@@ -55,12 +55,17 @@ mod tests {
     };
     use tower::ServiceExt;
 
+    fn mock_db() -> sea_orm::DatabaseConnection {
+        sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Sqlite).into_connection()
+    }
+
     fn test_state() -> MiryadAuthState {
         MiryadAuthState {
             oidc_client: std::sync::Arc::new(MockOidcClient),
             cookie_key: Key::from(&[0u8; 64]),
             post_login_redirect: "/".to_string(),
             post_logout_redirect: "/".to_string(),
+            db: mock_db(),
         }
     }
 
@@ -116,6 +121,7 @@ mod tests {
                 cookie_key: key,
                 post_login_redirect: "/".to_string(),
                 post_logout_redirect: "/".to_string(),
+                db: mock_db(),
             });
         let req = Request::builder()
             .uri("/protected")

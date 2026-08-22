@@ -1,15 +1,20 @@
 pub mod config;
 pub mod cookie;
+pub mod dual;
 pub mod error;
 pub mod middleware;
 pub mod oidc;
+pub mod principal;
 pub mod state;
+pub mod token;
 
 pub use config::OidcConfig;
 pub use error::AuthError;
 pub use middleware::AuthUser;
 pub use oidc::{OidcClient, OidcClientTrait, OidcIdentity};
+pub use principal::{AuthPrincipal, PrincipalSource};
 pub use state::MiryadAuthState;
+pub use token::{ApiToken, IssuedToken, issue_token, revoke_token, validate_token};
 
 #[cfg(test)]
 pub use oidc::MockOidcClient;
@@ -153,6 +158,8 @@ mod tests {
             cookie_key: ::cookie::Key::from(&[0u8; 64]),
             post_login_redirect: "/".to_string(),
             post_logout_redirect: "/".to_string(),
+            // Ces tests n'exercent que le flow cookie/OIDC — aucune requête n'atteint la base.
+            db: sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Sqlite).into_connection(),
         }
     }
 

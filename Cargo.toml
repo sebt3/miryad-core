@@ -11,7 +11,8 @@ name = "miryad"
 path = "src/bin/miryad.rs"
 
 [dependencies]
-sea-orm = "2"
+sea-orm = { version = "2", features = ["macros"] }
+sea-orm-migration = "2"
 clap = { version = "4", features = ["derive"] }
 axum = "0.8"
 openidconnect = "4.0"
@@ -23,8 +24,12 @@ async-trait = "0.1"
 thiserror = "2"
 tracing = "0.1"
 base64 = "0.22"
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+chrono = "0.4"
 
 [dev-dependencies]
-sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
+sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "mock"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tower = { version = "0.5", features = ["util"] }

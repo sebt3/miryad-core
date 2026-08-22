@@ -68,6 +68,7 @@ pub struct MiryadAuthState {
     pub cookie_key: cookie::Key,
     pub post_login_redirect: String,
     pub post_logout_redirect: String,
+    pub db: DatabaseConnection,   // ajouté en feature 2b, requis pour valider un token API
 }
 
 pub fn auth_router<S>() -> Router<S>
@@ -87,4 +88,54 @@ dépendance à un caractère de séparation absent des claims. Le cookie transit
 Erreurs : `AuthError` (`src/auth/error.rs`), préfixe `MRD-AUTH-XXX`, implémente `IntoResponse`
 (401 pour non-authentifié/session invalide, 502 pour une erreur OIDC amont).
 
-Pas de tokens API, pas de dual-auth, pas de persistance — cf. feature 2b (`docs/roadmap.md`).
+Pas de tokens API, pas de dual-auth, pas de persistance en 2a — cf. section suivante (2b).
+
+## Auth — tokens API + dual-auth (feature 2b, 2026-08-22)
+
+Première table interne à miryad-core (`miryad_api_tokens`, préfixe `miryad_` pour éviter toute
+collision avec le schéma de l'app consommatrice). Le schéma est géré par un `Migrator`
+(`sea-orm-migration`) embarqué dans le crate — séparé des migrations métier de l'app, appelé
+explicitement par elle au démarrage (`miryad_core::migration::Migrator::up(&db, None).await`).
+Toute future table interne (User/Group en feature 3) s'ajoute à ce même `Migrator`.
+
+```rust
+// src/auth/token.rs
+pub type ApiToken = Entity;   // alias du Entity généré par DeriveEntityModel
+pub struct Model {
+    pub id: i32,
+    pub subject: String,           // pas de FK vers User — n'existe pas encore (feature 3)
+    pub name: String,
+    pub token_hash: String,        // SHA-256 hex — jamais le token en clair
+    pub created_at: DateTimeUtc,
+    pub expires_at: Option<DateTimeUtc>,
+    pub last_used_at: Option<DateTimeUtc>,
+}
+
+pub struct IssuedToken { pub id: i32, pub token: String }  // le token en clair, retourné une seule fois
+
+pub async fn issue_token(db, subject, name, expires_at) -> Result<IssuedToken, AuthError>;
+pub async fn validate_token(db, token) -> Result<AuthPrincipal, AuthError>;
+pub async fn revoke_token(db, id) -> Result<(), AuthError>;
+```
+
+Format du token : `mrd_<43 car. base64url>` (32 octets aléatoires, préfixe façon GitHub/Stripe).
+Haché en SHA-256 (pas un KDF lent : le secret est déjà haute-entropie, pas un mot de passe humain).
+
+`AuthPrincipal` (`src/auth/principal.rs`) est le type unifié que REST/GraphQL/MCP consommeront
+(feature 4+) — distinct d'`AuthUser` (2a, resté spécifique au cookie navigateur) :
+
+```rust
+pub struct AuthPrincipal { pub subject: String, pub email: Option<String>, pub source: PrincipalSource }
+pub enum PrincipalSource { Session { id_token: String }, ApiToken { token_id: i32 } }
+```
+
+L'extracteur dual-auth (`src/auth/dual.rs`, `impl FromRequestParts<S> for AuthPrincipal`) résout
+soit via `Authorization: Bearer <token>`, soit via le cookie de session — dans cet ordre. Un
+header `Authorization: Bearer` présent mais invalide ne retombe **pas** sur le cookie : c'est un
+choix explicite du client, son échec est final (pas de repli silencieux vers un mode plus faible).
+
+`MiryadAuthState` (2a) s'est étendu d'un champ `db: DatabaseConnection`, sans rupture — 2a n'était
+pas encore publié.
+
+Pas de RBAC réel, pas de `MiryadResource` sur `ApiToken` (pas de CRUD générique dessus) — cf.
+feature 3 (Utilisateurs & Groupes) pour l'évaluation RBAC réelle et la vraie FK `subject → User`.

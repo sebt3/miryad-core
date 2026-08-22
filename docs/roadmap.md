@@ -71,5 +71,6 @@ appartient à l'application réellement déployée, donc au template `miryad` (s
 
 ## Statut
 
-Étape 1 (Fondations) et étape 2a (Auth — OIDC + session cookie) implémentées le 2026-08-22 — cf.
-`docs/architecture.md`. Étape 2b (tokens API + dual-auth) à designer ensuite.
+Étapes 1 (Fondations), 2a (Auth — OIDC + session cookie) et 2b (tokens API + dual-auth)
+implémentées le 2026-08-22 — cf. `docs/architecture.md`. Étape 3 (Utilisateurs & Groupes) à
+designer ensuite.
