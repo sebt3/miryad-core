@@ -195,6 +195,70 @@ feature 1 tenue jusqu'au bout). Admin gagne toujours, sur toutes les politiques 
 (inutile). `OwnerOnly` sans `owner_column` → refuse (fail-closed, comportement non défini par le
 contrat de la feature 1, désormais couvert par un test explicite).
 
-Pas de filtrage de liste (`WHERE owner_id = ?` généralisé) — `can_read`/`can_write` évaluent un
-enregistrement déjà chargé, un à la fois ; construire une clause de requête à partir d'une
-politique est le problème de la feature 4 (REST générique).
+Pas de filtrage de liste en feature 3 (`can_read`/`can_write` évaluent un enregistrement déjà
+chargé, un à la fois) — cf. section suivante (feature 4) pour `list_access`, qui construit la
+clause de requête.
+
+## API REST générique (feature 4, 2026-08-22)
+
+Routeur CRUD monté automatiquement pour toute entité qui implémente `MiryadResource` —
+`resource_router::<E, S>()` génère `GET/POST /{resource_name}` et
+`GET/PUT/DELETE /{resource_name}/{id}`, réutilisant `MiryadAuthState` (2b) comme état, aucun
+nouvel état à composer côté app.
+
+**Le corps de requête/réponse réutilise `E::Model`** — pas de DTO Create/Update par entité,
+grâce à `IntoActiveModel<E::ActiveModel>` généré par `DeriveEntityModel`. **Contrainte assumée** :
+une seule colonne de clé primaire, de type `i32` (vrai pour toutes les entités du crate à ce
+jour). Le trait `RestEntity` (`src/rest/mod.rs`) encode ces contraintes comme des bornes sur
+`MiryadResource` (via les bornes associées `Model:`/`ActiveModel:`/`PrimaryKey:` de Rust 2024),
+avec un blanket impl — pas de méthode supplémentaire à implémenter par entité.
+
+```rust
+pub trait RestEntity:
+    MiryadResource<
+        Model: Serialize + DeserializeOwned + IntoActiveModel<Self::ActiveModel> + Sync,
+        ActiveModel: ActiveModelTrait<Entity = Self> + Send,
+        PrimaryKey: PrimaryKeyTrait<ValueType = i32> + PrimaryKeyToColumn<Column = Self::Column>,
+    >
+{
+}
+
+pub fn resource_router<E: RestEntity, S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+    MiryadAuthState: FromRef<S>;
+```
+
+### Découverte : `Model::into_active_model()` marque tout `Unchanged`, pas `Set`
+
+`DeriveEntityModel` génère `impl From<Model> for ActiveModel` en mettant **tous** les champs à
+`ActiveValue::Unchanged`, y compris hors primary key. `ActiveModelTrait::insert()` traite
+`Unchanged` comme une valeur à écrire (donc `create` marchait tel quel), mais
+`ActiveModelTrait::update()` n'inclut que les champs `Set` dans la clause `SET` — un premier essai
+naïf de l'endpoint `PUT` n'écrivait donc silencieusement aucune colonne. Corrigé par
+`mark_all_set::<E>()` (`src/rest/mod.rs`), qui repasse tous les champs de `Unchanged` à `Set` par
+réflexion générique (`ActiveModelTrait::get`/`set`, itération sur `E::Column`) avant `insert`/
+`update` — aucune entité n'a besoin d'en tenir compte.
+
+### Pagination et filtre de liste
+
+`src/query.rs` (partagé, pas spécifique REST) : `Pagination` (page 1-indexée, `per_page` par
+défaut 100, plafonné à 1000 — pas une pagination fine, juste une garde-fou contre une liste de
+milliers de lignes) et `PagedResult<M> { items, page, per_page, total_items, total_pages }` via le
+`Paginator` déjà intégré à SeaORM (`Select::paginate` + `num_items_and_pages`).
+
+`MiryadResource::filter_column() -> Option<Self::Column>` (défaut `None`, amendement feature 1)
+déclare une colonne texte filtrable par `?filter=valeur` (égalité exacte). Combiné en `AND` avec
+la condition RBAC de `rbac::list_access::<E>()` (`Unrestricted` / `FilterByOwner(Condition)` /
+`Forbidden`) — un non-admin filtrant par catégorie ne voit jamais les enregistrements d'autrui,
+même si la catégorie correspond.
+
+### RBAC de création
+
+`rbac::can_create::<E>()` (nouveau, pas de record à comparer) : `Public`/`OwnerOnly` autorisent
+toujours (le créateur devient propriétaire), `Group`/`AdminOnly` vérifient l'appartenance. À la
+création, la colonne `owner_column()` du corps client est ignorée et écrasée par l'id de
+l'utilisateur authentifié — jamais de création au nom de quelqu'un d'autre.
+
+Pas de pagination par curseur, pas de tri, pas de filtre multi-champs, pas de masquage de champ —
+hors-scope MVP. 403 (pas 404) pour un enregistrement existant mais non autorisé.

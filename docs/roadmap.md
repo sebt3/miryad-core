@@ -33,7 +33,8 @@ admin / public) branchée sur le trait `MiryadResource` de l'étape 1.
 
 ## 4. API REST générique
 Routeur CRUD générique (axum) construit depuis le trait `MiryadResource` + RBAC de l'étape 3.
-Aucune route à écrire par entité.
+Aucune route à écrire par entité. Liste paginée (page/per_page, défaut 100, plafond 1000) et
+filtrable sur un champ texte unique déclaré par l'entité.
 
 ## 5. API GraphQL
 Intégration Seaography 2.0 (schéma dynamique depuis les entités SeaORM) + injection du RBAC de
@@ -73,6 +74,6 @@ appartient à l'application réellement déployée, donc au template `miryad` (s
 
 ## Statut
 
-Étapes 1 (Fondations), 2a (Auth — OIDC + session cookie), 2b (tokens API + dual-auth) et 3
-(Utilisateurs & Groupes) implémentées le 2026-08-22 — cf. `docs/architecture.md`. Étape 4 (API
-REST générique) à designer ensuite.
+Étapes 1 (Fondations), 2a (Auth — OIDC + session cookie), 2b (tokens API + dual-auth), 3
+(Utilisateurs & Groupes) et 4 (API REST générique) implémentées le 2026-08-22 — cf.
+`docs/architecture.md`. Étape 5 (API GraphQL) à designer ensuite.

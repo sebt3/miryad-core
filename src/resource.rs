@@ -35,4 +35,12 @@ pub trait MiryadResource: EntityTrait {
     /// `AccessPolicy::OwnerOnly` — comportement non défini sinon (vérifié
     /// par test, pas par le compilateur à ce stade).
     fn owner_column() -> Option<<Self as EntityTrait>::Column>;
+
+    /// Colonne texte sur laquelle la liste REST/GraphQL/MCP peut être filtrée
+    /// (`?filter=valeur`, égalité exacte) — feature 4. `None` par défaut : pas
+    /// de filtre pour cette entité. Une entité qui veut un filtre de liste
+    /// (ex. "recettes par catégorie") le déclare explicitement.
+    fn filter_column() -> Option<<Self as EntityTrait>::Column> {
+        None
+    }
 }

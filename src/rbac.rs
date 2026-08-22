@@ -1,5 +1,5 @@
 use sea_orm::entity::prelude::*;
-use sea_orm::{DatabaseConnection, ModelTrait};
+use sea_orm::{Condition, DatabaseConnection, ModelTrait};
 
 use crate::resource::{AccessPolicy, MiryadResource};
 use crate::users::group::{is_admin, is_member};
@@ -30,6 +30,26 @@ where
     E::Model: ModelTrait<Entity = E>,
 {
     evaluate::<E>(db, E::write_policy(), E::owner_column(), user, record).await
+}
+
+/// Autorisation de créer un nouvel enregistrement (feature 4) — il n'y en a pas encore à
+/// comparer, donc pas de vérification par propriétaire : `OwnerOnly` autorise toujours la
+/// création (le créateur devient le propriétaire), seules `Group`/`AdminOnly` filtrent selon
+/// l'appartenance.
+pub async fn can_create<E>(db: &DatabaseConnection, user: &user::Model) -> Result<bool, DbErr>
+where
+    E: MiryadResource,
+{
+    match E::write_policy() {
+        AccessPolicy::Public | AccessPolicy::OwnerOnly => Ok(true),
+        AccessPolicy::AdminOnly => is_admin(db, user.id).await,
+        AccessPolicy::Group(name) => {
+            if is_admin(db, user.id).await? {
+                return Ok(true);
+            }
+            is_member(db, user.id, name).await
+        }
+    }
 }
 
 async fn evaluate<E>(
@@ -66,6 +86,52 @@ where
             let owner_value = record.get(col);
             Ok(owner_value == sea_orm::Value::from(user.id))
         }
+    }
+}
+
+/// Résultat de l'évaluation RBAC pour une opération de liste (feature 4) — contrairement à
+/// `can_read`/`can_write`, il n'y a pas encore d'enregistrement précis à comparer, donc pas de
+/// simple booléen : soit on ne filtre pas, soit on filtre par propriétaire, soit c'est refusé
+/// avant même de construire une requête.
+#[derive(Debug)]
+pub enum ListAccess {
+    /// Politique publique, ou appelant admin — aucune restriction à appliquer.
+    Unrestricted,
+    /// Politique `OwnerOnly` pour un appelant non-admin — condition à ajouter à la requête de
+    /// liste (`WHERE owner_column = user.id`).
+    FilterByOwner(Condition),
+    /// Politique `Group`/`AdminOnly` sans l'appartenance requise — pas de requête à exécuter.
+    Forbidden,
+}
+
+pub async fn list_access<E>(db: &DatabaseConnection, user: &user::Model) -> Result<ListAccess, DbErr>
+where
+    E: MiryadResource,
+{
+    let policy = E::read_policy();
+
+    if policy == AccessPolicy::Public {
+        return Ok(ListAccess::Unrestricted);
+    }
+    if is_admin(db, user.id).await? {
+        return Ok(ListAccess::Unrestricted);
+    }
+
+    match policy {
+        AccessPolicy::Public => unreachable!("handled above"),
+        AccessPolicy::AdminOnly => Ok(ListAccess::Forbidden),
+        AccessPolicy::Group(name) => {
+            if is_member(db, user.id, name).await? {
+                Ok(ListAccess::Unrestricted)
+            } else {
+                Ok(ListAccess::Forbidden)
+            }
+        }
+        AccessPolicy::OwnerOnly => match E::owner_column() {
+            Some(col) => Ok(ListAccess::FilterByOwner(Condition::all().add(col.eq(user.id)))),
+            // Même contrat fail-closed que `evaluate` : pas de colonne, pas d'accès.
+            None => Ok(ListAccess::Forbidden),
+        },
     }
 }
 
@@ -139,6 +205,42 @@ mod tests {
             }
             fn owner_column() -> Option<Column> {
                 None
+            }
+        }
+    }
+
+    /// `OwnerOnly` en lecture *et* écriture — `recipe`/`ingredient` ne couvrent pas ce cas
+    /// (`recipe` est public en lecture), nécessaire pour tester `ListAccess::FilterByOwner`.
+    mod note {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+
+        #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+        #[sea_orm(table_name = "notes")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub body: String,
+            pub owner_id: i32,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "notes"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn owner_column() -> Option<Column> {
+                Some(Column::OwnerId)
             }
         }
     }
@@ -255,5 +357,54 @@ mod tests {
         .await
         .expect("evaluation does not error");
         assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn list_access_public_is_unrestricted() {
+        let db = test_db().await;
+        let anyone = resolve_user(&db, "anyone", None).await.expect("resolve");
+        assert!(matches!(
+            list_access::<recipe::Entity>(&db, &anyone).await.unwrap(),
+            ListAccess::Unrestricted
+        ));
+    }
+
+    #[tokio::test]
+    async fn list_access_owner_only_filters_for_non_admin_but_not_admin() {
+        let db = test_db().await;
+        let owner = resolve_user(&db, "owner", None).await.expect("resolve");
+        let admin = resolve_user(&db, "admin-user", None).await.expect("resolve");
+        sync_groups_from_oidc(&db, admin.id, &["admin".to_string()])
+            .await
+            .expect("sync");
+
+        match list_access::<note::Entity>(&db, &owner).await.unwrap() {
+            ListAccess::FilterByOwner(_) => (),
+            other => panic!("expected FilterByOwner for a non-admin, got {other:?}"),
+        }
+        assert!(matches!(
+            list_access::<note::Entity>(&db, &admin).await.unwrap(),
+            ListAccess::Unrestricted
+        ));
+    }
+
+    #[tokio::test]
+    async fn list_access_group_policy_forbidden_without_membership() {
+        let db = test_db().await;
+        let stranger = resolve_user(&db, "stranger", None).await.expect("resolve");
+        let member = resolve_user(&db, "member", None).await.expect("resolve");
+        sync_groups_from_oidc(&db, member.id, &["editors".to_string()])
+            .await
+            .expect("sync");
+
+        assert!(matches!(
+            list_access::<ingredient::Entity>(&db, &stranger).await.unwrap(),
+            ListAccess::Forbidden
+        ));
+        // `ingredient.read_policy()` est `Group("editors")`.
+        assert!(matches!(
+            list_access::<ingredient::Entity>(&db, &member).await.unwrap(),
+            ListAccess::Unrestricted
+        ));
     }
 }
