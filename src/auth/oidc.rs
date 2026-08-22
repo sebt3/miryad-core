@@ -16,20 +16,30 @@ type BuiltCoreClient = CoreClient<
     EndpointMaybeSet,
 >;
 
-/// Identité extraite d'un `id_token` OIDC vérifié.
+/// Identité extraite d'un `id_token` OIDC vérifié — c'est ce qui finit dans le cookie de session
+/// (cf. `auth::cookie`). Ne porte pas les groupes : ceux-ci sont éphémères, consommés une seule
+/// fois par `sync_groups_from_oidc` au login (cf. `OidcLoginResult`), jamais persistés ici.
 pub struct OidcIdentity {
     pub id_token: String,
-    /// Claim `sub` — identifiant stable, ce que la feature "Utilisateurs & Groupes" utilisera
-    /// pour lier ou créer un `User`.
+    /// Claim `sub` — identifiant stable, ce que `users::resolve_user` utilise pour lier/créer un
+    /// `User`.
     pub subject: String,
     /// Claim `email` — pas garanti par tous les fournisseurs/scopes, donc optionnel.
     pub email: Option<String>,
 }
 
+/// Résultat complet d'un échange de code réussi. `groups` (claim `groups`, spécifique à
+/// Authentik — pas un claim OIDC standard) pilote la synchronisation des appartenances de groupe
+/// en base (cf. feature 3, `users::sync_groups_from_oidc`) ; il n'est jamais persisté tel quel.
+pub struct OidcLoginResult {
+    pub identity: OidcIdentity,
+    pub groups: Vec<String>,
+}
+
 #[async_trait::async_trait]
 pub trait OidcClientTrait: Send + Sync {
     fn authorization_url(&self) -> (openidconnect::url::Url, CsrfToken, Nonce);
-    async fn exchange_code(&self, code: &str, expected_nonce: &Nonce) -> Result<OidcIdentity, AuthError>;
+    async fn exchange_code(&self, code: &str, expected_nonce: &Nonce) -> Result<OidcLoginResult, AuthError>;
 }
 
 pub struct OidcClient {
@@ -75,6 +85,34 @@ async fn send_http_request(
     Ok(response_builder
         .body(body)
         .expect("MRD-AUTH-009: failed to build HTTP response from a valid status+headers"))
+}
+
+/// Extrait le claim `groups` du payload d'un JWT déjà vérifié (signature/expiration validées en
+/// amont par `openidconnect`) — même technique que `cookie::extract_exp_claim` : on décode le
+/// payload base64 nous-mêmes plutôt que de reconfigurer `CoreClient` avec des `AdditionalClaims`
+/// génériques pour un seul champ non-standard. Absent ou malformé → liste vide, pas une erreur
+/// (tous les fournisseurs/apps ne portent pas ce claim).
+fn extract_groups_claim(jwt: &str) -> Vec<String> {
+    let parts: Vec<&str> = jwt.split('.').collect();
+    if parts.len() != 3 {
+        return Vec::new();
+    }
+    use base64::Engine;
+    let Ok(payload_json) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1]) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload_json) else {
+        return Vec::new();
+    };
+    value
+        .get("groups")
+        .and_then(|g| g.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl OidcClient {
@@ -128,7 +166,7 @@ impl OidcClientTrait for OidcClient {
         auth_request.url()
     }
 
-    async fn exchange_code(&self, code: &str, expected_nonce: &Nonce) -> Result<OidcIdentity, AuthError> {
+    async fn exchange_code(&self, code: &str, expected_nonce: &Nonce) -> Result<OidcLoginResult, AuthError> {
         let client = self.http_client.clone();
         let exchange_fn = move |req: HttpRequest| {
             let client = client.clone();
@@ -160,11 +198,15 @@ impl OidcClientTrait for OidcClient {
         let subject = id_token_claims.subject().to_string();
         let email = id_token_claims.email().map(|e| e.to_string());
         let id_token_string = id_token.to_string();
+        let groups = extract_groups_claim(&id_token_string);
 
-        Ok(OidcIdentity {
-            id_token: id_token_string,
-            subject,
-            email,
+        Ok(OidcLoginResult {
+            identity: OidcIdentity {
+                id_token: id_token_string,
+                subject,
+                email,
+            },
+            groups,
         })
     }
 }
@@ -183,7 +225,38 @@ impl OidcClientTrait for MockOidcClient {
         (url, CsrfToken::new_random(), Nonce::new_random())
     }
 
-    async fn exchange_code(&self, _code: &str, _expected_nonce: &Nonce) -> Result<OidcIdentity, AuthError> {
+    async fn exchange_code(
+        &self,
+        _code: &str,
+        _expected_nonce: &Nonce,
+    ) -> Result<OidcLoginResult, AuthError> {
         unimplemented!("MockOidcClient::exchange_code")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_groups_claim_reads_present_array() {
+        use base64::Engine;
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"sub":"u1","groups":["admin","editors"]}"#);
+        let jwt = format!("header.{payload}.sig");
+        assert_eq!(extract_groups_claim(&jwt), vec!["admin", "editors"]);
+    }
+
+    #[test]
+    fn extract_groups_claim_defaults_to_empty_when_absent() {
+        use base64::Engine;
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"sub":"u1"}"#);
+        let jwt = format!("header.{payload}.sig");
+        assert!(extract_groups_claim(&jwt).is_empty());
+    }
+
+    #[test]
+    fn extract_groups_claim_defaults_to_empty_when_malformed() {
+        assert!(extract_groups_claim("not-a-jwt").is_empty());
     }
 }

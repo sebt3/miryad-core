@@ -20,14 +20,16 @@ navigateur, scindé de 2b pour rester dans une taille de feature raisonnable (d�
 2026-08-22).
 
 ## 2b. Auth — tokens API + dual-auth
-Entité `ApiToken` (stockage hashé, `subject: String` sans FK — le modèle `User` n'existe pas
-encore, cf. feature 3) + middleware dual-auth (cookie de 2a **ou** token API) réutilisable par
-REST, GraphQL et MCP. La FK `subject` → `User` sera ajoutée par la feature 3 une fois le modèle
-disponible, pas avant.
+Entité `ApiToken` (stockage hashé, `subject: String` sans FK vers `User`) + middleware dual-auth
+(cookie de 2a **ou** token API) réutilisable par REST, GraphQL et MCP. La feature 3 résout
+`subject` → `User` par requête (get-or-create), pas par contrainte de schéma — décision actée en
+feature 3, pas de FK ajoutée après coup.
 
 ## 3. Utilisateurs & Groupes
-Modèle `User`/`Group`/`GroupMembership`, bootstrap d'un groupe `admin`, évaluation RBAC (owner-only
-/ groupe / admin / public) branchée sur le trait `MiryadResource` de l'étape 1.
+Modèle `User`/`Group`/`GroupMembership`, groupe `admin` pré-câblé (seedé par migration).
+Appartenance synchronisée depuis le claim `groups` OIDC à chaque login — Authentik décide,
+miryad-core reflète (pas d'API d'assignation manuelle). Évaluation RBAC (owner-only / groupe /
+admin / public) branchée sur le trait `MiryadResource` de l'étape 1.
 
 ## 4. API REST générique
 Routeur CRUD générique (axum) construit depuis le trait `MiryadResource` + RBAC de l'étape 3.
@@ -71,6 +73,6 @@ appartient à l'application réellement déployée, donc au template `miryad` (s
 
 ## Statut
 
-Étapes 1 (Fondations), 2a (Auth — OIDC + session cookie) et 2b (tokens API + dual-auth)
-implémentées le 2026-08-22 — cf. `docs/architecture.md`. Étape 3 (Utilisateurs & Groupes) à
-designer ensuite.
+Étapes 1 (Fondations), 2a (Auth — OIDC + session cookie), 2b (tokens API + dual-auth) et 3
+(Utilisateurs & Groupes) implémentées le 2026-08-22 — cf. `docs/architecture.md`. Étape 4 (API
+REST générique) à designer ensuite.

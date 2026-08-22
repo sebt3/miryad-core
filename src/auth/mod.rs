@@ -120,7 +120,11 @@ async fn handler_callback(
         return Err(AuthError::Oidc("MRD-AUTH-013: invalid CSRF state".to_string()));
     }
 
-    let identity = auth.oidc_client.exchange_code(&params.code, &nonce).await?;
+    let login_result = auth.oidc_client.exchange_code(&params.code, &nonce).await?;
+    let identity = login_result.identity;
+
+    let user = crate::users::resolve_user(&auth.db, &identity.subject, identity.email.as_deref()).await?;
+    crate::users::sync_groups_from_oidc(&auth.db, user.id, &login_result.groups).await?;
 
     let set_cookie_main = crate::auth::cookie::build_set_cookie(&identity, &auth.cookie_key);
     let set_cookie_clear_pending =

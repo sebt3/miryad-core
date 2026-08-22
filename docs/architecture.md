@@ -138,4 +138,63 @@ choix explicite du client, son échec est final (pas de repli silencieux vers un
 pas encore publié.
 
 Pas de RBAC réel, pas de `MiryadResource` sur `ApiToken` (pas de CRUD générique dessus) — cf.
-feature 3 (Utilisateurs & Groupes) pour l'évaluation RBAC réelle et la vraie FK `subject → User`.
+feature 3 (Utilisateurs & Groupes) pour l'évaluation RBAC réelle.
+
+## Utilisateurs & Groupes (feature 3, 2026-08-22)
+
+**Décision structurante : synchronisation, pas gestion.** Authentik est la seule source de vérité
+pour l'appartenance aux groupes (`admin` compris) — miryad-core ne fournit **aucune API
+d'assignation manuelle**. À chaque login OIDC réussi, `handler_callback` (`src/auth/mod.rs`)
+enchaîne `resolve_user` (get-or-create par `subject`, sans FK depuis `ApiToken` — la résolution se
+fait par requête sur `subject`, pas par contrainte de schéma) puis `sync_groups_from_oidc`, qui
+réconcilie **entièrement** les `GroupMembership` locales depuis le claim `groups` du token : ajout
+des groupes présents (création à la volée d'un `Group` jamais vu — pas de registre préalable),
+retrait de ceux qui ne le sont plus. Le groupe `admin` est *seedé* par migration (toujours présent,
+vide au départ), sans rien de spécial au niveau schéma — juste une convention lue par
+`rbac::is_admin`.
+
+**Limite acceptée** : un principal résolu depuis un token API (2b) n'a pas de session OIDC vivante
+par requête — son état de groupe reflète le *dernier login navigateur* de son `subject`, pas l'état
+Authentik en temps réel. Une révocation de groupe ne prend effet sur les tokens existants qu'après
+la prochaine connexion navigateur de la personne concernée.
+
+Le claim `groups` (spécifique à Authentik, pas standard OIDC) est extrait à la main du payload de
+l'`id_token` déjà vérifié (`auth::oidc::extract_groups_claim`, même technique que
+`cookie::extract_exp_claim`), plutôt que de reconfigurer `CoreClient` avec des `AdditionalClaims`
+génériques pour un seul champ. Ça a changé la signature d'`OidcClientTrait::exchange_code` (2a,
+pas encore publié — pas de rupture) : elle retourne désormais `OidcLoginResult { identity,
+groups }` au lieu de `OidcIdentity` seule.
+
+```rust
+// src/users/{user,group,membership}.rs
+pub struct User { pub id: i32, pub subject: String, pub email: Option<String>, pub display_name: Option<String>, pub created_at: DateTimeUtc }
+pub struct Group { pub id: i32, pub name: String, pub created_at: DateTimeUtc }
+pub struct GroupMembership { pub id: i32, pub user_id: i32, pub group_id: i32 }  // unique(user_id, group_id)
+
+pub async fn resolve_user<C: ConnectionTrait>(db: &C, subject: &str, email: Option<&str>) -> Result<user::Model, DbErr>;
+pub async fn sync_groups_from_oidc<C: ConnectionTrait>(db: &C, user_id: i32, groups: &[String]) -> Result<(), DbErr>;
+pub async fn is_admin<C: ConnectionTrait>(db: &C, user_id: i32) -> Result<bool, DbErr>;
+pub async fn is_member<C: ConnectionTrait>(db: &C, user_id: i32, group_name: &str) -> Result<bool, DbErr>;
+```
+
+Ces fonctions sont génériques sur `C: ConnectionTrait` (pas `&DatabaseConnection` en dur) : le seed
+de migration (`m20260822_000003_seed_admin_group`) les appelle directement via
+`manager.get_connection()`, qui n'est pas un `DatabaseConnection` mais satisfait le même trait —
+évite de dupliquer la logique d'insertion en SQL brut dans la migration.
+
+```rust
+// src/rbac.rs
+pub async fn can_read<E>(db, user: &user::Model, record: &E::Model) -> Result<bool, DbErr>
+where E: MiryadResource, E::Model: ModelTrait<Entity = E>;
+pub async fn can_write<E>(...) -> Result<bool, DbErr>;  // même signature, write_policy()
+```
+
+`OwnerOnly` compare via `record.get(owner_column)` — réflexion générique `sea_orm::ModelTrait`,
+aucune entité n'écrit son propre code de comparaison (l'intention du trait `MiryadResource` de la
+feature 1 tenue jusqu'au bout). Admin gagne toujours, sur toutes les politiques sauf `Public`
+(inutile). `OwnerOnly` sans `owner_column` → refuse (fail-closed, comportement non défini par le
+contrat de la feature 1, désormais couvert par un test explicite).
+
+Pas de filtrage de liste (`WHERE owner_id = ?` généralisé) — `can_read`/`can_write` évaluent un
+enregistrement déjà chargé, un à la fois ; construire une clause de requête à partir d'une
+politique est le problème de la feature 4 (REST générique).
