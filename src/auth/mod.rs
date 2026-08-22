@@ -14,7 +14,7 @@ pub use middleware::AuthUser;
 pub use oidc::{OidcClient, OidcClientTrait, OidcIdentity};
 pub use principal::{AuthPrincipal, PrincipalSource};
 pub use state::MiryadAuthState;
-pub use token::{ApiToken, IssuedToken, issue_token, revoke_token, validate_token};
+pub use token::{ApiToken, IssuedToken, ensure_token, issue_token, revoke_token, validate_token};
 
 #[cfg(test)]
 pub use oidc::MockOidcClient;
@@ -124,7 +124,7 @@ async fn handler_callback(
     let identity = login_result.identity;
 
     let user = crate::users::resolve_user(&auth.db, &identity.subject, identity.email.as_deref()).await?;
-    crate::users::sync_groups_from_oidc(&auth.db, user.id, &login_result.groups).await?;
+    crate::users::sync_group_memberships(&auth.db, user.id, &login_result.groups).await?;
 
     let set_cookie_main = crate::auth::cookie::build_set_cookie(&identity, &auth.cookie_key);
     let set_cookie_clear_pending =

@@ -71,7 +71,7 @@ pub async fn is_member<C: ConnectionTrait>(db: &C, user_id: i32, group_name: &st
 mod tests {
     use super::*;
     use crate::migration::Migrator;
-    use crate::users::membership::sync_groups_from_oidc;
+    use crate::users::membership::sync_group_memberships;
     use crate::users::user::resolve_user;
     use sea_orm_migration::MigratorTrait;
 
@@ -98,7 +98,7 @@ mod tests {
     async fn is_member_true_for_member_false_otherwise() {
         let db = test_db().await;
         let user = resolve_user(&db, "sub-1", None).await.expect("resolve succeeds");
-        sync_groups_from_oidc(&db, user.id, &["editors".to_string()])
+        sync_group_memberships(&db, user.id, &["editors".to_string()])
             .await
             .expect("sync succeeds");
 

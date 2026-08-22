@@ -25,6 +25,14 @@ Entité `ApiToken` (stockage hashé, `subject: String` sans FK vers `User`) + mi
 `subject` → `User` par requête (get-or-create), pas par contrainte de schéma — décision actée en
 feature 3, pas de FK ajoutée après coup.
 
+## 2c. Auth — comptes de service
+Fonction idempotente (`ensure_service_account`), appelée explicitement par l'app cible à son
+démarrage (après ses migrations, si elle le décide) : garantit l'existence d'un compte "machine"
+(jamais de login OIDC), membre des groupes donnés, authentifiable par un token dont la valeur est
+fournie par l'appelant (pas générée aléatoirement) — typiquement lue d'une variable
+d'environnement, pour que l'automatisation de déploiement (kuberest) connaisse le secret à
+l'avance. Décidé le 2026-08-22, après la feature 4.
+
 ## 3. Utilisateurs & Groupes
 Modèle `User`/`Group`/`GroupMembership`, groupe `admin` pré-câblé (seedé par migration).
 Appartenance synchronisée depuis le claim `groups` OIDC à chaque login — Authentik décide,
@@ -35,6 +43,14 @@ admin / public) branchée sur le trait `MiryadResource` de l'étape 1.
 Routeur CRUD générique (axum) construit depuis le trait `MiryadResource` + RBAC de l'étape 3.
 Aucune route à écrire par entité. Liste paginée (page/per_page, défaut 100, plafond 1000) et
 filtrable sur un champ texte unique déclaré par l'entité.
+
+## 4b. OpenAPI + Swagger UI (Swagger UI optionnel)
+Génération d'un document OpenAPI 3 pour les routes CRUD génériques de la feature 4 — toujours
+disponible (`utoipa` en dépendance normale), construite via l'API bas niveau d'`utoipa` (pas la
+macro `#[utoipa::path]`, qui exige une fonction concrète par route) pour rester générique par
+entité, sans boilerplate. Seule la UI Swagger est derrière une feature Cargo `swagger-ui`
+(activable par miryad-core et transitivement par l'app cible). Décidé le 2026-08-22, après la
+feature 4.
 
 ## 5. API GraphQL
 Intégration Seaography 2.0 (schéma dynamique depuis les entités SeaORM) + injection du RBAC de
@@ -74,6 +90,7 @@ appartient à l'application réellement déployée, donc au template `miryad` (s
 
 ## Statut
 
-Étapes 1 (Fondations), 2a (Auth — OIDC + session cookie), 2b (tokens API + dual-auth), 3
-(Utilisateurs & Groupes) et 4 (API REST générique) implémentées le 2026-08-22 — cf.
-`docs/architecture.md`. Étape 5 (API GraphQL) à designer ensuite.
+Étapes 1 (Fondations), 2a (Auth — OIDC + session cookie), 2b (tokens API + dual-auth), 2c
+(comptes de service), 3 (Utilisateurs & Groupes) et 4 (API REST générique) implémentées le
+2026-08-22 — cf. `docs/architecture.md`. Étape 4b (OpenAPI + Swagger UI) en cours d'implémentation,
+puis étape 5 (API GraphQL) à designer.

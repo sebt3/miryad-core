@@ -18,7 +18,7 @@ type BuiltCoreClient = CoreClient<
 
 /// Identité extraite d'un `id_token` OIDC vérifié — c'est ce qui finit dans le cookie de session
 /// (cf. `auth::cookie`). Ne porte pas les groupes : ceux-ci sont éphémères, consommés une seule
-/// fois par `sync_groups_from_oidc` au login (cf. `OidcLoginResult`), jamais persistés ici.
+/// fois par `sync_group_memberships` au login (cf. `OidcLoginResult`), jamais persistés ici.
 pub struct OidcIdentity {
     pub id_token: String,
     /// Claim `sub` — identifiant stable, ce que `users::resolve_user` utilise pour lier/créer un
@@ -30,7 +30,7 @@ pub struct OidcIdentity {
 
 /// Résultat complet d'un échange de code réussi. `groups` (claim `groups`, spécifique à
 /// Authentik — pas un claim OIDC standard) pilote la synchronisation des appartenances de groupe
-/// en base (cf. feature 3, `users::sync_groups_from_oidc`) ; il n'est jamais persisté tel quel.
+/// en base (cf. feature 3, `users::sync_group_memberships`) ; il n'est jamais persisté tel quel.
 pub struct OidcLoginResult {
     pub identity: OidcIdentity,
     pub groups: Vec<String>,

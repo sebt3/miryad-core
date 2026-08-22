@@ -139,7 +139,7 @@ where
 mod tests {
     use super::*;
     use crate::migration::Migrator;
-    use crate::users::{resolve_user, sync_groups_from_oidc};
+    use crate::users::{resolve_user, sync_group_memberships};
     use sea_orm_migration::MigratorTrait;
 
     mod recipe {
@@ -259,7 +259,7 @@ mod tests {
         let owner = resolve_user(&db, "owner", None).await.expect("resolve");
         let other = resolve_user(&db, "other", None).await.expect("resolve");
         let admin = resolve_user(&db, "admin-user", None).await.expect("resolve");
-        sync_groups_from_oidc(&db, admin.id, &["admin".to_string()])
+        sync_group_memberships(&db, admin.id, &["admin".to_string()])
             .await
             .expect("sync");
 
@@ -290,11 +290,11 @@ mod tests {
     async fn group_policy_allows_member_and_admin_denies_others() {
         let db = test_db().await;
         let member = resolve_user(&db, "member", None).await.expect("resolve");
-        sync_groups_from_oidc(&db, member.id, &["editors".to_string()])
+        sync_group_memberships(&db, member.id, &["editors".to_string()])
             .await
             .expect("sync");
         let admin = resolve_user(&db, "admin-user", None).await.expect("resolve");
-        sync_groups_from_oidc(&db, admin.id, &["admin".to_string()])
+        sync_group_memberships(&db, admin.id, &["admin".to_string()])
             .await
             .expect("sync");
         let stranger = resolve_user(&db, "stranger", None).await.expect("resolve");
@@ -374,7 +374,7 @@ mod tests {
         let db = test_db().await;
         let owner = resolve_user(&db, "owner", None).await.expect("resolve");
         let admin = resolve_user(&db, "admin-user", None).await.expect("resolve");
-        sync_groups_from_oidc(&db, admin.id, &["admin".to_string()])
+        sync_group_memberships(&db, admin.id, &["admin".to_string()])
             .await
             .expect("sync");
 
@@ -393,7 +393,7 @@ mod tests {
         let db = test_db().await;
         let stranger = resolve_user(&db, "stranger", None).await.expect("resolve");
         let member = resolve_user(&db, "member", None).await.expect("resolve");
-        sync_groups_from_oidc(&db, member.id, &["editors".to_string()])
+        sync_group_memberships(&db, member.id, &["editors".to_string()])
             .await
             .expect("sync");
 

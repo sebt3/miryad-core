@@ -108,6 +108,40 @@ pub async fn revoke_token(db: &DatabaseConnection, id: i32) -> Result<(), AuthEr
     Ok(())
 }
 
+/// Garantit l'existence d'un token dont la valeur en clair est `token` — contrairement à
+/// `issue_token`, la valeur n'est pas générée ici mais fournie par l'appelant (cf.
+/// `users::ensure_service_account`, feature 2c). Idempotent : si un token avec ce hash existe déjà
+/// pour ce `subject`, ne fait rien.
+pub async fn ensure_token(
+    db: &DatabaseConnection,
+    subject: &str,
+    name: &str,
+    token: &str,
+    expires_at: Option<DateTimeUtc>,
+) -> Result<(), AuthError> {
+    let hash = hash_token(token);
+    let exists = Entity::find()
+        .filter(Column::TokenHash.eq(&hash))
+        .one(db)
+        .await?
+        .is_some();
+    if exists {
+        return Ok(());
+    }
+
+    let active = ActiveModel {
+        subject: Set(subject.to_string()),
+        name: Set(name.to_string()),
+        token_hash: Set(hash),
+        created_at: Set(Utc::now()),
+        expires_at: Set(expires_at),
+        last_used_at: Set(None),
+        ..Default::default()
+    };
+    active.insert(db).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +208,37 @@ mod tests {
 
         let result = validate_token(&db, &issued.token).await;
         assert!(matches!(result, Err(AuthError::InvalidToken)));
+    }
+
+    #[tokio::test]
+    async fn ensure_token_creates_then_authenticates() {
+        let db = test_db().await;
+        ensure_token(&db, "service-account", "bootstrap", "mrd_fixed-secret", None)
+            .await
+            .expect("ensure succeeds");
+
+        let principal = validate_token(&db, "mrd_fixed-secret")
+            .await
+            .expect("token is valid");
+        assert_eq!(principal.subject, "service-account");
+    }
+
+    #[tokio::test]
+    async fn ensure_token_is_idempotent() {
+        let db = test_db().await;
+        ensure_token(&db, "service-account", "bootstrap", "mrd_fixed-secret", None)
+            .await
+            .expect("first ensure succeeds");
+        ensure_token(&db, "service-account", "bootstrap", "mrd_fixed-secret", None)
+            .await
+            .expect("second ensure succeeds");
+
+        let count = Entity::find()
+            .filter(Column::TokenHash.eq(hash_token("mrd_fixed-secret")))
+            .all(&db)
+            .await
+            .expect("query succeeds")
+            .len();
+        assert_eq!(count, 1);
     }
 }

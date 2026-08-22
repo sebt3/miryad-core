@@ -391,7 +391,7 @@ mod tests {
         let alice_token = bearer_for(&db, "alice").await;
         let admin_token = bearer_for(&db, "admin-user").await;
         let admin = auth_resolve_user(&db, "admin-user", None).await.expect("resolve");
-        crate::users::sync_groups_from_oidc(&db, admin.id, &["admin".to_string()])
+        crate::users::sync_group_memberships(&db, admin.id, &["admin".to_string()])
             .await
             .expect("sync");
 

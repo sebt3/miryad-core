@@ -23,7 +23,7 @@ pub type GroupMembership = Entity;
 /// groupes absents sont retirés, les nouveaux sont ajoutés (créés à la volée si inconnus). Seul
 /// chemin d'écriture de cette table — pas d'API d'assignation manuelle (Authentik est la source
 /// de vérité, cf. `docs/architecture.md`).
-pub async fn sync_groups_from_oidc<C: ConnectionTrait>(
+pub async fn sync_group_memberships<C: ConnectionTrait>(
     db: &C,
     user_id: i32,
     groups: &[String],
@@ -76,7 +76,7 @@ mod tests {
         let db = test_db().await;
         let user = resolve_user(&db, "sub-1", None).await.expect("resolve succeeds");
 
-        sync_groups_from_oidc(&db, user.id, &["admin".to_string(), "editors".to_string()])
+        sync_group_memberships(&db, user.id, &["admin".to_string(), "editors".to_string()])
             .await
             .expect("sync succeeds");
 
@@ -93,10 +93,10 @@ mod tests {
         let db = test_db().await;
         let user = resolve_user(&db, "sub-1", None).await.expect("resolve succeeds");
 
-        sync_groups_from_oidc(&db, user.id, &["admin".to_string(), "editors".to_string()])
+        sync_group_memberships(&db, user.id, &["admin".to_string(), "editors".to_string()])
             .await
             .expect("first sync succeeds");
-        sync_groups_from_oidc(&db, user.id, &["editors".to_string()])
+        sync_group_memberships(&db, user.id, &["editors".to_string()])
             .await
             .expect("second sync succeeds");
 
@@ -113,10 +113,10 @@ mod tests {
         let db = test_db().await;
         let user = resolve_user(&db, "sub-1", None).await.expect("resolve succeeds");
 
-        sync_groups_from_oidc(&db, user.id, &["editors".to_string()])
+        sync_group_memberships(&db, user.id, &["editors".to_string()])
             .await
             .expect("first sync succeeds");
-        sync_groups_from_oidc(&db, user.id, &["editors".to_string()])
+        sync_group_memberships(&db, user.id, &["editors".to_string()])
             .await
             .expect("second sync succeeds");
 
