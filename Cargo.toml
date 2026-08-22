@@ -13,7 +13,18 @@ path = "src/bin/miryad.rs"
 [dependencies]
 sea-orm = "2"
 clap = { version = "4", features = ["derive"] }
+axum = "0.8"
+openidconnect = "4.0"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+cookie = { version = "0.18", features = ["private"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+thiserror = "2"
+tracing = "0.1"
+base64 = "0.22"
 
 [dev-dependencies]
 sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tower = { version = "0.5", features = ["util"] }

@@ -13,10 +13,17 @@ Workspace Cargo, CI (fmt/clippy/test/audit — cf. `kydah-mcp-template`), conven
 lecture/écriture par entité, colonne de propriétaire. Rien de branché dessus encore — juste le
 contrat.
 
-## 2. Auth
-OIDC (porté depuis `vanyline/app/src/auth/oidc.rs`) + session cookie pour le frontend + tokens API
-pour les intégrations machine. Middleware dual-auth (JWT OIDC ou token API) réutilisable par REST,
-GraphQL et MCP.
+## 2a. Auth — OIDC + session cookie
+OIDC (porté depuis `vanyline/app/src/auth/oidc.rs`) + session cookie pour le frontend : login,
+callback, logout, extracteur `AuthUser`. Pas de tokens API ni de dual-auth ici — juste le flow
+navigateur, scindé de 2b pour rester dans une taille de feature raisonnable (décision du
+2026-08-22).
+
+## 2b. Auth — tokens API + dual-auth
+Entité `ApiToken` (stockage hashé, `subject: String` sans FK — le modèle `User` n'existe pas
+encore, cf. feature 3) + middleware dual-auth (cookie de 2a **ou** token API) réutilisable par
+REST, GraphQL et MCP. La FK `subject` → `User` sera ajoutée par la feature 3 une fois le modèle
+disponible, pas avant.
 
 ## 3. Utilisateurs & Groupes
 Modèle `User`/`Group`/`GroupMembership`, bootstrap d'un groupe `admin`, évaluation RBAC (owner-only
@@ -64,4 +71,5 @@ appartient à l'application réellement déployée, donc au template `miryad` (s
 
 ## Statut
 
-Étape 1 (Fondations) implémentée le 2026-08-22 — cf. `docs/features/01-fondations.md`.
+Étape 1 (Fondations) et étape 2a (Auth — OIDC + session cookie) implémentées le 2026-08-22 — cf.
+`docs/architecture.md`. Étape 2b (tokens API + dual-auth) à designer ensuite.

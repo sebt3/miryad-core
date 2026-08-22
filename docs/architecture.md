@@ -45,3 +45,46 @@ pas par `==`. À garder en tête pour la feature "Utilisateurs & Groupes", qui d
 `.github/workflows/ci.yml` (test/fmt/clippy) et `publish.yml` (publish crates.io sur tag `v*`)
 repris de `vynil-core`, adaptés : pas de matrice de features (un seul jeu pour l'instant, à
 réintroduire si des features Cargo apparaissent — ex. `postgres` vs `sqlite`).
+
+## Auth — OIDC + session cookie (feature 2a, 2026-08-22)
+
+Flow OIDC navigateur (Authorization Code), porté depuis `vanyline/app/src/auth/` et généralisé :
+pas d'`AppState` concret imposé, `MiryadAuthState` (état minimal : client OIDC, clé de cookie,
+redirections post-login/logout) est composé dans l'`AppState` de l'app consommatrice via le
+pattern `FromRef` standard d'axum. `auth_router<S>()` et l'extracteur `AuthUser` sont génériques
+sur `S` tant que `MiryadAuthState: FromRef<S>` — aucune fonction manuelle générique nécessaire
+côté handlers, le mécanisme d'extraction d'axum (`State<T>: FromRequestParts<S> where T:
+FromRef<S>`) suffit.
+
+```rust
+pub struct OidcIdentity {
+    pub id_token: String,
+    pub subject: String,       // claim `sub` — ce sur quoi la feature 3 liera un `User`
+    pub email: Option<String>, // pas garanti par tous les IdP/scopes
+}
+
+pub struct MiryadAuthState {
+    pub oidc_client: Arc<dyn OidcClientTrait>,
+    pub cookie_key: cookie::Key,
+    pub post_login_redirect: String,
+    pub post_logout_redirect: String,
+}
+
+pub fn auth_router<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+    MiryadAuthState: FromRef<S>;
+
+pub struct AuthUser { pub subject: String, pub email: Option<String>, pub id_token: String }
+// impl<S> FromRequestParts<S> for AuthUser where MiryadAuthState: FromRef<S>
+```
+
+Le cookie de session (`miryad_session`) porte un payload JSON chiffré (`id_token`/`subject`/
+`email`) plutôt que le format `id_token|email` délimité par `|` de vanyline — évite toute
+dépendance à un caractère de séparation absent des claims. Le cookie transitoire CSRF/nonce
+(`miryad_oidc_pending`) suit le même principe que vanyline (secret chiffré, `Max-Age=300`).
+
+Erreurs : `AuthError` (`src/auth/error.rs`), préfixe `MRD-AUTH-XXX`, implémente `IntoResponse`
+(401 pour non-authentifié/session invalide, 502 pour une erreur OIDC amont).
+
+Pas de tokens API, pas de dual-auth, pas de persistance — cf. feature 2b (`docs/roadmap.md`).
