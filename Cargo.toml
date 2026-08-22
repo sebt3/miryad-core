@@ -28,6 +28,11 @@ rand = "0.8"
 sha2 = "0.10"
 hex = "0.4"
 chrono = "0.4"
+utoipa = "5"
+utoipa-swagger-ui = { version = "9", optional = true, features = ["axum"] }
+
+[features]
+swagger-ui = ["dep:utoipa-swagger-ui"]
 
 [dev-dependencies]
 sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "mock"] }

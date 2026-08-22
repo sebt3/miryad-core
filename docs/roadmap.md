@@ -91,6 +91,6 @@ appartient à l'application réellement déployée, donc au template `miryad` (s
 ## Statut
 
 Étapes 1 (Fondations), 2a (Auth — OIDC + session cookie), 2b (tokens API + dual-auth), 2c
-(comptes de service), 3 (Utilisateurs & Groupes) et 4 (API REST générique) implémentées le
-2026-08-22 — cf. `docs/architecture.md`. Étape 4b (OpenAPI + Swagger UI) en cours d'implémentation,
-puis étape 5 (API GraphQL) à designer.
+(comptes de service), 3 (Utilisateurs & Groupes), 4 (API REST générique) et 4b (OpenAPI + Swagger
+UI) implémentées le 2026-08-22 — cf. `docs/architecture.md`. Étape 5 (API GraphQL) à designer
+ensuite.

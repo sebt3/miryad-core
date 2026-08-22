@@ -1,4 +1,5 @@
 pub mod error;
+pub mod openapi;
 
 use axum::extract::{FromRef, Path, Query, State};
 use axum::http::StatusCode;

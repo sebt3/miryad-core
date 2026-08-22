@@ -235,6 +235,45 @@ l'utilisateur authentifié — jamais de création au nom de quelqu'un d'autre.
 Pas de pagination par curseur, pas de tri, pas de filtre multi-champs, pas de masquage de champ.
 403 (pas 404) pour un enregistrement existant mais non autorisé.
 
+### OpenAPI + Swagger UI
+
+`utoipa` est une dépendance normale (pas optionnelle) — la génération `/openapi.json` est
+toujours disponible. Seule la UI Swagger (`utoipa-swagger-ui`) est optionnelle, derrière la
+feature Cargo `swagger-ui`.
+
+```rust
+// src/rest/openapi.rs
+pub trait OpenApiEntity: RestEntity<Model: utoipa::ToSchema> {}
+
+/// Fragment pour les 5 routes CRUD d'une entité — à fusionner (OpenApi::merge) avec celui des
+/// autres entités montées avant publication. Ne fixe pas `info` (titre/version) : l'app les
+/// renseigne sur le document final après fusion.
+pub fn resource_openapi<E: OpenApiEntity>() -> utoipa::openapi::OpenApi;
+
+/// Sert GET /openapi.json — toujours disponible.
+pub fn openapi_router<S>(spec: OpenApi) -> axum::Router<S>;
+
+/// Sert Swagger UI sur /swagger-ui, qui sert aussi /openapi.json lui-même (mécanisme natif
+/// d'utoipa-swagger-ui) — derrière la feature "swagger-ui". Ne pas fusionner avec
+/// openapi_router : les deux enregistreraient une route pour /openapi.json.
+#[cfg(feature = "swagger-ui")]
+pub fn swagger_ui_router<S>(spec: OpenApi) -> axum::Router<S>;
+```
+
+Construit via l'API bas niveau d'`utoipa` (`OperationBuilder`, `ObjectBuilder`, `Paths::
+add_path_operation`...), pas la macro `#[utoipa::path]` (qui exige une fonction concrète par
+route, incompatible avec des handlers génériques par entité) ni `utoipa-axum`/`OpenApiRouter`
+(même contrainte). L'enveloppe de pagination (`PagedResult<M>`, `src/query.rs`) n'a pas de
+`ToSchema` propre : son schéma est construit à la main (`items`/`page`/`per_page`/`total_items`/
+`total_pages`) pour éviter la friction des génériques avec `ToSchema` côté utoipa.
+
+**Point d'attention** : `ToSchema::name()` retourne par défaut le nom nu du type — et toute
+entité SeaORM s'appelle `Model` (convention `DeriveEntityModel`). Sans renommage, deux entités
+montées dans la même app produiraient donc un **même** nom de schéma (`Model`), et `OpenApi::merge`
+garderait silencieusement le premier en ignorant le second. Toute entité qui dérive `ToSchema` doit
+donc aussi porter `#[schema(as = NomUnique)]` (ex. `#[schema(as = Recipe)]`) — pas optionnel,
+contrairement à ce qu'un `#[derive(ToSchema)]` nu laisserait penser.
+
 ## Conventions transverses
 
 - Identifiants d'erreur uniques, préfixés par domaine : `MRD-AUTH-XXX` (`src/auth/error.rs`),
