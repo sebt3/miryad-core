@@ -1,3 +1,4 @@
+pub(crate) mod core;
 pub mod error;
 pub mod openapi;
 
@@ -5,18 +6,13 @@ use axum::extract::{FromRef, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Condition, EntityTrait, IntoActiveModel, Iterable, PaginatorTrait,
-    PrimaryKeyToColumn, PrimaryKeyTrait, QueryFilter,
-};
+use sea_orm::{ActiveModelTrait, EntityTrait, IntoActiveModel, PrimaryKeyToColumn, PrimaryKeyTrait};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::auth::{AuthPrincipal, MiryadAuthState};
-use crate::query::{PagedResult, Pagination};
-use crate::rbac::{ListAccess, can_create, can_read, can_write, list_access};
-use crate::resource::{AccessPolicy, MiryadResource};
-use crate::users::resolve_user;
+use crate::query::PagedResult;
+use crate::resource::MiryadResource;
 use error::RestError;
 
 /// Entités éligibles au routeur CRUD générique — en plus de `MiryadResource`, il faut pouvoir
@@ -42,28 +38,6 @@ impl<E> RestEntity for E where
                             + PrimaryKeyToColumn<Column = <E as EntityTrait>::Column>,
         >
 {
-}
-
-fn primary_key_column<E: RestEntity>() -> E::Column {
-    E::PrimaryKey::iter()
-        .next()
-        .expect("RestEntity assumes exactly one primary key column")
-        .into_column()
-}
-
-/// `Model::into_active_model()` (généré par `DeriveEntityModel`) marque tous les champs
-/// `Unchanged`, pas `Set` — pertinent pour un modèle relu depuis la base, pas pour un corps de
-/// requête PUT/POST qu'on veut écrire tel quel. `ActiveModelTrait::update()` n'inclut que les
-/// champs `Set` dans la clause `SET` ; sans ce passage, un `PUT` n'écrirait aucune colonne
-/// (découvert en testant cette feature — le `create` fonctionne quand même car `insert()` traite
-/// `Unchanged` comme une valeur à insérer, mais `update()` ne le fait pas).
-fn mark_all_set<E: RestEntity>(mut active: E::ActiveModel) -> E::ActiveModel {
-    for col in E::Column::iter() {
-        if let Some(value) = active.get(col).into_value() {
-            active.set(col, value);
-        }
-    }
-    active
 }
 
 #[derive(serde::Deserialize)]
@@ -99,32 +73,15 @@ async fn list_handler<E: RestEntity>(
     principal: AuthPrincipal,
     Query(params): Query<ListParams>,
 ) -> Result<Json<PagedResult<E::Model>>, RestError> {
-    let user = resolve_user(&auth.db, &principal.subject, principal.email.as_deref()).await?;
-
-    let condition = match list_access::<E>(&auth.db, &user).await? {
-        ListAccess::Unrestricted => Condition::all(),
-        ListAccess::FilterByOwner(condition) => condition,
-        ListAccess::Forbidden => return Err(RestError::Forbidden),
-    };
-    let condition = match (E::filter_column(), params.filter.as_deref()) {
-        (Some(col), Some(value)) => condition.add(col.eq(value)),
-        _ => condition,
-    };
-
-    let pagination = Pagination::from_raw(params.page, params.per_page);
-    let paginator = E::find()
-        .filter(condition)
-        .paginate(&auth.db, pagination.per_page);
-    let totals = paginator.num_items_and_pages().await?;
-    let items = paginator.fetch_page(pagination.page - 1).await?;
-
-    Ok(Json(PagedResult {
-        items,
-        page: pagination.page,
-        per_page: pagination.per_page,
-        total_items: totals.number_of_items,
-        total_pages: totals.number_of_pages,
-    }))
+    let page = core::list::<E>(
+        &auth.db,
+        &principal,
+        params.page,
+        params.per_page,
+        params.filter.as_deref(),
+    )
+    .await?;
+    Ok(Json(page))
 }
 
 async fn get_handler<E: RestEntity>(
@@ -132,16 +89,7 @@ async fn get_handler<E: RestEntity>(
     principal: AuthPrincipal,
     Path(id): Path<i32>,
 ) -> Result<Json<E::Model>, RestError> {
-    let user = resolve_user(&auth.db, &principal.subject, principal.email.as_deref()).await?;
-    let record = E::find_by_id(id)
-        .one(&auth.db)
-        .await?
-        .ok_or(RestError::NotFound)?;
-
-    if !can_read::<E>(&auth.db, &user, &record).await? {
-        return Err(RestError::Forbidden);
-    }
-    Ok(Json(record))
+    Ok(Json(core::get::<E>(&auth.db, &principal, id).await?))
 }
 
 async fn create_handler<E: RestEntity>(
@@ -149,25 +97,7 @@ async fn create_handler<E: RestEntity>(
     principal: AuthPrincipal,
     Json(body): Json<E::Model>,
 ) -> Result<Json<E::Model>, RestError> {
-    let user = resolve_user(&auth.db, &principal.subject, principal.email.as_deref()).await?;
-
-    if !can_create::<E>(&auth.db, &user).await? {
-        return Err(RestError::Forbidden);
-    }
-
-    let mut active = mark_all_set::<E>(body.into_active_model());
-    // La BD attribue l'id — jamais une PK choisie par le client.
-    active.not_set(primary_key_column::<E>());
-    // Un utilisateur ne peut jamais créer une ressource au nom de quelqu'un d'autre, même en le
-    // demandant explicitement dans le corps de la requête.
-    if E::write_policy() == AccessPolicy::OwnerOnly
-        && let Some(owner_col) = E::owner_column()
-    {
-        active.set(owner_col, sea_orm::Value::from(user.id));
-    }
-
-    let inserted = active.insert(&auth.db).await?;
-    Ok(Json(inserted))
+    Ok(Json(core::create::<E>(&auth.db, &principal, body).await?))
 }
 
 async fn update_handler<E: RestEntity>(
@@ -176,22 +106,7 @@ async fn update_handler<E: RestEntity>(
     Path(id): Path<i32>,
     Json(body): Json<E::Model>,
 ) -> Result<Json<E::Model>, RestError> {
-    let user = resolve_user(&auth.db, &principal.subject, principal.email.as_deref()).await?;
-    let existing = E::find_by_id(id)
-        .one(&auth.db)
-        .await?
-        .ok_or(RestError::NotFound)?;
-
-    if !can_write::<E>(&auth.db, &user, &existing).await? {
-        return Err(RestError::Forbidden);
-    }
-
-    let mut active = mark_all_set::<E>(body.into_active_model());
-    // Force la PK depuis le chemin — ignore toute divergence dans le corps de la requête.
-    active.set(primary_key_column::<E>(), sea_orm::Value::from(id));
-
-    let updated = active.update(&auth.db).await?;
-    Ok(Json(updated))
+    Ok(Json(core::update::<E>(&auth.db, &principal, id, body).await?))
 }
 
 async fn delete_handler<E: RestEntity>(
@@ -199,17 +114,7 @@ async fn delete_handler<E: RestEntity>(
     principal: AuthPrincipal,
     Path(id): Path<i32>,
 ) -> Result<StatusCode, RestError> {
-    let user = resolve_user(&auth.db, &principal.subject, principal.email.as_deref()).await?;
-    let existing = E::find_by_id(id)
-        .one(&auth.db)
-        .await?
-        .ok_or(RestError::NotFound)?;
-
-    if !can_write::<E>(&auth.db, &user, &existing).await? {
-        return Err(RestError::Forbidden);
-    }
-
-    E::delete_by_id(id).exec(&auth.db).await?;
+    core::delete::<E>(&auth.db, &principal, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

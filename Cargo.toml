@@ -38,6 +38,8 @@ async-graphql-axum = { version = "7", optional = true }
 swagger-ui = ["dep:utoipa-swagger-ui"]
 graphql = ["dep:seaography", "dep:async-graphql", "dep:async-graphql-axum"]
 graphiql = ["graphql", "async-graphql/graphiql"]
+# feature "mcp" volontairement absente : bloquée par un bug amont (jmespath 0.3.0, tiré sans
+# condition par vynil-core via handlebars_misc_helpers) — cf. docs/architecture.md, section MCP.
 
 [dev-dependencies]
 sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "mock"] }

@@ -84,8 +84,29 @@ reprendra tel quel dès que Cadence/Implement seront de nouveau disponibles.
 
 ## Clôture du bootstrap (2026-08-22)
 
-Repo GitHub `sebt3/miryad-core` créé (public), commit initial poussé sur `origin/main`. Licence
-BSD-3-Clause tranchée à cette occasion (cf. section Décisions d'architecture). `.claude/
-bootstrap.md` et `.claude/retrofit.md` (fichier mort, jamais référencé par `CLAUDE.md`) supprimés.
-Le projet démarre en mode feature normal — prochaine étape : valider le design de la feature
-Fondations (`docs/features/01-fondations.md`) avant dispatch.
+Repo GitHub `sebt3/miryad-core` créé (public). Licence BSD-3-Clause tranchée à cette occasion (cf.
+section Décisions d'architecture). `.claude/bootstrap.md` et `.claude/retrofit.md` (fichier mort,
+jamais référencé par `CLAUDE.md`) supprimés. Le développeur préfère grouper plusieurs features
+avant de pousser (`push ira à la fin des features`) plutôt que pousser à chaque commit — pas de
+push après chaque feature, à faire quand demandé explicitement.
+
+## Blocage `vynil-core` (features 6 et 7) — 2026-08-22
+
+`vynil-core` (moteur Handlebars/Rhai retenu pour les features MCP et workflow) **ne compile pas**
+actuellement : `handlebars_misc_helpers` (sa dépendance, feature `json` activée sans condition)
+tire `jmespath 0.3.0`, qui échoue à la compilation (`dyn Function` sans borne `Send`/`Sync`, utilisé
+dans un `lazy_static!` qui exige `Sync`). Reproduit à l'identique sur `rustc` 1.94.0 et 1.97.1 —
+pas une histoire de toolchain trop récente. `vynil-core` est une dépendance monolithique (pas moyen
+de n'obtenir que Rhai sans Handlebars/jmespath), donc la feature 7 (workflow) est concernée par le
+même blocage que la 6 (MCP).
+
+Remonté en amont : [sebt3/vynil-core#7](https://github.com/sebt3/vynil-core/issues/7) (poids des
+dépendances non conditionnelles de `vynil-core`) et
+[sebt3/vynil-core#8](https://github.com/sebt3/vynil-core/issues/8) (le blocage de compilation
+lui-même). Le design complet de la feature 6 (registre de tools, format de sortie
+json/yaml/markdown/custom via un unique mécanisme Handlebars, codes d'erreur JSON-RPC) est
+documenté dans `docs/architecture.md` malgré l'absence d'implémentation committée — la feature
+Cargo `mcp` n'est pas déclarée dans `Cargo.toml` tant que l'un des deux tickets n'est pas résolu.
+`src/rest/core.rs` (extraction de la logique métier REST, indépendante d'axum, pour être
+réutilisable par MCP plus tard) est en revanche committé — amélioration valable indépendamment du
+blocage.

@@ -61,15 +61,28 @@ multi-groupe de l'étape 3). Deux features Cargo distinctes : `graphql` (le cœu
 changement cohérent avec tous les chemins d'écriture (REST compris), pas juste câblé en dépendance
 aujourd'hui ; à reprendre en feature séparée si le besoin se confirme.
 
-## 6. Serveur MCP
-Tools CRUD générés par entité (list/get/create/update/delete), sortie markdown (pas de JSON —
-lisible par un SLM). Dual-auth réutilisé de l'étape 2. Base : patterns `auth.rs`/`mcp.rs` de
-`kydah-mcp-template`.
+## 6. Serveur MCP — design validé, **implémentation bloquée en amont**
+Tools CRUD générés par entité (list/get/create/update/delete), sortie configurable par l'app
+(json/yaml/markdown, ou template Handlebars custom — un seul mécanisme de rendu, cf.
+`docs/architecture.md`). Dual-auth et RBAC réutilisés (`rest/core.rs`). Base : patterns
+`auth.rs`/`mcp.rs` de `kydah-mcp-template`.
 
-## 7. Moteur de workflow
+Bloqué : `vynil-core` (moteur Handlebars retenu pour cette feature) ne compile pas actuellement
+(`jmespath 0.3.0`, tiré sans condition par `handlebars_misc_helpers`, échoue sur `rustc` 1.94.0 et
+1.97.1 — pas une histoire de toolchain). Remonté en amont :
+[sebt3/vynil-core#7](https://github.com/sebt3/vynil-core/issues/7) et
+[sebt3/vynil-core#8](https://github.com/sebt3/vynil-core/issues/8). La feature Cargo `mcp` n'est
+donc pas déclarée pour l'instant — à reprendre une fois l'un des deux tickets résolu.
+
+## 7. Moteur de workflow — **bloqué par le même problème que l'étape 6**
 Intégration apalis + apalis-postgres + apalis-workflow. Step-type natif "script Rhai" (vynil-core)
 pour les automatisations/fallbacks définis par un admin. Modèle de définition de DAG persisté en
 base (pas seulement du code Rust statique — un admin doit pouvoir définir un workflow).
+
+`vynil-core` étant une dépendance monolithique (pas de moyen de n'obtenir que le moteur Rhai sans
+Handlebars/`handlebars_misc_helpers`/jmespath), cette étape sera bloquée par le même bug amont que
+l'étape 6 tant qu'il n'est pas résolu — cf. [sebt3/vynil-core#7](https://github.com/sebt3/vynil-core/issues/7)
+et [sebt3/vynil-core#8](https://github.com/sebt3/vynil-core/issues/8).
 
 ## 8. Frontend générique
 Vue 3 + shadcn-vue + Tailwind. Écrans CRUD génériques pilotés par la métadonnée d'entité exposée
@@ -96,4 +109,7 @@ appartient à l'application réellement déployée, donc au template `miryad` (s
 Étapes 1 (Fondations), 2a (Auth — OIDC + session cookie), 2b (tokens API + dual-auth), 2c
 (comptes de service), 3 (Utilisateurs & Groupes), 4 (API REST générique), 4b (OpenAPI + Swagger
 UI) et 5 (API GraphQL) implémentées le 2026-08-22 — cf. `docs/architecture.md`. Étape 6 (Serveur
-MCP) à designer ensuite.
+MCP) designée mais **implémentation bloquée en amont** (`vynil-core`/`jmespath`, cf.
+[sebt3/vynil-core#7](https://github.com/sebt3/vynil-core/issues/7) et
+[sebt3/vynil-core#8](https://github.com/sebt3/vynil-core/issues/8)) — étape 7 également concernée.
+Prochaine étape non bloquée à identifier avec le développeur principal.

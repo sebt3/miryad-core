@@ -212,9 +212,15 @@ supplémentaire à implémenter par entité.
 `ActiveModelTrait::insert()` traite `Unchanged` comme une valeur à écrire, mais
 `ActiveModelTrait::update()` n'inclut que les champs `Set` dans la clause `SET` : un `Model` reçu
 tel quel et directement passé à `.update()` n'écrirait donc silencieusement aucune colonne.
-`mark_all_set::<E>()` (`src/rest/mod.rs`) corrige ça par réflexion générique
+`mark_all_set::<E>()` (`src/rest/core.rs`) corrige ça par réflexion générique
 (`ActiveModelTrait::get`/`set`, itération sur `E::Column`) avant tout `insert`/`update` — aucune
 entité n'a besoin d'en tenir compte.
+
+La logique métier des 5 opérations (`list`/`get`/`create`/`update`/`delete` : résolution RBAC,
+pagination, injection du propriétaire, `mark_all_set`) vit dans `src/rest/core.rs`,
+indépendamment d'axum — les handlers de `rest/mod.rs` ne font qu'extraire les paramètres et
+envelopper le résultat en `Json<...>`. Pensé pour être réutilisé tel quel par d'autres surfaces
+d'API sur les mêmes entités (ex. MCP), sans dupliquer les règles RBAC/pagination.
 
 Pagination et filtre de liste (`src/query.rs`, partagé — pas spécifique REST, réutilisable par
 GraphQL/MCP) :
@@ -344,6 +350,73 @@ Pas de subscriptions — Seaography ne fournit aucun mécanisme de détection de
 soi-même). Le faire correctement demanderait une détection de changement cohérente avec tous les
 chemins d'écriture (REST compris), pas seulement les mutations GraphQL — hors-scope pour
 l'instant.
+
+## Serveur MCP — design validé, implémentation bloquée en amont (2026-08-22)
+
+Tools CRUD générés par entité (`list`/`get`/`create`/`update`/`delete`), exposés en JSON-RPC 2.0
+sur un unique `POST /mcp` (mêmes patterns que `kydah-mcp-template/src/mcp.rs`). Dual-auth et RBAC
+entièrement réutilisés (`rest/core.rs`, cf. section REST ci-dessus) — aucune règle réécrite pour
+MCP. Design validé, mais **implémentation non committée** : bloquée par un bug en amont, cf.
+plus bas.
+
+**Décision : un seul mécanisme de rendu**, pas quatre chemins de code séparés :
+
+```rust
+pub enum OutputFormat {
+    Json,
+    Yaml,
+    Markdown,
+    /// Template Handlebars fourni par l'app, remplace le défaut.
+    Custom(String),
+}
+```
+
+`Json`/`Yaml`/`Markdown` sont des templates Handlebars **fournis en dur par miryad-core**
+(`{{json_to_str this format="json_pretty"}}`, `format="yaml"`, un gabarit `{{#each}}` générique
+pour markdown) ; `Custom` est le même mécanisme de rendu, juste avec le template de l'app à la
+place du défaut. Le format est fixé une fois par l'app, au montage du serveur MCP — pas
+reconfigurable par appel (cohérent avec REST/GraphQL). Un enregistrement seul (`get`/`create`/
+`update`) et une page de résultats (`list`, forme `PagedResult`) n'ont pas la même forme JSON :
+deux templates par défaut internes selon l'opération, pas exposé comme complexité côté app.
+
+Dispatch par nom d'entité (comme `graphql::PolicyRegistry`) plutôt que par type, puisque
+`tools/call` arrive avec un nom de méthode en chaîne, pas un type Rust :
+
+```rust
+// registre : mêmes contraintes que RestEntity (feature 4), rien de nouveau à implémenter
+pub struct McpToolRegistry { /* format + un trait object par entité montée */ }
+impl McpToolRegistry {
+    pub fn new(format: OutputFormat) -> Self;
+    /// Enregistre {resource_name}_list / _get / _create / _update / _delete.
+    pub fn register<E: RestEntity>(&mut self) -> &mut Self;
+}
+
+pub fn mcp_router<S>(registry: McpToolRegistry) -> axum::Router<S>
+where S: Clone + Send + Sync + 'static, MiryadAuthState: FromRef<S>;
+// monte POST /mcp — dispatch JSON-RPC 2.0 (initialize, tools/list, tools/call)
+```
+
+En interne, chaque tool appelle directement `rest::core::{list,get,create,update,delete}::<E>`
+(mêmes fonctions que REST) puis rend le résultat via `OutputFormat`. Codes d'erreur JSON-RPC :
+`-32001` (refusé), `-32002` (non trouvé), `-32601` (tool inconnu, standard "Method not found"),
+`-32602` (params invalides, standard "Invalid params"), `-32603` (erreur interne/DB, standard
+"Internal error") — `-32000`..`-32099` est la plage libre pour l'application selon la spec
+JSON-RPC 2.0, `-32001`/`-32002` sont nos choix dans cette plage.
+
+**Bloqué : `vynil-core` (moteur `vynil_core::hbs::HandleBars`, retenu pour réutiliser ses helpers
+Handlebars json/yaml/toml déjà écrits) ne compile pas actuellement.** `handlebars_misc_helpers`
+(dépendance de `vynil-core`, feature `json` activée sans condition) tire `jmespath 0.3.0`, qui
+échoue à la compilation (`dyn Function` sans borne `Send`/`Sync`, utilisé dans un
+`lazy_static!` qui exige `Sync`) — reproduit à l'identique sur `rustc` 1.94.0 et 1.97.1, donc pas
+une histoire de toolchain trop récente : `jmespath 0.3.0` ne compile simplement plus avec du Rust
+courant. Remonté en amont :
+[sebt3/vynil-core#7](https://github.com/sebt3/vynil-core/issues/7) (poids des dépendances non
+conditionnelles) et
+[sebt3/vynil-core#8](https://github.com/sebt3/vynil-core/issues/8) (le blocage de compilation
+lui-même). La feature `mcp` n'est donc **pas déclarée** dans `Cargo.toml` pour l'instant — à
+reprendre une fois l'un des deux tickets résolu en amont. La feature 7 (workflow, moteur Rhai de
+`vynil-core`) sera bloquée par le même problème, `vynil-core` étant une dépendance monolithique
+(pas de moyen de n'obtenir que Rhai sans Handlebars/`handlebars_misc_helpers`/jmespath).
 
 ## Conventions transverses
 
