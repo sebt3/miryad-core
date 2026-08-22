@@ -1,4 +1,6 @@
 pub mod auth;
+#[cfg(feature = "graphql")]
+pub mod graphql;
 pub mod migration;
 pub mod query;
 pub mod rbac;

@@ -274,6 +274,77 @@ garderait silencieusement le premier en ignorant le second. Toute entité qui d�
 donc aussi porter `#[schema(as = NomUnique)]` (ex. `#[schema(as = Recipe)]`) — pas optionnel,
 contrairement à ce qu'un `#[derive(ToSchema)]` nu laisserait penser.
 
+## API GraphQL
+
+Schéma généré dynamiquement par Seaography 2.0 (pas de codegen) depuis les entités `MiryadResource`
+montées par l'app, RBAC réellement appliqué via un pont maison vers `rbac.rs` — pas le RBAC natif
+de Seaography/SeaORM (`db.load_rbac()`/`RestrictedConnection`). Deux features Cargo distinctes :
+`graphql` (le cœur) et `graphiql` (le client interactif, dépend de `graphql`).
+
+**Décision : pas le RBAC natif de Seaography/SeaORM.** Il est table-level (grants
+`select`/`insert`/`update`/`delete` par rôle par table entière, pas de notion de ligne) et
+suppose un seul rôle par utilisateur (`RbacUserId` → un rôle, avec hiérarchie DAG) — deux
+incompatibilités de fond avec ce qu'on a déjà : `AccessPolicy::OwnerOnly` (row-level) et le
+multi-groupe synchronisé depuis Authentik (feature 3). L'adopter aurait fait vivre deux modèles
+RBAC parallèles, incohérents entre REST et GraphQL sur la même entité. Vérifié en lisant le
+billet SeaORM 2.0 RBAC (pas seulement le nom de la feature Cargo `rbac`).
+
+**Pont via `LifecycleHooksInterface`** (`seaography`, trait synchrone sauf `entity_watch`) :
+
+```rust
+pub trait LifecycleHooksInterface: Send + Sync {
+    fn entity_guard(&self, ctx: &ResolverContext, entity: &str, action: OperationType) -> GuardAction;
+    fn entity_filter(&self, ctx: &ResolverContext, entity: &str, action: OperationType) -> Option<Condition>;
+    // field_guard / entity_watch / before_active_model_save : défauts (Allow / no-op), non utilisés
+}
+// OperationType: Read | Create | Update | Delete — GuardAction: Allow | Block(Option<String>)
+```
+
+`entity_guard` bloque un accès entier (`AdminOnly`/`Group` sans appartenance) ; `entity_filter`
+ajoute une `Condition` de requête pour `OwnerOnly` — l'équivalent GraphQL de
+`rbac::ListAccess::FilterByOwner`, construite par **nom de colonne** (`sea_query::Expr::col(Alias::
+new(nom)).eq(user_id)`, via le trait `ExprTrait`) plutôt que par `Column` typé : Seaography
+identifie une entité par son nom (`&str`) à l'exécution, pas par son type.
+
+**Contrainte structurante : hooks synchrones, précalcul obligatoire.** `entity_guard`/
+`entity_filter` ne peuvent pas faire de requête DB (`is_admin`/`is_member` sont `async`). Le
+principal (statut admin + ensemble des groupes) est donc résolu **une fois par requête HTTP**,
+avant `schema.execute(...)`, puis injecté comme donnée de requête (`req.data(...)`, mécanisme
+standard async-graphql) :
+
+```rust
+// src/graphql/{registry,principal,hooks,handler}.rs
+pub struct EntityPolicy { pub read: AccessPolicy, pub write: AccessPolicy, pub owner_column: Option<String> }
+pub struct PolicyRegistry { .. }
+impl PolicyRegistry { pub fn register<E: MiryadResource>(&mut self) -> &mut Self; }
+
+pub struct GraphQlPrincipal { pub user_id: i32, pub is_admin: bool, pub groups: HashSet<String> }
+pub async fn load_principal(db: &DatabaseConnection, principal: &AuthPrincipal) -> Result<GraphQlPrincipal, DbErr>;
+
+pub struct MiryadHooks(/* PolicyRegistry */);   // impl LifecycleHooksInterface
+
+pub fn graphql_router<S>(schema: Schema) -> axum::Router<S>
+where S: Clone + Send + Sync + 'static, MiryadAuthState: FromRef<S>;
+// monte POST /graphql, + GET /graphiql sous la feature "graphiql"
+```
+
+L'app construit son `BuilderContext` avec `hooks: LifecycleHooks::new(MiryadHooks::new(registry))`,
+appelle `register_entity::<E>()` (Seaography) et `registry.register::<E>()` (le nôtre) pour chaque
+entité — deux registres en parallèle, même geste répétitif qu'un `resource_router::<E>()` par
+entité en REST.
+
+**Point d'attention — versions** : `seaography 2.0.0-rc.9` dépend d'`async-graphql 7.0.19` en
+interne. `async-graphql-axum` a une branche `8.x` sur crates.io, mais l'utiliser casserait la
+compatibilité de types avec le `Schema` de Seaography — épingler `async-graphql`/
+`async-graphql-axum` à `"7"`, jamais `"8"`. `seaography` est encore une release candidate ; une
+2.0 finale pourrait faire bouger `LifecycleHooksInterface`/`BuilderContext`.
+
+Pas de subscriptions — Seaography ne fournit aucun mécanisme de détection de changement
+(`register_entity` ne peuple que `Query`/`Mutation`, `Subscription` reste un root vide à peupler
+soi-même). Le faire correctement demanderait une détection de changement cohérente avec tous les
+chemins d'écriture (REST compris), pas seulement les mutations GraphQL — hors-scope pour
+l'instant.
+
 ## Conventions transverses
 
 - Identifiants d'erreur uniques, préfixés par domaine : `MRD-AUTH-XXX` (`src/auth/error.rs`),

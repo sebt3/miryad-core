@@ -30,9 +30,14 @@ hex = "0.4"
 chrono = "0.4"
 utoipa = "5"
 utoipa-swagger-ui = { version = "9", optional = true, features = ["axum"] }
+seaography = { version = "2.0.0-rc.9", optional = true }
+async-graphql = { version = "7", optional = true }
+async-graphql-axum = { version = "7", optional = true }
 
 [features]
 swagger-ui = ["dep:utoipa-swagger-ui"]
+graphql = ["dep:seaography", "dep:async-graphql", "dep:async-graphql-axum"]
+graphiql = ["graphql", "async-graphql/graphiql"]
 
 [dev-dependencies]
 sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "mock"] }

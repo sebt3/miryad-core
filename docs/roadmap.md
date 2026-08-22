@@ -54,9 +54,12 @@ feature 4.
 
 ## 5. API GraphQL
 Intégration Seaography 2.0 (schéma dynamique depuis les entités SeaORM) + injection du RBAC de
-l'étape 3 dans la résolution. Point de recherche à ouvrir en atteignant cette étape : comment
-Seaography permet d'injecter une politique d'autorisation par champ/entité dans son moteur
-dynamique.
+l'étape 3 dans la résolution, via `LifecycleHooksInterface` (pas le RBAC natif de Seaography/
+SeaORM — table-level et un seul rôle par utilisateur, incompatible avec `OwnerOnly` et le
+multi-groupe de l'étape 3). Deux features Cargo distinctes : `graphql` (le cœur) et `graphiql`
+(le client interactif). Pas de subscriptions — nécessiterait un mécanisme de détection de
+changement cohérent avec tous les chemins d'écriture (REST compris), pas juste câblé en dépendance
+aujourd'hui ; à reprendre en feature séparée si le besoin se confirme.
 
 ## 6. Serveur MCP
 Tools CRUD générés par entité (list/get/create/update/delete), sortie markdown (pas de JSON —
@@ -91,6 +94,6 @@ appartient à l'application réellement déployée, donc au template `miryad` (s
 ## Statut
 
 Étapes 1 (Fondations), 2a (Auth — OIDC + session cookie), 2b (tokens API + dual-auth), 2c
-(comptes de service), 3 (Utilisateurs & Groupes), 4 (API REST générique) et 4b (OpenAPI + Swagger
-UI) implémentées le 2026-08-22 — cf. `docs/architecture.md`. Étape 5 (API GraphQL) à designer
-ensuite.
+(comptes de service), 3 (Utilisateurs & Groupes), 4 (API REST générique), 4b (OpenAPI + Swagger
+UI) et 5 (API GraphQL) implémentées le 2026-08-22 — cf. `docs/architecture.md`. Étape 6 (Serveur
+MCP) à designer ensuite.
