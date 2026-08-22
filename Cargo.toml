@@ -1,0 +1,19 @@
+[package]
+name = "miryad-core"
+version = "0.1.0"
+edition = "2024"
+description = "Moteur générique (auth, RBAC, REST/GraphQL/MCP, workflow) derrière le template d'application miryad"
+license = "BSD-3-Clause"
+repository = "https://github.com/sebt3/miryad-core"
+
+[[bin]]
+name = "miryad"
+path = "src/bin/miryad.rs"
+
+[dependencies]
+sea-orm = "2"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

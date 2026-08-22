@@ -72,6 +72,16 @@ de lecture/écriture par entité), ownership multi-colonnes, UI de conception vi
 - Cadence (deepseek) : cadence l'implémentation d'une feature déjà designée, dispatche à `implement`
 - Implement (Qwen3.6:35b-a3b, opencode) : implémentation guidée
 
+## Mode de travail temporaire — Cadence/Implement indisponibles (2026-08-22)
+
+Le workflow décrit dans `config.md` (Claude conçoit, Qwen/`implement` code, Cadence dispatche)
+suppose ces deux agents disponibles. Ils ne le sont pas pour l'instant : les sessions en cours se
+font en binôme direct développeur + Claude, Claude implémentant lui-même (fast-track), sans passer
+par `.tasks/` ni par une copie de fichiers de référence — Claude lit directement les autres dépôts
+locaux (`vanyline`, `vynil-core`, `kydah-mcp-template`, tous clonés sous `$HOME/projets/`) au
+moment d'en porter un pattern, pas besoin de les dupliquer à l'avance. Le workflow `config.md`
+reprendra tel quel dès que Cadence/Implement seront de nouveau disponibles.
+
 ## Clôture du bootstrap (2026-08-22)
 
 Repo GitHub `sebt3/miryad-core` créé (public), commit initial poussé sur `origin/main`. Licence

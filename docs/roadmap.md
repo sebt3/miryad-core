@@ -64,4 +64,4 @@ appartient à l'application réellement déployée, donc au template `miryad` (s
 
 ## Statut
 
-Aucune étape démarrée. Feature 1 en cours de design : `docs/features/01-fondations.md`.
+Étape 1 (Fondations) implémentée le 2026-08-22 — cf. `docs/features/01-fondations.md`.
