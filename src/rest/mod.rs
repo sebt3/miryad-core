@@ -204,6 +204,60 @@ mod tests {
         }
     }
 
+    mod widget {
+        use crate::resource::{AccessPolicy, HookError, MiryadResource};
+        use sea_orm::ActiveValue::Set;
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "widgets")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub owner_id: i32,
+            pub label: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "widgets"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn owner_column() -> Option<Column> {
+                Some(Column::OwnerId)
+            }
+
+            // Hook de test : rejette un label vide, sinon le passe en majuscules — de quoi
+            // vérifier à la fois le blocage (feature 7b) et la mutation de l'ActiveModel.
+            fn before_create(
+                active: ActiveModel,
+                _principal: &crate::auth::AuthPrincipal,
+            ) -> Result<ActiveModel, HookError> {
+                let label = match &active.label {
+                    sea_orm::ActiveValue::Set(v) | sea_orm::ActiveValue::Unchanged(v) => v.clone(),
+                    sea_orm::ActiveValue::NotSet => String::new(),
+                };
+                if label.is_empty() {
+                    return Err(HookError::with_code("WIDGET-001", "label must not be empty"));
+                }
+                let mut active = active;
+                active.label = Set(label.to_uppercase());
+                Ok(active)
+            }
+        }
+    }
+
     async fn test_db() -> DatabaseConnection {
         let db = Database::connect("sqlite::memory:")
             .await
@@ -220,6 +274,9 @@ mod tests {
         db.execute(&schema.create_table_from_entity(ingredient::Entity))
             .await
             .expect("ingredients table creates");
+        db.execute(&schema.create_table_from_entity(widget::Entity))
+            .await
+            .expect("widgets table creates");
         db
     }
 
@@ -237,6 +294,7 @@ mod tests {
         Router::new()
             .merge(resource_router::<recipe::Entity, MiryadAuthState>())
             .merge(resource_router::<ingredient::Entity, MiryadAuthState>())
+            .merge(resource_router::<widget::Entity, MiryadAuthState>())
             .with_state(state)
     }
 
@@ -478,5 +536,62 @@ mod tests {
             .await
             .expect("router does not fail");
         assert_eq!(delete_resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn before_create_hook_mutation_is_applied_at_insert() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app = app(state);
+
+        let body = serde_json::json!({"id": 0, "owner_id": 0, "label": "gadget"});
+        let resp = app
+            .oneshot(json_request("POST", "/widgets", &token, Some(body)))
+            .await
+            .expect("router does not fail");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let created = json_body(resp).await;
+        assert_eq!(created["label"], "GADGET");
+    }
+
+    #[tokio::test]
+    async fn before_create_hook_error_blocks_insert_without_mrd_code() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app = app(state);
+
+        let body = serde_json::json!({"id": 0, "owner_id": 0, "label": ""});
+        let resp = app
+            .oneshot(json_request("POST", "/widgets", &token, Some(body)))
+            .await
+            .expect("router does not fail");
+
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let error = json_body(resp).await;
+        assert_eq!(error["code"], "WIDGET-001");
+        assert_eq!(error["message"], "label must not be empty");
+    }
+
+    #[tokio::test]
+    async fn entity_without_hook_override_is_unaffected() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app = app(state);
+
+        let body = serde_json::json!({
+            "id": 0, "title": "Tarte", "owner_id": 0, "category": "dessert",
+        });
+        let resp = app
+            .oneshot(json_request("POST", "/recipes", &token, Some(body)))
+            .await
+            .expect("router does not fail");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let created = json_body(resp).await;
+        assert_eq!(created["title"], "Tarte");
     }
 }

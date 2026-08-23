@@ -1,5 +1,9 @@
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use serde::Serialize;
+
+use crate::resource::HookError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RestError {
@@ -9,15 +13,31 @@ pub enum RestError {
     Forbidden,
     #[error("MRD-REST-003: database error: {0}")]
     Database(#[from] sea_orm::DbErr),
+    /// Erreur métier applicative (hook) — jamais un `MRD-*`, cf. `HookError`.
+    #[error("{}", .0.message)]
+    Application(HookError),
+}
+
+#[derive(Serialize)]
+struct ApplicationErrorBody<'a> {
+    code: Option<&'a str>,
+    message: &'a str,
 }
 
 impl IntoResponse for RestError {
     fn into_response(self) -> Response {
-        let status = match self {
-            RestError::NotFound => StatusCode::NOT_FOUND,
-            RestError::Forbidden => StatusCode::FORBIDDEN,
-            RestError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        };
-        (status, self.to_string()).into_response()
+        match self {
+            RestError::NotFound => (StatusCode::NOT_FOUND, self.to_string()).into_response(),
+            RestError::Forbidden => (StatusCode::FORBIDDEN, self.to_string()).into_response(),
+            RestError::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response(),
+            RestError::Application(ref err) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApplicationErrorBody {
+                    code: err.code.as_deref(),
+                    message: &err.message,
+                }),
+            )
+                .into_response(),
+        }
     }
 }

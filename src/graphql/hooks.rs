@@ -1,8 +1,11 @@
+use std::any::Any;
+
 use async_graphql::dynamic::ResolverContext;
 use sea_orm::Condition;
 use sea_orm::sea_query::{Alias, Expr, ExprTrait};
 use seaography::{GuardAction, LifecycleHooksInterface, OperationType};
 
+use crate::auth::AuthPrincipal;
 use crate::graphql::principal::GraphQlPrincipal;
 use crate::graphql::registry::{EntityPolicy, PolicyRegistry};
 use crate::resource::AccessPolicy;
@@ -87,5 +90,40 @@ impl LifecycleHooksInterface for MiryadHooks {
         let owner_column = policy.owner_column.as_ref()?;
         let user_id = ctx.data::<GraphQlPrincipal>().ok()?.user_id;
         Some(Condition::all().add(Expr::col(Alias::new(owner_column.as_str())).eq(user_id)))
+    }
+
+    /// Miroir GraphQL de `rest::core::create` appelant `E::before_create` (feature 7b) — create
+    /// only, Seaography ne déclenche ce hook que sur un insert ("only insert for now", cf.
+    /// `docs/features/7b-hooks-metier-crud.md`).
+    fn before_active_model_save(
+        &self,
+        ctx: &ResolverContext,
+        entity: &str,
+        action: OperationType,
+        active_model: &mut dyn Any,
+    ) -> GuardAction {
+        if action != OperationType::Create {
+            return GuardAction::Allow;
+        }
+        let Some(policy) = self.policy_for(entity) else {
+            return GuardAction::Allow;
+        };
+        let Ok(principal) = ctx.data::<AuthPrincipal>() else {
+            // AuthPrincipal doit toujours être injecté par graphql_handler — absence = bug
+            // d'intégration côté app, pas une raison métier de bloquer silencieusement.
+            return GuardAction::Block(Some(
+                "MRD-GQL-002: AuthPrincipal missing from request data".to_string(),
+            ));
+        };
+
+        match (policy.before_create)(active_model, principal) {
+            Ok(()) => GuardAction::Allow,
+            // Seaography ne transporte qu'une chaîne — cf. question d'implémentation dans
+            // docs/features/7b-hooks-metier-crud.md sur l'absence d'extensions structurées ici.
+            Err(err) => GuardAction::Block(Some(match err.code {
+                Some(code) => format!("{code}: {}", err.message),
+                None => err.message,
+            })),
+        }
     }
 }

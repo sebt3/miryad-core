@@ -99,15 +99,14 @@ plateforme Hatchet elle-même), soit une nouvelle option qui n'existait pas enco
 exploration.
 
 ## 7b. Hooks métier CRUD
-Point d'extension par entité sur les 4 opérations d'écriture/lecture génériques (`rest/core.rs`,
-donc REST **et** MCP simultanément) — validation, effets de bord, mutation avant écriture. Absorbe
-une partie de ce que le moteur de workflow (7, standby) aurait couvert pour les cas simples
-("à la création, fais aussi X"), pas les DAG multi-étapes avec reprise sur crash.
+Point d'extension par entité sur `create` (`rest/core.rs`, donc REST **et** MCP simultanément, et
+`MiryadHooks::before_active_model_save` côté GraphQL) — validation, mutation avant écriture. Scope
+limité à `Create` : Seaography ne déclenche son hook équivalent que sur un insert, et un hook qui
+ne se comporterait pas à l'identique sur les 3 surfaces a été jugé no-go. Absorbe une partie de ce
+que le moteur de workflow (7, standby) aurait couvert pour les cas simples ("à la création, fais
+aussi X"), pas les DAG multi-étapes avec reprise sur crash.
 
-Point de départ existant côté GraphQL : `LifecycleHooksInterface` (Seaography, feature 5) expose
-déjà `before_active_model_save`, laissé en no-op faute d'usage — la moitié du câblage est déjà là.
-Reste à définir l'équivalent pour `rest/core.rs` et le mécanisme déclaratif par entité (nouvelle
-méthode sur `MiryadResource`, ou trait compagnon).
+Implémentée le 2026-08-23 — cf. `docs/architecture.md`, section "Hooks métier CRUD".
 
 ## 8. Frontend générique
 Vue 3 + shadcn-vue + Tailwind. Écrans CRUD génériques pilotés par la métadonnée d'entité exposée
@@ -145,8 +144,7 @@ appartient à l'application réellement déployée, donc au template `miryad` (s
 
 Étapes 1 (Fondations), 2a (Auth — OIDC + session cookie), 2b (tokens API + dual-auth), 2c
 (comptes de service), 3 (Utilisateurs & Groupes), 4 (API REST générique), 4b (OpenAPI + Swagger
-UI), 5 (API GraphQL) et 6 (Serveur MCP) implémentées — cf. `docs/architecture.md`. Étape 7
-(Moteur de workflow) en standby, cf. section dédiée ci-dessus. Étape 7b (hooks métier CRUD)
-glissée dans le flow avant le frontend (8), suivie du scaffolding (9, nécessaire pour distribuer un
-frontend généré). Étape 10 (filtrage/tri étendus) explicitement hors MVP, reportée après un premier
-usage réel — décision du 2026-08-23.
+UI), 5 (API GraphQL), 6 (Serveur MCP) et 7b (hooks métier CRUD) implémentées — cf.
+`docs/architecture.md`. Étape 7 (Moteur de workflow) en standby, cf. section dédiée ci-dessus.
+Prochaine étape : le frontend (8), suivi du scaffolding (9, nécessaire pour le distribuer).
+Étape 10 (filtrage/tri étendus) explicitement hors MVP, reportée après un premier usage réel.

@@ -96,6 +96,10 @@ pub(crate) async fn create<E: RestEntity>(
     }
 
     let mut active = mark_all_set::<E>(body.into_active_model());
+    // Le hook métier s'exécute avant le PK-stripping/l'injection du propriétaire ci-dessous, pour
+    // que ces deux invariants de sécurité restent les derniers mots — un hook buggé ne peut pas
+    // les contourner en mutant l'ActiveModel.
+    active = E::before_create(active, principal).map_err(RestError::Application)?;
     // La BD attribue l'id — jamais une PK choisie par le client.
     active.not_set(primary_key_column::<E>());
     // Un utilisateur ne peut jamais créer une ressource au nom de quelqu'un d'autre, même en le

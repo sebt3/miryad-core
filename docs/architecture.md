@@ -19,6 +19,8 @@ pub trait MiryadResource: EntityTrait {
     fn write_policy() -> AccessPolicy;
     fn owner_column() -> Option<Self::Column>;
     fn filter_column() -> Option<Self::Column> { None }  // défaut : pas de filtre de liste
+    fn before_create(active: Self::ActiveModel, principal: &AuthPrincipal)
+        -> Result<Self::ActiveModel, HookError> { Ok(active) }  // défaut : no-op
 }
 
 pub enum AccessPolicy { Public, OwnerOnly, Group(&'static str), AdminOnly }
@@ -31,6 +33,7 @@ pub enum AccessPolicy { Public, OwnerOnly, Group(&'static str), AdminOnly }
   compilateur, seulement par test (cf. section RBAC, "fail-closed").
 - `filter_column()` (défaut `None`) déclare la colonne texte filtrable en liste par l'API REST
   (`?filter=valeur`, égalité exacte) — cf. section "API REST générique".
+- `before_create()` (défaut no-op) — hook métier, cf. section "Hooks métier CRUD".
 
 **Point d'attention** : le `Column` généré par `DeriveEntityModel` (SeaORM 2.0) n'implémente pas
 `PartialEq`/`Eq` (seulement `Copy, Clone, Debug, EnumIter, DeriveColumn`). Comparer une valeur de
@@ -410,6 +413,49 @@ désérialisation échouerait systématiquement. `registry.rs` désérialise don
 — une fois pour `id` seul, une fois pour `E::Model` en entier — la valeur de `id` dans le corps
 étant de toute façon écrasée par `core::update` (même convention que le REST : la PK vient du
 chemin, pas du corps).
+
+## Hooks métier CRUD
+
+Point d'extension optionnel par entité sur `create` — validation ou mutation de l'`ActiveModel`
+avant insertion, honoré à l'identique par REST, GraphQL et MCP. Scope volontairement limité à
+`Create` : `before_active_model_save` (Seaography, section GraphQL ci-dessus) ne se déclenche
+aujourd'hui que sur un insert ("only insert for now", commentaire du source de `seaography`) —
+principe retenu pour cette feature : un hook qui ne se comporterait pas à l'identique sur les 3
+surfaces n'a pas sa place ici. Pas de hook sur `update`/`delete`/lecture, pas d'"after" — à
+étendre si Seaography couvre un jour ces cas.
+
+```rust
+// src/resource.rs
+pub struct HookError { pub code: Option<String>, pub message: String }
+
+pub trait MiryadResource: EntityTrait {
+    // ...
+    fn before_create(active: Self::ActiveModel, principal: &AuthPrincipal)
+        -> Result<Self::ActiveModel, HookError> { Ok(active) }  // défaut : no-op
+}
+```
+
+**`HookError` est une erreur applicative, jamais une erreur miryad-core** — délibérément sans code
+`MRD-XXX-NNN` (cette convention identifie un problème dans le framework, pas une règle métier qui
+rejette une requête). `code` est libre, à la charge de l'app.
+
+Exécution : `rest::core::create` appelle `E::before_create` après `can_create`, avant le
+PK-stripping et l'injection du propriétaire — dans cet ordre pour que ces deux invariants de
+sécurité restent les derniers mots, un hook ne pouvant pas les contourner en mutant l'ActiveModel.
+Couvre REST **et** MCP simultanément (même fonction). Côté GraphQL, `MiryadHooks::
+before_active_model_save` fait le pont : downcast de l'`ActiveModel` type-erasé (`&mut dyn Any`)
+vers le type concret via un pointeur de fonction monomorphisé à l'enregistrement
+(`PolicyRegistry::register::<E>()`, même mécanisme que `EntityPolicy`).
+
+Chaque surface restitue `HookError` sans lui imposer sa taxonomie interne : REST en
+`422 Unprocessable Entity` (JSON `{code, message}`), MCP sur le code JSON-RPC `-32000` (`code` de
+l'app porté dans le champ `data`), GraphQL en concaténant `code`/`message` dans l'unique `String`
+que permet `GuardAction::Block` (Seaography ne transporte pas d'extension structurée à cet
+endroit — limite du mécanisme upstream, pas un choix).
+
+**Point d'attention — principal GraphQL.** Le hook reçoit le même `AuthPrincipal` que REST/MCP,
+pas le `GraphQlPrincipal` dérivé (user_id/is_admin/groups) utilisé par le RBAC — `graphql_handler`
+injecte donc les deux dans les données de requête (`req.data(snapshot).data(principal)`).
 
 ## Conventions transverses
 

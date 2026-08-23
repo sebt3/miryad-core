@@ -28,6 +28,8 @@ pub(crate) struct JsonRpcResponse {
 pub(crate) struct RpcError {
     pub code: i32,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 impl JsonRpcResponse {
@@ -41,6 +43,15 @@ impl JsonRpcResponse {
     }
 
     pub(crate) fn err(id: Option<Value>, code: i32, message: impl Into<String>) -> Self {
+        Self::err_with_data(id, code, message, None)
+    }
+
+    pub(crate) fn err_with_data(
+        id: Option<Value>,
+        code: i32,
+        message: impl Into<String>,
+        data: Option<Value>,
+    ) -> Self {
         Self {
             jsonrpc: "2.0",
             id,
@@ -48,6 +59,7 @@ impl JsonRpcResponse {
             error: Some(RpcError {
                 code,
                 message: message.into(),
+                data,
             }),
         }
     }

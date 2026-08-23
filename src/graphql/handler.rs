@@ -31,7 +31,10 @@ async fn graphql_handler(
     req: GraphQLRequest,
 ) -> Result<GraphQLResponse, AuthError> {
     let snapshot = load_principal(&auth.db, &principal).await?;
-    let request = req.into_inner().data(snapshot);
+    // `snapshot` (GraphQlPrincipal) sert au RBAC (entity_guard/entity_filter, déjà en place).
+    // `principal` (AuthPrincipal) est aussi injecté pour before_active_model_save (feature 7b) :
+    // le hook métier doit recevoir le même type de principal que REST/MCP, pas un dérivé GraphQL.
+    let request = req.into_inner().data(snapshot).data(principal);
     Ok(schema.execute(request).await.into())
 }
 

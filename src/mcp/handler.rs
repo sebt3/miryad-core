@@ -156,9 +156,9 @@ async fn handle_tools_call(
             let mut engine = HandleBars::new();
             match render(&mut engine, &registry.format, shape, &data) {
                 Ok(text) => JsonRpcResponse::ok(id, json!({ "content": [{ "type": "text", "text": text }] })),
-                Err(e) => JsonRpcResponse::err(id, e.rpc_code(), e.to_string()),
+                Err(e) => JsonRpcResponse::err_with_data(id, e.rpc_code(), e.to_string(), e.data()),
             }
         }
-        Err(e) => JsonRpcResponse::err(id, e.rpc_code(), e.to_string()),
+        Err(e) => JsonRpcResponse::err_with_data(id, e.rpc_code(), e.to_string(), e.data()),
     }
 }

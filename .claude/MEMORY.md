@@ -120,6 +120,33 @@ réel dans miryad-core (lib) vs. `miryad` (template applicatif) n'est pas tranch
 après l'implémentation de 7b. Leçon retenue : ne pas glisser dans le roadmap un gap que je repère
 moi-même sans valider la priorité — cf. mémoire globale `feedback-roadmap-scope`.
 
+## Clôture de la feature 7b (hooks métier CRUD) — 2026-08-23
+
+Design mené en plusieurs allers-retours avec le développeur principal avant tout code : le
+principe directeur ("un hook n'entre dans le scope que si les 3 surfaces peuvent l'honorer à
+l'identique — un décalage fonctionnel entre endpoints est un no-go absolu") a mécaniquement réduit
+le scope de départ (create/update/delete + before/after) à **`before_create` seul**, une fois
+vérifié dans le source de `seaography` (pas la doc publique) que `before_active_model_save` ne se
+déclenche que sur un insert et qu'aucun hook "after" avec accès aux données n'existe côté
+Seaography. Choix d'API (méthode directe sur `MiryadResource` vs. trait compagnon vs. closure au
+montage du routeur) tranché sur un comparatif objectif orienté ergonomie de l'app consommatrice,
+pas sur une préférence de style — la méthode directe gagne parce qu'elle ne change rien aux points
+d'enregistrement REST/GraphQL/MCP, contrairement aux deux autres options.
+
+`HookError` est explicitement une erreur *applicative*, jamais un code `MRD-*` — distinction posée
+par le développeur pour ne pas laisser croire qu'une règle métier rejetée est un bug de
+miryad-core. Chaque surface la restitue sans lui imposer sa taxonomie interne (REST 422 JSON,
+MCP `-32000`+`data`, GraphQL en concaténant `code`/`message` dans l'unique `String` que permet
+`GuardAction::Block` — limite du mécanisme Seaography à cet endroit, pas un choix).
+
+Implémentation : `resource.rs` (trait + `HookError`), `rest/core.rs`+`rest/error.rs` (REST+MCP
+partagent `core::create`), `mcp/error.rs`+`mcp/protocol.rs`+`mcp/handler.rs` (champ `data` JSON-RPC
+ajouté), `graphql/registry.rs` (dispatch par downcast de `&mut dyn Any` vers l'`ActiveModel`
+concret, pointeur de fonction monomorphisé à l'enregistrement) + `graphql/hooks.rs`. Découverte en
+cours d'implémentation : le hook GraphQL n'avait accès qu'au `GraphQlPrincipal` dérivé, pas à
+l'`AuthPrincipal` d'origine — `graphql_handler` injecte désormais les deux dans les données de
+requête. Détail complet dans `docs/architecture.md`, section "Hooks métier CRUD".
+
 ## Déblocage `vynil-core` et clôture de la feature 6 (MCP) — 2026-08-23
 
 Les deux tickets amont sont résolus dans `vynil-core` v0.7.3 (2026-08-23) : #7 a introduit des
