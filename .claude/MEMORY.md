@@ -120,6 +120,41 @@ réel dans miryad-core (lib) vs. `miryad` (template applicatif) n'est pas tranch
 après l'implémentation de 7b. Leçon retenue : ne pas glisser dans le roadmap un gap que je repère
 moi-même sans valider la priorité — cf. mémoire globale `feedback-roadmap-scope`.
 
+## Frontière frontend/backend et réorganisation du roadmap — 2026-08-23
+
+Discussion post-7b sur l'articulation front/back (feature 8) : le développeur principal a posé
+deux problèmes de fond — (1) UI partagée en lib vs. template à cherry-picker (aucune des deux
+options ne le satisfaisait), (2) comment produire une représentation intermédiaire du modèle de
+données pour un scaffolding frontend, étant donné Rust "peu parseable" à ses yeux.
+
+Sur (2) : faux problème — `rest/openapi.rs` (feature 4b) prouve déjà qu'une entité SeaORM
+s'introspecte proprement (`#[derive(ToSchema)]`, compile-time). Rust reste golden source, l'IR en
+est dérivée. Proposition initiale d'étendre `openapi.json` avec des extensions `x-miryad-*` —
+**rejetée par le développeur** : un contrat public destiné à des consommateurs externes ne doit
+pas porter des métadonnées internes de scaffolding (RBAC, owner_column). Deux publics, deux
+artefacts. Retenu : un IR séparé (`resource_ir::<E>()`, feature 8), bâti directement sur
+`EntityTrait::Column`/`ColumnType` (métadonnées SeaORM déjà obligatoires) plutôt que sur `utoipa` —
+zéro annotation supplémentaire à ajouter par l'app.
+
+Sur (1) : résolu en remarquant que shadcn-vue (déjà choisi au bootstrap) répond déjà à ce
+dilemme — ce n'est pas une lib qu'on installe, c'est un CLI qui copie le code source dans le
+projet consommateur. Même logique appliquée aux écrans CRUD : composables partagés et versionnés
+(sans opinion produit, donc sans risque à partager) + écrans générés une fois dans le code de
+l'app (comme shadcn-vue lui-même), jamais un template à cherry-picker. **Décision structurante** :
+le générateur (TypeScript, consomme l'IR pour écrire les `.vue`) vit dans `miryad` (le template),
+pas dans miryad-core — le développeur : "un projet miryad ne traite plus que le front, donc il est
+naturel que son code d'utilitaires soit en TypeScript". miryad-core garde seulement `resource_ir`
+et le service statique du frontend compilé (routeur générique, pas d'embarquement des assets dans
+le binaire).
+
+Conséquence sur le roadmap (réordonné par le développeur le 2026-08-23) : l'ancienne feature 9
+(CLI de scaffolding générant des entités Rust depuis un modèle décrit à la main) **disparaît du
+roadmap** — sa seule raison d'être (distribuer un frontend généré) n'existe plus, cette
+responsabilité étant maintenant côté `miryad`. Nouvel ordre pour la suite : 8 (support frontend :
+IR + service statique, design dans `docs/features/8-frontend-ir-static-serve.md`) → 9 (reprise du
+moteur de workflow, ex-7, si une solution saine se présente) → 10 (filtrage/tri étendus, toujours
+hors MVP). Détail dans `docs/roadmap.md`.
+
 ## Clôture de la feature 7b (hooks métier CRUD) — 2026-08-23
 
 Design mené en plusieurs allers-retours avec le développeur principal avant tout code : le

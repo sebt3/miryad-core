@@ -108,43 +108,50 @@ aussi X"), pas les DAG multi-étapes avec reprise sur crash.
 
 Implémentée le 2026-08-23 — cf. `docs/architecture.md`, section "Hooks métier CRUD".
 
-## 8. Frontend générique
-Vue 3 + shadcn-vue + Tailwind. Écrans CRUD génériques pilotés par la métadonnée d'entité exposée
-via REST/GraphQL (liste, détail, formulaire — pas un `.vue` par entité à maintenir). Login OIDC
-(pattern `vanyline/frontend`). Espace admin : utilisateurs, groupes, tokens API, visualisation des
-DAG de workflow.
+## 8. Support frontend (IR + service statique)
+Recentrée le 2026-08-23 après discussion sur l'articulation front/back : la génération du
+frontend lui-même (Vue 3 + shadcn-vue + Tailwind, écrans CRUD, admin) **sort de miryad-core** et
+devient le roadmap du template `miryad` (générateur TypeScript) — cohérent avec la frontière déjà
+posée ("Hors périmètre de miryad-core", ci-dessous), étendue de la production/déploiement à la
+génération frontend elle-même.
 
-## 9. CLI de scaffolding (`miryad` binaire)
-Format du modèle de données **à définir** (question ouverte, cf. `MEMORY.md`). Le binaire lit ce
-modèle, génère les migrations/entités SeaORM, les implémentations du trait `MiryadResource`, et
-instancie/complète un projet depuis le template `miryad`. Dépend de ce que les étapes 1-8 ont
-stabilisé comme forme réelle — volontairement en fin de roadmap, pas figé avant d'avoir une
-vraie application construite à la main dessus.
+Ce qui reste côté miryad-core, strictement backend :
+- `resource_ir::<E>()` — fonction pure exposant une représentation intermédiaire par entité (champs
+  + types via `EntityTrait::Column`/`ColumnType`, RBAC, `owner_column`, `filter_column`), pour que
+  le générateur TypeScript de `miryad` s'y cale. **Séparée d'`openapi.json`** (feature 4b) — ne pas
+  faire porter à un contrat public destiné aux consommateurs externes des métadonnées internes de
+  scaffolding ; deux publics, deux artefacts.
+- Service statique du frontend compilé (routeur générique servant un répertoire d'assets avec
+  fallback SPA) — générique, ne connaît rien du contenu réel.
 
-Glissée avant le filtrage (10) : probablement le seul moyen de distribution automatisée d'un
-frontend généré (8). Périmètre réel dans miryad-core (bibliothèque publiée) vs. `miryad` (le
-template applicatif) pas encore tranché — à discuter après l'implémentation de la feature 7b.
-Décidé le 2026-08-23.
+Design détaillé : `docs/features/8-frontend-ir-static-serve.md`.
+
+## 9. Moteur de workflow (reprise)
+Reprise de la feature 7 (standby, cf. section dédiée) une fois une solution d'implémentation saine
+identifiée — après la feature 8, priorité explicite du développeur principal (2026-08-23).
 
 ## 10. Filtrage et tri étendus — après un premier usage réel
 Le filtrage REST/GraphQL/MCP actuel (`filter_column()`) est limité à une seule colonne, égalité
 exacte. Pas de tri, pas de filtre multi-critères, pas de recherche texte. Gap réel mais **pas
-MVP** : le scope est déjà large, à reprendre une fois le frontend (8) et le scaffolding (9) traités
-et une première application miryad réelle construite dessus — pour caler le besoin sur un usage
-concret plutôt que sur une complétude théorique. Décidé le 2026-08-23.
+MVP** : le scope est déjà large, à reprendre une fois le frontend (8) traité et une première
+application miryad réelle construite dessus — pour caler le besoin sur un usage concret plutôt que
+sur une complétude théorique. Décidé le 2026-08-23.
 
 ---
 
-**Hors périmètre de miryad-core** : Dockerfile, chart Helm, doc de déploiement CNPG/Authentik.
-miryad-core est une lib publiée sur crates.io, pas un déployable — le packaging production
-appartient à l'application réellement déployée, donc au template `miryad` (son propre roadmap,
-à écrire quand son bootstrap reprendra — cf. `$HOME/projets/kydah/miryad/.claude/MEMORY.md`).
+**Hors périmètre de miryad-core** : Dockerfile, chart Helm, doc de déploiement CNPG/Authentik, et
+**la génération du frontend elle-même** (composants Vue, générateur TypeScript — décision du
+2026-08-23, cf. feature 8). miryad-core est une lib publiée sur crates.io, pas un déployable — le
+packaging production et la génération frontend appartiennent à l'application réellement déployée,
+donc au template `miryad` (son propre roadmap, à écrire quand son bootstrap reprendra — cf.
+`$HOME/projets/kydah/miryad/.claude/MEMORY.md`).
 
 ## Statut
 
 Étapes 1 (Fondations), 2a (Auth — OIDC + session cookie), 2b (tokens API + dual-auth), 2c
 (comptes de service), 3 (Utilisateurs & Groupes), 4 (API REST générique), 4b (OpenAPI + Swagger
 UI), 5 (API GraphQL), 6 (Serveur MCP) et 7b (hooks métier CRUD) implémentées — cf.
-`docs/architecture.md`. Étape 7 (Moteur de workflow) en standby, cf. section dédiée ci-dessus.
-Prochaine étape : le frontend (8), suivi du scaffolding (9, nécessaire pour le distribuer).
-Étape 10 (filtrage/tri étendus) explicitement hors MVP, reportée après un premier usage réel.
+`docs/architecture.md`. Ordre pour la suite, fixé par le développeur principal le 2026-08-23 :
+8 (support frontend : IR + service statique, en design) → 9 (reprise du moteur de workflow, ex-7,
+si une solution saine se présente) → 10 (filtrage/tri étendus, explicitement hors MVP jusqu'à un
+premier usage réel).
