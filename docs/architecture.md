@@ -351,13 +351,12 @@ soi-même). Le faire correctement demanderait une détection de changement cohé
 chemins d'écriture (REST compris), pas seulement les mutations GraphQL — hors-scope pour
 l'instant.
 
-## Serveur MCP — design validé, implémentation bloquée en amont (2026-08-22)
+## Serveur MCP
 
 Tools CRUD générés par entité (`list`/`get`/`create`/`update`/`delete`), exposés en JSON-RPC 2.0
 sur un unique `POST /mcp` (mêmes patterns que `kydah-mcp-template/src/mcp.rs`). Dual-auth et RBAC
 entièrement réutilisés (`rest/core.rs`, cf. section REST ci-dessus) — aucune règle réécrite pour
-MCP. Design validé, mais **implémentation non committée** : bloquée par un bug en amont, cf.
-plus bas.
+MCP. Feature Cargo `mcp` (`vynil-core`, `default-features = false, features = ["hbs", "crypto"]`).
 
 **Décision : un seul mécanisme de rendu**, pas quatre chemins de code séparés :
 
@@ -403,20 +402,14 @@ En interne, chaque tool appelle directement `rest::core::{list,get,create,update
 "Internal error") — `-32000`..`-32099` est la plage libre pour l'application selon la spec
 JSON-RPC 2.0, `-32001`/`-32002` sont nos choix dans cette plage.
 
-**Bloqué : `vynil-core` (moteur `vynil_core::hbs::HandleBars`, retenu pour réutiliser ses helpers
-Handlebars json/yaml/toml déjà écrits) ne compile pas actuellement.** `handlebars_misc_helpers`
-(dépendance de `vynil-core`, feature `json` activée sans condition) tire `jmespath 0.3.0`, qui
-échoue à la compilation (`dyn Function` sans borne `Send`/`Sync`, utilisé dans un
-`lazy_static!` qui exige `Sync`) — reproduit à l'identique sur `rustc` 1.94.0 et 1.97.1, donc pas
-une histoire de toolchain trop récente : `jmespath 0.3.0` ne compile simplement plus avec du Rust
-courant. Remonté en amont :
-[sebt3/vynil-core#7](https://github.com/sebt3/vynil-core/issues/7) (poids des dépendances non
-conditionnelles) et
-[sebt3/vynil-core#8](https://github.com/sebt3/vynil-core/issues/8) (le blocage de compilation
-lui-même). La feature `mcp` n'est donc **pas déclarée** dans `Cargo.toml` pour l'instant — à
-reprendre une fois l'un des deux tickets résolu en amont. La feature 7 (workflow, moteur Rhai de
-`vynil-core`) sera bloquée par le même problème, `vynil-core` étant une dépendance monolithique
-(pas de moyen de n'obtenir que Rhai sans Handlebars/`handlebars_misc_helpers`/jmespath).
+**Point d'attention — `update` et la PK.** `tools/call` transporte `id` et le corps du modèle
+dans le même objet `arguments` (pas de séparation path/body comme en REST). `id` ne peut pas être
+extrait par un `#[serde(flatten)]` du reste du corps : le champ nommé de l'enveloppe consommerait
+la clé `id` avant que `E::Model` (qui la requiert comme PK non optionnelle) ne la voie, et la
+désérialisation échouerait systématiquement. `registry.rs` désérialise donc `arguments` deux fois
+— une fois pour `id` seul, une fois pour `E::Model` en entier — la valeur de `id` dans le corps
+étant de toute façon écrasée par `core::update` (même convention que le REST : la PK vient du
+chemin, pas du corps).
 
 ## Conventions transverses
 

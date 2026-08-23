@@ -90,23 +90,22 @@ jamais référencé par `CLAUDE.md`) supprimés. Le développeur préfère group
 avant de pousser (`push ira à la fin des features`) plutôt que pousser à chaque commit — pas de
 push après chaque feature, à faire quand demandé explicitement.
 
-## Blocage `vynil-core` (features 6 et 7) — 2026-08-22
+## Déblocage `vynil-core` et clôture de la feature 6 (MCP) — 2026-08-23
 
-`vynil-core` (moteur Handlebars/Rhai retenu pour les features MCP et workflow) **ne compile pas**
-actuellement : `handlebars_misc_helpers` (sa dépendance, feature `json` activée sans condition)
-tire `jmespath 0.3.0`, qui échoue à la compilation (`dyn Function` sans borne `Send`/`Sync`, utilisé
-dans un `lazy_static!` qui exige `Sync`). Reproduit à l'identique sur `rustc` 1.94.0 et 1.97.1 —
-pas une histoire de toolchain trop récente. `vynil-core` est une dépendance monolithique (pas moyen
-de n'obtenir que Rhai sans Handlebars/jmespath), donc la feature 7 (workflow) est concernée par le
-même blocage que la 6 (MCP).
+Les deux tickets amont sont résolus dans `vynil-core` v0.7.3 (2026-08-23) : #7 a introduit des
+features Cargo indépendantes (`hbs`, `rhai`, `crypto`, toutes activées par défaut donc pas de
+breaking change), #8 a vendorisé les helpers `json_*` de `handlebars_misc_helpers` directement
+dans `vynil-core` (dépendant de `jmespath 0.5.0`, qui corrige le problème `Send`/`Sync` en amont)
+plutôt que d'attendre un projet non maintenu depuis ~2 ans. `miryad-core` consomme désormais
+`vynil-core = "0.7.3"` avec `default-features = false, features = ["hbs", "crypto"]`, gated
+derrière la feature Cargo `mcp` (`dep:vynil-core`).
 
-Remonté en amont : [sebt3/vynil-core#7](https://github.com/sebt3/vynil-core/issues/7) (poids des
-dépendances non conditionnelles de `vynil-core`) et
-[sebt3/vynil-core#8](https://github.com/sebt3/vynil-core/issues/8) (le blocage de compilation
-lui-même). Le design complet de la feature 6 (registre de tools, format de sortie
-json/yaml/markdown/custom via un unique mécanisme Handlebars, codes d'erreur JSON-RPC) est
-documenté dans `docs/architecture.md` malgré l'absence d'implémentation committée — la feature
-Cargo `mcp` n'est pas déclarée dans `Cargo.toml` tant que l'un des deux tickets n'est pas résolu.
-`src/rest/core.rs` (extraction de la logique métier REST, indépendante d'axum, pour être
-réutilisable par MCP plus tard) est en revanche committé — amélioration valable indépendamment du
-blocage.
+En reprenant le `src/mcp/` déjà écrit le 2026-08-22 (jamais committé faute de compiler, jamais
+reviewé), la review a trouvé un bug réel dans `registry.rs` : `UpdateParams<E::Model>` utilisait
+`#[serde(flatten)]` sur un champ `id` séparé, ce qui faisait perdre `id` (consommé par le champ
+nommé avant que le flatten ne voie le reste) — `E::Model` le requiert comme PK non optionnelle,
+donc `_update` échouait systématiquement en pratique, non détecté faute de test passant par ce
+chemin de dispatch. Corrigé (désérialisation en deux passes) + test de régression avec DB SQLite
+en mémoire. Feature 6 clôturée, migrée dans `docs/architecture.md` (section "Serveur MCP", statut
+"bloqué" retiré). La feature 7 (workflow) profite du même déblocage (`vynil-core` feature `rhai`)
+mais reste entièrement à designer — rien d'implémenté pour l'instant.
