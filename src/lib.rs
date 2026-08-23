@@ -1,6 +1,9 @@
 pub mod auth;
+#[cfg(feature = "static-frontend")]
+pub mod frontend;
 #[cfg(feature = "graphql")]
 pub mod graphql;
+pub mod ir;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod migration;

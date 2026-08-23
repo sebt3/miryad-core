@@ -19,6 +19,7 @@ pub trait MiryadResource: EntityTrait {
     fn write_policy() -> AccessPolicy;
     fn owner_column() -> Option<Self::Column>;
     fn filter_column() -> Option<Self::Column> { None }  // défaut : pas de filtre de liste
+    fn label_column() -> Option<Self::Column> { None }    // défaut : le générateur retombe sur la PK
     fn before_create(active: Self::ActiveModel, principal: &AuthPrincipal)
         -> Result<Self::ActiveModel, HookError> { Ok(active) }  // défaut : no-op
 }
@@ -33,6 +34,8 @@ pub enum AccessPolicy { Public, OwnerOnly, Group(&'static str), AdminOnly }
   compilateur, seulement par test (cf. section RBAC, "fail-closed").
 - `filter_column()` (défaut `None`) déclare la colonne texte filtrable en liste par l'API REST
   (`?filter=valeur`, égalité exacte) — cf. section "API REST générique".
+- `label_column()` (défaut `None`) — champ à afficher comme libellé humain (liste/select), cf.
+  section "Support frontend".
 - `before_create()` (défaut no-op) — hook métier, cf. section "Hooks métier CRUD".
 
 **Point d'attention** : le `Column` généré par `DeriveEntityModel` (SeaORM 2.0) n'implémente pas
@@ -456,6 +459,68 @@ endroit — limite du mécanisme upstream, pas un choix).
 **Point d'attention — principal GraphQL.** Le hook reçoit le même `AuthPrincipal` que REST/MCP,
 pas le `GraphQlPrincipal` dérivé (user_id/is_admin/groups) utilisé par le RBAC — `graphql_handler`
 injecte donc les deux dans les données de requête (`req.data(snapshot).data(principal)`).
+
+## Support frontend (IR + service statique)
+
+miryad-core reste strictement backend : la génération du frontend lui-même (composants Vue,
+écrans CRUD, générateur TypeScript) vit dans le template `miryad`, pas ici — décision du
+2026-08-23 (cf. `docs/roadmap.md`, feature 8). Deux briques seulement de ce côté-ci :
+
+```rust
+// src/ir.rs
+pub struct FieldIr {
+    pub name: String,
+    pub r#type: &'static str,        // vocabulaire OpenAPI : "string"|"integer"|"number"|...
+    pub format: Option<&'static str>, // "date-time"|"uuid"|"int64"|...
+    pub nullable: bool,
+    pub is_primary_key: bool,
+}
+pub struct EntityIr {
+    pub resource_name: String,
+    pub fields: Vec<FieldIr>,
+    pub read_policy: AccessPolicy,
+    pub write_policy: AccessPolicy,
+    pub owner_column: Option<String>,
+    pub filter_column: Option<String>,
+    pub label_column: Option<String>,
+}
+pub fn resource_ir<E: MiryadResource>() -> EntityIr;
+
+pub struct IrRegistry { /* .register::<E>(), .write_to_file(path) */ }
+```
+
+**Vocabulaire de types repris d'OpenAPI (`type`/`format`), pas un enum maison** — décision
+explicite : ces chaînes sont déjà stables et déjà comprises par tout l'outillage JS/TS qui
+consomme de l'OpenAPI, pas la peine d'en inventer un nouveau. **Volontairement séparé
+d'`openapi.json`** (feature 4b, jamais fusionné) : deux publics différents — consommateurs
+externes de l'API REST vs. outillage interne de scaffolding — donc deux contrats qui évoluent
+indépendamment. `label_column()` (nouvelle méthode sur `MiryadResource`, défaut `None` → PK) donne
+au générateur le champ à afficher dans une liste/un select.
+
+Le type/format est dérivé de `ColumnDef::get_column_type()` (SeaORM, déjà obligatoire pour toute
+entité) — aucune annotation supplémentaire à ajouter par l'app, contrairement à l'OpenAPI actuel
+qui exige `#[derive(ToSchema)]`. La clé primaire est détectée via `E::PrimaryKey::iter()` +
+`PrimaryKeyToColumn::into_column()`, comparée par nom (`Iden::to_string()`) — `Column` n'implémente
+pas `PartialEq` (cf. plus haut).
+
+**Production du fichier IR : à la charge de l'app, pas un binaire miryad-core.** `IrRegistry`
+accumule l'IR de plusieurs entités (même registre-pattern que `PolicyRegistry`/`McpToolRegistry`)
+et l'écrit en JSON ; l'app décide comment l'appeler (binaire dédié, ou sous-commande de son
+binaire backend existant).
+
+```rust
+// src/frontend.rs — feature Cargo "static-frontend", activée par défaut
+pub fn static_frontend_router<S>(assets_dir: impl Into<PathBuf>) -> axum::Router<S>
+where S: Clone + Send + Sync + 'static;
+```
+
+Sert `assets_dir` (`tower_http::services::ServeDir`) avec fallback vers `assets_dir/index.html`
+pour toute route non capturée par l'API — routing SPA côté client (Vue Router). Répertoire
+externe, pas d'embarquement des assets dans le binaire (pas de `rust-embed`) : miryad-core reste
+agnostique de la provenance des fichiers. `static-frontend` est activée par défaut
+(`default = ["static-frontend"]`) — contrairement à `graphql`/`mcp`/`swagger-ui` (dépendances
+lourdes, opt-in), celle-ci ne tire que `tower-http` et est attendue par la quasi-totalité des apps
+miryad ; désactivable explicitement (`default-features = false`) pour un backend pur API.
 
 ## Conventions transverses
 

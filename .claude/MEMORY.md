@@ -155,6 +155,25 @@ IR + service statique, design dans `docs/features/8-frontend-ir-static-serve.md`
 moteur de workflow, ex-7, si une solution saine se présente) → 10 (filtrage/tri étendus, toujours
 hors MVP). Détail dans `docs/roadmap.md`.
 
+## Clôture de la feature 8 (support frontend : IR + service statique) — 2026-08-23
+
+Trois corrections du développeur en cours de design, toutes intégrées avant implémentation :
+(1) production du fichier IR — pas de binaire côté miryad-core ("un petit binaire xtask lie l'app
+cible" était faux : miryad-core fournit `IrRegistry`, l'app écrit son propre `main()`, dédié ou
+intégré à son binaire backend) ; (2) vocabulaire de types — repris d'OpenAPI (`type`/`format`),
+pas un enum maison, sur suggestion du développeur reprenant le mérite (trancher la question) de
+l'idée initiale (étendre `openapi.json`) sans en garder l'inconvénient (mélanger deux publics) ;
+(3) `static-frontend` activée par défaut (`default = ["static-frontend"]`), contrairement à
+`graphql`/`mcp`/`swagger-ui` — dépendance légère (`tower-http` seul), attendue par la quasi
+totalité des apps miryad.
+
+Implémentation : `src/ir.rs` (nouveau module — `FieldIr`/`EntityIr`/`resource_ir::<E>()`/
+`IrRegistry`, type/format dérivés de `ColumnDef::get_column_type()`, PK détectée via
+`PrimaryKey::iter()` + comparaison par nom puisque `Column` n'implémente pas `PartialEq`),
+`src/frontend.rs` (nouveau module, `static_frontend_router` sur `tower_http::ServeDir` + fallback
+SPA), `label_column()` ajoutée à `MiryadResource`, `AccessPolicy` gagne `Serialize`. Détail complet
+dans `docs/architecture.md`, section "Support frontend (IR + service statique)".
+
 ## Clôture de la feature 7b (hooks métier CRUD) — 2026-08-23
 
 Design mené en plusieurs allers-retours avec le développeur principal avant tout code : le

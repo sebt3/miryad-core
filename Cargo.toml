@@ -34,8 +34,11 @@ seaography = { version = "2.0.0-rc.9", optional = true }
 async-graphql = { version = "7", optional = true }
 async-graphql-axum = { version = "7", optional = true }
 vynil-core = { version = "0.7.3", default-features = false, features = ["hbs", "crypto"], optional = true }
+tower-http = { version = "0.6", default-features = false, features = ["fs"], optional = true }
 
 [features]
+default = ["static-frontend"]
+static-frontend = ["dep:tower-http"]
 swagger-ui = ["dep:utoipa-swagger-ui"]
 graphql = ["dep:seaography", "dep:async-graphql", "dep:async-graphql-axum"]
 graphiql = ["graphql", "async-graphql/graphiql"]

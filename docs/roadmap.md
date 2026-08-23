@@ -124,7 +124,8 @@ Ce qui reste côté miryad-core, strictement backend :
 - Service statique du frontend compilé (routeur générique servant un répertoire d'assets avec
   fallback SPA) — générique, ne connaît rien du contenu réel.
 
-Design détaillé : `docs/features/8-frontend-ir-static-serve.md`.
+Implémentée le 2026-08-23 — cf. `docs/architecture.md`, section "Support frontend (IR + service
+statique)".
 
 ## 9. Moteur de workflow (reprise)
 Reprise de la feature 7 (standby, cf. section dédiée) une fois une solution d'implémentation saine
@@ -150,8 +151,7 @@ donc au template `miryad` (son propre roadmap, à écrire quand son bootstrap re
 
 Étapes 1 (Fondations), 2a (Auth — OIDC + session cookie), 2b (tokens API + dual-auth), 2c
 (comptes de service), 3 (Utilisateurs & Groupes), 4 (API REST générique), 4b (OpenAPI + Swagger
-UI), 5 (API GraphQL), 6 (Serveur MCP) et 7b (hooks métier CRUD) implémentées — cf.
-`docs/architecture.md`. Ordre pour la suite, fixé par le développeur principal le 2026-08-23 :
-8 (support frontend : IR + service statique, en design) → 9 (reprise du moteur de workflow, ex-7,
-si une solution saine se présente) → 10 (filtrage/tri étendus, explicitement hors MVP jusqu'à un
-premier usage réel).
+UI), 5 (API GraphQL), 6 (Serveur MCP), 7b (hooks métier CRUD) et 8 (support frontend : IR +
+service statique) implémentées — cf. `docs/architecture.md`. Prochaine étape : 9 (reprise du
+moteur de workflow, ex-7, si une solution saine se présente), puis 10 (filtrage/tri étendus,
+explicitement hors MVP jusqu'à un premier usage réel).

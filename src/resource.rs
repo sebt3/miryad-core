@@ -1,4 +1,5 @@
 use sea_orm::EntityTrait;
+use serde::Serialize;
 
 use crate::auth::AuthPrincipal;
 
@@ -32,7 +33,7 @@ impl HookError {
 /// Read et write sont évalués séparément — une entité peut être publique en
 /// lecture et restreinte en écriture (cas "recettes partagées, modifiables
 /// par leur auteur uniquement").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum AccessPolicy {
     /// Tout utilisateur authentifié (JWT ou token API valide)
     Public,
@@ -69,6 +70,12 @@ pub trait MiryadResource: EntityTrait {
     /// de filtre pour cette entité. Une entité qui veut un filtre de liste
     /// (ex. "recettes par catégorie") le déclare explicitement.
     fn filter_column() -> Option<<Self as EntityTrait>::Column> {
+        None
+    }
+
+    /// Colonne à afficher comme libellé humain de l'entité (liste, select) — feature 8, IR
+    /// frontend. `None` par défaut : le générateur retombe sur la clé primaire.
+    fn label_column() -> Option<<Self as EntityTrait>::Column> {
         None
     }
 
