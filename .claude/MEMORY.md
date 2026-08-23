@@ -90,6 +90,36 @@ jamais référencé par `CLAUDE.md`) supprimés. Le développeur préfère group
 avant de pousser (`push ira à la fin des features`) plutôt que pousser à chaque commit — pas de
 push après chaque feature, à faire quand demandé explicitement.
 
+## Feature 7 (workflow) en standby — 2026-08-23
+
+Après le déblocage de `vynil-core`, exploration comparative de moteurs de workflow pour la feature
+7 : `apalis-workflow` (DAG typé Rust, pas piloté par la donnée — écarté), `Acts` (spike : le store
+Postgres tronque sa table à chaque redémarrage, modèle déployé perdu — écarté), `Hatchet` (spike :
+moteur serveur sain, mais le seul binding Rust disponible, `hatchet-sdk` non officiel, casse sur
+`ctx.parent_output()` — le passage de données parent→enfant, cœur de tout DAG — contre toute
+version de Hatchet self-hostable actuellement disponible ; bug isolé au binding, pas à la
+plateforme), Temporal et Prefect écartés sur des critères d'architecture avant spike (empreinte de
+déploiement pour Temporal ; flows intrinsèquement Python pour Prefect, incompatible avec
+l'écosystème 100% Rust visé). Le fait-maison sur `apalis-postgres` reste l'option de secours mais
+représente ~1200-1900 lignes de code distribué/concurrent (fan-in sous course, reprise sur crash)
+à fiabiliser nous-mêmes — jugé disproportionné pour une brique dont la robustesse est justement
+l'exigence de départ. Détail complet dans `docs/roadmap.md`, section 7.
+
+Décision : la feature reste un pilier attendu (pas de dé-priorisation de fond), mais sans solution
+d'implémentation saine identifiée pour l'instant — standby, à reprendre soit via un correctif
+amont sur `hatchet-rust-sdk`, soit via une nouvelle option. Une nouvelle feature 7b (hooks métier
+sur les 4 opérations CRUD génériques — absorbe une partie des cas d'usage simples que le workflow
+aurait couverts) glisse dans le flow avant le frontend (8).
+
+Le filtrage/tri étendu (au-delà de l'égalité exacte sur une seule colonne) identifié dans la même
+discussion est un gap réel mais **pas MVP** — le développeur a explicitement recadré : scope déjà
+large, à reprendre après le frontend (8) et un premier usage réel de miryad, pas avant. Devenu
+feature 10 du roadmap. La CLI de scaffolding (feature 9) se glisse elle aussi avant le filtrage :
+probablement le seul moyen de distribution automatisée d'un frontend généré — mais son périmètre
+réel dans miryad-core (lib) vs. `miryad` (template applicatif) n'est pas tranché, à rediscuter
+après l'implémentation de 7b. Leçon retenue : ne pas glisser dans le roadmap un gap que je repère
+moi-même sans valider la priorité — cf. mémoire globale `feedback-roadmap-scope`.
+
 ## Déblocage `vynil-core` et clôture de la feature 6 (MCP) — 2026-08-23
 
 Les deux tickets amont sont résolus dans `vynil-core` v0.7.3 (2026-08-23) : #7 a introduit des
