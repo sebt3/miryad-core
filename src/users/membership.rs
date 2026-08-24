@@ -49,7 +49,16 @@ pub async fn sync_group_memberships<C: ConnectionTrait>(
                 group_id: Set(group_id),
                 ..Default::default()
             };
-            active.insert(db).await?;
+            // `current_group_ids` est un instantané pris en début de fonction, jamais rafraîchi
+            // pendant cette boucle : deux appels concurrents pour le même user_id (double
+            // callback OIDC) peuvent tous les deux tenter d'insérer la même ligne. ON CONFLICT
+            // DO NOTHING rend l'insertion idempotente sous concurrence sans retirer la
+            // contrainte unique — le perdant de la course n'échoue plus, il n'a juste rien à
+            // faire (la ligne existe déjà, posée par le gagnant).
+            Entity::insert(active)
+                .on_conflict_do_nothing_on([Column::UserId, Column::GroupId])
+                .exec(db)
+                .await?;
         }
     }
 
@@ -126,5 +135,32 @@ mod tests {
             .await
             .expect("query succeeds");
         assert_eq!(memberships.len(), 1);
+    }
+
+    /// Reproduit le scénario de l'issue #3 : un double callback OIDC (prefetch navigateur, double
+    /// requête) déclenche deux invocations concurrentes pour le même `user_id`. Les deux lisent
+    /// le même instantané `current` avant que l'une ou l'autre n'ait committé ses insertions —
+    /// sans ON CONFLICT DO NOTHING, la perdante de la course viole la contrainte unique
+    /// `(user_id, group_id)` et l'appelante (le callback OIDC) échoue en entier alors que les
+    /// données finissent par être correctes.
+    #[tokio::test]
+    async fn concurrent_syncs_for_the_same_user_do_not_violate_the_unique_constraint() {
+        let db = test_db().await;
+        let user = resolve_user(&db, "sub-1", None).await.expect("resolve succeeds");
+        let groups = vec!["admin".to_string(), "editors".to_string()];
+
+        let (first, second) = tokio::join!(
+            sync_group_memberships(&db, user.id, &groups),
+            sync_group_memberships(&db, user.id, &groups),
+        );
+        first.expect("first concurrent sync succeeds");
+        second.expect("second concurrent sync succeeds");
+
+        let memberships = Entity::find()
+            .filter(Column::UserId.eq(user.id))
+            .all(&db)
+            .await
+            .expect("query succeeds");
+        assert_eq!(memberships.len(), 2);
     }
 }
