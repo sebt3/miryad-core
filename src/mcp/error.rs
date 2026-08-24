@@ -15,6 +15,10 @@ pub enum McpError {
     InvalidParams(String),
     #[error("MRD-MCP-006: unknown tool: {0}")]
     UnknownTool(String),
+    /// Miroir de `RestError::Internal` — cf. le commentaire de ce variant pour le contexte
+    /// (conversion explicite d'`AuthError`, pas de `From` générique trompeur).
+    #[error("MRD-MCP-007: internal error: {0}")]
+    Internal(String),
     /// Erreur métier applicative (hook) — jamais un `MRD-*`, cf. `HookError`.
     #[error("{}", .0.message)]
     Application(HookError),
@@ -30,7 +34,7 @@ impl McpError {
             McpError::NotFound => -32002,
             McpError::UnknownTool(_) => -32601, // "Method not found", standard JSON-RPC
             McpError::InvalidParams(_) => -32602, // "Invalid params", standard JSON-RPC
-            McpError::Database(_) | McpError::Render(_) => -32603, // "Internal error", standard JSON-RPC
+            McpError::Database(_) | McpError::Render(_) | McpError::Internal(_) => -32603, // "Internal error", standard JSON-RPC
         }
     }
 
@@ -51,6 +55,7 @@ impl From<RestError> for McpError {
             RestError::Forbidden => McpError::Forbidden,
             RestError::Database(e) => McpError::Database(e),
             RestError::Application(e) => McpError::Application(e),
+            RestError::Internal(msg) => McpError::Internal(msg),
         }
     }
 }
