@@ -1,6 +1,7 @@
 pub mod admin;
 pub(crate) mod core;
 pub mod error;
+pub mod me;
 pub mod openapi;
 pub mod tokens;
 

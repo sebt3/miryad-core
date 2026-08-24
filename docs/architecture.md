@@ -205,6 +205,13 @@ aucune route REST/GraphQL/MCP générique ne les expose. `src/rest/admin.rs` mon
 utilisateur pour éviter le N+1 sur une page de résultats. Lecture seule, cohérent avec la décision
 structurante ci-dessus : pas de route de gestion, Authentik reste la seule source de vérité.
 
+**Identité self-service (issue #24)** : `src/rest/me.rs` monte `GET /api/v1/me` — n'importe quel
+principal authentifié, jamais `AdminOnly`, toujours restreint à son propre compte (dans l'esprit
+de `tokens_router`, pas d'`admin.rs`). Répond `{ subject, email, groups }` pour que le frontend
+sache "qui je suis" (ex. afficher ou non un lien de nav vers une page admin) sans accès direct aux
+tables internes. Réutilise `groups_by_user` (`rest::admin`, rendue `pub(crate)`) avec un seul id —
+même logique que la liste admin, pas de second mécanisme de résolution de groupes à maintenir.
+
 ## API REST générique
 
 ```rust
