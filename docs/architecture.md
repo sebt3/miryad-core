@@ -545,6 +545,7 @@ pub struct FieldIr {
     pub format: Option<&'static str>, // "date-time"|"uuid"|"int64"|...
     pub nullable: bool,
     pub is_primary_key: bool,
+    pub references: Option<String>,  // resource_name de l'entité référencée (relation belongs_to)
 }
 pub struct EntityIr {
     pub resource_name: String,
@@ -578,6 +579,23 @@ pas `PartialEq` (cf. plus haut).
 accumule l'IR de plusieurs entités (même registre-pattern que `PolicyRegistry`/`McpToolRegistry`)
 et l'écrit en JSON ; l'app décide comment l'appeler (binaire dédié, ou sous-commande de son
 binaire backend existant).
+
+**`FieldIr::references` (relations, #19) — résolu en deux temps.** `resource_ir::<E>()` lit
+`E::Relation` (même déclaration `belongs_to`/`has_many` que celle requise pour GraphQL, cf.
+section "API GraphQL" ci-dessus) et ne retient que les relations `belongs_to` scalaires
+(`rel_type == HasOne && !is_owner`, colonne simple non composite) ; une entité seule ne connaît
+que le **nom de table SQL brut** de la cible, pas son `resource_name`. `IrRegistry` résout ce nom
+de table en `resource_name` une fois toutes les entités enregistrées connues
+(`write_to_file`) — `None` si la cible n'est pas enregistrée dans le même `IrRegistry`.
+
+**Point d'attention — `RelationDef::is_owner` a une sémantique inversée par rapport à son propre
+doc-comment**, vérifié dans le source `sea-orm 2.0.2` : `belongs_to()` (où `Self` porte
+effectivement la colonne FK) construit avec `is_owner: false` ; `has_one()`/`has_many()` (où c'est
+l'entité liée qui porte la FK, pas `Self`) construisent avec `is_owner: true`. `is_owner: true`
+signifie en réalité "`Self` est parent/propriétaire de la relation" (cascade-save
+`ActiveModelEx`), pas "porte la colonne" — une lecture littérale du doc-comment ferait remonter la
+clé primaire comme `references` sur les relations `has_one` inversées. FK composite
+(`Identity::Binary`/`Ternary`/`Many`) non supportée : `references` reste `None`.
 
 ```rust
 // src/frontend.rs — feature Cargo "static-frontend", activée par défaut
