@@ -58,7 +58,8 @@ Ajouter une table interne = ajouter un fichier `m<date>_<numéro>_<nom>.rs` et l
 Flow OIDC navigateur (Authorization Code), généralisé depuis le pattern de `vanyline` : pas
 d'`AppState` concret imposé. `MiryadAuthState` (état minimal requis par l'auth) est composé dans
 l'`AppState` de l'app consommatrice via le pattern `FromRef` standard d'axum ; `auth_router<S>()`
-et les extracteurs (`AuthUser`, `AuthPrincipal`) sont génériques sur `S` tant que
+monte `/auth/login`, `/auth/callback`, `/auth/logout` (préfixe `/auth` figé dans le crate,
+feature 6) et les extracteurs (`AuthUser`, `AuthPrincipal`) sont génériques sur `S` tant que
 `MiryadAuthState: FromRef<S>` — le mécanisme d'extraction natif d'axum
 (`State<T>: FromRequestParts<S> where T: FromRef<S>`) suffit, aucune fonction manuelle générique
 n'est nécessaire côté handlers.
@@ -204,9 +205,14 @@ pub fn resource_router<E: RestEntity, S>() -> Router<S>
 where S: Clone + Send + Sync + 'static, MiryadAuthState: FromRef<S>;
 ```
 
-Monte `GET/POST /{resource_name}` et `GET/PUT/DELETE /{resource_name}/{id}` pour toute entité
-`RestEntity` — aucune route à écrire à la main par entité, aucun nouvel état à composer (réutilise
-`MiryadAuthState`). Le corps de requête/réponse réutilise `E::Model` directement (pas de DTO
+Monte `GET/POST /api/v1/{resource_name}` et `GET/PUT/DELETE /api/v1/{resource_name}/{id}` pour
+toute entité `RestEntity` — aucune route à écrire à la main par entité, aucun nouvel état à
+composer (réutilise `MiryadAuthState`). Préfixe `/api/v1` figé dans le crate (feature 6) —
+élimine par construction la collision avec une route SPA du frontend dont le nom correspondrait
+à un `resource_name` (ex. une entité `demo-recipes` et un écran Vue Router `/demo-recipes`) :
+avant, l'app devait nester elle-même ses routeurs miryad-core sous des préfixes ad hoc pour
+éviter la collision avec `static_frontend_router` (feature 8) ; ce n'est plus nécessaire. Le
+corps de requête/réponse réutilise `E::Model` directement (pas de DTO
 Create/Update par entité), grâce à `IntoActiveModel<E::ActiveModel>` généré par
 `DeriveEntityModel`. **Contrainte assumée** : une seule colonne de clé primaire, de type `i32`
 (vrai pour toutes les entités du crate à ce jour) — encodée dans les bornes associées de
@@ -249,9 +255,11 @@ Pas de pagination par curseur, pas de tri, pas de filtre multi-champs, pas de ma
 
 ### OpenAPI + Swagger UI
 
-`utoipa` est une dépendance normale (pas optionnelle) — la génération `/openapi.json` est
+`utoipa` est une dépendance normale (pas optionnelle) — la génération `/api/openapi.json` est
 toujours disponible. Seule la UI Swagger (`utoipa-swagger-ui`) est optionnelle, derrière la
-feature Cargo `swagger-ui`.
+feature Cargo `swagger-ui`. Les chemins générés par `resource_openapi` (`/api/v1/{resource}`,
+`/api/v1/{resource}/{id}`) suivent le préfixe figé de `resource_router` (feature 6) — toujours
+à jour vis-à-vis des routes REST réellement montées.
 
 ```rust
 // src/rest/openapi.rs
@@ -262,12 +270,14 @@ pub trait OpenApiEntity: RestEntity<Model: utoipa::ToSchema> {}
 /// renseigne sur le document final après fusion.
 pub fn resource_openapi<E: OpenApiEntity>() -> utoipa::openapi::OpenApi;
 
-/// Sert GET /openapi.json — toujours disponible.
+/// Sert GET /api/openapi.json — toujours disponible.
 pub fn openapi_router<S>(spec: OpenApi) -> axum::Router<S>;
 
-/// Sert Swagger UI sur /swagger-ui, qui sert aussi /openapi.json lui-même (mécanisme natif
-/// d'utoipa-swagger-ui) — derrière la feature "swagger-ui". Ne pas fusionner avec
-/// openapi_router : les deux enregistreraient une route pour /openapi.json.
+/// Sert Swagger UI sur /api/swagger-ui, qui sert aussi /api/openapi.json lui-même (mécanisme
+/// natif d'utoipa-swagger-ui) — derrière la feature "swagger-ui". Ne pas fusionner avec
+/// openapi_router : les deux enregistreraient une route pour /api/openapi.json. Chemins absolus
+/// plutôt qu'un `.nest("/api", ...)` externe : `.url(...)` est aussi ce que le JS de Swagger UI
+/// embarque comme URL de fetch, un nest désynchroniserait la route montée de celle interrogée.
 #[cfg(feature = "swagger-ui")]
 pub fn swagger_ui_router<S>(spec: OpenApi) -> axum::Router<S>;
 ```
@@ -337,7 +347,8 @@ pub struct MiryadHooks(/* PolicyRegistry */);   // impl LifecycleHooksInterface
 
 pub fn graphql_router<S>(schema: Schema) -> axum::Router<S>
 where S: Clone + Send + Sync + 'static, MiryadAuthState: FromRef<S>;
-// monte POST /graphql, + GET /graphiql sous la feature "graphiql"
+// monte POST /api/graphql, + GET /api/graphiql sous la feature "graphiql" (préfixe /api figé,
+// feature 6 — graphiql_handler embarque /api/graphql comme URL de fetch dans le HTML servi)
 ```
 
 L'app construit son `BuilderContext` avec `hooks: LifecycleHooks::new(MiryadHooks::new(registry))`,
