@@ -1,6 +1,7 @@
 use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterBuilder, ParameterIn};
 use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::response::ResponseBuilder;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme};
 use utoipa::openapi::{
     ArrayBuilder, ComponentsBuilder, ContentBuilder, Object, OpenApi, OpenApiBuilder, Paths, Ref, RefOr,
     Required, Schema, Type,
@@ -8,6 +9,12 @@ use utoipa::openapi::{
 use utoipa::{PartialSchema, ToSchema};
 
 use crate::rest::RestEntity;
+
+/// Nom du `SecurityScheme` déclaré par `resource_openapi` — le dual-auth de miryad-core accepte
+/// aussi un cookie de session OIDC, mais celui-ci est `HttpOnly`/chiffré et n'a rien d'utilisable
+/// depuis le champ "Authorize" de Swagger UI ; seul le token API (`issue_token`) est actionnable
+/// depuis cette interface.
+const BEARER_SECURITY_SCHEME: &str = "bearer_auth";
 
 /// Entités éligibles à la génération OpenAPI — en plus de `RestEntity`, `Model` doit dériver
 /// `utoipa::ToSchema` pour que sa forme JSON soit décrite dans le document généré.
@@ -19,7 +26,9 @@ impl<E> OpenApiEntity for E where E: RestEntity<Model: ToSchema> {}
 /// montées (`utoipa::openapi::OpenApi::merge`) avant publication. Ne fixe pas `info`
 /// (titre/version) : l'app renseigne ces champs sur le document final après fusion. Les chemins
 /// suivent le préfixe figé de `resource_router` (feature 6) — toujours à jour vis-à-vis des
-/// routes REST réellement montées.
+/// routes REST réellement montées. Déclare un `SecurityScheme` Bearer (feature 2) : le bouton
+/// "Authorize" de Swagger UI fonctionne sans configuration côté app — `OpenApi::merge` dédoublonne
+/// le schéma et l'exigence de sécurité par nom/égalité entre fragments d'entités.
 pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
     let resource = E::resource_name();
     let schema_name = E::Model::name().into_owned();
@@ -54,6 +63,10 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
     );
     let components = components
         .schema(paged_schema_name.clone(), RefOr::T(paged_schema))
+        .security_scheme(
+            BEARER_SECURITY_SCHEME,
+            SecurityScheme::Http(HttpBuilder::new().scheme(HttpAuthScheme::Bearer).build()),
+        )
         .build();
 
     let query_param = |name: &str, schema_type: Type| {
@@ -164,6 +177,10 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
     OpenApiBuilder::new()
         .paths(paths)
         .components(Some(components))
+        .security(Some([SecurityRequirement::new(
+            BEARER_SECURITY_SCHEME,
+            Vec::<String>::new(),
+        )]))
         .build()
 }
 
@@ -314,6 +331,48 @@ mod tests {
         assert!(spec.paths.get_path_item("/api/v1/recipes/{id}").is_some());
         assert!(spec.paths.get_path_item("/api/v1/ingredients").is_some());
         assert!(spec.paths.get_path_item("/api/v1/ingredients/{id}").is_some());
+    }
+
+    #[test]
+    fn resource_openapi_declares_bearer_security_scheme() {
+        let spec = resource_openapi::<recipe::Entity>();
+
+        let components = spec.components.expect("components present");
+        assert!(
+            matches!(
+                components.security_schemes.get(BEARER_SECURITY_SCHEME),
+                Some(SecurityScheme::Http(_))
+            ),
+            "expected a Bearer HTTP security scheme under {BEARER_SECURITY_SCHEME:?}"
+        );
+
+        let security = spec.security.expect("global security requirement present");
+        assert!(
+            security
+                .iter()
+                .any(|req| req == &SecurityRequirement::new(BEARER_SECURITY_SCHEME, Vec::<String>::new())),
+            "expected a global security requirement referencing {BEARER_SECURITY_SCHEME:?}"
+        );
+    }
+
+    /// Régression : `OpenApi::merge` dédoublonne `security_schemes`/`security` par nom/égalité —
+    /// deux fragments d'entités déclarant le même schéma Bearer ne doivent pas produire de
+    /// doublons dans le document final.
+    #[test]
+    fn merging_fragments_does_not_duplicate_the_security_scheme() {
+        let mut spec = resource_openapi::<recipe::Entity>();
+        spec.merge(resource_openapi::<ingredient::Entity>());
+
+        let components = spec.components.expect("components present");
+        assert_eq!(
+            components
+                .security_schemes
+                .keys()
+                .filter(|name| name.as_str() == BEARER_SECURITY_SCHEME)
+                .count(),
+            1
+        );
+        assert_eq!(spec.security.expect("security present").len(), 1);
     }
 
     #[tokio::test]

@@ -261,6 +261,13 @@ feature Cargo `swagger-ui`. Les chemins générés par `resource_openapi` (`/api
 `/api/v1/{resource}/{id}`) suivent le préfixe figé de `resource_router` (feature 6) — toujours
 à jour vis-à-vis des routes REST réellement montées.
 
+`resource_openapi` déclare aussi un `SecurityScheme` HTTP Bearer (`bearer_auth`, feature 2) —
+Bearer uniquement, pas de schéma pour le cookie de session : celui-ci est `HttpOnly`/chiffré,
+rien d'actionnable depuis le champ "Authorize" de Swagger UI, contrairement au token API
+(`issue_token`). `OpenApi::merge` dédoublonne le schéma et l'exigence de sécurité globale par
+nom/égalité entre fragments d'entités — un seul `bearer_auth` dans le document final quel que
+soit le nombre d'entités montées.
+
 ```rust
 // src/rest/openapi.rs
 pub trait OpenApiEntity: RestEntity<Model: utoipa::ToSchema> {}
@@ -355,6 +362,11 @@ L'app construit son `BuilderContext` avec `hooks: LifecycleHooks::new(MiryadHook
 appelle `register_entity::<E>()` (Seaography) et `registry.register::<E>()` (le nôtre) pour chaque
 entité — deux registres en parallèle, même geste répétitif qu'un `resource_router::<E>()` par
 entité en REST.
+
+**Authentification depuis GraphiQL (feature 2)** : GraphiQL v4 (`async_graphql::http::GraphiQLSource`)
+expose nativement son panneau "Headers" (`defaultEditorToolsVisibility: true`, HTML généré par la
+dépendance) — un développeur y colle `Authorization: Bearer <token>` pour authentifier ses requêtes
+depuis l'UI. Rien à configurer côté miryad-core pour ce chemin.
 
 **Point d'attention — versions** : `seaography 2.0.0-rc.9` dépend d'`async-graphql 7.0.19` en
 interne. `async-graphql-axum` a une branche `8.x` sur crates.io, mais l'utiliser casserait la
