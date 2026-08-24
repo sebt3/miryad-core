@@ -540,6 +540,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_ignores_client_supplied_owner() {
+        let db = test_db().await;
+        let alice_token = bearer_for(&db, "alice").await;
+        let alice = auth_resolve_user(&db, "alice", None).await.expect("resolve");
+        let bob = auth_resolve_user(&db, "bob", None).await.expect("resolve");
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        let create_body = serde_json::json!({
+            "id": 0, "title": "Tarte", "owner_id": 0, "category": "dessert",
+        });
+        let created = app_ref
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/recipes",
+                &alice_token,
+                Some(create_body),
+            ))
+            .await
+            .expect("create succeeds");
+        let created = json_body(created).await;
+        let id = created["id"].as_i64().expect("id present");
+        assert_eq!(created["owner_id"], alice.id);
+
+        // Tente de "donner" la ressource à bob en changeant owner_id dans le corps — doit rester
+        // sans effet, comme create() protège déjà owner_id contre une valeur cliente.
+        let update_body = serde_json::json!({
+            "id": id, "title": "Tarte modifiee", "owner_id": bob.id, "category": "dessert",
+        });
+        let resp = app_ref
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/v1/recipes/{id}"),
+                &alice_token,
+                Some(update_body),
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let updated = json_body(resp).await;
+        assert_eq!(updated["title"], "Tarte modifiee");
+        assert_eq!(updated["owner_id"], alice.id);
+    }
+
+    #[tokio::test]
+    async fn update_with_invalid_owner_id_in_body_does_not_fail() {
+        let db = test_db().await;
+        let alice_token = bearer_for(&db, "alice").await;
+        let alice = auth_resolve_user(&db, "alice", None).await.expect("resolve");
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        let create_body = serde_json::json!({
+            "id": 0, "title": "Tarte", "owner_id": 0, "category": "dessert",
+        });
+        let created = app_ref
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/recipes",
+                &alice_token,
+                Some(create_body),
+            ))
+            .await
+            .expect("create succeeds");
+        let created = json_body(created).await;
+        let id = created["id"].as_i64().expect("id present");
+
+        // owner_id ne correspondant à aucun utilisateur — appliqué tel quel casserait sur la
+        // contrainte FK (500 brut) si update() ne l'ignorait pas comme create().
+        let update_body = serde_json::json!({
+            "id": id, "title": "Tarte modifiee", "owner_id": 999_999, "category": "dessert",
+        });
+        let resp = app_ref
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/v1/recipes/{id}"),
+                &alice_token,
+                Some(update_body),
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let updated = json_body(resp).await;
+        assert_eq!(updated["owner_id"], alice.id);
+    }
+
+    #[tokio::test]
     async fn get_and_delete_nonexistent_recipe_return_404() {
         let db = test_db().await;
         let token = bearer_for(&db, "alice").await;
