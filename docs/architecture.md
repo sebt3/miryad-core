@@ -380,6 +380,37 @@ appelle `register_entity::<E>()` (Seaography) et `registry.register::<E>()` (le 
 entité — deux registres en parallèle, même geste répétitif qu'un `resource_router::<E>()` par
 entité en REST.
 
+**Rendre une entité traversable (relations)** : `register_entity::<E>()` (Seaography) exige un
+`impl seaography::RelationBuilder for E::RelatedEntity`. Ne pas l'écrire à la main — déclarer de
+vraies relations SeaORM sur `Relation` (`belongs_to`/`has_many`, cf. doc `sea_orm::EntityTrait`),
+puis `#[derive(DeriveRelatedEntity)]` sur `RelatedEntity` (import déjà dans
+`sea_orm::entity::prelude::*`) :
+
+```rust
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {
+    #[sea_orm(belongs_to = "super::recipe::Entity", from = "Column::RecipeId", to = "super::recipe::Column::Id")]
+    Recipe,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::recipe::Entity")]
+    Recipe,
+}
+```
+
+**Point d'attention — feature Cargo requise.** `DeriveRelatedEntity` (macro standard de `sea-orm`,
+`sea-orm-macros/src/derives/related_entity.rs`) est entièrement `#[cfg(feature = "seaography")]`
+côté `sea-orm` — une feature Cargo de `sea-orm` lui-même, distincte de la crate `seaography`. La
+feature `graphql` de miryad-core l'active (`sea-orm/seaography`, unifiée par Cargo dans le graphe
+de dépendances de l'app) : rien à ajouter côté app. Sans elle, `RelatedEntity` doit être écrit à la
+main (`match *self {}` sur un type inhabité si `Relation` est vide) — aucune traversée possible,
+échec silencieux à la compilation du schéma plutôt qu'à l'exécution.
+
+`resource_ir::<E>()` (section IR ci-dessous) lit la même déclaration `E::Relation` pour peupler
+`FieldIr::references` — une seule source de vérité pour GraphQL et l'IR frontend.
+
 **Authentification depuis GraphiQL (feature 2)** : GraphiQL v4 (`async_graphql::http::GraphiQLSource`)
 expose nativement son panneau "Headers" (`defaultEditorToolsVisibility: true`, HTML généré par la
 dépendance) — un développeur y colle `Authorization: Bearer <token>` pour authentifier ses requêtes
@@ -514,6 +545,7 @@ pub struct FieldIr {
     pub format: Option<&'static str>, // "date-time"|"uuid"|"int64"|...
     pub nullable: bool,
     pub is_primary_key: bool,
+    pub references: Option<String>,  // resource_name de l'entité référencée (relation belongs_to)
 }
 pub struct EntityIr {
     pub resource_name: String,
@@ -547,6 +579,23 @@ pas `PartialEq` (cf. plus haut).
 accumule l'IR de plusieurs entités (même registre-pattern que `PolicyRegistry`/`McpToolRegistry`)
 et l'écrit en JSON ; l'app décide comment l'appeler (binaire dédié, ou sous-commande de son
 binaire backend existant).
+
+**`FieldIr::references` (relations, #19) — résolu en deux temps.** `resource_ir::<E>()` lit
+`E::Relation` (même déclaration `belongs_to`/`has_many` que celle requise pour GraphQL, cf.
+section "API GraphQL" ci-dessus) et ne retient que les relations `belongs_to` scalaires
+(`rel_type == HasOne && !is_owner`, colonne simple non composite) ; une entité seule ne connaît
+que le **nom de table SQL brut** de la cible, pas son `resource_name`. `IrRegistry` résout ce nom
+de table en `resource_name` une fois toutes les entités enregistrées connues
+(`write_to_file`) — `None` si la cible n'est pas enregistrée dans le même `IrRegistry`.
+
+**Point d'attention — `RelationDef::is_owner` a une sémantique inversée par rapport à son propre
+doc-comment**, vérifié dans le source `sea-orm 2.0.2` : `belongs_to()` (où `Self` porte
+effectivement la colonne FK) construit avec `is_owner: false` ; `has_one()`/`has_many()` (où c'est
+l'entité liée qui porte la FK, pas `Self`) construisent avec `is_owner: true`. `is_owner: true`
+signifie en réalité "`Self` est parent/propriétaire de la relation" (cascade-save
+`ActiveModelEx`), pas "porte la colonne" — une lecture littérale du doc-comment ferait remonter la
+clé primaire comme `references` sur les relations `has_one` inversées. FK composite
+(`Identity::Binary`/`Ternary`/`Many`) non supportée : `references` reste `None`.
 
 ```rust
 // src/frontend.rs — feature Cargo "static-frontend", activée par défaut
