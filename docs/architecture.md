@@ -380,6 +380,37 @@ appelle `register_entity::<E>()` (Seaography) et `registry.register::<E>()` (le 
 entité — deux registres en parallèle, même geste répétitif qu'un `resource_router::<E>()` par
 entité en REST.
 
+**Rendre une entité traversable (relations)** : `register_entity::<E>()` (Seaography) exige un
+`impl seaography::RelationBuilder for E::RelatedEntity`. Ne pas l'écrire à la main — déclarer de
+vraies relations SeaORM sur `Relation` (`belongs_to`/`has_many`, cf. doc `sea_orm::EntityTrait`),
+puis `#[derive(DeriveRelatedEntity)]` sur `RelatedEntity` (import déjà dans
+`sea_orm::entity::prelude::*`) :
+
+```rust
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {
+    #[sea_orm(belongs_to = "super::recipe::Entity", from = "Column::RecipeId", to = "super::recipe::Column::Id")]
+    Recipe,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::recipe::Entity")]
+    Recipe,
+}
+```
+
+**Point d'attention — feature Cargo requise.** `DeriveRelatedEntity` (macro standard de `sea-orm`,
+`sea-orm-macros/src/derives/related_entity.rs`) est entièrement `#[cfg(feature = "seaography")]`
+côté `sea-orm` — une feature Cargo de `sea-orm` lui-même, distincte de la crate `seaography`. La
+feature `graphql` de miryad-core l'active (`sea-orm/seaography`, unifiée par Cargo dans le graphe
+de dépendances de l'app) : rien à ajouter côté app. Sans elle, `RelatedEntity` doit être écrit à la
+main (`match *self {}` sur un type inhabité si `Relation` est vide) — aucune traversée possible,
+échec silencieux à la compilation du schéma plutôt qu'à l'exécution.
+
+`resource_ir::<E>()` (section IR ci-dessous) lit la même déclaration `E::Relation` pour peupler
+`FieldIr::references` — une seule source de vérité pour GraphQL et l'IR frontend.
+
 **Authentification depuis GraphiQL (feature 2)** : GraphiQL v4 (`async_graphql::http::GraphiQLSource`)
 expose nativement son panneau "Headers" (`defaultEditorToolsVisibility: true`, HTML généré par la
 dépendance) — un développeur y colle `Authorization: Bearer <token>` pour authentifier ses requêtes
