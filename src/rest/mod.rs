@@ -2,6 +2,7 @@ pub mod admin;
 pub(crate) mod core;
 pub mod error;
 pub mod openapi;
+pub mod tokens;
 
 use axum::extract::{FromRef, Path, Query, State};
 use axum::http::StatusCode;

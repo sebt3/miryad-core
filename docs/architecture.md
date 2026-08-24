@@ -145,6 +145,15 @@ L'extracteur dual-auth (`src/auth/dual.rs`) résout dans cet ordre : `Authorizat
 **pas** sur le cookie — c'est le choix explicite du client, son échec est final (pas de repli
 silencieux vers un mode plus faible).
 
+**Self-service des tokens (issue #5)** : `issue_token`/`revoke_token` existaient déjà comme
+fonctions Rust mais n'étaient montées derrière aucune route HTTP. `src/rest/tokens.rs` monte
+`GET/POST /api/v1/tokens` et `DELETE /api/v1/tokens/{id}` — page "mon compte", pas admin :
+n'importe quel principal authentifié (dual-auth), toujours restreint à son propre `subject`.
+`GET` ne renvoie jamais la valeur en clair (seulement `id`/`name`/`created_at`/`expires_at`/
+`last_used_at`) ; `POST` la renvoie une seule fois, à l'émission. `DELETE` vérifie que le token
+appartient bien à l'appelant avant de le révoquer (403 sinon) — `revoke_token` lui-même ne fait
+aucune vérification de propriétaire, c'est au routeur de la faire.
+
 ## Utilisateurs & Groupes / RBAC
 
 **Décision structurante : synchronisation, pas gestion.** Authentik est la seule source de vérité
