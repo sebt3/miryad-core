@@ -5,21 +5,24 @@ use axum::extract::{FromRef, State};
 use crate::auth::{AuthError, AuthPrincipal, MiryadAuthState};
 use crate::graphql::principal::load_principal;
 
-/// Monte `POST /graphql` (et `GET /graphiql` sous la feature `graphiql`) à partir d'un `Schema`
-/// déjà construit par l'app (via `seaography::Builder`, hooks compris — cf. `MiryadHooks`).
-/// Réutilise `MiryadAuthState` comme les autres routeurs (REST, auth) — rien de nouveau à
-/// composer côté app au-delà du `Schema` lui-même.
+/// Monte `POST /api/graphql` (et `GET /api/graphiql` sous la feature `graphiql`) à partir d'un
+/// `Schema` déjà construit par l'app (via `seaography::Builder`, hooks compris — cf.
+/// `MiryadHooks`). Réutilise `MiryadAuthState` comme les autres routeurs (REST, auth) — rien de
+/// nouveau à composer côté app au-delà du `Schema` lui-même. Préfixe `/api` figé dans le crate
+/// (feature 6) — chemins absolus plutôt que `.nest("/api", ...)` : `graphiql_handler` embarque
+/// `/api/graphql` comme URL de fetch dans le HTML servi, un nest externe désynchroniserait la
+/// route réellement montée de celle que l'UI interroge (même piège que `swagger_ui_router`).
 pub fn graphql_router<S>(schema: Schema) -> axum::Router<S>
 where
     S: Clone + Send + Sync + 'static,
     MiryadAuthState: FromRef<S>,
 {
     let router = axum::Router::new()
-        .route("/graphql", axum::routing::post(graphql_handler))
+        .route("/api/graphql", axum::routing::post(graphql_handler))
         .layer(axum::Extension(schema));
 
     #[cfg(feature = "graphiql")]
-    let router = router.route("/graphiql", axum::routing::get(graphiql_handler));
+    let router = router.route("/api/graphiql", axum::routing::get(graphiql_handler));
 
     router
 }
@@ -48,7 +51,7 @@ async fn graphql_handler(
 async fn graphiql_handler() -> axum::response::Html<String> {
     axum::response::Html(
         async_graphql::http::GraphiQLSource::build()
-            .endpoint("/graphql")
+            .endpoint("/api/graphql")
             .finish(),
     )
 }
@@ -119,7 +122,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/graphql")
+                    .uri("/api/graphql")
                     .header("Authorization", format!("Bearer {token}"))
                     .header("Content-Type", "application/json")
                     .body(Body::from(

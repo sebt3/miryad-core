@@ -47,8 +47,10 @@ struct ListParams {
     filter: Option<String>,
 }
 
-/// Monte `GET/POST /{resource_name}` et `GET/PUT/DELETE /{resource_name}/{id}`. Réutilise
-/// `MiryadAuthState` (feature 2b) — même état que l'auth, rien de nouveau à composer côté app.
+/// Monte `GET/POST /api/v1/{resource_name}` et `GET/PUT/DELETE /api/v1/{resource_name}/{id}`.
+/// Réutilise `MiryadAuthState` (feature 2b) — même état que l'auth, rien de nouveau à composer
+/// côté app. Préfixe `/api/v1` figé dans le crate (feature 6) — élimine par construction la
+/// collision avec une route SPA du frontend dont le nom correspondrait à un `resource_name`.
 pub fn resource_router<E, S>() -> Router<S>
 where
     E: RestEntity,
@@ -58,14 +60,17 @@ where
     let collection_path = format!("/{}", E::resource_name());
     let item_path = format!("/{}/{{id}}", E::resource_name());
 
-    Router::new()
-        .route(&collection_path, get(list_handler::<E>).post(create_handler::<E>))
-        .route(
-            &item_path,
-            get(get_handler::<E>)
-                .put(update_handler::<E>)
-                .delete(delete_handler::<E>),
-        )
+    Router::new().nest(
+        "/api/v1",
+        Router::new()
+            .route(&collection_path, get(list_handler::<E>).post(create_handler::<E>))
+            .route(
+                &item_path,
+                get(get_handler::<E>)
+                    .put(update_handler::<E>)
+                    .delete(delete_handler::<E>),
+            ),
+    )
 }
 
 async fn list_handler<E: RestEntity>(
@@ -341,7 +346,7 @@ mod tests {
             "category": "dessert",
         });
         let resp = app
-            .oneshot(json_request("POST", "/recipes", &token, Some(body)))
+            .oneshot(json_request("POST", "/api/v1/recipes", &token, Some(body)))
             .await
             .expect("router does not fail");
         assert_eq!(resp.status(), StatusCode::OK);
@@ -368,7 +373,7 @@ mod tests {
             });
             let resp = app_ref
                 .clone()
-                .oneshot(json_request("POST", "/recipes", owner_token, Some(body)))
+                .oneshot(json_request("POST", "/api/v1/recipes", owner_token, Some(body)))
                 .await
                 .expect("create succeeds");
             assert_eq!(resp.status(), StatusCode::OK);
@@ -376,14 +381,14 @@ mod tests {
 
         let alice_list = app_ref
             .clone()
-            .oneshot(json_request("GET", "/recipes", &alice_token, None))
+            .oneshot(json_request("GET", "/api/v1/recipes", &alice_token, None))
             .await
             .expect("list succeeds");
         let alice_body = json_body(alice_list).await;
         assert_eq!(alice_body["total_items"], 1);
 
         let admin_list = app_ref
-            .oneshot(json_request("GET", "/recipes", &admin_token, None))
+            .oneshot(json_request("GET", "/api/v1/recipes", &admin_token, None))
             .await
             .expect("list succeeds");
         let admin_body = json_body(admin_list).await;
@@ -403,13 +408,18 @@ mod tests {
             });
             app_ref
                 .clone()
-                .oneshot(json_request("POST", "/recipes", &token, Some(body)))
+                .oneshot(json_request("POST", "/api/v1/recipes", &token, Some(body)))
                 .await
                 .expect("create succeeds");
         }
 
         let resp = app_ref
-            .oneshot(json_request("GET", "/recipes?page=2&per_page=1", &token, None))
+            .oneshot(json_request(
+                "GET",
+                "/api/v1/recipes?page=2&per_page=1",
+                &token,
+                None,
+            ))
             .await
             .expect("list succeeds");
         let page = json_body(resp).await;
@@ -439,13 +449,18 @@ mod tests {
             });
             app_ref
                 .clone()
-                .oneshot(json_request("POST", "/recipes", token, Some(body)))
+                .oneshot(json_request("POST", "/api/v1/recipes", token, Some(body)))
                 .await
                 .expect("create succeeds");
         }
 
         let resp = app_ref
-            .oneshot(json_request("GET", "/recipes?filter=dessert", &alice_token, None))
+            .oneshot(json_request(
+                "GET",
+                "/api/v1/recipes?filter=dessert",
+                &alice_token,
+                None,
+            ))
             .await
             .expect("list succeeds");
         let page = json_body(resp).await;
@@ -463,7 +478,7 @@ mod tests {
         let app_ref = app(state);
 
         let resp = app_ref
-            .oneshot(json_request("GET", "/ingredients", &token, None))
+            .oneshot(json_request("GET", "/api/v1/ingredients", &token, None))
             .await
             .expect("router does not fail");
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
@@ -482,7 +497,12 @@ mod tests {
         });
         let created = app_ref
             .clone()
-            .oneshot(json_request("POST", "/recipes", &alice_token, Some(create_body)))
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/recipes",
+                &alice_token,
+                Some(create_body),
+            ))
             .await
             .expect("create succeeds");
         let created = json_body(created).await;
@@ -495,7 +515,7 @@ mod tests {
             .clone()
             .oneshot(json_request(
                 "PUT",
-                &format!("/recipes/{id}"),
+                &format!("/api/v1/recipes/{id}"),
                 &bob_token,
                 Some(update_body.clone()),
             ))
@@ -506,7 +526,7 @@ mod tests {
         let allowed = app_ref
             .oneshot(json_request(
                 "PUT",
-                &format!("/recipes/{id}"),
+                &format!("/api/v1/recipes/{id}"),
                 &alice_token,
                 Some(update_body),
             ))
@@ -526,13 +546,13 @@ mod tests {
 
         let get_resp = app_ref
             .clone()
-            .oneshot(json_request("GET", "/recipes/999999", &token, None))
+            .oneshot(json_request("GET", "/api/v1/recipes/999999", &token, None))
             .await
             .expect("router does not fail");
         assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
 
         let delete_resp = app_ref
-            .oneshot(json_request("DELETE", "/recipes/999999", &token, None))
+            .oneshot(json_request("DELETE", "/api/v1/recipes/999999", &token, None))
             .await
             .expect("router does not fail");
         assert_eq!(delete_resp.status(), StatusCode::NOT_FOUND);
@@ -547,7 +567,7 @@ mod tests {
 
         let body = serde_json::json!({"id": 0, "owner_id": 0, "label": "gadget"});
         let resp = app
-            .oneshot(json_request("POST", "/widgets", &token, Some(body)))
+            .oneshot(json_request("POST", "/api/v1/widgets", &token, Some(body)))
             .await
             .expect("router does not fail");
 
@@ -565,7 +585,7 @@ mod tests {
 
         let body = serde_json::json!({"id": 0, "owner_id": 0, "label": ""});
         let resp = app
-            .oneshot(json_request("POST", "/widgets", &token, Some(body)))
+            .oneshot(json_request("POST", "/api/v1/widgets", &token, Some(body)))
             .await
             .expect("router does not fail");
 
@@ -586,7 +606,7 @@ mod tests {
             "id": 0, "title": "Tarte", "owner_id": 0, "category": "dessert",
         });
         let resp = app
-            .oneshot(json_request("POST", "/recipes", &token, Some(body)))
+            .oneshot(json_request("POST", "/api/v1/recipes", &token, Some(body)))
             .await
             .expect("router does not fail");
 

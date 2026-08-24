@@ -14,10 +14,12 @@ use crate::rest::RestEntity;
 pub trait OpenApiEntity: RestEntity<Model: ToSchema> {}
 impl<E> OpenApiEntity for E where E: RestEntity<Model: ToSchema> {}
 
-/// Fragment OpenAPI pour les 5 routes CRUD d'une entité (`GET/POST /{resource_name}`,
-/// `GET/PUT/DELETE /{resource_name}/{id}`) — à fusionner avec celui des autres entités montées
-/// (`utoipa::openapi::OpenApi::merge`) avant publication. Ne fixe pas `info` (titre/version) :
-/// l'app renseigne ces champs sur le document final après fusion.
+/// Fragment OpenAPI pour les 5 routes CRUD d'une entité (`GET/POST /api/v1/{resource_name}`,
+/// `GET/PUT/DELETE /api/v1/{resource_name}/{id}`) — à fusionner avec celui des autres entités
+/// montées (`utoipa::openapi::OpenApi::merge`) avant publication. Ne fixe pas `info`
+/// (titre/version) : l'app renseigne ces champs sur le document final après fusion. Les chemins
+/// suivent le préfixe figé de `resource_router` (feature 6) — toujours à jour vis-à-vis des
+/// routes REST réellement montées.
 pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
     let resource = E::resource_name();
     let schema_name = E::Model::name().into_owned();
@@ -87,7 +89,7 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
                 .build(),
         )
         .build();
-    paths.add_path_operation(format!("/{resource}"), vec![HttpMethod::Get], list_op);
+    paths.add_path_operation(format!("/api/v1/{resource}"), vec![HttpMethod::Get], list_op);
 
     let create_op = OperationBuilder::new()
         .request_body(Some(
@@ -104,7 +106,7 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
         )
         .response("403", ResponseBuilder::new().description("Refusé").build())
         .build();
-    paths.add_path_operation(format!("/{resource}"), vec![HttpMethod::Post], create_op);
+    paths.add_path_operation(format!("/api/v1/{resource}"), vec![HttpMethod::Post], create_op);
 
     let get_op = OperationBuilder::new()
         .parameter(id_param.clone())
@@ -118,7 +120,11 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
         .response("403", ResponseBuilder::new().description("Refusé").build())
         .response("404", ResponseBuilder::new().description("Non trouvé").build())
         .build();
-    paths.add_path_operation(format!("/{resource}/{{id}}"), vec![HttpMethod::Get], get_op);
+    paths.add_path_operation(
+        format!("/api/v1/{resource}/{{id}}"),
+        vec![HttpMethod::Get],
+        get_op,
+    );
 
     let update_op = OperationBuilder::new()
         .parameter(id_param.clone())
@@ -137,7 +143,11 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
         .response("403", ResponseBuilder::new().description("Refusé").build())
         .response("404", ResponseBuilder::new().description("Non trouvé").build())
         .build();
-    paths.add_path_operation(format!("/{resource}/{{id}}"), vec![HttpMethod::Put], update_op);
+    paths.add_path_operation(
+        format!("/api/v1/{resource}/{{id}}"),
+        vec![HttpMethod::Put],
+        update_op,
+    );
 
     let delete_op = OperationBuilder::new()
         .parameter(id_param)
@@ -145,7 +155,11 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
         .response("403", ResponseBuilder::new().description("Refusé").build())
         .response("404", ResponseBuilder::new().description("Non trouvé").build())
         .build();
-    paths.add_path_operation(format!("/{resource}/{{id}}"), vec![HttpMethod::Delete], delete_op);
+    paths.add_path_operation(
+        format!("/api/v1/{resource}/{{id}}"),
+        vec![HttpMethod::Delete],
+        delete_op,
+    );
 
     OpenApiBuilder::new()
         .paths(paths)
@@ -153,15 +167,15 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
         .build()
 }
 
-/// Sert `GET /openapi.json` à partir d'un document déjà fusionné — toujours disponible, pas
+/// Sert `GET /api/openapi.json` à partir d'un document déjà fusionné — toujours disponible, pas
 /// besoin de la feature `swagger-ui`. Ne pas combiner avec `swagger_ui_router` (celui-ci sert
-/// déjà `/openapi.json` lui-même) : utiliser l'un ou l'autre, pas les deux.
+/// déjà `/api/openapi.json` lui-même) : utiliser l'un ou l'autre, pas les deux.
 pub fn openapi_router<S>(spec: OpenApi) -> axum::Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
     axum::Router::new().route(
-        "/openapi.json",
+        "/api/openapi.json",
         axum::routing::get(move || {
             let spec = spec.clone();
             async move { axum::Json(spec) }
@@ -169,15 +183,18 @@ where
     )
 }
 
-/// Monte Swagger UI sur `/swagger-ui`, qui sert aussi `/openapi.json` lui-même (mécanisme natif
-/// d'`utoipa-swagger-ui`) — ne pas fusionner en plus avec `openapi_router`, ça collisionnerait sur
-/// `/openapi.json`.
+/// Monte Swagger UI sur `/api/swagger-ui`, qui sert aussi `/api/openapi.json` lui-même (mécanisme
+/// natif d'`utoipa-swagger-ui`) — ne pas fusionner en plus avec `openapi_router`, ça
+/// collisionnerait sur `/api/openapi.json`. Chemins absolus plutôt que `.nest("/api", ...)` :
+/// `.url(...)` est aussi ce que le JS de Swagger UI embarque comme URL de fetch — un nest
+/// externe désynchroniserait la route réellement montée de celle que l'UI interroge.
 #[cfg(feature = "swagger-ui")]
 pub fn swagger_ui_router<S>(spec: OpenApi) -> axum::Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    axum::Router::new().merge(utoipa_swagger_ui::SwaggerUi::new("/swagger-ui").url("/openapi.json", spec))
+    axum::Router::new()
+        .merge(utoipa_swagger_ui::SwaggerUi::new("/api/swagger-ui").url("/api/openapi.json", spec))
 }
 
 #[cfg(test)]
@@ -266,14 +283,14 @@ mod tests {
 
         let collection = spec
             .paths
-            .get_path_item("/recipes")
+            .get_path_item("/api/v1/recipes")
             .expect("collection path present");
         assert!(collection.get.is_some());
         assert!(collection.post.is_some());
 
         let item = spec
             .paths
-            .get_path_item("/recipes/{id}")
+            .get_path_item("/api/v1/recipes/{id}")
             .expect("item path present");
         assert!(item.get.is_some());
         assert!(item.put.is_some());
@@ -293,10 +310,10 @@ mod tests {
         let mut spec = resource_openapi::<recipe::Entity>();
         spec.merge(resource_openapi::<ingredient::Entity>());
 
-        assert!(spec.paths.get_path_item("/recipes").is_some());
-        assert!(spec.paths.get_path_item("/recipes/{id}").is_some());
-        assert!(spec.paths.get_path_item("/ingredients").is_some());
-        assert!(spec.paths.get_path_item("/ingredients/{id}").is_some());
+        assert!(spec.paths.get_path_item("/api/v1/recipes").is_some());
+        assert!(spec.paths.get_path_item("/api/v1/recipes/{id}").is_some());
+        assert!(spec.paths.get_path_item("/api/v1/ingredients").is_some());
+        assert!(spec.paths.get_path_item("/api/v1/ingredients/{id}").is_some());
     }
 
     #[tokio::test]
@@ -305,7 +322,7 @@ mod tests {
         let app: axum::Router = openapi_router(spec);
 
         let req = Request::builder()
-            .uri("/openapi.json")
+            .uri("/api/openapi.json")
             .body(Body::empty())
             .expect("valid request");
         let resp = app.oneshot(req).await.expect("router does not fail");
@@ -315,7 +332,7 @@ mod tests {
             .await
             .expect("readable body");
         let parsed: OpenApi = serde_json::from_slice(&bytes).expect("valid OpenApi JSON");
-        assert!(parsed.paths.get_path_item("/recipes").is_some());
+        assert!(parsed.paths.get_path_item("/api/v1/recipes").is_some());
     }
 
     #[cfg(feature = "swagger-ui")]
@@ -325,7 +342,7 @@ mod tests {
         let app: axum::Router = swagger_ui_router(spec);
 
         let req = Request::builder()
-            .uri("/swagger-ui")
+            .uri("/api/swagger-ui")
             .body(Body::empty())
             .expect("valid request");
         let resp = app.oneshot(req).await.expect("router does not fail");

@@ -31,18 +31,24 @@ use ::cookie::{Cookie, CookieJar};
 
 const PENDING_COOKIE_NAME: &str = "miryad_oidc_pending";
 
-/// Sous-routeur `/login`, `/callback`, `/logout` — montable dans n'importe quel `Router<S>` de
-/// l'app consommatrice tant que `MiryadAuthState: FromRef<S>` (pattern axum standard pour les
-/// sous-états de bibliothèque, pas d'`AppState` concret imposé par miryad-core).
+/// Sous-routeur `/auth/login`, `/auth/callback`, `/auth/logout` — montable dans n'importe quel
+/// `Router<S>` de l'app consommatrice tant que `MiryadAuthState: FromRef<S>` (pattern axum
+/// standard pour les sous-états de bibliothèque, pas d'`AppState` concret imposé par
+/// miryad-core). Préfixe `/auth` figé dans le crate (feature 6) — élimine par construction la
+/// collision avec les routes SPA du frontend, plutôt que de compter sur l'app pour l'appliquer
+/// elle-même.
 pub fn auth_router<S>() -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
     MiryadAuthState: FromRef<S>,
 {
-    Router::new()
-        .route("/login", axum::routing::get(handler_login))
-        .route("/callback", axum::routing::get(handler_callback))
-        .route("/logout", axum::routing::get(handler_logout))
+    Router::new().nest(
+        "/auth",
+        Router::new()
+            .route("/login", axum::routing::get(handler_login))
+            .route("/callback", axum::routing::get(handler_callback))
+            .route("/logout", axum::routing::get(handler_logout)),
+    )
 }
 
 #[derive(Deserialize)]
@@ -175,7 +181,7 @@ mod tests {
     async fn logout_clears_cookie_and_redirects() {
         let app = make_app();
         let req = Request::builder()
-            .uri("/logout")
+            .uri("/auth/logout")
             .body(Body::empty())
             .expect("valid request");
         let resp = app.oneshot(req).await.expect("router does not fail");
@@ -196,7 +202,7 @@ mod tests {
     async fn callback_without_pending_cookie_is_rejected() {
         let app = make_app();
         let req = Request::builder()
-            .uri("/callback?code=test&state=wrong")
+            .uri("/auth/callback?code=test&state=wrong")
             .body(Body::empty())
             .expect("valid request");
         let resp = app.oneshot(req).await.expect("router does not fail");
@@ -207,7 +213,7 @@ mod tests {
     async fn login_redirects_and_sets_pending_cookie() {
         let app = make_app();
         let req = Request::builder()
-            .uri("/login")
+            .uri("/auth/login")
             .body(Body::empty())
             .expect("valid request");
         let resp = app.oneshot(req).await.expect("router does not fail");
@@ -226,7 +232,7 @@ mod tests {
         let app = make_app();
 
         let login_req = Request::builder()
-            .uri("/login")
+            .uri("/auth/login")
             .body(Body::empty())
             .expect("valid request");
         let login_resp = app.clone().oneshot(login_req).await.expect("login ok");
@@ -242,7 +248,7 @@ mod tests {
             .to_string();
 
         let callback_req = Request::builder()
-            .uri("/callback?code=irrelevant&state=not-the-real-csrf-token")
+            .uri("/auth/callback?code=irrelevant&state=not-the-real-csrf-token")
             .header("Cookie", pending_cookie)
             .body(Body::empty())
             .expect("valid request");
