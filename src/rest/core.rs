@@ -3,8 +3,8 @@
 //! règles RBAC/pagination/injection de propriétaire entre les deux surfaces d'API.
 
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, IntoActiveModel, Iterable, PaginatorTrait,
-    PrimaryKeyToColumn, QueryFilter,
+    ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, IntoActiveModel, Iterable, ModelTrait,
+    PaginatorTrait, PrimaryKeyToColumn, QueryFilter,
 };
 
 use crate::auth::AuthPrincipal;
@@ -129,6 +129,15 @@ pub(crate) async fn update<E: RestEntity>(
     let mut active = mark_all_set::<E>(body.into_active_model());
     // Force la PK depuis le chemin — ignore toute divergence dans le corps de la requête.
     active.set(primary_key_column::<E>(), sea_orm::Value::from(id));
+    // Même invariant qu'à la création (cf. create()) : owner_column() n'est jamais éditable par
+    // le client, même en le demandant explicitement dans le corps — sinon un owner_id divergent
+    // change silencieusement le propriétaire (incohérent avec la protection de create()), ou un
+    // owner_id invalide fait échouer la requête sur une contrainte FK brute plutôt qu'un 4xx propre.
+    if E::write_policy() == AccessPolicy::OwnerOnly
+        && let Some(owner_col) = E::owner_column()
+    {
+        active.set(owner_col, existing.get(owner_col));
+    }
 
     Ok(active.update(db).await?)
 }
