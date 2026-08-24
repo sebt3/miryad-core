@@ -47,6 +47,11 @@ async fn graphql_handler(
     Ok(schema.execute(request).await.into())
 }
 
+/// Sert GraphiQL v4 (`async_graphql::http::GraphiQLSource`), qui expose nativement (feature 2 —
+/// `defaultEditorToolsVisibility: true`, cf. le HTML généré par cette dépendance) le panneau
+/// "Headers" de son éditeur : un développeur y colle `Authorization: Bearer <token>` (token API,
+/// `issue_token`) pour authentifier ses requêtes depuis l'UI — aucune configuration
+/// supplémentaire côté miryad-core n'est nécessaire pour ce chemin.
 #[cfg(feature = "graphiql")]
 async fn graphiql_handler() -> axum::response::Html<String> {
     axum::response::Html(
