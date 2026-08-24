@@ -16,6 +16,11 @@ pub enum RestError {
     /// Erreur métier applicative (hook) — jamais un `MRD-*`, cf. `HookError`.
     #[error("{}", .0.message)]
     Application(HookError),
+    /// Enveloppe une erreur d'un autre sous-système (ex. `auth::AuthError` dans
+    /// `rest::tokens`) dont seule une variante est réellement atteignable depuis un handler REST
+    /// — pas de `From` générique qui laisserait croire à une conversion sans perte.
+    #[error("MRD-REST-004: internal error: {0}")]
+    Internal(String),
 }
 
 #[derive(Serialize)]
@@ -38,6 +43,7 @@ impl IntoResponse for RestError {
                 }),
             )
                 .into_response(),
+            RestError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response(),
         }
     }
 }
