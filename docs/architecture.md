@@ -188,6 +188,14 @@ pub enum ListAccess { Unrestricted, FilterByOwner(Condition), Forbidden }
   restriction, une condition `WHERE owner_column = user.id`, ou un refus complet avant même de
   construire la requête (`Group`/`AdminOnly` sans appartenance).
 
+**Liste admin des utilisateurs (issue #4)** : `User`/`Group`/`GroupMembership` sont des entités
+SeaORM publiques mais n'implémentent pas `MiryadResource` (pas d'owner, jamais de write) — donc
+aucune route REST/GraphQL/MCP générique ne les expose. `src/rest/admin.rs` monte `GET
+/api/v1/users` (routeur dédié, `AdminOnly`, dans l'esprit d'`auth_router`) — liste paginée
+`{ id, subject, email, groups }`, deux requêtes (memberships puis groupes) plutôt qu'une par
+utilisateur pour éviter le N+1 sur une page de résultats. Lecture seule, cohérent avec la décision
+structurante ci-dessus : pas de route de gestion, Authentik reste la seule source de vérité.
+
 ## API REST générique
 
 ```rust
