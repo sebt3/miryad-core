@@ -201,6 +201,41 @@ cours d'implémentation : le hook GraphQL n'avait accès qu'au `GraphQlPrincipal
 l'`AuthPrincipal` d'origine — `graphql_handler` injecte désormais les deux dans les données de
 requête. Détail complet dans `docs/architecture.md`, section "Hooks métier CRUD".
 
+## Fix #19/#20 — relations manquantes dans l'IR et dans GraphQL — 2026-08-24
+
+Les deux issues (ouvertes côté `miryad`, l'app consommatrice, en essayant de faire traverser
+`recipe → recipe_ingredients → ingredient` en GraphQL et de générer un `<select>` de FK côté
+frontend) partagent une même racine : nos entités déclarent `enum Relation {}` vide, faute
+d'utilité perçue pour Seaography tel qu'utilisé jusqu'ici. Traitées ensemble sur une branche
+`fix/ir-graphql-relations`, dans l'ordre où le développeur principal les a posées.
+
+**#20** : la feature Cargo `graphql` de miryad-core n'activait pas `sea-orm/seaography` —
+`DeriveRelatedEntity` (macro qui génère `impl seaography::RelationBuilder` depuis `Relation`) est
+entièrement `#[cfg(feature = "seaography")]` côté `sea-orm-macros`, vérifié dans le source
+`sea-orm-macros-2.0.2` (cache cargo local) avant correction, pas seulement supposé depuis l'issue.
+Fix : `graphql = [..., "sea-orm/seaography"]` + pattern documenté dans `docs/architecture.md`
+(section "API GraphQL").
+
+**#19** : `FieldIr` gagne `references: Option<String>` (resource_name de l'entité cible d'une
+relation `belongs_to`), lu depuis `E::Relation` — même déclaration que #20, pas de méthode dédiée
+sur `MiryadResource` comme envisagé initialement dans l'issue (correction actée par le
+développeur principal lui-même en cours d'issue, avant cette session). `resource_ir::<E>()` reste
+pure (ne connaît que le nom de table SQL brut de la cible) ; `IrRegistry` résout ce nom en
+`resource_name` une fois toutes les entités enregistrées connues (`resolved_entities`, appelée par
+`write_to_file`) — `None` si la cible n'est pas enregistrée dans le même registre, ou si la FK est
+composite.
+
+**Découverte non anticipée par l'issue, trouvée en lisant `sea-orm-2.0.2/src/entity/relation.rs`
+avant d'écrire le code** : `RelationDef::is_owner` a une sémantique inversée par rapport à son
+propre doc-comment. `belongs_to()` (où `Self` porte réellement la colonne FK) construit avec
+`is_owner: false` ; `has_one()`/`has_many()` (où c'est l'entité liée qui porte la FK) construisent
+avec `is_owner: true` — `is_owner: true` signifie en fait "`Self` est parent/propriétaire de la
+relation" (cascade-save `ActiveModelEx`), pas "porte la colonne". Une lecture littérale du
+doc-comment aurait fait remonter la PK comme `references` sur les relations `has_one` inversées —
+bug silencieux évité par vérification directe du source avant implémentation plutôt que par
+confiance dans la doc-string. Règle retenue : une colonne est une vraie FK scalaire ⟺
+`rel_type == HasOne && !is_owner && from_col == Identity::Unary(<colonne>)`.
+
 ## Déblocage `vynil-core` et clôture de la feature 6 (MCP) — 2026-08-23
 
 Les deux tickets amont sont résolus dans `vynil-core` v0.7.3 (2026-08-23) : #7 a introduit des
