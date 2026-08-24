@@ -65,7 +65,14 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
         .schema(paged_schema_name.clone(), RefOr::T(paged_schema))
         .security_scheme(
             BEARER_SECURITY_SCHEME,
-            SecurityScheme::Http(HttpBuilder::new().scheme(HttpAuthScheme::Bearer).build()),
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .description(Some(
+                        "Coller le token seul, sans le préfixe \"Bearer\" : Swagger UI l'ajoute automatiquement.",
+                    ))
+                    .build(),
+            ),
         )
         .build();
 
@@ -338,12 +345,23 @@ mod tests {
         let spec = resource_openapi::<recipe::Entity>();
 
         let components = spec.components.expect("components present");
+        let scheme = components
+            .security_schemes
+            .get(BEARER_SECURITY_SCHEME)
+            .expect("bearer security scheme present");
+        let SecurityScheme::Http(http) = scheme else {
+            panic!("expected a Bearer HTTP security scheme under {BEARER_SECURITY_SCHEME:?}");
+        };
+        assert!(matches!(http.scheme, HttpAuthScheme::Bearer));
+        // #21 : le champ "Authorize" de Swagger UI n'attend que le token seul (pas le préfixe
+        // "Bearer" qu'il ajoute lui-même) — sans description, rien ne l'indique.
+        let description = http
+            .description
+            .as_deref()
+            .expect("bearer scheme has a description");
         assert!(
-            matches!(
-                components.security_schemes.get(BEARER_SECURITY_SCHEME),
-                Some(SecurityScheme::Http(_))
-            ),
-            "expected a Bearer HTTP security scheme under {BEARER_SECURITY_SCHEME:?}"
+            description.to_lowercase().contains("bearer"),
+            "description should warn against typing the Bearer prefix: {description:?}"
         );
 
         let security = spec.security.expect("global security requirement present");
