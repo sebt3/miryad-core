@@ -1,3 +1,8 @@
+//! RBAC applicatif row-level — évaluation par enregistrement ([`can_read`](crate::rbac::can_read)/[`can_write`](crate::rbac::can_write)),
+//! création ([`can_create`](crate::rbac::can_create)) et filtrage de liste ([`ListAccess`](crate::rbac::ListAccess)).
+//!
+//! Admin gagne toujours. `OwnerOnly` sans `owner_column` → refus (fail-closed).
+
 use sea_orm::entity::prelude::*;
 use sea_orm::{Condition, DatabaseConnection, ModelTrait};
 

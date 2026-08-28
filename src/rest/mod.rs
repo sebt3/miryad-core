@@ -1,3 +1,8 @@
+//! API REST générique — routeur CRUD axum construit depuis [`crate::resource::MiryadResource`].
+//!
+//! `resource_router::<E, S>()` monte `GET/POST /api/v1/{resource}` et
+//! `GET/PUT/DELETE /api/v1/{resource}/{id}` avec RBAC et pagination automatiques.
+
 pub mod admin;
 pub(crate) mod core;
 pub mod error;

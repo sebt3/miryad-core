@@ -1,3 +1,5 @@
+//! Gestion utilisateurs/groupes — résolution, synchronisation OIDC et comptes de service.
+
 pub mod group;
 pub mod membership;
 pub mod service_account;

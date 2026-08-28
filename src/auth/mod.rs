@@ -1,3 +1,8 @@
+//! Authentification OIDC + session cookie + tokens API.
+//!
+//! Point d'entrée : [`MiryadAuthState`](crate::auth::MiryadAuthState) et [`auth_router`](crate::auth::auth_router).
+//! Dual-auth (cookie ou `Authorization: Bearer`) via [`AuthPrincipal`](crate::auth::AuthPrincipal).
+
 pub mod config;
 pub mod cookie;
 pub mod dual;

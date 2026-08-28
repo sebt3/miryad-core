@@ -1,3 +1,8 @@
+//! Contrat central [`MiryadResource`](crate::resource::MiryadResource) — une implémentation par entité SeaORM,
+//! lue telle quelle par REST, GraphQL et MCP.
+//!
+//! Voir la doc crate pour un exemple complet et `docs/architecture.md` pour les détails.
+
 use sea_orm::EntityTrait;
 use serde::Serialize;
 
