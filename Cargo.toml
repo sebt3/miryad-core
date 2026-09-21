@@ -10,11 +10,40 @@ documentation = "https://docs.rs/miryad-core"
 readme = "README.md"
 keywords = ["axum", "sea-orm", "rbac", "oidc", "crud"]
 categories = ["web-programming", "authentication"]
-exclude = [".tasks/*", "docs/features/*"]
+# Les specs `.sdd` vivent à côté de leur source et ne sont pas embarquées dans le paquet publié ;
+# le bootstrap SpecDD et les définitions d'agents ne regardent pas les consommateurs.
+exclude = [".specdd/*", ".opencode/*", "**/*.sdd"]
 
 [[bin]]
 name = "miryad"
 path = "src/bin/miryad.rs"
+
+# Harnais de qualité des agents — source de vérité contractualisée par tooling.sdd.
+[lints.rust]
+unsafe_code = "forbid"
+# warn et non deny : lint rustc, un deny empêcherait cargo build/test de tourner, donc
+# empêcherait la purge de la dette qu'il pilote. Le -D warnings de la CI fait le blocage.
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+arithmetic_side_effects = "deny"
+indexing_slicing = "deny"
+unwrap_in_result = "deny"
+panic_in_result_fn = "deny"
+# Doublons de versions imposés par les dépendances amont (SeaORM, axum, openidconnect,
+# seaography) — cargo update ne les déduplique pas. Décision Sébastien, voir tooling.sdd.
+multiple_crate_versions = { level = "allow", priority = 1 }
 
 [dependencies]
 sea-orm = { version = "2", features = ["macros"] }

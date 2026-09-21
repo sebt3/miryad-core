@@ -102,7 +102,27 @@
 //! * Tables internes préfixées `miryad_*`, migrations isolées (tracking table dédiée).
 
 #![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]
-#![cfg_attr(docsrs, warn(missing_docs))]
+// Famille panic/unwrap/indexation interdite en production (`[lints]` de Cargo.toml, harnais
+// contractualisé par `tooling.sdd`) mais tolérée sous `cfg(test)` : les modules de tests inline
+// héritent de cette exemption depuis la racine de crate, sans `#[allow]` dispersés.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::dbg_macro,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::print_stdout,
+        clippy::print_stderr,
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
 
 /// Authentification OIDC, cookies de session, tokens API et extracteurs axum.
 ///

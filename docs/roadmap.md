@@ -4,7 +4,7 @@ Grandes étapes vers un scaffolding utilisable. Tout ce qui suit fait partie du 
 relégation en "phase 2" pour ces items (décision explicite : le moteur de workflow est un pilier,
 pas un bonus). L'ordre reflète les dépendances techniques, pas une priorité produit.
 
-Chaque ligne devient une ou plusieurs features (`docs/features/<nom>.md`) au moment d'y arriver —
+Chaque ligne devient une ou plusieurs specs `.sdd` (et leurs `Tasks`) au moment d'y arriver —
 pas de design détaillé à l'avance au-delà de ce qui est nécessaire pour ordonner le travail.
 
 ## 1. Fondations

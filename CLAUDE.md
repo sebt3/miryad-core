@@ -1,5 +1,1 @@
-@.claude/config.md
----
-@.claude/MEMORY.md
----
-@AGENTS.md
+@./AGENTS.md
