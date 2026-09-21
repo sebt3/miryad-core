@@ -1,0 +1,243 @@
+# Spec produite par spec-reverse depuis ./user.rs : comportement constate, a relire par Sebastien.
+# Les [?] des Tasks listent les comportements d'accident presume qui ne deviennent contrats
+# qu'apres arbitrage.
+
+Spec: user — entité SeaORM miryad_users et get-or-create @resolve_user, lien du claim sub d'OIDC vers un @id interne i32 stable
+
+Purpose:
+  Porter l'entité SeaORM @users::user (table `miryad_users`) et la fonction @resolve_user,
+    get-or-create appuyé sur le claim `sub` : à la première vue d'un sujet OIDC le compte local
+    est créé, à toute vue suivante la ligne existante est rendue intacte, sans écriture.
+  Fixer l'identité interne de la crate : @users::user::Model::id (i32) est la seule valeur
+    comparée à l'@owner_column par @crate::rbac et la seule clé indexée par
+    @users::sync_group_memberships. Le callback OIDC appelle @resolve_user puis
+    @sync_group_memberships ; la persistance des appartenances d'un utilisateur entre deux logins
+    tient à ce que le même @subject retrouve toujours le même @id et une seule ligne.
+  Borner le rôle de surface de l'entité : @User n'est pas une @MiryadResource — aucune des routes
+    CRUD générériques REST, GraphQL et MCP ne lit `miryad_users`. Les trois surfaces ne rencontrent
+    ce fichier que par @resolve_user : REST directement, GraphQL dans
+    @crate::graphql::load_principal, MCP par délégation aux fonctions de @crate::rest::core.
+
+Owns:
+  ./user.rs
+
+References:
+  ./mod.rs — contrat d'agrégation : @resolve_user et @User sont ré-exportés hors du module
+  ../migration/m20260822_000002_create_users_groups.rs — DDL réellement posée de miryad_users :
+    colonnes, nullabilités, contrainte UNIQUE sur `subject` ; le modèle doit lui correspondre à
+    l'identique
+  ../migration/m20260822_000003_seed_admin_group.rs — sens des clés étrangères : ce sont les
+    appartenances qui référencent @User, l'insertion d'un utilisateur ne dépend d'aucune clé
+    étrangère entrante
+  /src/rbac.sdd — usage contractuel de @users::user::Model::id : la comparaison à l'@owner_column
+    et l'égalité à @sea_orm::Value::from se décident là, pas dans ./user.rs
+  ../auth/mod.rs — appelant du callback OIDC : @resolve_user sur l'identité échangée, puis
+    @users::sync_group_memberships avec l'@id rendu, dans cet ordre
+
+Must:
+  Fournir un modèle fidèle au schéma de la migration : colonnes `id`, `subject`, `email`,
+    `display_name`, `created_at` ; @id en `i32` PK auto-incrémentée — vérifié dans le source de
+    @sea_orm-macros 2.0.2 : `primary_key` unique sur un champ `i32` sans argument ⇒ auto_increment ;
+    @subject NOT NULL ; @email et @display_name nullables ; @created_at de type @DateTimeUtc contre
+    `timestamp_with_time_zone` NOT NULL. Tout écart entre @Model et la migration est un bug d'un
+    côté ou de l'autre.
+  Poser @created_at avec l'horloge applicative @Utc::now au moment de l'insertion, valeur ensuite
+    immuable : la base ne la pose pas, ./user.rs ne la remanie jamais.
+  Router l'unicité opérante de @subject sur le `unique_key()` de la migration, jamais sur
+    l'annotation : vérifié dans le source de @sea_orm-macros 2.0.2, `#[sea_orm(unique)]` n'émet
+    aucune DDL — elle annote seulement les métadonnées de @Column. Une table posée sans cette
+    contrainte exposerait @resolve_user à des lignes doubles sous concurrence.
+  Traiter @subject comme une clé opaque comparée par `=` SQL, sans normalisation ni trim : `sub`
+    et `SUB` sont deux utilisateurs distincts (collation par défaut sensible à la casse en SQLite
+    comme en Postgres).
+  Garantir la stabilité de l'@id : le même @subject ne produit qu'une seule et même ligne, donc
+    qu'un seul @id, à travers re-logins, redémarrages et appels concurrents. C'est l'invariant sur
+    lequel reposent @crate::rbac et @users::sync_group_memberships en amont.
+  Rester sans effet de bord hors écriture SQL : l'implémentation vide de @ActiveModelBehavior
+    laisse @before_save et @after_save identiques à l'identité (vérifié dans le source de
+    @sea_orm 2.0.2) ; le fichier n'émet aucune trace `tracing`.
+  Compiler sous toutes les combinaisons de features du `Cargo.toml` (`static-frontend`,
+    `swagger-ui`, `graphql`, `graphiql`, `mcp`) : le module @crate::users n'est porté par aucun
+    #[cfg(feature = ...)], @sea_orm et @chrono sont des dépendances non optionnelles ; la batterie
+    de /tooling.sdd doit passer pour ce fichier sur chaque combinaison.
+
+Must not:
+  Modifier @users::user::Relation pour naviguer vers @users::membership::Entity sans arbitrage de
+    Sébastien : l'enum est vide à ce jour, la clé étrangère entrante de la migration n'est résolue
+    que par jointures explicites chez les consommateurs, et Seaography ne monte jamais
+    `miryad_users`.
+  Écrire dans @miryad_groups, @miryad_group_memberships ou @miryad_api_tokens : les appartenances
+    appartiennent à @users::sync_group_memberships, dans le fichier d'à côté.
+  Implémenter @crate::resource::MiryadResource pour @User : `miryad_users` reste hors des
+    générateurs CRUD des trois surfaces — pas d'owner, pas d'écriture exposée, Authentik reste la
+    source de vérité de l'identité.
+  Employer un mécanisme anti-conflit propre à un seul backend (ON CONFLICT, index unique filtré)
+    pour la course du premier login : le commentaire du source écarte explicitement une contrainte
+    portable SQLite/Postgres ; le chemin de course n'est qu'une relecture.
+
+Depends on:
+  sea-orm 2 (@sea_orm, via @sea_orm::entity::prelude, @sea_orm::ConnectionTrait, @sea_orm::Set) —
+    sémantiques vérifiées dans le source de sea-orm 2.0.2 (registry local) :
+    @ActiveModelTrait::insert passe par @exec_with_returning (src/entity/active_model.rs:232) et
+    rend le @Model avec la PK reposée par la base ; @ActiveModelBehavior::new laisse chaque colonne
+    à @ActiveValue::NotSet (src/entity/active_model.rs:1077 et le derive du macro) ; @Select::one
+    sur zéro ligne rend @Ok(@None) sans erreur (src/executor/select.rs:547) — ce qui rend propres
+    la première lecture d'existence comme le rebond de course.
+  @chrono — @Utc::now pour @created_at, import direct `use chrono::Utc`.
+  ../migration/m20260822_000002_create_users_groups.rs — la table doit exister avant @resolve_user ;
+    ./user.rs ne pose aucune DDL (le @Schema constructeur de SeaORM n'est pas utilisé ici).
+
+Exposes:
+  @users::user::Model — @Clone, @Debug, @PartialEq, @DeriveEntityModel ; table `miryad_users`.
+    Champs pub, types et annotations : @id: @i32 avec #[sea_orm(primary_key)] ; @subject: @String
+    avec #[sea_orm(unique)] ; @email: @Option<@String> ; @display_name: @Option<@String> ;
+    @created_at: @DateTimeUtc
+  @users::user::User — alias public de @users::user::Entity ; un alias du générateur SeaORM, pas
+    un type distinct ; ré-exporté avec @crate::users::resolve_user par ./mod.rs
+  @users::user::ActiveModel — un @ActiveValue par colonne ; son @Default laisse chaque champ,
+    @id compris, à @ActiveValue::NotSet (vérifié au source) — c'est ce qui retire @id de l'`INSERT`
+    et délègue la PK à l'auto-incrément.
+  @users::user::Column et @users::user::PrimaryKey — énumérations générées par @DeriveEntityModel
+  @users::user::Relation — @DeriveRelation déclaré avec un enum vide : l'appartenance aux groupes
+    ne se lit que par requête explicite (./membership.rs, ../rest/admin.rs)
+  @users::user::ActiveModelBehavior — implémentation vide : aucun hook de cycle de vie, l'insertion
+    écrit la ligne telle quelle
+  @users::user::resolve_user — pub async fn @resolve_user<@C: @ConnectionTrait>(@db: &@C,
+    @subject: &@str, @email: @Option<&@str>) -> @Result<@users::user::Model, @sea_orm::DbErr>.
+    Aucun #[cfg(feature = ...)] ne le gate.
+
+Accepts:
+  db — n'importe quelle @sea_orm::ConnectionTrait : connexion ou transaction ; le générique
+    @C: @ConnectionTrait est plus large que le @DatabaseConnection que lui passent tous les
+    appelants actuels (callback @crate::auth, handlers de /src/rest,
+    @crate::graphql::load_principal, @users::ensure_service_account)
+  subject — chaîne du claim `sub` reçue verbatim : aucune validation de format, aucune garde
+    contre la chaîne vide dans ./user.rs (la non-vacuité du `sub` relève de @crate::auth, cf. [?]
+    en Tasks)
+  email — @Option<&@str> sans contrôle de format : un @Some est inséré tel quel, un @None devient
+    SQL `NULL` ; l'argument n'est consommé qu'à la création, jamais à la re-vue
+  backends — SQLite (tests) et Postgres (production) ; le chemin de course n'emploie que
+    `SELECT`/`INSERT` standard
+
+Returns:
+  @Ok(@Model) pour une ligne créée : @id posé par la base et strictement positif (PK reposée par
+    @exec_with_returning, vérifié au source), @email égal à l'argument (NULL si @None),
+    @display_name NULL, @created_at à @Utc::now de l'application.
+  @Ok(@Model) pour une ligne existante : la ligne rendue telle quelle en base — @email peut
+    différer de l'argument passé, @created_at reste la date de première vue ; ./user.rs n'émet pas
+    d'`UPDATE`.
+  Coût d'appels : existence connue → une seule `SELECT` ; création réussie → `SELECT` + `INSERT` ;
+    course perdue → `SELECT` + `INSERT` en échec + `SELECT`.
+  Comptes de service : @users::ensure_service_account appelle @resolve_user avec @email @None — un
+    sujet de service naît avec @email NULL, même chemin que les sujets OIDC.
+
+Raises:
+  Aucun code `MRD-*` n'est porté par ./user.rs : les deux lectures propagent le @sea_orm::DbErr
+    brut par `?`. La décoration en code `MRD-*` est un contrat des appelants — @AuthError::Database
+    (`MRD-AUTH-016`, /src/auth/mod.sdd) côté callback, @RestError::Database (`MRD-REST-003`,
+    ../rest/error.rs) côté REST, mapping propre au module GraphQL.
+  @sea_orm::DbErr synthétisé @DbErr::RecordNotFound avec le message interpolé
+    `user with subject {subject} vanished` quand l'insertion échoue et que la relecture de rebond
+    ne trouve toujours aucune ligne. Erreur interne sans code — voir le [?] en Tasks.
+  L'erreur d'insertion d'origine ne remonte jamais : absorbée par le bras de course (voir
+    `Handles` et le [?] correspondant).
+
+Handles:
+  Subject inconnu → insertion : @subject et l'argument @email écrits, @display_name posé à NULL,
+    @created_at posé à @Utc::now.
+  Subject déjà présent → retour anticipé de la ligne existante, aucune écriture.
+  Course de deux premières vues (double callback OIDC, double requête) : l'`INSERT` du perdant
+    heurte la contrainte UNIQUE, le bras `Err(_)` relit par @subject et rend la ligne du gagnant —
+    avec l'@email du gagnant, pas celui que l'appelant perdant a demandé.
+  Toute erreur d'insertion, et pas seulement la violation d'unicité — le `Err(_)` ne filtre pas la
+    nature de l'@sea_orm::DbErr — tombe dans la même branche de rebond ; si le rebond ne trouve
+    aucune ligne, l'erreur d'origine est perdue, remplacée par @DbErr::RecordNotFound.
+  @email @None → colonne NULL à la création ; @subject vide → une ligne avec `subject = ''` est
+    posée sans protestation (aucune garde locale, cf. [?]).
+  Sujets de service (`system:`…) créés par @users::ensure_service_account → même get-or-create,
+    @email NULL.
+
+Tasks:
+  [ ] Convertir chaque `Scenario` de cette spec en un test Rust distinct nommé dans le
+    #[cfg(test)] @mod tests de ./user.rs : SQLite en mémoire migré par @crate::migration::Migrator ;
+    @tokio::join! pour le scenario de course ; @sea_orm::MockDatabase pour le scenario
+    RecordNotFound (feature `mock` déjà en dev-dependency). Décompte : 8 `Scenario` → au moins 8
+    tests ; un seul test inline vit aujourd'hui (@resolve_user_creates_then_reuses_same_row, qui
+    couvre le scenario « re-login »). Les tests d'usage des surfaces (REST, GraphQL, MCP via la
+    délégation de @crate::rest::core) restent dans les specs des surfaces qui les exercent.
+  [?] @email n'est jamais rafraîchi après la création (get-or-create, pas upsert) : un re-login
+    avec un nouvel e-mail à l'IdP laisse la ligne, @crate::rest::me et @crate::rest::admin sur
+    l'e-mail de première vue. Verrouille-t-on ce snapshot ou passe-t-on à l'upsert ?
+  [?] Le `Err(_)` fourre-tout de l'insertion : toute erreur d'`INSERT` (pas seulement la violation
+    UNIQUE) tombe dans la relecture de rebond, la cause d'origine est perdue et aucun événement
+    `tracing` n'est émis sur ce chemin. Filtre-t-on la nature de l'erreur et trace-t-on un `warn`
+    avant rebond ?
+  [?] @DbErr::RecordNotFound(`… vanished`) est une erreur interne construite sans code `MRD-*`,
+    alors que la spec racine en exige un sur toute erreur interne de la crate. Crée-t-on un
+    `MRD-USER-001`, ou la décoration amont (`MRD-AUTH-016`, `MRD-REST-003`) suffit-elle ?
+  [?] @subject est utilisé verbatim sans validation : la chaîne vide se pose sans garde et `sub`
+    ≠ `SUB` crée deux comptes. La garantie de non-vacuité relève-t-elle déjà de @crate::auth, ou
+    faut-il une précondition dans @resolve_user ?
+  [?] @display_name est créé à NULL et rien dans la crate ne l'écrit. Colonne en attente de
+    feature, ou colonne morte à documenter comme telle ?
+  [?] @users::user::Relation vide volontairement et pour durable (clé étrangère entrante jamais
+    naviguée, aucune exposition relationnelle à verrouiller ailleurs) ? Si oui, le `Must not` de
+    cette spec devient le verrou explicite.
+
+Done when:
+  Chacun des 8 `Scenario` dispose d'au moins un test distinct nommé exerçant son `Then`, le nombre
+    de tests est supérieur ou égal au nombre de `Scenario`, la batterie de /tooling.sdd passe
+    verte sur toutes les combinaisons de features sans warning sur ./user.rs, et chaque `[?]` de
+    cette spec a été tranché par Sébastien.
+
+Scenario: première vue avec email crée la ligne complète
+  Given une base migrée vide
+  When @resolve_user est appelée pour `sub-1` avec @Some(`a@example.com`)
+  Then le @Ok rend un @Model dont l'@id est posé par la base, @subject `sub-1`, @email
+    `a@example.com`, @display_name NULL et @created_at non NULL
+  And une relecture par @Column::Subject ne trouve qu'une seule ligne
+
+Scenario: première vue sans email
+  Given une base migrée vide
+  When @resolve_user est appelée pour `sub-2` avec @None comme @email
+  Then le @Ok rend une ligne fraîchement créée avec @email NULL
+  And @display_name est NULL et @created_at est non NULL
+
+Scenario: re-login ne crée ni n'écrase rien
+  Given une ligne existe pour `sub-3` avec @email `a@example.com` et un @created_at figé
+  When @resolve_user est appelée pour `sub-3` avec @Some(`changed@example.com`)
+  Then le @Ok rend la même ligne : @id inchangé, @email toujours `a@example.com`, @created_at
+    inchangé
+  But aucun `UPDATE` n'a modifié la ligne
+
+Scenario: deux premières vues concurrentes du même subject ne laissent qu'une ligne
+  Given une base migrée vide
+  When deux appels concurrents à @resolve_user pour `sub-race` sont lancés par @tokio::join!
+  Then les deux rendent @Ok avec le même @id
+  And la table ne porte qu'une ligne pour `sub-race`
+
+Scenario: insertion en échec sans ligne trouvée devient RecordNotFound
+  Given un @sea_orm::MockDatabase où la première lecture ne rend aucune ligne, l'`INSERT` échoue
+    d'une erreur arbitraire et la relecture de rebond ne rend aucune ligne non plus
+  When @resolve_user est appelée pour `sub-ghost`
+  Then le résultat est un @sea_orm::DbErr::RecordNotFound dont le message contient
+    `user with subject sub-ghost vanished`
+  But l'erreur d'insertion d'origine n'apparaît nulle part dans le résultat
+
+Scenario: deux subjects qui ne diffèrent que par la casse sont deux utilisateurs
+  Given une base migrée vide
+  When @resolve_user est appelée pour `sub-CASE` puis pour `sub-case`
+  Then deux lignes distinctes existent avec deux @id distincts
+
+Scenario: subject vide est posé sans garde
+  Given une base migrée vide
+  When @resolve_user est appelée avec `""` comme @subject
+  Then le @Ok rend une ligne dont @subject est la chaîne vide
+  # comportement constate, pas une prescription — voir le [?] de validation amont en Tasks
+
+Scenario: l'entité n'expose que les cinq colonnes de la migration
+  Given l'entité @users::user::Entity compilée contre la migration `m20260822_000002`
+  When @users::user::Column::iter() est énuméré
+  Then exactement les colonnes `id`, `subject`, `email`, `display_name`, `created_at` apparaissent
+  And un aller-retour insertion-relecture rend @email NULL et @display_name NULL quand ils ont été
+    créés à NULL

@@ -1,0 +1,336 @@
+Spec: admin — endpoints d'administration
+
+Purpose:
+  Exposer aux seuls membres du groupe `admin` la liste paginée en lecture seule des
+    utilisateurs locaux (table `miryad_users`) avec les noms de leurs groupes, par un routeur
+    dédié `GET /api/v1/users` dans l'esprit d'@auth::auth_router — pas un @MiryadResource :
+    @User n'a pas de sémantique CRUD (pas de colonne owner, aucune écriture autorisée par cette
+    surface), @users::sync_group_memberships piloté par le callback OIDC restant la seule source
+    de vérité de l'appartenance aux groupes (Authentik). Le fichier fournit aussi l'agrégation
+    `pub(crate)` @groups_by_user que le crate réutilise pour `GET /api/v1/me`.
+
+Owns:
+  ./admin.rs
+    Y compris son module `#[cfg(test)] mod tests` inline (trois tests à la rédaction), qui vit
+    dans le fichier et est régi par la présente spec.
+
+References:
+  /src/query.sdd — contrat de pagination partagé : normalisation @Pagination::from_raw, DTO
+    @PagedResult et les faits @sea_orm vérifiés en amont (@Paginator::fetch_page indexée depuis
+    zéro, division majorante de @num_items_and_pages, assertion `page_size != 0` de
+    @paginate) sur lesquels ce fichier s'appuie sans les re-démontrer.
+  /src/users/mod.sdd
+  /src/users/user.sdd — @resolve_user get-or-create, effet de bord d'insertion avant le garde.
+  /src/users/group.sdd — @is_admin via @is_member sur @ADMIN_GROUP_NAME (`admin`).
+  /src/users/membership.sdd — table `miryad_group_memberships`, unique @(user_id, group_id).
+  /src/auth/dual.sdd — extracteur @AuthPrincipal : bearer token API d'abord, cookie de session
+    sinon, jamais de repli silencieux ; c'est lui qui produit les `401` observés sur cette route.
+  /src/auth/error.sdd — codes @AuthError et leurs statuts http.
+  /src/auth/state.sdd — @MiryadAuthState et le pattern @FromRef imposé à l'état de l'app.
+  /docs/architecture.md — section « Utilisateurs & Groupes / RBAC », convention `AdminOnly` et
+    mention explicite de ce routeur.
+  /tooling.sdd — harnais hérité : le fichier est sans gating de feature, il doit passer la
+    batterie complète sur chaque combinaison.
+
+Must:
+  @users_router monte exactement et seulement `GET /api/v1/users` : @Router @nest sous le
+    préfixe `/api/v1` figé dans le crate, cohérent avec @rest::resource_router,
+    @rest::me::me_router et @rest::tokens::tokens_router.
+  Le routeur est générique et sans état interne : @Router<@S> avec `S: @Clone + @Send +
+    @Sync + 'static` et @MiryadAuthState: @FromRef<@S> — l'app consommatrice fournit l'état,
+    rien n'est appelé @with_state dans le fichier.
+  Chaque requête réévalue le garde admin en base : @resolve_user du @principal courant puis
+    @is_admin sur l'@id résolu — aucun cache de session, une révocation d'appartenance prise en
+    compte par @users::sync_group_memberships est effective à la requête suivante.
+  Le garde n'emprunte pas @rbac::list_access : @User n'étant pas @MiryadResource, l'exigence
+    « AdminOnly » est codée en dur dans le handler, chemin distinct et assumé de celui des
+    routes CRUD.
+  La liste est exhaustive sur la table `miryad_users` : chaque page porte le trigramme complet
+    `{ id, subject, email, groups }`, les totaux décrivent la table entière, jamais un sous-ensemble
+    filtré ; l'appelant admin voit sa propre ligne dans sa propre liste.
+  Colonnes rendues : @id, @subject, @email, @groups — jamais @display_name, @created_at, ni une
+    colonne d'une autre table interne (tokens compris) ; @email vient de la ligne `miryad_users`,
+    pas du credential de la requête (le bearer API porte @email @None).
+  Les groupes viennent de @groups_by_user, borné à deux requêtes SQL (@memberships filtrée par
+    @is_in puis @group par @is_in) quel que soit le nombre d'utilisateurs de la page — pas de
+    requête par utilisateur.
+  La pagination passe par @Pagination::from_raw — normalisation unique partagée avec les listes
+    CRUD et MCP — puis @Paginator::fetch_page(@page - `1`) ; l'invariant amont `per_page >= 1`
+    est ce qui rend l'assertion `page_size != 0` de @paginate innescable depuis cette route.
+  Les totaux @total_items et @total_pages viennent de @num_items_and_pages (division majorante,
+    table vide → `0` page — fait @sea_orm vérifié, consigné dans /src/query.sdd) ; la réponse est
+    le DTO @PagedResult sérialisé, écho pur des cinq clés `items`, `page`, `per_page`,
+    `total_items`, `total_pages`.
+  Un utilisateur sans aucune appartenance rend `groups: []` (@Option::unwrap_or_default sur la
+    lookup de la carte), et l'itérateur @ids vide court-circuite @groups_by_user avant tout SQL.
+  L'ordre des @items dans une page et l'ordre des noms dans @groups ne sont pas contractuels :
+    la requête @user::Entity::find() ne porte aucun @ORDER BY (tâche `[?]`) et @groups_by_user
+    pousse les noms dans l'ordre de parcours des memberships.
+  Le fichier compile sous toute combinaison de features de la batterie /tooling.sdd : zéro
+    attribut `#[cfg(feature = ...)]`, ni dans le code ni dans son module de tests.
+
+Must not:
+  Exposer une écriture sur cette surface : pas de `POST`/`PUT`/`DELETE /api/v1/users` ni
+    d'assignation de groupe — la table `miryad_group_memberships` n'a d'autre chemin d'écriture
+    que @users::sync_group_memberships déclenché par le callback OIDC.
+  Enregistrer @user::Entity comme @MiryadResource pour le faire passer par @resource_router et
+    gagner par erreur un CRUD complet (create/update/delete) sur les utilisateurs.
+  Ajouter une route item `GET /api/v1/users/{id}` sous prétexte de compléter la liste : la
+    surface actuelle est la liste paginée uniquement, une route item serait un nouveau contrat.
+  Construire @Pagination à la main ou consommer @page/@per_page bruts : seuls @Pagination::from_raw
+    puis @fetch_page(@page - `1`) sont le chemin, garant du `400`/normalisation partagés avec les
+    autres listes.
+  Accepter un paramètre `filter` : @ListParams de ce fichier ne le déclare pas (à l'usage il est
+    ignoré silencieusement par @serde, asymétrie d'expérience avec les listes CRUD consignée en
+    `Handles`).
+
+Depends on:
+  @axum — @Router, @nest, @get, extracteurs @State/@Query, @Json.
+  @sea_orm — @EntityTrait/@PaginatorTrait/@QueryFilter sur @user::Entity, @group::Entity,
+    @membership::Entity, @DatabaseConnection, @DbErr.
+  @serde — @Deserialize de @ListParams, @Serialize de @UserSummary.
+  @crate::auth — @MiryadAuthState (@db partagé), @AuthPrincipal et son extracteur dual-auth,
+    @AuthError pour les statuts produits amont.
+  @crate::users — @resolve_user, @is_admin, entités @user, @group, @membership.
+  @crate::query — @Pagination::from_raw, @PagedResult.
+  @crate::rest::error::@RestError — codes et statuts du 403 et du 500 de cette route (sa spec
+    `./error.sdd` reste à produire).
+  @std::collections::@HashMap — agrégation de @groups_by_user.
+  /src/query.sdd — pour les faits amont @sea_orm que ce fichier consomme sans les vérifier.
+
+Exposes:
+  @UserSummary — `pub struct` derives @Debug, @Clone, @PartialEq, @serde::Serialize ; champs
+    `pub` @id (@i32), @subject (@String), @email (@Option<@String>), @groups (@Vec<@String>).
+    Clés wire aux mêmes noms (aucun attribut @serde) ; @email @None rend `null`, @groups vide
+    rend `[]`.
+  @users_router — `pub fn users_router<S>() -> @Router<S>`, `S: @Clone + @Send + @Sync +
+    'static`, @MiryadAuthState: @FromRef<@S> ; état @router nu, sans @with_state ; monte
+    `GET /api/v1/users` ; compilation non gatée, accessible sur toute combinaison de features.
+  @groups_by_user — `pub(crate) async fn groups_by_user(db: &@sea_orm::@DatabaseConnection,
+    user_ids: impl @Iterator<@Item=@i32>) -> @Result<@HashMap<@i32, @Vec<@String>>, @sea_orm::@DbErr>` ;
+    visibilité `pub(crate)` délibérée : agrégation « groupes d'un utilisateur » réutilisée par
+    ./me.rs pour `GET /api/v1/me` (issue #24).
+  @ListParams — struct @Deserialize privé du fichier (non exposé) : champs @page et @per_page
+    tous deux @Option<@u64>, aucun @deny_unknown_fields.
+  En-tête de module `//!` — positionne le routeur dédié en lecture seule, cite
+    @users::sync_group_memberships et la section RBAC de /docs/architecture.md comme motivations.
+
+Accepts:
+  L'extracteur @AuthPrincipal en tête de handler : token API `Authorization: Bearer` (validé en
+    amont par @validate_token, @email @None) ou cookie de session chiffré (email porté par le
+    JWT de session). Rejet d'abord par @AuthError, avant toute ligne du handler.
+  Query string : `page` et `per_page` optionnels, typés @u64 par @serde — absents = normalisation
+    aux défauts ; `0` normalisé à `1` ; valeurs non numériques, négatives ou au-dessus de
+    @u64::MAX rejetées `400` par l'extracteur @Query avant le handler (contrat de la surface
+    extracteur, consigné ici car observable sur cette route).
+  Tout autre paramètre inconnu (dont `filter`) est ignoré silencieusement par @serde : la liste
+    admin ne filtre jamais, contrairement aux listes CRUD de ./mod.rs qui déclarent @filter.
+  Aucun corps de requête (route `GET`), aucun paramètre de chemin, aucun en-tête requis hors
+    credential ; @UserSummary n'accepte jamais le @user::Model complet en sortie.
+
+Returns:
+  `200` au corps JSON : @PagedResult<@UserSummary> — `items` = tranche de la page courante de
+    @UserSummary `{ id, subject, email, groups }`, `page`/`per_page` en echo post-normalisation,
+    `total_items`/`total_pages` = totaux réels de la table (division majorante @sea_orm).
+  `403` texte brut `MRD-REST-002: access denied` (@RestError::@Forbidden → @IntoResponse).
+  `405` corps vide avec en-tête `Allow: GET` sur toute autre méthode : le @routeur de méthodes
+    @axum répond avant les extracteurs — pas d'authentification, pas de requête SQL sur ce chemin.
+  Aucun cookie posé, aucun en-tête `Location` : cette route ne fait jamais de redirection.
+  En sortie de @groups_by_user : @HashMap ne contenant que les ids ayant au moins un groupe
+    résolu — l'absence d'une clé vaut « pas de groupe », l'appelant complète par
+    @unwrap_or_default.
+
+Raises:
+  @RestError::@Forbidden — code `MRD-REST-002`, statut `403` : principal authentifié dont
+    @is_admin répond @false ; inclut le cas fail-closed du groupe `admin` absent (seed
+    manquant) ; ne dépend d'aucun paramètre de requête.
+  @RestError::@Database — code `MRD-REST-003`, statut `500` : tout @DbErr propagé par les six
+    points `?` du handler — @resolve_user, @is_admin, @num_items_and_pages, @fetch_page, les
+    deux requêtes SQL de @groups_by_user.
+  Jamais levés par ce fichier mais visibles sur sa route : `401` @AuthError `MRD-AUTH-001`
+    (anonyme), `MRD-AUTH-002` (session invalide), `MRD-AUTH-014`/`MRD-AUTH-015` (token inconnu
+    / expiré) et le `400` de rejet @Query — produits par les extracteurs amont, taxonomies
+    /src/auth/error.sdd et @axum, pas la taxonomie REST de ce fichier.
+  Jamais de `404` métier : la route ne porte pas d'@id, aucune entité à trouver ; un `404` sur
+    ce préfixe (chemin inconnu, par ex. `GET /api/v1/unknown`) vient du routage @axum sans
+    atteindre le handler, sans auth ni SQL.
+  Aucune @HookError possible : ni hook, ni écriture, ni @MiryadResource sur cette route.
+
+Handles:
+  Sujet authentifié jamais vu : @resolve_user get-or-create insère une ligne `miryad_users`
+    (email du @AuthPrincipal à l'insertion uniquement) avant le garde — un non-admin appelé sur
+    une toute première requête reçoit `403` alors que sa ligne vient d'être écrite (contradiction
+    avec l'en-tête « lecture seule », tâche `[?]`).
+  Course de première résolution concurrente du même @subject : contrainte unique puis reprise
+    par @find côté @users::user — ce fichier ne voit qu'un Model rendu.
+  Groupe `admin` absent des tables : @is_admin → @is_member → lookup de groupe @None → @false →
+    `403` fail-closed.
+  Utilisateur sans memberships : absent de la carte de @groups_by_user → `groups: []` rendu,
+    sans erreur.
+  Itérateur @ids vide (page hors limite vidée, page vide en sortie de @fetch_page) :
+    @HashMap vide rendu avant toute instruction SQL — le court-circuit précède le `is_in`,
+    cohérent avec la même précaution dans @graphql::principal::load_principal.
+  @memberships pointant un @group_id absent de la seconde requête : la ligne est silencieusement
+    ignorée (@if let @Some sur la lookup des noms) — normalement injoignable grâce à la FK
+    `ON DELETE CASCADE` de `miryad_group_memberships` → `miryad_groups` (migration
+    /src/migration/m20260822_000002_create_users_groups.rs vérifiée en amont), branche
+    défensive jamais testée (tâche `[?]`).
+  @page au-delà de la dernière : @fetch_page rend un @Vec vide, @total_items/@total_pages
+    conservés, @page renvoyé tel que demandé (aucun retour à la dernière page).
+  @per_page absent / `0` / écrêté : normalisé en amont par @Pagination::from_raw, observable
+    uniquement dans l'echo des champs `page`/`per_page` de la réponse `200`.
+
+Tasks:
+  [?] L'en-tête `//!` clame « lecture seule » mais @resolve_user s'exécute avant le garde : une
+    requête authentifiée d'un sujet inconnu, y compris un non-admin renvoyé `403`, écrit une
+    ligne dans `miryad_users` (et @validate_token, en amont du fichier, a déjà écrit
+    `last_used_at` sur le token). Ce comportement est-il le contrat (et l'en-tête est faux) ou
+    l'accident à corriger (trouver l'utilisateur sans créer, réserver l'insertion aux admins) ?
+  [?] @user::Entity::find() ne porte aucun @ORDER BY : l'ordre des pages repose sur l'ordre de
+    parcours du backend (rowid en pratique sur SQLite, non garanti sur Postgres) — deux requêtes
+    simultanées peuvent sauter ou dupliquer une ligne entre deux pages. Un ordre stable (par
+    ex. @id) devient-il contractuel ici, ou la question est-elle à arbitrer globalement avec
+    @rest::core::list qui présente le même manque ?
+  [?] Parité des trois surfaces : `GET /api/v1/users` n'existe qu'en REST — @User n'étant pas
+    @MiryadResource, aucune entité `miryad_users` n'est enregistrée dans le @PolicyRegistry de
+    ./graphql ni dans @mcp::registry (qui ne génère de tools que par @MiryadResource). La règle
+    transverse de /.specdd/bootstrap.project.md (« tout comportement ajouté sur une surface doit
+    être honoré sur les deux autres ») s'applique-t-elle à cette liste admin, ou le précédent
+    des surfaces REST-only (@auth::auth_router, `GET /api/v1/me`, @rest::tokens::tokens_router)
+    vaut-il exemptation pour les tables internes ?
+  [?] Un appel refusé (`403`) ou authentifié par token expiré (`401`) ne laisse aucune trace :
+    zéro appel @tracing dans tout le fichier. Faut-il une trace d'audit (warn) sur les tentatives
+    d'accès refusées à cette route, ou le silence est-il le contrat ?
+  [?] @groups_by_user ignore silencieusement une membership dont le groupe ne remonte pas de la
+    seconde requête (branche @if let @Some jamais exercée, rendue injoignable par la FK
+    cascade) : contrat « ignorer » entériné tel quel, ou erreur explicite si la FK est jamais
+    retirée ou non appliquée (selon backend) ?
+  [ ] Convertir les treize `Scenario` en au moins treize tests nommés distincts du
+    `#[cfg(test)] mod tests` de `./admin.rs` (tout l'observable vit sur la surface HTTP de ce
+    fichier, aucun test ne déborde dans ./tests/) : « admin obtient la liste paginée avec les
+    groupes de chaque utilisateur » → @admin_sees_paginated_users_with_their_groups (existant, à
+    étendre : assertion de `total_pages` et de l'écho `per_page`) ; « le non-admin authentifié est
+    refusé » → @non_admin_is_forbidden (existant, à étendre : assertion du corps
+    `MRD-REST-002`) ; « la page demandée est respectée » → @pagination_params_are_respected
+    (existant) ; créer : @anonymous_request_is_unauthorized (« requête anonyme refusée »),
+    @invalid_or_expired_token_is_unauthorized (« token invalide ou expiré refusé »),
+    @malformed_pagination_is_bad_request_before_guard (« paramètre de pagination invalide »),
+    @post_is_method_not_allowed_without_auth (« méthode refusée avant toute authentification »),
+    @null_pagination_params_are_normalized (« paramètres nuls normalisés »),
+    @per_page_above_cap_is_echoed_capped (« `per_page` au-dessus du plafond »),
+    @out_of_range_page_keeps_empty_items_and_totals (« page au-delà de la dernière »),
+    @groups_by_user_empty_input_issues_no_query (« itérateur vide — aucune requête de groupes » —
+    @sea_orm::MockDatabase sans requête attendue, pattern déjà utilisé dans /src/auth/mod.rs),
+    @groups_by_user_caps_at_two_queries (« deux requêtes au plus pour une page » —
+    @sea_orm::MockDatabase avec exactement deux @SELECT attendus),
+    @unknown_path_under_mount_is_not_found (« chemin inconnu sous le préfixe monté »).
+
+Done when:
+  Chaque `Scenario` est vérifié par au moins un test nommé distinct dans le `#[cfg(test)] mod
+    tests` de `./admin.rs` (treize minimum, trois existants étendus, dix créés), chacun assertant
+    son `Then`.
+  La batterie complète /tooling.sdd passe verte sur toutes les combinaisons de features —
+    `--no-default-features` comprise, le fichier n'étant gated par aucune feature — sans warning
+    clippy nouveau sur `./admin.rs`.
+  Les cinq lignes `[?]` de `Tasks` ont chacune une décision de Sébastien reflétée dans la spec.
+  La spec est relue et approuvée par Sébastien ; seule l'implementer convertit ensuite les
+    `Scenario` en tests.
+
+Scenario: admin obtient la liste paginée avec les groupes de chaque utilisateur
+  Given une base sqlite en mémoire migrée (@Migrator::up), un utilisateur `admin-sub` membre du
+    groupe `admin`, `alice-sub` avec l'email `alice@example.com` membre de `editors` et
+    `viewers`, et `bob-sub` sans aucun groupe
+  When un porteur de token API valide pour `admin-sub` appelle `GET /api/v1/users` sans paramètre
+  Then la réponse est `200`
+  And `total_items` vaut `3` et `total_pages` vaut `1` (défaut @per_page `100`)
+  And `items` contient trois entrées dont `admin-sub`, chaque entrée avec les clés `id`,
+    `subject`, `email`, `groups` et rien d'autre
+  And l'entrée de `bob-sub` a `"email": null` et `groups: []`
+  And l'entrée d'`alice-sub` a l'email `alice@example.com` et ses groupes `editors` et
+    `viewers` — l'ordre des entrées et celui des groupes ne sont pas contractuels, le test trie
+
+Scenario: le non-admin authentifié est refusé
+  Given un utilisateur `alice-sub` résolu, sans aucune appartenance, et son token API valide
+  When `GET /api/v1/users` avec ce porteur
+  Then la réponse est `403`
+  And le corps porte `MRD-REST-002: access denied`
+  But aucune page d'utilisateurs n'est rendue, ni partielle
+
+Scenario: requête anonyme refusée, même avec des paramètres invalides
+  Given aucune pièce d'identité
+  When `GET /api/v1/users?page=abc` sans credential
+  Then la réponse est `401`
+  And le corps porte `MRD-AUTH-001: not authenticated (no session cookie)`
+  But le `400` de parsing de query ne se déclenche jamais : l'extracteur @AuthPrincipal passe
+    avant @Query
+
+Scenario: token invalide ou expiré refusé
+  Given un token `mrd_…` jamais émis, et séparément un token émis avec @expires_at passé
+  When `GET /api/v1/users` avec l'un puis l'autre en `Authorization: Bearer`
+  Then les deux réponses sont `401`
+  And le token inconnu produit le corps `MRD-AUTH-014: invalid or unknown API token`
+  And le token expiré produit le corps `MRD-AUTH-015: expired API token`
+
+Scenario: méthode refusée avant toute authentification
+  Given une requête `POST /api/v1/users` anonyme, corps vide
+  When elle atteint le routeur monté par @users_router
+  Then la réponse est `405`
+  And l'en-tête `Allow` est `GET`
+  But aucune authentification ni requête SQL n'est exécutée — le routeur de méthodes répond
+    d'abord
+
+Scenario: paramètre de pagination invalide
+  Given un token API valide pour un appelant non-admin (le parsing doit trancher avant le garde)
+  When `GET /api/v1/users?page=abc` avec ce porteur
+  Then la réponse est `400` (rejet de l'extracteur @Query sur @u64)
+  But ce n'est pas `403` : la validation des query params précède @is_admin, l'ordre des
+    extracteurs du handler est @State puis @AuthPrincipal puis @Query
+
+Scenario: la page demandée est respectée
+  Given `admin-sub` membre de `admin` plus trois autres utilisateurs (`user-0`, `user-1`,
+    `user-2`), soit quatre lignes au total
+  When `GET /api/v1/users?page=2&per_page=3` avec le porteur admin
+  Then la réponse est `200` avec `page` renvoyé `2`, `per_page` renvoyé `3`
+  And `total_items` vaut `4` et `total_pages` vaut `2`
+  And `items` contient exactement `1` entrée
+
+Scenario: paramètres nuls normalisés
+  Given le même jeu de quatre utilisateurs qu'« la page demandée est respectée »
+  When `GET /api/v1/users?page=0&per_page=0` avec le porteur admin
+  Then la réponse est `200` avec `page` renvoyé `1` et `per_page` renvoyé `1`
+  And `items` contient exactement `1` entrée — @Pagination::from_raw est passé avant @fetch_page
+
+Scenario: `per_page` au-dessus du plafond
+  Given le porteur admin
+  When `GET /api/v1/users?per_page=50000`
+  Then la réponse est `200`
+  And `per_page` est renvoyé écrêté à `1000` (@MAX_PER_PAGE), `page` à `1`
+
+Scenario: page au-delà de la dernière
+  Given deux utilisateurs (dont `admin-sub` membre de `admin`)
+  When `GET /api/v1/users?page=99&per_page=1` avec le porteur admin
+  Then la réponse est `200`
+  And `items` est le tableau vide `[]`
+  And `page` est renvoyé `99`, `total_items` `2`, `total_pages` `2`
+  But rien n'est ramené à la dernière page existante
+
+Scenario: itérateur vide — aucune requête de groupes
+  Given une connexion @sea_orm::MockDatabase sans aucune requête attendue
+  When @groups_by_user est appelée avec un itérateur @vide
+  Then le résultat est un @HashMap @vide
+  And aucune instruction SQL n'a été exécutée — le court-circuit précède le `is_in`
+
+Scenario: deux requêtes au plus pour une page
+  Given une @sea_orm::MockDatabase attendant exactement deux @SELECT : des memberships croisées
+    pour deux ids utilisateur, puis la liste des groupes cités
+  When @groups_by_user est appelée avec les deux ids
+  Then la carte rendue associe chaque id aux noms de ses groupes, dans l'ordre de parcours des
+    memberships
+  And aucune troisième requête n'est émise, quel que soit le volume de memberships — un @SELECT
+    de memberships et un @SELECT de groupes au total
+
+Scenario: chemin inconnu sous le préfixe monté
+  Given le routeur monté seul dans l'app de test
+  When un `GET /api/v1/utilisateurs` (chemin inconnu sous `/api/v1`) anonyme
+  Then la réponse est `404` produite par le routage @axum
+  But ni @AuthPrincipal ni @ListParams ne sont évalués, aucune requête SQL n'est émise

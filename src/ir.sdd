@@ -1,0 +1,476 @@
+Spec: ir — IR interne par entité pour le générateur TypeScript du frontend
+
+Purpose:
+  Fournir la représentation intermédiaire (IR) par entité que consomme le générateur
+    TypeScript du frontend du template miryad : champs, type/format OpenAPI, clés, clés
+    étrangères, politiques de lecture/écriture et colonnes propriétaire, filtrage et libellé —
+    dérivée des seules métadonnées déjà obligatoires de @MiryadResource et des déclarations
+    SeaORM, sans annotation supplémentaire de l'app consommatrice (#19).
+  Garder cette IR comme artefact interne distinct du contrat public @rest::openapi : deux
+    publics, deux contrats qui évoluent séparément — /miryad-core.sdd interdit d'étendre le
+    document OpenAPI d'extensions `x-miryad-*` ; l'IR est l'artefact interne de l'outillage de
+    scaffolding, `openapi.json` reste le contrat externe, et @ir ne le consomme jamais (séparation
+    consignée dans /docs/architecture.md, section Support frontend).
+  Accumuler les IR d'entités dans @ir::IrRegistry et sérialiser un fichier JSON unique ; la
+    production du fichier (binaire dédié ou sous-commande) reste à la charge de l'app
+    consommatrice — miryad-core ne fournit pas d'exécutable pour cela.
+
+Owns:
+  ./ir.rs
+
+Can read:
+  ./lib.rs — vérification du gating de features à la source : @ir y est déclaré par
+    `pub mod ir;` sans aucun `#[cfg(feature = ...)]`
+  /Cargo.toml — vérification que `sea-orm`, `serde` et `serde_json` sont des dépendances non
+    optionnelles, qu'aucune feature n'alimente ce module et que cette absence de gating est un fait
+
+References:
+  /docs/architecture.md — section Support frontend : justification de la séparation, vocabulaire
+    de types repris d'OpenAPI, point d'attention `is_owner` et résolution en deux temps des
+    references (#19)
+  /tooling.sdd — matrice de features que ce module doit traverser sans aucun gating
+  ./rest/openapi.rs — contrat public dont cet artefact est volontairement séparé ; sa spec
+    adjacente sera seule autorité sur ce côté
+
+Must:
+  Compiler et exposer @ir::resource_ir et @ir::IrRegistry sous toute combinaison de features,
+    `--no-default-features` compris : le gating est absent, vérifié dans `./lib.rs`
+    (`pub mod ir;` inconditionnel), et le module ne dépend que des dépendances non optionnelles de
+    /Cargo.toml.
+  Garder @ir::resource_ir fonction pure sans paramètre : aucun I/O, aucune trace @tracing — le
+    module n'en émet aucune —, aucune connexion base, aucun mot-clé `async`, sortie déterministe
+    pour un @E donné, appelable avant l'existence de tout registre.
+  Dériver les colonnes de @FieldIr de leur @ColumnDef et de leur @Iden : `name` est le nom
+    snake_case de la colonne, `nullable` la valeur de @ColumnDef::is_null, `is_primary_key` vient
+    de la comparaison par nom via @Iden::to_string de @PrimaryKeyToColumn::into_column — @Column
+    n'implémente pas @PartialEq, d'où la comparaison par nom et non par `==`.
+  Mapper @ColumnType vers `type` et `format` exclusivement dans le vocabulaire OpenAPI, selon la
+    table donnée en Example de cette spec — aucun enum maison, rien emprunté à @utoipa — avec deux
+    choix assumés : @ColumnType::Decimal et @ColumnType::Money retombent sur `("string", null)`
+    pour ne pas perdre de précision en JSON, et le repli `("string", null)` couvre les futures
+    variantes, @ColumnType étant `#[non_exhaustive]` en amont.
+  Renseigner @FieldIr::references avec le nom SQL physique de la table cible lorsque la relation
+    déclarée sur @E::Relation a la forme belongs_to : @RelationType::HasOne avec
+    @RelationDef::is_owner à `false`, @Identity::Unary sur @from_col dont le nom @Iden égale celui
+    de la colonne courante, @TableRef::Table comme @to_tbl ; ni @to_col ni @from_tbl ne sont lus,
+    d'où un `belongs_to` vers une colonne non-PK qui est aussi une référence.
+  S'appuyer sur la sémantique réelle de @RelationDef::is_owner construite en amont, vérifiée dans
+    le source sea-orm 2.0.2 : @EntityTrait::belongs_to construit @RelationType::HasOne avec
+    @is_owner `false`, @EntityTrait::has_one, @EntityTrait::has_many et @EntityTrait::has_many_via
+    construisent @is_owner `true` — l'inverse de leur doc-comment amont, dont la lecture littérale
+    mettrait la clé primaire dans references des relations inversées. La macro
+    `#[sea_orm(belongs_to = ...)]` de @DeriveRelation se déplie en @EntityTrait::belongs_to
+    (vérifié sea-orm-macros 2.0.2) et obéit à la même forme.
+  Retenir, quand plusieurs relations visent la même colonne, la première rencontrée dans l'ordre
+    de déclaration de @E::Relation::iter, via @find_map, sans fusion ni erreur.
+  Conserver dans @ir::IrRegistry les entités dans l'ordre d'enregistrement, sans tri, et
+    @ir::IrRegistry::register empile dans la table de résolution la paire du nom physique lu via
+    `@E::default().@table_name()` et du @resource_name : @Default est garanti par la chaîne de
+    traits @EntityName, vérifié sea-orm 2.0.2, aucune borne supplémentaire n'incombe à @E.
+  Résoudre les references — nom de table brut vers `resource_name` — uniquement dans la méthode
+    privée @ir::IrRegistry::resolved_entities : sur des copies des entités enregistrées, chaque nom
+    brut remplacé par le @resource_name de la première ligne de la table de résolution dont la
+    table égale, `null` conservé quand aucune ligne ne correspond, sans jamais muter l'état
+    interne du registre.
+  Rejouer cette résolution à chaque @ir::IrRegistry::write_to_file, afin qu'un enregistrement
+    ajouté après une première écriture apparaisse dans le fichier suivant sans reconstruire le
+    registre.
+  Sérialiser le tableau résolu par @serde_json::to_string_pretty et écrire exactement ces octets
+    via @std::fs::write : indentation `2` espaces, aucun saut de ligne final, écrasement d'une
+    cible existante, création du dossier parent jamais réalisée.
+  Lire @resource_name, @read_policy, @write_policy, @owner_column, @filter_column et
+    @label_column tels que déclarés par @MiryadResource, sans renommage ni recalcul : colonnes
+    stringifiées en snake_case par @Iden, défauts @Option::None des traits rendus par `null` dans
+    le fichier.
+  Sérialiser @FieldIr et @EntityIr par @serde::Serialize avec toutes les clés snake_case épinglées
+    — `type` pour le champ @r#type, `is_primary_key` —, `null` explicite pour @Option @None, sans
+    attribut @serde de renommage ni d'omission : les formes épinglées en second Example de cette
+    spec sont le contrat du fichier.
+  Lire @E::Column et @E::Relation — les mêmes déclarations que le schéma GraphQL Seaography
+    traverse — source de vérité commune entre les surfaces : un même belongs_to alimente à la fois
+    la traversée GraphQL et les references de l'IR, zéro duplication de déclaration.
+
+Must not:
+  Exiger de l'app consommatrice, pour l'IR, des annotations dédiées en plus de @MiryadResource —
+    @utoipa::ToSchema, attributs @serde, marqueurs de relations inventés pour l'occasion : @ir ne
+    dérive que le déjà obligatoire, à la différence de @rest::openapi qui exige @ToSchema.
+  Se fier au doc-comment amont de @RelationDef::is_owner : lu littéralement, il ferait rejeter les
+    belongs_to et accepter les @EntityTrait::has_one inversées.
+  Dériver quoi que ce soit de @rest::openapi, de `openapi.json` ou d'une extension `x-miryad-*`
+    qui s'y trouverait : le mapping se construit sur @ColumnType, les deux artefacts ne fusionnent
+    jamais.
+  Créer dans miryad-core un exécutable ou une sous-commande CLI qui produit le fichier IR :
+    l'appel de la génération appartient au template miryad, la crate reste une bibliothèque.
+
+Depends on:
+  ./resource.rs — @MiryadResource, source des métadonnées déclarées, et @AccessPolicy dont le
+    @Serialize dérivé nu s'insère dans l'IR sans renommage ni adaptation locale
+  @sea_orm — @Iterable, @ColumnTrait, @RelationTrait, @PrimaryKeyToColumn, @Iden, @Identity,
+    @RelationDef, @RelationType, plus @sea_orm::sea_query ré-exporté (@ColumnType, @TableRef,
+    @TableName)
+  @serde — derives @Serialize de @FieldIr et @EntityIr, sans attribut additionnel
+  @serde_json — @serde_json::to_string_pretty et la conversion de @serde_json::Error vers
+    @std::io::Error que consomme le `?` de @ir::IrRegistry::write_to_file
+  @std::fs et @std::io — écriture et type d'erreur @std::io::Result de @ir::IrRegistry::write_to_file
+
+Exposes:
+  @ir::FieldIr — `pub struct` @Debug + @Clone + @Serialize, champs publics
+    `pub @name: @String`, `pub @r#type: &'static @str` de clé JSON `type`, `pub @format:
+    @Option<&'static @str>`, `pub @nullable: bool`, `pub @is_primary_key: bool` et
+    `pub @references: @Option<@String>`
+    @None de @references recouvre deux états : colonne hors belongs_to scalaire, ou cible non
+    encore résolue faute de registre
+  @ir::EntityIr — `pub struct` @Debug + @Clone + @Serialize, champs publics
+    `pub @resource_name: @String`, `pub @fields: @Vec<@FieldIr>`, `pub @read_policy:
+    @AccessPolicy`, `pub @write_policy: @AccessPolicy`, `pub @owner_column: @Option<@String>`,
+    `pub @filter_column: @Option<@String>`, `pub @label_column: @Option<@String>`
+  @ir::resource_ir — `pub fn resource_ir<E: @MiryadResource>() -> @EntityIr`, fonction pure sans
+    paramètre runtime
+  @ir::IrRegistry — `pub struct` @Debug + @Default à champs privés ; `pub fn new() -> @Self` —
+    identique en comportement à @Default::default —,
+    `pub fn register<E: @MiryadResource>(&mut self) -> &mut Self`,
+    `pub fn write_to_file(&self, path: impl @AsRef<@Path>) -> @std::io::Result`
+    La résolution @ir::IrRegistry::resolved_entities reste privée, visible seulement via
+    @ir::IrRegistry::write_to_file
+  Les auxiliaires privés @ir::openapi_type et @ir::resolve_reference_table : pas de surface
+    publique, mais contractualisés ici car le `#[cfg(test)] mod tests` du fichier les appelle en
+    direct
+  Aucun gating de feature, aucun `pub use` : @ir::resource_ir et @ir::IrRegistry s'atteignent par
+    @ir, comme le promet la documentation racine de `./lib.rs` et de sa spec ./lib.sdd
+
+Accepts:
+  @ir::resource_ir : rien au runtime — son seul entrée est @E borné par @MiryadResource — sans
+    précondition de base de données, de registre ni de feature sélectionnée.
+  @ir::IrRegistry::register : @E borné par @MiryadResource ; le nom de table physique est lu sur
+    l'instance produite par @Default — `@E::default().@table_name()` —, aucune borne additionnelle
+    n'est requise sur @E.
+  @ir::IrRegistry::write_to_file : un chemin `impl @AsRef<@Path>` choisi par l'appelant, dont le
+    dossier parent existe déjà — la méthode ne crée aucun dossier et n'impose aucune convention
+    d'emplacement.
+  Pour le module entier : toute combinaison de features de /tooling.sdd, y compris
+    `--no-default-features` — le module ne consomme et ne requiert aucune feature.
+
+Returns:
+  @ir::resource_ir : un @EntityIr qui ne peut pas échouer, @fields dans l'ordre de
+    @E::Column::iter — ordre dérivé des colonnes, ordre de déclaration du modèle, sans tri.
+  @ir::IrRegistry::register : le registre lui-même, `&mut self`, pour chaînage.
+  @ir::IrRegistry::write_to_file : `()` quand @std::fs::write a réussi ; le fichier contient alors
+    exactement la sortie de @serde_json::to_string_pretty sur le tableau résolu des entités — `[]`
+    pour un registre vide —, un objet par entité enregistrée, dans l'ordre d'enregistrement.
+  @FieldIr::references porte le nom de table physique brut sur la sortie de @ir::resource_ir ; le
+    même champ porte le `resource_name` résolu dans le fichier écrit par
+    @ir::IrRegistry::write_to_file : les deux états contractuels d'un même champ, jamais mélangés
+    dans un même artefact.
+
+Raises:
+  Aucun code `MRD-*` : le module n'émet aucun code d'erreur interne — la seule surface d'échec est
+    @ir::IrRegistry::write_to_file, et @HookError n'y a pas d'usage.
+  Sur échec I/O de @ir::IrRegistry::write_to_file : @std::io::Error de @std::fs::write propagé tel
+    quel, sans enrobage local — @std::io::ErrorKind::NotFound quand le dossier parent manque,
+    @std::io::ErrorKind::PermissionDenied, cible en usage, etc. — seuls les kinds @std::io
+    existent.
+  Sur échec de sérialisation — branche inatteignable par la surface publique d'aujourd'hui car
+    tout champ de @EntityIr se sérialise — @ir::IrRegistry::write_to_file rend un @std::io::Error
+    bâti depuis @serde_json::Error par la conversion amont, vérifiée dans le source serde_json
+    1.0.151 : les catégories @Syntax et @Data donnent @std::io::ErrorKind::InvalidData, @Eof donne
+    @std::io::ErrorKind::UnexpectedEof.
+
+Handles:
+  Entité au enum Relation vide : @E::Relation::iter ne rend rien et toutes les `references` restent
+    @Option::None.
+  Clé étrangère composite portée par @from_col : @Identity::Binary, @Identity::Ternary,
+    @Identity::Many — aucune correspondance, la référence composite reste non supportée (#19,
+    consigné dans le récit d'architecture).
+  Relations inversées @EntityTrait::has_one et @EntityTrait::has_many, y compris
+    @EntityTrait::has_many_via : exclues par la garde @is_owner `false`, car l'amont les construit
+    avec @is_owner `true`.
+  @RelationDef construite à la main avec @RelationType::BelongsTo : jamais retenue comme
+    référence, la garde n'admet que @RelationType::HasOne tel que @EntityTrait::belongs_to le
+    construit.
+  @to_tbl autre que @TableRef::Table — @TableRef::SubQuery, @TableRef::ValuesList,
+    @TableRef::FunctionCall, et futures variantes, @TableRef étant `#[non_exhaustive]` en amont,
+    vérifié sea-query 1.0.2 — : branche de repli vers @Option::None.
+  Table qualifiée par un schéma ou aliasée : @TableName.0 — le schéma — est jeté avec le champ
+    alias de @TableRef, seul @TableName.1 — le nom nu — est conservé ; le registre et la
+    résolution utilisant cette même clé nue, la résolution reste correcte mais ne peut distinguer
+    deux tables qualifiées du même nom nu.
+  Collision de noms physiques — deux entités enregistrées avec le même @table_name — : la
+    résolution des references tombe sur la première entité enregistrée, en ordre @find.
+  Enregistrement double d'une même entité : deux entités et deux paires de résolution identiques
+    dans le registre, sans déduplication — voir le `[?]` de `Tasks`.
+  Variante de @ColumnType inconnue à l'écriture de la crate : le repli de @ir::openapi_type rend
+    `("string", null)` au lieu d'une erreur de compilation.
+  Politique @AccessPolicy::Group : transmise sans interprétation, sa sérialisation définie dans
+    ./resource.rs est restituée.
+  Registre vide : @ir::IrRegistry::write_to_file produit un tableau JSON vide mais légal — pas une
+    erreur.
+
+Tasks:
+  [?] @ir::IrRegistry ne déduplique ni n'avertit en collision : deux @ir::IrRegistry::register
+    d'une même entité produisent deux entrées identiques dans le tableau JSON, et deux tables
+    physiques partageant le même @table_name nu résolvent les references vers la première entité
+    enregistrée. Contrat pris tel quel, ou @ir::IrRegistry::register doit-il dédupliquer ou
+    refuser ?
+  [?] @ir::EntityIr est `pub` et @Serialize : un consommateur de @ir::resource_ir peut
+    court-circuiter @ir::IrRegistry::write_to_file et sérialiser l'objet, avec des `references`
+    restées noms de table bruts, sans aucun signal distinguant les deux états contractuels du
+    champ. Réserver la sérialisation d'artefact à @ir::IrRegistry::write_to_file, ou accepter la
+    sérialisation directe de @ir::FieldIr et @ir::EntityIr ?
+  [?] Repli `("string", null)` de @ir::openapi_type : toute variante amont actuelle a une branche
+    explicite, aucune testabilité de la branche de repli tant que @ColumnType n'ajoute pas de
+    variante — `#[non_exhaustive]`. Figer sa forme dès maintenant — la première variante amont
+    future tombe sur `("string", null)` par contrat — ou laisser sans preuve ?
+  [?] Perte de la qualification : @TableName.0 — le schéma — est jeté par le source et la clé du
+    registre est le @table_name nu. Les apps miryad ont-elles des tables qualifiées hors public —
+    auquel cas la collision d'homonymes est réelle — ou le nom nu suffit et cette suffisance
+    devient un contrat à écrire ici ?
+  [ ] Rejouer la matrice complète de /tooling.sdd après ajout des tests des `Scenario` — défaut,
+    `--no-default-features`, `swagger-ui`, `graphql`, `graphiql`, `mcp`, `--all-features`, clippy
+    `-D warnings` sur chaque combinaison et `cargo fmt --check` — @ir n'étant pas gaté, la
+    combinaison `--no-default-features` est l'authentique garde de cette absence.
+  [ ] Convertir les dix-huit `Scenario` en au moins dix-huit tests nommés et distincts — neuf
+    conservés, neuf créés — dans le `#[cfg(test)] mod tests` de `./ir.rs`, le contrat ne déborde
+    pas du fichier, et avec la correspondance exacte suivante :
+    « @ir::resource_ir reflète les champs et types déclarés » →
+      `resource_ir_reflects_fields_types_and_policy`, conservé tel quel
+    « Entité sans override met les trois colonnes par défaut à `null` » →
+      `entity_without_label_column_override_defaults_to_none`, étendu aux nulls d'`owner_column`
+      et de `filter_column` sur @ingredient::Entity autant que de `label_column`
+    « @read_policy et @write_policy rendus tels que déclarés » →
+      `resource_ir_reports_declared_policies`, créé, par contraste de @recipe::Entity et
+      @ingredient::Entity
+    « Champs conservés dans l'ordre de @E::Column::iter » →
+      `resource_ir_fields_follow_column_iteration_order`, créé
+    « @ir::resource_ir seule déclare les noms de table SQL bruts » →
+      `resource_ir_reports_raw_table_name_for_belongs_to_relations`, conservé
+    « Le registre résout les references en `resource_name` » →
+      `ir_registry_resolves_references_to_resource_name`, conservé
+    « Entité cible non enregistrée laisse les references à `null` » →
+      `ir_registry_leaves_reference_unresolved_when_target_entity_not_registered`, conservé
+    « @belongs_to se marie seulement sur la bonne colonne » →
+      `resolve_reference_table_matches_belongs_to_on_the_right_column`, conservé
+    « @has_one et @has_many ne sont jamais source de references » →
+      `resolve_reference_table_ignores_reversed_has_one_has_many`, conservé
+    « Clés étrangères composites jamais references » →
+      `resolve_reference_table_ignores_composite_foreign_keys`, conservé
+    « @openapi_type map toutes les variantes couvertes de @ColumnType » →
+      `openapi_type_maps_every_covered_column_type_variant`, construit par appel direct de
+      @ir::openapi_type sur chaque variante @ColumnType construite, même pattern que les tests de
+      @ir::resolve_reference_table
+    « Le fichier écrit est un tableau JSON valide » → `write_to_file_produces_valid_json_array`,
+      conservé
+    « Les clés et les valeurs `null` du fichier sont épinglées » →
+      `write_to_file_emits_exact_json_shape`, construit sur la comparaison octet à octet avec
+      @serde_json::to_string_pretty
+    « La politique @AccessPolicy::Group s'écrite taguée externement » →
+      `entity_ir_serializes_group_policy_externally_tagged`, construite avec une fixture d'entité
+      en @AccessPolicy::Group et lecture JSON du fichier
+    « Un registre vide écrit le tableau `[]` » →
+      `write_to_file_writes_empty_array_for_empty_registry`, construit
+    « Un dossier parent manquant lève `NotFound` » →
+      `write_to_file_on_missing_parent_dir_yields_not_found_error`, construit
+    « L'écriture est répétible sans muter le registre, et les enregistrements supplémentaires y
+      sont lus » → `write_to_file_is_repeatable_and_includes_later_registrations`, construit
+    « Les entités apparaissent dans l'ordre d'enregistrement, chaînage inclus » →
+      `write_to_file_preserves_registration_order_and_register_chains`, construit
+    Neuf tests conservés, neuf à créer, total dix-huit pour dix-huit `Scenario` ; tous vivent dans
+    le `#[cfg(test)] mod tests` de `./ir.rs`, le contrat ne déborde pas dans les crates
+    d'intégration.
+
+Done when:
+  La spec porte exactement dix-huit `Scenario`, chacun vérifié par son test nommé distinct listé
+    dans `Tasks` — neuf conservés, neuf créés — exerçant son `Then` dans le `#[cfg(test)] mod
+    tests` de `./ir.rs`.
+  Le mapping de @ir::openapi_type est testé variante par variante par appel direct de la fonction
+    privée, comme les tests de @ir::resolve_reference_table le font déjà.
+  Les tests de fichier épinglent les octets exacts de @serde_json::to_string_pretty, sans newline
+    final, les clés épinglées, @None rendu par `null` explicite et @AccessPolicy::Group en tag
+    externe.
+  La matrice /tooling.sdd est verte en défaut et sous `--no-default-features` — @ir est sans
+    gating —, et le harnais n'ajoute aucun warning sur les fichiers touchés.
+  Les questions `[?]` portées par `Tasks` ont été arbitrées par Sébastien, portées dans `Must`,
+    `Handles` ou `Tasks`.
+  Le fichier est lisible, `npx specdd lint src/ir.sdd` sort sans erreur, et Sébastien a approuvé la
+    spec : le comportement accidentel de #19 ne devient contrat qu'à ce prix.
+
+Scenario: @ir::resource_ir reflète les champs et types déclarés
+  Given la fixture @recipe::Entity, @MiryadResource sur une table à PK `id` (@i32), colonne `title`
+    (@String), colonne `owner_id` (@i32) retournée par @MiryadResource::owner_column, colonne
+    `label_column` retournée par @MiryadResource::label_column, colonne `notes` @Option<@String>
+  When @ir::resource_ir est appelée sur @recipe::Entity
+  Then @resource_name de l'@EntityIr est `recipes`, @read_policy est @AccessPolicy::Public et
+    @write_policy est @AccessPolicy::OwnerOnly
+  And le champ `id` a @r#type `integer`, @format `int32`, @is_primary_key à `true` et @nullable à
+    `false`
+  And le champ `title` a @r#type `string` et @nullable `false`, et le champ `notes` a @r#type
+    `string` et @nullable `true`
+
+Scenario: Entité sans override met `label_column` et `filter_column` par défaut à `null`
+  Given la fixture @ingredient::Entity, sur laquelle @MiryadResource::label_column ne surcharge pas
+    le défaut et @MiryadResource::filter_column ne surcharge pas le défaut, @owner_column
+    retournant @Option::None
+  When @ir::resource_ir est appelée sur @ingredient::Entity
+  Then @owner_column, @label_column et @filter_column de l'@EntityIr sont @Option::None, rendus
+    par `null` dans le fichier
+
+Scenario: @read_policy et @write_policy rendus tels que déclarés
+  Given @recipe::Entity, déclarée en @AccessPolicy::Public en lecture et @AccessPolicy::OwnerOnly
+    en écriture, et @ingredient::Entity, déclarée en @AccessPolicy::AdminOnly dans les deux sens
+  When @ir::resource_ir est appelée sur l'une puis sur l'autre
+  Then chaque @EntityIr porte @read_policy et @write_policy exactement telles que déclarées, sans
+    croisement ni relâchement dans le sens de l'autre politique
+
+Scenario: Champs conservés dans l'ordre de @E::Column::iter
+  Given une entité dont l'enum @Column::iter produit un ordre non alphabétique
+  When @ir::resource_ir est appelée sur cette entité
+  Then @fields de l'@EntityIr est dans l'ordre produit par @E::Column::iter, sans tri alphabétique
+    ni remaniement
+
+Scenario: @ir::resource_ir seule déclare les noms de table SQL bruts
+  Given la fixture @recipe_ingredient::Entity, avec une seule relation @RelationType::HasOne
+    non-owned — la forme belongs_to, @is_owner `false` vérifié sea-orm 2.0.2 — de sa FK `recipe_id`
+    vers la table `recipes` de @recipe::Entity, et `tag_id` vers @tag::Entity dont la table SQL est
+    `tags` et le @resource_name `recipe-tags`
+  When @ir::resource_ir est appelée sur @recipe_ingredient::Entity seule, sans aucun registre
+  Then le champ `recipe_id` porte @references `recipes`
+  And le champ `tag_id` porte @references `tags` — le nom de table brut, pas le @resource_name
+    `recipe-tags` —, la fixture @ingredient et @Column::TagId étant là pour prouver la même règle
+    sur d'autres colonnes FK
+  And le champ `id` garde @references @Option::None
+
+Scenario: Le registre résout les references en `resource_name`
+  Given un @ir::IrRegistry où sont enregistrés @recipe::Entity, @ingredient::Entity, @tag::Entity
+    et @recipe_ingredient::Entity
+  When la vue résolue est lue — @ir::IrRegistry::resolved_entities appelable par le test inline, ou
+    la sortie de @ir::IrRegistry::write_to_file
+  Then le champ `tag_id` de `recipe-ingredients` porte @references `recipe-tags`, non `tags` : la
+    collision discriminante prouve que @ir::IrRegistry a converti le nom de table, pas recopié
+  And le champ `recipe_id` porte `recipes`, par coïncidence de nom
+
+Scenario: Entité cible non enregistrée laisse les references à `null`
+  Given un @ir::IrRegistry où seule @recipe_ingredient::Entity est enregistrée, @recipe::Entity,
+    @ingredient::Entity et @tag::Entity étant volontairement absentes
+  When la vue résolue est lue
+  Then les `references` de `recipe_id`, `ingredient_id` et `tag_id` restent @Option::None, alors
+    que @ir::resource_ir seule portait leurs noms de table bruts
+
+Scenario: @belongs_to ne marie que la colonne déclarée
+  Given une @RelationDef de forme belongs_to — @RelationType::HasOne, @is_owner `false`, @from_col
+    `recipe_id`, @TableRef::Table cible `recipes`, helper @relation_def —
+  When @ir::resolve_reference_table est appelée avec `recipe_id` comme nom de colonne
+  Then le nom de table `recipes` est retourné
+  When elle est appelée avec `other_id` sur la même relation
+  Then @Option::None est retourné, et l'absence de correspondance sur d'autres colonnes FK de
+    @recipe_ingredient::Entity est couverte par la vérification de @from_col
+
+Scenario: @has_one et @has_many ne sont jamais sources de references
+  Given une @RelationDef @RelationType::HasOne construite avec @is_owner `true` — ce que
+    @EntityTrait::has_one construit réellement — et une @RelationDef @RelationType::HasMany —
+    @EntityTrait::has_many construit @is_owner `true`, même exclue —
+  When @ir::resolve_reference_table est appelée sur chacune, avec la colonne nominative `id` pour
+    l'une et `recipe_id` pour l'autre
+  Then chacune retourne @Option::None : aucune relation inverse ne peut alimenter
+    @FieldIr::references
+
+Scenario: Clés étrangères composites jamais references
+  Given une @RelationDef belongs_to dont l'identité est un @Identity::Binary — @from_col `a_id` et
+    `b_id`
+  When @ir::resolve_reference_table est appelée avec `a_id`
+  Then @Option::None est retourné : la @Identity::Binary — et @Identity::Ternary et
+    @Identity::Many par le même branch — ne produit jamais de référence
+
+Scenario: @openapi_type map toutes les variantes couvertes de @ColumnType
+  Given @ColumnType construit variante par variante selon la table en Example — dont
+    @ColumnType::Decimal, @ColumnType::Money, @ColumnType::Uuid, @ColumnType::Json,
+    @ColumnType::Blob, @ColumnType::BigInteger et @ColumnType::Array
+  When @ir::openapi_type est appelée sur chacune
+  Then chaque couple correspond exactement à la ligne attendue : `Decimal` et `Money` →
+    `("string", null)`, `Uuid` → `("string", "uuid")`, `Json` → `("object", null)`, `Blob` →
+    `("string", "byte")`, `BigInteger` → `("integer", "int64")`, `Array` → `("array", null)`
+  And @format nul en JSON lorsque le couple porte `null`, jamais une clé absente
+
+Scenario: Le fichier écrit est un tableau JSON valide
+  Given un @ir::IrRegistry avec seulement @recipe::Entity enregistré
+  When @ir::IrRegistry::write_to_file écrit un fichier
+  Then le fichier se relit comme un tableau JSON valide de longueur `1`
+  And l'élément porte @resource_name `recipes`
+
+Scenario: Les clés et les valeurs `null` du fichier sont épinglées
+  Given un @ir::IrRegistry avec @recipe::Entity enregistré, dont @filter_column est @Option::None
+    et dont `notes` a @format nul
+  When @ir::IrRegistry::write_to_file écrit un fichier
+  Then le fichier est octet pour octet la sortie de @serde_json::to_string_pretty sur le tableau
+    résolu, sans newline final
+  And l'objet entité porte exactement les clés `resource_name`, `fields`, `read_policy`,
+    `write_policy`, `owner_column`, `filter_column`, `label_column`, et chaque champ exactement
+    `name`, `type`, `format`, `nullable`, `is_primary_key`, `references`
+  And chaque @None apparaît comme `null` explicite — `filter_column`, `label_column` sur une
+    entité sans libellé, `format`, `references` — et aucune clé n'est ni sautée ni renommée
+
+Scenario: La politique @AccessPolicy::Group s'écrite taguée externement
+  Given une fixture d'entité en @AccessPolicy::Group avec le groupe `admins` en lecture et en
+    écriture
+  When son @ir::EntityIr est résolu dans un @ir::IrRegistry puis @ir::IrRegistry::write_to_file
+    écrit
+  Then le JSON porte `read_policy` comme l'objet `{"Group":"admins"}` — tag externe amont de
+    @resource::AccessPolicy restitué tel quel — et non comme une chaîne plate
+
+Scenario: Un registre vide écrit le tableau `[]`
+  Given un @ir::IrRegistry sans aucun enregistrement
+  When @ir::IrRegistry::write_to_file écrit un fichier
+  Then le fichier écrit exactement `[]`, et l'appel rend @Ok : le vide est un artefact légal, pas
+    une erreur
+
+Scenario: Un dossier parent manquant lève `NotFound`
+  Given un chemin de fichier sous un dossier parent inexistant
+  When @ir::IrRegistry::write_to_file écrit à ce chemin
+  Then @Err remonte un @std::io::Error de kind @std::io::ErrorKind::NotFound, propagé sans
+    enrobage ni code `MRD-*` ajouté par le module
+  And aucun dossier n'est créé par @std::fs::write
+
+Scenario: L'écriture est répétible sans muter le registre, et les enregistrements supplémentaires y sont lus
+  Given un @ir::IrRegistry avec @recipe::Entity enregistré, déjà écrit une fois sur un fichier
+  When @ir::IrRegistry::write_to_file est relancé sur la même cible, sans rien réenregistrer
+  Then le second appel rend @Ok et le fichier est identique octet pour octet au premier, y compris
+    les `references` restés bruts — @ir::IrRegistry::resolved_entities clone et ne mute jamais le
+    registre
+  Then @ir::IrRegistry::register d'@ingredient::Entity sur le même @ir::IrRegistry sans nouveau
+    registre préalable, puis un troisième écrit, fait apparaître `ingredients` dans le fichier — la
+    résolution et la sérialisation sont rejouées à chaque écriture
+
+Scenario: Les entités apparaissent dans l'ordre d'enregistrement, chaînage inclus
+  Given un @ir::IrRegistry construit par chaînage : `@ir::IrRegistry::new().register::<@recipe::Entity>().register::<@ingredient::Entity>()`
+  When @ir::IrRegistry::write_to_file écrit un fichier
+  Then le fichier contient @recipe::Entity et @ingredient::Entity dans l'ordre d'enregistrement,
+    sans tri ni déduplication — un second @ir::IrRegistry::register de la même entité produirait
+    deux entrées identiques
+
+Example:
+  Mapping @ir::openapi_type — @ColumnType → `("type", "format")`, `null` = @format non émis en JSON
+  `@ColumnType::Char`, `@ColumnType::String`, `@ColumnType::Text`, `@ColumnType::Custom`,
+    `@ColumnType::Interval`, `@ColumnType::Bit`, `@ColumnType::VarBit`, `@ColumnType::Cidr`,
+    `@ColumnType::Inet`, `@ColumnType::MacAddr` → `("string", null)`
+  `@ColumnType::Enum`, `@ColumnType::LTree`, `@ColumnType::Array`, `@ColumnType::Vector` →
+    `("string", null)` pour @ColumnType::Enum et @ColumnType::LTree, `("array", null)` pour
+    @ColumnType::Array et @ColumnType::Vector
+  `@ColumnType::TinyInteger`, `@ColumnType::SmallInteger`, `@ColumnType::Integer`,
+    `@ColumnType::TinyUnsigned`, `@ColumnType::SmallUnsigned`, `@ColumnType::Unsigned`,
+    `@ColumnType::Year` → `("integer", "int32")`
+  `@ColumnType::BigInteger` et `@ColumnType::BigUnsigned` → `("integer", "int64")`
+  `@ColumnType::Float` → `("number", "float")` ; `@ColumnType::Double` → `("number", "double")`
+  `@ColumnType::Decimal` et `@ColumnType::Money` → `("string", null)` — choix assumé, précision JSON
+  `@ColumnType::DateTime`, `@ColumnType::Timestamp`, `@ColumnType::TimestampWithTimeZone` →
+    `("string", "date-time")`
+  `@ColumnType::Time` → `("string", "time")` ; `@ColumnType::Date` → `("string", "date")`
+  `@ColumnType::Boolean` → `("boolean", null)` ; `@ColumnType::Json`, @ColumnType::JsonBinary →
+    `("object", null)`
+  `@ColumnType::Uuid` → `("string", "uuid")` ; `@ColumnType::Blob`, @ColumnType::Binary,
+    @ColumnType::VarBinary → `("string", "byte")`
+  Toute variante non citée ci-dessus — @ColumnType est `#[non_exhaustive]` en amont — →
+    `("string", null)`
+
+Example:
+  Clés @ir::EntityIr sérialisé : `resource_name`, `fields`, `read_policy`, `write_policy`,
+    `owner_column`, `filter_column`, `label_column`
+  Clés @ir::FieldIr sérialisé : `name`, `type`, `format`, `nullable`, `is_primary_key`, `references`
+  @ir::IrRegistry::write_to_file sur un registre vide → `[]`

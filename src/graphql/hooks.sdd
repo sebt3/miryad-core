@@ -1,0 +1,631 @@
+Spec: hooks — @MiryadHooks : garde d'accès Seaography branchée sur @PolicyRegistry
+
+Purpose:
+  Monte la garde d'accès GraphQL de la crate : @MiryadHooks implémente
+    @seaography::@LifecycleHooksInterface et relit, à chaque appel de hook synchrone, la politique
+    consignée par @PolicyRegistry sous l'identifiant d'entité que @seaography passe à ses hooks,
+    sur le snapshot @GraphQlPrincipal précalculé par ./handler.rs. Trois décisions sortent du
+    fichier : @GuardAction par @entity_guard (lecture et mutations, par action), clause SQL
+    d'ownership par @entity_filter, mutation ou refus par @before_active_model_save (création
+    seule, miroir GraphQL de @crate::rest::core::create appelant @crate::resource::MiryadResource::before_create).
+    Le fichier est le seul porteur de la crate pour le domaine `MRD-GQL` : @MRD-GQL-001 (création
+    @AccessPolicy::OwnerOnly sans colonne propriétaire) et @MRD-GQL-002 (@crate::auth::AuthPrincipal
+    absent des données de requête au hook métier).
+  La parité REST/GraphQL (/miryad-core.sdd) est tenue par la source commune des déclarations —
+    @EntityPolicy est le miroir de @crate::resource::MiryadResource posé par ./registry.sdd — et non
+    par un évaluateur partagé : ce fichier ne relit jamais @crate::rbac et peut donc en diverger.
+    Les écarts constatés avec /src/rbac.sdd (fail-open GraphQL contre fail-closed RBAC en lecture
+    comme en mutation) sont consignés ligne à ligne dans `Handles` et `Tasks`, jamais présentés
+    comme une parité acquise.
+  Résolution de clé : le registre est indexé par @crate::resource::MiryadResource::resource_name ;
+    l'identifiant que @seaography passe réellement est le nom de table SQL en `UpperCamelCase`
+    (preuve au source amont, consignée par `[!]` #19 de /src/resource.sdd et reprise dans
+    ./registry.sdd). Toute politique non retrouvée retombe sur @GuardAction::Allow, @entity_filter
+    @None et hook non dispatché : fail-open ACTUEL, bug tranché par Sébastien, à corriger sur la
+    branche `fix/graphql-policy-key-mismatch` — la présente spec décrit l'état du code, pas l'état
+    voulu.
+  Gating : aucun `#[cfg(feature = ...)]` interne ; le fichier et ses tests inline ne compilent que
+    par la déclaration `#[cfg(feature = "graphql")]` de /src/lib.rs (contrat de ./mod.sdd), donc sur
+    les runs `--features graphql`, `--features graphiql` (implication) et `--all-features` de la
+    matrice /tooling.sdd ; absent ailleurs, sans stub ni erreur.
+
+Owns:
+  ./hooks.rs
+    Y compris tout @mod tests `#[cfg(test)]` inline qu'il portera : à la rédaction le fichier ne
+    contient aucun test (129 lignes vérifiées, finissant sur l'implémentation de
+    @before_active_model_save) — les preuves des `Scenario` sont à créer (`Tasks`).
+
+References:
+  /miryad-core.sdd — hérité : parité des trois surfaces lues depuis la seule
+    @crate::resource::MiryadResource, codes `MRD-<DOMAINE>-NNN` dont le domaine `MRD-GQL` porté ici
+    en entier, @crate::resource::HookError hors taxonomie, une-spec-par-fichier
+  /.specdd/bootstrap.project.md — flux de correction de bug : branche `fix/<description>` depuis
+    `origin/main`, spec réécrite avant code — cadre de la branche `fix/graphql-policy-key-mismatch`
+  ./registry.sdd — contrat amont qui alimente @EntityPolicy (@read, @write, @owner_column en nom
+    brut @Iden, pointeur @before_create) et consignation partagée de `[!]` #19 ; le @None de
+    @PolicyRegistry::get naît là, sa transformation en @GuardAction::Allow naît ici
+  ./mod.sdd — agrégation et gating ; lui a déjà délégué à la présente spec l'arbitrage de
+    l'enveloppe `MRD-GQL` (chaîne dans @GuardAction::Block contre type typé) et du fail-open
+    d'enregistrement — repris dans `Tasks` ci-dessous
+  /src/resource.sdd — `[!]` #19 tranché (fail-closed attendu sur clé inconnue), `[?]` de
+    @crate::resource::MiryadResource::filter_column sur-promis pour GraphQL (re-consigné ici côté
+    consommateur), contrat @AccessPolicy/@HookError/@MiryadResource
+  /src/rbac.sdd — évaluateur dont ce fichier NE consomme RIEN : ses lignes `[?]` sur le fail-closed
+    @AccessPolicy::OwnerOnly sans colonne et l'asymétrie GraphQL sont ici les écarts de référence,
+    consignés dans `Handles` ligne par ligne
+  ./handler.rs — amont d'assemblage : @load_principal par requête avant @schema.execute, injection
+    en données de requête de @DatabaseConnection, @GraphQlPrincipal et @crate::auth::AuthPrincipal ;
+    l'extraction d'identité (cookie ou token) est décidée là, avant ces hooks
+  ./principal.rs — @GraphQlPrincipal : @user_id (@i32), @is_admin (@bool), @groups (@HashSet) —
+    seule source d'appartenance lue par ce fichier
+  /src/rest/core.rs — invariants de @crate::rest::core::create et @crate::rest::core::update
+    (retrait de la clé primaire client, injection et immuabilité de la colonne propriétaire sous
+    `OwnerOnly`) contre lesquels `Handles` compare le chemin GraphQL
+  /docs/architecture.md — récit : rejet du RBAC natif Seaography, hook métier recevant
+    @crate::auth::AuthPrincipal et non le @GraphQlPrincipal dérivé, assemblage de l'app en deux
+    gestes parallèles
+  /tooling.sdd — matrice qui prouve le gating et borne les tests aux runs contenant `graphql`
+
+Must:
+  Résoudre la politique par égalité stricte : @entity_guard, @entity_filter et
+    @before_active_model_save cherchent l'identifiant `&str` reçu de @seaography octet pour octet
+    dans @PolicyRegistry::get — aucune normalisation de casse, aucun repli — et toute la décision
+    ci-dessous est conditionnée à cette trouvaille (son absence : `Handles`, `[!]` des `Tasks`).
+  Lire la politique selon l'action : @OperationType::Read évalue @EntityPolicy::read ;
+    @OperationType::Create, @OperationType::Update et @OperationType::Delete évaluent
+    @EntityPolicy::write — dans @entity_guard comme dans @entity_filter, deux déclarations
+    toujours lues indépendamment, sans fusion.
+  Accorder le raccourci admin avant toute politique retrouvée : @GraphQlPrincipal::is_admin à @true
+    donne @GuardAction::Allow dans @entity_guard (y compris @AccessPolicy::AdminOnly et
+    @AccessPolicy::Group sans appartenance) et @entity_filter @None (aucune clause propriétaire).
+  Décider @entity_guard sur la politique retenue hors admin : @AccessPolicy::Public →
+    @GuardAction::Allow sans aucune autre lecture ; @AccessPolicy::Group(@nom) → @Allow si
+    @GraphQlPrincipal::groups contient le nom à l'octet près, @GuardAction::Block(@None) sinon ;
+    @AccessPolicy::AdminOnly hors admin → @GuardAction::Block(@None) — @None sans motif, le code
+    n'y met aucun texte.
+  Décider @AccessPolicy::OwnerOnly dans @entity_guard par @Allow, sauf une seule branche en refus :
+    @OperationType::Create ET @EntityPolicy::owner_column à @None ET principal non-admin →
+    @GuardAction::@Block(Some(le motif exact `MRD-GQL-001: OwnerOnly without owner_column`)). Pour
+    @Read, @Update et @Delete la restriction propriétaire n'est pas un contrôle au garde : elle est
+    la clause de requête d'@entity_filter — et seulement là.
+  Construire @entity_filter comme une conjonction @sea_orm::@Condition::all().add d'une seule
+    égalité : @Expr::col(@Alias::new(@nom_brut)) de la colonne propriétaire lue en chaîne, égal à
+    @GraphQlPrincipal::user_id — jamais une disjonction, jamais une clause sur une autre colonne.
+    L'expression n'est rendue qu'en hors-admin sur politique @OwnerOnly ; tout autre cas (politique
+    @Public, @AdminOnly, @Group ; admin ; colonne @None ; @GraphQlPrincipal absent des données de
+    requête) répond @None.
+  Réserver @before_active_model_save à la création : action autre que @OperationType::Create →
+    @GuardAction::Allow immédiat, sans lire le registre ni les données de requête. Sur
+    @OperationType::Create avec politique retrouvée : lire @crate::auth::AuthPrincipal dans les
+    données de requête — absence → @GuardAction::@Block(Some(le motif exact
+    `MRD-GQL-002: AuthPrincipal missing from request data`)), panne d'intégration de l'app refusée
+    bruyamment plutôt que laissée silencieuse ; présent → dispatcher le pointeur
+    @EntityPolicy::before_create sur l'@ActiveModel effacé `&mut dyn @std::any::Any` et rendre :
+    @Ok → @GuardAction::Allow avec la mutation écrite en place ; @Err(d'un @crate::resource::HookError)
+    → @GuardAction::@Block(Some(de @code.followé de `: ` puis @message quand @code est @Some, du seul
+    @message quand @code est @None)).
+  Rendre @MRD-GQL-002 indépendant de la politique et du rôle : il bloque un principal admin comme
+    une politique @Public — la condition d'appel est (action @Create, clé retrouvée,
+    @crate::auth::AuthPrincipal absent), rien de plus. À l'inverse @MRD-GQL-001 dépend des deux :
+    politique @write `OwnerOnly` ET colonne @None — la politique de lecture reste sans effet.
+  Restituer toute décision par le vocabulaire @GuardAction de `seaography-2.0.0-rc.9`, vérifié au
+    source et seul de son enum : @GuardAction::Allow et @GuardAction::@Block(@Option<@String>) — il
+    n'existe aucune variante `Forbid` ni `Unauthorized`. @Block(@Some(motif)) devient
+    @async_graphql::@Error portant le motif verbatim comme seul texte d'erreur ; @Block(@None) fait
+    rendre à @seaography sa valeur de repli par point d'appel (`Entity guard triggered.` aux gardes,
+    `Blocked by before_active_model_save.` au hook de sauvegarde, vérifiés au source amont) —
+    l'enveloppe reste une chaîne GraphQL, sans extension structurée ni statut HTTP dédié (arbitrage
+    `Tasks`).
+  Rester synchrone et sans effet : aucune des trois méthodes overridees n'attend, n'interroge la
+    base, n'émet de @tracing, ne pose de cookie ni ne mute rien hors de l'@ActiveModel qu'on lui
+    prête ; @entity_watch et @field_guard ne sont pas overridees — aucun effet après mutation, et
+    tout champ reste visible et éditable par défaut. @GuardAction::Allow n'est jamais conditionné
+    à une vérification de base (la fraîcheur de l'appartenance est bornée par
+    @load_principal en amont, ./principal.rs).
+  Emprunter @async_trait::async_trait pour implémenter @LifecycleHooksInterface, seule contrainte
+    d'avoir un trait mixte — les trois méthodes surchargées restent des @fn synchrones, alignées
+    sur l'amont.
+
+Must not:
+  Relancer une décision depuis @crate::rbac (@can_read, @can_write, @can_create,
+    @crate::rbac::ListAccess) depuis ces hooks, ni supposer la parité avec /src/rbac.sdd acquise :
+    le pont consomme le miroir @EntityPolicy, les écarts existent et se nomment dans `Handles`.
+  Préfixer un code `MRD-` au code libre d'un @crate::resource::HookError, le réévaluer, ou
+    construire un @HookError pour une panne qui ne vient pas d'un hook métier : le `: ` de
+    restitution est une concaténation, pas une taxonomie ; @MRD-GQL-001 et @MRD-GQL-002 sont les
+    deux seules chaînes `MRD-*` émises par le fichier.
+  Interpréter une absence de @GraphQlPrincipal autrement que comme non-admin, non-membre, sans
+    clause : @is_admin et @is_member retombent à @false, @entity_filter à @None — jamais un refus
+    dédié, jamais une erreur. La seule absence qui bloque est celle de @crate::auth::AuthPrincipal
+    au hook de sauvegarde — asymétrie de traitement arbitrée en `Tasks`.
+  Attraper le @panic du downcast de dispatch (@expect de ./registry.rs documenté par
+    ./registry.sdd) ni inventer ici un @GuardAction d'erreur interne : @GuardAction ne transporte
+    qu'un refus ou un accord, une panique amont traverse le hook comme elle traverserait tout autre
+    appel.
+  Consommer @crate::resource::MiryadResource::filter_column ou brancher ici le `?filter=` d'égalité
+    REST : @EntityPolicy ne transporte pas cette colonne ; le filtrage utilisateur sur cette
+    surface passe par les FILTRES natifs @seaography sur toutes les colonnes. La promesse de doc
+    « REST/GraphQL/MCP » est un sur-promis déjà `[?]` de /src/resource.sdd, ce fichier ne répare
+    pas la promesse en consommant la colonne par surprise.
+  Décider une valeur de colonne propriétaire absente du snapshot : pas de chargement
+    @users::group à la volée, pas de @resolve_user — le fichier ne connaît que les trois types
+    injectés par ./handler.rs.
+  Appliquer une clause propriétaire sur l'action @OperationType::Create dans un but d'exécution :
+    @entity_filter peut techniquement en rendre une (politique @write `OwnerOnly` avec colonne),
+    mais @seaography ne l'invoque qu'en select, update et delete — jamais insert (doc du trait «
+    but not insert » et points d'appel vérifiés au source) : cette valeur doit rester sans effet
+    sur l'insertion, seule la clause SQL d'un select/update/delete est un effet attendu.
+
+Depends on:
+  @seaography `2.0.0-rc.9` — @LifecycleHooksInterface, @GuardAction, @OperationType, actifs par la
+    feature `graphql` de /Cargo.toml ; sémantique d'appel vérifiée au source amont (registre
+    cargo) : points d'appel des gardes et filtres sur les quatre @OperationType, avant-after des
+    mutations, @pluralize_unique identité hors feature `field-pluralize`, transaction de
+    @entity_create_batch_mutation
+  @async_graphql `7` — @ResolverContext et ses @ctx.data, @async_trait pour l'implémentation du
+    trait
+  @sea_orm `2` — @Condition et @sea_orm::@sea_query (@Alias, @Expr) pour la clause d'ownership,
+    dépendance obligatoire de /Cargo.toml
+  ./registry.rs — @PolicyRegistry et @EntityPolicy, seule source des politiques ; ./principal.rs —
+    @GraphQlPrincipal, seule source d'appartenance ; ./handler.rs — injecteur du snapshot, de
+    @crate::auth::AuthPrincipal et de la connexion
+  /src/auth/principal.rs — @crate::auth::AuthPrincipal, seul principal reçu par le hook métier
+    (session ou token API indifféremment) ; /src/resource.rs — @crate::resource::AccessPolicy et
+    @crate::resource::HookError, traversés sans les redéfinir
+  @std::any::Any — forme effacée de l'@ActiveModel reçu en mutation
+  # Direction de dépendance : ./mod.rs et ./handler.rs dépendent de ce fichier, la crate @rbac et
+  # @rest l'ignorent ; ./registry.rs ne connaît pas @seaography, ce fichier oui — l'amont
+  # n'est cité que comme preuve vérifiée, jamais importé au-delà du seuil `graphql`.
+
+Exposes:
+  @MiryadHooks — @pub @struct à champ @registry (@PolicyRegistry) privé, @pub
+    @MiryadHooks::new(@PolicyRegistry) passant le registre par valeur : le hook en devient
+    l'unique propriétaire, un exemplaire par schéma monté — pas de registre global ni de
+    construction alternative.
+  @impl @LifecycleHooksInterface for @MiryadHooks — trois méthodes overriding, toutes `fn` sous
+    @async_trait : `fn @entity_guard(&self, ctx: &@ResolverContext, entity: &str, action:
+    @OperationType) -> @GuardAction`, `fn @entity_filter(&self, ctx: &@ResolverContext, entity:
+    &str, action: @OperationType) -> @Option<@sea_orm::@Condition>`, `fn
+    @before_active_model_save(&self, ctx: &@ResolverContext, entity: &str, action: @OperationType,
+    active_model: &mut dyn @std::any::Any) -> @GuardAction`. @entity_watch et @field_guard laissés
+    aux défauts de l'amont (@Allow / no-op).
+  @pub @policy_for, @is_admin, @is_member restent PRIVES au fichier : aucune porte de test ou de
+    consommation directe des décisions.
+  Double adressage hérité de ./mod.sdd (arbitrage `[?]` de cette spec-là) : chemin court
+    @miryad_core::graphql::@MiryadHooks et chemin long @miryad_core::graphql::hooks::@MiryadHooks.
+  Aucune autre surface : pas de type d'erreur propre, aucun @derive, aucun ré-export.
+
+Accepts:
+  L'identifiant `entity` que @seaography passe à ses hooks : le nom de table SQL rendu
+    `UpperCamelCase` (@EntityObjectBuilder::@type_name, source vérifiée) ; la feature
+    `field-pluralize` de @seaography n'étant pas activée par /Cargo.toml, @pluralize_unique est
+    l'identité et le MÊME identifiant parvient à @entity_guard, @entity_filter et
+    @before_active_model_save pour tous les points d'appel (liste, unité par clé, relations,
+    create, create_batch, update, delete) — vérifié au source amont.
+  La table de correspondance réel/attendu : clés du registre = @MiryadResource::resource_name
+    déclarés (`recipes`, `recipe-tags`) ; identifiants reçus = `Recipes`, `Tags` (table `tags`) —
+    recouvrement exact impossible hors nom déclaré soi-même en CamelCase (`[!]` des `Tasks`).
+  Les données de requête injectées par ./handler.rs : @GraphQlPrincipal (gardes et filtre),
+    @crate::auth::AuthPrincipal (hook de sauvegarde). Toute absence est acceptée et traitée à l'état
+    `Handles` ; le fichier total — aucune de ses méthodes ne peut paniquer de son propre fait.
+  Un @ActiveModel effacé construit par @seaography/@prepare_active_model pour l'entité du schéma
+    (clé primaire auto-incrémentée hors des inputs d'insertion — ./registry.sdd l'a vérifié).
+  Toute valeur @OperationType de l'amont, sur tout identifiant — y compris un identifiant sans
+    politique enregistrée : @entity_guard rend alors @GuardAction::Allow sans rien lire d'autre,
+    @entity_filter @None, @before_active_model_save @Allow sans dispatch (fail-open documenté en
+    `Handles`, `[!]` des `Tasks`).
+
+Returns:
+  @entity_guard — exactement l'une des trois formes : @GuardAction::Allow ;
+    @GuardAction::@Block(Some(`MRD-GQL-001: OwnerOnly without owner_column`)) ;
+    @GuardAction::@Block(None) — aucun autre contenu de @Some n'est jamais produit par cette
+    méthode.
+  @entity_filter — @None, ou @Some d'une conjonction @sea_orm::@Condition::all().add unique :
+    colonne propriétaire en @Alias brut, égale au @user_id. JAMAIS une clause composée, jamais un
+    nom de colonne GraphQL (le nom rendu est le nom SQL @Iden).
+  @before_active_model_save — @GuardAction::Allow (non-@Create, ou dispatch @Ok), ou
+    @GuardAction::@Block(Some(...)) avec pour seuls contenus :
+    `MRD-GQL-002: AuthPrincipal missing from request data`, ou `CODE: message` / `message` issus du
+    @crate::resource::HookError — jamais un code @MRD- posé sur un code d'app.
+  Effets annexes : aucun. Aucune trace, aucune écriture, aucun cookie ; la seule mutation
+    observable est l'@ActiveModel modifié en place par un dispatch réussi (preuve
+    ./registry.sdd).
+
+Raises:
+  @MRD-GQL-001 — @GuardAction::@Block(Some) depuis @entity_guard quand et seulement quand : clé
+    retrouvée, action @OperationType::Create, politique @write = @AccessPolicy::OwnerOnly,
+    @EntityPolicy::owner_column = @None, principal non-admin (un admin reçoit @Allow avant ce
+    test, un principal absent est traité non-admin). Bloque la mutation d'insertion
+    (@entity_create_one_mutation et @entity_create_batch_mutation), et elle seule : @Read,
+    @Update et @Delete ne voient jamais ce motif — les failles ouvertes en @Update/@Delete sont
+    consignées en `Handles`.
+  @MRD-GQL-002 — @GuardAction::@Block(Some) depuis @before_active_model_save : clé retrouvée,
+    action @Create, @crate::auth::AuthPrincipal absent des données de requête. Politique et rôle
+    sans effet ; bloque l'insertion avant @prepare_active_model puis l'@insert — jamais un appel de
+    hook partiel.
+  Restitution GraphQL de ces blocages : message d'@async_graphql::@Error portant la chaîne exacte
+    (HTTP `200` + `errors[]` porté par ./handler.rs — pas de `403`, pas d'extension structurée).
+  Refus sans code : @AccessPolicy::AdminOnly hors admin et @AccessPolicy::Group hors membre
+    sortent en @Block(@None) — l'@Error rendu est le texte de repli @seaography, aucun code
+    `MRD-GQL-*` n'identifie ces refus (écart avec @crate::rest::error de /src/rest/error.sdd,
+    enveloppe `[?]` des `Tasks`).
+  @crate::resource::HookError : restitué formaté, jamais transformé — hors taxonomie par contrat
+    hérité ; @code @Some → `CODE: message` ; @code @None → message seul.
+  @panic du dispatch (downcast d'un mauvais type d'@ActiveModel) : traversé sans être catché,
+    propriété de ./registry.rs, dette `expect_used` de /tooling.sdd.
+  Aucune @sea_orm::@DbErr possible ici : zéro IO (la panne de @load_principal est amont,
+    ./handler.rs) ; aucun timeout : méthodes synchrones sans point d'attente.
+
+Handles:
+  Fail-open sur identifiant inconnu — comportement ACTUEL documenté, pas un contrat voulu : clé
+    absente ⇒ @entity_guard @Allow pour TOUTES les actions, @entity_filter @None (aucune clause
+    propriétaire), @before_active_model_save @Allow sans dispatcher (le hook métier @before_create
+    de l'entité ne s'exécute pas, même @Err-worthy). Comme l'identifiant amont est
+    `CamelCase(table)` contre clé `resource_name` (déclaré typiquement `recipes`, `recipe-tags`
+    pour table `tags` — fixture /src/ir.rs), le mismatch est le cas général, pas l'exception :
+    sans alignement éditorial de l'app, la surface GraphQL n'applique ni RBAC ni hook métier.
+    Faute tranchée par Sébastien (`[!]` de `Tasks`), l'état voulu est fail-closed.
+  Fail-open @AccessPolicy::OwnerOnly sans colonne (`Handles` hors fail-open de clé ci-dessus) :
+    lecture en liste non filtrée (clause @None ⇒ toutes les lignes de tous les propriétaires),
+    update/delete non gardés (garde @Allow, clause @None ⇒ toute ligne atteignable) — /src/rbac.sdd
+    répond `false` et @crate::rbac::ListAccess::Forbidden aux mêmes entrées ; création seule est
+    bloquée @MRD-GQL-001. Asymétrie [?] `Tasks`, même arbitrage que les `[?]` de /src/rbac.sdd.
+  Reading fail-open avec colonne (vérifié au source amont) : @entity_filter n'est appliqué par
+    @seaography qu'aux requêtes liste/relations, aux update et aux delete — PAS à la requête unité
+    par clé (@to_singular_field) : un non-admin lit n'importe quelle ligne par clé primaire malgré
+    une politique `OwnerOnly` avec colonne, là où @crate::rest::core::get échoue par @can_read.
+  Write asymmetry avec colonne : update/delete OwnerOnly sont bornés par la clause d'égalité
+    (cible limitée aux lignes du demandeur), MAIS @seaography laisse l'input client modifier la
+    propriétaire elle-même : une mutation `owner_id` valide transfère la ligne — @rest force
+    l'immuabilité (@crate::rest::core::update). À la création GraphQL, nulle part ne retire la clé
+    primaire posée par le client (hors auto-incrément, exclue des inputs) ni n'injecte le
+    @user_id en colonne propriétaire, contrairement aux « derniers mots » de
+    @crate::rest::core::create : un client GraphQL pose son propre `owner_id`.
+  Snapshot absent des données de requête (assemblage hors ./handler.rs — @Schema branché à la main)
+    : @is_admin et @is_member @false, @entity_filter @None — politiquement : @Public et @Group
+    hors membre gardent leurs réponses, @OwnerOnly perd toute clause. Aucun code, aucun refus
+    dédié — la détection d'assemblage est renversée sur @before_active_model_save et son
+    @MRD-GQL-002, asymétrie `[?]` des `Tasks`.
+  Groupe inconnu : @GraphQlPrincipal ne le contient jamais — refus @Block(None), sans création ni
+    erreur (mêmes bornes que @users::group côté /src/rbac.sdd).
+  Action @Create dans @entity_filter rend @Some de la clause OwnerOnly si colonne déclarée :
+    valeur jamais consommée par @seaography (insert hors portée de l'amont, vérifié) — branche
+    morte assumée du code, comme la branche non-@Create de @before_active_model_save, jamais
+    déclenchée en `2.0.0-rc.9`, garde défensive d'avenir.
+  Création en lot : @before_active_model_save est rappelé par ligne par @seaography sous
+    transaction — un premier @Err interrompt la mutation AVANT commit, transaction abandonnée : le
+    lot entier est refusé et aucune des lignes déjà `insert` du lot n'est conservée
+    (@entity_create_batch_mutation, source vérifiée).
+  Admin : raccourci total dans les gardes et les filtres (point `Must`), mais pas au hook métier —
+    admin subit @before_create comme tout principal, dont le blocage `MRD-GQL-001` et le refus d'un
+    @HookError : la validation métier est le contrat du hook, pas une autorisation.
+
+Example:
+  # table de décision — colonne = @EntityPolicy::owner_column ; hors mention : clé retrouvée,
+  # principal non-admin, @GraphQlPrincipal présent.
+  action `Read` × politique @AccessPolicy::Public × tout principal → @Allow (avant toute lecture)
+  action `Read` × politique @AccessPolicy::OwnerOnly × colonne @Some → @Allow + clause
+    `owner_id = user_id` appliquée aux listes et relations, AUCUNE sur la lecture par clé
+  action `Read` × politique @AccessPolicy::OwnerOnly × colonne @None → @Allow + @None (tout se lit)
+  action `Create` × politique @AccessPolicy::OwnerOnly × colonne @Some → @GuardAction::Allow
+  action `Create` × politique @AccessPolicy::OwnerOnly × colonne @None →
+    @Block(reason `MRD-GQL-001: OwnerOnly without owner_column`) — unique @GuardAction::@Block(Some)
+    rendu par @entity_guard
+  action `Read|Create|Update|Delete` × politique @AccessPolicy::AdminOnly × hors admin →
+    @Block(@None) ; × admin → @Allow
+  action `Write` (`Create|Update|Delete`) × politique @AccessPolicy::Group × membre → @Allow ;
+    × non-membre (groupe connu ou non) → @Block(@None)
+  action `Update`/`Delete` × politique @AccessPolicy::OwnerOnly × colonne @Some → @Allow + clause
+    d'égalité sur la statement — mais l'input client peut modifier `owner_id` sur les lignes ciblées
+  action `Update`/`Delete` × politique @AccessPolicy::OwnerOnly × colonne @None → @Allow + @None —
+    toutes les lignes de la table mutables par un appelant authentifié sous politique de lecture
+    @AccessPolicy::Public
+  identifiant non enregistré (toute politique, toute action, y compris admin) → @Allow, filtre
+    @None, hook @before_create NON dispatché — fail-open complet de la surface
+  before × `Create` × hook @Ok(muté) → @Allow, mutation visible sur l'@ActiveModel insérée
+  before × `Create` × hook @Err code `RECIPE-001` → @Block(Some(`RECIPE-001: title must not be
+    empty`)) (message @Error final, sans `MRD-` ajouté)
+  before × `Create` × hook @Err sans code → @Block(Some(message seul))
+  before × `Create` × @crate::auth::AuthPrincipal absent × politique retrouvée (même @Public, même
+    admin) → @Block(Some(`MRD-GQL-002: AuthPrincipal missing from request data`))
+  before × `Update|Delete|Read` × tout → @Allow sans dispatch — branche jamais atteinte en rc.9
+
+Tasks:
+  [ ] Convertir les vingt-trois `Scenario` en au moins vingt-trois tests nommés distincts, un par
+    scenario minimum, dans le @mod tests `#[cfg(test)]` inline de ./hooks.rs (le fichier n'en porte
+    aucun ; compilé par les runs /tooling.sdd contenant `graphql`). Patrons : harness @Schema
+    @async_graphql::@dynamic minimal rejouant un point d'appel @seaography avec un vrai
+    @ResolverContext, à la manière du test de ./handler.rs, plus fixtures du pattern `recipe` de
+    ./registry.rs (déclarer aussi une entité sans colonne, une entité à hook @Err avec/sans code,
+    une entité au nom déclaré EN CamelCase pour faire tourner les cas « clé retrouvée »). Les
+    scenarios 11/12 et 22 exigent un vrai schéma @seaography::@Builder (fixtures `Relation` +
+    `DeriveRelatedEntity` — `sea-orm/seaography` actif sous `graphql`, ./mod.sdd l'a vérifié) sur
+    sqlite mémoire migré. Correspondance scenario → test : « `Public` sous toutes les actions » →
+    `guard_public_all_actions_allow_regardless_of_principal` ; « `AdminOnly` hors admin : refus
+    sans motif » → `guard_admin_only_non_admin_blocks_without_reason_generic_message` ; « admin
+    passe `AdminOnly` » → `guard_admin_only_admin_allowed_by_shortcut` ; « `Group` membre
+    l'écriture » → `guard_group_member_allowed_write` ; « `Group` non-membre et groupe inconnu » →
+    `guard_group_non_member_and_unknown_group_block_without_reason` ; « admin traverse sans
+    appartenance ni colonne » → `guard_admin_bypasses_group_and_owner_only_without_column` ; «
+    `OwnerOnly` lecture : garde `Allow`, la clause fait le filtre » →
+    `guard_owner_only_read_is_allow` ; « `OwnerOnly` création avec colonne déclarée » →
+    `guard_owner_only_create_with_declared_column_allows` ; « `OwnerOnly` création sans colonne » →
+    `guard_owner_only_create_without_column_blocks_with_mrd_gql_001` ; « `OwnerOnly` update/delete
+    sans colonne encore `Allow` » → `guard_owner_only_update_and_delete_without_column_still_allow`
+    ; « identifiant inconnu : toutes actions `Allow` » →
+    `guard_unknown_identifier_allows_every_action` ; « identifiant inconnu : `before_create` non
+    dispatché » → `before_unknown_identifier_skips_business_hook` ; « principal GraphQL absent » →
+    `guard_absent_graphql_principal_behaves_as_non_admin_non_member` ; « clause owner unique sous
+    `Read`/`Update`/`Delete` » → `entity_filter_owner_only_with_column_adds_single_owner_equality`
+    ; « OwnerOnly sans colonne : pas de clause » →
+    `entity_filter_owner_only_without_column_returns_none` ; « admin, `Public`, `AdminOnly`,
+    `Group` : pas de clause » → `entity_filter_none_for_admin_and_non_owner_only_policies` ; «
+    mutation `before_create` traversante » → `before_create_ok_dispatch_persists_mutation` ; «
+    refus avec code : motif exact sans `MRD-` » →
+    `before_create_err_with_code_returns_prefixed_reason_without_mrd` ; « refus sans code : message
+    seul » → `before_create_err_without_code_returns_bare_message` ; « @crate::auth::AuthPrincipal
+    absent » → `before_create_missing_auth_principal_blocks_with_mrd_gql_002` ; « hors `Create` :
+    `Allow` sans dispatch » → `before_active_model_save_non_create_returns_allow_without_dispatch`
+    ; « lot : une ligne rejetée annule tout » → `batch_create_one_rejected_row_aborts_whole_batch`
+    ; « admin subit `before_create` » → `admin_hook_error_still_blocks_create`.
+    Rejouer la batterie /tooling.sdd après conversion — le module n'existe pas hors `graphql`, les
+    runs
+    `--no-default-features` et `--features swagger-ui` doivent rester verts sans ces tests.
+  [!] Fail-open de clé (hérité du `[!]` #19 de /src/resource.sdd, consignature ./registry.sdd,
+    délégation de fail-open de ./mod.sdd) : tant que la clé de @PolicyRegistry est
+    @crate::resource::MiryadResource::resource_name et l'identifiant amont `CamelCase(table)`, les
+    scenarios « identifiant inconnu » ci-dessus verrouillent un comportement BUGGUÉ, pas un
+    contrat. L'état voulu est le fail-closed sur clé inconnue (dont le `[?]` d'enveloppe tranche la
+    forme exacte), décidé par Sébastien, appliqué sur la branche
+    `fix/graphql-policy-key-mismatch` du flux de /.specdd/bootstrap.project.md : spec
+    réécrite d'abord (celle-ci et ./registry.sdd), test de régression d'abord, code ensuite. Les
+    tests nommés `guard_unknown_identifier_*` et `before_unknown_identifier_*` sont ceux qui
+    s'inversent à ce moment-là.
+  [?] Enveloppe des refus `MRD-GQL` (délégation de ./mod.sdd, confirmée ici comme lieu
+    d'arbitrage) : @MRD-GQL-001 et @MRD-GQL-002 voyagent en chaînes libres dans @GuardAction::Block
+    — contrainte de @seaography rc.9, qui ne transporte qu'un @String sans extension. @seaography
+    rend ces chaînes en @Error GraphQL HTTP `200` (`errors[]`) pendant que REST rend `403` +
+    @crate::rest::error (@MRD-REST-002) : le domaine `MRD-GQL` se déclare-t-il « codes en message
+    libre, statut 200 » comme contrat inter-surface, et que vaut un refus @Block(@None) sans code
+    (`AdminOnly`, `Group`) dans ce vocabulaire — y ajoute-t-on des codes (lequel pour le refus pur
+    ?) ou l'absence est-elle assumée ?
+  [?] Fail-open en `OwnerOnly` hors clé reconnue, même arbitrage que les deux premiers
+    `[?]` de /src/rbac.sdd dont il est le versant consommateur : hors admin sans colonne (et avec
+    colonne sur les chemins qui ne filtrent pas), le pont GraphQL rend accessible la liste NON
+    filtrée (et `Update`/`Delete` non bornés sur toute la table), là où /src/rbac.sdd refuse par
+    `false`/@Forbidden et @crate::rest::core::get refuse la ligne. Le `[!]` de clé corrige
+    l'enregistrement, pas les colonnes manquantes : le fail-closed `OwnerOnly` sans colonne (et la
+    trouée de la lecture par clé non filtrée) exige-t-il lui aussi un refus explicite côté
+    hooks, côté @seaography (filtre sur la requête unité), ou les deux ? Question de sécurité,
+    arbitrage à rendre avant tout usage de `OwnerOnly` hors colonne déclarée.
+  [?] Owner passthrough à l'écriture GraphQL : @before_active_model_save ne retire pas la clé
+    primaire posée par le client (hors auto-incrément), n'injecte pas @GraphQlPrincipal::user_id en
+    colonne propriétaire à la création, et laisse `Update` porter un `owner_id` divergent sur une
+    ligne ciblée — les trois « derniers mots » que @crate::rest::core::create et @update tiennent
+    après leur hook (et que l'@mcp hérite par délégation). Reprendre ces invariants dans CE
+    fichier (hook avant save est le seul point d'accroche GraphQL, par nature) ou documenter
+    l'asymétrie REST/MCP contre GraphQL ? Question de sécurité aussi : le passeport `owner_id`
+    autorise à créer pour autrui, et à se déposséder.
+  [?] Asymétrie des absences de principal : l'absence de @GraphQlPrincipal ne bloque ni ne trace
+    (garde dégradée non-admin/non-membre, clause perdue) tandis que l'absence de
+    @crate::auth::AuthPrincipal ne bloque que la création et jamais la mutation pure `Update`/
+    `Delete` (garde non-admin, clause `user_id` impossible). Un assemblage qui oublierait
+    @load_principal produit un GraphQL « tout non-admin » silencieux : une sonde fail-closed sur
+    l'absence des deux snapshots est-elle due, au prix d'un couplage plus fort à ./handler.rs ?
+  [?] Commentaires orphelins du fichier : deux renvois à `docs/features/7b-hooks-metier-crud.md`
+    (bloc de doc de @before_active_model_save et commentaire du @Block d'erreur de hook) — fichier
+    supprimé, signalé déjà par ./mod.sdd : faut-il les rediriger vers la présente ./hooks.sdd et
+    /docs/architecture.md (le commentaire d'en-tête « miroir GraphQL de @rest::core::create » est
+    juste, lui) ? La correction est dans ./hooks.rs, hors `Tasks` réalisables par la seule spec —
+    à signaler tant que la correction n'est pas écrite.
+  [?] Branche morte assumée : @entity_filter rend une clause pour @OperationType::Create que
+    @seaography ne consultera jamais, et @before_active_model_save retourne @Allow pour toute
+    action non-@Create que rien ne déclenche en rc.9. Garde d'avenir à commenter comme telle, ou
+    code mort à purger ? La réponse dépend de @seaography : un hook
+    @before_active_model_save étendu à update/delete rendrait les deux branches exécutées.
+
+Done when:
+  Vingt-trois `Scenario`, donc au moins vingt-trois tests nommés distincts dans le @mod tests
+    inline de ./hooks.rs (répartis : harness @dynamic pour les décisions de garde/filtre/hook, vrai
+    @seaography::@Builder pour « identifiant inconnu » et « lot ») ; batterie /tooling.sdd verte
+    sur chaque run compilant le module (`--features graphql`, `--features graphiql`,
+    `--all-features`) et sur `--no-default-features` qui doit l'exclure sans erreur ; `missing_docs`
+    et lints du harnais propres sur le fichier touché.
+  Les questions `[?]` ci-dessus ont reçu un arbitrage écrit de Sébastien, reporté dans cette spec :
+    code `MRD-GQL` en message libre contre statut 200 ; refus sans code ; fail-closed `OwnerOnly`
+    hors colonne et lecture par clé non filtrée ; passeport `owner_id` et clé primaire à la
+    création GraphQL ; sonde d'absence de principal ; commentaires orphelins ; branches mortes.
+  `[!]` fail-open de clé reste consigné dans son état tranché de /src/resource.sdd et ./registry.sdd
+    — la présente spec ne présume rien du correctif : les tests qui verrouillent l'état bugué sont
+    nommés comme régressions à inverser, spec réécrite avant code sur `fix/graphql-policy-key-mismatch`.
+
+Scenario: `Public` accordé sous toutes les actions
+  Given un registre contenant une entité dont @EntityPolicy::read et @EntityPolicy::write sont
+    @AccessPolicy::Public, et un @GraphQlPrincipal non-admin sans groupe
+  When @entity_guard est appelé avec chacun des quatre @OperationType (@Read, @Create, @Update,
+    @Delete) sur l'identifiant enregistré
+  Then chaque appel retourne @GuardAction::Allow — la politique publique tranche avant lecture
+    d'admin ou d'appartenance
+
+Scenario: `AdminOnly` hors admin refuse sans motif
+  Given un registre contenant une entité dont la politique applicable est @AccessPolicy::AdminOnly
+    et un principal non-admin
+  When @entity_guard est appelé avec @OperationType::Read puis avec @OperationType::Update
+  Then @GuardAction::@Block(@None) est retourné dans les deux cas — aucun motif porté par le
+    fichier
+  And la chaîne d'erreur vue par le client est le texte de repli @seaography du point d'appel
+    (`Entity guard triggered.` aux gardes, vérifié au source amont), sans code `MRD-GQL-*`
+
+Scenario: admin passe `AdminOnly` par raccourci
+  Given la même entité @AccessPolicy::AdminOnly et un @GraphQlPrincipal dont @is_admin est @true
+  When @entity_guard est appelé avec @OperationType::Update
+  Then @GuardAction::Allow est retourné, sans consultation d'appartenance à un quelconque groupe
+
+Scenario: membre du `Group` déclaré passe l'écriture
+  Given une entité dont @EntityPolicy::write est @AccessPolicy::Group avec le nom `editors` et un
+    principal dont @GraphQlPrincipal::groups contient exactement `editors`
+  When @entity_guard est appelé avec @OperationType::Create
+  Then @GuardAction::Allow — la correspondance de nom est lue octet pour octet dans le snapshot
+
+Scenario: non-membre et groupe inconnu refusés de même par `Group`
+  Given deux principaux non-admin, l'un membre d'un autre groupe que celui déclaré, l'autre sans
+    aucune appartenance, et une entité @AccessPolicy::Group nommant `ghosts` inexistant en base
+  When @entity_guard est appelé avec @OperationType::Delete pour tous les deux
+  Then @GuardAction::@Block(@None) pour chacun — un groupe jamais vu en base se refuse exactement
+    comme un non-membre, sans erreur ni création
+
+Scenario: admin traverse `Group`, `OwnerOnly` et colonne absente sans rien vérifier
+  Given une principale admin, sans appartenance aux groupes nommés ; trois entités du registre :
+    @AccessPolicy::Group nommé `editors`, @AccessPolicy::OwnerOnly avec colonne, et
+    @AccessPolicy::OwnerOnly sans colonne
+  When @entity_guard est appelé avec @OperationType::Create sur les trois politiques puis
+    @entity_filter avec @OperationType::Read
+  Then les trois gardes retournent @GuardAction::Allow — y compris le @MRD-GQL-001 qui ne
+    déclenche pas pour un admin — et les trois filtres retournent @None
+
+Scenario: `OwnerOnly` en lecture : le garde est `Allow`, la clause fait le filtrage
+  Given une entité @AccessPolicy::OwnerOnly avec @EntityPolicy::owner_column @Some et un principal
+    non-admin
+  When @entity_guard est appelé avec @OperationType::Read
+  Then @GuardAction::Allow est retourné — aucune décision par enregistrement n'est prise au garde
+    sur cette surface (écart consigné en `Handles`, non une autorisation finale)
+
+Scenario: `OwnerOnly` création avec colonne déclarée passe
+  Given la même entité (colonne propriétaire @Some) et un principal non-admin
+  When @entity_guard est appelé avec @OperationType::Create
+  Then @GuardAction::Allow — le blocage @MRD-GQL-001 ne vise que l'absence de colonne, pas la
+    création en elle-même
+
+Scenario: `OwnerOnly` création sans colonne bloque avec @MRD-GQL-001
+  Given une entité du registre dont @EntityPolicy::write est @AccessPolicy::OwnerOnly avec
+    @EntityPolicy::owner_column @None, et un principal non-admin
+  When @entity_guard est appelé avec @OperationType::Create
+  Then @GuardAction::@Block(Some(...)) est retourné, motif exactement
+    `MRD-GQL-001: OwnerOnly without owner_column`, chaîne complète verbatim
+  And sur @Read, @Update et @Delete pour la même entrée, @GuardAction::Allow — la création est la
+    seule mutation que ce code intercepte
+
+Scenario: `OwnerOnly` update/delete sans colonne restent `Allow` — fail-open actuel
+  Given l'entité @AccessPolicy::OwnerOnly sans colonne et un principal non-admin
+  When @entity_guard est appelé avec @OperationType::Update puis @OperationType::Delete, et
+    @entity_filter avec ces mêmes actions
+  Then les deux gardes retournent @GuardAction::Allow et les deux filtres @None : toute ligne de
+    la table est atteignable par update/delete, alors que /src/rbac.sdd refuserait les mêmes couples
+    (comportement ACTUEL, fail-open, arbitrage `[?]`/`[!]` des `Tasks` — pas un contrat voulu)
+
+Scenario: identifiant inconnu : garde `Allow` pour toute action — fail-open actuel
+  Given un @PolicyRegistry ne contenant QUE la clé déclarée `recipes-alias`, et les hooks appelés
+    sous l'identifiant `Recipes` — celui que @seaography passe pour la table `recipes` en
+    `UpperCamelCase` (vérifié au source amont) — pour un principal non-admin
+  When @entity_guard et @entity_filter sont appelés avec chacun des quatre @OperationType sous
+    l'identifiant `Recipes`
+  Then @GuardAction::Allow est retourné pour chacune des quatre actions, quelle que soit la
+    politique que l'entité a déclarée, et @entity_filter @None partout — ni RBAC ni clause :
+    fail-open sur toute la surface (état bugué du `[!]` des `Tasks`)
+
+Scenario: identifiant inconnu : hook métier non dispatché
+  Given une entité dont @MiryadResource::before_create rejette toute création, politique
+    @AccessPolicy::Public en lecture comme en écriture pour écarter tout refus de garde, enregistrée
+    sous une clé que l'identifiant amont ne retrouve pas, et une mutation `Create` par le schéma réel
+  When @before_active_model_save est appelé avec @OperationType::Create sous l'identifiant reçu de
+    @seaography
+  Then @GuardAction::Allow : le pointeur @EntityPolicy::before_create n'est jamais appelé — la
+    validation métier saute avec l'autorisation sur une clé inconnue (même `[!]`, vérifié en
+    mutation réelle avec @seaography::@Builder)
+
+Scenario: principal GraphQL absent : tout se passe comme hors-admin, hors-membre
+  Given un registre et un principal complets, mais un @ResolverContext dont @GraphQlPrincipal a
+    été OMIS (assemblage sans ./handler.rs)
+  When @entity_guard est appelé sur @Read pour une entité @AccessPolicy::Public, sur @Create pour
+    @AccessPolicy::Group nommant `editors`, sur @Create pour @AccessPolicy::AdminOnly, et sur
+    @Create pour @AccessPolicy::OwnerOnly sans colonne
+  Then la première réponse est @Allow ; les trois suivantes @GuardAction::Block — @None pour les
+    deux premières, motif @MRD-GQL-001 pour la troisième : l'absence vaut non-admin et non-membre,
+    pas un refus global ni une erreur dédiée (asymétrie `[?]` des `Tasks`)
+
+Scenario: OwnerOnly avec colonne : une seule égalité colonne = user_id
+  Given une entité @AccessPolicy::OwnerOnly avec colonne `owner_id` et un principal non-admin dont
+    @GraphQlPrincipal::user_id est `7`
+  When @entity_filter est appelé avec @OperationType::Read, @OperationType::Update puis
+    @OperationType::Delete
+  Then chaque réponse est @Some d'un @sea_orm::@Condition::all().add d'UNE seule conjonction :
+    @Expr::col(@Alias::new(`owner_id`)).eq(`7`) — colonne brute, jamais `OwnerId`, jamais un
+    multiple de clauses
+  And avec @OperationType::Create, @entity_filter retourne @Some de la même clause, jamais rendue
+    effective par @seaography (le trait l'exclut de l'insert — `Handles`)
+
+Scenario: OwnerOnly sans colonne : aucune clause
+  Given une entité @AccessPolicy::OwnerOnly dont @EntityPolicy::owner_column est @None et un
+    principal non-admin
+  When @entity_filter est appelé avec @OperationType::Read
+  Then @None est retourné : la liste ne porte AUCUNE restriction propriétaire — toutes les lignes
+    de tous les propriétaires sont rendues (fail-open ACTUEL, même arbitrage `[?]` que celui de
+    /src/rbac.sdd ; faille détaillée en `Handles`)
+
+Scenario: pas de clause d'ownership pour admin ni pour les politiques non-`OwnerOnly`
+  Given une entité @AccessPolicy::OwnerOnly avec colonne et un principal admin ; trois autres
+    entités @AccessPolicy::Public, @AccessPolicy::AdminOnly, @AccessPolicy::Group, principal
+    non-admin
+  When @entity_filter est appelé avec @OperationType::Read sur les quatre
+  Then les quatre réponses sont @None — admin est exempté, et les trois autres politiques sont
+    gardées sans clause, jamais filtrées par propriétaire
+
+Scenario: `before_create` réussi : mutation persistée, `Allow` rendu
+  Given une entité enregistrée sous l'identifiant reçu de @seaography (nom déclaré en CamelCase
+    pour retrouver la clé), dont @MiryadResource::before_create met le titre en majuscules, un
+    @crate::auth::AuthPrincipal présent dans les données de requête
+  When @before_active_model_save est appelé avec @OperationType::Create et l'@ActiveModel effacé
+    dont le titre posé est `tarte`
+  Then @GuardAction::Allow ; l'@ActiveModel reçu porte le titre muté, champs non touchés intacts —
+    le pointeur @EntityPolicy::before_create dispatché a écrit en place (preuve de la mutation,
+    ./registry.sdd)
+
+Scenario: refus du hook avec code : motif `CODE: message`, sans `MRD-` ajouté
+  Given la même entité dont @MiryadResource::before_create rejette un titre vide par un
+    @crate::resource::HookError::with_code avec `RECIPE-001` et `title must not be empty`
+  When @before_active_model_save est appelé avec @OperationType::Create sur un ActiveModel au titre
+    posé vide
+  Then @GuardAction::@Block(Some(`RECIPE-001: title must not be empty`)) exactement
+  But aucune partie du motif ne porte de préfixe `MRD-` — le code de l'app reste un code d'app
+
+Scenario: refus du hook sans code : message seul
+  Given le même dispatch et un @crate::resource::HookError::new — pas de code applicable — portant
+    seulement le message `only one row per key`
+  When @before_active_model_save retourne le refus
+  Then @GuardAction::Block(Some(le message seul, sans séparateur ni préfixe)) — le `: `
+    d'assemblage n'apparaît que quand @code est @Some
+
+Scenario: @crate::auth::AuthPrincipal absent bloque avec @MRD-GQL-002
+  Given un @ResolverContext avec @GraphQlPrincipal mais sans @crate::auth::AuthPrincipal, et une
+    entité à politique retrouvée et hook no-op, politique de création @AccessPolicy::Public
+  When @before_active_model_save est appelé avec @OperationType::Create
+  Then @GuardAction::@Block(Some(...)), motif exactement
+    `MRD-GQL-002: AuthPrincipal missing from request data` — le hook n'est pas dispatché, et la
+    politique @Public comme un rôle admin n'y changent rien
+
+Scenario: hors `Create`, @before_active_model_save est silencieux
+  Given une entité du registre, un principal @crate::auth::AuthPrincipal ABSENT des données de
+    requête, et un ActiveModel effacé
+  When @before_active_model_save est appelé avec @OperationType::Read, @OperationType::Update puis
+    @OperationType::Delete
+  Then @GuardAction::Allow dans les trois cas — registre et principal ne sont pas même lus, le
+    hook @before_create ne s'exécute pas (branches jamais déclenchées par rc.9, garde d'avenir du
+    fichier vérifiée au source amont)
+
+Scenario: lot de créations : une ligne refusée annule tout
+  Given un schéma réel construit par @seaography::@Builder branché aux hooks, la fixture avec hook
+    rejetant le titre vide, et une mutation @entity_create_batch_mutation de trois lignes dont la
+    deuxième porte un titre vide
+  When la mutation est exécutée
+  Then la réponse est une erreur d'@async_graphql portant le motif `RECIPE-001: title must not be
+    empty` et AUCUNE des trois lignes n'est en base : @seaography a interrompu la transaction de
+    lot avant commit (déroulement vérifié au source `entity_create_batch_mutation.rs`)
+
+Scenario: admin subit le hook métier comme les autres
+  Given un @GraphQlPrincipal dont @is_admin est @true (le garde laisse donc passer une politique
+    AdminOnly), @crate::auth::AuthPrincipal présent, et la fixture dont le hook rejette le titre
+    vide
+  When @before_active_model_save est appelé avec @OperationType::Create sur un titre vide
+  Then @GuardAction::Block(Some(`RECIPE-001: title must not be empty`)) — le raccourci admin de
+    @entity_guard ne dispense pas de @MiryadResource::before_create : la validation métier n'est
+    pas une autorisation

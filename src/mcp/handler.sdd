@@ -1,0 +1,435 @@
+Spec: handler — @mcp_router : transport HTTP `POST /mcp` et extraction du principal
+
+Purpose:
+  Servir le transport HTTP unique du module `mcp` — la route `POST /mcp` — et porter ici le
+    dispatch JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`) et la garde des notifications.
+    Ce dispatch est manuel : `vynil-core 0.7.4`, la dépendance derrière la feature `mcp`, ne
+    contient aucun module JSON-RPC ni serveur MCP (source du registre vérifié : seul @HandleBars
+    du module `hbs` est consommé, comme auxiliaire de rendu) ; la promesse « la même métadonnée
+    @MiryadResource lue à l'identique par REST, GraphQL et MCP » tient parce que l'exécution dresse
+    le @AuthPrincipal extrait par ./../auth/dual.rs dans @McpEntity::call, lequel delegue aux mêmes
+    fonctions @rest::core que REST. Les enveloppes JSON-RPC vivent dans ./protocol.rs, les outils
+    dans ./registry.rs, la forme de sortie dans ./format.rs, les erreurs typées et leurs codes
+    fildans ./error.rs ; le fichier ne fait que router, extraire, envelopper et traduire en statut
+    HTTP.
+
+Owns:
+  ./handler.rs
+
+References:
+  ./mod.rs — ré-exporte @mcp_router et @McpToolRegistry sous @crate::mcp ; aucune déclaration
+    d'enfant ne porte de `#[cfg(feature = ...)]`, le gating vient de /src/lib.rs
+  ./protocol.rs — @JsonRpcRequest exige `jsonrpc` et `method`, rend `id` optionnel et `params`
+    default @Value::Null ; @JsonRpcResponse::ok, @JsonRpcResponse::err et
+    @JsonRpcResponse::err_with_data posent `jsonrpc: "2.0"` et omettent `id`, `result`, `error`
+    quand ils valent @None
+  ./registry.rs — @McpToolRegistry (@entities par nom de ressource + @format figé à la
+    construction), @McpOp et @McpEntity::call ; @HandleBars et @OutputFormat ne le quittent pas
+  ./format.rs — @render, @RenderShape (@Record pour un enregistrement, @List pour une page) et
+    le choix de gabarit ; tout échec de rendu remonte en @McpError::Render
+  ./error.rs — @McpError et sa traduction fil : @McpError::rpc_code (`-32000` hook applicatif,
+    `-32001` @McpError::Forbidden, `-32002` @McpError::NotFound, `-32603` base/rendu/interne) et
+    @McpError::data (le @HookError.code dans le champ `data`) ; @McpError::UnknownTool porte
+    `-32601` mais ce fichier ne le construit jamais (voir `Tasks` `[?]`)
+  ../auth/dual.rs — extracteur @AuthPrincipal : en-tête `Authorization: Bearer ` d'abord, sans
+    repli cookie s'il est invalide, sinon cookie de session, sinon @AuthError ; seul chemin de cet
+    injecteur
+  /src/auth/error.sdd — rendu des @AuthError (`401` `text/plain` pour `MRD-AUTH-001`, `MRD-AUTH-002`,
+    `MRD-AUTH-014`, `MRD-AUTH-015`, `500` pour @AuthError::Database) ; son `Tasks` `[?]`
+    « asymétrie d'enveloppe » nomme `POST /mcp` explicitement
+  ../rest/core.rs — les fonctions @list, @get, @create, @update, @delete exécutées par
+    @McpEntity::call (RBAC, ownership, pagination, hooks @MiryadResource::before_create) ; la
+    comparaison de rendu des mêmes refus vit dans /src/rest/error.sdd
+  /src/lib.rs — `#[cfg(feature = "mcp")] pub mod mcp` ; la doc racine promet `POST /mcp` avec
+    cinq tools par entité, chemin sans préfixe `/api`
+  /Cargo.toml — `mcp = ["dep:vynil-core"]`, @vynil-core en `default-features = false` avec
+    features `hbs` et `crypto` ; `CARGO_PKG_NAME` et `CARGO_PKG_VERSION` nourrissent `serverInfo`
+  /tooling.sdd — ce fichier ne compile que sous les combinaisons `--no-default-features --features
+    mcp` et `--all-features` de la batterie
+
+Must:
+  Ne porter aucun `#[cfg(...)]` interne : la compilation du fichier vient uniquement du
+    `#[cfg(feature = "mcp")]` posé sur @mcp dans /src/lib.rs et du graphe `/Cargo.toml` ; hors
+    `mcp`, ni @mcp_router ni aucune de ses fonctions existent.
+  Monter exactement une route absolue `/mcp` en `POST` (@axum::routing::post sur @mcp_handler),
+    sans fallback ni préfixe paramétrable : @mcp_router ne consomme ni `nest` ni argument de
+    montage, et le @Registry porté par la couche @Extension est un @Arc unique par construction de
+    routeur, cloné par requête sans reconstruction.
+  Fixer l'ordre d'extraction par la déclaration de @mcp_handler — @State, puis @AuthPrincipal,
+    puis @Extension, puis @Json : vérifié dans le source d'axum 0.8.9 (`impl_handler!` de
+    `src/handler/mod.rs`, lignes 238-257) que tous les @FromRequestParts courent avant le @FromRequest
+    de corps. La route est d'abord filtrée par axum (chemin `POST` seul) : un `405` ou `404`
+    précède tout extracteur. Un refus d'authentification est donc rendu avant que le corps ne soit
+    lu — aucun corps, valide ou non, n'est jamais parsé pour une requête sans credentials.
+  Extraire le principal avec le contrat dual-auth complet d'../auth/dual.rs : le @AuthPrincipal
+    (§subject, email, source) est injecté tel quel dans l'exécution, sans aucun branchement sur
+    @PrincipalSource — session et token API suivent le même chemin, et aucune résolution d'user ni
+    aucun snapshot @GraphQlPrincipal n'est construit ici (asymétrie assumée avec
+    @crate::graphql::load_principal, signalée en `Purpose`).
+  Réserver @StatusCode::ACCEPTED : `@JsonRpcRequest.id` @None — champ absent comme `null` explicite,
+    @Option<@Value> le fundo sur le fil — répond `202` corps vide, sans enveloppe et sans regarder la
+    méthode, connue ou inconnue ; @JsonRpcRequest.params n'est pas consulté sur ce chemin.
+  Dispatcher la méthode par appariement exact (sensible à la casse) en trois branches seulement,
+    `initialize`, `tools/list` et `tools/call`, toute autre valeur finissant en
+    @JsonRpcResponse::err(code `-32601`, message `Method not found: {other}`).
+  Répondre à `initialize`, sans lire les @JsonRpcRequest.params du client : @JsonRpcResponse::ok
+    avec `protocolVersion` égal à @PROTOCOL_VERSION `2024-11-05`, `capabilities` égal à
+    `{"tools":{}}` sans autre capacité, et `serverInfo` = name `miryad-core` / version = @env! CARGO_PKG_VERSION
+    au moment de la compilation (la valeur du champ @version de `/Cargo.toml`, pas un littéral du
+    fichier).
+  Énumérer pour `tools/list` cinq déclarations par entrée de @McpToolRegistry.entities, nommées
+    `{ressource}{suffixe}` avec les suffixes de @OPERATIONS dans l'ordre `_list`, `_get`, `_create`,
+    `_update`, `_delete` pour une même entité, descriptions littérales `List {name}, paginated`,
+    `Get a single {name} by id`, `Create a new {name}`, `Update an existing {name} by id` et
+    `Delete a {name} by id`, et @inputSchema exacts : page/per_page `integer` et filter `string`
+    optionnels pour `_list` ; `id` `integer` requis pour `_get` et `_delete` (le même @Value de
+    schéma, sérialisé deux fois) et une copie littérale identique pour `_update` ; `{"type":"object"}`
+    sans propriétés pour `_create`. L'itération d'un @HashMap ne garantissant aucun ordre entre
+    entités, le contrat est un ensemble de tools ; @McpToolRegistry.format n'entre dans aucune déclaration.
+  Traiter `tools/call` en trois étapes ordonnées : désérialisation de @JsonRpcRequest.params en
+    @ToolCallParams (`name` obligatoire, @ToolCallParams.arguments default @Value::Null) sous
+    `-32602` `Invalid params: {e}` incluant le @Display serde brut ; puis @parse_tool_name qui
+    dépouille le premier suffixe de @OPERATIONS correspondant (les cinq suffixes sont exclusifs ;
+    un nom égal à un suffixe nu laisse une ressource vide) et lache `-32601` `Unknown tool: {name}`
+    quand aucun suffixe ne correspond comme quand la ressource dépouillée est absente de
+    @McpToolRegistry.entities (deux branches, même message, sans code `MRD-`) ; puis
+    @McpEntity::call(op, @MiryadAuthState.db, principal, arguments) avec l'emprunt exact du
+    principal extrait à la route.
+  Renduire le succès : @RenderShape::List pour @McpOp::List seul, @RenderShape::Record pour les
+    quatre autres opérations ; un @HandleBars::new frais par appel (aucun cache de template) ;
+    succès de @format::render → @JsonRpcResponse::ok avec `content` = un bloc unique
+    `{"type":"text","text":...}` ; échec de rendu → traduction d'./error.rs.
+  Traduire toute erreur d'exécution ou de rendu par ./error.rs seul : @JsonRpcResponse::err_with_data(id,
+    @McpError::rpc_code, @Display de @McpError, @McpError::data) — aucun message, aucun code,
+    aucun `data` réécrit ici ; le @HookError.code de @McpError::Application ne sort que dans
+    `data`, sa @Display reste le message applicatif nu sans code `MRD-`.
+  Rendre toute requête parvenue au dispatch en @Json → `200` et en-tête @CONTENT_TYPE
+    `application/json` (sans charset — conversion @IntoResponse vérifiée dans axum 0.8.9
+    `src/json.rs`, l. 205-219), y compris toute réponse `error` JSON-RPC : le statut HTTP ne porte
+    jamais l'échec métier, seul `202` (notification) et les rejets d'extracteurs existent hors `200`.
+  Poser sur le fil les rejets amont dont ce fichier est la vitrine, chacun vérifié au source d'axum
+    0.8.9 / axum-core 0.5.6 : table complète en `Raises`.
+  Rester muet : le fichier ne lève aucune trace — import de @tracing absent du fichier, aucun
+    @warn, @info ou @debug sur les errors `-32601`, `-32602`, `-32001`, `-32603` comme sur les
+    refus d'auth (les rejets axum sont loggés par les macros d'axum-core dans @log, pas dans @tracing).
+  N'utiliser de @MiryadAuthState que le champ @db (passé à @McpEntity::call) ; @oidc_client,
+    @cookie_key et les redirections ne sont jamais consultés ici.
+
+Must not:
+  Valider la valeur du champ `jsonrpc` ni négocier `protocolVersion` : @JsonRpcRequest.jsonrpc est
+    marqué `#[allow(dead_code)]` et accepté verbatim (`"1.0"` passe), les @JsonRpcRequest.params de
+    `initialize` ne sont pas lus — toute introduction de négociation ou de rejet d'enveloppe
+    dépasse ce contrat et passe par un arbitrage de Sébastien (voir `Tasks` `[?]`).
+  Brancher l'exécution sur @PrincipalSource, résoudre l'user en table avant appel, ou construire
+    un @AuthPrincipal de toutes pièces — l'identité vient d'../auth/dual.rs et de lui seul, et sa
+    résolution locale est le contrat de @crate::graphql::load_principal, pas de ce fichier.
+  Construire, mapper ou enrichir une @McpError, une @HookError ou une @AuthError ici : les codes
+    `-32000`/`-32001`/`-32002`/`-32603` viennent du seul @McpError::rpc_code ; les deux `-32601` et
+    le `-32602` de premier niveau sont literals ici et ne passent pas par ./error.rs — ne pas les
+    faire migrer vers @McpError::UnknownTool/@McpError::InvalidParams sans arbitrage (même `Tasks` `[?]`).
+  Changer le statut HTTP d'une requête parvenue au dispatch : pas de `2xx` autre que `202` pour une
+    notification, pas de `4xx`/`5xx` pour une réponse `result` ou `error` JSON-RPC.
+  Émettre la moindre trace @tracing — l'ajout d'un log sur les chemins d'erreur est un changement
+    de contrat, pas un détail (la branche muette est l'état vérifiable du fichier).
+  Ajouter une route au routeur retourné — `GET /mcp` pour la découverte, CORS, ou un préfixe
+    `/api/v1` aligné sur REST : @mcp_router ne déclare qu'une route et qu'une méthode (le `405`
+    avec @Allow est posé par axum, pas ici).
+
+Depends on:
+  @axum 0.8 — @Router, @Json, @Extension, @State, @StatusCode, @IntoResponse ; comportements
+    vérifiés au source axum 0.8.9 et axum-core 0.5.6 : ordre des extracteurs (`src/handler/mod.rs`
+    `impl_handler!` l. 238-257), statuts et corps de rejets (`src/extract/rejection.rs` l. 9-47 ;
+    `axum-core src/macros.rs` l. 90-141 pour le suffixe `: {erreur}`), route et méthode seules
+    autorisées (`src/routing/method_routing.rs`, `src/routing/route.rs` : `405` corps vide + en-tête @Allow),
+    chemin strict sans slash final (`src/routing/tests/mod.rs` l. 324-345), limite de corps @DefaultBodyLimit
+    `2MB` (`axum-core src/extract/default_body_limit.rs`)
+  @vynil_core::hbs::HandleBars sous la feature `mcp` — @HandleBars::new compose le moteur
+    Handlebars avec helpers `json_to_str`/`str_to_json` (register interne) ; @HandleBars::render
+    mappe tout échec sur @vynil_core::Error; aucun composant JSON-RPC n'existe dans `vynil-core 0.7.4`
+  ./protocol.rs, ./registry.rs, ./format.rs, ./error.rs, ../auth/dual.rs, ../auth/state.rs,
+    @crate::auth::AuthPrincipal — contrats détaillés dans leurs specs adjacentes
+  @serde via @serde::Deserialize sur @ToolCallParams ; @serde_json @Value et macro @json!
+
+Exposes:
+  @mcp_router<S>(registry: McpToolRegistry) -> @Router<S> — item `pub` unique du fichier,
+    ré-exporté sous @crate::mcp par ./mod.rs ; générique avec les bornes @S: @Clone + @Send +
+    @Sync + `'static` et @MiryadAuthState: @FromRef<@S> (même patron que les autres routeurs de la
+    crate : l'état est rendu par le consommateur, @mcp_router ne appelle @with_state)
+  @mcp_router ne dépend d'aucun feature interne : son `#[cfg]` protecteur est celui du module
+    entier posé dans /src/lib.rs
+  Rien d'autre : @mcp_handler, @handle_initialize, @handle_tools_list, @handle_tools_call,
+    @parse_tool_name, @ToolCallParams, @PROTOCOL_VERSION et @OPERATIONS sont privés au fichier —
+    seul le contrat HTTP de `POST /mcp` est observable de l'extérieur
+
+Accepts:
+  @mcp_router : un @McpToolRegistry par valeur (format + entités enregistrées, figés au montage) ;
+    aucun chemin, aucune méthode, aucun préfixe configurable ; l'état d'app doit fournir
+    @MiryadAuthState par @FromRef
+  @mcp_handler (interne) — route `POST /mcp` : @State<@MiryadAuthState>, extracteur
+    @AuthPrincipal dual-auth (@Rejection @AuthError), @Extension<@Arc<@McpToolRegistry>> posée par
+    la couche de @mcp_router, corps sous @Content-Type `application/json` (absent ou d'un autre
+    type → rejet `415` — vérifié axum 0.8.9 `src/json.rs` l. 138-155), ≤ `2MB` avant rejet `413`
+  Enveloppe JSON-RPC : `jsonrpc` @String obligatoire (jamais relu), `method` @String obligatoire,
+    `id` @Option<@Value> (absent ou `null` → notification), `params` @Value default @Value::Null
+  Params de `tools/call` : objet @ToolCallParams { @ToolCallParams.name @String obligatoire,
+    @ToolCallParams.arguments @default @Value::Null } ; les clés inconnues (`_meta`,
+    `progressToken`…) sont ignorées silencieusement par @serde
+
+Returns:
+  `200` + @CONTENT_TYPE `application/json` pour toute requête parvenue au dispatch, corps
+    @JsonRpcResponse : `{"jsonrpc":"2.0","id":<echo>,"result":...}` avec `result` = objet
+    d'initialisation (`protocolVersion`, `capabilities`, `serverInfo`), `{"tools":[...]}` cinq
+    déclarations par entité pour `tools/list`, `{"content":[{"type":"text","text":...}]}` pour
+    `tools/call` réussi — ou `{"jsonrpc":"2.0","id":<echo>,"error":{code,message,data?}}` pour
+    toute erreur du dispatch, `data` n'apparaissant que pour @McpError::Application
+  `202` corps vide pour toute requête sans `id`
+  L'echo d'`id` est verbatim quelle que soit la @Value reçue (nombre, chaîne, objet) ; après la
+    garde de notification, `@JsonRpcRequest.id` est toujours @Some donc `id` est toujours sérialisé
+  @None jamais : @mcp_router retourne toujours son @Router, la construction ne peut échouer
+
+Raises:
+  Rejets axum posés avant ou autour du dispatch, tous hors enveloppe JSON-RPC (asymétrie actée —
+    voir `Tasks` `[?]`), corps `text/plain` sauf mention, vérifiés au source axum 0.8.9 :
+    `- chemin/method`: `404` corps vide (`/mcp/` slash final, `/api/mcp`, toute autre URL) ;
+      `405` corps vide avec en-tête @Allow `POST` pour tout @Method non-@POST sur `/mcp` exact
+    `- @AuthError` d'../auth/dual.rs rendu par /src/auth/error.rs: `401` pour `MRD-AUTH-001`
+      (aucun credential), `MRD-AUTH-002` (cookie illisible/expiré), `MRD-AUTH-014` (token inconnu
+      ou révoqué), `MRD-AUTH-015` (token expiré) ; `500` pour @AuthError::Database (`MRD-AUTH-016`)
+      quand les requêtes de @validate_token tombent — @AuthError::Oidc est hors d'atteinte sur cetteroute
+      (../auth/dual.rs ne le construit jamais), donc `502` n'existe pas sur `POST /mcp`
+    `- @MissingJsonContentType`: `415` corps `Expected request with `Content-Type: application/json``,
+      @Content-Type absent ou non-`application/json`
+    `- @JsonSyntaxError`: `400` corps préfixé `Failed to parse the request body as JSON: ` suivi de
+      l'erreur serde (syntaxe ou fin prématurée)
+    `- @JsonDataError`: `422` corps préfixé `Failed to deserialize the JSON body into the target
+      type: ` suivi de l'erreur serde avec chemin (ex. `missing field `method``) — le JSON est
+      conforme mais ne rentre pas dans @JsonRpcRequest
+    `- @LengthLimitError`: `413` corps préfixé `Failed to buffer the request body: ` au-delà de la
+      limite @DefaultBodyLimit `2MB` par défaut
+  Codes JSON-RPC portés par des réponses `200`, émis par ce fichier : `-32601` message
+    `Method not found: {method}` pour toute méthode hors des trois connues ; `-32601` message
+    `Unknown tool: {name}` pour un suffixe inconnu comme pour une ressource absente (deux branches
+    de @handle_tools_call) ; `-32602` message préfixé `Invalid params: ` + @Display serde quand
+    @JsonRpcRequest.params ne se désarialise pas en @ToolCallParams
+  Codes JSON-RPC relayés de ./error.rs via @McpError::rpc_code après @McpEntity::call ou @format::render :
+    `-32602` aussi — préfixé `MRD-MCP-005` — quand @ToolCallParams.arguments arrive valide au
+    registre mais ne se désarialise pas en params d'opération (-32602 de seconde couche, distinct
+    du premier par son préfixe `MRD-MCP-005`) ; `-32001` `MRD-MCP-001: forbidden`, `-32002`
+    `MRD-MCP-002: resource not found`, `-32000` avec @HookError.code en `data`, `-32603` base,
+    rendu et interne — messages d'./error.rs verbatim
+  Le @McpError::UnknownTool de ./error.rs (`MRD-MCP-006`) n'est jamais construit par ce fichier :
+    le code ne sort pas sur le fil aujourd'hui (`Tasks` `[?]`)
+
+Handles:
+  Notifications JSON-RPC par garde unique sur l'`id` : méthode connue ou inconnue, avec ou sans
+    `params`, `initialize` répété — tout part en `202` sans dispatch ni log.
+  Désérialisation @Option<@Value> du champ `id` : absent et explicite `null` fundo sur la même
+    valeur @None → les deux partent en `202`, y compris pour un client qui enverrait `"id": null`
+    sur une requête attendue comme une réponse (écart à la spec JSON-RPC 2.0, `Tasks` `[?]`).
+  Ordre d'itération non déterministe de @McpToolRegistry.entities pour `tools/list` (un @HashMap) :
+    le contrat observable est l'ensemble `{resource}_{suffix}` des declarations et leurs schémas,
+    pas une séquence ; aucune pagination de `tools/list` n'existe (tous les tools d'un coup).
+  Prefixe vide après dépouillement de suffixe : l'outil `_list` nu (nom égal au suffixe) donne une
+    ressource `""` absente du registre → `-32601` `Unknown tool: _list` par la seconde branche.
+  @ToolCallParams.arguments absent → @Value::Null passé tel quel au registre : les cinq opérations
+    le déserialisent et échouent en -32602 (message `MRD-MCP-005`) avec corps `null`, jamais en succès.
+  Rendu de @McpOp::Delete : la donnée du registre est @Value::Null ; sous @RenderShape::Record et
+    les gabarits par défaut, @json_to_str de `vynil-core` rend un @Null en chaîne vide (source
+    vérifiée `hbs_json.rs` l. 141-143) → `text` vide sur le fil (@OutputFormat::Custom reste
+    maitre de ce qu'il rend d'un enregistrement @Null — contrat de ./format.rs).
+  Absence de @Extension<@Arc<@McpToolRegistry>> : inatteignable par @mcp_router (la couche est
+    posée à la construction) ; @handle_tools_call n'est pas exposed sans elle — pas de `500` de
+    @MissingExtension observable via cette surface.
+  Corps trop lourd, UTF-8 invalide, méthode absente de l'enveloppe : rejections axum `413`, `400`,
+    `422` sans qu'aucune ligne de @mcp_handler ne tourne — aucun de ces codes n'entre dans
+    l'enveloppe JSON-RPC.
+
+Tasks:
+  [ ] Convertir les 19 `Scenario` en au moins 19 tests nommés distincts dans le `mod tests`
+    `#[cfg(test)]` de ./handler.rs — le fichier compte 0 test inline à ce jour ; gabarits à
+    dupliquer de ./registry.rs (sqlite mémoire + @Migrator::up + entité @RestEntity fixture
+    `recipes` + @issue_token) et de ../auth/dual.rs (@Router::oneshot via @tower::ServiceExt) ;
+    les scénarios de politique (`-32001`, fixture en @AccessPolicy::OwnerOnly avec possédant
+    divergent) et de hook (`-32000`, fixture @MiryadResource::before_create retournant @HookError
+    avec @code `HOOK-42`) portent leurs propres entités fixtures dans ce même `mod tests` ; le
+    contrat reste confiné au fichier, aucune crate de /tests/ nécessaire
+  [?] Asymétrie d'enveloppe (liée au `[?]` « asymétrie d'enveloppe » de /src/auth/error.sdd qui
+    nomme `POST /mcp`) : tout refus de transport ou d'auth (`401`/`405`/`404`/`400`/`415`/`422`/`413`)
+    sort en `text/plain` ou corps vide hors enveloppe, alors que JSON-RPC 2.0 documente `-32700` et
+    `-32600` dans le corps — refuse-t-on d'envelopper ces refus dans une erreur JSON-RPC à `200`,
+    ou l'exposition HTTP crue est-elle le contrat voulu pour les clients MCP ?
+  [?] Poignée de main non vérifiée : @JsonRpcRequest.jsonrpc exigé à la désérialisation mais jamais
+    relu (`#[allow(dead_code)]` — `"jsonrpc": "1.0"` passe), `initialize` ignore le
+    `protocolVersion` du client et ne négocie rien — fige-t-on ce laçage minimal, ou exige-t-on la
+    vérification `2.0` et l'écho négocié de version selon la spec MCP ?
+  [?] `id` absent équivaut `id: null` sur la garde de notification : une requête `{"jsonrpc":
+    "2.0","method":"tools/list","id":null}` reçoit `202` sans réponse au lieu d'une erreur
+    `MRD-`-libre de requête invalide (JSON-RPC 2.0 interdit `id` null sur une request) — accident
+    assumé d'un @Option=@None ou branche à corriger ?
+  [?] Code `MRD-MCP-006` mort : @McpError::UnknownTool (`-32601`, Display `MRD-MCP-006: unknown
+    tool`) n'est construit nulle part dans la crate — ce fichier pose `-32601` `Unknown tool:
+    {name}` sans code ; fait-on passer le refus par @McpError::UnknownTool (code sur le fil, parité
+    taxonomie `MRD-*`) ou supprime-t-on la variante (message nu assumé) ?
+  [?] Silence sur `POST /mcp` : le fichier ne trace rien — ni `tools/call` en échec (`-32001`
+    interdiction, `-32603` base), ni les refus d'auth de la route (le rejet @AuthPrincipal est rendu
+    muet par /src/auth/error.rs, aucun middleware ne l'entoure ici) ; le contrat transverse « @tracing
+    pour toute trace » impose-t-il d'ajouter des events @warn ici, avec quel nivellement et sans
+    loguer les payloads ?
+
+Done when:
+  Chaque `Scenario` a au moins un test nommé distinct et vert (≥ 19 tests), joués sur
+    `--no-default-features --features mcp` et `--all-features` — seules combinaisons de la batterie
+    de /tooling.sdd où ce fichier compile —, zéro warning clippy/rustc sur le fichier.
+  La table `Raises` (statut exact, corps exact, en-têtes @Allow et @CONTENT_TYPE) est affirmée par
+    assertions littérales sans `contains` sur un code, et l'ordre extraction-avant-corps du `Must`
+    est attesté par le test scenario « requête sans credentials » corps non parsable.
+  La parité de surface est tenue : les mêmes refus que REST produisent la même decision @rest::core
+    rendue `-32001`/`-32002` par ./error.rs (test de comparaison lu, pas supposé), aucune divergence
+    fonctionnelle MCP↔REST n'est laissée silencieuse.
+  Les cinq lignes `[?]` sont arbitrées par Sébastien et leurs suites reflétées dans le contrat ou
+    le code, et la spec est relue et approuvée par lui.
+
+Scenario: tools/call valide avec token API
+  Given @mcp_router monté sur un sqlite mémoire migré avec @McpToolRegistry::register pour l'entité
+    fixture `recipes` et un token API émis par @issue_token pour le possesseur du enregistrement
+  When un `POST /mcp` avec @Authorization `Bearer <token>`, @Content-Type `application/json` et le
+    corps `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recipes_get","arguments":{"id":<id>}}}`
+  Then le statut est `200` et l'en-tête @CONTENT_TYPE vaut `application/json`
+  And `jsonrpc` vaut `"2.0"`, `id` vaut `1` et `error` est absent
+  And `result.content[0].type` vaut `"text"` et `result.content[0].text` est le rendu JSON de
+    l'enregistrement (parsable, `title` égal à la valeur en base)
+
+Scenario: session cookie authentique un tools/call comme le bearer
+  Given @mcp_router avec le même registre et le même enregistrement, un cookie de session valide
+    posé pour l'identité possédant la ligne (gabarit @build_set_cookie de ../auth/dual.rs), sans
+    en-tête @Authorization
+  When le même appel `tools/call` `recipes_get` arrive
+  Then le statut est `200`, `result.content[0].text` rend le même enregistrement
+  And aucune distinction de @PrincipalSource n'est observable sur le fil — @AuthPrincipal source @Session
+    suit le chemin RBAC exact du token
+
+Scenario: requête sans credentials est rejetée 401 avant corps
+  Given @mcp_router seul, sans cookie ni @Authorization, et un corps `not-a-json` non parsable
+  When un `POST /mcp` avec @Content-Type `application/json` arrive
+  Then le statut est `401` et le corps est exactement `MRD-AUTH-001: not authenticated (no session cookie)`
+  But aucune erreur JSON-RPC n'apparaît : ni champ `error`, ni code `-32700` — le refus est texte
+    hors enveloppe (voir `Tasks` `[?]`)
+
+Scenario: bearer invalide ne retombe pas sur le cookie
+  Given un cookie de session valide pour une ligne et un en-tête @Authorization bearer
+    d'un token inexistant
+  When un `tools/call` valide arrive avec les deux credentials
+  Then le statut est `401` (`MRD-AUTH-014`) et aucun `result` n'est rendu
+  And la session valide n'a jamais été consultée — le bearer est un choix exclusif
+
+Scenario: seule la méthode POST est admise sur method /mcp
+  Given @mcp_router avec un état valide
+  When `GET`, `PUT`, `OPTIONS` puis `DELETE` arrivent sur `/mcp` avec @Content-Type `application/json`
+  Then chaque réponse porte `405` corps vide
+  And l'en-tête @Allow vaut `POST` sur chacune — le routeur ne déclare aucune autre méthode
+
+Scenario: le chemin /mcp ne se sert pas avec un slash final
+  Given @mcp_router monté sans fallback externe
+  When un `POST /mcp/` parfaitement formé et authentifié arrive
+  Then le statut est `404` avec corps vide — la route `/mcp` est un chemin exact, aucun dispatch
+    JSON-RPC ne tourne
+
+Scenario: corps JSON non syntaxique est rejeté 400 hors enveloppe
+  Given un bearer valide et @Content-Type `application/json`
+  When le corps `{oops` arrive sur `POST /mcp`
+  Then le statut est `400` et le corps commence exactement par `Failed to parse the request body as JSON: `
+  But aucune enveloppe JSON-RPC n'est émise : le parseur d'enveloppe n'a jamais vu la requête
+
+Scenario: Content-Type non JSON est rejeté 415 après l'auth
+  Given un bearer valide, un corps JSON parfaitement formé mais @Content-Type `text/plain`
+  When le `POST /mcp` arrive
+  Then le statut est `415` et le corps est exactement `Expected request with `Content-Type: application/json``
+  And l'@AuthPrincipal a été extrait d'abord — le rejet vient du @Json, la méthode eut été dispatchée si le type était bon
+
+Scenario: enveloppe JSON valide hors forme JsonRpcRequest est rejetée 422
+  Given un bearer valide et @Content-Type `application/json`
+  When le corps `{"jsonrpc":"2.0","params":{}}` (champ `method` absent) arrive
+  Then le statut est `422` et le corps commence exactement par `Failed to deserialize the JSON body into the target type: `
+  But le message serde chemine jusqu'à `missing field` sans code `MRD-` ni `-32600` enveloppé
+
+Scenario: notification sans id répond 202 quelle que soit la méthode
+  Given un bearer valide et @Content-Type `application/json`
+  When `{"jsonrpc":"2.0","method":"notifications/initialized"}` sans `id` arrive
+  Then le statut est `202` avec corps vide
+  And `{"jsonrpc":"2.0","method":"aucune/methode","id":null}` avec `id` explicite `null` reçoit le
+    même `202` vide — avant tout dispatch
+
+Scenario: initialize répond la poignée de main figée
+  Given un bearer valide
+  When `{"jsonrpc":"2.0","id":"abc-123","method":"initialize","params":{"protocolVersion":"1999-01-01","capabilities":{}}}` arrive
+  Then `200` et `result.protocolVersion` vaut `"2024-11-05"` — la version demandée est ignorée sans négociation (voir `Tasks` `[?]`)
+  And `result.capabilities` vaut exactement `{"tools":{}}`
+  And `result.serverInfo.name` vaut `"miryad-core"` et `.version` la valeur de @env! CARGO_PKG_VERSION
+    au moment du build du test (comparaison à @env! CARGO_PKG_VERSION, pas à un littéral)
+  And `id` est renvoyé verbatim, ici la chaîne `"abc-123"`
+
+Scenario: tools/list déclare cinq tools par entité
+  Given un registre avec les fixtures `recipes` et `articles` montées, format même en @OutputFormat::Custom
+  When un `tools/list` authentifié et id-numéroté arrive
+  Then `200` et ` result.tools` contient exactement l'ensemble des 10 noms `{resource}_{suffix}`
+    attendu, sans égard à l'ordre d'itération du @HashMap
+  And `recipes_get`, `recipes_update` et `recipes_delete` portent l'@inputSchema avec
+    `{"type":"integer"}` pour `id` et `required:["id"]` ; `recipes_list` déclare `page`, `per_page`
+    et `filter` sans requis ; `recipes_create` un objet nu
+  But l'@OutputFormat::Custom n'introduit aucun template ou texte dans les descriptions — les
+    descriptions sont les littéraux `List {name}, paginated` etc., inchangés par le format
+
+Scenario: méthode JSON-RPC sans dispatch répond -32601 sous 200
+  Given un bearer valide
+  When `{"jsonrpc":"2.0","id":7,"method":"ping"}` arrive
+  Then le statut HTTP est `200`
+  And `error.code` vaut `-32601` et `error.message` exactement `Method not found: ping`, sans préfixe `MRD-`
+  And le contenu de `result` est absent mais `id` est `7`
+
+Scenario: outil inconnu au dispatch répond -32601 sous 200
+  Given le registre des fixtures et un bearer valide
+  When un `tools/call` `params.name` `"recipes_ping"` (suffixe hors table @OPERATIONS) puis un
+    second `"ghost_list"` (suffixe valide, ressource absente) arrivent avec des `id` distincts
+  Then chaque réponse est `200` avec `error.code` `-32601`
+  And les deux messages sont exactement `Unknown tool: {name}` avec le nom reçu — la variante
+    @McpError::UnknownTool (`MRD-MCP-006`) est absente du fil dans les deux cas (voir `Tasks` `[?]`)
+
+Scenario: params invalides pour tools/call répond -32602 sous 200
+  Given un bearer valide et l'entité `recipes` montée
+  When un `tools/call` `{"name":123}` (name non-string) arrive — `error.code` vaut `-32602`,
+    message préfixé `Invalid params: ` suivi du @Display serde, sans code `MRD-`
+  And quand `{"name":"recipes_get"}` arrive sans `arguments`, l'appel parvient au registre avec
+    @Value::Null et `error.code` `-32602` cette fois avec message préfixé `MRD-MCP-005` — les deux
+    niveaux de `-32602` se distinguent par le préfixe `MRD-`
+
+Scenario: appel refusé par la politique rend -32001 sous 200
+  Given une entité fixture en @AccessPolicy::OwnerOnly, un enregistrement dont la colonne
+    @owner_column désigne un possesseur différent du principal du bearer courant
+  When un `tools/call` `recipes_delete` ciblant cet `id` légitime arrive authentifié
+  Then le statut HTTP est `200` — l'échec de politique ne se dit pas en `403` ici comme en REST
+    (/src/rest/error.sdd) mais en réponse JSON-RPC `error`
+  And `error.code` vaut `-32001`, `error.message` exactement `MRD-MCP-001: forbidden`, `error.data` absent
+
+Scenario: hook applicatif rend -32000 avec son code dans data
+  Given une entité fixture dont @MiryadResource::before_create retourne @HookError de message
+    `titre vide` et de @code `HOOK-42`
+  When un `tools/call` `recipes_create` authentifié et sinon valide arrive
+  Then le statut est `200`, `error.code` vaut `-32000`
+  And `error.message` est exactement `titre vide` — préfixe `MRD-` aucun (taxonomie réservée de la
+    crate exclue de @HookError)
+  And `error.data` vaut exactement `{"code":"HOOK-42"}`
+
+Scenario: delete valide rend un texte vide sous format JSON par défaut
+  Given le registre en @OutputFormat::Json et un enregistrement possédé par le principal du bearer
+  When un `tools/call` `recipes_delete` cible cet `id`
+  Then le statut est `200`, `error` absent, et `result.content` est un bloc unique de type `"text"`
+  And `result.content[0].text` est la chaîne vide — la donnée @Null de @McpOp::Delete se rend vide
+    par @json_to_str de `vynil-core` (source vérifiée)
+  And une relire `recipes_get` du même id échoue ensuite en `error.code` `-32002` — l'effet en base a eu lieu
+
+Scenario: corps au-dessus de la limite par défaut répond 413
+  Given un bearer valide, @Content-Type `application/json` et un corps JSON valide mais de plus de
+    `2MB` (gabarit `2 * 1024 * 1024 + bytes`)
+  When le `POST /mcp` arrive
+  Then le statut est `413` et le corps commence par `Failed to buffer the request body: `
+  But aucun dispatch JSON-RPC ne tourne et aucune enveloppe n'est émise

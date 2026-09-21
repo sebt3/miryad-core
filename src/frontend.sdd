@@ -1,0 +1,367 @@
+Spec: frontend — service statique SPA, dossier d'assets externe et repli vers index.html
+
+Purpose:
+  Sert en HTTP statique le dossier compilé du frontend (assets_dir) avec repli SPA : toute
+    route `GET` ou `HEAD` sans fichier correspondant rend assets_dir/index.html, pour
+    que le routage côté client (Vue Router) ne se heurte jamais à un `404` prématuré. Le
+    fichier reste générique sur le contenu — il ne connaît aucun asset et n'embarque rien
+    dans le binaire — et neutre face à l'état de l'application consommatrice. Son seul
+    item public, @frontend::static_frontend_router, ne compile que sous `static-frontend`
+    (feature par défaut, seule consommatrice de `tower-http` dans la crate).
+
+Owns:
+  ./frontend.rs
+
+References:
+  ./lib.sdd — déclare et gate ici le module @frontend par #[cfg(feature = "static-frontend")]
+    de @lib.rs
+  /Cargo.toml — `default = ["static-frontend"]`, `static-frontend =
+    ["dep:tower-http"]`, `tower-http = { default-features = false, features =
+    ["fs"] }`
+  /tooling.sdd — matrice de batterie de features que le gating de ce fichier impose
+  /docs/architecture.md — récit « Support frontend » : assets externes, pas de
+    `rust-embed`, feature par défaut attendue de toutes les applications miryad
+
+Must:
+  Compiler seulement sous `static-frontend`, par la déclaration du module ici dans
+    @lib.rs — le fichier n'utilise pas @tower_http sans cette feature.
+  N'être construit que par deux combinaisons de la batterie de /tooling.sdd — défaut et
+    `--all-features`. Les cinq constructions `--no-default-features` (dont
+    `swagger-ui`, `graphql`, `graphiql`, `mcp`) compilent sans ce
+    module et doivent rester vertes ; @frontend::static_frontend_router n'est pas dans leur
+    surface publique.
+  Ne faire aucun accès au système de fichiers à la construction : pas de contrôle
+    d'existence, pas de normalisation, pas de lecture de assets_dir ; un dossier absent ou
+    sans index.html ne se révèle qu'à la requête, et @frontend::static_frontend_router ne
+    panique jamais et ne renvoie pas de `Result`.
+  Résoudre un assets_dir relatif au moment de chaque requête, depuis le répertoire de travail
+    du processus (l'amont préfixe la base de recherche par `.`) ; un chemin absolu
+    s'utilise tel quel, sans protection contre un répertoire qui bougerait en cours de
+    service.
+  Répondre `200`, pour une requête `GET` ou `HEAD` touchant un fichier
+    existant sous assets_dir, avec un `content-type` deviné par extension (table
+    @mime_guess `2.0.5` : `html` → `text/html`, `js` →
+    `text/javascript`), plus `accept-ranges` `bytes`, `content-length`
+    égal à la tranche livrée et `last-modified` dès que le système de fichiers expose le
+    mtime du fichier.
+  Ne jamais poser de `cache-control` ni d'`etag` dans la réponse : la validité
+    ne repose que sur `last-modified`, `if-modified-since`,
+    `if-unmodified-since`.
+  Rendre la coquille assets_dir/index.html pour tout `GET` ou `HEAD` sans fichier
+    valide trouvable — fichier manquant, chemin invalidé (`..`, racine, préfixe de
+    lecteur, pour-cent indécodable, octet nul), requête sous un sous-chemin de fichier — avec
+    le statut `200` posé par @tower_http::services::ServeFile, sans réécriture de statut,
+    @ServeDir::not_found_service n'étant pas utilisé.
+  Répondre `307` avec un `location` égal au chemin suivi de `/`, query
+    string conservée, à un répertoire appelé sans slash final ; un répertoire appelé avec un
+    slash final sert son propre `index.html` s'il en contient un.
+  Ne jamais lire hors de assets_dir : le décodage pour-cent précède la validation, et tout
+    segment `..`, racine ou préfixe de lecteur est refusé avant ouverture ; cette
+    protection ne produit jamais de `4xx` dans la composition courante — le repli
+    s'exécute et rend la coquille.
+  Répondre `405` avec `allow` à `GET,HEAD` et corps vide, sans appeler le
+    repli, à toute méthode autre que `GET` et `HEAD` sur n'importe quel chemin
+    (@ServeDir::call_fallback_on_method_not_allowed n'est pas activé) : un `POST` sur
+    une route SPA ne reçoit jamais la coquille.
+  Appliquer les requêtes conditionnelles sur le mtime : `if-modified-since` supérieur ou
+    égal à `last-modified` répond `304` au corps vide ; `if-unmodified-since`
+    antérieur au mtime répond `412` ; une date indécodable ou absente est silencieusement
+    ignorée. Sur le chemin du repli, la comparaison porte sur le mtime de index.html même.
+  Honorer l'en-tête `range` : une plage unique satisfiable répond `206` avec un
+    `content-range` `bytes` suivi de `début-fin/total` et le corps de la
+    tranche d'octets ; une plage insatisfiable, indécodable ou multi-plages répond `416`
+    — multi-plages avec le corps `Cannot serve multipart range requests`, les autres cas
+    au corps vide.
+  Ignorer `accept-encoding` : @ServeDir::precompressed_gzip,
+    @ServeDir::precompressed_br, @ServeDir::precompressed_deflate et
+    @ServeDir::precompressed_zstd ne sont jamais appelés, aucun `content-encoding` n'est
+    émis et le contenu servi reste non compressé.
+  Rendre un @axum::Router sans aucune route déclarée : seul @Router::fallback_service le
+    compose ; le paramètre générique `S` n'est jamais consommé — le service ne lit
+    aucun état — ce qui laisse le routeur se faire fusionner puis lier à l'état du
+    consommateur, les routes déclarées du fusionneur gardant la priorité sur le repli SPA.
+  Porter un fallback personnalisé au niveau du routeur, ce qui l'expose à la règle de
+    @Router::merge d'@axum `0.8.9` : le fusionner avec un autre routeur portant lui
+    aussi un fallback personnalisé fait lever un panic à l'assemblage.
+  Convertir en `500` vide les erreurs amont du système de fichiers autres que
+    `NotFound`, `PermissionDenied`, `ENOTDIR` ; dans le graphe unifié du
+    dépôt, la feature `tracing` de `tower-http` n'est pas activée et ces
+    `500` ne laissent aucune trace de log côté amont.
+  N'émettre ici aucune trace — ni macro `tracing`, ni @println!, ni @eprintln!,
+    ni @dbg! — pas même sur la voie des `500` amont, et ne porter aucun code
+    `MRD-<DOMAINE>-NNN`.
+
+Must not:
+  Sérialiser une erreur d'API sur un fichier manquant, une méthode refusée ou un chemin
+    invalidé : ni @HookError ni de code de la taxonomie `MRD-*` — la langue ici se limite
+    aux statuts HTTP amont, au corps vide ou minimal.
+  Faire une quelconque authentification (cookie, token API, RBAC) sur les assets ou sur la
+    coquille : la coquille SPA se rend sans principal, et l'authentification est le contrat
+    de @auth, non celui du service statique.
+  Déclarer ici une route d'API ou d'auth : le préfixe `/api/v1` et les callbacks
+    OAuth appartiennent à @rest et à @auth, qui écartent la collision avec les routes SPA par
+    le préfixe ; le service concerné ne contribue qu'un catch-all de routeur.
+  Employer les constructeurs amont qui modifieraient la composition —
+    @ServeDir::not_found_service, @ServeDir::call_fallback_on_method_not_allowed,
+    @ServeDir::precompressed_gzip, @ServeDir::precompressed_br,
+    @ServeDir::precompressed_deflate, @ServeDir::precompressed_zstd — chacun réécrirait des
+    statuts sans garantie de test, inventerait une négociation d'encodage inexistante, ou
+    ferait déborder les méthodes `POST`, `PUT`, `PATCH`, `DELETE` vers
+    la coquille.
+  Garder dans ses lignes un autre gating de feature que celui de @lib.rs : le fichier ne
+    contient aucun `#[cfg(feature = ...)]` et ne devra en contenir.
+
+Forbids:
+  `rust-embed` et tout mécanisme qui fixe le contenu des assets dans le binaire
+    compilé, @std::include_str! et @std::include_bytes! compris : le contrat lit le
+    répertoire à la requête, selon /docs/architecture.md.
+
+Depends on:
+  @tower_http::services::ServeDir — service de `tower-http` `0.6.11`, dont le
+    comportement a été vérifié dans la source du registre amont et non dans ses commentaires
+    documentaires : routage sur le répertoire, validation du chemin, refus des méthodes, relais
+    du repli, conditionnels et `range`.
+  @tower_http::services::ServeFile — repli porteur de la coquille ; son `content-type`
+    se fixe à la construction par @mime_guess `2.0.5` sur le chemin déclaré,
+    indépendamment de la requête.
+  @axum::Router — routeur hôte de @Router::fallback_service et de @Router::merge, chez @axum
+    `0.8.9`, vérifié à la source.
+  @std::path::PathBuf — type de destination de assets_dir.
+  /Cargo.toml — la feature `static-frontend`, qui n'active de `tower-http` que
+    la feature `fs`.
+  @tower et @tokio — dev-dependencies exploitées par les tests inline, @tower::ServiceExt pour
+    `oneshot` et @tokio::test pour l'exécution asynchrone.
+
+Exposes:
+  @frontend::static_frontend_router — seul item public du fichier, signature
+    `pub fn static_frontend_router<S>(assets_dir: impl Into<PathBuf>) -> Router<S>` avec
+    `S: Clone + Send + Sync + 'static`, assemblé seulement sous
+    `static-frontend` par @lib.rs.
+  Le corps et les en-têtes des réponses HTTP rendus sans retouche : le fichier emballe
+    @tower_http dans un @axum::Router sans couche, sans en-tête ajouté, sans middleware @tower.
+
+Accepts:
+  Tout assets_dir convertible en @std::path::PathBuf — @String, `&str`,
+    @std::path::PathBuf — sans validation ni accès ; un chemin relatif accepté se résout à
+    chaque requête depuis le répertoire de travail.
+  Un type `S` satisfaisant `Clone + Send + Sync + 'static`, jamais lu.
+  Toute requête HTTP parvenant au routeur, quelle que soit sa méthode : `GET` et
+    `HEAD` pour le service, le repli, les conditionnels, les `range` ; `POST`,
+    `PUT`, `PATCH`, `DELETE` et les autres pour le refus.
+  Les en-têtes optionnels `range`, `if-modified-since`,
+    `if-unmodified-since` — interprétés — et `accept-encoding` — ignoré ; la query
+    string reste hors de la construction du chemin de fichiers mais se conserve dans le
+    en-tête `location` de la redirection de répertoire.
+
+Returns:
+  Un @axum::Router<@S> rendu de façon synchrone, sans entrées-sorties ni tâche lancée, dont
+    la seule composition est le service statique avec repli sur index.html.
+  Les réponses HTTP produites par @tower_http — fichier servi, coquille, `206`,
+    `304`, `307`, `416`, `404`, `405`, `412`,
+    `500` — avec statuts et en-têtes inchangés.
+
+Raises:
+  Nulle part d'erreur Rust : @frontend::static_frontend_router ne renvoie pas de
+    `Result`, et le service @tower_http a @Infallible pour type d'erreur — le routeur
+    @axum ne s'engage donc jamais en échec.
+  Nulle part de construction d'erreur non plus : aucun code `MRD-<DOMAINE>-NNN`
+    n'est émis ici, la taxonomie de la crate ne s'applique pas à ce fichier.
+  Les conditions d'échec restent des statuts HTTP observables : `404` vide, sans
+    `content-type`, quand index.html manque ; `405` quand la méthode n'est ni
+    `GET` ni `HEAD` ; `304`, `412`, `416` sur les issues
+    conditionnelles ou `range` ; `500` vide sur erreur d'entrée-sorties disque
+    autre que `NotFound`, `PermissionDenied`, `ENOTDIR`.
+
+Handles:
+  Segments `..` en forme encodée (%2e%2e) ou littérale, racine ou préfixe de
+    lecteur ; séquences pour-cent indécodables en UTF-8 ; octet nul (%00) : tout est refusé
+    par @ServeDir avant ouverture, et rendu par le repli de coquille.
+  Requête sur un sous-chemin de fichier, comme `/app.js/nested` : @tower_http rapporte
+    `ENOTDIR` comme une absence de fichier, et le repli rend index.html avec `200`.
+  `HEAD` sur route inconnue : métadonnées de la coquille — `200`,
+    `content-length` égal à la taille de index.html, corps vide.
+  Requête `range` sur un chemin qui bascule au repli : le repli @ServeFile interprète
+    lui-même l'en-tête et rend la tranche de index.html avec `206`.
+  Coquille à extension inconnue de @mime_guess : le `content-type` fixé à la construction
+    retombe sur `application/octet-stream` ; le `index.html` habituel donne
+    `text/html`.
+  Les combinaisons `--no-default-features` de la batterie : le module n'est pas
+    construit, @tower_http reste présent dans le graphe de résolution, porté par @reqwest et sa
+    feature `follow-redirect`, sans `fs` — @ServeDir et @ServeFile y sont
+    indisponibles et @frontend n'est jamais déclaré.
+
+Tasks:
+  [?] — La coquille, index.html au premier chef, se rend sans `cache-control` ni
+      `etag` : un index.html trop mis en cache casse les déploiements du frontend. Le
+      contrat veut-il rester cette absence amont, exiger un `cache-control` porté par une
+      couche @axum sur le routeur, ou laisser ce choix à l'application consommatrice ?
+  [?] — Le commentaire de documentation promet « renvoie index.html plutôt qu'un 404 pour
+      toute route non trouvée », alors que la source rend `405` hors `GET` et
+      `HEAD`, `404` quand index.html manque, et `200` même sur les chemins
+      `..` invalidés. Aligne-t-on le commentaire sur la source, ou change-t-on le
+      comportement, par exemple avec
+      @ServeDir::call_fallback_on_method_not_allowed ?
+  [?] — Chemins invalides (`..` encodé, octet nul) et sous-chemins de fichier rendent la
+      coquille avec `200` : convention SPA assumée ou `4xx` explicite à préférer,
+      pour le référencement et le sondage ?
+  [ ] Rejouer la batterie complète de /tooling.sdd après l'ajout des tests ci-dessous : le
+      module ne se construit que sur défaut et `--all-features`, et les cinq autres
+      combinaisons doivent compiler sans lui.
+  [ ] Convertir chaque `Scenario` en test Rust nommé et distinct, au minimum dix-neuf
+      tests pour dix-neuf `Scenario`, correspondance complète — les deux premiers vivent
+      déjà dans le mod inline @frontend::tests et seront complétés d'assertions jusqu'à
+      vérifier tout leur `Then` : « fichier statique servi en GET » →
+      `serves_an_existing_asset` ; « coquille SPA rendue sur route inconnue » →
+      `falls_back_to_index_html_for_unknown_routes` ; « en-têtes du fichier servi portent
+      sa matière » → `serves_asset_with_metadata_headers` ; « coquille SPA servie
+      directement au chemin racine » → `serves_index_at_root` ; « requête HEAD rend les
+      en-têtes sans corps » → `head_asset_responds_without_body` ; « méthode autre que GET
+      ou HEAD refusée en 405 » → `non_get_method_returns_405` ; « répertoire sans slash
+      final redirigé en 307 » → `directory_redirects_with_trailing_slash` ; « répertoire
+      avec slash sert son propre index » → `subdirectory_serves_its_own_index` ; « fichier
+      demandé comme dossier replie sur la coquille » → `file_as_directory_falls_back` ;
+      « traversée parente encodée ne sort jamais du dossier » →
+      `percent_traversal_never_escapes_dir` ; « octet nul dans le chemin replie sur la
+      coquille » → `nul_byte_falls_back_to_shell` ; « index.html absent répond 404 vide »
+      → `missing_index_returns_empty_404` ; « conditionnelle fraîche répond 304 » →
+      `if_modified_since_returns_304` ; « précondition sur date ancienne échoue en 412 »
+      → `if_unmodified_since_returns_412` ; « requête range satisfiable rend 206 et la
+      tranche » → `satisfiable_range_returns_206` ; « range insatisfiable rend 416 » →
+      `unsatisfiable_range_returns_416` ; « deux routeurs à fallback personnalisé refusent
+      la fusion » → `merging_two_custom_fallbacks_panics` ; « routes déclarées passent
+      avant la coquille SPA » → `merged_routes_win_over_shell` ; « module absent de la
+      surface sans static-frontend » → `frontend_surface_follows_feature_gating`,
+      contrôle de compilation qui résout @frontend::static_frontend_router sous
+      `static-frontend`, dont l'absence est en outre prouvée par la batterie
+      `--no-default-features` de /tooling.sdd.
+
+Done when:
+  Chacun des dix-neuf `Scenario` dispose d'un test nommé distinct, correspondant à la
+    table de `Tasks`, les deux premiers étant portés par les tests inline existants du
+    fichier, et `cargo test` en features par défaut les exécute au vert.
+  La batterie de /tooling.sdd est verte sur chaque combinaison — défaut et
+    `--all-features` contiennent ce module, les cinq `--no-default-features`
+    compilent sans lui — et clippy n'émet aucun avertissement sur ce fichier.
+  Les trois tâches ouvertes `[?]` sont arbitrées par Sébastien et leur décision inscrite
+    dans cette spec, et Sébastien a approuvé cette spec.
+
+Scenario: fichier statique servi en GET
+  Given un assets_dir contenant index.html et un fichier app.js au contenu connu
+  When le client envoie un GET vers `/app.js`
+  Then la réponse est `200` et le corps est l'octet-à-octet exact du fichier
+
+Scenario: coquille SPA rendue sur route inconnue
+  Given le même assets_dir
+  When le client envoie un GET vers `/recipes/42`
+  Then la réponse est `200` et le corps est l'octet-à-octet de index.html
+  And le `content-type` est `text/html`
+
+Scenario: en-têtes du fichier servi portent sa matière
+  Given le même assets_dir
+  When le client envoie un GET vers `/app.js`
+  Then `content-type` vaut `text/javascript`
+  And `content-length` égale la taille du fichier
+  And `accept-ranges` vaut `bytes`
+  But ni `cache-control` ni `etag` ne sont présents
+
+Scenario: coquille SPA servie directement au chemin racine
+  Given le même assets_dir
+  When le client envoie un GET vers `/`
+  Then la réponse est `200` et le corps est l'octet-à-octet du index.html racine
+  And le `content-type` est `text/html`
+
+Scenario: requête HEAD rend les en-têtes sans corps
+  Given le même assets_dir
+  When le client envoie un HEAD vers `/app.js`
+  Then la réponse est `200` et `content-length` égale la taille du fichier
+  But le corps est vide
+
+Scenario: méthode autre que GET ou HEAD refusée en 405
+  Given le même assets_dir
+  When le client envoie un POST vers `/recipes/42`
+  Then la réponse est `405` et `allow` vaut `GET,HEAD`
+  And le corps est vide
+  But aucun index.html n'est rendu pour cette requête
+
+Scenario: répertoire sans slash final redirigé en 307
+  Given un assets_dir contenant un sous-répertoire sub, muni de son propre index.html
+  When le client envoie un GET vers `/sub`
+  Then la réponse est `307`
+  And le `location` est l'URI allongée du `/` final, query string conservée
+
+Scenario: répertoire avec slash sert son propre index
+  Given le même assets_dir contenant sub/index.html
+  When le client envoie un GET vers `/sub/`
+  Then la réponse est `200` et le corps est l'octet-à-octet de sub/index.html
+  But pas l'octet-à-octet de l'index.html racine
+
+Scenario: fichier demandé comme dossier replie sur la coquille
+  Given le même assets_dir
+  When le client envoie un GET vers `/app.js/nested`
+  Then la réponse est `200` et le corps est l'octet-à-octet du index.html racine
+
+Scenario: traversée parente encodée ne sort jamais du dossier
+  Given un assets_dir dont le répertoire parent porte un fichier `outside.html` au
+    contenu sentinelle, reconnaissable entre tous
+  When le chemin demandé concatène deux segments parents encodés (%2e%2e) puis
+    `outside.html`
+  Then le corps de la réponse est exactement l'octet-à-octet du index.html racine, sans que
+    la sentinelle parente y paraisse
+  And une requête en forme littérale `..` produit le même résultat
+
+Scenario: octet nul dans le chemin replie sur la coquille
+  Given le même assets_dir
+  When le chemin demandé contient un octet nul encodé (%00)
+  Then la réponse est `200` et le corps est l'octet-à-octet de index.html
+
+Scenario: index.html absent répond 404 vide
+  Given un assets_dir qui ne contient pas index.html
+  When le client envoie un GET vers `/nimporte-quoi`
+  Then la réponse est `404`
+  But le corps est vide, sans aucun en-tête `content-type`
+
+Scenario: conditionnelle fraîche répond 304
+  Given un asset et le `last-modified` rendu par une première requête GET
+  When le client rejoue la requête avec l'en-tête `if-modified-since` égal à cette date
+  Then la réponse est `304` et le corps est vide
+
+Scenario: précondition sur date ancienne échoue en 412
+  Given un asset de assets_dir
+  When le client envoie un GET portant l'en-tête `if-unmodified-since` à la date
+    `Fri, 09 Aug 1996 14:21:40 GMT`, nécessairement ancienne
+  Then la réponse est `412` et le corps est vide
+
+Scenario: requête range satisfiable rend 206 et la tranche
+  Given un assets_dir contenant app.js d'au moins trois octets
+  When le client envoie un GET vers `/app.js` avec l'en-tête `range: bytes=0-2`
+  Then la réponse est `206` et le corps est les trois premiers octets du fichier
+  And `content-range` commence par `bytes 0-2/` et se termine par la taille totale
+
+Scenario: range insatisfiable rend 416
+  Given un app.js trop court pour la plage demandée
+  When le client envoie un GET vers `/app.js` avec l'en-tête `range: bytes=900-`
+  Then la réponse est `416` et le corps est vide
+  And `content-range` indique `bytes */` suivi de la taille totale
+
+Scenario: deux routeurs à fallback personnalisé refusent la fusion
+  Given un routeur portant un fallback personnalisé posé par @Router::fallback côté consommateur
+  When @Router::merge reçoit en face un @axum::Router que @frontend::static_frontend_router
+    vient de construire
+  Then @Router::merge lève un panic, et les deux fallbacks ne peuvent cohabiter dans un même
+    @axum::Router
+
+Scenario: routes déclarées passent avant la coquille SPA
+  Given un @axum::Router que @frontend::static_frontend_router construit, fusionné avec un
+    @axum::Router qui déclare la route `/api/ping` en @get
+  When le client envoie un GET vers `/api/ping`
+  Then la réponse vient du handler et non de index.html
+  But un GET sur `/nimporte-quoi` rend l'octet-à-octet de index.html
+
+Scenario: module absent de la surface sans static-frontend
+  Given un test compilé quand `static-frontend` est présente
+  When il résout @frontend::static_frontend_router par le chemin complet
+  Then la compilation passe
+  And le build `--no-default-features` de la batterie /tooling.sdd compile la bibliothèque
+    avec @frontend absent, @tower_http restant au graphe de résolution par @reqwest
+  But @ServeDir et @ServeFile y sont indisponibles, la feature `fs` faisant défaut
+

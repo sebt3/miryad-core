@@ -1,0 +1,244 @@
+Spec: state — @MiryadAuthState, état minimal d'auth composé dans l'état @axum de l'application consommatrice
+
+Purpose:
+  Porter les cinq seules données que le module auth et les routeurs montés exigent — client
+    OIDC partagé, clé de chiffrement des cookies, deux redirections, connexion à la base — dans
+    un type `pub struct` sans logique, sans constructeur et sans validation, dérivant @Clone
+    seul. Le type est un sous-état : @auth_router, @resource_router, @graphql_router,
+    @mcp_router et les extracteurs @AuthUser et @AuthPrincipal sont génériques sur @S tant que
+    @MiryadAuthState: @FromRef<@S> ; miryad-core n'impose jamais d'@AppState concret (pattern
+    natif d'axum, cf. /docs/architecture.md).
+
+Owns:
+  ./state.rs
+
+References:
+  ./mod.rs — ré-exporte le type sous @crate::auth et @crate::auth::state ; @auth_router lit les
+    cinq champs (URL d'autorisation, CSRF et nonce via @authorization_url, cookie pending
+    chiffré avec @cookie_key, échange de code, @resolve_user et @sync_group_memberships sur @db,
+    @Location des deux redirections) ; ses tests inline construisent l'état par littéral
+  ./middleware.rs — extracteur @AuthUser : @MiryadAuthState::from_ref puis lecture de
+    @cookie_key seule
+  ./dual.rs — extracteur @AuthPrincipal : @db pour @validate_token en chemin `Bearer`,
+    @cookie_key sinon ; @Rejection @AuthError
+  ./oidc.rs — @OidcClientTrait borne @Send + @Sync, @OidcClient::new fallible (codes
+    `MRD-AUTH-004` à `MRD-AUTH-008`), @MockOidcClient sous `#[cfg(test)]`
+  ./config.rs — @OidcConfig : fournie par l'app, jamais relue par le moteur ; porte les deux
+    redirections homonymes que @OidcClient::new ignore
+  ./error.sdd — rendu de @AuthError par @into_response (dont le statut `502` du chemin
+    @AuthError::Oidc qu'une valeur invalide de @Location peut déclencher)
+  /src/rest/mod.rs — @resource_router et ses cinq handlers : lecture de @db seule
+  /src/rest/me.rs — @me_router : @db seul ; /src/rest/admin.rs — @users_router : @db seul ;
+    /src/rest/tokens.rs — @tokens_router : @db seul
+  /src/graphql/handler.rs — @graphql_router : @db injecté dans la requête et @load_principal
+  /src/mcp/handler.rs — @mcp_router : @db passé à @entity.call
+  /tooling.sdd — matrice de features que ce type doit traverser sans gating
+
+Must:
+  Champ à champ, exactement cinq champs `pub` et leur type : @oidc_client de type
+    @std::sync::Arc<dyn @OidcClientTrait> ; @cookie_key de type @cookie::Key ;
+    @post_login_redirect et @post_logout_redirect de type @String ; @db de type
+    @sea_orm::DatabaseConnection. Toute suppression, renommage ou retype casse la compilation de
+    ./mod.rs, ./middleware.rs, ./dual.rs et des routeurs REST, GraphQL et MCP : c'est le
+    contrat d'exigence du flow auth
+  Le seul derive présent est @Clone : pas de @Debug, @PartialEq, @Default, aucun `impl`, aucune
+    méthode, aucun chemin exécutable dans le fichier
+  Sémantique du @Clone exigée par le rythme axum : @axum 0.8.9 appelle
+    @FromRef::from_ref à chaque extraction de @State (source vérifié @axum-0.8.9
+    `src/extract/state.rs`), donc chaque clone partage la même instance de provider (incrément
+    de compteurs @Arc, aucune re-discovery) et le même pool de connexions (@sea-orm 2.0.2
+    @DatabaseConnection : handle de pool dérivant @Clone, bon marché à cloner — source vérifié
+    `src/database/db_connection.rs`), et ne duplique que la clé de 64 octets (@cookie 0.18.2
+    @Key dérive @Clone — source vérifié `src/secure/key.rs`) et les deux @String
+  @Send et @Sync sont satisfaits par les champs, ce que la borne @S des routeurs
+    (`Clone + Send + Sync + 'static`, et `Send + Sync` côté extracteurs) impose à la
+    compilation : @OidcClientTrait borne @Send + @Sync, @cookie::Key est un tableau d'octets,
+    @sea-orm 2.0.2 affirme lui-même @Send + @Sync sur @DatabaseConnection (test inline de son
+    source), @String trivial
+  @MiryadAuthState est un état de routeur valide à lui seul : l'implémentation blanket
+    `impl<T: Clone> @FromRef<T> for T` clone par identité (source vérifié @axum-core 0.5.6
+    `src/extract/from_ref.rs`) — c'est ce qui rend légitime l'exemple de /src/lib.rs
+    (@auth_router et @resource_router montés directement sur l'état), sans aucune
+    implémentation locale de @FromRef
+  Compilation inconditionnelle : aucun `#[cfg(feature = ...)]` dans le fichier, `pub mod auth`
+    non gateé dans /src/lib.rs, @cookie, @sea-orm et @axum non optionnels dans /Cargo.toml — le
+    contrat est identique de `--no-default-features` à `--all-features` et doit être exercé sur
+    la matrice de /tooling.sdd
+  Parité des surfaces sur une instance unique : la même valeur alimente @auth_router, la
+    surface REST (@resource_router, @me_router, @users_router, @tokens_router), @graphql_router
+    et @mcp_router ; lectures par surface — auth : les cinq champs ; @AuthUser : @cookie_key ;
+    @AuthPrincipal : @db en chemin `Bearer`, @cookie_key en chemin cookie ; REST, GraphQL et
+    MCP : @db seul. Aucune divergence de comportement entre surfaces n'est constatée ; les
+    deux écarts documentés (commentaire de @db, absence de validation des redirections) vivent
+    dans `Tasks`
+
+Must not:
+  Imposer un @AppState concret ni écrire ici un @FromRef pour l'état d'une application :
+    la crate ignore ses consommatrices, la composition lui appartient (ou retombe sur
+    l'identité blanket d'axum-core)
+  Lire @OidcConfig, l'environnement ou un fichier pour remplir ou valider un champ : les cinq
+    valeurs viennent brutes de l'application, à la même frontière que ./config.rs
+  Introduire @axum ou une mutabilité partagée (@std::sync::Mutex, @std::cell::RefCell, cache) :
+    le derive @Clone est le seul lien avec axum (condition de l'identité @FromRef) et chaque
+    extraction travaille sur sa copie
+  Ajouter @Debug ou tout autre derive sans arbitrage de Sébastien : décider d'abord ce qu'une
+    display publique du véhicule portant @cookie::Key a le droit de montrer
+
+Depends on:
+  @std — @std::sync::Arc et @Clone dérivé
+  @cookie 0.18, feature `private` — @cookie::Key (source vérifié `src/secure/key.rs` :
+    @cookie::Key::from délègue à `Key::try_from(key).unwrap()` et panic sous 64 octets,
+    @KeyError::TooShort en version non panic)
+  @sea_orm 2 — @sea_orm::DatabaseConnection (@Send + @Sync affirmés par son test inline,
+    clone = handle de pool partagé — sources vérifiés `src/database/db_connection.rs`)
+  ./oidc.rs — @crate::auth::oidc::OidcClientTrait (borne @Send + @Sync portée par @async_trait)
+
+Exposes:
+  @MiryadAuthState — `pub struct` aux cinq champs `pub` typés ci-dessus, derive @Clone unique ;
+    atteignable sous @crate::auth::MiryadAuthState (ré-export ./mod.rs) et sous
+    @crate::auth::state::MiryadAuthState (chemin direct) ; auto-traits @Send, @Sync et
+    `'static` satisfaits (§ `Must`) ; @Debug non satisfait
+
+Accepts:
+  Construction par littéral de structure à cinq valeurs nommées — pas de constructeur, pas de
+    builder ; l'application consommatrice est le seul point de construction, et les tests
+    inline de la crate (sous `#[cfg(test)]` dans ./mod.rs, ./middleware.rs, ./dual.rs,
+    /src/rest, /src/graphql) font de même
+  Un provider non validé : n'importe quelle implémentation de @OidcClientTrait enveloppée
+    d'@Arc est acceptée (@MockOidcClient le prouve en test), y compris une instance n'ayant
+    jamais effectué de discovery (`Tasks` `[?]`)
+  Un @cookie::Key déjà formé : l'unique rejet en amont — panic @cookie::Key::from sous 64
+    octets — a lieu chez la consommatrice, ce fichier ne voit jamais une clé invalide
+  @Clone::clone, @FromRef::from_ref par identité (emprunt de @MiryadAuthState), ou
+    @FromRef::from_ref depuis l'état concret de l'app via l'implémentation que celle-ci écrit
+    (bornes sur @S détaillées au `Must` correspondant)
+
+Returns:
+  Accès aux champs — valeurs ou emprunts aux types d'`Exposes`, sans conversion
+  @Clone::clone : même pointeur @Arc pour @oidc_client, pool partagée pour @db, copies propres
+    des deux @String et de la clé (chacune vérifiée dans le source de la dépendance citée en
+    `Depends on`) ; la mutation d'un clone ne rétroagit jamais sur l'original
+  @FromRef::from_ref d'identité : un @MiryadAuthState aux champs égaux, pointeur @Arc inchangé
+
+Raises:
+  Aucune erreur construite ici : la construction ne peut pas échouer, aucun @Result, aucun
+    panic, aucune trace — le fichier n'a aucun chemin exécutable ; aucun code `MRD-AUTH-NNN`
+    de la crate ne naît dans ./state.rs
+  Les échecs amont de la séquence de construction appartiennent à la consommatrice :
+    `MRD-AUTH-004` à `MRD-AUTH-008` émis par @OidcClient::new, et le panic de
+    @cookie::Key::from sous 64 octets — ici ni émis, ni capturé, ni propagé
+  Échec différé des redirections : @post_login_redirect et @post_logout_redirect traversent le
+    fichier sans validation et servent de valeur d'en-tête `Location` dans ./mod.rs ; une
+    valeur invalide y fait échouer @Response::builder, converti en @AuthError::Oidc et rendu
+    `502` par ./error.sdd — la validation à cette frontière est une question ouverte
+    (`Tasks` `[?]`)
+
+Handles:
+  Clonage à la demande du framework : l'extraction @State clone l'état à chaque requête, coût
+    borné à un incrément @Arc, un handle de pool, 64 octets et deux @String — ni re-discovery
+    du provider, ni nouvelle connexion
+  Composition en état applicatif : l'app écrit un @FromRef de son @AppState vers
+    @MiryadAuthState (@axum 0.8 ne livre pas la dérive @FromRef dans ses features par défaut,
+    l'impl est manuel côté app, ou dérivée via `axum-macros`), ou monte les routeurs avec
+    l'état lui-même
+  Rotation en cours de vie : champs `pub` sans setter — un porteur mutable substitue une
+    valeur ; un handler ne peut pas corrompre l'état partagé car @State lui livre une copie à
+    chaque extraction
+  Combinaisons gateées : les routeurs derrière `graphql` et `mcp` n'ajoutent que des bornes du
+    même genre, que le type non gateé satisfait déjà
+
+Tasks:
+  [?] Le constructeur libre accepte un provider jamais validé (le type n'exige aucune discovery
+    effectuée) : la crate doit-elle offrir une construction validée, ou la validation
+    d'@OidcClient::new reste-t-elle une simple habitude attendue de la consommatrice ?
+  [?] Le commentaire de @db (« non utilisé par le flow cookie seul (2a) ») contredit ./mod.rs
+    (le callback cookie passe par @resolve_user et @sync_group_memberships) et
+    /docs/architecture.md (« requis pour valider un token API et résoudre un User ») : quel
+    texte gagne ?
+  [?] Doublon des redirections : @OidcConfig et @MiryadAuthState portent les deux mêmes champs
+    et @OidcClient::new les ignore — quelle est la source de vérité que le contrat promet aux
+    applications (copie explicite assumée, ou l'un des deux disparaît) ?
+  [?] `Location` invalide rendu `502` à la requête au lieu d'un refus à la construction :
+    accepte-t-on l'échec différé, ou impose-t-on une validation des deux @String ?
+  [ ] Convertir les 9 `Scenario` en au moins 9 tests distincts nommés dans le `mod tests`
+    `#[cfg(test)]` inline de ./state.rs — le contrat ne déborde pas du fichier ; suggestions :
+    @clone_shares_oidc_provider, @clone_deep_copies_redirects, @db_clone_shares_pool (sqlite en
+    mémoire comme ./dual.rs), @identity_from_ref_keeps_arc, @state_is_send_sync_static,
+    @pub_field_swapped_in_place, @unvalidated_provider_accepted,
+    @composes_into_app_state_via_from_ref (état composite avec @FromRef écrit à la main et une
+    requête @oneshot sur @auth_router), @present_without_default_features ; seuls les huit
+    premiers s'exécutent partout, le neuvième est prouvé par la batterie /tooling.sdd sur
+    `--no-default-features` ; les dev-dependencies @tokio, @tower et @sea-orm (feature
+    `sqlx-sqlite`) existent déjà
+
+Done when:
+  Les 9 `Scenario` ont chacun au moins un test nommé distinct et vert (les huit premiers dans
+    le `mod tests` de ./state.rs, le neuvième par la batterie), la batterie de /tooling.sdd
+    passe sur toutes les combinaisons — le type est présent jusque sous
+    `--no-default-features` — et les quatre `[?]` sont arbitrés par Sébastien, reflet inclus
+    dans le contrat ou le code
+
+Scenario: provider OIDC partagé entre clones
+  Given un @MiryadAuthState dont @oidc_client enveloppe une instance @MockOidcClient
+  When @Clone::clone est appelé sur cet état
+  Then @std::sync::Arc::ptr_eq entre l'@oidc_client d'origine et celui du clone vaut `true`
+  And aucun appel de discovery ni construction de client HTTP n'a eu lieu
+
+Scenario: redirections proprement dupliquées entre clones
+  Given un @MiryadAuthState dont @post_login_redirect vaut `/login-done`
+  When l'état est cloné, la liaison du clone rendue mutable et son @post_login_redirect
+    remplacé par `/autre`
+  Then l'@post_login_redirect de l'original vaut encore `/login-done`
+  And @std::sync::Arc::ptr_eq sur @oidc_client entre l'original et le clone vaut `true`
+
+Scenario: clones de db adressent le même pool
+  Given un @MiryadAuthState bâti sur @sea_orm::Database::connect d'une base sqlite en mémoire
+  When une ligne est insérée via la @db du clone, puis relue par une requête SeaORM sur la @db
+    de l'original
+  Then la relure retrouve la ligne — les deux poignées partagent le pool, sans nouvelle
+    connexion
+
+Scenario: l'état est son propre état de routeur
+  Given un @MiryadAuthState construit par littéral
+  When @FromRef::from_ref est appelée sur son emprunt — l'implémentation blanket d'axum-core,
+    aucune impl de @FromRef ne vivant dans ./state.rs
+  Then le retour est un @MiryadAuthState aux champs égaux
+  And son @oidc_client est @std::sync::Arc::ptr_eq avec celui de l'emprunt
+
+Scenario: état transportable entre threads
+  Given un auxiliaire de test `fn assert_send_sync_static<T: Send + Sync + 'static>()`
+  When cet auxiliaire est instancié avec @MiryadAuthState
+  Then la crate compile sans borne insatisfaite — les bornes `Clone + Send + Sync + 'static`
+    des routeurs sont tenues à la compilation, et le test inline passe par sa seule existence
+
+Scenario: rotation de clé en place par le porteur
+  Given un @MiryadAuthState dont @cookie_key vaut K1, clé de 64 octets nuls formée par
+    @cookie::Key::from, dans une liaison mutable du test
+  When @cookie_key reçoit directement une seconde clé valide K2 formée de la même manière
+  Then l'emprunt de @cookie_key est inégal à K1 (@cookie::Key compare en temps constant via
+    @PartialEq)
+  But ./state.rs n'expose ni setter, ni validation : la mutation n'existe que par la liaison
+    mutable que détient l'appelant
+
+Scenario: provider jamais validé accepté
+  Given une implémentation de @OidcClientTrait qui n'a jamais effectué de discovery
+    (@MockOidcClient)
+  When @MiryadAuthState est construit par littéral avec cette valeur pour @oidc_client
+  Then la construction réussit sans erreur, sans panic et sans trace — aucune validation de
+    provider n'existe à cette frontière
+
+Scenario: composition dans l'état concret de l'application
+  Given un type de test @AppTestState (`pub struct` portant un champ @auth de type
+    @MiryadAuthState), et dans le test un @FromRef<@AppTestState> pour @MiryadAuthState écrit à
+    la main
+  When @auth_router est instanciée sur @AppTestState et alimentée par @with_state, et qu'une
+    requête `GET /auth/logout` lui est envoyée par @oneshot
+  Then la réponse est `302` (@StatusCode::FOUND) avec l'en-tête `Location` du
+    @post_logout_redirect — miryad-core n'a exigé aucun état concret
+
+Scenario: type présent sans features par défaut
+  Given la bibliothèque compilée avec `--no-default-features`
+  When la cible de test de la bibliothèque référence @crate::auth::MiryadAuthState (chemin
+    public, module non gateé)
+  Then la compilation et le test réussissent sur cette combinaison de /tooling.sdd, comme sur
+    toutes les autres

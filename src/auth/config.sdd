@@ -1,0 +1,292 @@
+Spec: config — type @OidcConfig : configuration OIDC fournie par l'application consommatrice, structure de huit champs sans constructeur ni validation
+
+Purpose:
+  Déclarer la configuration du client OIDC en entrée du module auth : un unique struct public
+    @OidcConfig de huit champs, construit uniquement par littéral de l'application consommatrice —
+    miryad-core ne la lit jamais depuis l'environnement ni un fichier (doc-comment de la ligne 1 du
+    fichier, tenue par l'absence de tout code d'import dans ce fichier). Le fichier ne porte ni
+    @derive, ni constructeur, ni validation, ni dépendance amont : @client_secret ne peut être ni
+    cloné ni imprimé, et toute valeur invalide (URL, PEM, secret vide) n'émerge qu'à la construction
+    du client dans ./oidc.rs, sur une chaîne d'ordre fixe portant les codes `MRD-AUTH-004` à
+    `MRD-AUTH-008`. Chaque champ a une destination vérifiée dans les sources des dépendances amont :
+    @openidconnect et @oauth2 pour issuer, client et redirect, @reqwest pour @ca_cert, et rien pour
+    les deux redirections locales que la crate ne lit jamais.
+
+Owns:
+  ./config.rs
+
+References:
+  ./oidc.rs — seul lecteur du type : @OidcClient::new et @build_http_client lisent six des huit
+    champs et émettent @AuthError::Oidc avec les codes internes `MRD-AUTH-004` (issuer non
+    parseable), `MRD-AUTH-007` (échec de @Certificate::from_pem — branche injoignable dans le graphe
+    de features compilé, voir `Tasks`), `MRD-AUTH-008` (échec de @ClientBuilder::build, dont PEM
+    malformé), `MRD-AUTH-005` (discovery) et `MRD-AUTH-006` (redirect non parseable)
+  ./mod.rs — ré-exporte @OidcConfig sous @crate::auth::OidcConfig ; ses handlers `/auth/login` et
+    `/auth/callback` lisent @MiryadAuthState.post_login_redirect, pas ceux de @OidcConfig
+  ./state.rs — @MiryadAuthState porte ses propres champs @post_login_redirect et
+    @post_logout_redirect, que l'application remplit elle-même, champ par champ, depuis @OidcConfig
+    — aucune copie n'existe dans la crate
+  ./error.sdd — contrat de @AuthError : @AuthError::Oidc préfixe sa charge utile `MRD-AUTH-003` et
+    rend `502` sur les trois surfaces
+  /Cargo.toml — @openidconnect et @reqwest déclarés non optionnels ; @reqwest avec
+    `default-features = false` et les features `rustls-tls` et `json`
+  /tooling.sdd — `missing_docs = warn` : dette préexistante dont ce fichier est une part mesurée
+
+Must:
+  Table des champs invariante : @issuer_url @String, @client_id @String, @client_secret @String,
+    @redirect_url @String, @scopes @Vec<@String>, @ca_cert @Option<@String>, @post_login_redirect
+    @String, @post_logout_redirect @String — les sept champs @String sont obligatoires au littéral
+    (aucun @Default, aucun builder), @ca_cert est le seul @Option
+  Zéro @derive et zéro corps de fonction : @OidcConfig n'est ni @Clone, ni @Debug, ni @PartialEq, ni
+    @Default, ni @serde::Serialize, ni @serde::Deserialize ; @client_secret ne peut fuiter par `{:?}`
+    ni par log @tracing sans un accès champ par champ écrit de la main
+  Validation entièrement différée : un @OidcConfig monté avec n'importe quelles valeurs compile et
+    s'échange sans erreur ; seul l'await de @OidcClient::new (./oidc.rs) échoue, dans cet ordre de
+    sources : issuer (parse), construction du client HTTP avec le PEM, discovery contre l'issuer,
+    parse du redirect
+  @issuer_url et @redirect_url ne sont contraints que par @url::Url::parse : aucun schéma `https`
+    imposé, aucune règle `localhost` à la construction (vérifié dans openidconnect 4.0.1 `macros.rs`
+    ligne 335 et oauth2 5.0.0 `types.rs` ligne 260 — @RedirectUrl est le vrai type derrière le
+    ré-export @openidconnect) ; `https` reste une exigence d'exploitation de la discovery, pas un
+    contrat du type
+  @client_id et @scopes ne sont validés nulle part : @ClientId::new et @Scope::new sont infaillibles
+    (oauth2 5.0.0 `types.rs` ligne 159) ; @scopes est copié par @Clone dans @OidcClient à la
+    construction (./oidc.rs ligne 148) — snapshot, le client ne garde aucun emprunt de la config
+  @client_secret est toujours empaqueté @Some(@ClientSecret::new(valeur)) (./oidc.rs lignes
+    138-141) : la valeur vide `""` compte comme un secret, non comme une absence, et le profil
+    client public (sans secret) ne peut pas s'exprimer avec ce type
+  @ca_cert est un contenu PEM, pas un chemin de fichier — contrat posé par son doc-comment (ligne 9
+    du fichier) et conforme à ./oidc.rs : les octets de la valeur sont passés tels quels à
+    @Certificate::from_pem (ligne 55), jamais ouverts comme un chemin
+  La CA embarquée s'ajoute sans remplacer : @tls_built_in_root_certs vaut `true` par défaut (reqwest
+    0.12.28 `async_impl/client.rs` ligne 318), miryad-core n'appelle jamais @tls_built_in_root_certs,
+    et le graphe de features résolu à `--all-features` donne à @reqwest uniquement `__rustls`, `json`,
+    `rustls-tls` et `rustls-tls-webpki-roots` — jamais `native-tls` ni `default-tls` : les racines
+    webpki publiques restent au magasin, la CA configurée s'y ajoute
+  @post_login_redirect et @post_logout_redirect ne sont lus par aucun code de miryad-core : les cinq
+    occurrences de @OidcConfig dans /src/ (déclaration du type, ré-export de ./mod.rs, import et
+    deux passages en paramètre de ./oidc.rs) n'accèdent à aucun de ces deux champs ;
+    @post_logout_redirect n'est jamais non plus transmis comme `post_logout_redirect_uri` à l'IdP —
+    le logout reste une redirection locale (./mod.rs)
+  @OidcConfig auto-implémente @Send et @Sync par composition de @String, @Vec<@String> et
+    @Option<@String> : @OidcClient::new tient l'emprunt de la config au-delà de son @await de
+    discovery et @build_http_client clone un @Client reqwest, donc un appelant qui @spawn doit
+    satisfaire ces deux bornes
+  Compilation sans aucun gating de feature : zéro `#[cfg(feature = ...)]` dans le fichier,
+    `pub mod auth` non gateé dans /src/lib.rs, @openidconnect et @reqwest non optionnels dans
+    /Cargo.toml — `static-frontend`, `swagger-ui`, `graphql`, `graphiql` et `mcp` ne changent rien
+    au contrat ; la batterie de /tooling.sdd exerce le fichier de `--no-default-features` à
+    `--all-features`
+  Parité des surfaces : aucun champ par surface (REST, GraphQL, MCP) — un @ca_cert fautif dégrade
+    pareil l'authentification derrière @AuthUser (./middleware.rs), @AuthPrincipal (./dual.rs),
+    @graphql_handler (/src/graphql/handler.rs) et @mcp_handler (/src/mcp/handler.rs), tous justiciables
+    du même @AuthError : la config ne peut introduire d'asymétrie entre surfaces
+  Cinq champs sur huit n'ont pas de doc-comment de champ : @issuer_url, @client_id, @client_secret,
+    @redirect_url et @scopes portent chacun un warning `missing documentation for a struct field`
+    que `cargo check` émet sur les lignes 4 à 8 — comptés dans la dette préexistante suivie par
+    /tooling.sdd ; seuls @ca_cert (`Certificat CA additionnel, contenu PEM`), @post_login_redirect
+    et @post_logout_redirect sont documentés au champ
+
+Must not:
+  Lire l'environnement, un fichier ou du @serde::Deserialize pour construire @OidcConfig — le
+    chargement appartient à l'application consommatrice, comme le pose explicitement le doc-comment
+    du fichier ; ce fichier n'a aucun corps qui permette de le faire aujourd'hui
+  Valider, normaliser ou trimmer quoi que ce soit ici : pas de trim sur @issuer_url, pas de
+    déduplication de @scopes, pas de contrôle de schéma, pas de liste de scopes exigée — ce travail
+    vit, ou devra vite, chez les appelants ./oidc.rs et ./state.rs
+  Ajouter un @derive, un @impl ou une fonction à @OidcConfig sans arbitrage de Sébastien : la
+    surface nulle du fichier est l'assiette des `[?]` de `Tasks` (@Clone/@Debug, champs de
+    redirection, client public) et un @derive @Debug de convenance exposerait @client_secret dans
+    tout `{:?}`
+
+Depends on:
+  Rien : le fichier n'a aucun import @use, et ne référence aucune autre crate — @openidconnect,
+    @oauth2 et @reqwest ne consomment @OidcConfig qu'au travers de ./oidc.rs
+
+Exposes:
+  @OidcConfig — struct `pub` de huit champs `pub`, seul item public du fichier, sans méthode ni
+    fonction associée
+    @OidcConfig.issuer_url — @String, obligatoire ; identifiant de l'émetteur, transmis à
+      @IssuerUrl::new à la construction du client
+    @OidcConfig.client_id — @String, obligatoire ; identifiant client, transmis sans validation à
+      @ClientId::new
+    @OidcConfig.client_secret — @String, obligatoire ; `""` accepté, transmis sous @Some
+    @OidcConfig.redirect_url — @String, obligatoire ; callback OIDC de l'application (monté par
+      @auth_router sous `/auth/callback`), pris par @RedirectUrl::new de oauth2, ré-exporté sous
+      @openidconnect
+    @OidcConfig.scopes — @Vec<@String>, obligatoire, le @Vec vide est permis ; copié en snapshot à
+      la construction du client
+    @OidcConfig.ca_cert — @Option<@String>, documenté comme un contenu PEM et non un chemin ;
+      @None = aucune CA supplémentaire
+    @OidcConfig.post_login_redirect — @String, obligatoire, jamais lu par miryad-core
+    @OidcConfig.post_logout_redirect — @String, obligatoire, jamais lu par miryad-core
+  @crate::auth::OidcConfig — ré-export ./mod.rs, même type sous ce second chemin public
+  Auto-trait @Send et auto-trait @Sync de @OidcConfig
+  Rien d'autre : aucun trait manuel, aucune fonction, aucune constante, aucun alias de type
+
+Accepts:
+  Rien que le type calcule : @OidcConfig est une entrée passive, aucune transformation
+  Un littéral de struct avec les huit champs aux types exacts de la table de `Must`, tous présents —
+    la compilation rejette tout champ manquant ou de type divergent
+  @OidcClient::new (./oidc.rs) reçoit `&@OidcConfig` et la tient au-delà de l'@await de la discovery :
+    tout appelant qui @spawn doit posséder une @OidcConfig @Send + @Sync
+
+Returns:
+  Ce fichier ne retourne rien : aucune fonction ; lire un champ rend l'emprunt de la valeur déposée
+    au littéral
+  Destinée amont des champs (sources amont vérifiées) : @issuer_url → @IssuerUrl::new puis discovery
+    sur l'émetteur ; @client_id et @client_secret (sous @Some) → @CoreClient::from_provider_metadata ;
+    @redirect_url → @RedirectUrl::new puis @set_redirect_uri ; @scopes → copie @Vec<@String> interne
+    du client ; @ca_cert → racines ajoutées au @rustls::RootCertStore aux côtés des racines webpki ;
+    @post_login_redirect et @post_logout_redirect → rien dans miryad-core
+
+Raises:
+  Aucune erreur et aucun code `MRD-AUTH-NNN` dans ce fichier : zéro logique, zéro constructeur
+    faillible. Un @OidcConfig invalide n'émerge qu'à @OidcClient::new (./oidc.rs), dans cet ordre :
+    `MRD-AUTH-004` — @url::Url::parse échoue sur @issuer_url (toute valeur sans base absolue
+      parseable, `""` et `pas une url` compris), la parse de l'issuer étant la première étape
+    `MRD-AUTH-008` — @ClientBuilder::build échoue : c'est la seule voie réelle d'un @ca_cert fautif
+      dans le graphe compilé, un bloc `-----BEGIN CERTIFICATE-----` au contenu non décodable ou un
+      DER invalide (reqwest 0.12.28 `tls.rs` lignes 214-238 et 689 : le PEM se parse au @build, pas
+      au @from_pem)
+    `MRD-AUTH-007` — mapped sur @Certificate::from_pem mais injoignable : sous `rustls-tls` seul,
+      @from_pem est infaillible (reqwest 0.12.28 `tls.rs` lignes 167-174 — il ne fait que stocker
+      l'octet PEM) ; voir `Tasks` `[?]`
+    `MRD-AUTH-005` — la discovery échoue une fois le client HTTP construit ; un issuer injoignable
+      masque `MRD-AUTH-006`, la parse du @redirect_url ne venant qu'après
+    `MRD-AUTH-006` — @url::Url::parse échoue sur @redirect_url, seulement le jour où la discovery
+      réussit
+  Toutes ces erreurs arrivent encapsulées dans @AuthError::Oidc, préfixées `MRD-AUTH-003` et rendues
+    `502` (./error.sdd)
+  @post_login_redirect et @post_logout_redirect ne participent à aucun de ces codes : personne ne
+    les valide nulle part dans la chaîne de construction, ni dans la crate
+
+Handles:
+  Validation différée au point de construction @OidcClient::new, ordre de sources ./oidc.rs : issuer,
+    client HTTP avec le PEM, discovery, redirect
+  @ca_cert sans aucun bloc `-----BEGIN CERTIFICATE-----` dans sa valeur (un chemin de fichier par
+    exemple) : le client HTTP se construit avec zéro certificat embarqué et la discovery est tentée
+    quand même — la confusion contenu contre chemin tombe en `MRD-AUTH-005`, jamais en erreur de
+    certificat (l'itérateur PEM ne remonte qu'une fin sans élément, sans erreur : rustls-pki-types
+    1.15.1 `pem.rs` lignes 250-279)
+  @ca_cert @None : magasin par défaut seul, racines webpki conservées, aucun comportement
+    supplémentaire à tester côté config
+  @scopes vide ou contenant `openid` : sans effet ici ; le filtre sur `openid` appliqué à l'URL
+    d'autorisation est le contrat de @authorization_url (./oidc.rs) ; @openidconnect impose la scope
+    `openid` par lui-même (client.rs ligne 785) et le filtre miryad évite le doublon
+  @client_secret vide `""` : accepté par la config, wrappé sous @Some en aval, aucun code d'erreur
+    dédié
+  Erreur de config jamais bloquante au chargement : un @OidcConfig malformé compile et s'échange ;
+    il ne casse qu'à l'exécution de @OidcClient::new, ou côté application pour les redirections que
+    la crate ne lit pas
+
+Tasks:
+  [?] @ca_cert dont la valeur ne contient aucun bloc PEM est silencieusement ignoré (octets stockés,
+    zéro parse, client construit ; l'erreur ne remonte qu'ensuite en `MRD-AUTH-005` TLS/DNS si la CA
+    embarquée était nécessaire) : exiger du côté ./oidc.rs un nombre de blocs PEM supérieur à zéro,
+    ou garder cette fenêtre de diagnostic ouverte ?
+  [?] `MRD-AUTH-007` injoignable dans le graphe compilé : @from_pem est infaillible en `rustls-tls`
+    seul (source reqwest 0.12.28, feature tree à `--all-features` sans `native-tls` ni `default-tls`),
+    le PEM fautif tombe en `MRD-AUTH-008` — code à fusionner dans `MRD-AUTH-008`, à recycler pour un
+    autre cas, ou à garder en attente d'un futur backend `default-tls` ?
+  [?] @OidcConfig sans @Clone, sans @Debug ni @Default : choix délibéré (secret imprimable nulle
+    part, config non réutilisable) ou manque de l'API instable ? L'app consommatrice doit réécrire
+    tous les champs pour réutiliser une config remplie — arbitrer un @Clone avec un @Debug @redigé
+    sur @client_secret, ou rien
+  [?] @post_login_redirect et @post_logout_redirect vivent dans @OidcConfig sans que la crate les
+    lise, pendant que @MiryadAuthState porte les champs de même nom : la crate doit-elle fournir un
+    convertisseur @OidcConfig vers @MiryadAuthState (ce qui rendrait @Clone nécessaire — lié au `[?]`
+    précédent), ou la copie champ par champ par l'application est-elle voulue et ces deux champs
+    sont-ils une pure documentation dans @OidcConfig ?
+  [?] Profil client public (non confidentiel) inexprimable : @client_secret est un @String obligatoire
+    toujours sous @Some(@ClientSecret) — miryad-core est-il volontairement réservé aux clients
+    confidentiels ?
+  [ ] Convertir les 8 `Scenario` en au moins 8 tests distincts nommés dans un module de tests
+    `#[cfg(test)]` à créer dans ./config.rs (le fichier compte 0 test inline à ce jour) : les 7 scenarios
+    runtime sous `#[tokio::test]` (@tokio est déjà dev-dependency avec `macros` et `rt-multi-thread`,
+    @OidcClient::new est atteignable dans la crate), l'affirmation @Send et @Sync comme appel d'une
+    fonction générique bornée `@T: @Send + @Sync` instantiée sur @OidcConfig — une seule affirmation
+    de compilation compte pour le scenario 8 ; toute URL d'émetteur des scenarios finit en
+    `.invalid` (RFC 6761 : TLD jamais résolu, aucun endpoint public touché) ; chaque test runtime
+    assertit le préfixe exact du code `MRD-AUTH-NNN` porté par la @Display de @AuthError et
+    l'absence de tout autre code ; le contrat ne déborde pas du fichier, aucune crate d'intégration
+    séparée n'est nécessaire
+
+Done when:
+  Les 8 `Scenario` ont chacun au moins un test nommé distinct et vert dans ./config.rs, sur features
+    par défaut comme sur `--no-default-features` et `--all-features` (fichier sans gating)
+  Chaque test runtime affirme le préfixe exact du code attendu via la @Display de @AuthError
+    (@AuthError::Oidc préfixé `MRD-AUTH-003`) et l'exclusion explicite des autres codes `MRD-AUTH-*`,
+    sans simple `contains` large
+  La batterie de /tooling.sdd passe verte avec ce fichier dedans, sans dette `missing_docs` ajoutée
+    au-delà des cinq warnings de champ déjà portée par la dette suivie
+  Les cinq lignes `[?]` de `Tasks` sont arbitrées par Sébastien et leurs suites reflétées dans le
+    contrat, ici ou dans ./oidc.rs selon la décision
+
+Scenario: construction par littéral des huit champs obligatoires
+  Given l'absence de @Default, de constructeur et de builder sur @OidcConfig
+  When un littéral de struct est écrit avec une valeur pour chacun des huit champs de la table de `Must`
+  Then la lecture de chaque champ par emprunt rend exactement la valeur déposée
+  But @OidcConfig reste impossible à construire partiellement : le littéral du test énumère les huit
+    champs et tout champ manquant casse sa compilation
+
+Scenario: issuer non parseable rejette avant tout échange
+  Given une @OidcConfig à @issuer_url `pas une url`, @client_id `cid`, @client_secret `secret`,
+    @redirect_url `https://app.invalid/callback`, @scopes vide, @ca_cert @None, @post_login_redirect
+    `/` et @post_logout_redirect vide
+  When @OidcClient::new est awaited avec cette config sous `#[tokio::test]`
+  Then la @Display de @AuthError commence par `MRD-AUTH-003: OIDC error: MRD-AUTH-004:`
+  But elle ne contient aucun des codes `MRD-AUTH-005`, `MRD-AUTH-006`, `MRD-AUTH-007` ni
+    `MRD-AUTH-008` — la parse de l'issuer est la première étape de @OidcClient::new
+
+Scenario: bloc PEM au contenu invalide casse la construction du client HTTP
+  Given une @OidcConfig à @issuer_url `https://issuer.invalid` et @ca_cert @Some d'une valeur
+    contenant les marqueurs `-----BEGIN CERTIFICATE-----` et `-----END CERTIFICATE-----` et un corps
+    `!!!` qui n'est pas du base64
+  When @OidcClient::new est awaited avec cette config
+  Then la @Display commence par `MRD-AUTH-003: OIDC error: MRD-AUTH-008:` : le PEM se parse au
+    @ClientBuilder::build et non au @Certificate::from_pem
+  But elle ne contient ni `MRD-AUTH-005` (la discovery n'a pas été tentée) ni `MRD-AUTH-007`
+    (injoignible sous `rustls-tls` seul)
+
+Scenario: ca_cert recevant un chemin de fichier est ignoré en silence
+  Given une @OidcConfig à @issuer_url `https://issuer.invalid` et @ca_cert @Some de `ca-bundle.pem`,
+    valeur qui ne contient aucun marqueur `-----BEGIN CERTIFICATE-----`
+  When @OidcClient::new est awaited avec cette config
+  Then la @Display commence par `MRD-AUTH-003: OIDC error: MRD-AUTH-005:` : le client HTTP s'est
+    construit avec zéro certificat embarqué et seule la discovery d'un émetteur `.invalid` fait
+    échouer la construction
+  But ni `MRD-AUTH-007` ni `MRD-AUTH-008` n'apparaissent : la confusion contenu contre chemin est
+    muette côté certificat et ne fuit qu'en erreur de discovery
+
+Scenario: client_secret vide accepté jusqu'au fournisseur
+  Given une @OidcConfig bien formée, à @client_secret `""` vide et @issuer_url `https://issuer.invalid`
+  When @OidcClient::new est awaited avec cette config
+  Then la @Display commence par `MRD-AUTH-003: OIDC error: MRD-AUTH-005:` : la chaîne de validation
+    locale ne rejette pas un secret vide
+  But un @ClientSecret non absent a quand même été construit depuis la valeur vide : la config ne
+    peut pas exprimer un client public (`Tasks` `[?]`)
+
+Scenario: redirect_url non parseable ne se révèle qu'après la discovery
+  Given une @OidcConfig à @issuer_url `https://issuer.invalid` et @redirect_url `pas une url`
+  When @OidcClient::new est awaited avec cette config
+  Then la @Display commence par `MRD-AUTH-003: OIDC error: MRD-AUTH-005:` : la discovery de
+    l'émetteur `.invalid` échoue avant la parse de @redirect_url
+  But elle ne contient pas `MRD-AUTH-006` : @OidcConfig seul ne peut pas révéler un @redirect_url
+    invalide quand l'issuer ne répond pas — l'ordre est issuer, client HTTP, discovery, redirect
+
+Scenario: redirections post-login et post-logout absentes de toute vérification
+  Given une @OidcConfig à @issuer_url `https://issuer.invalid`, @post_login_redirect `peu importe`
+    et @post_logout_redirect `idem`, hors de tout format URL
+  When @OidcClient::new est awaited avec cette config
+  Then la @Display commence par `MRD-AUTH-003: OIDC error: MRD-AUTH-005:`, exactement comme avec une
+    config aux redirections bien formées : aucun de ces deux champs n'est lu par la chaîne de
+    construction
+
+Scenario: la configuration voyage entre tâches par sa nature Send et Sync
+  Given la composition des huit champs en @String, @Vec<@String> et @Option<@String>
+  When une affirmation de compilation borne une fonction générique @T par @Send et @Sync et
+    l'instantie sur @OidcConfig
+  Then la compilation du module de tests passe : @OidcConfig est @Send et @Sync, une app consommatrice
+    peut la posséder à travers un @tokio::spawn et @OidcClient::new tient l'emprunt de la config
+    au-delà de son @await

@@ -1,0 +1,394 @@
+Spec: mod — contrat d'agrégation du module mcp
+
+Purpose:
+  Agrégation et gating du module MCP de la crate : ./mod.rs déclare les cinq sous-modules tous
+    privés @error, @format, @handler, @protocol, @registry et ré-exporte l'intégralité des items
+    `pub` de leurs cinq fichiers — quatre items, @McpError, @OutputFormat, @mcp_router,
+    @McpToolRegistry — surface publique totale et exclusive du module (@protocol ne contribue
+    rien, tous ses types sont `pub(crate)`). Il ne définit aucun type, aucune fonction, aucun
+    état, aucune erreur : la logique (dispatch JSON-RPC, cinq tools CRUD par entité, rendu
+    Handlebars, codes `MRD-MCP-*`) vit chez les enfants, chacun gardant sa spec adjacente.
+    Fichier purement déclaratif à la rédaction (14 lignes : en-tête `//!`, cinq déclarations
+    `mod`, quatre `pub use`, zéro ligne exécutable). Le gating est porté par la déclaration de
+    ../lib.rs — `#[cfg(feature = "mcp")] pub mod mcp;`, vérifié au source — et par elle seule :
+    ./mod.rs n'en porte aucun. Le fichier est aussi le point par lequel la promesse de
+    ../lib.sdd (`POST /mcp` sous `mcp`, cinq tools par entité) devient adressable par
+    l'application consommatrice, et le point où le contrat racine — `mcp` n'embarque
+    vylinl-core `0.7.4` que réduit à `hbs` et `crypto`, `default-features = false` —
+    conditionne sa compilation. Asymétrie de forme avec ./graphql/mod.rs signalée ici : les
+    cinq enfants sont tous `mod` privés (un seul adresseur par item, les chemins longs
+    `miryad_core::mcp::<enfant>::*` ne résolvent pas), alors que le module graphql ouvre trois
+    de ses enfants en `pub mod` — arbitrage de convention en `Tasks` `[?]`.
+
+Structure:
+  ./error.rs — sous-module `mod` (privé) : @McpError, huit variantes portant les motifs
+    `MRD-MCP-001`..`MRD-MCP-007` plus @Application(@HookError) hors taxonomie ; @rpc_code et
+    @data `pub(crate)` ; sa spec propre le décrit
+  ./format.rs — sous-module `mod` (privé) : @OutputFormat (@Json, @Yaml, @Markdown,
+    @Custom(String)) ; @RenderShape et @render `pub(crate)`, templates Handlebars par défaut ;
+    sa spec propre le décrit
+  ./handler.rs — sous-module `mod` (privé) : @mcp_router et son dispatch JSON-RPC interne
+    (@mcp_handler, @handle_initialize, @handle_tools_list, @handle_tools_call) ; seul
+    @mcp_router est ré-exporté ; sa spec propre le décrit
+  ./protocol.rs — sous-module `mod` (privé), le seul à ne ré-exporter aucun item :
+    @JsonRpcRequest, @JsonRpcResponse, @RpcError et leurs constructeurs sont tous
+    `pub(crate)` ; pure menuiserie interne de ./handler.rs ; sa spec propre le décrit
+  ./registry.rs — sous-module `mod` (privé) : @McpToolRegistry (@new, @register::<@E>), et
+    sous scellés `pub(crate)`/privés @McpOp, @McpEntity, @McpEntityImpl, @ListParams,
+    @IdParams ; sa spec propre le décrit
+    # Les cinq enfants sont déclarés par ./mod.rs mais non ownés : ./mod.rs n'est autorité que
+    # sur les déclarations de modules et les quatre ré-exports.
+
+Owns:
+  ./mod.rs
+    Y compris tout `#[cfg(test)] mod tests` inline ou doctest porté par son bloc `//!` : le
+    fichier n'en porte aucun à la rédaction, et ces preuves sont à créer par `Tasks`.
+
+References:
+  /miryad-core.sdd — contrat hérité : parité des trois surfaces lues à l'identique depuis la
+    seule métadonnée @MiryadResource, codes `MRD-<DOMAINE>-NNN` dont le domaine `MRD-MCP`,
+    exception @HookError sans code, et la ligne `Must` racine qui impose « `mcp` n'embarque
+    vylinl-core que en `hbs` et `crypto` (`default-features = false`) »
+  ../lib.sdd — déclare @mcp sous `#[cfg(feature = "mcp")]` (le gating vit là, à la déclaration,
+    pas dans ./mod.rs — vérifié aux lignes 147-149 de ../lib.rs), promet `POST /mcp` — cinq
+    tools par entité (@mcp::mcp_router) — sous `mcp`, interdit tout `pub use` de racine, et
+    pose que @mcp n'est pas présenté comme consommant @query tant que @query est documenté
+    comme l'usage REST actuel
+  /Cargo.toml — graphe `[features]` : `mcp = ["dep:vynil-core"]`, et la ligne
+    `vynil-core = { version = "0.7.4", default-features = false, features = ["hbs", "crypto"],
+    optional = true }` ; lecture seule, propriétaire /miryad-core.sdd
+  /docs/architecture.md — récit du module MCP (rôle, sortie des formats)
+  ../rest/mod.sdd et /src/rest/core.sdd — @RestEntity (borne de @register::<@E>) et
+    @rest::core::@list, @rest::core::@get, @rest::core::@create, @rest::core::@update,
+    @rest::core::@delete, que ./registry.rs appelle pour la parité de lecture REST/MCP ;
+    contrat des enfants, pas d'ici
+  /tooling.sdd — batterie sur chaque combinaison de features : c'est elle qui prouve le gating
+    (`--no-default-features` comme preuve d'absence, `--features mcp` comme preuve de surface,
+    `--all-features`)
+
+Must:
+  Porter le gating comme pur effet de la déclaration de ../lib.sdd : `#[cfg(feature = "mcp")]`
+    est posé sur `pub mod mcp` dans ../lib.rs ; ./mod.rs n'en porte aucun et n'en répète aucun —
+    conséquence d'atomicité : les cinq enfants et les quatre ré-exports compilent ou disparaissent
+    ensemble sur ce seul cfg, jamais partiellement.
+  Fixer la surface publique du module, identique sur toute combinaison contenant `mcp` : les
+    quatre items en chemins courts `miryad_core::mcp::*` (@McpError, @OutputFormat,
+    @mcp_router, @McpToolRegistry), et rien d'autre — aucun enfant joignable en chemin long,
+    tous déclarés `mod` privés ; ces quatre `pub use` sont l'intégralité des items `pub`
+    définis par les enfants (vérifié aux cinq sources), la surface du module est donc
+    exactement la somme de ses enfants, sans filtre ni surplus.
+  Tenir vérifié au source amont, non à la doc, ce que le contrat racine embarque et ce que les
+    enfants en consomment : dans vylinl-core `0.7.4` (source du registre lu : lib.rs, hbs.rs,
+    hbs_json.rs), `pub mod hbs` n'est gated que par la feature Cargo `hbs` ; @HandleBars (@new,
+    @render) et le helper @json_to_str — utilisé en dur dans les templates par défaut de
+    ./format.rs avec `format="json_pretty"` et `format="yaml"`, tous deux implémentés dans
+    hbs_json.rs vendorisé sous serde_yaml — ne dépendent pas de `crypto` ; `crypto` n'apporte
+    dans le module `hbs` que trois helpers de template (@argon_hash, @bcrypt_hash,
+    @gen_private_key) qu'aucun template embarqué par miryad-core n'invoque ;
+    `default-features = false` ampute vylinl-core de `http`, `rhai` et `hbs-scripting` — donc
+    de sa reqwest propre, de rhai et de @kube, @oci_client et @object_store. ./mod.rs doit
+    rester le seul point de la crate dont la compilation dépend de cet état du graphe, et le
+    vérifier sur la matrice de /tooling.sdd.
+  Garantir l'adressage de la promesse de ../lib.sdd : @mcp_router (montage `POST /mcp` —
+    routes internes à ./handler.rs) et @McpToolRegistry (montage par l'app via @new suivi de
+    @register::<@E>) sont atteignables par les seuls chemins `miryad_core::mcp::…` que ./mod.rs
+    ré-exporte ; sans ces deux `pub use` la promesse racine est inatteignable, et ./mod.rs est
+    l'unique porte de ré-export du module.
+  Rester déclaratif et muet : aucune définition (type, fonction, trait, état, macro), aucune
+    ligne exécutable, vylinl-core n'est référencé nulle part dans ./mod.rs (il n'est consommé
+    que par ./format.rs et ./handler.rs, vérifié au source), zéro @tracing, aucun littéral
+    `MRD-MCP-` écrit ici (les codes `MRD-MCP-001`..`MRD-MCP-007` vivent en ./error.rs) ; le
+    fichier ne peut pas paniquer de son propre fait.
+  Rester identique sous toute combinaison contenant `mcp` : ./mod.rs ne mentionne `graphql`,
+    `graphiql`, `swagger-ui` ni `static-frontend` sous aucune forme (aucun cfg croisé) ; la
+    surface est la même en `mcp` seul et en `--all-features` — la coexistence `mcp` + `graphql`
+    est débloquée depuis le bump vylinl-core `0.7.4` (commit `6384a68`, « débloque la
+    combinaison graphql+mcp »).
+  Garder l'en-tête `//!` aligné sur la promesse réelle : rôle (« 5 tools CRUD par entité,
+    sortie JSON/YAML/Markdown »), mention de l'exigence de la feature `mcp`, et deux liens
+    intra-doc `crate::mcp::@McpToolRegistry` et `crate::mcp::@mcp_router` qui résolvent en
+    permanence puisque ./mod.rs ne compile que sous `mcp` — le `#![warn(rustdoc::
+    broken_intra_doc_links)]` de ../lib.rs s'applique à ce bloc sans qu'il puisse rester une
+    promesse non compilée.
+
+Must not:
+  Ajouter un gating interne au fichier — un `#[cfg(feature = "mcp")]` redondant ou un cfg sur
+    une déclaration ou un ré-export : le cfg de ../lib.rs suffit et le répéter fragmente la
+    preuve d'atomicité ; ./mod.rs n'a aucun cfg à porter, aucun détail de feature ne se joue à
+    ce niveau (contrairement à ./graphql/mod.rs dont l'enfant ./graphql/handler.rs porte le cfg
+    `graphiql` — ici aucun enfant de mcp ne porte le moindre cfg de feature, vérifié aux
+    sources des cinq enfants).
+  Passer un enfant en `pub mod`, ou ajouter un cinquième `pub use` (@McpOp, @McpEntity,
+    @JsonRpcRequest, @JsonRpcResponse, @RpcError, @RenderShape, @render) : ces items sont
+    choisis `pub(crate)` ou privés par leurs enfants et leur ouverture créerait une seconde
+    surface ; la protocol JSON-RPC interne et le dispatch @McpOp ne sont pas des contrats
+    publics, et l'arborescence docs.rs basculerait sans arbitrage de Sébastien (cf. `Tasks`
+    `[?]` pour la convention vs ./graphql/mod.rs).
+  Héberger un type, une erreur, un état, une façade ou du câblage sous prétexte que le module
+    agrège cinq enfants (type façade partagé, état de registre racine, macro de montage,
+    enveloppe d'erreur partagée) : le contrat d'un mod.rs de la crate est déclaratif —
+    ./rest/mod.rs héberge @RestEntity parce qu'il la définit, pas parce qu'un mod.rs en
+    accueille ; ./mcp/mod.rs ne définit rien et n'accueille aucune définition.
+  Faire transiter par ./mod.rs un symbole de pagination ou ré-exporter quoi que ce soit de
+    ../query.rs : la pagination MCP circule via ./registry.rs appelant @rest::core::@list avec
+    les champs @page, @per_page et @filter de @ListParams, et ../lib.sdd interdit de documenter
+    @mcp comme consommant @query — facetter @query derrière @mcp crée la dérive documentaire
+    que ../lib.sdd veut éviter.
+  Référence directe, dans ./mod.rs, de vylinl-core, @axum, @sea_orm ou @serde_json : le fichier
+    ne contient aucun `use` hors de ses quatre `pub use` ; toute importation directe dans le
+    fichier d'agrégation masquerait quel enfant justifie quelle dépendance du contrat racine et
+    ruinerait la lisibilité du graphe `hbs` + `crypto` vérifiée en `Must`.
+
+Depends on:
+  Graphe `[features]` de /Cargo.toml (lecture) — `mcp = ["dep:vynil-core"]`, vylinl-core
+    `0.7.4` optionnel `default-features = false, features = ["hbs", "crypto"]`
+  ./error.rs — @McpError et les motifs `MRD-MCP-001`..`MRD-MCP-007` ; le @HookError applicatif
+    restitué sans taxonomie de la crate ; l'implémentation de @From<@RestError> qui branche la
+    parité de lecture sur le domaine REST
+  ./format.rs — @OutputFormat, seul formatage des sorties (templates Handlebars embarqués)
+  ./handler.rs — @mcp_router, seul item ré-exporté d'un module privé qui monte `POST /mcp`
+  ./protocol.rs — types JSON-RPC `pub(crate)` consommés par ./handler.rs seul ; contribution
+    nulle à la surface publique
+  ./registry.rs — @McpToolRegistry, dispatch runtime par nom d'entité branché sur
+    /src/rest/core.rs et ../resource.rs
+  vylinl-core `0.7.4` — feature `mcp` de /Cargo.toml ; ./mod.rs ne le référence pas directement
+    mais ne compile qu'avec lui (@vynil_core::hbs::@HandleBars consommé par ./format.rs et
+    ./handler.rs) ; conséquences de `hbs`/`crypto` vérifiées au source du registre (cf. `Must`)
+  /src/auth/state.sdd et /src/auth/principal.sdd — @MiryadAuthState (borne @FromRef de
+    @mcp_router) et @AuthPrincipal (extraction dual-auth du handler) que la surface montée
+    consomme — contrat des enfants, pas d'ici
+  /tooling.sdd — matrice des combinaisons prouvant gating et surface
+
+Exposes:
+  @mcp_router — `pub fn mcp_router<S>(registry: McpToolRegistry) -> Router<S>` where `S: Clone
+    + Send + Sync + 'static`, `MiryadAuthState: FromRef<S>` ; générique sur l'état @S
+    uniquement, jamais sur une entité — un routeur pour tous les tools, l'@Extension du
+    @McpToolRegistry étant posée par ./handler.rs (détail : ./handler.sdd) ; monte
+    `POST /mcp` ; ré-exporté depuis un module privé
+  @McpToolRegistry — `pub struct` à champs `pub(crate)` @format et @entities ; @new(@OutputFormat)
+    -> @Self, @register::<@E>() -> `&mut Self` pour `E: @RestEntity` (méthode Builder renvoyant
+    `&mut Self`, à l'origine des cinq tools `{resource}_list|_get|_create|_update|_delete`
+    dont la forme est le contrat de ./registry.sdd) ; ré-exporté depuis un module privé
+  @OutputFormat — `pub enum` derive @Debug + @Clone : @Json, @Yaml, @Markdown,
+    @Custom(String) ; ré-exporté depuis un module privé ; le choix de variante est la seule
+    option de formatage offerte à l'app, figée au montage (détail : ./format.sdd)
+  @McpError — `pub enum` @thiserror, huit variantes : @Forbidden `MRD-MCP-001`, @NotFound
+    `MRD-MCP-002`, @Database portant le @sea_orm::@DbErr reçu par @From `MRD-MCP-003`, @Render
+    `MRD-MCP-004`, @InvalidParams `MRD-MCP-005`, @UnknownTool `MRD-MCP-006`, @Internal
+    `MRD-MCP-007`, plus @Application(@HookError) sans code `MRD-*` ; @rpc_code et @data
+    `pub(crate)` ; implantation de @From<@RestError> — ré-exporté depuis un module privé ;
+    mapping codes JSON-RPC et enveloppe `data` : contrat ./error.sdd
+  Les cinq déclarations de modules — ./error.rs, ./format.rs, ./handler.rs, ./protocol.rs,
+    ./registry.rs, toutes `mod` privés : adressage unique par chemin court pour chaque item
+    public, aucun `pub(crate)` enfant joignable de l'extérieur du module (à la différence du
+    double adressage de ./graphql/mod.rs — asymétrie signalée, `Tasks` `[?]`)
+  L'en-tête `//!` et ses deux liens (@mcp::@McpToolRegistry, @mcp::@mcp_router) — deux des
+    quatre items, @McpError et @OutputFormat n'y sont pas cités ; aucun `#[cfg(test)] mod tests`
+    inline à la rédaction — les preuves du fichier sont à créer (`Tasks`)
+
+Accepts:
+  La sélection du graphe `[features]` (/Cargo.toml) comme seule entrée du fichier : ni entrée
+    runtime (aucune fonction, aucun état), ni lecture d'une autre feature que `mcp`
+  Adressage consommateur — uniquement les chemins courts `miryad_core::mcp::*` pour les items
+    public ; l'app passe par @McpToolRegistry::@new suivi de @register::<@E> puis @mcp_router
+    pour monter la surface, sur son propre état @S résolvant @FromRef de @MiryadAuthState —
+    ./mod.rs ne construit ni ne présume aucun état concret
+  Toute combinaison de features contenant `mcp` : ./mod.rs ne change de forme sous aucune
+    alliance avec `graphql`, `graphiql`, `swagger-ui` ou `static-frontend`
+  Hors `mcp` — ./mod.rs n'est pas compilé : le module n'est pas déclaré par ../lib.rs, le
+    chemin `miryad_core::mcp` n'existe pas (`Returns`, `Raises`)
+
+Returns:
+  ./mod.rs ne retourne rien — zéro fonction ; il retourne une surface par combinaison de features :
+  défaut (`static-frontend`), `--no-default-features`, `swagger-ui` seul, `graphql` seul,
+    `graphiql` seul — module absent : les chemins `miryad_core::mcp::*` ne résolvent pas, sans
+    erreur de substitution ni squelette
+  `--no-default-features --features mcp` — les quatre items en chemins courts, cinq modules
+    privés inaccessibles, @mcp_router montant `POST /mcp` (route réelle : ./handler.rs)
+  `--all-features` (et toute combinaison contenant `mcp` + `graphql`) — surface mcp strictement
+    identique à `mcp` seul, coexistant avec @graphql sans interférence ni ligne différente dans
+    ./mod.rs
+
+Raises:
+  ./mod.rs ne construit ni ne propage aucune erreur, aucun code, aucune @panic — aucune ligne
+    exécutable ; les codes `MRD-MCP-001`..`MRD-MCP-007` et leur mapping JSON-RPC
+    (`-32000`..`-32002` applicatifs, `-32601`, `-32602`, `-32603` standards) sont écrits en
+    ./error.rs et ./error.sdd en porte l'autorité
+  Modes de défaillance de gating, côté compilation — sans `mcp` : toute import
+    `miryad_core::mcp::*` échoue (`E0432`/`E0433`, module non déclaré, ../lib.sdd) ; avec la
+    feature mais un graphe amputé de vylinl-core (dérive hors contrat racine) : ./format.rs et
+    ./handler.rs n'importent plus @vynil_core::hbs (`E0432` en cascade) — ./mod.rs ne peut ni
+    rattraper ni signaler, la prévention est la conformité de /Cargo.toml vérifiée en `Must`
+  Chemin long tenté avec la feature présente — `miryad_core::mcp::registry::McpToolRegistry`,
+    `...::protocol::JsonRpcRequest` etc. : `E0603` (module privé, pas de valeur publique
+    derrière), aucune enveloppe de runtime ne peut en découler
+
+Handles:
+  Toute la matrice de /tooling.sdd — défaut, `--no-default-features`, `swagger-ui`, `graphql`,
+    `graphiql`, `mcp`, `--all-features` : `swagger-ui`, `graphql`, `graphiql` et
+    `static-frontend` n'ont aucune prise sur ./mod.rs (aucun cfg croisé, vérifié au source du
+    fichier) ; la combinaison `graphql` + `mcp` compile depuis le commit `6384a68`
+  Absence de feature demandée explicitement : module simplement non déclaré — pas de stub,
+    pas d'erreur de substitution ; même loi que ../lib.sdd pour @frontend et @graphql
+  Vie interne à la crate : les enfants s'appellent entre eux par `crate::mcp::*` — ./handler.rs
+    importe @crate::mcp::format, @crate::mcp::protocol et @crate::mcp::registry, ./registry.rs
+    et ./format.rs importent @crate::mcp::error ; l'ensemble des fichiers de `src/` hors du
+    sous-arbre mcp ignore @crate::mcp (vérifié au source) — @rest, @graphql, @ir, @auth
+    n'importent pas le module ; la parité des surfaces se joue sur @MiryadResource et
+    @rest::core, pas sur l'import du module
+  Sorties MCP absentes des artefacts descriptifs : @utoipa/@openapi et @ir::@resource_ir ne
+    décrivent ni les tools ni @mcp_router — la surface MCP n'existe que par le dispatch
+    JSON-RPC runtime de ./handler.rs ; asymétrie avec REST (documenté par OpenAPI) et GraphQL
+    signalée ici, l'arbitrage (un IR des tools) n'est pas de cette spec
+  Pagination MCP : ./registry.rs reçoit @page/@per_page/@filter et les transmet à
+    @rest::core::@list — @query::@Pagination n'est pas consommé par le sous-arbre mcp
+    (vérifié au source) ; la documentation de @query reste alignée sur l'usage REST comme
+    l'exige ../lib.sdd
+  Erreur applicative : ./error.rs restitue @HookError en @McpError::@Application sans jamais
+    lui imposer de code `MRD-*` — la parité avec le contrat @HookError de ../resource.sdd est
+    le fait de ./error.rs ; ./mod.rs ne fait passer le type que par son `pub use`
+
+Tasks:
+  [ ] Convertir les six `Scenario` en au moins six preuves nommées distinctes, une par scenario,
+    avec la correspondance : « quatre ré-exports et la chaîne de montage résolvent sous mcp » →
+    `mcp_surface_four_reexports_resolve`, test inline du `#[cfg(test)] mod tests` à créer dans
+    ./mod.rs sous `#[cfg(feature = "mcp")]` (chemins courts @crate::mcp::* seuls ; chaîne
+    @OutputFormat::@Json + @McpToolRegistry::@new + @register::<@E>
+    + @mcp_router::<@MiryadAuthState> sur une fixture entité du pattern `recipe` de
+    ./registry.rs — la fixture est à dupliquer ici, ses homologues de ./registry.rs et
+    ./handler.rs étant privés à leurs modules ; sans instance d'état — la construction du
+    @Router générique n'en requiert pas) ; « le module est absent sans mcp » →
+    `mcp_surface_absent_without_feature`, portée par les runs nommés
+    `cargo test --no-default-features` et `cargo test --no-default-features --features graphql`
+    de la batterie /tooling.sdd — précédent : le scenario d'absence de ./graphql/mod.sdd prouvé
+    de même, une négation de compilation ne pouvant vivre dans la cible qu'elle nie ; « enfants
+    jamais joignables en chemin long » → doctest `compile_fail` du bloc `//!`
+    (`use miryad_core::mcp::protocol;` — `E0603`, collecté seulement quand le module compile,
+    stable sur la matrice) ; « mcp n'ajoute que vylinl-core au graphe » → preuve par runs nommés
+    `cargo tree --no-default-features -e normal --depth 1` vs
+    `cargo tree --no-default-features --features mcp -e normal --depth 1` : l'unique ajout de
+    dépendance directe est vylinl-core `0.7.4`, et `cargo tree -i rhai` comme
+    `cargo tree -i kube` n'ont aucun résultat (features `http`/`rhai`/`k8s`/`oci`/`s3` de
+    vylinl-core absentes) ; « liens d'en-tête résolus dans la configuration où le fichier
+    compile » → run nommé `cargo doc --no-default-features --features mcp` sans avertissement
+    `rustdoc::broken_intra_doc_links` sur ./mod.rs ; « mcp et graphql coexistent sans
+    interférence » → `mcp_graphql_coexist`, test inline du même module sous
+    `#[cfg(all(feature = "mcp", feature = "graphql"))]` référençant @mcp_router et
+    @crate::graphql::@graphql_router dans une même unité de compilation. Les six preuves ne
+    sauraient être réduites à moins de six ; aucune ne peut rester implicite.
+  [?] `crypto` embarqué par `mcp` : /Cargo.toml et le contrat racine l'imposent. Vérifié au
+    source de vylinl-core `0.7.4` : `hbs` n'en dépend pas et @json_to_str (formats
+    `json_pretty`/`yaml`) est vendorisé sous `hbs` seule ; `crypto` n'ajoute dans `hbs` que les
+    trois helpers de template @argon_hash, @bcrypt_hash, @gen_private_key — aucun template
+    embarqué par miryad-core ne les invoque, mais un @OutputFormat::@Custom d'app le pourrait ;
+    `cargo tree --no-default-features --features mcp -i openssl` confirme @openssl `0.10.81`
+    (plus argon2/bcrypt) dans le graphe des consommateurs sous `mcp` seule. `crypto` est-il
+    voulu pour exposer ces helpers aux templates `Custom` (contrat racine à garder), ou
+    reste-t-il un reliquat des features par défaut de vylinl-core à purger (allègement du link
+    openssl natif des apps) ? Décision de /miryad-core.sdd, pas de ce fichier — ./mod.rs garde
+    la conformité au contrat en vigueur dans les deux cas.
+  [?] ../lib.sdd présente @mcp comme exposant @mcp_router et @McpToolRegistry ; ./mod.rs en
+    expose quatre (@McpError et @OutputFormat sont publics et nécessaires à l'app :
+    @OutputFormat argument de @new, @McpError type de retour des appels) et docs.rs montre la
+    page complète. Étendre la documentation de surface de ../lib.sdd aux quatre items, ou la
+    ligne actuelle est-elle un résumé assumé ? Décision Sébastien, portée sur ../lib.sdd.
+  [?] Convention d'adressage inter-modules : ./mcp/mod.rs ferme ses cinq enfants (un seul
+    adresseur par item) là où ./graphql/mod.rs ouvre trois `pub mod` (double adresseur — sa
+    propre tâche `[?]`). Homogénéise-t-on la convention des modules de surface, et dans quel
+    sens ? ./mcp/mod.rs garde les cinq `mod` privés dans l'attente ; trancher avec
+    ./graphql/mod.sdd.
+  [ ] Rejouer la batterie complète de /tooling.sdd (toutes les combinaisons de /AGENTS.md,
+    `--no-default-features` comme preuve d'absence, `--features mcp` comme preuve de surface,
+    `--all-features` comme preuve de coexistence, plus `cargo test --doc` pour le doctest
+    `compile_fail` et les runs `cargo tree`/`cargo doc` de l'épreuve de graphe) après création
+    des preuves ; les trois `[?]` ci-dessus reçoivent une décision de Sébastien reportée dans
+    la spec ou portée vers la spec concernée.
+
+Done when:
+  Chaque `Scenario` de la présente spec est couvert par sa preuve nommée distincte — deux tests
+    inline du `#[cfg(test)] mod tests` de ./mod.rs (surface mcp, coexistence mcp+graphql), un
+    doctest `compile_fail` de son bloc `//!`, et trois runs nommés de la batterie (absence,
+    graphe, doc) — soit au moins six preuves nommées pour six scenarios ; la batterie de
+    /tooling.sdd passe verte sur toutes les combinaisons de features avec `-- -D warnings`,
+    `--no-default-features` prouvant l'absence du module et `--all-features` la coexistence
+    mcp+graphql ; le graphe de dépendances sous `mcp` est exact (vylinl-core seul ajouté, en
+    `hbs` + `crypto`, rien des features `http`/`rhai`/`k8s`/`oci`/`s3` de vylinl-core) ; les
+    lignes `[?]` ont reçu une décision de Sébastien (embarquement de `crypto`, exhaustivité de
+    la documentation de surface de ../lib.sdd, convention d'adressage vs ./graphql/mod.sdd) ;
+    la spec est relue et approuvée par lui.
+
+Scenario: quatre ré-exports et la chaîne de montage résolvent sous mcp
+  Given un build `--no-default-features --features mcp` de la bibliothèque
+  When un test inline de ./mod.rs — compilé seulement sous `mcp`, lui-même preuve d'atomicité —
+    référence @McpError, @OutputFormat, @mcp_router et @McpToolRegistry par leurs seuls chemins
+    courts @crate::mcp::*, puis enchaîne @OutputFormat::@Json, @McpToolRegistry::@new,
+    @register::<@E> sur une fixture entité du pattern `recipe` (dupliquée dans le module de
+    test, celles des enfants étant privées) et @mcp_router::<@MiryadAuthState> sur ce registre
+  Then la cible de test compile et le test passe : la surface courte complète est résolue et la
+    chaîne de montage d'une app se construit à travers ./mod.rs seul, sans jamais passer par un
+    chemin d'enfant
+  But `crate::mcp::registry::@McpToolRegistry` n'y est pas constructible — la négation vit dans
+    le scenario « enfants jamais joignables en chemin long »
+
+Scenario: le module est absent sans mcp
+  Given la bibliothèque en features par défaut (`static-frontend` seule), puis en
+    `--no-default-features`, puis en `--no-default-features --features graphql` — trois runs de
+    la batterie /tooling.sdd où ./mod.rs n'est jamais compilé
+  When la compilation et les tests de la crate tournent sur ces trois runs
+  Then la compilation réussit : aucune déclaration de la crate ne référence @crate::mcp (le
+    module gate est dans ../lib.rs, ./mod.rs n'importe rien qui pourrait fuiler son absence),
+    @rest, @graphql et @auth montent normalement — pas de squelette, pas de stub, pas d'erreur
+    de substitution
+  And toute import `miryad_core::mcp::*` par un consommateur échoue à la compilation
+    (`E0432`/`E0433`) — preuve négative hors crate, ./mod.rs n'étant pas compilé sous ces runs
+    pour la porter, distincte des preuves positives qui ne vivent que sous `mcp`
+
+Scenario: enfants jamais joignables en chemin long
+  Given le module compilé sous toute combinaison contenant `mcp`
+  When un consommateur écrit `use miryad_core::mcp::protocol;`,
+    `miryad_core::mcp::registry::McpToolRegistry` ou toute autre adresse
+    `miryad_core::mcp::<enfant>::*`
+  Then la compilation échoue (`E0603` : les cinq enfants sont déclarés `mod` privés — ./mod.rs
+    ne ré-exporte que quatre items), et `miryad_core::mcp::McpToolRegistry` résout en revanche,
+    par le `pub use` de ./mod.rs
+  And la preuve est un doctest `compile_fail` porté par le bloc `//!` : collecté seulement quand
+    le module compile, et sa cause d'échec (la visibilité des enfants) ne dépend d'aucune autre
+    feature — la preuve est donc stable sur toute la matrice
+  But @McpOp, @McpEntity, @JsonRpcRequest, @JsonRpcResponse, @RpcError, @RenderShape et @render
+    — `pub(crate)` ou privés chez leurs enfants — sont inaccessibles y compris sous `mcp` : la
+    surface publique est exactement les quatre items, aucun autre point d'entrée n'existe
+
+Scenario: mcp n'ajoute que vylinl-core au graphe de dépendances
+  Given deux runs `cargo tree --no-default-features -e normal --depth 1` : sans feature `mcp`,
+    puis avec
+  When on compare les deux arbres de dépendances directes
+  Then le second n'ajoute exactement qu'une ligne : vylinl-core `0.7.4` — ni reqwest embarquée
+    par vylinl-core via sa feature `http` par défaut (exclue par `default-features = false`),
+    ni @rhai, @kube, @oci_client, @object_store (vérifié : `cargo tree ... -i rhai` et
+    `cargo tree ... -i kube` sans résultat sous `mcp`)
+  And sous `mcp`, @openssl, @argon2 et @bcrypt apparaissent par la seule feature `crypto` de
+    vylinl-core (`cargo tree --no-default-features --features mcp -i openssl` : chaîne unique
+    vylinl-core puis miryad-core) — coût assumé par le contrat racine tant que `Tasks` `[?]`
+    sur `crypto` n'est pas tranché
+  But @reqwest reste au graphe des deux runs : dépendance obligatoire de la crate (auth/OIDC),
+    pas une embarcation de `mcp`
+
+Scenario: liens d'en-tête résolus dans la configuration où le fichier compile
+  Given `cargo doc --no-default-features --features mcp` lancé sur une toolchain compatible
+    (le `#![warn(rustdoc::broken_intra_doc_links)]` de la crate est actif)
+  When la documentation du module est générée
+  Then aucun avertissement rustdoc ne porte sur ./mod.rs : les liens `crate::mcp::@McpToolRegistry`
+    et `crate::mcp::@mcp_router` du bloc `//!` résolvent, les deux items étant ré-exportés par
+    le fichier lui-même
+  And la page du module ne liste que les quatre items publics et l'en-tête : les cinq modules
+    privés n'y figurent pas
+
+Scenario: mcp et graphql coexistent sans interférence
+  Given un build `--all-features`
+  When un test inline de ./mod.rs sous `#[cfg(all(feature = "mcp", feature = "graphql"))]`
+    référence @mcp_router en chemin court mcp et @crate::graphql::@graphql_router en chemin
+    court graphql dans une même unité de compilation
+  Then la compilation réussit et le test passe : ./mod.rs ne change aucune ligne entre `mcp`
+    seul et `mcp` + `graphql` (coexistence débloquée par le bump vylinl-core `0.7.4`, commit
+    `6384a68`), et la surface publique de @mcp reste exactement les quatre items, ni amputée ni
+    étendue par la présence de @graphql

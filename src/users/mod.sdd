@@ -1,0 +1,218 @@
+Spec: mod — contrat d'agrégation du module users
+
+Purpose:
+  Fichier d'agrégation du module `users` : il déclare les quatre sous-modules publics sans aucun
+    gating de feature, met à plat neuf items publics de ces enfants, et ne définit lui-même
+    aucune fonction, aucun type, aucune constante — @sync_group_memberships n'est pas défini
+    ici mais dans ./membership.rs, ce fichier ne le ré-exporte que. Les enfants (@group,
+    @membership, @service_account, @user) ont chacun leur spec adjacente : la présente ne décrit
+    ni leur conduite interne (résolution get-or-create, évaluation d'appartenance, réconciliation
+    des appartenances et son idempotence, provisionnement de compte de service), ni leurs effets
+    en base, seulement l'agrégation, les chemins publics promis et la tenue de la surface de
+    compilation sur toute la matrice de features.
+
+Owns:
+  ./mod.rs
+
+References:
+  /src/lib.sdd — déclare @users à la racine de la crate, sans feature et sans aucun `pub use`
+    racine ; ce fichier est le premier maillon de cette promesse.
+  /Cargo.toml — le graphe `[features]` ne comporte aucune feature couvrant `users` et les
+    dépendances que lit le module sont toutes non optionnelles (`sea-orm` verrouillé `2.0.2`,
+    `sea-orm-migration`, `chrono`) : aucune de ses déclarations ne peut être gated.
+  /tooling.sdd — dette préexistante vérifiée par `cargo check --lib` : quatre avertissements
+    `missing_docs` « missing documentation for a module » dont le span porte sur les quatre
+    lignes de déclaration `pub mod` de ce fichier, comptés dans les cent trente-six de la purge
+    ; cette spec ne les modifie pas.
+
+Must:
+  Déclarer exactement quatre `pub mod` — `group`, `membership`, `service_account`, `user` —
+    sans jamais de `#[cfg(feature = ...)]` : le module users compile sur toute la matrice de
+    /tooling.sdd, `--no-default-features` compris ; le seul `cfg` toléré dans ce fichier est
+    `#[cfg(test)]`, réservé au `mod tests` exigé par la conversion des `Scenario`.
+  Mettre à plat exactement les neuf items listés en `Exposes`, par quatre lignes `pub use`,
+    sans glob, sans renommage ni alias ajouté : tout item à plat est défini dans son fichier
+    enfant, aucun n'est défini ni redéfini ici.
+  Ne définir aucun code exécuté en runtime : le fichier ne porte que le bloc `//!`, les quatre
+    déclarations `pub mod` et les quatre lignes `pub use` — aucune fonction partagée, même
+    privée, n'est posée ici ; @sync_group_memberships, @resolve_user, @is_admin, @is_member,
+    @ensure_service_account, @ensure_group vivent dans les enfants et leurs contrats (étapes,
+    effets en base, idempotence, comportement en concurrence) y sont contractualisés, pas ici.
+  Garder la surface à plat et le nom des modules sans collision : @User et le module `user`,
+    @Group et @group, @GroupMembership et @membership coexistent par distinction de casse dans
+    un même list `use` ; tout ajout ou renommage qui les ferait entrer en conflit casse la
+    double route des consommateurs.
+  Servir d'entrée unique et identique aux trois surfaces REST, GraphQL et MCP pour le domaine
+    users : la résolution (@resolve_user), la synchronisation OIDC
+    (@sync_group_memberships) et le provisionnement de compte de service
+    (@ensure_service_account) sont les mêmes primitives plates pour toutes les consommations
+    de la crate ; aucune variante, aucun raccourci ni aucune voie propre à une surface
+    n'existe à ce niveau — la parité entre surfaces tient au fait qu'il n'y a rien à
+    dupliquer ici.
+  Garder le bloc `//!` comme orientation du module : il compose avec la doc externe que
+    /src/lib.sdd met sur la déclaration `pub mod users` pour la page docs.rs du module.
+
+Must not:
+  Gater sous une feature une déclaration ou un ré-export : aucune feature de /Cargo.toml ne
+    couvre `users` et /src/lib.sdd promet un module toujours compilé — un gating ici exigerait
+    un arbitrage de Sébastien sur le graphe de features.
+  Définir ici un helper partagé, un type, une constante ou un import `use` non `pub use` : le
+    point d'agrégation est le lieu d'erreur naturel pour du code « n'appartenant à aucun
+    enfant » ; tout comportement partagé nouveau est une décision d'arbitrage (quel enfant en
+    devient le contrat) avant d'être du code.
+  Élargir la liste des neuf items à plat, importer par glob (`pub use ... ::*`) ou exposer un
+    item sous un nom autre que celui de sa définition : les absences constatées (@ensure_group,
+    les items générés SeaORM @Model, @Column, @ActiveModel, @Entity, @PrimaryKey, @Relation des
+    enfants) sont des faits d'agrégation tracés en `Exposes` et `Tasks`, pas des contrats des
+    enfants.
+  Décrire dans cette spec la conduite interne des enfants — construction d'entité, requêtes,
+    réconciliation de tables, conversion d'erreurs : chacune a sa spec adjacente et fait
+    autorité.
+
+Depends on:
+  ./group.rs — fournit @ADMIN_GROUP_NAME, @Group, @is_admin et @is_member ré-exportés, et le
+    module `group` avec le reste de sa surface publique.
+  ./membership.rs — fournit @GroupMembership et @sync_group_memberships ré-exportés, et le
+    module `membership` avec le reste de sa surface publique.
+  ./service_account.rs — fournit @ensure_service_account ré-exporté ; sa surface publique est
+    intégralement mise à plat, seul enfant dans ce cas.
+  ./user.rs — fournit @User et @resolve_user ré-exportés, et le module `user` avec le reste de
+    sa surface publique.
+
+Exposes:
+  Quatre déclarations `pub mod` sans gating : @users::group, @users::membership,
+    @users::service_account, @users::user — chaque item public d'un enfant reste atteignable
+    par le chemin `miryad_core::users::<module>::…`.
+  Neuf mises à plat promises aux consommateurs — chemin public exact sous @users puis item
+    source :
+    @users::ADMIN_GROUP_NAME — ré-export de @ADMIN_GROUP_NAME, constante publique de type
+      &@str (./group.rs)
+    @users::Group — ré-export de @Group, alias de type de @group::Entity (./group.rs)
+    @users::is_admin — ré-export de @is_admin (./group.rs)
+    @users::is_member — ré-export de @is_member (./group.rs)
+    @users::GroupMembership — ré-export de @GroupMembership, alias de type de
+      @membership::Entity (./membership.rs)
+    @users::sync_group_memberships — ré-export de @sync_group_memberships (./membership.rs)
+    @users::ensure_service_account — ré-export de @ensure_service_account
+      (./service_account.rs)
+    @users::User — ré-export de @User, alias de type de @user::Entity (./user.rs)
+    @users::resolve_user — ré-export de @resolve_user (./user.rs)
+  Signatures portées par le chemin plat telles que définies chez l'enfant (le mod ne les
+    modifie pas) : @users::is_admin et @users::is_member génériques sur `C: @ConnectionTrait`
+    retournant @Result<@bool, @sea_orm::DbErr> ; @users::resolve_user générique sur le même
+    @ConnectionTrait retournant @Result<@user::Model, @sea_orm::DbErr> ;
+    @users::sync_group_memberships générique sur @ConnectionTrait retournant
+    @Result<(), @sea_orm::DbErr> ; @users::ensure_service_account sur @DatabaseConnection
+    concret retournant @Result<(), @sea_orm::DbErr>.
+  Non mis à plat, atteignables par le chemin du sous-module seulement : @group::ensure_group
+    (pub, consommé par ./membership.rs et par ./migration/m20260822_000003_seed_admin_group.rs
+    par le chemin enfant), et les items générés par @DeriveEntityModel de chaque entité —
+    @Model, @Entity (sous son nom brut, distinct des alias mis à plat), @Column, @ActiveModel,
+    @PrimaryKey, @Relation pour @group, @membership et @user. Atteignabilité vérifiée par les
+    usages compilés de la crate (ex. @membership::Column lu par les tests de
+    ./service_account.rs). Cette absence de mise à plat est un fait d'agrégation, pas une
+    interdiction pour l'enfant.
+  Rien de plus : aucune constante utilitaire, aucun type, aucune fonction ne vit dans ce
+    fichier, et aucun @pub use de la racine n'en découle — les chemins promis restent
+    `miryad_core::users::…` (/src/lib.sdd).
+
+Accepts:
+  Aucune entrée runtime — le fichier n'a aucun point d'entrée exécutable. Seule consommation
+    attendue : la résolution en compilation des neuf chemins plats sous @miryad_core::users,
+    des chemins enfants `miryad_core::users::<module>::<item>`, et d'un même list `use` mélangeant
+    modules et items (le module @user et l'item @User importés côte à côte, par exemple).
+
+Returns:
+  Rien à renvoyer : aucune fonction n'est définie ici ; les retours des fonctions mises à
+    plat sont ceux contractualisés chez leur enfant.
+
+Raises:
+  Aucune voie d'échec propre : l'agrégation ne peut que compiler ou ne pas compiler.
+  Aucune erreur n'est construite ici ; la surface plate ne remonte aujourd'hui que des
+    @sea_orm::DbErr propagés bruts par les enfants (@users::resolve_user,
+    @users::sync_group_memberships, @users::is_admin, @users::is_member) ou convertis par
+    ./service_account.rs, sans aucun code `MRD-*` sur ces chemins — tension transverse portée
+    en `Tasks`, pas un contrat de ce fichier.
+
+Tasks:
+  [?] @ensure_group est pub dans ./group.rs, consommé depuis ./membership.rs et la migration de
+    seed par le chemin enfant, mais n'est pas mis à plat ici alors que tous les autres items
+    pub destinés à sortir du module le sont : omission assumée (réservé à l'usage interne et
+    aux migrations) ou mise à plat à ajouter pour la cohérence de la facade ?
+  [?] Les @sea_orm::DbErr de la surface plate (@users::resolve_user,
+    @users::sync_group_memberships, @users::is_admin, @users::is_member,
+    @users::ensure_service_account) ne portent aucun code `MRD-*`, alors que
+    `.specdd/bootstrap.project.md` en prescrit un pour toute erreur interne de la crate : le
+    contrat transverse plie-t-il pour @sea_orm::DbErr de passage, ou y a-t-il un trou à traiter
+    module par module ? L'arbitrage déborde les quatre specs enfants et cette agrégation ; la
+    conversion des `Scenario` ne doit pas graver l'absence actuelle comme contrat.
+  [?] Les quatre avertissements `missing_docs` « for a module » portent sur les lignes de
+    déclaration `pub mod` de ce fichier : documenter au niveau agrégé (doc externe sur les
+    quatre déclarations ici) ou laisser chaque enfant porter son bloc `//!` en tête de fichier,
+    ce qui éteint les avertissements sans toucher ce fichier ?
+  [ ] Convertir les cinq `Scenario` en au moins cinq tests nommés et distincts : quatre dans un
+    `mod tests` `#[cfg(test)]` de ./mod.rs à créer (le fichier n'a aucun test inline à ce jour)
+    — résolution compilée des neuf chemins plats avec assert runtime sur @users::ADMIN_GROUP_NAME
+    `admin`, identité de type des trois alias, list `use` mixte modules + items, résolution des
+    chemins enfants des items non mis à plat — et le `Scenario` « aucune feature » prouvé par la
+    combinaison `--no-default-features` de la matrice de /tooling.sdd, l'exercice de features
+    débordant du fichier. L'absence de glob et la liste exacte de neuf items relèvent de la
+    relecture `Done when` : aucun outil de compile-failure n'existe dans le dépôt pour prouver
+    qu'un chemin plat absent n'existe pas.
+
+Done when:
+  Cinq `Scenario` ont chacun au moins un test nommé distinct et vert, ou une place explicite
+    dans la matrice de /tooling.sdd pour celui hors fichier ; la relecture confirme quatre
+    `pub mod` sans gating et quatre `pub use` couvrant exactement les neuf items d'`Exposes`,
+    sans glob ni renommage ; les trois lignes `[?]` sont arbitrées par Sébastien ; `cargo check`
+    n'ajoute aucun avertissement sur ce fichier au-delà des quatre déjà tracés ; la batterie de
+    /tooling.sdd passe verte sur toutes les combinaisons ; la spec est approuvée par lui.
+
+Scenario: les neuf chemins plats résolvent sans passer par un enfant
+  Given un test consommateur qui référence @users::ADMIN_GROUP_NAME, @users::Group,
+    @users::is_admin, @users::is_member, @users::GroupMembership, @users::sync_group_memberships,
+    @users::ensure_service_account, @users::User et @users::resolve_user, sans importer aucun
+    chemin direct d'enfant
+  When il compile et lit la constante
+  Then chaque chemin résout sous @miryad_core::users
+  And @users::ADMIN_GROUP_NAME vaut `admin` à l'exécution
+  And aucune déclaration de valeur ou de fonction n'existe dans ./mod.rs pour les produire —
+    chaque item est la définition de son enfant, rejointe par la ligne `pub use`
+
+Scenario: les trois alias plats sont les Entity enfants eux-mêmes
+  Given un test qui définit trois fonctions identité convertissant @users::Group vers
+    @users::group::Entity, @users::User vers @users::user::Entity et @users::GroupMembership
+    vers @users::membership::Entity
+  When il compile
+  Then les trois conversions type-checkent — l'alias plat et l'@Entity enfant sont le même type,
+    pas deux types jumeaux
+  And les fonctions génériques @users::is_admin et @users::is_member restent utilisables par le
+    chemin plat avec une clause `C: @ConnectionTrait` au point d'appel
+
+Scenario: modules et items à plat coexistent dans un même list d'imports
+  Given un test qui importe dans un seul list `use` les quatre modules `group`, `membership`,
+    `service_account`, `user` et les neuf items mis à plat
+  When il compile
+  Then aucune collision n'apparaît — @User et le module `user`, @Group et @group ne se masquent
+    pas mutuellement, @GroupMembership ne collide avec aucun nom de module
+  And désigner @user::resolve_user et désigner @resolve_user par le chemin plat appellent la même
+    fonction, aucune copie n'existant
+
+Scenario: le module compile et expose sa surface sans aucune feature activée
+  Given un build `--no-default-features` — ni `static-frontend`, `swagger-ui`, `graphql`,
+    `graphiql` ni `mcp`
+  When la bibliothèque et les tests du module users sont compilés
+  Then les quatre sous-modules et les neuf chemins plats sont atteignables
+  And @users::ensure_service_account résout alors que ./auth est lui aussi non gated — la chaîne
+    ./service_account.rs vers @ensure_token n'introduit aucun gating à ce niveau
+  # La preuve vit dans la matrice de /tooling.sdd, pas dans un test inline.
+
+Scenario: les chemins enfants restent l'autre voie valable pour le non-mis-à-plat
+  Given un consommateur qui référence @users::group::ensure_group, @users::user::Model,
+    @users::user::Column, @users::user::ActiveModel, @users::membership::Column et
+    @users::membership::ActiveModel
+  When il résout chacun par le chemin de l'enfant
+  Then la compilation réussit — les quatre `pub mod` gardent toute la surface publique des
+    enfants atteignable et la mise à plat n'est pas un écran
+  And aucun de ces six noms ne résout à plat sous @users — fait vérifié par relecture des
+    quatre `pub use` : pas de glob, pas d'item hors des neuf listés en `Exposes`

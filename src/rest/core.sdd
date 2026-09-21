@@ -1,0 +1,718 @@
+Spec: core — CRUD générique : @list, @get, @create, @update, @delete par entité
+
+Purpose:
+  Porter le noyau des cinq opérations CRUD de toute entité @RestEntity, hors de tout framework :
+    chaque opération commence par @users::resolve_user (get-or-create du @AuthPrincipal en
+    @users::user::Model), délègue chaque décision d’autorisation à @rbac sans jamais la
+    réévaluer, compose la condition @rbac::ListAccess::FilterByOwner avec l’égalité
+    @MiryadResource::filter_column, normalise la pagination par @query::Pagination::from_raw, puis
+    exécute la mutation @sea_orm avec ses deux invariants de sécurité posés après le hook : retrait
+    de la clé primaire fournie par le client et colonne propriétaire jamais écrivable par le corps
+    sous @AccessPolicy::OwnerOnly. Il est le seul endroit de la crate où ces règles existent : les
+    handlers de ./mod.rs et les cinq tools de ./../mcp/registry.rs appellent exactement ces
+    fonctions — la parité REST/MCP est structurelle, pas documentaire. ./../graphql ne passe pas
+    par lui (chemin @seaography + @graphql::hooks propre) : asymétrie constatée, signalée en
+    `Handles` et relayée au `Done when`, instruite par ./../rbac.sdd et ./../resource.sdd.
+  Le fichier ne choisit aucun statut HTTP : il ne produit que @RestError (./error.rs) et n’atteint
+    que trois de ses codes — `MRD-REST-001` (@RestError::NotFound), `MRD-REST-002`
+    (@RestError::Forbidden), `MRD-REST-003` (@RestError::Database) ; @HookError traverse en
+    @RestError::Application sans code `MRD-*`. Aucun `#[cfg(feature = ...)]` : @rest (./../lib.sdd)
+    et ce sous-module `pub(crate)` (./mod.rs) compilent sur chaque combinaison de la batterie
+    /tooling.sdd, `--no-default-features` compris. Zéro trace @tracing, zéro cookie, zéro token à
+    ce jour ; les effets d’écriture sont les mutations de l’entité et le get-or-create de
+    @users::resolve_user, y compris sur les lectures et sur les requêtes au final refusées.
+
+Owns:
+  ./core.rs
+
+References:
+  /miryad-core.sdd — contrat hérité : un code `MRD-*` par erreur interne, @HookError hors
+    taxonomie, parité de lecture des surfaces, règle tests ≥ scenarios
+  /.specdd/bootstrap.project.md — contrat transverse @HookError, interdits du harnais, frontière
+    par surface : ce fichier est partagé, il ne choisit de surface aucune
+  /tooling.sdd — dette stricte tracée : l’@expect de @rest::core::primary_key_column est un des
+    sites `expect_used` de production, la soustraction `pagination.page - 1` un des sites
+    `arithmetic_side_effects` ; la batterie court ici sous les sept combinaisons de features
+  ./../lib.sdd — @rest déclaré sans gating ; @rest::core n’est jamais visible hors de la crate
+  ./mod.rs — contrat ./mod.sdd : possesseur de @RestEntity (PK unique @i32 assumée comme
+    limitation), des handlers et de leurs statuts de succès `200`/`204`, premier appelant des cinq
+    fonctions ; ses douze tests inline exercent ce contrat (mapping en `Tasks`)
+  ./error.rs — @RestError, la seule monnaie d’erreur de ./core.rs : codes, @IntoResponse `403`/
+    `404`/`422`/`500` et absence de toute variante `201`/`409` ; contrat ./error.sdd
+  ./openapi.rs — cohérence wire vérifiée : le document ne prévoit pour le CRUD générique que `200`,
+    `204`, `403` et `404`
+  ./../rbac.sdd — amont décisionnel : `false` de @rbac::can_read, @rbac::can_write,
+    @rbac::can_create et @rbac::ListAccess::Forbidden deviennent ici @RestError::Forbidden ; ses
+    `[?]` colonne propriétaire non-i32 et création `OwnerOnly` sans colonne ont des conséquences
+    d’écriture proprement ici (`Tasks [?]`)
+  ./../query.sdd — @query::Pagination::from_raw et @query::PagedResult : garanties `page >= 1`
+    (sans quoi `pagination.page - 1` sous-fléchirait) et `per_page >= 1` (sans quoi
+    @sea_orm::PaginatorTrait::paginate paniquerait), clés wire de la page ; son `[?]` de `page`
+    extrême se rejoue côté appelant
+  ./../resource.sdd — @MiryadResource::before_create (position : après @rbac::can_create, avant
+    insertion), @MiryadResource::owner_column, @MiryadResource::filter_column, @AccessPolicy,
+    @HookError sans code `MRD-*` ; sa ligne `[!]` sur les clés GraphQL n’est pas de ce fichier
+  ./../auth/error.rs et ./error.rs — les deux tables de traduction amont/aval : @AuthError (`401`,
+    codes `MRD-AUTH-*`) rejette avant que ./core.rs ne soit appelé ; ./core.rs ne construit jamais
+    de @AuthError et ne voit jamais les rejets `400`/`401` des extracteurs
+  ./../mcp/registry.rs — second appelant, vérifié ligne à ligne : les cinq tools (@McpOp::List,
+    @McpOp::Get, @McpOp::Create, @McpOp::Update, @McpOp::Delete) délèguent aux cinq mêmes fonctions
+    sans réévaluer une politique ; ses `ListParams` @serde en @Option::None alimentent les mêmes
+    paramètres bruts ; son `Update` relit `id` et le modèle en deux passes et suppose la PK de
+    corps écrasée par @rest::core::update — c’est bien ce fichier qui l’écrase ; son test
+    `update_dispatch_accepts_id_alongside_full_model_body` exerce le contrat
+  ./../mcp/error.rs — @From<@RestError> pour @McpError : @RestError::NotFound → @McpError::NotFound
+    (`MRD-MCP-002`, `-32002`), @RestError::Forbidden → @McpError::Forbidden (`MRD-MCP-001`,
+    `-32001`), @RestError::Database → @McpError::Database (`MRD-MCP-003`, `-32603`),
+    @RestError::Application → @McpError::Application (`-32000`, `data.code`) — parité des décisions,
+    traduction des codes
+  /docs/architecture.md — récit : PK unique @i32 comme limite documentée, raison du noyau partagé
+    contre la duplication REST/MCP
+
+Must:
+  Compiler sans aucun gating de feature : ./core.rs ne porte aucun `#[cfg(feature = ...)]` ; le
+    fichier compile sur les sept combinaisons de /tooling.sdd, `--no-default-features` d’abord,
+    preuve qu’aucune règle de sécurité d’attend une feature pour exister.
+  Rester le dénominateur commun vérifié des surfaces : @rest::core::list, @rest::core::get,
+    @rest::core::create, @rest::core::update et @rest::core::delete sont les seules implémentations
+    appelées depuis ./mod.rs (cinq handlers) et depuis ./../mcp/registry.rs (cinq @McpOp) ; aucune
+    règle de RBAC, de pagination, de clé primaire ou de colonne propriétaire ne peut vivre dans une
+    surface sans vivre ici, et aucune des deux surfaces ne peut en contourner une.
+  Ordonner @rest::core::list exactement ainsi : @users::resolve_user → @rbac::list_access (politique
+    de lecture) → @rbac::ListAccess::Forbidden rend @RestError::Forbidden avant toute construction
+    de requête ; @rbac::ListAccess::Unrestricted part d’un @sea_orm::Condition::all ; @rbac::ListAccess::FilterByOwner
+    apporte sa condition d’égalité — puis, si @MiryadResource::filter_column et `filter` sont tous
+    deux @Some, @sea_orm::Condition::add ajoute l’égalité de la colonne déclarée sur la valeur
+    transmise, sinon rien — puis @query::Pagination::from_raw(page, per_page), @paginate(per_page),
+    @sea_orm::Paginator::num_items_and_pages, @sea_orm::Paginator::fetch_page(index zéro =
+    `page - 1`, vérifié ./../query.sdd), et @query::PagedResult de cinq champs.
+  Ordonner @rest::core::get, @rest::core::update et @rest::core::delete sur le même préfixe :
+    @users::resolve_user puis relecture @sea_orm::EntityTrait::find_by_id(@id).one — un @None rend
+    @RestError::NotFound avant toute consultation de politique (l’inconnu est `404` même pour un
+    demandeur sans aucun droit — oracle d’existence ouvert en `Tasks [?]`) ; puis @rbac::can_read
+    (get) ou @rbac::can_write (update, delete), évalués sur la ligne relue, jamais sur le corps
+    reçu, `false` rendu @RestError::Forbidden.
+  Ordonner @rest::core::create exactement ainsi : @users::resolve_user ; @rbac::can_create sur
+    @MiryadResource::write_policy seule, `false` rend @RestError::Forbidden sans hook appelé ni
+    écriture tentée ; @mark_all_set(appliqué à @IntoActiveModel::into_active_model(body)) ;
+    @MiryadResource::before_create dont l’@Err est mappé @RestError::Application sans
+    transformation ; puis, dans cet ordre et sans rien après, @ActiveModelTrait::not_set(retraite
+    de @rest::core::primary_key_column) et, sous @AccessPolicy::OwnerOnly avec
+    @MiryadResource::owner_column @Some, @ActiveModelTrait::set de cette colonne à
+    @sea_orm::Value::from(@users::user::Model::id) ; puis @ActiveModelTrait::insert.
+  Tenir le hook après @rbac::can_create mais avant les deux invariants : @MiryadResource::before_create
+    ne tourne que si la création est autorisée, et retrait de PK comme injection de propriétaire
+    s’exécutent après lui, sans condition : un hook aux ordres du client qui reverrouillerait la PK
+    ou l’owner est déjoué par l’ordre même de la séquence — le même ordre vaut pour la surface MCP,
+    qui délègue (./../mcp/registry.rs vérifié).
+  Réserver l’injection de colonne au couple @AccessPolicy::OwnerOnly (lu sur @write_policy) +
+    @MiryadResource::owner_column @Some, dans @rest::core::create et dans @rest::core::update :
+    hors de ce couple @owner_column est une colonne ordinaire du corps (asymétrie remontée en
+    `Tasks [?]`), et @MiryadResource::read_policy ne gouverne jamais l’injection.
+  Forcer dans @rest::core::update, après @rest::core::mark_all_set, la cible et la colonne :
+    @ActiveModelTrait::set de la PK à
+    @sea_orm::Value::from(id du chemin) — une PK divergente du corps ne peut déplacer la cible —
+    puis @ActiveModelTrait::set de @MiryadResource::owner_column à la valeur @sea_orm::Value extraite
+    par @sea_orm::ModelTrait::get de @existing : le corps ne transfère jamais la propriété, y compris
+    pour un admin que @rbac::can_write laisse passer sans jamais lire de colonne.
+  Écrire le corps intégralement : @rest::core::mark_all_set promeut chaque @ActiveValue::Unchanged
+    porteur de valeur en @ActiveValue::Set (le @NotSet sans valeur reste @NotSet) — vérifié en
+    sea-orm `2.0.2` (@sea_orm::Update::one ne met dans `SET` que les @ActiveValue::Set ; une `SET`
+    vide est un no-op sans colonne écrite, pas une erreur). @rest::core::update s’appuie sur ce
+    passage, sans
+    quoi le `PUT` n’écrirait aucune colonne.
+  Ne jamais écrire sans relecture : @rest::core::update et @rest::core::delete décident @rbac::can_write
+    sur @existing puis émettent leur SQL cible (PK seule, sans filtre owner) — @rest::core::delete
+    ignore son @sea_orm::DeleteResult : une cible déjà partie entre la relecture et la suppression
+    reste un @Ok, jamais un NotFound — fenêtre de course remontée en `Tasks [?]`.
+  Propager toute @sea_orm::DbErr par `?` en @RestError::Database (`MRD-REST-003`) : @users::resolve_user
+    (y compris son @sea_orm::DbErr::RecordNotFound interne de course de création), @rbac::list_access
+    et les @rbac::can_*, @sea_orm::Paginator::num_items_and_pages, @sea_orm::Paginator::fetch_page,
+    @ActiveModelTrait::insert, @ActiveModelTrait::update, @sea_orm::EntityTrait::delete_by_id — la
+    panne de base ne devient jamais un refus @Forbidden ni un succès silencieux.
+  Réserver le fichier à ce qu’un @RestEntity garantit : @rest::core::primary_key_column rend la
+    colonne de la PK via @sea_orm::PrimaryKeyToColumn::into_column et son @expect ne peut se
+    déclencher que sur un itérateur @E::PrimaryKey::iter vide, impossible sous la bound ValueType
+    @i32 de @RestEntity ;
+    @rest::core::mark_all_set itère @E::Column::iter de la même emprise.
+  Porter, sans en ajouter, la dette stricte déjà tracée à /tooling.sdd : @std::result::Result::expect
+    de @rest::core::primary_key_column (`expect_used`) et la soustraction `pagination.page - 1`
+    (`arithmetic_side_effects`, sans risque de underflow car @query borne `page >= 1`) ; la purge
+    suit le calendrier de /tooling.sdd.
+  Rester silencieux et sans état : aucune trace @tracing à ce jour, aucun état partageable, aucune
+    variable globale ; jamais @println!, @eprintln!, @dbg! ; @tracing est seul permis pour toute
+    trace future (contrat transverse /.specdd/bootstrap.project.md).
+
+Must not:
+  Choisir un statut HTTP ni importer @axum : ./core.rs ne produit que @RestError ; la table
+    erreur↔statut vit ./error.rs, les `200`/`204` de succès vivent ./mod.rs — une décision qui
+    parlerait HTTP cesserait d’être partagée avec @MCP.
+  Donner un code `MRD-*` à @HookError ou construire @RestError::Internal : @RestError::Application
+    est la seule destination du @HookError du hook, @code/@message restitués intacts ;
+    `MRD-REST-004` n’a ici aucun chemin de construction.
+  Réévaluer lui-même une décision d’autorisation : ./core.rs ne lit @AccessPolicy que pour le test
+    `@write_policy == @AccessPolicy::OwnerOnly` de l’injection ; aucune lecture de groupe, aucun
+    is_admin, aucune comparaison de propriétaire pour décider — réévaluer ici créerait précisément le
+    fork REST/MCP/GQL que ce fichier existe pour empêcher.
+  Appeler @MiryadResource::before_create dans @rest::core::update ou @rest::core::delete, ou y
+    inventer un hook d’update/delete : le hook est réservé à la création par parité @seaography
+    (./../resource.sdd) ; un tel appel serait un hook fantôme sur deux surfaces seulement.
+  Faire confiance à la PK du corps, à @rest::core::create (elle est retirée par
+    @ActiveModelTrait::not_set, la base attribue) comme à @rest::core::update
+    (le `WHERE` est l’id du chemin) : aucune ligne ciblée ou créée par un choix client.
+  Laisser @users::resolve_user être sauté par une surface ou un futur raccourci : si @resolve_user
+    était contourné, @can_create, @can_read, @can_write et l’injection d’owner tourneraient sans
+    identité résolu ; les cinq opérations de ./core.rs sont les seules portes et le font toujours
+    en premier.
+  Exposer quoi que ce soit en @pub : les sept fonctions sont `pub(crate)` ; la surface hors crate est
+    @rest::resource_router (./mod.rs) et les tools MCP ; @pub(crate) serait une API publique d’un
+    noyau sans façade.
+  Brancher sur le champ source de @crate::auth::AuthPrincipal, un cookie ou un type de token : seul
+    @subject
+    (et @email transmis tel quel, jamais relu) entre ; session et token API y sont indiscernables —
+    ./../auth/dual.sdd les unifie exprès en amont.
+  Normaliser, caster ou valider @filter, ou toucher une colonne du corps autre que la PK et
+    l’@owner_column des deux injections : aucune sanitation d’entrée ici, la valeur de filtre est
+    collée telle quelle en @sea_orm::ColumnTrait::eq (question ouverte `[?]`).
+
+Forbids:
+  @axum, @http ou tout type de requête/réponse dans ./core.rs — la dépendance framework ferait de
+    REST la surface de référence et romprait la parité MCP assumée par ./../mcp/registry.rs
+
+Depends on:
+  ./error.rs — @RestError : @RestError::NotFound, @RestError::Forbidden, @RestError::Database,
+    @RestError::Application, et son @From<@sea_orm::DbErr> qui alimente @Database par `?` ; ./error.sdd
+  ./mod.rs — @rest::RestEntity : PK unique ValueType @i32, @sea_orm::PrimaryKeyToColumn, @Model
+    @Serialize + @DeserializeOwned + @IntoActiveModel — sans ces bornes le fichier ne compile pas ;
+    leurs limites sont le contrat de ./mod.rs
+  ./../rbac.rs — @rbac::list_access, @rbac::can_read, @rbac::can_write, @rbac::can_create,
+    @rbac::ListAccess ; ./core.rs ne réimplémente aucune décision (./../rbac.sdd)
+  ./../query.rs — @query::Pagination::from_raw et @query::PagedResult : normalisation, clés wire et
+    invariants `page >= 1` / `1 <= per_page <= @query::MAX_PER_PAGE` (./../query.sdd)
+  ./../resource.rs — @AccessPolicy, @HookError et @MiryadResource (write_policy, owner_column,
+    filter_column, before_create) consommés au travers du supertrait de @RestEntity (./../resource.sdd)
+  ./../users/mod.rs — @users::resolve_user (réexporté de ./../users/user.rs) et l’id du modèle
+    retourné, seule identité injectée dans @owner_column
+  ./../auth/mod.rs — @crate::auth::AuthPrincipal en lecture de @subject et @email seulement (./../auth/principal.sdd)
+  @sea_orm `2.0.2` — @sea_orm::ActiveModelTrait (set/not_set/get/insert/update), @IntoActiveModel,
+    @ActiveValue, @sea_orm::EntityTrait (find/find_by_id/delete_by_id), @ModelTrait, @Condition (add/all), @Value (from),
+    @ColumnTrait + @sea_orm::QueryFilter (eq de filtre), @sea_orm::PaginatorTrait + @sea_orm::Paginator
+    (paginate / num_items_and_pages / fetch_page), @PrimaryKeyToColumn + @sea_orm::Iterable, @DbErr
+
+Exposes:
+  @rest::core::list — `pub(crate) async fn list<E: @RestEntity>(db: &@sea_orm::DatabaseConnection,
+    principal: &@crate::auth::AuthPrincipal, page: @Option<@u64>, per_page: @Option<@u64>, filter:
+    @Option<&str>) -> @Result<@query::PagedResult<@E::Model>, @RestError>` — liste autorisée,
+    filtrée et paginée d’une entité
+  @rest::core::get — `pub(crate) async fn get<E: @RestEntity>(db, principal, id: @i32) -> @Result<E::Model, @RestError>`
+    — lecture d’un enregistrement après @rbac::can_read
+  @rest::core::create — `pub(crate) async fn create<E: @RestEntity>(db, principal, body: E::Model)
+    -> @Result<E::Model, @RestError>` — insertion après @rbac::can_create + hook @before_create +
+    invariants PK/owner
+  @rest::core::update — `pub(crate) async fn update<E: @RestEntity>(db, principal, id: @i32,
+    body: E::Model) -> @Result<E::Model, @RestError>` — écriture intégrale du corps, cible forcée à
+    l’id du chemin, colonne propriétaire reconduite sous @AccessPolicy::OwnerOnly
+  @rest::core::delete — `pub(crate) async fn delete<E: @RestEntity>(db, principal, id: @i32) ->
+    @Result<(), @RestError>` — suppression après @rbac::can_write, résultat SQL non inspecté
+  @rest::core::mark_all_set — `pub(crate) fn mark_all_set<E: @RestEntity>(active: E::ActiveModel) ->
+    E::ActiveModel` — promotion colonne par colonne de @ActiveValue::Unchanged en @ActiveValue::Set
+    (@sea_orm::ActiveValue::into_value → @ActiveModelTrait::set) ; @NotSet épargné
+  @rest::core::primary_key_column — `pub(crate) fn primary_key_column<E: @RestEntity>() -> E::Column`
+    — unique colonne PK d’un @RestEntity (helper partagé de @rest::core::create, @rest::core::update)
+  Tout est `pub(crate)` : aucune surface publique ; @rest::core n’est appelé que depuis ./mod.rs et
+    ./../mcp/registry.rs (./../lib.sdd n’expose pas le sous-module)
+
+Accepts:
+  Un @sea_orm::DatabaseConnection partagé — ./core.rs n’ouvre jamais de transaction, chaque
+    instruction est autonome — sur une base migrée des tables @crate::migration : @resolve_user
+    exige @miryad_users, la mutation exige la table de l’entité ; leur absence est une @DbErr
+    ordinaire, pas une branche spéciale
+  Un @crate::auth::AuthPrincipal déjà authentifié (validité tranchée par ./../auth/dual.sdd ou le
+    handler MCP) : @subject non vide, @email @Option transmis sans contrôle ni revu ailleurs
+  @rest::core::list : page/per_page à l’état brut @Option<@u64> — le @axum::extract::Query de
+    ./mod.rs et le @serde_json de ./../mcp/registry.rs ont seuls le droit de rejeter avant (typage,
+    `400`, @McpError::InvalidParams) ; `filter` à l’état brut @Option<&str>, aucune hypothèse de
+    format, la valeur vide est une valeur
+  @rest::core::get/@rest::core::update/@rest::core::delete : un id @i32 déjà décodé (@axum @Path
+    côté REST, `IdParams` @serde côté MCP — au-delà de @i32, la surface refuse avant ./core.rs)
+  @rest::core::create/@rest::core::update : un E::Model complet — la désérialisation de surface
+    exige toutes les colonnes non-optionnelles avant ./core.rs ; la PK du corps peut porter
+    n’importe quelle @i32, elle n’est jamais crue ; un E::Model @Default @body n’est pas une entrée
+    prévue (les surfaces construisent @by leurs extracteurs)
+  Comme entrée du hook (position intermédiaire) : l’ActiveModel marqué par @rest::core::mark_all_set
+    avec la PK du corps encore @Unchanged→promue, puis @ActiveValue::NotSet après
+    @ActiveModelTrait::not_set — @MiryadResource::before_create est synchrone et rend @Ok de
+    l’ActiveModel ou @Err(@HookError)
+
+Returns:
+  @rest::core::list — un @query::PagedResult : @items = tranche rendue par @sea_orm::Paginator::fetch_page
+    (`[]` hors limite réelle), @page/@per_page = valeurs normalisées @query (jamais `0`),
+    @total_items/@total_pages = compteurs réels (@num_items_and_pages, table vide → `0`/`0`,
+    division majorante ./../query.sdd) ; le comptage suit la condition effective, filtre et owner inclus
+  @rest::core::get — le E::Model relu (image avant mutation) ; @rest::core::update — le E::Model
+    relu après `UPDATE` par @sea_orm (PK de l’id du chemin ; @owner_column conservée sous
+    @AccessPolicy::OwnerOnly) ; @rest::core::create — le E::Model retour de @ActiveModelTrait::insert
+    (PK attribuée par la base, owner autorisé, mutations du hook incluses)
+  @rest::core::delete — @Ok(()) sans information de lignes touchées : `204` REST et @serde_json::Value::Null
+    MCP en découlent côté surface
+  Toute @Err est @RestError (./error.rs) : @RestError::NotFound, @RestError::Forbidden,
+    @RestError::Database, @RestError::Application — ./core.rs ne rend @Result d’aucun autre type
+
+Raises:
+  `MRD-REST-001` par @RestError::NotFound — un seul chemin : la relecture @sea_orm::EntityTrait::find_by_id(id).one
+    rend @None dans @rest::core::get, @rest::core::update, @rest::core::delete, avant toute
+    consultation de politique. Rendu : `404` REST (./error.rs), @McpError::NotFound `-32002`
+    (`MRD-MCP-002`). @rest::core::list ne l’atteint jamais.
+  `MRD-REST-002` par @RestError::Forbidden — quatre chemins : @rbac::ListAccess::Forbidden dans
+    @list (refus avant construction de requête) ; `false` de @rbac::can_read dans @get ; `false` de
+    @rbac::can_create dans @create (hook non appelé, insertion non tentée) ; `false` de @rbac::can_write
+    dans @update et @delete. Rendu : `403` REST, @McpError::Forbidden `-32001` (`MRD-MCP-001`).
+  `MRD-REST-003` par @RestError::Database — tout @sea_orm::DbErr propagé par `?` : @users::resolve_user
+    (tables internes absentes, ou son @sea_orm::DbErr::RecordNotFound interne quand la course de
+    création ne retrouve aucune ligne), erreurs de @rbac::list_access et des @rbac::can_* propagées
+    telles quelles,
+    @num_items_and_pages, @fetch_page, contrainte violée à l’@ActiveModelTrait::insert, @sea_orm::DbErr::RecordNotUpdated
+    de @ActiveModelTrait::update quand la ligne relue a disparu entre la relecture et l’`UPDATE`
+    (vérifié amont — erreur interne `500`, jamais `404`), @sea_orm::EntityTrait::delete_by_id. Rendu
+    : `500` REST, @McpError::Database `-32603` (`MRD-MCP-003`).
+  @RestError::Application(@HookError), sans code `MRD-*` par contrat transverse (@HookError)
+    — un seul chemin : @MiryadResource::before_create rend @Err dans @rest::core::create ; @insert
+    non émis. Rendu : `422` JSON @code/@message côté REST (./error.rs), @McpError::Application
+    `-32000` avec `data.code` côté MCP (@HookError).
+  @RestError::Internal (`MRD-REST-004`) — jamais atteint : aucune construction dans ./core.rs.
+  Aucun statut HTTP n’est porté ici : `400` vient des extracteurs (@Json mal typé, `page=abc`, id
+    hors @i32, @axum Query de ./mod.rs, @serde de ./../mcp/registry.rs), `401` de @AuthError avant
+    ./mod.rs ; `201` et `409` n’existent dans aucune variante (@RestError n’est pas @Created, ./error.rs
+    ne connaît pas @Conflict) — @create répond `200` (décision de ./mod.rs, `Tasks [?]`). ./core.rs
+    ne peut ni les lever ni les voir.
+  Panics amont vérifiés, hors du contrôle du fichier : @ActiveModelTrait::set panic sur valeur
+    @sea_orm::DbErr::Type (vérifié : @ActiveModelTrait::try_set → panic wrapper) quand la colonne
+    @owner_column déclarée ne reçoit pas @sea_orm::Value::from(@i32) ; @expect de @rest::core::primary_key_column
+    (inatteignable compilable, dette `expect_used`) ; @sea_orm::PaginatorTrait::paginate avec
+    `per_page 0` est impossible — @query::Pagination::from_raw tient `per_page >= 1`. La
+    soustraction `page - 1` est protégée par `page >= 1` (./../query.sdd), le débordement d’offset
+    calculé pour @sea_orm::Paginator::fetch_page sur `page` extrême est l’ouvert `[?]` de
+    ./../query.sdd.
+  Aucun code `MRD-*` de @auth ici : ./core.rs ne construit jamais @AuthError (aucun de ses chemins
+    n’appelle ./../auth) ; @resolve_user ne retourne que @sea_orm::DbErr.
+
+Handles:
+  Toute combinaison politique × appelant, toujours par les entrées @rbac : @rest::core::list rend
+    @sea_orm::Condition::all (@rbac::ListAccess::Unrestricted : publique, admin, groupe accordé), la
+    condition d’égalité owner (@rbac::ListAccess::FilterByOwner), ou le refus avant toute requête
+    (lecture @AccessPolicy::AdminOnly hors admin, @AccessPolicy::Group hors membre,
+    @AccessPolicy::OwnerOnly sans @MiryadResource::owner_column) ; @get/@update/@delete
+    traduisent le booléen ; @create ne consulte que @MiryadResource::write_policy.
+  Quatre quadrants du filtre : colonne déclarée + `filter` @Some → égalité ajoutée en AND à la
+    condition owner (jamais substituée, jamais en disjonction) ; colonne déclarée + `filter` @None →
+    rien d’ajouté ; aucune colonne déclarée + `filter` @Some → paramètre ignoré silencieusement (pas
+    de `400`, ouvert `[?]`) ; valeur vide `""` → égalité sur vide.
+  Pagination transmise telle quelle à @query::Pagination::from_raw : absents/`0`/énormes bornés par
+    ./../query.sdd, aucun pré-calcul ici, @query::PagedResult rend l’écho normalisé et les totaux
+    réels — page au-delà de la dernière : `items` vide et @total_items réels (@sea_orm::Paginator::fetch_page
+    vérifié ./../query.sdd), aucune erreur, aucun `404` propre.
+  Ordre 404-avant-403 sur les trois opérations à id : un enregistrement inconnu répond
+    @RestError::NotFound à un demandeur sans droit, sans que @rbac::can_read/@rbac::can_write soient
+    consultés —
+    l’existence est observable par un non-ayant-droit (oracle, `Tasks [?]`).
+  Provisionnement avant tout : l’effet de bord d’@users::resolve_user (insertion la première fois)
+    précède @rbac::list_access, @rbac::can_read, @rbac::can_create, @rbac::can_write et la relecture —
+    une requête refusée
+    `403`/`404` a quand même écrit @miryad_users (`Tasks [?]`).
+  Colonne propriétaire : @rest::core::create sous `OwnerOnly` — la valeur du corps est ignorée,
+    @ActiveModelTrait::set(user.id) est le dernier mot ; @rest::core::update sous `OwnerOnly` — la
+    valeur de @existing est réécrite, la valeur du corps est
+    ignorée (un owner_id invalide présent dans le corps ne part pas en `500` de contrainte FK,
+    commenté dans le source par la protection symétrique de @rest::core::create) ; hors
+    `OwnerOnly` — le @body est transparent (ouvert `[?]`).
+  PK : @create — corps avec PK `0` ou PK inventée, @rest::core::mark_all_set la promeut puis
+    @ActiveModelTrait::not_set la retire, @ActiveValue::NotSet sort de l’`INSERT` et la base attribue
+    (vérifié @sea_orm `2.0.2`, `query/insert.rs`) ; @update — PK du corps divergente de l’id du
+    chemin, @ActiveModelTrait::set force le `WHERE` (PK exclue de `SET`, vérifié
+    @sea_orm::Update::one), la ligne autorisée est la seule
+    touchée ; hook hostile — un @MiryadResource::before_create qui re-poserait PK et owner est
+    déjoué, @ActiveModelTrait::not_set et @ActiveModelTrait::set lui sont postérieurs dans ./core.rs.
+  Hook : entité sans surcharge → @MiryadResource::before_create identité, insertion inchangée ;
+    hook mutateur → mutation visible sur la ligne insérée ; hook @Err → @RestError::Application,
+    insertion non tentée ; @rest::core::update/@rest::core::delete → hook jamais appelé (aucun
+    chemin de code ne l’appelle).
+  Courses (aucun verrou, aucune transaction) : @update dont la ligne disparaît entre @sea_orm::EntityTrait::find_by_id
+    et @ActiveModelTrait::update → @sea_orm::DbErr::RecordNotUpdated propagé → @RestError::Database
+    `500` — branche jamais exercée par un test (`Tasks [?]`) ; @delete dont la ligne disparaît entre
+    la relecture et @sea_orm::EntityTrait::delete_by_id → @Ok silencieux (`0` ligne touchée, `204`
+    au final) ; une mutation d’owner entre la relecture et le `WHERE` PK seul traverse la
+    vérification — TOCTOU `[?]`.
+  Parité MCP : toute décision listée ci-dessus est rendue depuis ./../mcp/registry.rs par @McpOp
+    correspondant et traduite par @From<@RestError> de ./../mcp/error.rs en codes `-320xx`/`-32603`,
+    sans qu’une politique soit consultée deux fois ; @graphql n’emprunte pas ./core.rs (asymétrie
+    d’architecture instruite par ./../rbac.sdd, ./../graphql/hooks.sdd en attente).
+  Dette harnais du fichier : @expect de @rest::core::primary_key_column (`expect_used`, inatteignable
+    compilable) et `pagination.page - 1` (`arithmetic_side_effects`) — les deux comptés à
+    /tooling.sdd, aucune autre infraction stricte à la lecture du fichier.
+
+Example:
+  # Ordre contractuel de @rest::core::create — l’ordre est le contrat.
+  @users::resolve_user → @rbac::can_create (sur @MiryadResource::write_policy seule) →
+    @RestError::Forbidden sinon, hook jamais appelé → @rest::core::mark_all_set →
+    @MiryadResource::before_create → @RestError::Application(@HookError) sans code `MRD-*` sinon →
+    @ActiveModelTrait::not_set de @rest::core::primary_key_column → @ActiveModelTrait::set de
+    @MiryadResource::owner_column à @users::user::Model::id quand @write_policy ==
+    @AccessPolicy::OwnerOnly et @MiryadResource::owner_column @Some → @ActiveModelTrait::insert.
+    Un hook qui re-forge PK ou owner est défait par les lignes qui le suivent.
+
+Tasks:
+  [?] L’existence est un oracle : @get/@update/@delete répondent `404` (@RestError::NotFound) avant
+    `403` (@RestError::Forbidden), donc un appelant sans aucun droit distingue par `404`/`403` une
+    ligne existante d’une ligne absente sur toute entité, `@AccessPolicy::AdminOnly` compris. Oracle
+    assumé ou refus uniforme `403` à contracter pour les non-autorisés ?
+  [?] @users::resolve_user s’exécute avant toute décision : toute requête authentifiée, même refusée
+    ensuite, crée la ligne @miryad_users du sujet. Provisionnement voulu (tout sujet authentifié
+    obtient sa ligne) ou décision de sécurité à rendre : refus avant insertion ? Les tests du
+    scenario « Provisionnement du principal avant toute décision et avant tout refus » consignent le
+    comportement actuel seul.
+  [?] @AccessPolicy::OwnerOnly avec @MiryadResource::owner_column @None : @rbac::can_create rend
+    `true` (./../rbac.sdd `[?]` miroir) mais @rest::core::create n’injecte rien — la ligne est créée
+    avec la valeur d’@MiryadResource::owner_column portée par le corps (souvent `0`) et ne sera
+    visible de personne hors admin.
+    ./core.rs doit-il refuser (@RestError::Forbidden dédié ?) ou le trait l’interdit-il ?
+  [?] L’injection de colonne ne protège @owner_column que @write_policy == @AccessPolicy::OwnerOnly :
+    une entité avec colonne propriétaire et `write` `Public`/`Group` peut être créée au nom d’un
+    autre et transférée par PUT (valeur du corps telle quelle, @rest::core::update sans reconduction).
+    Protection à élargir à toute entité déclarant @MiryadResource::owner_column, ou création et
+    transfert explicitement réservés aux entités sans @MiryadResource::owner_column ?
+  [?] TOCTOU des écritures : @rest::core::update/@rest::core::delete décident sur @existing puis
+    émettent un SQL sans re-gard. La fenêtre est ouverte et les deux branches ne sont testées nulle
+    part : @rest::core::update d’une
+    ligne entre-temps supprimée → @sea_orm::DbErr::RecordNotUpdated → `500` (pourquoi pas `404` ?) ;
+    @rest::core::delete d’une ligne entre-temps supprimée → `0` ligne, `204`, sans distinction d’une
+    vraie suppression. Fenêtre tolérée ou verdict (re-vérifier dans le `WHERE`, lecture de
+    @sea_orm::DeleteResult::rows_affected, `404` sur `0` ligne) à trancher ?
+  [?] @filter est appliqué sans typage ni vérification de colonne : @MiryadResource::filter_column
+    sur une colonne non textuelle oppose @sea_orm::Value::from de `&str` à une colonne @i32 → erreur
+    serveur → `500` plutôt que `400` ; et @filter est ignoré quand aucune colonne n’est déclarée.
+    Conversion de type explicite et `400` pour colonne non textuelle, ou `filter` réservé aux
+    colonnes textuelles ?
+  [?] La page extrême : @query::Pagination::from_raw ne borne pas `page`, le `pagination.page - 1`
+    de ./core.rs et @sea_orm::Paginator::fetch_page calculent un offset `u64` : panic en debug,
+    wraparound en release — le `[?]` miroir est ouvert dans ./../query.sdd, ./core.rs est l’appelant
+    déclencheur
+    de la parité REST/MCP. La borne se pose-t-elle dans @query, dans ./core.rs (`saturating_sub` +
+    clamp sur `total_pages`), et la dette `arithmetic_side_effects` de la soustraction est-elle
+    purgée dans le même mouvement /tooling.sdd ?
+  [?] Statut de @create : la surface @rest répond `200` avec l’objet (jamais `201`),
+    ./../openapi.rs ne documente que `200`. Le statut n’appartient pas à ./core.rs (choisi par
+    ./mod.rs) mais ./core.rs porte le contrat partagé MCP — @McpOp::Create appelle @rest::core::create
+    et rend la valeur sans notion de statut. `201` à ajouter côté @rest seulement (que dit alors la
+    parité) ? Arbitrage à rendre dans ./mod.sdd, consigné ici.
+  [ ] Convertir les vingt-sept `Scenario` de cette spec en au moins vingt-sept tests Rust distincts
+    nommés, un scenario minimum par test ; ./core.rs ne porte aucun test inline à la rédaction (0
+    tests), les preuves actuelles sont les douze tests de ./mod.rs (exercices par routeur avec états
+    HTTP) et deux de ./../mcp/registry.rs, rattachés ci-dessous sans être la propriété de ./core.rs :
+    « provisioning avant »/« tables internes absentes » → nouveaux `list_provisionne_puis_refuse_sur_table_absente`
+    et `toutes_operations_sans_tables_utilisateurs_sont_database` (./core.rs mod tests, sqlite
+    mémoire, fixtures `recipe`/`ingredient` copiées de ./mod.rs) ; « refus sans requête sur la table »
+    → nouveau `list_refuse_ne_touche_pas_la_table_absente` ; « OwnerOnly » → nouveau `list_owner_only_non_admin_vs_admin` ;
+    « refus sans requête » → existant `list_ingredients_forbidden_without_group_membership` (./mod.rs) ;
+    « Public » → existant `list_pagination_returns_requested_page` (./mod.rs, même branche Unrestricted)
+    + nouveau `list_public_voit_toutes_les_lignes` ; « filtre en AND » → existant
+    `list_filter_combines_with_owner_restriction` + nouveau `list_filtre_ignore_sans_colonne_declaree` ;
+    « pagination normalisée » → existant `list_pagination_returns_requested_page` (./mod.rs) + nouveau
+    `list_pagination_bornee` ; « page hors limite »/« table vide » → nouveaux
+    `list_page_hors_limites_vide_avec_totaux` et `list_table_vide_totaux_zero` ; « get 404 avant »
+    → nouveau `get_introuvable_est_not_found_avant_la_politique` (et son pendant delete
+    `delete_introuvable_est_not_found_avant_can_write`, élargissement de
+    `get_and_delete_nonexistent_recipe_return_404` qui ne teste pas l’ordre avec `403`) ;
+    « get OwnerOnly » →
+    nouveau `get_owner_passe_etranger_refuse` ; « create refusé » → nouveau
+    `create_refuse_appelle_ni_hook_ni_insert` (hook espion compteurs) ; « hook mutation » → existant
+    `before_create_hook_mutation_is_applied_at_insert` (./mod.rs) ; « hook rejet » → existant
+    `before_create_hook_error_blocks_insert_without_mrd_code` (./mod.rs) ; « hook hostile » → nouveau
+    `create_hook_hostile_ne_contourne_les_invariants` (fixture `hostile` : hook qui remet PK et
+    owner) ; « PK cliente » → nouveau `create_ignore_la_pk_du_corps` ; « OwnerOnly create » →
+    existant `create_ignores_client_supplied_owner` (./mod.rs) ; « non-OwnerOnly create » → nouveau
+    `create_ecrit_owner_du_corps_hors_owner_only` ; « contrainte » → nouveau
+    `create_insertion_en_contrainte_est_database` ; « update 404/permission » → nouveau
+    `update_introuvable_404_puis_can_write` ; « update PK du corps » → nouveau
+    `update_force_l_id_du_chemin` (fixture `other` portant l’autre id) + existant
+    `update_dispatch_accepts_id_alongside_full_model_body` (./../mcp/registry.rs) ; « update corps
+    entier » → nouveau `update_ecrit_toutes_les_colonnes_du_corps` ; « update OwnerOnly reconduit » →
+    existants `update_ignores_client_supplied_owner` + `update_with_invalid_owner_id_in_body_does_not_fail`
+    (./mod.rs) ; « update hook » → nouveau `update_n_appelle_jamais_before_create` ; « update course »
+    → nouveau `update_course_suppimee_est_database_jamais_not_found` (suppression entre relecture et
+    update par deux connexions sqlite, ou fixture pilotée) ; « delete » → nouveau
+    `delete_ok_meme_sans_ligne_a_supprimer` ; « mark_all_set NotSet » → nouveau unitaire
+    `mark_all_set_epargne_les_not_set` (./core.rs mod tests, sans base) ; « parité MCP » → nouveaux
+    `#[cfg(feature = "mcp")]` `parite_mcp_refus_et_invariants` (./core.rs mod tests, via
+    @McpOp::List et @McpOp::Create sur
+    @rest::core directement, ./../mcp/registry.rs existant en plus). Les scénarios de parité wire
+    (statuts `200`/`204`/`403`/`404`/`422`/`500` sur le fil) restent propriété de ./mod.sdd et de
+    ./error.sdd — les tests cités de ./mod.rs les couvrent déjà, ils ne comptent pas deux fois ; si
+    la résidence inline ./core.rs est jugée trop lourde pour les scénarios d’intégration
+    (multi-connexions, features), la décision de les placer dans ./tests/ rattaché est à rendre avec
+    la relecture de cette spec, jamais en silence.
+
+Done when:
+  Les vingt-sept `Scenario` disposent chacun d’au moins un test nommé distinct vérifiant son `Then`
+    (mapping `Tasks` tenu, zéro test inline dans ./core.rs aujourd’hui donc tout est à créer ou à
+    rattacher explicitement), et la batterie /tooling.sdd est verte sur chaque combinaison de
+    features, ./core.rs ne portant aucune dette stricte au-delà des deux sites connus.
+  Les huit `[?]` de `Tasks` — oracle d’existence, provisioning, `OwnerOnly` sans colonne, colonne
+    hors `OwnerOnly`, TOCTOU, filtre non typé, page extrême, `201` de @create — ont une décision
+    écrite de Sébastien, la spec amendée en conséquence, et aucune de ces branches ne reste un comportement
+    accidentel implicite.
+  La parité ./../mcp/registry.rs est prouvée au moins par le scenario portant, sous `--features mcp`,
+    et la compilation sans feature est prouvée sur `--no-default-features` ; ./../graphql/hooks.sdd,
+    à sa production, porte l’asymétrie de surface déjà signalée en `References`.
+  La spec est relue et approuvée par Sébastien, puis la ligne correspondante de /miryad-core.sdd
+    peut passer à `[x]`.
+
+Scenario: Provisionnement du principal avant toute décision et avant tout refus
+  Given une base migrée des seules tables @crate::migration (aucune table d’entité) et un
+    @crate::auth::AuthPrincipal dont le @subject n’a jamais été vu dans @miryad_users
+  When @rest::core::get est appelé sur un id quelconque et échoue (@RestError::Database, la table
+    de l’entité n’existe pas)
+  Then @users::resolve_user a été le premier exécuté : la ligne @miryad_users du @subject existe
+    après l’appel — le get-or-create précède la relecture et toute politique
+  And @users::resolve_user est de même appelé avant @rbac::can_create dans @rest::core::create et
+    avant @rbac::list_access dans @rest::core::list, donc une requête refusée `403` a déjà écrit la
+    ligne (question `[?]` en `Tasks`)
+
+Scenario: Tables internes absentes : @RestError::Database avant toute politique
+  Given une connexion @sea_orm connectée mais aucune table @crate::migration appliquée
+  When chacune des cinq fonctions de ./core.rs est appelée pour un @RestEntity de fixture
+  Then chacune rend @RestError::Database (`MRD-REST-003`) dès @users::resolve_user, avant @rbac::can_create,
+    @rbac::can_read, @rbac::can_write, @rbac::list_access ou la relecture de l’entité — aucune erreur
+    @AuthError, aucune variante choisie
+
+Scenario: Une table d’entité absente refuse d’abord l’appelant refusé, ne trahit rien d’autre
+  Given tables @crate::migration présentes, table de l’entité fixture `ingredient` absente, un
+    @users::user::Model non membre d’`editors`
+  When @rest::core::list appelle @rbac::list_access qui répond @rbac::ListAccess::Forbidden
+  Then @RestError::Forbidden est retourné sans que @sea_orm::EntityTrait (find, paginate) n’ait été
+    touché : le refus ne trahit pas l’état de migration de la base
+  But un appelant autorisé sur la même connexion non-migrée reçoit @RestError::Database au
+    @paginate — les deux branches sont distinctement observables
+
+Scenario: Listage `OwnerOnly` : le non-admin ne voit que ses lignes, l’admin voit tout
+  Given une fixture `note` (@AccessPolicy::OwnerOnly en lecture, @owner_column @Some), deux lignes créées
+    par deux utilisateurs distincts, et un troisième utilisateur membre du groupe `admin`
+  When @rest::core::list est appelé par le propriétaire de la ligne une
+  Then @query::PagedResult::items contient exactement la ligne une : la condition ajoutée est
+    l’égalité `owner` de @rbac::ListAccess::FilterByOwner, aucune autre ligne
+  When @rest::core::list est appelé par l’admin
+  Then les deux lignes reviennent (@rbac::ListAccess::Unrestricted rendu @sea_orm::Condition::all),
+    et @total_items vaut `2` — la condition d’admin ne filtre pas en SQL
+
+Scenario: list refusé par `Group` sans appartenance : `MRD-REST-002`, aucune requête construite
+  Given une fixture `ingredient` (lecture @rbac::Group `editors`) et un utilisateur sans appartenance
+    (tables présentes)
+  When @rest::core::list est appelé avec pagination et filtre valides
+  Then @RestError::Forbidden (`MRD-REST-002`) avant @query::Pagination::from_raw : aucune construction
+    de @sea_orm::Paginator n’a eu lieu (observable par une table d’entité absente qui ne produit
+    alors aucune erreur de table)
+
+Scenario: Listage `Public` : aucune condition propriétaire n’est ajoutée
+  Given une fixture `recipe` de lecture @AccessPolicy::Public avec des lignes de deux utilisateurs
+    distincts
+  When @rest::core::list est appelé par le second
+  Then @query::PagedResult::items contient les lignes des deux : @rbac::ListAccess::Unrestricted
+    rendu @sea_orm::Condition::all, @total_items inclut la ligne d’autrui
+  But la politique d’écriture ne transparaît pas ici : @AccessPolicy::OwnerOnly en @write_policy se
+    lit dans @rest::core::create, jamais dans @rest::core::list
+
+Scenario: Filtre utilisateur : ajouté en AND à la restriction owner, jamais substitué
+  Given une fixture avec @MiryadResource::filter_column déclarée et @AccessPolicy::OwnerOnly en
+    lecture : une ligne du demandeur dans la catégorie filtrée, une ligne d’autrui dans la même
+    catégorie, une ligne du demandeur hors catégorie
+  When @rest::core::list est appelé avec le filtre de catégorie du demandeur
+  Then seule la ligne du demandeur dans la catégorie revient : @sea_orm::Condition::add compose
+    l’égalité du filtre avec la condition @rbac::ListAccess::FilterByOwner, @total_items vaut `1` —
+    le filtre n’efface pas la restriction owner
+
+Scenario: Filtre transmis à une entité sans colonne de filtre : ignoré silencieusement
+  Given une fixture dont @MiryadResource::filter_column rend @None et une table pleine
+  When @rest::core::list est appelé avec @filter @Some d’une valeur quelconque
+  Then le tuple du match tombe sur le bras par défaut : aucune condition ajoutée, @RestError d’aucune
+    sorte, réponse complète paginée — un `filter` de typo ne provoque pas `400`, pas même une erreur
+    (ouvert `[?]` en `Tasks`)
+
+Scenario: Pagination normalisée : `0`, absence et excès rendus bornés dans @query::PagedResult
+  Given une fixture pleine, appel avec page @Some(`0`) et per_page @Some(`0`)
+  When @rest::core::list s’exécute
+  Then @query::PagedResult::page vaut `1` et @query::PagedResult::per_page vaut `1`
+    (@query::Pagination::from_raw, ./../query.sdd)
+  When un second appel passe per_page @Some(`50_000`)
+  Then @query::PagedResult::per_page vaut @query::MAX_PER_PAGE (`1000`) et la tranche rendue tient
+    dans cette borne — ./core.rs ne connaît aucune borne lui-même, seulement @query
+
+Scenario: Page au-delà de la dernière : `items` vide, totaux réels, page hors limite conservée
+  Given une fixture pleine de trois lignes, appel avec per_page `1` et page `99`
+  When @rest::core::list s’exécute
+  Then @query::PagedResult::page vaut `99`, @query::PagedResult::items est vide et
+    @query::PagedResult::total_items vaut `3` — @sea_orm::Paginator rend un `Vec` vide sans erreur
+    (vérifié ./../query.sdd), aucune variante @RestError::NotFound n’est atteinte
+  But la `page` de la réponse n’est pas ramenée à la dernière page : ./core.rs rend l’écho
+    normalisé tel quel
+
+Scenario: Table vide : totaux `0`, `items` vide, page conservée
+  Given une table d’entité présente mais sans aucune ligne, lecture permise
+  When @rest::core::list est appelé sans paramètres
+  Then @query::PagedResult::total_items vaut `0`, @query::PagedResult::total_pages vaut `0` (division
+    majorante @sea_orm ./../query.sdd), @query::PagedResult::items est vide — jamais une erreur,
+    jamais une page fabriquée
+
+Scenario: get d’un inconnu : `404` avant toute consultation de politique
+  Given un id absent de toute ligne et un utilisateur que @rbac::can_read refuserait sur n’importe
+    quelle ligne existante
+  When @rest::core::get est appelé
+  Then @RestError::NotFound (`MRD-REST-001`) : @sea_orm::EntityTrait::find_by_id(id).one a rendu
+    @None et @rbac::can_read n’a pas été consulté — la distinction `404`/`403` est donc un oracle
+    d’existence, `[?]` en `Tasks`
+
+Scenario: get existant : `Ok`, @RestError::Forbidden au non-autorisé
+  Given un enregistrement existant @AccessPolicy::OwnerOnly, sa ligne lisible par son owner, un autre
+    utilisateur non-owner non-admin, et un membre admin
+  When @rest::core::get est appelé par les trois
+  Then @Ok de l’enregistrement pour son propriétaire ; @Ok pour l’admin ; @RestError::Forbidden
+    (`MRD-REST-002`) pour le tiers refusé par @rbac::can_read — l’enregistrement n’est jamais rendu au refusé
+
+Scenario: create refusé : ni hook, ni écriture, `MRD-REST-002`
+  Given une fixture `ingredient` (@write @AccessPolicy::AdminOnly) et un utilisateur qui n’est pas
+    dans `admin`, avec un @MiryadResource::before_create espion comptant ses appels
+  When @rest::core::create est appelé avec un corps valide
+  Then @RestError::Forbidden (`MRD-REST-002`) et l’espion n’a rien compté : @rbac::can_create est
+    consulté avant @MiryadResource::before_create, et @ActiveModelTrait::insert n’a jamais été atteint —
+    la table reste vide
+
+Scenario: create : la mutation du hook est écrite, mais les invariants restent après lui
+  Given une fixture @AccessPolicy::OwnerOnly dont @MiryadResource::before_create majuscule un champ,
+    corps porteur d’un id client `4242`, d’un owner étranger `999` et du champ muté par le hook
+  When @rest::core::create est appelé par un utilisateur autorisé
+  Then @ActiveModelTrait::insert retourne une ligne : id attribuée par la base (`4242` ignoré,
+    @ActiveModelTrait::not_set de @rest::core::primary_key_column), owner égal à @users::user::Model::id de
+    l’appelant (`999` ignoré, @ActiveModelTrait::set postérieur au hook), et la mutation du hook visible sur la ligne —
+    le hook est lu avant, les deux invariants écrivent après
+
+Scenario: create réjecté par le hook : @RestError::Application sans code `MRD-*`
+  Given une fixture @AccessPolicy::OwnerOnly dont @MiryadResource::before_create rejette un corps
+    invalide par @HookError `WIDGET-001`
+  When @rest::core::create est appelé avec le corps que le hook rejette
+  Then @RestError::Application porte le @HookError intact : @code `WIDGET-001`, @message d’origine,
+    aucun préfixe `MRD-` n’apparaît — et @ActiveModelTrait::insert n’est pas appelé : @Err du hook
+    interrompt avant @rest::core::primary_key_column
+  And la table ne porte aucune nouvelle ligne côté refus et porte la ligne côté succès du même hook
+    mutateur
+
+Scenario: hook hostile : PK et owner qu’il re-forge sont annulés par les invariants
+  Given une fixture @AccessPolicy::OwnerOnly dont @MiryadResource::before_create re-pose la PK à
+    `77` et @owner_column sur un autre utilisateur, appelé par un utilisateur autorisé
+  When @rest::core::create s’exécute
+  Then la ligne retournée porte la PK que la base a attribuée (jamais `77`) et l’owner égal à
+    @users::user::Model::id de l’appelant (jamais l’autre) : @ActiveModelTrait::not_set et
+    @ActiveModelTrait::set
+    suivent le hook dans le source — les commentaires de ./core.rs et ./../resource.sdd le
+    promettent, ce scenario le grave
+
+Scenario: create : `OwnerOnly` force l’attribut propriétaire, corps muet ou menteur
+  Given une fixture @AccessPolicy::OwnerOnly avec @owner_column @Some : deux appels de @rest::core::create
+    par le même utilisateur autorisé, l’un avec un corps omettant l’owner (`0` de @Default), l’un
+    avec un owner étranger explicite dans le corps
+  When les deux insertions s’exécutent
+  Then les deux lignes portent @owner_column = @users::user::Model::id de l’appelant dans les deux
+    cas — jamais `0`, jamais l’étranger : sous @write_policy == @AccessPolicy::OwnerOnly, la colonne
+    n’appartient pas au corps
+
+Scenario: create hors `OwnerOnly` : la colonne propriétaire est une colonne du corps
+  Given une fixture à @owner_column @Some mais @write_policy @AccessPolicy::Public (asymétrie ouverte),
+    corps porteur d’un owner étranger explicite
+  When @rest::core::create est appelé par tout utilisateur
+  Then la ligne porte l’owner du corps : le @ActiveModelTrait::set d’injection est gardé par `write_policy == @AccessPolicy::OwnerOnly`
+    et ne s’exécute pas — pas un contrat voulu mais le comportement actuel, `[?]` en `Tasks`, scenario
+    pour le graver avant arbitrage
+
+Scenario: create en contrainte de colonne : @DbErr devient `MRD-REST-003`
+  Given une fixture avec une contrainte que le corps peut violer (colonne sous `UNIQUE`, valeur déjà
+    prise)
+    et un @MiryadResource::before_create laissé au défaut identité
+  When @rest::core::create est appelé sur la valeur en conflit
+  Then @ActiveModelTrait::insert remonte @sea_orm::DbErr propagée par `?` → @RestError::Database
+    (préfixe `MRD-REST-003` dans le @Display) — la contrainte brute de la base est traduite en erreur
+    interne, jamais en `400`, et le hook identité n’a rien intercepté
+
+Scenario: update : `NotFound` avant toute consultation, puis @can_write sur la ligne relue
+  Given un id inconnu d’une part, et d’autre part une ligne existante que @rbac::can_write refuse
+    pour l’appelant
+  When @rest::core::update est appelé sur chacun des deux cas
+  Then le premier rend @RestError::NotFound (`MRD-REST-001`) sans que @rbac::can_write soit atteint ;
+    le second rend @RestError::Forbidden (`MRD-REST-002`) et le corps n’a jamais été examiné pour la
+    cible — la décision est prise sur @existing, pas sur @body
+  And @rest::core::delete partage le même préfixe (même scenario d’ordre) ;
+    `get_and_delete_nonexistent_recipe_return_404` de ./mod.rs ne teste pas l’ordre avec un appelant
+    refusé : test inline à créer
+
+Scenario: update : les colonnes du corps sont écrites, PK du chemin seule cible
+  Given une ligne existante `A` id `1` appartenant à l’appelant (@AccessPolicy::OwnerOnly,
+    @owner_column @Some), et une ligne tierce `B` id `2` ; @rest::core::update est appelé avec
+    id du chemin `1` et un corps dont PK vaut `2`, un owner menteur et toute autre colonne mutée
+  When @ActiveModelTrait::update s’exécute après @rest::core::mark_all_set,
+    @ActiveModelTrait::set de la PK à `1`, @ActiveModelTrait::set de l’owner depuis @existing
+  Then la ligne `1` est mise à jour (colonnes du corps écrites via @rest::core::mark_all_set qui
+    promeut @ActiveValue::Unchanged → @ActiveValue::Set : sans lui la `SET` serait vide et
+    @sea_orm n’écrirait rien, vérifié source @sea_orm `2.0.2`), la ligne `2` reste intacte, le
+    propriétaire de `1` inchangé
+  And le @RestError::Application n’intervient pas : @MiryadResource::before_create n’est jamais
+    consulté par @rest::core::update — un espion de hook ne bouge pas, y compris avec mutation réussie
+
+Scenario: update `OwnerOnly` : le propriétaire de la ligne survit au corps, même pour admin
+  Given une ligne appartenant à `alice`, et un appel de @rest::core::update par `bob` que
+    @rbac::can_write laisse passer (admin par exemple) avec un corps portant un owner inventé `999_999`
+  When @ActiveModelTrait::update s’exécute
+  Then la ligne garde son owner d’avant : @ActiveModelTrait::set d’@owner_column à la valeur lue
+    par @sea_orm::ModelTrait::get sur @existing s’exécute après @rest::core::mark_all_set ; une
+    valeur invalide du corps ne part pas en `500` de contrainte FK — la symétrie avec
+    @rest::core::create est commentée dans le source
+  And un corps avec owner valide mais divergent produit la même survivance : le corps ne transfère
+    jamais la propriété (élargissement hors `OwnerOnly` ouvert `[?]`)
+
+Scenario: update de la ligne supprimée entre-temps : @RestError::Database, jamais `404`
+  Given une ligne relue par @sea_orm::EntityTrait::find_by_id puis supprimée entre la relecture et @ActiveModelTrait::update
+  When @ActiveModelTrait::update s’exécute sur une cible disparue
+  Then @sea_orm::DbErr::RecordNotUpdated (vérifié amont, `src/executor/update.rs` de @sea_orm
+    `2.0.2`) est propagé par `?`
+    en @RestError::Database (`MRD-REST-003`) — pas @RestError::NotFound, car @RestError::NotFound
+    n’est émis
+    qu’en amont de @rbac::can_write ; la fenêtre est une conséquence directe de l’absence de toute
+    transaction dans ./core.rs — `[?]` `Tasks`
+
+Scenario: delete : décision sur ligne relue, suppression par PK, `0` ligne reste `Ok`
+  Given une ligne que @rbac::can_write autorise, et le même id à re-frapper une fois la ligne partie
+  When @rest::core::delete réussit puis est rappelé sur la ligne disparue (relecture @None)
+  Then le premier appel émet @sea_orm::EntityTrait::delete_by_id(id).exec et retourne @Ok(())
+    (surface `204`/null MCP) ; le second rend @RestError::NotFound avant @rbac::can_write
+  But une suppression concurrente entre la relecture et le SQL (à piloter en dehors d’une ligne)
+    rendrait @sea_orm::DeleteResult::rows_affected `0` sans que ./core.rs le lise — @Ok quand même,
+    `204`, TOCTOU `[?]` en `Tasks`
+
+Scenario: Parité MCP : la surface MCP rend les mêmes décisions, traduites sans décision propre
+  Given une base sous `feature mcp`, un appel @McpOp::List, un autre @McpOp::Create, d’abord pour
+    un principal que @rbac::list_access refuse, puis pour un principal dont
+    @MiryadResource::before_create rejette le corps
+  When ./../mcp/registry.rs appelle @rest::core::list et @rest::core::create (même chemin que cette
+    spec)
+  Then le refus MCP est @McpError::Forbidden (`MRD-MCP-001`), pas une réévaluation : @RestError::Forbidden
+    lu par @From<@RestError> de ./../mcp/error.rs, idem @RestError::NotFound → `MRD-MCP-002`
+  And @RestError::Application du hook → @McpError::Application sans code `MRD-*`, `data.code`
+    @HookError::code ; @McpOp::Update : la PK du corps JSON est écrasée par ./core.rs comme côté @rest,
+    comme l’exerce `update_dispatch_accepts_id_alongside_full_model_body`
+
+Scenario: @rest::core::mark_all_set ne touche pas ce qui n’est pas posé et sert les deux chemins
+  Given un E::ActiveModel de fixture posant une colonne @ActiveValue::Set, une @ActiveValue::Unchanged,
+    une @ActiveValue::NotSet
+  When @rest::core::mark_all_set passe sur ses colonnes
+  Then @ActiveValue::Unchanged est promu @ActiveValue::Set (@ActiveValue::into_value @Some → @ActiveModelTrait::set),
+    la colonne @ActiveValue::NotSet n’a pas de valeur → @ActiveValue::into_value @None → non promue —
+    et @rest::core::create s’en sert avant @ActiveModelTrait::insert (aucune colonne d’un E::Model
+    passé par @sea_orm::IntoActiveModel n’est @ActiveValue::Set à l’entrée), @rest::core::update
+    s’en sert pour remplir la `SET` ; ce qui reste @ActiveValue::NotSet — la PK retirée par
+    @ActiveModelTrait::not_set dans @rest::core::create — n’entre ni dans l’`INSERT` ni dans la
+    `SET` (vérifié @sea_orm `2.0.2`)

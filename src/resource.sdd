@@ -1,0 +1,385 @@
+Spec: resource — contrat central @MiryadResource : métadonnées d'entité, politiques @AccessPolicy, erreur applicative @HookError
+
+Purpose:
+  Définit la seule déclaration que l'application consommatrice implémente par entité SeaORM :
+    erreur applicative @HookError, politique d'accès @AccessPolicy et trait @MiryadResource (nom
+    exposé, politiques de lecture et d'écriture, colonne propriétaire, colonne de filtre, colonne
+    de libellé, hook métier de création). Le fichier ne déclare rien d'exécutable : ni évaluation
+    d'autorisation, ni IO, ni trace, ni code `MRD-*`. La promesse héritée de /miryad-core.sdd —
+    ajouter une entité = implémenter ce trait, et rien de plus — tient parce que REST, GraphQL et
+    MCP lisent ces métadonnées à l'identique et que le miroir @ir les exporte telles quelles.
+  Le fichier ne porte aucun `#[cfg(feature = ...)]` : il compile sur toute la matrice de
+    /tooling.sdd, `--no-default-features` compris — contractué en première ligne de `Must`.
+
+Owns:
+  ./resource.rs
+
+Can modify:
+  ../tests/resource.rs — crate d'intégration rattachée à ce contrat inter-surface par la convention
+    de /.specdd/bootstrap.project.md (les tests de tests/ sont rattachés à la spec du contrat
+    exercé, pas de spec propre) ; elle exerce la lecture @MiryadResource/@AccessPolicy/@HookError
+    identique sur REST, GraphQL et MCP. Deux tests rattachés y existent déjà.
+
+References:
+  /miryad-core.sdd — contrat hérité : parité REST/GraphQL/MCP lue depuis la seule métadonnée,
+    codes `MRD-<DOMAINE>-NNN` réservés à la crate, exception @HookError
+  ./lib.sdd — spec de la racine qui déclare @resource (chemin @miryad_core::resource, aucun
+    ré-export) et impose la documentation de @HookError comme erreur applicative
+  /tooling.sdd — matrice de features qui prouve l'absence de gating de ce fichier
+  /docs/architecture.md — récit cité par le bloc `//!` du fichier, non contractuel
+
+Must:
+  Compiler sans aucun gating de feature : aucune condition `#[cfg(feature = ...)]` dans le fichier ;
+    ses seules dépendances de typage sont @sea_orm::EntityTrait, @serde::Serialize (feature
+    `derive` de la dépendance obligatoire @serde de /Cargo.toml) et @crate::auth::AuthPrincipal,
+    toutes non optionnelles. La batterie de /tooling.sdd le vérifie au minimum sur
+    `--no-default-features`.
+  Tenir @MiryadResource::read_policy et @MiryadResource::write_policy comme deux déclarations
+    indépendantes : une entité peut être `Public` en lecture et `OwnerOnly` en écriture — cas
+    d'école « recettes partagées, modifiables par leur auteur » ; aucune fusion implicite.
+  Rendre tous les accessseurs indépendants du principal et de tout contexte : fonctions statiques
+    retournant les valeurs déclarées, sans récepteur ; @crate::auth::AuthPrincipal n'entre que dans
+    @MiryadResource::before_create, en lecture seule.
+  Réserver @MiryadResource::before_create à la création, après le contrôle @rbac::can_create et
+    avant l'insertion — miroir de @seaography::LifecycleHooksInterface.before_active_model_save,
+    que @seaography `2.0.0-rc.9` ne déclenche que sur un insert (vérifié dans la source amont :
+    seules @entity_create_one_mutation et @entity_create_batch_mutation l'appellent).
+  Fixer la signature de @MiryadResource::before_create comme synchrone, sans point d'attente : le
+    hook amont est synchrone (source `seaography-2.0.0-rc.9`) ; un hook asynchrone romprait
+    l'identité des trois surfaces. Le hook est donc un calcul pur sur l'ActiveModel.
+  Garantir qu'une implémentation de @MiryadResource::before_create ne peut pas contourner les
+    invariants appliqués après elle sur la création : le retrait de la clé primaire choisie par le
+    client et l'injection du propriétaire sous `OwnerOnly` restent les derniers mots — comportement
+    effectif de @rest::core::create que l'outil MCP de création réutilise (./mcp/registry.rs
+    délègue à @rest::core::create, vérifié).
+  Définir @HookError comme l'erreur applicative de l'application consommatrice : @code est un code
+    applicatif libre à la charge de l'app et ne porte jamais de code `MRD-*` de la crate ; `None`
+    quand l'app n'a pas de code. Le fichier lui-même n'émet et ne construit jamais de `MRD-*`.
+  Conserver les noms de variantes de @AccessPolicy comme contrat de sérialisation : le @Serialize
+    de @serde en représentation externe par défaut (vérifié dans les sources amont `serde_derive
+    1.0.229` — variantes unitaires via @serialize_unit_variant, newtype via
+    @serialize_newtype_variant — et `serde_json 1.0.151`) en fait les chaînes JSON `Public`,
+    `OwnerOnly`, `AdminOnly` et l'objet à clé unique `{"Group":"<nom>"}` dans l'IR JSON lu par le
+    générateur du template `miryad` ; tout renommage ou attribut `#[serde(...)]` est une rupture
+    silencieuse soumise à arbitrage.
+  Retourner des colonnes typées et jamais des chaînes : @MiryadResource::owner_column,
+    @MiryadResource::filter_column et @MiryadResource::label_column retournent l'@Option du @Column
+    de @sea_orm::EntityTrait ; la conversion en nom @Iden (snake_case) est opérée par les
+    consommateurs qui en ont besoin (@ir::resource_ir et le miroir @graphql::EntityPolicy), pas ici.
+  Exposer @MiryadResource en supertrait de @sea_orm::EntityTrait avec toutes ses méthodes
+    statiques : ni instance ni forme @dyn @MiryadResource n'est possible ; les surfaces
+    monomorphisent par généricité ou effacent le type elles-mêmes — le champ
+    @graphql::EntityPolicy.before_create est un pointeur de fonction sur `dyn @std::any::Any`
+    monomorphisé par entité, preuve que l'effacement est une décision du consommateur, pas du trait.
+  Documenter @HookError comme dérivant @Debug et @Clone uniquement — pas @Copy, pas @PartialEq, et
+    aucune implémentation de @std::fmt::Display ni de @std::error::Error nulle part dans la crate
+    (vérifié dans toutes les sources de `src/`) ; les surfaces lisent les champs @code et @message
+    en direct, aucune ne manipule @HookError comme une erreur std.
+
+Must not:
+  Évaluer, décider ou exécuter une autorisation ici : l'évaluation par enregistrement
+    (@rbac::can_read, @rbac::can_write, @rbac::can_create, @rbac::list_access) et les gardes de
+    surface vivent ailleurs — ce fichier ne connaît ni base de données ni @users.
+  Déclarer un hook métier d'update ou de delete tant que le miroir @seaography est create-only : un
+    hook qui ne se déclencherait pas à l'identique sur les trois surfaces viole le contrat de
+    parité de /miryad-core.sdd — règle déjà énoncée par le commentaire de @before_create.
+  Construire @HookError depuis le runtime de miryad-core pour une panne qui ne vient pas d'un hook
+    applicatif : une erreur interne de la crate porte son propre code `MRD-*` dans son module.
+  Introduire de l'asynchrone, de l'IO ou de l'état partageable dans ce contrat : les déclarations
+    restent des fonctions totales sans effet de bord.
+
+Depends on:
+  @sea_orm::EntityTrait — supertrait de @MiryadResource, source du type @Column associé ;
+    dépendance obligatoire non gatée de /Cargo.toml.
+  @serde::Serialize — dérivé de @AccessPolicy ; @serde est une dépendance obligatoire avec la
+    feature `derive`, jamais optionnelle : le dérivé survit à toutes les combinaisons de features.
+  ./auth/principal.rs — @crate::auth::AuthPrincipal, seul paramètre du hook @before_create.
+  # Direction de dépendance respectée : @rbac, @ir, @rest, @graphql et @mcp dépendent de ce
+  # fichier, jamais l'inverse ; ils ne sont nommés en amont que comme preuves de contrat (parité,
+  # signature, effacement de type), jamais comme dépendances.
+
+Exposes:
+  @HookError — structure publique, erreur applicative de l'app consommatrice, hors taxonomie
+    `MRD-*` ; deux champs publics seulement, @code (`Option<String>`, code applicatif libre) et
+    @message (`String`) ; constructeurs @HookError::new(message: impl Into<String>) avec @code à
+    `None` et @HookError::with_code(code, message) avec @code à `Some` ; derives @Debug et @Clone
+    seulement.
+  @AccessPolicy — énumération publique @Copy, @Clone, @PartialEq, @Eq, @Serialize sans attribut :
+    @AccessPolicy::Public — tout utilisateur authentifié (JWT ou token API valide) ;
+    @AccessPolicy::OwnerOnly — l'utilisateur référencé par @MiryadResource::owner_column, membres
+    du groupe admin en plus (l'évaluation de ce surplus appartient à @rbac) ;
+    @AccessPolicy::Group — membres du groupe nommé, admin aussi, nom en `&'static str` ;
+    @AccessPolicy::AdminOnly — membres du groupe admin uniquement.
+    Sérialisation @serde par défaut : `Public`, `OwnerOnly`, `AdminOnly` en chaînes JSON, @Group en
+    objet `{"Group":"<nom>"}`.
+  @MiryadResource — trait public, supertrait @sea_orm::EntityTrait, une implémentation par entité,
+    lu à l'identique par REST, GraphQL et MCP. Méthodes obligatoires :
+    `fn resource_name() -> &'static str`, `fn read_policy() -> AccessPolicy`,
+    `fn write_policy() -> AccessPolicy`,
+    `fn owner_column() -> Option<<Self as EntityTrait>::Column>`
+    (`None` = entité sans notion de propriétaire, référentiel partagé).
+    Méthodes avec défaut : `fn filter_column()` → `None` (pas de filtre de liste),
+    `fn label_column()` → `None`, `fn before_create(active, principal)` → identité (`Ok` de
+    l'ActiveModel inchangé, principal ignoré via `let _ =`).
+    Aucune méthode à récepteur : distribution statique uniquement, pas de forme @dyn.
+  Aucun ré-export de la racine : chemins publics @miryad_core::resource::HookError,
+    @miryad_core::resource::AccessPolicy, @miryad_core::resource::MiryadResource (convention de
+    ./lib.sdd).
+
+Accepts:
+  Côté implémentation : un nom d'entité en `&'static str` et un nom de groupe en `&'static str` —
+    une valeur calculée à l'exécution (`String`) n'est pas acceptable à ces deux places.
+  @HookError::new et @HookError::with_code acceptent indifféremment `&str` et `String` (paramètres
+    en `impl Into<String>`).
+  @MiryadResource::before_create reçoit l'ActiveModel complet de l'entité (valeurs `Set`,
+    `Unchanged` ou `NotSet` telles que fournies par l'appelant — côté REST, la clé primaire client y
+    est encore présente) et une référence @crate::auth::AuthPrincipal (@subject, @email optionnel,
+    @source de session ou token API) — lecture seule, ignorée par le défaut.
+  Les accessseurs ne prennent aucune entrée : fonctions statiques, sans instance, sans base, sans
+    principal.
+
+Returns:
+  @MiryadResource::resource_name — la chaîne littérale déclarée (`"recipes"` dans les tests).
+  @MiryadResource::read_policy et @MiryadResource::write_policy — la variante @AccessPolicy
+    déclarée, telle quelle.
+  @MiryadResource::owner_column, @MiryadResource::filter_column, @MiryadResource::label_column —
+    @Some de la colonne déclarée ou `None` (défauts de @filter_column et @label_column).
+  @MiryadResource::before_create — @Ok de l'ActiveModel (inchangé par défaut, muté par override) ou
+    @Err d'un @HookError (@code `None` ou libre, @message porté).
+  @HookError::new — un @HookError avec @code à `None` ; @HookError::with_code — @code à @Some du
+    code passé.
+
+Raises:
+  Aucun code `MRD-<DOMAINE>-NNN` : le fichier n'en émet aucun, n'en définit aucun — sa seule erreur
+    est @HookError, hors taxonomie par contrat hérité.
+  Aucun échec : aucun accessseur faillible, pas de @Result hors @before_create, aucun panic, aucun
+    @unwrap ni @expect (famille stricte interdite par /tooling.sdd hors `cfg(test)`).
+  Seule traversée d'erreur possible : un @HookError remonté par l'override de
+    @MiryadResource::before_create — erreur de l'application que chaque surface restitue dans son
+    vocabulaire propre sans lui imposer de code de la crate.
+  Aucune erreur de base de données possible : @sea_orm n'est utilisé qu'au niveau des types.
+
+Handles:
+  Entités avec propriétaire (colonne déclarée) et sans propriétaire (référentiel partagé, `None`).
+  Politiques dissociées en lecture et en écriture (`Public` avec `OwnerOnly`, `Group` avec
+    `AdminOnly`).
+  Entités sans filtre de liste et sans libellé déclarés (défauts `None` de @filter_column et
+    @label_column).
+  Entités sans hook métier (défaut identité de @before_create) comme avec hook mutateur ou
+    rejetant (@HookError avec ou sans code).
+  Incohérence déclarative `OwnerOnly` sans @owner_column : compilable, sans enforcement de ce
+    fichier ; le fail-closed effectif est un choix aval documenté dans @rbac (voir `Tasks`).
+
+Tasks:
+  [ ] Convertir les vingt `Scenario` en au moins vingt tests nommés distincts, un par scenario.
+    État des lieux : 0 test inline dans ./resource.rs, 2 tests rattachés existants dans
+    ../tests/resource.rs, 1 scenario couvert par des tests de la surface déléguée — soit 17 tests à
+    créer dans ../tests/resource.rs. Correspondance scenario → test : « construction de @HookError
+    sans code » → `hook_error_new_leaves_code_none` ; « code applicatif libre porté par @HookError »
+    → `hook_error_with_code_preserves_code_and_message` ; « copie et rendu @Debug de @HookError » →
+    `hook_error_clone_preserves_debug_fields` ; « variantes unitaires d'@AccessPolicy en chaînes
+    JSON » → `access_policy_unit_variants_serialize_to_their_names` ; « @Group sérialisé en objet
+    JSON tagué » → `access_policy_group_serializes_as_single_key_object` ; « politique @Copy et
+    comparable » → `access_policy_is_copy_and_comparable` ; « politiques dissociées avec @Group
+    extrait » → `group_and_admin_only_policies_are_read_back_independently` ; « entité avec
+    propriétaire déclarée » → test rattaché existant
+    `recipe_declares_owner_only_write_with_public_read` ; « entité sans propriétaire déclarée » →
+    test rattaché existant `ingredient_has_no_owner_and_is_admin_only` ; « incohérence @OwnerOnly
+    sans colonne propriétaire acceptée à la compilation » →
+    `owner_only_without_owner_column_still_compiles` ; « @filter_column par défaut sans
+    surdéclaration » → `filter_column_defaults_to_none` ; « @label_column par défaut sans
+    surdéclaration » → `label_column_defaults_to_none` ; « colonnes de filtre et de libellé
+    surdéclarées » → `filter_and_label_column_overrides_return_declared_values` ;
+    « @before_create par défaut est une identité sans égard au principal » →
+    `default_before_create_is_identity_on_any_principal` ; « mutation de l'ActiveModel par un
+    override de @before_create » → `before_create_override_mutates_the_active_model` ; « rejet par
+    un override de @before_create avec code libre » →
+    `before_create_override_rejects_with_free_form_error` ; « accès générique au contrat via le
+    supertrait » → `entity_columns_are_reachable_through_generic_bound` ; « surface disponible sans
+    aucune feature » → `resource_surface_available_without_default_features` (test ordinaire,
+    prouvé par le run `--no-default-features` de la batterie de /tooling.sdd) ; « métadonnées
+    identiques au seuil GraphQL » → `graphql_policy_registry_reads_trait_metadata` compilé sous
+    `#[cfg(feature = "graphql")]` ; « position du hook dans la création » → couvert par les tests
+    existants `before_create_hook_mutation_is_applied_at_insert` et
+    `before_create_hook_error_blocks_insert_without_mrd_code` de ./rest/mod.rs — le contrat déborde
+    du fichier, c'est là que ces tests vivent (surface déléguée, non owned ici).
+  [?] ./resource.rs présente l'incohérence @OwnerOnly sans @owner_column comme un « comportement
+    non défini … vérifié par test, pas par le compilateur à ce stade » ; or ./rbac.rs a choisi un
+    fail-closed écrit (@rbac::evaluate et @rbac::list_access refusent) et ./graphql/hooks.rs bloque
+    la création avec un motif `MRD-GQL-001`. Le commentaire reste-t-il en l'état, ou documente-t-on
+    le fail-closed dans le contrat de la méthode ?
+  [!] #19 La doc de @MiryadResource::resource_name affirme que le nom fait « le type GraphQL ». Vérifié
+    dans la source `seaography-2.0.0-rc.9` (@EntityObjectBuilder::type_name) : le nom d'objet
+    GraphQL et l'identifiant passé aux hooks viennent du nom de table SQL en CamelCase, jamais de
+    @MiryadResource::resource_name ; côté miryad-core, @graphql::PolicyRegistry indexe pourtant par
+    @MiryadResource::resource_name et ./graphql/hooks.rs retombe sur @GuardAction::Allow quand
+    aucune politique ne correspond — fail-open. Si le template n'aligne pas tables et noms déclarés
+    (cas testé dans ./ir.rs : table `tags` pour le nom `recipe-tags`), les politiques déclarées ne
+    s'appliquent pas sur cette surface. Tranché par Sébastien : c'est un BUG, pas un contrat de
+    nommage — traité par le flux de correction de /.specdd/bootstrap.project.md sur une branche
+    `fix/graphql-policy-key-mismatch`, instruit par les specs ./graphql/hooks.sdd et
+    ./graphql/registry.sdd dès leur production (wave graphql) ; fail-closed attendu au lieu du
+    @GuardAction::Allow sur clé inconnue.
+  [?] La doc de @MiryadResource::filter_column annonce une filtration « REST/GraphQL/MCP » par
+    `?filter=valeur` en égalité exacte. Vérifié : REST l'applique (condition d'égalité dans
+    @rest::core::list) et MCP la réutilise (délégation à @rest::core::list) ; GraphQL ne consomme
+    jamais cette colonne (./graphql/hooks.rs ne construit que la condition propriétaire, le
+    filtrage y passe par les inputs natifs @seaography sur toutes les colonnes). La promesse de la
+    méthode est-elle maintenue telle quelle ou corrigée côté doc (GraphQL sur-promis) ?
+  [?] @MiryadResource::label_column promet que « le générateur retombe sur la clé primaire » quand
+    la valeur est `None`. Le générateur TypeScript vit dans le template `miryad` (hors dépôt) :
+    rien dans ce dépôt ne vérifie ce fallback. Garde-t-on la promesse comme contrat de la méthode
+    alors qu'elle est invérifiable ici ?
+
+Done when:
+  La spec porte exactement vingt `Scenario` et chaque `Scenario` est vérifié par au moins un test
+    nommé distinct au total : 17 tests rattachés créés dans ../tests/resource.rs, 2 tests rattachés
+    existants, plus les 2 tests de ./rest/mod.rs qui couvrent le scenario « position du hook dans la
+    création » — 21 tests distincts pour 20 `Scenario`.
+  Les tests passent sur chaque combinaison de la matrice de /tooling.sdd, y compris
+    `--no-default-features` pour la preuve de non-gating et `--features graphql` pour le seuil
+    GraphQL.
+  Les quatre lignes `[?]` ci-dessus ont été arbitrées par Sébastien et la spec relue par lui, sans
+    assertion déléguée ni comportement accidentel devenu contrat silencieux.
+
+Scenario: construction de @HookError sans code
+  Given un message fourni en `&str` puis un message fourni en `String`
+  When @HookError::new est appelé avec chacun des deux
+  Then @code est `None` dans les deux cas
+  And @message porte la chaîne exacte transmise, sans troncature ni transformation
+
+Scenario: code applicatif libre porté par @HookError
+  Given un code applicatif `WIDGET-001` et un message `label must not be empty`, passés en `&str`
+    puis en `String`
+  When @HookError::with_code est appelé avec chacun des deux jeux
+  Then @code est @Some du code exact et @message du message exact
+  And le type @HookError n'expose que @code et @message — aucune place pour un code `MRD-*`
+
+Scenario: copie et rendu @Debug de @HookError
+  Given un @HookError construit avec @HookError::with_code
+  When il est cloné puis rendu via @Debug
+  Then le clone conserve @code et @message champ par champ (le type ne dérive pas @PartialEq)
+  And la sortie @Debug contient le nom @HookError et la valeur des deux champs
+
+Scenario: variantes unitaires d'@AccessPolicy en chaînes JSON
+  Given les valeurs @AccessPolicy::Public, @AccessPolicy::OwnerOnly et @AccessPolicy::AdminOnly
+  When chacune est sérialisée par @serde_json
+  Then les trois chaînes JSON exactes sont `Public`, `OwnerOnly` et `AdminOnly` — noms bruts des
+    variantes, aucun attribut de renommage
+
+Scenario: @Group sérialisé en objet JSON tagué
+  Given la variante @AccessPolicy::Group avec le nom `editors`
+  When elle est sérialisée par @serde_json
+  Then le résultat est l'objet à clé unique `{"Group":"editors"}` — représentation externe par
+    défaut de @serde, vérifiée dans les sources amont et non dans la doc
+
+Scenario: politique @Copy et comparable
+  Given une valeur @AccessPolicy::OwnerOnly et une valeur @AccessPolicy::Group avec `editors`
+  When une valeur est affectée à deux variables puis comparée à elle-même et à l'autre variante
+  Then l'affectation duplique sans @clone (@Copy) et la valeur reste utilisable après chaque usage
+  And chaque variante est égale à elle-même (@PartialEq) et différente des autres, @Group avec un
+    autre nom étant également différent
+
+Scenario: politiques dissociées avec @Group extrait
+  Given une entité de test déclarant @MiryadResource::read_policy comme @AccessPolicy::Group avec
+    le nom `editors` et @MiryadResource::write_policy comme @AccessPolicy::AdminOnly
+  When les deux politiques sont relues via le trait
+  Then la lecture correspond à @AccessPolicy::Group avec le nom `editors` extrait, en durée
+    `'static`, et l'écriture à @AccessPolicy::AdminOnly
+  And les deux déclarations sont lues indépendamment, sans interférence
+
+Scenario: entité avec propriétaire déclarée
+  Given l'implémentation de @MiryadResource pour l'entité `recipe` de ../tests/resource.rs, qui ne
+    fournit que les quatre méthodes obligatoires
+  When le contrat est relu
+  Then @MiryadResource::resource_name retourne `"recipes"`, la lecture est `Public`, l'écriture est
+    `OwnerOnly` et @MiryadResource::owner_column est @Some de la colonne `owner_id`
+
+Scenario: entité sans propriétaire déclarée
+  Given l'implémentation de @MiryadResource pour l'entité `ingredient` de ../tests/resource.rs
+  When le contrat est relu
+  Then @MiryadResource::resource_name retourne `"ingredients"`, lecture et écriture sont
+    `AdminOnly` et @MiryadResource::owner_column est `None`
+
+Scenario: incohérence @OwnerOnly sans colonne propriétaire acceptée à la compilation
+  Given une entité de test déclarant @MiryadResource::write_policy comme @AccessPolicy::OwnerOnly
+    alors que @MiryadResource::owner_column retourne `None`
+  When cette implémentation compile et que le contrat est relu
+  Then la compilation réussit — aucune contrainte entre politique et colonne n'est appliquée par le
+    compilateur dans ce fichier
+  And les valeurs relues sont exactement celles déclarées ; le refus effectif en aval est un choix
+    de @rbac, documenté par la ligne `[?]` de `Tasks` associée
+
+Scenario: @filter_column par défaut sans surdéclaration
+  Given l'entité `recipe` de ../tests/resource.rs, qui ne surdéclare pas @MiryadResource::filter_column
+  When @MiryadResource::filter_column est appelée
+  Then le résultat est `None` — aucune colonne de filtre pour cette entité
+
+Scenario: @label_column par défaut sans surdéclaration
+  Given l'entité `ingredient` de ../tests/resource.rs, qui ne surdéclare pas @MiryadResource::label_column
+  When @MiryadResource::label_column est appelée
+  Then le résultat est `None` — le libellé retombe sur la logique du consommateur, question du
+    fallback documentée dans `Tasks`
+
+Scenario: colonnes de filtre et de libellé surdéclarées
+  Given une entité de test surdéclarant @MiryadResource::filter_column avec la colonne `category`
+    et @MiryadResource::label_column avec la colonne `title`
+  When les deux accessseurs sont appelés via le trait
+  Then chacun retourne @Some exactement la colonne déclarée, retournée telle quelle — jamais une
+    chaîne
+
+Scenario: @before_create par défaut est une identité sans égard au principal
+  Given l'entité `recipe`, qui ne surdéclare pas @MiryadResource::before_create, et un
+    @crate::auth::AuthPrincipal de source token API puis un @crate::auth::AuthPrincipal de source
+    session
+  When @MiryadResource::before_create est appelée avec un ActiveModel contenant des valeurs posées
+  Then chaque appel retourne @Ok et l'ActiveModel conservé champ par champ, inchangé
+  And aucun panic ni comportement conditionnel au principal : le défaut ignore le paramètre
+
+Scenario: mutation de l'ActiveModel par un override de @before_create
+  Given une entité de test dont @MiryadResource::before_create remplace le libellé par sa version
+    en majuscules
+  When le hook est appelé via le trait avec un ActiveModel dont le libellé est `gadget`
+  Then le résultat est @Ok avec le libellé `GADGET`, prouvant que l'override remplace bien
+    l'ActiveModel transmis
+
+Scenario: rejet par un override de @before_create avec code libre
+  Given une entité de test dont @MiryadResource::before_create rejette un libellé vide par un
+    @HookError portant le code `WIDGET-001`
+  When le hook est appelé via le trait avec un libellé vide
+  Then le résultat est @Err avec @code @Some `WIDGET-001` et @message `label must not be empty`
+  But aucune structure de @HookError ni de son code ne mentionne un préfixe `MRD-`
+
+Scenario: accès générique au contrat via le supertrait @EntityTrait
+  Given une fonction générique bornée par @MiryadResource qui lit @MiryadResource::resource_name et
+    @MiryadResource::owner_column en manipulant le type @Column associé, sans nommer d'entité
+    concrète
+  When elle est instanciée avec l'entité `recipe`
+  Then elle compile et renvoie les valeurs déclarées — la métadonnée est atteignable par le seul
+    bornage, comme le font les surfaces
+
+Scenario: surface disponible sans aucune feature
+  Given le fichier ./resource.rs, sans aucun `#[cfg(feature = ...)]`
+  When la crate est compilée avec `--no-default-features` puis avec `--all-features`
+  Then @miryad_core::resource::MiryadResource, @miryad_core::resource::AccessPolicy et
+    @miryad_core::resource::HookError sont utilisables dans les deux cas, un test ordinaire
+    s'exécutant sur chaque combinaison de la batterie de /tooling.sdd
+
+Scenario: métadonnées identiques au seuil GraphQL
+  Given un build sous la feature `graphql` et l'entité `recipe`, enregistrée via
+    @graphql::PolicyRegistry::register dans un registre neuf
+  When la politique est relue par @graphql::PolicyRegistry::get avec la clé `"recipes"`
+  Then @graphql::EntityPolicy porte exactement les @AccessPolicy déclarés par
+    @MiryadResource::read_policy et @MiryadResource::write_policy, et son champ owner_column est la
+    chaîne exacte `owner_id` — même déclaration lue à l'identique, sans retraduction de politique
+  But l'alignement entre la clé @MiryadResource::resource_name et l'identifiant que @seaography
+    passe réellement à ses hooks n'est pas prouvé ici : question ouverte dans `Tasks`
+
+Scenario: position du hook dans la création
+  Given une entité avec override de @MiryadResource::before_create montée sur la surface REST, et
+    l'outil de création MCP qui délègue à la même fonction @rest::core::create
+  When une création authentifiée est exécutée
+  Then le hook s'exécute après le contrôle @rbac::can_create et avant l'insertion : sa mutation est
+    visible sur la ligne insérée, et un @HookError bloque l'insertion sans qu'aucun code `MRD-*`
+    n'apparaisse
+  And un refus RBAC préalable n'appelle pas le hook

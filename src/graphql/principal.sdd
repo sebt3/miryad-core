@@ -1,0 +1,401 @@
+# Spec produite par spec-reverse : comportement tel quel du code existant.
+# Aucun comportement accidentel ne devient contrat avant relecture par Sébastien.
+
+Spec: principal — @GraphQlPrincipal : snapshot précalculé par requête pour les hooks Seaography
+
+Purpose:
+  Calculer, une seule fois par requête `POST /api/graphql` et avant @Schema::execute, le snapshot
+    d'autorisation @GraphQlPrincipal que les hooks Seaography synchrones de ./hooks.rs liront sans
+    aucun accès base : un @user_id interne @i32, un drapeau @is_admin et le jeu @HashSet des noms de
+    groupes de l'utilisateur. Le fichier fait le pont entre l'identité unifiée @AuthPrincipal (claim
+    `sub`, email, source session/token) et l'identité interne de la crate : il applique
+    @resolve_user (get-or-create sur `miryad_users`), relit @users::membership puis @users::group
+    par @Entity::find directs, et efface toute trace de la source d'authentification — un même
+    @subject produit le même snapshot depuis une session ou un token API. Il ne décide aucune
+    permission : il précalcule la source de vérité en lecture des hooks. Aucun code `MRD-*` n'y est
+    produit ni construit ; toute erreur de base est un @sea_orm::DbErr propagé verbatim. Le fichier
+    ne compile que sous la feature `graphql`, portée par le gating `#[cfg(feature = "graphql")]`
+    sur `pub mod graphql` de /src/lib.rs ; il n'a aucun `#[cfg(feature = ...)]` interne.
+
+Owns:
+  ./principal.rs
+
+References:
+  /miryad-core.sdd — contrat hérité : codes `MRD-<DOMAINE>-NNN` portés par les modules (aucun ici),
+    parité REST/GraphQL/MCP lue à l'identique sur la seule métadonnée @MiryadResource
+  /tooling.sdd — harnais strict (famille panic/unwrap/indexation interdite en production) et
+    batterie par combinaison de features ; ce fichier ne compile que sous `graphql`, `graphiql` et
+    `--all-features`
+  /src/graphql/mod.rs — déclare `pub mod principal` et ré-exporte à plat @GraphQlPrincipal et
+    @load_principal hors du module ; le gating de feature porte sur @crate::graphql tout entier
+  ./handler.rs — seul appelant de production : @graphql_handler appelle @load_principal(&auth.db,
+    &principal) une seule fois par requête avant @Schema::execute, puis injecte le snapshot par
+    valeur via @Request::data ; son type de retour @Result<@GraphQLResponse, @AuthError> convertit
+    tout @sea_orm::DbErr remonté par l'opérateur `?`
+  ./hooks.rs — seul lecteur du type : @MiryadHooks::entity_guard, @entity_filter et
+    @before_active_model_save lisent @ctx.data::<@GraphQlPrincipal>() et ne font aucun accès base —
+    le commentaire d'en-tête du fichier est vérifié d'accord avec son code ; sa dégradation quand le
+    type est absent du contexte (`false`, pas de filtre) est le contrat de sa spec, pas de celle-ci
+  /src/auth/principal.sdd — @crate::auth::AuthPrincipal en amont : ce que le snapshot conserve
+    (@subject converti en @users::user::Model::id) et ce qu'il efface (@email, @source, @id_token,
+    @token_id)
+  /src/auth/dual.sdd — producteur exclusif de @AuthPrincipal en production (cookie ou token API) :
+    la distinction de source s'efface ici comme dans @crate::rbac
+  /src/auth/error.sdd — rendu en aval déclaré par ce contrat : @sea_orm::DbErr de @load_principal
+    converti en @AuthError::Database, corps `MRD-AUTH-016: database error: ...` en `500`
+    `text/plain; charset=utf-8` — hors de l'enveloppe JSON GraphQL ; ce contrat nomme déjà
+    @load_principal comme source de `MRD-AUTH-016`
+  /src/users/user.sdd — @resolve_user get-or-create : 1 SELECT de réutilisation, ou 1 SELECT puis 1
+    INSERT à la première vue, bras de course sur la contrainte UNIQUE de @subject avec SELECT de
+    rattrapage et @DbErr::RecordNotFound si la ligne posée par le gagnant disparaît avant relecture ;
+    l'email n'enrichit jamais une ligne existante
+  /src/users/group.sdd — @ADMIN_GROUP_NAME (verbatim `admin`) comme seule convention admin, et sa
+    ligne `[?]` « Bypass GraphQL » : la question des deux chemins de lecture du même prédicat est
+    posée là et reprise en `Tasks` de la présente spec
+  /src/users/membership.rs — table `miryad_group_memberships` et sa contrainte unique
+    (`user_id`, `group_id`) : les @group_ids lus ici en sont nécessairement dépourvus
+  /src/rbac.sdd — l'autre moteur de décision : le REST relit @users::group::is_admin et
+    @users::group::is_member à la demande ; GraphQL n'appelle pas ces helpers et relit les groupes
+    lui-même via le présent snapshot — voir `Tasks` `[?]`
+  /src/rest/admin.rs — @rest::admin::groups_by_user : même précaution `is_in` vide court-circuitée,
+    commentée comme calquée du présent fichier ; la lecture des groupes d'un utilisateur a deux
+    implémentations parallèles (REST d'un côté, snapshot de l'autre)
+
+Must:
+  Compiler uniquement sous la feature `graphql` (`graphiql` l'implique) : aucun `#[cfg(feature =
+    ...)]` dans ./principal.rs, le gating est porté par /src/lib.rs ; le fichier et ses tests inline
+    ne sont exercés par la batterie de /tooling.sdd que sur `graphql`, `graphiql` et
+    `--all-features`, et aucune ligne n'est compilée sur `--no-default-features`, `static-frontend`,
+    `swagger-ui` ni `mcp`
+  Exposer @GraphQlPrincipal avec exactement trois champs publics et rien d'autre : @user_id un @i32
+    égal à l'@users::user::Model::id rendu par @resolve_user, @is_admin un @bool, @groups un
+    @HashSet<@String> de noms de groupes ; derives @Debug et @Clone uniquement — pas de @PartialEq,
+    pas de @Default, et pas d'autre constructeur que @load_principal pour le code de production
+  Poser l'invariant de construction @is_admin == @groups.contains(@ADMIN_GROUP_NAME) : le drapeau
+    est calculé une fois par @HashSet::contains sur la constante, jamais par un littéral inline,
+    jamais par un appel à @users::group::is_admin ; aucune divergence entre drapeau et jeu n'est
+    possible à la sortie de @load_principal
+  Effacer la source d'authentification : @load_principal ne lit jamais la variante de @source —
+    @PrincipalSource::Session et @PrincipalSource::ApiToken du même @subject produisent des snapshots
+    champ à champ identiques à état de base identique ; le snapshot ne porte ni @subject, ni @email,
+    ni @id_token, ni @token_id, ni @display_name, ni @created_at, ni aucun identifiant de groupe —
+    la conversion de @crate::auth::AuthPrincipal et de @users::user::Model vers @GraphQlPrincipal est
+    à sens unique et strictement amputante des deux côtés
+  Tenir le coût annoncé « une seule fois par requête HTTP », vérifié dans l'appelant : ./handler.rs
+    est l'unique appelant de production et l'appelle exactement une fois par requête avant
+    @Schema::execute, quel que soit le nombre d'opérations ou de fragments du document GraphQL — une
+    introspection pure paie déjà le snapshot ; les hooks ne font aucun accès base pendant l'exécution
+  Ordonner la construction en lectures séquentielles sans jointure SQL : le get-or-create
+    @resolve_user sur `miryad_users` (1 SELECT, ou 1 SELECT + 1 INSERT à la première vue, plus 1
+    SELECT de rattrapage en cas de course selon /src/users/user.sdd), puis exactement 1 SELECT sur
+    `miryad_group_memberships` filtré par @membership::Column::UserId via @QueryFilter::filter, puis
+    — seulement si au moins une appartenance existe — exactement 1 SELECT sur `miryad_groups` filtré
+    @group::Column::Id.is_in des @group_ids : de 2 SELECT au total (aucune appartenance) à 3
+    (utilisateur membre), plus l'INSERT éventuel de première vue
+  Court-circuiter la lecture des groupes quand aucune appartenance n'existe : le @HashSet vide est
+    posé sans émettre le troisième SELECT ; vérifié dans le source de @sea-query `1.0.2`
+    (`src/backend/query_builder.rs` : un @is_in de liste vide est rendu en l'expression toujours
+    fausse `1 = 2`), la garde n'est donc pas une correction de sémantique — sans elle la requête
+    partirait et rendrait zéro ligne de même — mais l'évitement d'un aller-retour inutile, même
+    précaution commentée que @rest::admin::groups_by_user
+  Construire @groups comme un ensemble : noms de groupes sans doublon ni ordre (la contrainte unique
+    (`user_id`, `group_id`) de `miryad_group_memberships` garantit des @group_ids sans doublon) ; un
+    utilisateur membre de k groupes voit un @HashSet de exactement k noms, et aucun nom de groupe
+    auquel il n'appartient pas
+  Relire à chaque appel sans la moindre mémoïsation : aucun @static, @thread_local, cache ni état
+    intermédiaire — deux @load_principal sur la même connexion avec un @sync_group_memberships entre
+    les deux rendent des snapshots différents ; la fraîcheur figée par requête (le snapshot rendu ne
+    bouge plus, même si la base change pendant l'exécution) vient du retour par valeur, pas d'un état
+    conservé par le fichier
+  N'écrire en base que par le get-or-create de @resolve_user : une première requête GraphQL sur un
+    @subject inconnu crée la ligne `miryad_users` avec @email égal au claim de session reçu (ou
+    @None pour un token API, où @email est codé @None en amont par @validate_token) ; ensuite
+    ./principal.rs ne mute plus rien — ni email, ni display_name, aucune table d'appartenance
+  Rester injectable comme donnée de requête @async_graphql sans aucun attribut, derive ni import du
+    framework : la borne vérifiée dans le source de @async_graphql `7.0.19` est @Any + @Send + @Sync
+    (@Request::data, @Data::insert et @Context::data aux mêmes bornes) — les champs @i32, @bool et
+    @HashSet<@String> la satisfont par composition ; aucun @derive @Data n'existe ni n'est
+    nécessaire, l'enregistrement est une entrée de la map indexée par @TypeId que ./handler.rs pose
+    par @.data(snapshot)
+  Respecter le harnais de /tooling.sdd en production : propagation par l'opérateur `?` de chaque
+    @Result, aucun @unwrap, @expect, @panic, @unreachable, aucune indexation par `[]`, aucune trace
+    @tracing, aucune sortie stdio — le fichier ne log pas même en échec
+  Porter au niveau du type l'effacement de privilège de @crate::rbac : ./principal.rs ne connaît ni
+    @MiryadResource, ni @AccessPolicy, ni aucune entité applicative — il calcule des faits
+    d'appartenance, ./hooks.rs seul en fait des décisions
+
+Must not:
+  Importer @axum, @async_graphql, @async_graphql_axum ou @seaography dans le fichier : le type est
+    volontairement indépendant du transport et traverse @async_graphql par sa seule forme @Any +
+    @Send + @Sync ; importer l'un de ces crates lierait le snapshot à l'implémentation GraphQL
+    intérieure — le croisement de frontière le plus plausible au vu du nom du module
+  Lire @source, @id_token ou @token_id pour différencier deux snapshots : la parité session/token du
+    moteur doit se lire à l'identique dans les hooks comme dans @crate::rbac
+  Appeler @users::group::is_admin, @users::group::is_member ou tout autre helper de
+    ../users/group.rs pour calculer @is_admin ou @groups : le fichier est justement le second chemin
+    de lecture (les hooks synchrones l'exigent) ; l'arbitrage des deux chemins est la ligne `[?]` des
+    `Tasks`, pas un silence de cette spec
+  Évaluer une permission, une @AccessPolicy, une colonne propriétaire ou un filtre : aucune décision
+    n'apparaît dans ./principal.rs, qui ne retourne ni booléen de refus ni @Condition — seul
+    ./hooks.rs traduit le snapshot en @GuardAction et en clauses de requête
+  Inventer un code `MRD-*`, une variante d'erreur ou un repli par défaut : une panne de base remonte
+    en @Err(@sea_orm::DbErr) sans être convertie ni avalée — un @is_admin forcé `false` sur erreur
+    serait un fail-open déguisé en succès, et ./hooks.rs ne dégrade qu'en l'absence totale du type
+    dans le contexte, cas où l'appel @load_principal a déjà échoué en amont
+  Revalider le bearer, le cookie, le hash du token ou un quelconque matériel d'authentification :
+    l'extracteur /src/auth/dual.rs a déjà tranché en amont ; ici le @subject est confiance rendue
+  Enrichir l'email ou le @display_name d'un utilisateur déjà connu : le porteur de l'email est
+    @resolve_user et son contrat (snapshot à la première vue, /src/users/user.sdd) ; toute écriture
+    conditionnelle ici serait un second point d'écriture de `miryad_users`
+  Mettre en cache un snapshot entre deux appels ou entre deux requêtes, ni aucun état interne
+    @Mutex/@RwLock : la fraîcheur demandée est une relecture fraîche à chaque appel
+
+Forbids:
+  @crate::rbac, @crate::resource — direction de dépendance figée : ./hooks.rs lit le snapshot et les
+    déclarations @AccessPolicy, ./principal.rs ne voit ni les décisions ni les entités ; une
+    dépendance ici ferait de ce fichier un second évaluateur
+  @tracing — aucune trace dans ce fichier ; la décision de tracer l'identité interne d'une requête
+    GraphQL n'appartient pas à ./principal.rs (aucun token ni JWT n'y transite de toute façon)
+
+Depends on:
+  @sea_orm `2.0.2` — @DatabaseConnection, @sea_orm::entity::prelude (@EntityTrait, @ColumnTrait,
+    filtres @QueryFilter), @DbErr ; les trois lectures passent par les entités @users::user,
+    @users::membership et @users::group, jamais par du SQL brut
+  /src/auth/principal.rs — @crate::auth::AuthPrincipal et ses @subject/@email : seule entrée du
+    calcul, variante @source ignorée
+  /src/users/user.rs — @resolve_user : get-or-create, bras de course et @DbErr::RecordNotFound de
+    rattrapage selon /src/users/user.sdd
+  /src/users/group.rs — @group::Entity et @group::Column::Id pour la lecture des noms ; @ADMIN_GROUP_NAME
+    comme seule constante partagée avec ce module
+  ../users/membership.rs — @membership::Entity et @membership::Column::UserId pour la lecture des
+    appartenances, ainsi que la contrainte unique (`user_id`, `group_id`) vérifiée dans sa spec
+  @std::collections::HashSet — représentation de @groups
+  @sea-query `1.0.2` (transitif de @sea_orm) — sémantique de @is_in vide rendue en `1 = 2`, vérifiée
+    dans sa source
+  @async_graphql `7.0.19` (transitif, feature `graphql`) — bornes d'injection et de lecture des
+    données de requête (@Request::data, @Context::data), vérifiées dans sa source
+
+Exposes:
+  @GraphQlPrincipal — @pub struct @Debug + @Clone à trois champs publics : @user_id un @i32,
+    @is_admin un @bool, @groups un @HashSet<@String> ; aucune méthode, aucun constructeur public
+  @load_principal — `pub async fn load_principal(db: &@DatabaseConnection, principal:
+    &@AuthPrincipal) -> @Result<@GraphQlPrincipal, @sea_orm::DbErr>` : l'unique chemin de
+    construction, sans générique ni paramètre de feature
+  Les deux items sont ré-exportés à plat par /src/graphql/mod.rs sous @crate::graphql — surface
+    publique de la crate sous feature `graphql`, appelable par une application consommatrice
+
+Accepts:
+  Un emprunt &@DatabaseConnection — toute connexion @sea_orm vivante ; les tables internes
+    `miryad_users` et `miryad_group_memberships` sont supposées présentes et migrées ;
+    `miryad_groups` n'est touchée que si au moins une appartenance existe (le chemin sans
+    appartenance fonctionne même sans cette table)
+  Un emprunt &@AuthPrincipal — seuls @subject (clé de @resolve_user) et @email via @as_deref
+    (nourrit la création de première vue) sont consultés ; toute valeur de @subject est légale, y
+    compris vide, sans normalisation ni trim (contrat amont /src/users/user.sdd) ; la variante de
+    @source n'est jamais inspectée
+  Aucune entrée générique, aucun paramètre optionnel, aucun état global ; compilation et appel
+    possibles seulement quand la feature `graphql` est activée
+
+Returns:
+  @Ok(@GraphQlPrincipal) : @user_id égale l'@users::user::Model::id de la ligne lue ou créée ;
+    @groups est l'ensemble des noms des groupes dont l'utilisateur est membre ce jour en base (vide
+    sans appartenance) ; @is_admin vaut `true` si et seulement si `admin` ∈ @groups au sens de
+    @HashSet<@String> — comparaison binaire : `Admin` et `admin` sont deux noms distincts, convention
+    alignée sur @users::group::is_member, collation déjà interrogée en `[?]` de /src/users/group.sdd
+  Un snapshot retourné par valeur, imperméable aux écritures postérieures : les mutations de la base
+    après le retour ne s'y reflètent plus
+  Aucun cookie, aucun token, aucune trace, aucun corps HTTP en sortie — uniquement la valeur
+
+Raises:
+  Aucun code `MRD-*` construit dans ./principal.rs, aucune erreur d'un type autre que @sea_orm::DbErr
+  @sea_orm::DbErr propagé verbatim depuis : le SELECT/INSERT de @resolve_user — y compris
+    @DbErr::RecordNotFound(`user with subject ... vanished`), atteignable seulement dans la course de
+    première vue décrite par /src/users/user.sdd — ; le SELECT de @users::membership ; le SELECT de
+    @users::group (émis uniquement quand @group_ids est non vide)
+  En aval, vérifié dans ./handler.rs : l'opérateur `?` du handler convertit chaque @DbErr par le
+    @From<@sea_orm::DbErr> de @AuthError en @AuthError::Database ; le rendu `500`
+    `text/plain; charset=utf-8` `MRD-AUTH-016: database error: ...` est le contrat de
+    /src/auth/error.sdd — hors de l'enveloppe d'erreurs JSON GraphQL, arbitré en `Tasks` `[?]`
+
+Handles:
+  Utilisateur sans aucune ligne de `miryad_group_memberships` : @groups vide, @is_admin `false`, le
+    SELECT des noms de groupes n'est jamais émis (2 SELECT au total)
+  Utilisateur membre d'un ou plusieurs groupes : noms chargés en un seul SELECT par @is_in sur des
+    @group_ids uniques par construction
+  @subject jamais vu : création de la ligne `miryad_users` par @resolve_user avec l'email reçu
+    (@Some pour une session portant le claim, @None pour un token API ou une session muette) ; deux
+    premières requêtes concurrentes du même @subject inconnu tombent dans le bras de course assumé de
+    @resolve_user, pas dans une seconde écriture ici
+  Appartenance désignant un groupe absent de `miryad_groups` : configuration rendue impossible par la
+    clé étrangère `ON DELETE CASCADE` de la migration m20260822_000002 (référence vérifiée
+    /src/users/group.sdd) — si elle surgissait, le nom disparaîtrait simplement de @groups, seul
+    comportement observable du code
+  Nom de groupe hors convention de casse : seul le nom exact `admin` (valeur de @ADMIN_GROUP_NAME)
+    rend @is_admin `true`
+  Base sans migrations / table absente : le premier @Err rencontré remonte, sans nouvelle tentative
+    ni repli à un principal « non-admin » fabriqué
+  Type absent du contexte GraphQL en aval : hors du pouvoir de ce fichier — ./hooks.rs dégrade alors
+    en non-admin sans filtre, comportement porté par sa propre spec et asymétrie signalée par
+    /src/rbac.sdd
+
+Example:
+  snapshot d'un admin membre de `admin` et `editors`: @user_id = id de la ligne lue, @is_admin `true`, @groups = { `admin`, `editors` }
+  coût d'une requête — utilisateur connu avec appartenance: SELECT `miryad_users` + SELECT `miryad_group_memberships` + SELECT `miryad_groups` (3 lectures séquentielles)
+  coût d'une requête — utilisateur sans appartenance: SELECT `miryad_users` + SELECT `miryad_group_memberships` (2 lectures)
+  effacement depuis @AuthPrincipal: @email, @source/@id_token/@token_id
+  effacement depuis @users::user::Model: @subject, @email, @display_name, @created_at
+
+Tasks:
+  [ ] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé (treize
+    minimum) dans le @mod tests `#[cfg(test)]` de ./principal.rs ; le contrat ne déborde pas du
+    fichier : fixtures sur le gabarit inline existant (`sqlite::memory:` + @Migrator::up,
+    @resolve_user, @sync_group_memberships, @AuthPrincipal littéraux à @id_token @String::new()).
+    Les deux tests inline existants ne couvrent qu'en partie : @reflects_admin_status_and_groups →
+    scenario 1, sans affirmer l'ensemble exact des noms — renforcer ;
+    @non_admin_user_has_empty_or_partial_groups → mêle les scenarios « sans appartenance » et
+    « partiel » en n'affirmant que le premier — le scinder. Tests à créer :
+    @snapshot_admin_carries_user_id_and_groups ; @is_admin_false_without_admin_membership ;
+    @no_membership_skips_groups_select (DDL `miryad_users` et `miryad_group_memberships` posées à la
+    main, `miryad_groups` absente) ; @session_and_token_same_subject_same_snapshot ;
+    @graphql_first_sight_creates_user_with_email ; @token_first_sight_creates_user_without_email ;
+    @second_email_never_overwrites_row ; @admin_cased_group_is_not_admin ;
+    @groups_is_exact_membership_names ; @snapshot_is_call_time_no_cache ;
+    @missing_tables_propagate_dberr ; @injectable_as_request_data_and_readback ;
+    @clone_deep_debug_verbatim
+  [?] Parité RBAC : ./hooks.rs décide sur ce snapshot qui relit les groupes lui-même (@Entity::find
+    directs + @HashSet::contains), alors que @crate::rbac (REST, donc MCP par délégation) rappelle
+    @users::group::is_admin et @is_member à chaque décision — mêmes tables, même @ADMIN_GROUP_NAME,
+    deux prédicats écrits en double. Les deux chemins coïncident à état de base identique, mais
+    toute évolution du sens d'« admin » (drapeau, super-admin, collation) ne se propagerait que d'un
+    côté. Le snapshot par requête est-il le contrat GraphQL assumé (hooks synchrones l'exigent) — à
+    dire ici et dans /src/users/group.sdd qui porte le `[?]` jumeau — ou toute surface doit-elle
+    passer par les helpers de /src/users/group.rs ?
+  [?] Rendu des échecs de construction : un @DbErr de @load_principal sort en @AuthError::Database,
+    `500` `text/plain` hors de l'enveloppe JSON `errors` de GraphQL (contrat de
+    /src/auth/error.sdd), alors qu'une erreur de resolver, elle, rentre dans l'enveloppe. Une panne
+    de base en chemin GraphQL doit-elle être rendue dans l'enveloppe (@errors + @extensions
+    `MRD-AUTH-016`) pour la parité des clients, ou le texte `500` est-il le contrat assumé ?
+  [?] @Clone est dérivé mais sans aucun consommateur de production dans la crate aujourd'hui :
+    ./handler.rs injecte par valeur, ./hooks.rs emprunte — derive réservé aux applications
+    consommatrices (à documenter) ou dette de derive à purger avec le harnais ?
+  [?] Dette `missing_docs` vérifiée sur `cargo check --no-default-features --features graphql` :
+    exactement 4 avertissements portent sur ./principal.rs (@load_principal et les trois champs),
+    comptés dans l'ardoise `missing_docs` de /tooling.sdd (136 en features par défaut). Purge
+    immédiate sur ce petit fichier ou calendrier module par module ?
+  [?] /src/rest/me.sdd (References) décrit @load_principal comme calculant « le même snapshot (id
+    interne, subject, groupes) » : le snapshot ne porte ni @subject ni @email, et @groups n'y est pas
+    un @Vec — écart de formule dans la spec voisine. Corriger me.sdd, ou arbitrer un vrai type de
+    snapshot partagé entre @rest::me et GraphQL ?
+  [ ] Rejouer la batterie complète de /tooling.sdd après la conversion des scénarios, en insistant
+    sur `graphql`, `graphiql` et `--all-features` — seules combinaisons où ce fichier est compilé —
+    et certifier zéro warning de harnais sur ./principal.rs (aucune ligne compilée ailleurs).
+
+Done when:
+  Les treize `Scenario` ont chacun au moins un test distinct nommé et vert dans le @mod tests de
+    ./principal.rs (treize minimum, deux couverts partiellement aujourd'hui), la batterie de
+    /tooling.sdd est verte sur chaque combinaison de features sans warning de harnais sur le fichier.
+  Les cinq lignes `[?]` de `Tasks` sont arbitrées par Sébastien et leur suite reportée dans le
+    contrat ou le code, en cohérence avec le `[?]` jumeau de /src/users/group.sdd.
+  La spec est relue et approuvée par Sébastien.
+
+Scenario: Snapshot admin complet par session
+  Given une base migrée où l'utilisateur `alice` (sujet connu, @email @None) est membre des groupes
+    `admin` et `editors` via @sync_group_memberships
+  When @load_principal est appelé avec un @AuthPrincipal @source @PrincipalSource::Session sur ce
+    @subject
+  Then @Ok : @user_id égale l'@users::user::Model::id d'`alice`, @is_admin vaut `true`, et @groups
+    contient exactement { `admin`, `editors` } — rien d'autre
+
+Scenario: Groupes sans `admin` : drapeau faux, noms exacts
+  Given la même base et un utilisateur membre des seuls groupes `editors` et `reviewers`
+  When @load_principal est appelé pour lui
+  Then @is_admin vaut `false`, @groups vaut { `editors`, `reviewers` } et le nom `admin` n'y figure
+    pas
+
+Scenario: Aucune appartenance : le troisième SELECT n'est jamais émis
+  Given une connexion `sqlite::memory:` non passée par @Migrator::up, où seules les DDL
+    `miryad_users` et `miryad_group_memberships` sont créées à la main par @execute_unprepared,
+    `miryad_groups` n'existe pas, et l'appelant n'a aucune ligne d'appartenance
+  When @load_principal est appelé pour ce sujet
+  Then @Ok avec @groups vide et @is_admin `false` — un @Err(@sea_orm::DbErr) « table absente »
+    surgirait immanquablement si un troisième SELECT visait `miryad_groups` : le @Ok suffit à prouver
+    que ce SELECT n'est jamais parti, cohérent avec la sémantique `1 = 2` vérifiée de @is_in vide
+  But @resolve_user a bien inséré la ligne inconnue dans `miryad_users` au passage
+
+Scenario: Session et token du même sujet : snapshots identiques, source effacée
+  Given une base migrée avec l'utilisateur `alice` membre de `editors`, et deux @AuthPrincipal
+    littéraux de même @subject : l'un @PrincipalSource::Session avec @id_token @String::new(),
+    l'autre @PrincipalSource::ApiToken @token_id `7` à @email @None
+  When @load_principal est appelé sur chacun
+  Then les deux snapshots portent le même @user_id, @is_admin `false` et des @groups égaux champ à
+    champ — aucune information propre à la source ne survit au snapshot
+
+Scenario: Première vue du sujet par GraphQL : @resolve_user crée la ligne
+  Given une base migrée sans ligne pour le @subject `eve` et un @AuthPrincipal Session à @email
+    @Some de `eve@example.org`
+  When @load_principal est appelé pour la première fois sur ce @subject
+  Then @Ok : @user_id porte l'@users::user::Model::id d'une ligne `miryad_users` créée pour `eve`
+    avec l'email `eve@example.org`, relue via @users::user::Entity
+  And @groups est vide et @is_admin `false` : @load_principal ne crée aucun groupe ni appartenance
+
+Scenario: Première vue par token API : email @None figé à la création
+  Given une base migrée sans ligne pour le @subject `svc-x` et un @AuthPrincipal
+    @PrincipalSource::ApiToken @token_id `9` à @email @None — la forme exacte de @validate_token
+  When @load_principal est appelé pour la première fois sur ce @subject
+  Then @Ok, et la ligne `miryad_users` créée porte @email @None — l'absence d'email n'est pas une
+    erreur, c'est la valeur posée par le producteur du principal
+
+Scenario: Second principal à l'email différent : la ligne existante ne change jamais
+  Given une base migrée où `bob` existe avec @email `bob@a.example`, et un @AuthPrincipal Session du
+    même @subject portant dorénavant @email @Some de `bob@b.example`
+  When @load_principal est appelé pour lui, puis la ligne `miryad_users` relue
+  Then le @snapshot est revenu @Ok et la ligne conserve @email `bob@a.example` — ./principal.rs ne
+    mute rien hors le chemin get-or-create de @resolve_user
+
+Scenario: Groupe nommé `Admin` : ce n'est pas l'admin
+  Given une base migrée et un utilisateur membre du seul groupe `Admin` (capital A, jamais vu donc
+    créé à la volée par @sync_group_memberships), @ADMIN_GROUP_NAME valant toujours `admin`
+  When @load_principal est appelé pour cet utilisateur
+  Then @is_admin vaut `false` — @HashSet::contains est une égalité binaire sur la constante — et
+    @groups vaut { `Admin` }
+
+Scenario: L'ensemble @groups : les noms possédés, rien d'autre
+  Given une base migrée où existent les groupes `a`, `b`, `c`, `d`, l'utilisateur `mira` n'étant
+    membre que de `a` et `c`
+  When @load_principal est appelé pour `mira`
+  Then @groups est exactement { `a`, `c` } de taille `2` — `b` et `d` n'y figurent pas, et aucune
+    doublure de `a` ou `c` ne peut y figurer deux fois
+
+Scenario: Snapshot au temps de l'appel, pas de cache entre appels
+  Given une base migrée avec l'utilisateur `cara` sans aucun groupe au départ
+  When @load_principal est appelé une première fois, puis @sync_group_memberships lui ajoute
+    `admin`, puis @load_principal est rappelé sur la même connexion
+  Then le premier snapshot porte @is_admin `false` et @groups vide
+  But le second porte @is_admin `true` et @groups { `admin` } — chaque appel relit la base, aucune
+    mémoïsation ne traverse les appels
+
+Scenario: Tables absentes : @Err(@sea_orm::DbErr) propagé, sans code ni repli
+  Given une connexion `sqlite::memory:` fraîche où aucune DDL n'a jamais été posée, et un
+    @AuthPrincipal Session @subject `any`
+  When @load_principal est appelé
+  Then @Err(@sea_orm::DbErr) est retourné sur le premier SELECT de @resolve_user (table absente)
+  But aucun panic, aucun @is_admin `false` de repli fabriqué, aucun code `MRD-*` produit par ce
+    fichier — c'est en aval, dans ./handler.rs et /src/auth/error.sdd, que la panne rendra `500`
+    `MRD-AUTH-016` hors enveloppe
+
+Scenario: Injectable en données de requête @async_graphql et relu à l'identique
+  Given un @GraphQlPrincipal construit par @load_principal sur une base migrée avec un admin
+  When il est injecté dans un @async_graphql::Request par @.data(snapshot) — borne @Any + @Send +
+    @Sync vérifiée dans la source de @Request::data — puis relu depuis la table de données du
+    @request, downcastée par @TypeId
+  Then la compilation passe sans aucun trait ni derive à ajouter au type, et la valeur relue porte
+    les trois champs exacts du snapshot injecté
+
+Scenario: @Clone profond, @Debug verbatim
+  Given un snapshot à @user_id `1`, @is_admin `true`, @groups { `admin` } et sa copie par @Clone()
+  When le test ajoute le nom `ghost` aux @groups de la copie seule, puis formate l'original par @Debug
+  Then la copie porte { `admin`, `ghost` } et l'original reste à { `admin` } — @Clone réalloue le
+    @HashSet, aucune mutualisation
+  And la sortie @Debug de l'original contient `GraphQlPrincipal`, `is_admin` et le nom `admin`
+  But @Clone n'est consommé par aucun code de production de la crate aujourd'hui — arbitrage en
+    `Tasks` `[?]`

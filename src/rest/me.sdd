@@ -1,0 +1,412 @@
+# Spec produite par spec-reverse : elle décrit le comportement tel quel du code existant.
+# Aucun de ses comportements accidentels ne devient contrat avant relecture par Sébastien.
+
+Spec: me — self-service : identité et groupes du principal courant
+
+Purpose:
+  Exposer au frontend d'une application consommatrice le « qui je suis » minimal — subject, email,
+    groupes — sans lui donner accès direct aux tables internes `miryad_users`/`miryad_groups` de la
+    crate (issue #24, ex : afficher ou non un lien de nav vers une page admin). Le fichier monte la
+    route unique `GET /api/v1/me`, ouverte à tout principal authentifié par le dual-auth, jamais
+    réservée aux admins, et toujours restreinte au compte de l'appelante : aucun identifiant
+    d'utilisateur n'est jamais accepté du client, la cible est la ligne résolue depuis le
+    @AuthPrincipal lui-même. Sa particularité de contrat : il ne fait que recoller trois
+    comportements existants — extraction dual-auth (/src/auth/dual.sdd), get-or-create
+    @resolve_user (/src/users/user.sdd), lecture de groupes @groups_by_user
+    (/src/rest/admin.rs) — et définit lui-même la forme exacte du JSON rendu (trois champs
+    ordonnés, nullabilités) et le silence côté autorisation (aucun contrôle de politique).
+
+Owns:
+  ./me.rs
+
+References:
+  /miryad-core.sdd — code `MRD-*` exigé sur toute erreur interne, parité des surfaces, une spec
+    par fichier
+  ./.specdd/bootstrap.project.md — contrat transverse `MRD-<DOMAINE>-NNN`, traces uniquement via
+    @tracing (jamais @println/@eprintln/@dbg), gating de features, règle des trois surfaces
+  ./tooling.sdd — harnais `[lints]` et batterie sur chaque combinaison de features (fichier
+    inconditionnel, donc exercé sur `--no-default-features` comme sur `--all-features`)
+  /src/rest/mod.rs — déclare `pub mod me;` sans gating ; @me_router est atteint par le chemin
+    public `miryad_core::rest::me::me_router`, jamais ré-exporté à plat
+  ./admin.rs — @groups_by_user `pub(crate)` rendue réutilisable « par rest::me (issue #24) » ;
+    @UserSummary voisin de la vue `GET /api/v1/users` expose lui un champ `id` (spec ./admin.sdd à
+    produire)
+  ./tokens.rs — paire self-service de même esprit (issue #5) : mêmes bornes de routeur, mêmes
+    bornes d'accès au propre compte, mais conversion @to_rest_error que ce fichier n'a pas à faire
+  ./error.rs — @RestError ; sa variante @Database est la seule construite depuis ce fichier
+  ./openapi.rs — ne déclare que les routes CRUD des @MiryadResource : `GET /api/v1/me` n'apparaît
+    dans aucun document OpenAPI (voir `Tasks` `[?]`)
+  /src/auth/dual.sdd — extraction @AuthPrincipal : ordre Bearer/cookie et non-repli, tels
+    qu'observables sur cette route via les corps de rejet
+  /src/auth/error.sdd — rendu `401`/`500` `text/plain` des rejets d'extraction (@AuthError)
+  /src/auth/state.sdd — @MiryadAuthState : ce fichier ne lit que @db ; @cookie_key et
+    @oidc_client ne servent qu'à l'extracteur @AuthPrincipal appelé avant le handler
+  /src/users/user.sdd — @resolve_user get-or-create : snapshot d'email à la première vue, bras de
+    course, colonne @display_name NULL
+  /src/graphql/principal.rs — @load_principal calcule le même snapshot (id interne, subject,
+    groupes) pour la surface GraphQL, sans l'exposer en requête publique (voir `Tasks` `[?]`)
+  /src/mcp/handler.rs — la surface MCP ne monte aucun tool d'identité self-service
+  /docs/architecture.md — section « Identité self-service (issue #24) » : même promesse
+    `{ subject, email, groups }` et réutilisation explicite de @groups_by_user
+
+Must:
+  Route exacte : @nest sur `/api/v1` contenant @route `/me` bornée à @get — l'URL observable est
+    exactement `GET /api/v1/me`, même préfixe `/api/v1` figé que @resource_router, @users_router
+    et @tokens_router ; `/api/v1/me/` (slash final) n'est pas normalisé et tombe au `404` de
+    l'app, vérifié dans le source de @matchit 0.8.4 : aucune logique de slash final dans le trie
+  Méthodes réellement servies : @get sans @head déclaré — dans @call_with_state d'axum 0.8.9
+    l'endpoint @get est aussi dispatché sur @HEAD (`call!(req, HEAD, get)`, test source
+    @get_accepts_head) et @RouteFuture vide le corps au niveau top-level ; toute autre méthode
+    heurte le fallback par défaut du @MethodRouter : `405`, corps vide, en-tête @Allow `GET`
+    (tests sources @method_not_allowed_by_default et @sets_allow_header)
+  Autorisation : tout principal authentifié suffit — @me_handler n'appelle pas @is_admin, ne
+    consulte aucune @AccessPolicy, ne pose aucune condition de groupe ; un membre du groupe
+    `admin` y accède comme un utilisateur sans groupe, et n'y voit jamais rien de plus que son
+    propre compte
+  Extraction : @AuthPrincipal arrive par l'impl dual de /src/auth/dual.rs — cookie de session ou
+    `Bearer`, Bearer d'abord, pas de repli silencieux ; ce fichier ne choisit rien de l'ordre et ne
+    peut ni le contourner ni le relâcher ; une requête rejetée par l'extracteur n'atteint jamais
+    @me_handler
+  Sources des champs rendus : @subject = colonne `subject` de la ligne `miryad_users` rendue par
+    @resolve_user — égale à @AuthPrincipal.@subject par construction de la lookup ; @email =
+    colonne `email` de cette même ligne, jamais @AuthPrincipal.@email — le chemin token rend donc
+    l'email persisté alors que @principal.email y vaut @None, et une session portant un email
+    divergent ne voit jamais rendu que le snapshot de première vue (@resolve_user n'est pas un
+    upsert, verrou hérité de /src/users/user.sdd) ; @groups = noms des groupes dont une ligne de
+    `miryad_group_memberships` pointe sur @caller.id, lus en deux requêtes via @groups_by_user
+  Clé des groupes jamais fournie par le client : l'itérateur passé à @groups_by_user est
+    @std::iter::once(@caller.id) — un seul id, toujours celui résolu en base depuis le principal ;
+    la lookup ne peut structurellement recevoir l'id d'un autre utilisateur, et le
+    @remove sur la map rendue ne peut retirer que la clé de l'appelante
+  Forme du JSON succès : @MeResponse sérialisé par @Json — `200`, @Content-Type
+    `application/json`, corps = trois champs et trois seulement, émis en ordre de déclaration
+    `subject`, `email`, `groups` : @serialize_struct_visitor de @serde_derive 1.0.229 itère les
+    champs dans l'ordre sans tri et @serde_json 1.0.151 écrit à flux tendu sans réordonner ;
+    @email @None → la clé est rendue avec la valeur JSON `null` (aucun @skip_serializing_if n'est
+    déclaré) ; @groups sans appartenance → tableau vide `[]` ; aucun champ `id`, contrairement à
+    @UserSummary de ./admin.rs (voir `Tasks` `[?]`)
+  Ordonnancement des groupes non contractuel : aucun @order_by_* n'est émis sur le scan de
+    `miryad_group_memberships` (vérifié dans le source de @sea_orm 2.0.2 : @select.rs n'ajoute une
+    clause @ORDER BY que par méthode explicite) — l'ordre du tableau rendu est celui de la passe
+    de la base et peut varier entre deux appels ; l'ensemble des noms en revanche est contractuel
+  Effet de bord d'écriture en base : @resolve_user est un get-or-create — le premier appel `/me`
+    réussi d'un @subject inconnu INSERT une ligne `miryad_users` (@email NULL sur le chemin token,
+    @display_name NULL) avant le rendu ; c'est le seul chemin d'écriture déclenchable depuis @me_handler ;
+    les tables de groupes ne sont que lues — ni @ensure_group ni @sync_group_memberships ici
+  Cas sans appartenance : @groups_by_user ne produit pas de clé pour @caller.id quand aucune
+    membership n'existe ;
+    le @remove suivi de @unwrap_or_default produit un @Vec vide — @unwrap_or_default n'est pas un
+    @unwrap du harnais, il ne panique jamais
+  Erreurs du handler : les deux propagations `?` portent des @sea_orm::DbErr (@resolve_user et
+    @groups_by_user) convertis par le @From en @RestError::Database, rendu `500` `text/plain` au
+    corps préfixé `MRD-REST-003: database error: ` suivi du @Display brut du @DbErr ; les variantes
+    @NotFound, @Forbidden, @Application et @Internal (`MRD-REST-001`, `MRD-REST-002`, `MRD-REST-004`,
+    `422` hook) ne sont jamais construites par ce fichier — contraste avec ./tokens.rs qui en pose
+    trois
+  Erreurs d'extraction distinctes des erreurs REST : le rejet d'@AuthPrincipal est un @AuthError
+    rendu hors @RestError par /src/auth/error.sdd — `401` pour `MRD-AUTH-001` (anonyme),
+    `MRD-AUTH-002` (session invalide ou expirée), `MRD-AUTH-014` (Bearer inconnu ou révoqué, même
+    cookie valide co-présent), `MRD-AUTH-015` (Bearer expiré), `500` pour `MRD-AUTH-016` (base
+    injoignable sur le chemin token, le cookie valide authentifie même une base en panne) ; ce fichier
+    ne décore, n'enveloppe ni ne re-mappe aucune de ces erreurs — les deux familles `MRD-AUTH-*`
+    et `MRD-REST-003` cohabitent sur cette route et ne se distinguent qu'au préfixe du corps
+  Traces : mutisme total — aucun appel @tracing en succès comme en rejet, aucun autour de
+    l'insertion de première vue ; asymétrie adjacente déjà relevée sur /src/auth/dual.sdd ; aucun
+    @println/@eprintln/@dbg (harnais de ./tooling.sdd)
+  Gating de features : compilation inconditionnelle — aucun `#[cfg(feature = ...)]` dans le
+    fichier, `pub mod me;` sans gating dans /src/rest/mod.rs, `pub mod rest` sans gating dans
+    /src/lib.rs ; la batterie de ./tooling.sdd exerce ce contrat sur `--no-default-features` comme
+    sur `--all-features`
+  Parité des surfaces, ce que le fichier garantit : la surface REST expose l'identité self-service
+    sous `GET /api/v1/me`, lue en dual-auth comme le reste de la surface, avec le même rendu
+    d'erreur d'authentification que les routes protégées CRUD, admin et tokens ; asymétries
+    constatées hors du fichier (GraphQL sans requête `me`, MCP sans tool `me`, OpenAPI muet) :
+    voir `Tasks` `[?]`, la règle transverse visant les entités @MiryadResource dont `me` n'est pas
+
+Must not:
+  Accepter une cible venue du client : aucun extracteur @Query, @Path ni @Json n'est déclaré par
+    @me_handler — `/api/v1/me?subject=...`, `?id=...` ou un corps JSON ne sauraient déplacer la
+    lookup vers un autre compte ; ils sont ignorés sans erreur ni effet
+  Restreindre la route par un rôle ou un groupe : @is_admin n'est pas appelée, @RestError::Forbidden
+    n'est jamais construite — contrairement à ./admin.rs dont la vue est `AdminOnly`
+  Écrire dans `miryad_groups` ou `miryad_group_memberships` : la réconciliation d'appartenances
+    reste monopolisée par le callback OIDC via @sync_group_memberships ; cet endpoint ne fait que
+    lire, et ne crée même pas les groupes inconnus qu'il rencontre
+  Réimplémenter l'analyse du `Bearer`, le déchiffrement du cookie, le hash du token ou l'itération
+    des memberships : les trois déléguations (@AuthPrincipal, @resolve_user, @groups_by_user) sont
+    les seuls bras armés du fichier ; une dérive de l'une d'elles ne doit jamais être corrigée ici
+  Rendu autre que @Json pour le succès, ni @Json pour les erreurs REST de ce chemin — le contrat
+    du fil pour @RestError::Database et @AuthError est `text/plain`
+  @unwrap, @expect, @panic, @todo, @unimplemented, @println, @eprintln ou indexation `[]` non
+    gardée dans le code de production du fichier (harnais de ./tooling.sdd) ; le seul nom contenant
+    « unwrap » est @unwrap_or_default, non paniquant
+  Ajouter un champ (@id, @display_name, @created_at…), un dérivé @Deserialize ou un
+    @utoipa::@ToSchema sur @MeResponse sans arbitrage préalable de Sébastien — la forme du corps
+    est le contrat observable des clients
+
+Depends on:
+  @axum 0.8.9 — @Router, @nest, @route, @get, @Json, @State, @FromRef ; table de méthodes, dispatch
+    @HEAD vers @get, `405`/@Allow et effacement du corps HEAD vérifiés dans le source
+    (@method_routing.rs @call_with_state, @route.rs @RouteFuture avec @set_content_length avant
+    l'effacement, @json.rs : le corps @Bytes porte une taille exacte donc @Content-Length est posée)
+  @matchit 0.8.4 (transitif via @axum) — trie sans normalisation du slash final : `me` et `me/`
+    sont deux chemins distincts
+  @serde 1.0.229 + @serde_derive 1.0.229 — @Serialize dérivé émet les champs en ordre de
+    déclaration (@serialize_struct_visitor itère @fields sans tri, vérifié dans le source) ;
+    @serde_json 1.0.151 écrit l'objet à flux tendu sans réordonner. Côté test : @serde_json::@Value
+    en features par défaut est un @BTreeMap qui trie les clés à la lecture — l'ordre du fil ne
+    s'observe que sur les octets bruts
+  @sea_orm 2.0.2 — aucune clause @ORDER BY implicite sur @find/@all (vérifié dans
+    @query/select.rs) ; @DbErr et son @Display rendu par @RestError
+  /src/auth — @AuthPrincipal (impl @FromRequestParts de /src/auth/dual.rs), @MiryadAuthState,
+    @AuthError comme @Rejection rendu par /src/auth/error.sdd
+  /src/users/user.rs — @resolve_user (spec /src/users/user.sdd) : get-or-create, snapshot email,
+    bras de course
+  ./admin.rs — @rest::admin::groups_by_user en visibilité `pub(crate)` : deux requêtes,
+    court-circuit liste vide, filtrage des memberships orphelines
+  ./error.rs — @RestError et son impl @IntoResponse (sa spec ./error.sdd reste à produire)
+
+Exposes:
+  `pub fn @me_router<@S>() -> @Router<@S>` borné par `@S: @Clone + @Send + @Sync + 'static` et
+    `@MiryadAuthState: @FromRef<@S>` — seule fonction publique appelable du fichier, chemin public
+    complet `miryad_core::rest::me::me_router` ; construit le @Router infalliblement, aucun état
+    interne, deux montages produisent des routeurs indépendants mergeables dans tout @Router d'app
+  @MeResponse — struct `pub`, derives @Debug, @Clone, @PartialEq, @Serialize uniquement ; champs
+    `pub` @subject de type @String, @email de type @Option<@String>, @groups de type @Vec<@String> ;
+    ni @Deserialize, ni @utoipa::@ToSchema, ni champ `id`
+  @me_handler — fonction `async fn` privée, non appelable hors du fichier : entrée
+    @State<@MiryadAuthState> + @AuthPrincipal, sortie @Result<@Json<@MeResponse>, @RestError> ; sa
+    surface observable est exactement la route montée par @me_router
+  Sous `#[cfg(test)]` : @mod tests avec 2 tests inline — @me_reports_own_identity_and_groups et
+    @me_never_reports_another_users_groups — et leurs helpers @test_db, @test_state, @app,
+    @json_body, @get_request
+
+Accepts:
+  HTTP `GET /api/v1/me` (et @HEAD par dispatch implicite de axum) — corps de requête vide ou
+    ignoré, aucun paramètre de chemin, aucune query reconnue
+  Credentials : uniquement ceux du contrat dual — en-tête `Authorization` au préfixe exact
+    `Bearer ` ou cookie `miryad_session` ; jamais un troisième canal (query, en-tête custom, sous
+    quelque nom que ce soit)
+  @me_router : tout état @S projetant @MiryadAuthState par @FromRef ; de ce projeté, @me_handler ne
+    lit que @db
+  Aucun autre type d'entrée : pas de générique sur l'entité (contrairement à @resource_router), pas
+    de paramètre de feature, pas d'argument de configuration
+
+Returns:
+  @me_router : un @Router, toujours — conversion infallible, aucune erreur à ce niveau
+  Succès HTTP : `200`, @Content-Type `application/json`, corps JSON à trois clés ordonnées à
+    l'écriture : `"subject"` (chaîne), `"email"` (chaîne ou littéral `null`), `"groups"` (tableau
+    de chaînes, possiblement vide) — et rien d'autre ; cas minimal octet pour octet :
+    `{"subject":"nobody-sub","email":null,"groups":[]}`
+  @HEAD authentifié : mêmes en-têtes que le GET correspondant (@Content-Type `application/json`,
+    @Content-Length égal aux octets du corps JSON du GET — posé avant effacement, @route.rs), corps
+    effectivement vide
+  Échec : jamais de corps structuré ni @Json depuis ce fichier — uniquement les @Display texte de
+    @AuthError (extraction) ou de @RestError::Database (handler)
+
+Raises:
+  Ce fichier ne construit lui-même que @RestError::Database ; tout le reste transite par les
+    couches amont sans re-mapping. Sur `GET /api/v1/me` :
+  `401` corps exact `MRD-AUTH-001: not authenticated (no session cookie)` : anonyme complet — ni
+    cookie `miryad_session` ni Bearer reconnu ; émis par @extract_session via /src/auth/dual.sdd,
+    @me_handler jamais exécuté
+  `401` corps exact `MRD-AUTH-002: invalid or expired session` : cookie présent mais
+    indéchiffrable, @exp absente ou atteinte — chemin session, aucune lecture de @db n'a eu lieu
+  `401` corps exact `MRD-AUTH-014: invalid or unknown API token` : Bearer reconnu mais inconnu ou
+    révoqué — un cookie valide co-présent reste ignoré (non-repli verrouillé par ./dual.sdd,
+    observable ici au corps et non au statut seul, `014` et `015` rendant tous deux `401`)
+  `401` corps exact `MRD-AUTH-015: expired API token` : Bearer dont la ligne porte un @expires_at
+    atteint
+  `500` corps préfixé `MRD-AUTH-016: database error: ` : panne de @db sur le chemin token — le
+    handler n'est pas atteint, aucun @MRD-REST-* ne peut surgir d'un échec d'extraction
+  `500` corps préfixé `MRD-REST-003: database error: ` : @sea_orm::DbErr levé dans @me_handler —
+    SELECT/INSERT `miryad_users` par @resolve_user (y compris le @DbErr::RecordNotFound synthétique
+    du bras de course, sans code propre, voir le `[?]` de /src/users/user.sdd) ou SELECT de
+    @groups_by_user ; préfixe `MRD-REST-003`, pas `MRD-AUTH-016`
+  `405` corps vide, en-tête @Allow `GET` : toute autre méthode sur `/api/v1/me` — posés par le
+    routeur axum avant l'extracteur, donc aussi sur une requête sans credential
+  `404` du fallback applicatif : toute autre URL, y compris `/api/v1/me/` et `/api/v1/me` hors
+    montage de @me_router
+  Jamais émis depuis ce fichier : `403`/`MRD-REST-002`, `404` interne `MRD-REST-001`, `422`
+    @HookError, `MRD-REST-004`, `502` `MRD-AUTH-003` — aucune de ces variantes n'est constructible
+    ici
+
+Handles:
+  @subject jamais vu en base (token émis à la main, premier appel avant login navigateur) :
+    @resolve_user insère la ligne avant le rendu — réponse `200` avec @email `null` sur le chemin
+    token, et la ligne est observable en `miryad_users` après coup
+  Appelante sans aucune appartenance : la map de @groups_by_user ne contient pas sa clé → @remove
+    rend @None → @unwrap_or_default → `"groups":[]`, statut `200`, jamais une erreur
+  Membership orpheline (ligne de `miryad_group_memberships` pointant une ligne de groupe supprimée
+    à la main — état que la crate ne produit pas seule) : @groups_by_user filtre le nom en silence,
+    le tableau peut compter moins d'éléments que de lignes de membership ; comportement hérité
+  Course de deux premiers appels pour le même subject : le bras de rebond de @resolve_user rend la
+    ligne du gagnant — /me rend le subject et l'email du gagnant ; l'erreur d'insertion d'origine
+    est absorbée amont (déjà `[?]` dans /src/users/user.sdd)
+  Query string quelconque (`?page=99`, `?subject=autre`) : ignorée sans effet sur la lookup ni sur
+    la réponse — faute d'extracteur pour la déclarer
+  Rejet d'extraction : @me_handler ne s'exécute pas, aucune lecture `miryad_users` ni membership
+    n'a lieu ; ne subsistent que les effets de bord de l'extracteur lui-même (écriture
+    `last_used_at` en chemin token, contrat de ./dual.sdd)
+  @HEAD authentifié : le handler complet s'exécute — lookup, insertion éventuelle de première vue
+    — jusqu'à la fabrication de la réponse ; seul le corps est évidé au top-level par axum
+
+Tasks:
+  [?] @MeResponse n'expose pas de champ `id` (ni @display_name, ni @created_at) là où @UserSummary
+    de la vue admin `GET /api/v1/users` expose `id` : choix délibéré (garder la clé interne hors du
+    frontend) ou lacune — le template miryad a-t-il besoin du `id` interne depuis /me pour chaîner
+    un appel ? Le code ne l'a jamais rendu ; aucune prose d'architecture ne le promet.
+  [?] Parité des trois surfaces : l'identité self-service n'existe qu'en REST — GraphQL calcule le
+    même snapshot (@load_principal de /src/graphql/principal.rs : id interne, subject, groupes)
+    sans l'exposer en requête publique, MCP n'a aucun tool `me`. La règle transverse (« tout
+    comportement ajouté sur une surface est honoré sur les deux autres ») est écrite pour les
+    entités @MiryadResource, dont `me` n'est pas : applique-t-on quand même la parité (requête
+    GraphQL `me`, tool MCP) ou l'exemption est-elle une décision à écrire noir sur blanc ?
+  [?] OpenAPI muet sur la route : @resource_openapi ne couvre que les CRUD @MiryadResource —
+    `/api/v1/me` (comme `/api/v1/users` et `/api/v1/tokens`) est absent du document et de Swagger
+    UI, alors que @MeResponse ne derive pas @ToSchema : déclare-t-on un fragment pour les routes
+    self-service, ou leur marginalité hors document contractuel est-elle assumée ?
+  [?] Ordre du tableau `groups` : aucun @ORDER BY (constaté dans sea-orm 2.0.2) — l'ordre rendu est
+    celui de la passe de la base et peut varier entre deux appels identiques. Verrouille-t-on un
+    ordre (tri SQL ou @sort explicite) pour la stabilité du frontend, ou le désordre reste-t-il le
+    contrat ?
+  [?] @HEAD à effets de bord : @get sans @head fait tourner le handler complet sur HEAD —
+    @resolve_user peut INSERT une ligne `miryad_users` et la validation du token écrit
+    `last_used_at` pendant une requête « qui ne renvoie rien ». Reste-t-on sur le comportement
+    implicite de axum, ou déclare-t-on un @head refusant (`405`) pour qu'un HEAD ne soit plus
+    jamais écrivant ?
+  [?] @email affiché par /me est le snapshot de première vue, jamais rafraîchi : répercussion
+    directe du `[?]` de /src/users/user.sdd. Si l'upsert d'email est tranché amont, la ligne de
+    contrat « email = colonne de la ligne » tombe d'elle-même sans toucher ce fichier ; si le
+    snapshot est confirmé, l'écrire explicitement au contrat (fait ici) suffit-il ?
+  [ ] Convertir les 13 `Scenario` en au moins 13 tests distincts nommés dans le @mod tests
+    `#[cfg(test)]` inline de ./me.rs : sqlite en mémoire + @Migrator + @oneshot de @tower comme les
+    helpers existants — le contrat ne déborde pas du fichier, aucun crate d'intégration requis.
+    Décompte inline à ce jour : 2 tests. @me_reports_own_identity_and_groups approche le scenario 4
+      (bearer, email lu en base) mais ne lit le corps que via @serde_json::@Value — ordre des clés,
+      nullabilité littérale et forme byte-exact ne sont pas affirmés ; @me_never_reports_another_users_groups
+      approche le scenario 2 dans l'autre sens (témoin = appelante sans groupe) et ne prouve pas la
+      forme attendue. Renforcer ces 2 tests (octets bruts via @axum::body::to_bytes pour les
+      scenarios 6 et 11 — @Value trie les clés et perd l'ordre) et écrire 11 tests neufs : le
+      scenario 12 se construit par @DROP TABLE de `miryad_users` après @Migrator::up (sqlite), le
+      scenario 11 en comparant @Content-Length du HEAD à la longueur du corps du GET.
+
+Done when:
+  Chacun des 13 `Scenario` a au moins un test nommé distinct et vert dans le @mod tests de ./me.rs,
+    sur features par défaut comme sur `--no-default-features` (fichier inconditionnel), chaque test
+    affirmant corps et en-têtes — pas le seul statut
+  La batterie de ./tooling.sdd passe verte sans warning nouveau sur ./me.rs : les avertissements
+    @missing_docs actuels sur @MeResponse (struct et ses trois champs) sont de la dette recensée
+    par ./tooling.sdd et ne doivent pas grossir
+  Les 6 lignes `[?]` de `Tasks` sont arbitrées par Sébastien et leurs suites reflétées dans ce
+    contrat (ou dans le code par la tâche d'implémentation qui en découle)
+  Les asymétries constatées (absence de `id`, GraphQL et MCP sans équivalent, OpenAPI muet) sont
+    écrites comme décisions assumées — plus comme silences
+
+Scenario: Callante cookie de session rend son identité et ses groupes
+  Given une ligne `miryad_users` pour `alice-sub` avec l'email `alice@example.com` et une
+    appartenance au groupe `admin`
+  And un cookie `miryad_session` valide de subject `alice-sub`, sans en-tête `Authorization`
+  When un `GET /api/v1/me` atteint le @Router monté par @me_router
+  Then le statut est `200` avec @Content-Type `application/json`
+  And le corps porte @subject `alice-sub`, @email `alice@example.com` et @groups égal à
+    `["admin"]`
+
+Scenario: Aucun groupe d'autrui n'est rendu
+  Given une ligne `miryad_users` pour `bob-sub` membre du groupe `admin`
+  And une ligne pour `alice-sub` sans aucune appartenance
+  And un token API émis pour `alice-sub`
+  When un `GET /api/v1/me` porte ce bearer
+  Then le statut est `200` et @subject vaut `alice-sub`
+  And @groups est le tableau vide `[]`
+  But la chaîne `admin` n'apparaît nulle part dans le corps : la lookup des groupes est indexée
+    sur l'id résolu de l'appelante, jamais sur un id pair
+
+Scenario: L'email de la base prime sur l'email de la session
+  Given une ligne `miryad_users` pour `carol-sub` créée avec l'email `old@example.com`
+  And un cookie `miryad_session` valide dont le payload déchiffré porte l'email `new@example.com`
+  When un `GET /api/v1/me` porte ce cookie
+  Then le @email rendu est exactement `old@example.com`
+  But pas `new@example.com` : @me_handler lit la colonne de la ligne résolue et ne rafraîchit
+    jamais la base depuis @AuthPrincipal
+
+Scenario: Token sans email au principal voit l'email en base
+  Given une ligne `miryad_users` pour `dave-sub` avec l'email `dave@example.com`
+  And un token API émis pour `dave-sub` — le chemin token porte un principal dont @email vaut @None
+  When un `GET /api/v1/me` porte ce bearer
+  Then le @email rendu est `dave@example.com` et @subject est `dave-sub`
+  But la source du champ est la colonne `email` de la base, pas @AuthPrincipal.@email
+
+Scenario: Subject inconnu est inséré avant le premier rendu
+  Given une base migrée ne contenant aucune ligne `miryad_users` pour `fresh-sub`
+  And un token API émis pour `fresh-sub`
+  When un `GET /api/v1/me` porte ce bearer
+  Then le statut est `200` avec @subject `fresh-sub`, @email `null` et @groups `[]`
+  And une lecture directe de `miryad_users` trouve exactement une ligne `fresh-sub`, d'email NULL
+
+Scenario: Corps minimal exactement subject email et groups en ordre de déclaration
+  Given une ligne `miryad_users` pour `nobody-sub`, sans email et sans aucun groupe
+  And un token API émis pour `nobody-sub`
+  When un `GET /api/v1/me` portant ce bearer reçoit une réponse lue en octets bruts
+  Then l'en-tête @CONTENT_TYPE est `application/json`
+  And les octets du corps sont exactement `{"subject":"nobody-sub","email":null,"groups":[]}`
+  And aucune clé `id` n'y figure
+
+Scenario: Anonyme est 401 MRD-AUTH-001
+  Given une requête sans aucun cookie et sans en-tête `Authorization`
+  When elle atteint `/api/v1/me`
+  Then le statut est `401`
+  And le corps est exactement `MRD-AUTH-001: not authenticated (no session cookie)` en
+    `text/plain; charset=utf-8`
+  But aucune requête SQL sur `miryad_users` n'a eu lieu : @me_handler n'a pas été exécuté
+
+Scenario: Bearer invalide avec cookie valide est 401 MRD-AUTH-014 sans repli me
+  Given un en-tête `Authorization: Bearer mrd_inconnu` dont le hash ne correspond à aucune ligne
+  And un cookie `miryad_session` valide co-présent
+  When la requête atteint `/api/v1/me`
+  Then le statut est `401` avec le corps exact `MRD-AUTH-014: invalid or unknown API token`
+  But aucun corps `MRD-REST-*` et aucune session acceptée : /me n'ajoute pas de second mécanisme,
+    le non-repli verrouillé par ./dual.sdd s'observe ici au corps
+
+Scenario: Paramètre de requête ignoré par la route
+  Given une ligne `miryad_users` pour `alice-sub` et un token API valide pour `alice-sub`
+  When un `GET /api/v1/me?page=99&subject=bob-sub` porte ce bearer
+  Then le statut est `200` et le corps est identique à l'appel sans paramètre
+  And la lookup n'a pas dévié vers `bob-sub` : la query string est ignorée faute d'extracteur
+    déclaré
+
+Scenario: Méthode autre que GET est 405 avec Allow
+  Given une base migrée et une application montée par @me_router
+  When une requête `POST /api/v1/me` sans la moindre credential atteint la route
+  Then le statut est `405` avec un corps vide
+  And l'en-tête @Allow vaut `GET`
+  But pas de `401` : le routeur tranche la méthode sur le chemin connu avant que l'extracteur
+    d'identité ne tourne
+
+Scenario: HEAD execute le handler et rend un corps vide
+  Given une ligne `miryad_users` pour `alice-sub` et un token API valide pour elle
+  When une requête `HEAD /api/v1/me` portant ce bearer atteint la route
+  Then le statut est `200`, @Content-Type est `application/json` et @Content-Length vaut la
+    longueur du corps JSON du GET correspondant
+  And le corps effectivement lu par @axum::body::to_bytes est vide
+  But l'extraction a tourné comme sur GET : `last_used_at` du token a été rafraîchi — effet de
+    bord de ./dual.sdd, pas de ce fichier
+
+Scenario: Table users absente rend le handler 500 MRD-REST-003
+  Given une base migrée puis vidée de sa table `miryad_users` par @DROP TABLE — la table
+    `miryad_api_tokens` est intacte
+  And un token API émis pour `ghost-sub`, valide car émis avant la suppression
+  When un `GET /api/v1/me` porte ce bearer
+  Then le statut est `500`
+  And le corps `text/plain` commence par `MRD-REST-003: database error: `
+  But pas par `MRD-AUTH-016` : l'extraction a réussi, c'est @resolve_user qui échoue dans le
+    handler
+
+Scenario: Ordre des groupes non verrouillé par le contrat
+  Given une ligne `miryad_users` pour `eve-sub` membre à la fois des groupes `editors` et `viewers`
+  And un token API émis pour `eve-sub`
+  When un `GET /api/v1/me` porte ce bearer
+  Then @groups est un tableau de exactement deux éléments dont l'ensemble des valeurs vaut
+    `{editors, viewers}`
+  But aucune position n'est affirmée : aucun ORDER BY n'étant émis sur la lookup des appartenances,
+    l'ordre de la passe de la base est rendu tel quel

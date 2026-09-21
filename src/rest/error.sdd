@@ -1,0 +1,362 @@
+Spec: error — taxonomie @RestError et rendu REST
+
+Purpose:
+  Centraliser les échecs de la surface REST dans le seul type public @RestError à cinq variantes,
+    chacune portant soit un code unique `MRD-REST-NNN` (`001` à `004`) dans sa @Display, soit une
+    @HookError — l'erreur applicative du consommateur, jamais codée `MRD-*` — et décider leur rendu
+    @IntoResponse pour REST : statut exact par variante, corps `text/plain` porteur du code pour
+    `001` à `004`, corps JSON à deux clés sans `MRD-*` pour @RestError::Application. Le fichier ne
+    construit lui-même aucune erreur : les variantes viennent des handlers ./mod.rs, ./admin.rs,
+    ./me.rs et ./tokens.rs (opérateur `?` puis @From<@sea_orm::DbErr>, @ok_or, @map_err explicite),
+    et le même @RestError irrigue la surface MCP par @From<@RestError> for @McpError
+    (/src/mcp/error.rs, feature `mcp`), laquelle rend une enveloppe JSON-RPC à la place de ce
+    @IntoResponse.
+
+Owns:
+  ./error.rs
+
+References:
+  ./mod.rs — déclare @RestError comme type d'erreur des cinq handlers CRUD (import privé, aucune
+    ré-export) ; ses tests inline affirment déjà des statuts rendus par ce fichier : @StatusCode::FORBIDDEN
+    deux fois, @StatusCode::NOT_FOUND dans un test GET+DELETE, @StatusCode::UNPROCESSABLE_ENTITY une
+    fois avec les affirmations de corps JSON `code`=`WIDGET-001` et `message` — jamais le corps texte
+    exact de `403`/`404`
+  ./core.rs — seul émetteur de @RestError::Application, par @map_err explicite sur @before_create
+    dans @create ; émetteur de @RestError::NotFound (@ok_or dans @get, @update, @delete) et de
+    @RestError::Forbidden (refus de @rbac::list_access, @can_read, @can_create, @can_write)
+  ./admin.rs — refus @RestError::Forbidden du @users_router pour un appelant non admin
+  ./me.rs — @me_router où seule une @sea_orm::DbErr (@RestError::Database par `?`) est émettable
+  ./tokens.rs — @to_rest_error, conversion explicite de @AuthError dans @RestError : @AuthError::Database
+    passe en @RestError::Database, toute autre variante devient @RestError::Internal portant la
+    @Display complète de l'@AuthError ; c'est le seul émetteur de @RestError::Internal de la crate,
+    et sa doc assume qu'aucune conversion @From générique ne doit voir le jour
+  ./openapi.rs — document généré décrivant `403` et `404` en simples descriptions, sans schéma de
+    corps d'erreur ni `422` : asymétrie avec le contrat fil de ce fichier, voir `Tasks` `[?]`
+  /src/mcp/error.rs — @From<@RestError> for @McpError exhaustive 5/5, charges utiles @sea_orm::DbErr,
+    @HookError et @String préservées ; en MCP le rendu @Display/@code du hook passe dans le champ
+    JSON-RPC `data`, jamais par le @IntoResponse de ce fichier
+  /src/resource.rs — @HookError (champs publics @code @Option de valeur libre et @message), charge
+    utile de @RestError::Application ; contrat porté par /src/resource.sdd
+  /src/auth/error.rs — voisin et contraste de rendu : @AuthError ne rend que du texte, et le `401`
+    des extracteurs @AuthUser/@AuthPrincipal derrière toutes les routes `/api/v1` est rendu là-bas,
+    jamais ici ; la spec /src/auth/error.sdd vérifie le content-type @text/plain d'axum-core, réutilisé ici
+  /src/rbac.sdd — tranche en amont la traduction @rbac::ListAccess::Forbidden → @RestError::Forbidden
+    (`MRD-REST-002`) et le refus sans colonne propriétaire → @RestError::Database (`MRD-REST-003`)
+  /tests/resource.rs — ne déclare que de la métadonnée @MiryadResource : n'affirme ni statut HTTP ni
+    corps d'erreur, aucun test d'intégration n'est rattaché à ce fichier
+
+Must:
+  Table de rendu invariante et exhaustive, sans bras joker de premier niveau — le `match` de
+    @into_response nomme les cinq variantes, l'ajout d'une sixième interrompt la compilation avant
+    rendu par défaut, à l'image de /src/auth/error.rs :
+    @RestError::NotFound → `MRD-REST-001` → `404` (@StatusCode::NOT_FOUND) → corps texte exactement
+      `MRD-REST-001: resource not found` → @CONTENT_TYPE `text/plain; charset=utf-8`
+    @RestError::Forbidden → `MRD-REST-002` → `403` (@StatusCode::FORBIDDEN) → corps texte exactement
+      `MRD-REST-002: access denied` → @CONTENT_TYPE `text/plain; charset=utf-8`
+    @RestError::Database, quel que soit son @sea_orm::DbErr → `MRD-REST-003` → `500`
+      (@StatusCode::INTERNAL_SERVER_ERROR) → corps texte `MRD-REST-003: database error: ` suivi de
+      la @Display du @sea_orm::DbErr verbatim → @CONTENT_TYPE `text/plain; charset=utf-8`
+    @RestError::Application, quel que soit son @HookError → aucun code `MRD-*` → `422`
+      (@StatusCode::UNPROCESSABLE_ENTITY) → corps JSON `{"code": ..., "message": ...}` →
+      @CONTENT_TYPE `application/json`
+    @RestError::Internal, quelle que soit sa charge utile @String → `MRD-REST-004` → `500` → corps
+      texte `MRD-REST-004: internal error: ` suivi de la charge utile verbatim → @CONTENT_TYPE
+      `text/plain; charset=utf-8`
+  Le code `MRD-REST-NNN` est dans le corps en texte brut pour `404`/`403`/`500` ; le corps `422` ne
+    contient jamais la sous-chaîne `MRD-` — la séparation contrat transverse @HookError / taxonomie
+    `MRD-*` passe par la variante, pas par un préfixe commun
+  Corps `422` produit par le struct privé @ApplicationErrorBody à deux champs @Serialize : exactement
+    les clés `code` et `message`, @code émis même lorsque le @HookError n'a pas de code (sérialisé
+    `null`, aucun `skip_serializing_if`), @message = message brut sans préfixe ni troncature. Le
+    @serde derive émet les champs dans l'ordre de déclaration (@code puis @message) — comportement
+    constaté de la version verrouillée, non une garantie du fil : les tests affirment par @serde_json
+    interpété, pas par comparaison d'octets
+  @code du @HookError jamais validé, filtré ni re-codé : une application qui logerait `MRD-REST-001`
+    dans son @HookError le verrait sortir tel quel dans le corps `422` — ce fichier ne tranche pas
+  @Display de @RestError::Application = @HookError::message brut sous l'attribut
+    `#[error("{}", .0.message)]` — sans @code, sans préfixe, sans variante de @code : le rendu HTTP
+    @Json est le seul chemin qui porte @code
+  @Error::source ne vaut @Some que pour @RestError::Database et retourne alors le @sea_orm::DbErr
+    embarqué — `#[from]` vaut `#[source]`, vérifié dans le source de thiserror-impl 2.0.20 ; les
+    quatre autres valent @None, @RestError::Application compris dont le @HookError n'est pas
+    déclaré source
+  @From<@sea_orm::DbErr> générée par `#[from]` est la seule conversion dérivée vers cet enum : ni
+    @From<@HookError> ni @From<@String> n'existent, @RestError::Application et @RestError::Internal
+    sont construits explicitement par leurs appelants
+  Rendu sans défaillance ni repli : @into_response consomme `self` par valeur et retourne un
+    @axum::response::Response ; la sérialisation d'un @Option<&str> et d'un @&str ne peut pas
+    échouer, donc le repli @Json d'axum (`500` texte en cas d'échec serde, vérifié dans le source
+    d'axum 0.8.9) est inatteignable ici
+  Mécanisme de content-type vérifié dans le source amont : @IntoResponse de @String transite par
+    @Cow<'static, str> et pose @mime::TEXT_PLAIN_UTF_8 (axum-core 0.5.6) ; @axum::Json pose
+    @mime::APPLICATION_JSON sans charset (axum 0.8.9) ; le tuple (@StatusCode, @R) rend @R puis
+    écrase seulement le statut, en-tête conservé (axum-core 0.5.6)
+  Mécanisme de charge utile vérifié pareillement : la charge utile de @RestError::Database est
+    formatée par la @Display de @sea_orm::DbErr telle que sea-orm 2.0.2 — @sea_orm::DbErr::Custom de
+    texte `boom` y porte le préfixe `Custom Error: ` ; @RestError::Database encapsulant ce @Custom
+    rend exactement `MRD-REST-003: database error: Custom Error: boom`
+  Mutisme total : aucun appel @tracing (@error!, @warn! ou autre), @println, @eprintln ou @dbg dans
+    @Display ou @into_response — les traces de rejet vivent chez les extracteurs auth
+    (/src/auth/middleware.rs, /src/auth/dual.rs), aucun appelant REST n'en pose non plus
+  Compilation inconditionnelle sur toutes les combinaisons de features de /Cargo.toml : aucun
+    `#[cfg(feature = ...)]` dans le fichier, `pub mod rest` non gateé dans /src/lib.rs, @axum,
+    @thiserror, @serde et @sea-orm non optionnels — `--no-default-features` comme `--all-features`
+    de la batterie `tooling.sdd` doivent compiler et exercer ce contrat
+  Parité des surfaces pour la monnaie d'erreur @RestError : rendue en statuts HTTP par ce fichier
+    sur REST (les dix handlers de ./mod.rs, ./admin.rs, ./me.rs et ./tokens.rs retournent
+    `Result<_, @RestError>`), convertie 1:1 charges utiles incluses en @McpError côté MCP
+    (/src/mcp/error.rs) ; GraphQL ne consomme pas @RestError et suit sa propre taxonomie
+    `MRD-GQL-*` (/src/rbac.sdd) — asymétrie d'enveloppe constatée, pas de décalage de sens
+
+Must not:
+  Émettre la moindre trace ou effet de bord dans @Display ou @into_response — le contrat `Must` de
+    mutisme interdit d'ajouter un @error! ici sans changer la spec
+  Conférer un codage `MRD-REST-*` à un @HookError, ni le mapper en @RestError::NotFound,
+    @RestError::Forbidden ou @RestError::Internal — @RestError::Application est sa seule issue
+    (règle transverse `.specdd/bootstrap.project.md` et `Must not` de `./miryad-core.sdd`)
+  Introduire un @From<@HookError> ou un @From<@AuthError> vers @RestError : @to_rest_error
+    (./tokens.rs) et le @map_err de ./core.rs existent précisément pour refuser une conversion
+    générique faisant croire à une correspondance sans perte — le commentaire de
+    @RestError::Internal dans ce fichier l'interdit explicitement
+  Sanitiser, troncater ou généraliser les corps `500` : la charge utile verbatim de @RestError::Database
+    et @RestError::Internal est le comportement actuel ; son exposition est une question `[?]`, pas
+    une marge de manœuvre de l'implémenteur
+  Rendre @RestError::Application en texte, ou une variante codée `MRD-*` en @Json — les formes par
+    variante de la table `Must` sont exhaustives
+  Poser un quelconque en-tête de réponse, @WWW-Authenticate sur `403` compris : le `match` ne sort
+    que statut + corps
+  Modifier un littéral de @Display, un code `MRD-REST-NNN` ou une cellule variante → statut de la
+    table sans arbitrage de Sébastien — ces chaînes sont le contrat fil des clients du template
+    miryad et les affirmations des tests inline de ./mod.rs, ./admin.rs et ./tokens.rs
+
+Depends on:
+  @axum 0.8 (lock 0.8.9 ; axum-core 0.5.6) — traits @IntoResponse et @StatusCode, type @axum::Json
+    dont @serde_json porte la sérialisation
+  @thiserror 2 (lock 2.0.20) — derives @Debug/@Display/@Error et @From via `#[from]`
+  @sea_orm 2 (lock 2.0.2) — @sea_orm::DbErr comme charge utile de @RestError::Database
+  @serde (derive @Serialize) — pour le struct privé @ApplicationErrorBody uniquement
+  /src/resource.rs — @HookError, type public du contrat consommateur importé ici
+
+Exposes:
+  @RestError — enum `pub` à cinq variantes, derives @Debug et @thiserror::Error uniquement, sans
+    @Clone ni @PartialEq ; accessible seulement par @crate::rest::error::RestError — ./mod.rs ne le
+    ré-exporte pas
+    @RestError::NotFound — variante unitaire, code `MRD-REST-001`
+    @RestError::Forbidden — variante unitaire, code `MRD-REST-002`
+    @RestError::Database — variante tuple d'un @sea_orm::DbErr sous `#[from]`, code `MRD-REST-003`
+    @RestError::Application — variante tuple d'un @HookError, sans `#[from]`, sans code `MRD-*`
+    @RestError::Internal — variante tuple d'un @String, code `MRD-REST-004` ; sa doc-comment
+      n'assume atteignable qu'une variante d'un autre sous-système réellement joignable, et proscrit
+      le @From générique
+  @IntoResponse pour @RestError — seule implémentation manuelle du fichier, rendue dans ./mod.rs,
+    ./admin.rs, ./me.rs et ./tokens.rs par le `Result` de retour des handlers
+  @From<@sea_orm::DbErr> pour @RestError — générée par `#[from]` ; les dix handlers REST qui
+    appellent SeaORM l'empruntent par `?`
+  @Display dérivée publique — les cinq messages de la table `Must`, y compris le message nu de
+    @RestError::Application
+
+Accepts:
+  @IntoResponse::into_response : `self` par valeur ; la branche @RestError::Application lie sa
+    charge utile par référence (@ref) pour l'emprunter dans @ApplicationErrorBody, les quatre autres
+    passent par @Display et la charge utile est perdue après rendu
+  @From<@sea_orm::DbErr> : un @sea_orm::DbErr nu, sans perte de message
+  @ApplicationErrorBody (privé) : @code emprunté @Option<&str> par @as_deref, @message emprunté
+    @&str ; la sérialisation @serde_json s'exécute de façon synchrone dans @into_response, avant
+    toute fin de vie de l'emprunt
+  Aucune entrée générique, aucun paramètre de feature, aucun état global ; @RestError n'est le
+    @Rejection d'aucun extracteur axum — le rejet d'authentification est une affaire @AuthError
+
+Returns:
+  @IntoResponse::into_response : @axum::response::Response au statut, au corps et à l'en-tête de la
+    cellule de table correspondant à la variante consommée — aucun en-tête supplémentaire, aucun
+    chemin d'échec ni repli
+  @From<@sea_orm::DbErr> : @RestError::Database conservant l'erreur d'origine accessible par
+    @Error::source
+  @Display : @String exactement celui de la table `Must` pour les quatre variantes codées, message
+    nu du hook pour @RestError::Application
+
+Raises:
+  `MRD-REST-001` via @RestError::NotFound : rendu `404` sur `GET/PUT/DELETE /api/v1/{resource}/{id}`
+    (@ok_or de ./core.rs) et `DELETE /api/v1/tokens/{id}` (./tokens.rs) quand aucune ligne ne
+    correspond à l'identifiant
+  `MRD-REST-002` via @RestError::Forbidden : rendu `403` sur les routes CRUD quand @rbac@ ::list_access
+    répond @ListAccess::Forbidden ou @can_read/@can_create/@can_write répondent @false, sur
+    `GET /api/v1/users` pour un non-admin (./admin.rs), et sur `DELETE /api/v1/tokens/{id}` quand le
+    @subject du token diffère de celui de la ligne (./tokens.rs)
+  `MRD-REST-003` via @RestError::Database : rendu `500` pour toute @sea_orm::DbErr remontée par `?`
+    dans les dix handlers (@resolve_user, @is_admin, @paginate/@num_items_and_pages/@fetch_page,
+    @insert/@update/@delete_by_id, requêtes @ApiToken), plus le pass-through de @AuthError::Database
+    par @to_rest_error (./tokens.rs sur @issue_token/@revoke_token)
+  `MRD-REST-004` via @RestError::Internal : rendu `500` du seul bras non-@Database de @to_rest_error,
+    portant la @Display intégrale de l'@AuthError — bras défensif que la doc de ./tokens.rs déclare
+    en pratique inatteignable (@issue_token/@revoke_token ne produisent aujourd'hui que
+    @AuthError::Database)
+  Aucune variante par ce fichier : il ne construit rien, seul le rendu est décidé ici ; @RestError::Application
+    n'a volontairement pas de code `MRD-*` — sa rejection métier est émise par ./core.rs quand @before_create
+    retourne une @Err de @HookError, sur `POST /api/v1/{resource}` seulement
+
+Handles:
+  Trois formes de `500` distinguées au seul corps : @RestError::Database (panne SeaORM,
+    `MRD-REST-003` + @sea_orm::DbErr verbatim) et @RestError::Internal (erreur d'un autre
+    sous-système encapsulée, `MRD-REST-004`) partagent le statut, le code du corps dit l'origine
+  Rejet métier du consommateur avec restitution complète : @RestError::Application rend `422` en
+    @Json avec le @code libre du @HookError (ex. `WIDGET-001`, seul cas testé aujourd'hui en
+    ./mod.rs) et le message brut, sans ajouter de code `MRD-*` — exception de fond au codage interne
+  Traduction @AuthError : absente de ce fichier ; @to_rest_error (./tokens.rs) passe @AuthError::Database
+    en @RestError::Database (`MRD-REST-003`) et convertit le reste en @RestError::Internal — le
+    message embarqué imbrique alors `MRD-AUTH-NNN` sous le préfixe `MRD-REST-004` (voir `Tasks` `[?]`)
+  Consommation MCP des mêmes erreurs : conversion 1:1 des cinq variants par /src/mcp/error.rs —
+    @RestError::NotFound→@McpError::NotFound (`-32002`), @RestError::Forbidden→@McpError::Forbidden
+    (`-32001`), @RestError::Database/@RestError::Application/@RestError::Internal charges utiles
+    préservées ; le `422` et l'en-tête @Json n'existent pas en MCP, le @code du hook y passe dans le
+    champ `data` JSON-RPC
+  Frontière d'authentification : les `401` (cookie absent, session expirée, token inconnu/expiré)
+    sur toutes les routes `/api/v1` sortent d'@AuthError via les rejets @AuthUser/@AuthPrincipal,
+    jamais de ce fichier — @RestError n'intervient qu'une fois l'identité établie
+  Continuité de pagination et corps vides : hors périmètre — ./core.rs et @Pagination les traitent
+    avant tout @RestError
+
+Tasks:
+  [?] Les corps `500` exposent verbatim la @Display d'un @sea_orm::DbErr (message du driver, SQL
+    éventuel, fuite de chaîne de connexion ?) et celle du sous-système d'origine pour
+    `MRD-REST-004` : exposition brute voulue (diagnostic ops du self-host) ou corps génériques avec
+    détail en @tracing ? La même question est ouverte dans /src/auth/error.sdd.
+  [?] Double code dans le corps `500` : @to_rest_error imbrique `MRD-AUTH-NNN: ...` sous le préfixe
+    `MRD-REST-004: internal error: ` — lequel des deux est le code unique que le contrat transverse
+    promet au client, et lequel doit apparaître dans l'IR ou les clients générés ?
+  [?] @Display de @RestError::Application perd @HookError::code (message nu), alors que le corps
+    `422` le garde et que MCP le place dans `data` : un consommateur qui sérialise l'erreur hors de
+    @into_response perd donc @code — comportement assumé ou à corriger (afficher @code dans la
+    @Display casserait en revanche la règle « message nu sans code » du hook) ?
+  [?] OpenAPI : /src/rest/openapi.rs ne documente que des descriptions `403`/`404` sans aucun schéma
+    de corps, et ne publie ni le `422` du hook @before_create ni les codes `MRD-REST-*` des `500` :
+    le contrat d'erreur des routes REST doit-il entrer dans le document public (deux artefacts,
+    OpenAPI vs IR, déjà séparés par `./miryad-core.sdd`) ou rester code-only ?
+  [ ] Convertir les 14 `Scenario` en au moins 14 tests distincts nommés dans le `mod tests`
+    `#[cfg(test)]` de ./error.rs (le fichier ne compte aucun test inline à ce jour) : neuf cas purs
+    (@Display, @From, @Error::source) en @test synchrone, cinq cas de rendu en @tokio::test lisant
+    corps et en-tête par @axum::body::to_bytes (dev-dependencies déjà présentes via ./mod.rs). Le
+    contrat ne déborde pas du fichier, sauf : le dispatch réel de @to_rest_error s'affirme dans les
+    tests de ./tokens.rs, et @From<@RestError> for @McpError s'affirmera dans les tests inline de
+    /src/mcp/error.rs à la rédaction de sa spec. Les tests voisins assertent déjà des statuts rendus
+    ici — ./mod.rs : `403` ×2, `404` ×1 (GET+DELETE), `422` ×1 avec corps JSON `code`/`message` ;
+    ./admin.rs : `403` ×1 ; ./tokens.rs : `403` ×1, `404` ×1 — mais aucun n'affirme les corps texte
+    exacts `403`/`404`/`500` de ce fichier, et /tests/resource.rs n'exerce rien de ce contrat.
+
+Done when:
+  Les 14 `Scenario` ont chacun au moins un test nommé distinct et vert dans ./error.rs, sur features
+    par défaut comme sur `--no-default-features` (fichier inconditionnel)
+  La table variante → code → statut → corps → content-type et la distinction de @Error::source sont
+    affirmées sans réinterprétation : comparaison de chaînes exactes pour le texte, @serde_json
+    interprété pour le `422`, présence de la clé `code` à `null` vérifiée
+  Le mutisme et l'absence d'en-tête supplémentaire sont certifiés par lecture statique du fichier
+    (aucun @tracing, @println, @dbg, aucun en-tête fabriqué)
+  Les quatre lignes `[?]` de `Tasks` sont arbitrées par Sébastien et leurs suites reflétées dans le
+    contrat ou le code
+
+Scenario: Display 001 ressource absente
+  Given l'erreur @RestError::NotFound construite directement
+  When la @Display dérivée est évaluée par `to_string`
+  Then la chaîne renvoyée est exactement `MRD-REST-001: resource not found`
+
+Scenario: Display 002 accès refusé
+  Given l'erreur @RestError::Forbidden construite directement
+  When la @Display dérivée est évaluée par `to_string`
+  Then la chaîne renvoyée est exactement `MRD-REST-002: access denied`
+
+Scenario: Display 003 DbErr embarqué
+  Given l'erreur @RestError::Database encapsulant @sea_orm::DbErr::Custom de texte `boom`
+  When la @Display dérivée est évaluée par `to_string`
+  Then la chaîne renvoyée est exactement `MRD-REST-003: database error: Custom Error: boom`
+    (préfixe `Custom Error: ` vérifié dans le source de sea-orm 2.0.2)
+
+Scenario: Display 004 charge utile verbatim
+  Given l'erreur @RestError::Internal de charge utile `upstream exploded`
+  When la @Display dérivée est évaluée par `to_string`
+  Then la chaîne renvoyée est exactement `MRD-REST-004: internal error: upstream exploded`
+
+Scenario: Display Application message nu sans code
+  Given l'erreur @RestError::Application encapsulant un @HookError créé par `with_code` de code
+    `WIDGET-001` et de message `label must not be empty`
+  When la @Display dérivée est évaluée par `to_string`
+  Then la chaîne renvoyée est exactement `label must not be empty`
+  And elle ne contient ni le code `WIDGET-001`, ni le sous-code `WIDGET-`, ni aucune sous-chaîne `MRD-`
+
+Scenario: rendu HTTP 404 pour 001
+  Given l'erreur @RestError::NotFound
+  When @IntoResponse::into_response est appelée
+  Then le statut est `404`
+  And le corps lu par @axum::body::to_bytes est exactement `MRD-REST-001: resource not found`
+  And l'en-tête @CONTENT_TYPE vaut `text/plain; charset=utf-8`
+
+Scenario: rendu HTTP 403 pour 002
+  Given l'erreur @RestError::Forbidden
+  When @IntoResponse::into_response est appelée
+  Then le statut est `403`
+  And le corps lu par @axum::body::to_bytes est exactement `MRD-REST-002: access denied`
+  And l'en-tête @CONTENT_TYPE vaut `text/plain; charset=utf-8`
+
+Scenario: rendu HTTP 500 pour 003
+  Given l'erreur @RestError::Database encapsulant @sea_orm::DbErr::Custom de texte `boom`
+  When @IntoResponse::into_response est appelée
+  Then le statut est `500`
+  And le corps lu par @axum::body::to_bytes est exactement `MRD-REST-003: database error: Custom Error: boom`
+  And l'en-tête @CONTENT_TYPE vaut `text/plain; charset=utf-8`
+
+Scenario: rendu HTTP 500 pour 004
+  Given l'erreur @RestError::Internal de charge utile `upstream exploded`
+  When @IntoResponse::into_response est appelée
+  Then le statut est `500`
+  And le corps lu par @axum::body::to_bytes est exactement `MRD-REST-004: internal error: upstream exploded`
+  And l'en-tête @CONTENT_TYPE vaut `text/plain; charset=utf-8`
+
+Scenario: rendu HTTP 422 JSON avec code de hook
+  Given l'erreur @RestError::Application encapsulant un @HookError créé par `with_code` de code
+    `WIDGET-001` et de message `label must not be empty`
+  When @IntoResponse::into_response est appelée
+  Then le statut est `422`
+  And l'en-tête @CONTENT_TYPE vaut `application/json`
+  And le corps interprété par @serde_json a exactement deux clés : `code` vaut `WIDGET-001` et
+    `message` vaut `label must not be empty`
+  But le corps ne contient aucune sous-chaîne `MRD-`
+
+Scenario: rendu HTTP 422 JSON sans code de hook
+  Given l'erreur @RestError::Application encapsulant un @HookError créé par `new` de message `boom`
+  When @IntoResponse::into_response est appelée
+  Then le statut est `422`
+  And le corps interprété par @serde_json porte la clé `code` présente avec la valeur `null` et la
+    clé `message` valant `boom`
+
+Scenario: source de l'erreur sur Database seulement
+  Given une valeur de chacune des cinq variantes de @RestError, @RestError::Database encapsulant
+    @sea_orm::DbErr::Custom de texte `boom` et @RestError::Application encapsulant un @HookError quel
+  When @Error::source est appelée sur chacune
+  Then la réponse est @Some, égale au @sea_orm::DbErr embarqué, pour @RestError::Database seulement
+  But la réponse est @None pour les quatre autres variantes, @RestError::Application compris
+
+Scenario: DbErr propagé par l'opérateur d'interrogation devient Database
+  Given un @sea_orm::DbErr::Custom nu de texte `connection lost`
+  When la conversion @From générée par `#[from]` est appliquée — le chemin qu'emprunte l'opérateur
+    `?` dans les dix handlers de ./mod.rs, ./admin.rs, ./me.rs et ./tokens.rs sur leurs appels SeaORM
+  Then la valeur obtenue est @RestError::Database conservant l'erreur d'origine par @Error::source
+  And sa @Display vaut exactement `MRD-REST-003: database error: Custom Error: connection lost`
+
+Scenario: Internal portant un AuthError imbrique le double code
+  Given l'erreur @RestError::Internal construite avec la @Display d'un @AuthError::Oidc de charge
+    utile `discovery failed` — ce que produit @to_rest_error dans ./tokens.rs pour toute variante
+    non-@Database
+  When la @Display est évaluée puis @IntoResponse::into_response appelée
+  Then la chaîne de @Display est exactement `MRD-REST-004: internal error: MRD-AUTH-003: OIDC error: discovery failed`
+  And le rendu HTTP est `500` avec ce corps en `text/plain; charset=utf-8`
+
+Example: matrice variante → code → statut → content-type → corps exact
+  @RestError::NotFound → `MRD-REST-001` → `404` → `text/plain; charset=utf-8` → `MRD-REST-001: resource not found`
+  @RestError::Forbidden → `MRD-REST-002` → `403` → `text/plain; charset=utf-8` → `MRD-REST-002: access denied`
+  @RestError::Database encapsulant @sea_orm::DbErr::Custom `boom` → `MRD-REST-003` → `500` →
+    `text/plain; charset=utf-8` → `MRD-REST-003: database error: Custom Error: boom`
+  @RestError::Application encapsulant un @HookError de code `WIDGET-001` et message `label must not be empty`
+    → aucun `MRD-*` → `422` → `application/json` → objet JSON `code`=`WIDGET-001`, `message`=`label must not be empty`
+  @RestError::Application encapsulant un @HookError sans code de message `boom` → aucun `MRD-*` →
+    `422` → `application/json` → objet JSON `code`=`null` (clé présente), `message`=`boom`
+  @RestError::Internal de charge utile `upstream exploded` → `MRD-REST-004` → `500` →
+    `text/plain; charset=utf-8` → `MRD-REST-004: internal error: upstream exploded`

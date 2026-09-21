@@ -1,0 +1,404 @@
+Spec: cookie — cookie de session `miryad_session` : pose chiffrée AES-256-GCM, lecture vérifiée avec ré-lecture d'expiration, retrait par `Max-Age=0`
+
+Purpose:
+  Porter le cookie de session navigateur `miryad_session` : payload JSON @id_token/@subject/@email de
+    l’@OidcIdentity scellé par @cookie::PrivateJar, sans store de session côté serveur — le
+    déchiffrement à la clé maîtresse plus la ré-lecture horodatée de la claim `exp` sont tout
+    l’acte d’authentification. Le fichier expose la pose (@build_set_cookie), la lecture
+    (@extract_session) et le retrait (@clear_cookie), et rien d’autre.
+  Frontière assumée : ce fichier ne connaît que `miryad_session`. Le cookie temporaire
+    `miryad_oidc_pending` (state CSRF + nonce, `Max-Age=300`) est posé, lu et effacé par ./mod.rs —
+    même enveloppe chiffrée et même @cookie::Key (celui de @MiryadAuthState.cookie_key), même style
+    d’attributs, contrat distinct. Il n’y a pas de cookies PKCE dans ce flow : ./oidc.rs conduit le
+    flux `AuthorizationCode` sans défi PKCE (aucun `set_pkce_challenge`, vérifié dans son source) —
+    la seule paire state/nonce temporaire est celle du pending cookie, hors de ce fichier.
+
+Owns:
+  ./cookie.rs
+
+References:
+  ./error.rs — codes portés par les deux erreurs émises ici : @AuthError::NotAuthenticated =
+    `MRD-AUTH-001`, @AuthError::InvalidSession = `MRD-AUTH-002`, tous deux rendus `401` en texte
+  ./error.sdd — contrat frère : confirme que @extract_session est le seul émetteur des variantes
+    @AuthError::NotAuthenticated et @AuthError::InvalidSession de toute la crate
+  ./oidc.rs — définit l’@OidcIdentity triplé persisté ici ; vérifie signature et nonce de
+    l’@id_token en amont (@OidcClientTrait::exchange_code, `MRD-AUTH-011`) ; ne pose pas de défi
+    PKCE — @extract_exp_claim imite sa technique de découpage JWT (@extract_groups_claim) mais sans
+    parse JSON complet (asymétrie, `Tasks` `[?]`)
+  ./mod.rs — seul appelant de ces trois fonctions côté flux : @handler_callback pose le cookie de session
+    via @build_set_cookie, @handler_logout émet @clear_cookie ; le pending cookie
+    `miryad_oidc_pending` (attributs identiques, `Max-Age=300` fixe) y est construit à la main
+  ./middleware.rs — @AuthUser (extracteur REST cookie-only) appelle @extract_session et porte la
+    trace debug `auth rejected` sur le rejet
+  ./dual.rs — @AuthPrincipal (cookie ou `Bearer`) appelle @extract_session : c’est par lui que le
+    cookie authentifie les surfaces REST, GraphQL et MCP
+  ./state.rs — @MiryadAuthState.cookie_key : source et propriété du @cookie::Key, hors du périmètre
+    de ce contrat (construction, dérivation, rotation)
+  /docs/architecture.md — récit : payload chiffré sans séparateur `|`, pending cookie `Max-Age=300`,
+    et asymétrie OpenAPI assumée (schéma `bearer_auth` seul, cookie `HttpOnly` non actionnable dans
+    Swagger UI)
+  /tooling.sdd — dette imputée à ce fichier : 1 `indexing_slicing` de production dans
+    @extract_exp_claim et `missing_docs` sur les quatre items publics ; règle une-spec-par-fichier
+    (les tests inline comptent dans cette spec)
+
+Must:
+  Contrat de pose littéral, octet pour octet, dans cet ordre : nom `miryad_session`, puis `=`, puis
+    la valeur scellée, puis `; HttpOnly`, `; SameSite=Lax`, `; Path=/`, `; Max-Age=<n>` — `HttpOnly`
+    est posé, et aucune `;` finale ne termine la chaîne
+  La table d’attributs posée est exhaustive : `Secure`, `Domain` et `Expires` ne sont jamais posés
+    (cookie hôte-only, durée portée par `Max-Age` seul) — c’est le contrat actuel, dont l’arbitrage
+    est tracé en `Tasks` `[?]`, pas une décision que ce fichier prend tout seul
+  `Max-Age=<n>` avec `n` = @u64 `max_age` rendu par @u64::saturating_sub(`exp` − `now`) : `exp` = claim
+    lisible de l’@id_token via @extract_exp_claim, sinon `0` (@Option::unwrap_or(`0`)) ; `now` =
+    secondes @SystemTime::now/@UNIX_EPOCH, `0` si l’horloge est antérieure à l’epoch — conséquence
+    contractuelle : un @id_token expiré, sans claim `exp`, non compact ou indéchiffrable en base64
+    produit un cookie à `Max-Age=0` que le navigateur jette aussitôt, et un cookie vivant meurt
+    exactement à l’`exp` du fournisseur
+  Payload scellé : JSON @serde à exactement trois clés `id_token`, `subject`, `email` — email absent
+    sérialisé en `null` (aucun attribut `skip_serializing_if` sur @SessionPayloadRef) — puis scellé
+    par @cookie::PrivateJar : `AES-256-GCM`, nonce `12` octets tiré de @thread_rng et tag détaché
+    `16` octets, enveloppe @base64::prelude::BASE64_STANDARD de `nonce|chiffré|tag`, et le nom du
+    cookie comme données associées AEAD — la valeur est donc indémontable et non transplantable vers
+    un autre nom (table vérifiée dans le source cookie-0.18.2 `src/secure/private.rs`)
+  La clé de chiffrement effective est l’intervalle d’octets `32..64` (les derniers `32` octets) du
+    @cookie::Key maître, vérifié @cookie::Key::encryption dans le source cookie-0.18.2
+    `src/secure/key.rs` — aucun @Key::from ici, et @Key::from amont panique sous `64` octets : la
+    validité de la clé est un prérequis hérité, jamais une construction de ce fichier
+  Double barrière d’expiration : `Max-Age` côté client et ré-lecture serveur à chaque
+    @extract_session — si la claim `exp` du payload déchiffré vaut `≤` `now`, la lecture échoue en
+    `MRD-AUTH-002` ; un client qui poste le cookie au-delà de son `Max-Age` ne passe jamais sans
+    cette revalidation, et `exp == now` exactement est déjà un rejet (borne `≤` partagée avec le
+    `saturating_sub` de la pose, qui rend alors `0` — pas de fenêtre de divorce pose/lecture)
+  @extract_session restitue l’@OidcIdentity triplé à l’identique : @id_token retourné au byte près
+    tel que déchiffré, sans re-vérification de signature ni de nonce — la confiance vient de la
+    vérification amont (./oidc.rs, `MRD-AUTH-011`) et de l’origine serveur prouvée par le
+    déchiffrement GCM à la clé
+  Lecture brute et figée de l’en-tête `Cookie` : découpe par `;`, trim de chaque segment, segments
+    vides filtrés, @str::split_once au premier `=` seulement (la valeur garde les `=` de bourrage
+    @base64::prelude::BASE64_STANDARD de fin, qui lui appartiennent), comparaison de nom exacte et
+    sensible à la casse contre `miryad_session`, première occurrence retenue par @Iterator::find_map,
+    segments sans `=` ignorés — aucune parse par le crate @cookie, aucun percent-decode
+  Compilation inconditionnelle : aucun `#[cfg(feature = ...)]` dans le fichier, @cookie (feature
+    `private`), @base64, @serde et @serde_json non optionnels dans /Cargo.toml, `pub mod cookie` non
+    gateé dans ./mod.rs et `pub mod auth` non gateé dans /src/lib.rs — la batterie de /tooling.sdd,
+    `--no-default-features` inclus, doit compiler et exercer ce contrat comme sur `--all-features`
+  Parité des surfaces par fonction de lecture unique : @extract_session est le seul chemin de
+    lecture de `miryad_session` pour les trois surfaces — @AuthUser (./middleware.rs, REST) et
+    @AuthPrincipal (./dual.rs, partagé REST/GraphQL/MCP) s’appuient dessus, donc le cookie
+    authentifie pareillement, à `401` près, les trois surfaces ; asymétrie constatée et assumée hors
+    de ce fichier : /src/rest/openapi.rs ne déclare que le schéma `bearer_auth`, le cookie n’a pas
+    de schéma OpenAPI (/docs/architecture.md)
+  Mutisme total : aucune trace @tracing, @println, @eprintln, @dbg ici — les traces du rejet
+    (`auth rejected`, debug) appartiennent à @AuthUser (./middleware.rs) et `MRD-AUTH-013` à
+    ./mod.rs ; toute trace ajoutée ici exposerait sujet/email et ferait doublon de niveau
+
+Must not:
+  Gérer le cookie `miryad_oidc_pending` — le poser, le lire ou le retirer : il appartient aux
+    handlers de ./mod.rs (même clé et même enveloppe, nom et durée `Max-Age=300` différents) ; la
+    déconnexion (@handler_logout de ./mod.rs appelle @clear_cookie) ne retire que
+    `miryad_session` et
+    jamais le pending — asymétrie de nettoyage constatée, documentée, non transposable ici
+  Vérifier la signature, le nonce, `aud` ou `iss` d’un @id_token dans @build_set_cookie ou
+    @extract_session — seul `exp` est relu, pour l’horloge seulement ; @subject/@email sont
+    relivés sans recontrôle
+  Poser `Secure`, `Domain` ou `Expires` sur les deux chaînes `Set-Cookie` produites — la table
+    actuelle est `HttpOnly` + `SameSite=Lax` + `Path=/` + `Max-Age`, toute bascule est l’arbitrage
+    des `Tasks` `[?]`, pas une modification libre de ce fichier
+  Émettre la moindre trace depuis ce fichier, sous quelque niveau que ce soit
+  Introduire un second chemin de lecture de `miryad_session` contournant @extract_session — la
+    parité REST/GraphQL/MCP tient à l’unicité de cette fonction
+  Faire grossir la dette suivie par /tooling.sdd : les tranches de chaîne de @extract_exp_claim
+    portent déjà un `indexing_slicing` de production et les quatre items publics n’ont aucun
+    commentaire de documentation (`missing_docs`)
+
+Depends on:
+  @cookie `0.18` verrouillé `0.18.2` en feature `private` — @cookie::CookieJar, @cookie::PrivateJar,
+    @cookie::Cookie ; sémantique scellée vérifiée dans son source (registre local) : `AES-256-GCM`,
+    nonce `12` octets via @thread_rng, tag `16` octets, nom du cookie en AAD, échecs de
+    @cookie::PrivateJar::decrypt énumérés en `Raises` ; @cookie::Key maître de `64` octets dont
+    seuls les derniers `32` chiffrent (@cookie::Key::encryption)
+  @base64 `0.22` — @base64::engine::general_purpose::URL_SAFE_NO_PAD pour lire le payload JWT : ce
+    moteur rejette strictement tout `=` de bourrage (@base64::DecodeError::InvalidPadding, vérifié
+    dans le source base64-0.22.1) ; un payload JWT bourré est donc un `exp` illisible, pas une
+    tolérance silencieuse
+  @serde + @serde_json `1` — @SessionPayloadRef (dérivé @serde::Serialize, trois champs empruntés)
+    et @SessionPayload (dérivé @serde::Deserialize, sans `deny_unknown_fields` : une clé
+    supplémentaire dans un payload hérité passe, un champ manquant échoue)
+  @SystemTime + @UNIX_EPOCH — l’horloge système, seule source de `now` des deux côtés (pose et
+    lecture), sans injection possible (`Tasks` `[?]`)
+  @AuthError (./error.rs) et @OidcIdentity (./oidc.rs) du crate
+  /tooling.sdd — harnais applicable tel quel (le fichier est sous `[lints]`, aucune exemption hors
+    `cfg(test)`)
+
+Exposes:
+  @SESSION_COOKIE_NAME — `pub const` de type `&'static str`, valeur textuelle exacte
+    `miryad_session` ; c’est le nom contractuel posé et cherché, affirmé par les tests de ./mod.rs
+  @build_set_cookie — `pub fn` @build_set_cookie(@OidcIdentity, @cookie::Key) -> @String, les deux
+    arguments empruntés : produit l’unique en-tête `Set-Cookie` de session ; infaillible, ne retourne
+    pas de @Result
+  @extract_session — `pub fn` @extract_session(@Option<@str>, @cookie::Key) ->
+    @Result<@OidcIdentity, @AuthError> : unique chemin de lecture du cookie, émetteur exclusif des
+    deux erreurs documentées en `Raises`
+  @clear_cookie — `pub fn` @clear_cookie() -> @String : chaîne littérale de retrait, sans argument,
+    sans erreur possible
+  Privés au fichier, documentés ici pour le contrat : @SessionPayloadRef (écriture seule, champs
+    empruntés pour ne rien cloner), @SessionPayload (lecture seule, champs possédés),
+    @extract_exp_claim (lecture fragile par sous-chaîne de la claim `exp` — voir `Tasks` `[?]`)
+  Surface atteignable seulement par le chemin @crate::auth::cookie : ./mod.rs ne ré-exporte à plat
+    que @AuthError, @AuthUser, @OidcClient & co, jamais les items de ce fichier ; quatre items
+    publics sans commentaire de doc — dette `missing_docs` portée par /tooling.sdd
+
+Accepts:
+  @build_set_cookie : un @OidcIdentity emprunté — @id_token/@subject/@email recopiés dans le JSON
+    sans trim, sans normalisation de casse — et un @cookie::Key emprunté, déjà valide (`≥ 64`
+    octets sinon @Key::from amont panique)
+  @extract_session : le texte brut d’un en-tête `Cookie` sous @Option<@str> (les appelants
+    ./middleware.rs et ./dual.rs le réduisent en @str::to_str avant d’appeler), plus le même
+    @cookie::Key que la pose ; aucune structure, aucune parse du crate @cookie en entrée, aucune
+    hypothèse d’encodage percent-encoding
+  @clear_cookie : rien
+  Aucun paramètre générique, aucune feature, aucun état global ou thread-local
+
+Returns:
+  @build_set_cookie : @String suivant exactement la forme
+    `miryad_session=<scellé>; HttpOnly; SameSite=Lax; Path=/; Max-Age=<n>`, où `<scellé>` est
+    l’enveloppe base64 standard `nonce|chiffré|tag` (bourrage `=` éventuel en fin de valeur) et
+    `<n>` les secondes @u64 de @u64::saturating_sub selon la règle de `Must`, sans `;` finale
+  @extract_session @Ok : @OidcIdentity triplé @id_token/@subject/@email à l’identique des valeurs
+    posées
+  @clear_cookie : @String exactement `miryad_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0` —
+    valeur vide, mêmes attributs que la pose (nom, `Path=/`, hôte-only) pour que le client retire
+    bien le cookie posé
+
+Raises:
+  @AuthError::NotAuthenticated (`MRD-AUTH-001`) — chemin @Option::ok_or de @extract_session
+    seulement, aux deux exclusives suivantes : l’en-tête passé est @None (aucun en-tête `Cookie`),
+    ou aucune ligne du texte ne porte le nom exact `miryad_session` après découpe/trim/filtrage
+  @AuthError::InvalidSession (`MRD-AUTH-002`) — chemins @Option::ok_or, @Result::map_err et test
+    d’horloge de @extract_session, par cinq familles de cause : (1) @cookie::PrivateJar::decrypt
+    rend @None — base64 invalide, longueur décodée `≤ 12` octets ce qui couvre la valeur vide
+    `miryad_session=`, tag GCM mauvais (clé différente, valeur altérée, nom transplanté), clair non
+    UTF-8 (@str::from_utf8) — énumération exacte de la fonction `unseal`, source cookie-0.18.2 ;
+    (2) @serde_json::from_str échoue sur le clair déchiffré ; (3) claim `exp` absente ou illisible
+    du @id_token déchiffré — nombre de segments séparés par un point différent de `3`, bourrage `=`
+    du payload, absence du literal `"exp":`, absence de chiffre en tête après les deux-points (le
+    parse d’une tranche vide rend un @Option::None) ; (4) @SystemTime antérieur à @UNIX_EPOCH (@Result::map_err) ; (5) `exp` `≤` `now`
+  @build_set_cookie et @clear_cookie : aucune erreur, aucun @Result — toute dégradation est
+    silencieuse et bornée (`Max-Age=0` pour `exp` introuvable, replis morts décrits en `Handles`)
+
+Handles:
+  En-tête multi-cookies : découpe `;`, trim des segments, filtrage des vides (le `;` final du
+    navigateur ne crée pas de fausse ligne), split au premier `=` seulement — le bourrage
+    @base64::prelude::BASE64_STANDARD de fin reste dans la valeur recherchée
+  Nom dupliqué dans l’en-tête : la première occurrence du nom gagne avant tout déchiffrement
+    (@Iterator::find_map) ; si cette première valeur est mauvaise, la lecture échoue sans jamais
+    réessayer les occurrences suivantes — pas de repli de rattrapage
+  Cookie présent mais vidé (`miryad_session=`) : distinct de l’absence — il tombe en
+    `MRD-AUTH-002` (longueur décodée `0 ≤ 12`), alors que l’absence tombe en `MRD-AUTH-001` ;
+    rejouer sa propre valeur effacée est un cas d’erreur, pas un « pas connecté »
+  Valeur scellée sous un autre nom (`miryad_oidc_pending` notamment, avec la même clé) : le nom
+    étant l’AAD GCM, la transplantation d’une valeur entre les deux cookies du flow échoue en
+    `MRD-AUTH-002`, même pour un attaquant en possession de l’un des deux cookies légitimes
+  Horloge antérieure à l’epoch : la pose s’en tire par @Result::map_or(`0`) (le `now` vaut `0`, le
+    `Max-Age` rendu vaut alors `exp` en secondes d’epoch entières) pendant que la lecture la traite
+    en `MRD-AUTH-002` (@Result::map_err) — asymétrie silencieuse jamais testée, `Tasks` `[?]`
+  `Max-Age` saturé : `exp` `≤` `now` à la pose ne déborde jamais (@u64::saturating_sub borné à `0`),
+    cohérent avec le rejet `exp ≤ now` de la lecture — aucune fenêtre où la pose croirait la session
+    vivable alors que la lecture la refuse
+  Branches mortes déclarées : @cookie::CookieJar::get juste après @cookie::PrivateJar::add est
+    toujours @Some (le delta est consulté d’abord, source cookie-0.18.2) et @serde_json::to_string
+    d’un @str/@Option est infaillible — les replis silencieux @Option::map_or(`""`) et
+    @Result::unwrap_or_default ne s’exécutent jamais et ne sont testés par personne, `Tasks` `[?]` ;
+    @base64::Engine::decode et @str::from_utf8 du payload JWT échouent au contraire fréquemment :
+    leurs conversions en @Option::None suivies de `?` sont des branches vivantes de la lecture
+
+Tasks:
+  [?] Aucun des deux `Set-Cookie` produits ne porte `Secure` (cf. `Must`) : en HTTP clair le cookie,
+    pourtant chiffré, circule en texte et le navigateur l’accepte ; l’ajouter (inconditionnel, ou
+    piloté par une config/type d’hôte) casse les environnements de dev en HTTP — arbitre Sébastien :
+    on pose `Secure`, on le rend configurable, ou `HttpOnly` + `SameSite=Lax` restent le choix assumé ?
+  [?] `SameSite=Lax` (et non `Strict`) : `Strict` interdirait au moins le renvoi du pending cookie
+    sur la navigation top-level cross-site du callback de ./mod.rs ; est-ce un choix figé « Lax,
+    parce que le flux OIDC l’exige », à écrire au contrat avec sa justification, ou un défaut à
+    revisiter (par ex. `Strict` sur le seul cookie de session) ?
+  [?] `Domain` jamais posé : cookie hôte-only, non envoyé aux sous-domaines — choix voulu
+    (déploiement mono-origine) ou omission qui condamne les installations multi-sous-domaines du
+    template miryad ?
+  [?] Pose silencieuse d’un `Max-Age=0` : @build_set_cookie ne peut échouer et pose un cookie déjà
+    mort (payload exp introuvable : claim absente, JWT non compact ou bourré, ou déjà expiré), sans
+    @tracing et sans erreur remontée à @handler_callback — le client ne saura pas pourquoi il reste
+    déconnecté. Silence acceptable, ou warn @tracing sur cette branche (le mutisme du fichier
+    serait alors à ré-arbitrer) ?
+  [?] @extract_exp_claim est manuel (sous-chaîne `"exp":` : première occurrence, aucun espace après
+    les deux-points toléré, @base64::engine::general_purpose::URL_SAFE_NO_PAD strict) alors que
+    ./oidc.rs::@extract_groups_claim décode le même payload avec @serde_json — asymétrie de
+    robustesse constatée : un JWT émis avec un espace après un deux-points ou une claim imbriquée
+    homonyme équivaut ici à une session morte sans diagnostic. On unifie la technique, ou la limite
+    « JWT compacts des fournisseurs standards uniquement » est le contrat assumé ?
+  [?] Branches inatteignables et horloge non injectable : @Result::unwrap_or_default de
+    @serde_json::to_string et @Option::map_or(`""`) du @cookie::CookieJar::get post-@cookie::PrivateJar::add
+    (mortes, sources cookie/base64 vérifiées), et les deux branches d’horloge pré-epoch (pose comme
+    lecture) — rester sans test, ou exiger une injection de `now` pour les rendre atteignables ? ce
+    fichier serait alors le premier du module auth à recevoir cette injection, à décider avant
+    d’écrire les tests des Scenarios concernés
+  [ ] Convertir les 19 `Scenario` en au moins 19 tests nommés distincts, dans le `mod tests`
+    `#[cfg(test)]` inline de ./cookie.rs (le contrat ne déborde pas du fichier : @build_set_cookie,
+    @cookie::CookieJar et @base64 suffisent à construire chaque entrée, y compris la valeur pending
+    transplantée et le JSON non valide chiffré) ; les 4 tests inline actuels
+    (`build_and_extract_valid_session`, `expired_session_returns_invalid`,
+    `missing_cookie_returns_not_authenticated`, `clear_cookie_has_max_age_zero`) recoupent
+    grossièrement 4 Scenarios mais n’affirment les attributs posés que par `contains` — resserrer
+    en assertions de chaîne complète avant comptage
+
+Done when:
+  19 tests nommés distincts verts, un par `Scenario`, sur features par défaut comme sur
+    `--no-default-features` (fichier sans gate de feature)
+  Les deux chaînes `Set-Cookie` (pose et retrait) sont affirmées chaîne entière — nom, ordre des
+    attributs, absence de `Secure`/`Domain`/`Expires`, pas de `;` finale — sans `contains` sur un
+    fragment d’attribut
+  `MRD-AUTH-001` et `MRD-AUTH-002` sont distingués par appariement de variante (`matches!`), pas
+    par chaîne — notamment absent contre vidé
+  Les six lignes `[?]` sont arbitrées par Sébastien et leurs décisions reflétées dans ce contrat ou
+    le code ; la dette harnais suivie par ./tooling.sdd (tranches de @extract_exp_claim,
+    `missing_docs`) n’a pas grossi
+
+Scenario: Pose — contrat session complet avec email
+  Given un @OidcIdentity dont l’@id_token est un JWT tri-segment dont la claim d’expiration vaut
+    `now+3600`, @subject `user-123`, email `user-123@example.com`, et un @cookie::Key de `64` octets
+  When @build_set_cookie est appelée
+  Then la chaîne rendue vaut `miryad_session=<scellé>; HttpOnly; SameSite=Lax; Path=/; Max-Age=<n>`
+    avec `<n>` égal à `exp − now` à la seconde près, les attributs dans cet ordre, `HttpOnly` posé
+    et `;` finale absente
+  And la chaîne ne porte ni `Secure`, ni `Domain`, ni `Expires`
+  And `<scellé>` déchiffré par @cookie::PrivateJar::decrypt avec la même clé est un JSON à
+    exactement trois clés : `id_token`, `subject`, `email`
+
+Scenario: Pose — email absent sérialisé null
+  Given un @OidcIdentity d’email @None et d’@id_token avec claim d’expiration future
+  When @build_set_cookie est appelée avec un @cookie::Key valide
+  Then le `<scellé>` déchiffré porte la clé `email` à valeur `null` — @None est une information
+    absente, pas une clé disparue du payload
+
+Scenario: Pose — id_token expiré donne Max-Age nul
+  Given un @OidcIdentity dont l’@id_token porte une expiration à `1000000` (passée)
+  When @build_set_cookie est appelée
+  Then la chaîne rendue se termine par `Max-Age=0`, la valeur scellée étant posée malgré tout avec
+    le même jeu d’attributs — @u64::saturating_sub ne déborde jamais
+
+Scenario: Pose — expiration illisible donne Max-Age nul
+  Given un @OidcIdentity dont l’@id_token est un JWT tri-segment dont le payload encodé ne porte que
+    la claim `sub`, aucune claim `exp`
+  When @build_set_cookie est appelée
+  Then la chaîne rendue se termine par `Max-Age=0` (@Option::unwrap_or(`0`) sur expiration
+    introuvable)
+  And un @id_token `not-a-jwt`, à deux segments seulement, produit la même fin de chaîne pour la
+    même raison
+
+Scenario: Pose — deux poses consécutives divergent et se relisent
+  Given un même @OidcIdentity, un même @cookie::Key, deux appels successifs à @build_set_cookie
+  When on compare les deux valeurs scellées
+  Then les deux valeurs diffèrent — nonce de `12` octets aléatoire par pose, @thread_rng, aucune
+    reproductibilité attendue
+  But les deux déchiffrent au même payload JSON sous la même clé
+
+Scenario: Retrait — chaîne exacte valeur vide Max-Age nul
+  Given aucun état — @clear_cookie ne reçoit rien
+  When @clear_cookie est appelée
+  Then la chaîne rendue est exactement `miryad_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`
+    — valeur vide, `HttpOnly` posé, même nom, même `Path=/` et même hôte-only que la pose pour que
+    le client retire bien le cookie posé
+
+Scenario: Lecture — aller-retour restitue l’identité triplée
+  Given un @OidcIdentity triplé (expiration future, @subject `user-123`, email présente), la ligne
+    `nom=valeur` extraite de @build_set_cookie et replacée seule dans un en-tête `Cookie`
+  When @extract_session est appelée avec le même @cookie::Key
+  Then le résultat est @Ok
+  And @id_token, @subject et @email sont égaux byte pour byte aux originaux
+
+Scenario: Lecture — ligne de session sélectionnée parmi plusieurs cookies
+  Given un en-tête `Cookie` `x=1; miryad_session=<scellé valide>; csrftoken=two`
+  When @extract_session est appelée avec la clé de pose
+  Then le résultat est @Ok sur l’@OidcIdentity attendu
+  And les lignes `x=1` et `csrftoken=two`, étrangers au nom `miryad_session`, sont ignorées sans
+    perturber la recherche de nom exact
+
+Scenario: Lecture — en-tête Cookie absent rend MRD-AUTH-001
+  Given l’en-tête @None
+  When @extract_session est appelée avec n’importe quel @cookie::Key valide
+  Then l’erreur est @AuthError::NotAuthenticated — code `MRD-AUTH-001`, rendu `401` par ./error.rs
+
+Scenario: Lecture — absence de la ligne de session rend MRD-AUTH-001
+  Given un en-tête `other=1; miryad_autre=v; fragment` — aucun nom `miryad_session`, ligne sans `=`
+    ignorée, segment vide final filtré
+  When @extract_session est appelée avec n’importe quel @cookie::Key
+  Then l’erreur est @AuthError::NotAuthenticated (`MRD-AUTH-001`) — et surtout pas `MRD-AUTH-002` :
+    un nom absent ne se confond jamais avec un cookie vidé
+
+Scenario: Lecture — clé différente rend MRD-AUTH-002
+  Given une paire valide produite par @build_set_cookie sous un @cookie::Key A
+  When @extract_session reçoit la ligne de session sous un @cookie::Key B distinct
+  Then l’erreur est @AuthError::InvalidSession (`MRD-AUTH-002`) — le tag `AES-256-GCM` ne se
+    vérifie pas, les sous-clés de chiffrement `32..64` de A et B diffèrent
+
+Scenario: Lecture — valeur altérée rend MRD-AUTH-002
+  Given une paire valide et une copie du scellé dont un caractère de la partie chiffrée a été
+    remplacé (hors bourrage `=`)
+  When @extract_session reçoit l’en-tête altéré sous la clé d’origine
+  Then l’erreur est @AuthError::InvalidSession — l’étanchéité `nonce|chiffré|tag` est vérifiée et la
+    retouche, d’un seul caractère soit-elle, casse le tag GCM (@Option::None côté @unseal)
+
+Scenario: Lecture — cookie effacé reposté rend MRD-AUTH-002
+  Given l’en-tête `miryad_session=` — valeur vide telle que posée par @clear_cookie, repostée par un
+    client non conforme
+  When @extract_session est appelée avec n’importe quel @cookie::Key valide
+  Then l’erreur est @AuthError::InvalidSession (`MRD-AUTH-002`) : la valeur décodée fait `0` octet,
+    `≤` la longueur du nonce (`12` octets)
+  And ce cas reste distinct de l’en-tête sans cookie (`MRD-AUTH-001`) — un effacement reposté
+    n’est pas une absence
+
+Scenario: Lecture — payload déchiffré non-JSON rend MRD-AUTH-002
+  Given une valeur scellée sous le nom `miryad_session` par @cookie::CookieJar avec la même clé,
+    dont le clair est le texte `pas-du-json` (construite à la main dans le test, sans @build_set_cookie)
+  When @extract_session reçoit cette ligne
+  Then l’erreur est @AuthError::InvalidSession — @cookie::PrivateJar::decrypt passe, la
+    désérialisation @serde_json en @SessionPayload échoue et tombe en @Result::map_err
+
+Scenario: Lecture — id_token sans claim exp rend MRD-AUTH-002
+  Given la paire produite par @build_set_cookie pour un @OidcIdentity dont l’@id_token tri-segment
+    n’encode aucune claim `exp` (la pose a donc rendu `Max-Age=0`, cf. scenario Pose dédié)
+  When @extract_session reçoit la ligne dépouillée de ses attributs et repostée sous la clé de pose
+  Then l’erreur est @AuthError::InvalidSession — @extract_exp_claim ne trouve pas le literal
+    `"exp":` dans le payload, et la lecture ne connaît pas le repli `0` de la pose : @Option::ok_or
+    exige la claim
+
+Scenario: Lecture — payload de JWT bourré rend MRD-AUTH-002
+  Given un @OidcIdentity dont l’@id_token a un segment de payload encodé en base64 url-safe terminé
+    par un `=` de bourrage, claim d’expiration future bien présente
+  When @build_set_cookie produit la paire puis @extract_session reçoit la ligne sous la même clé
+  Then l’erreur est @AuthError::InvalidSession —
+    @base64::engine::general_purpose::URL_SAFE_NO_PAD refuse le bourrage
+    (@base64::DecodeError::InvalidPadding, source base64-0.22.1), la claim devient introuvable
+  And la pose portait `Max-Age=0` pour cette même raison
+
+Scenario: Lecture — expiration dépassée rend MRD-AUTH-002
+  Given une paire valide construite par @build_set_cookie pour un @id_token expiré à `1000000`
+  When @extract_session est appelée sous la clé de pose
+  Then l’erreur est @AuthError::InvalidSession — déchiffrement et JSON passent, c’est le contrôle
+    d’horloge serveur `exp ≤ now` qui rejette
+  And ce chemin est celui qu’affirme déjà le test inline `expired_session_returns_invalid`
+
+Scenario: Lecture — valeur du cookie pending transplantée rend MRD-AUTH-002
+  Given une valeur scellée par @cookie::CookieJar sous la même @cookie::Key mais sous le nom
+    `miryad_oidc_pending` (celle que @handler_login de ./mod.rs pose pendant le flux OIDC)
+  When cette valeur est présentée à @extract_session dans l’en-tête `miryad_session=<valeur>`
+  Then l’erreur est @AuthError::InvalidSession — le nom du cookie est la donnée associée AEAD
+    (source cookie-0.18.2 `src/secure/private.rs`) : aucune valeur ne traverse du pending vers la
+    session, même pour un attaquant en possession des deux cookies légitimes
+
+Scenario: Lecture — doublon de session et première ligne invalide rend MRD-AUTH-002
+  Given l’en-tête `miryad_session=invalide; miryad_session=<scellé valide>` — le nom apparaît deux
+    fois et la première valeur n’est pas un scellé
+  When @extract_session est appelée avec la clé du scellé valide
+  Then l’erreur est @AuthError::InvalidSession — @Iterator::find_map retient la première occurrence
+    du nom et ne retombe jamais sur la seconde occurrence valide : dupliquer le cookie de session
+    ne force aucun rattrapage

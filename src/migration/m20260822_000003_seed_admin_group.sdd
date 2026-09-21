@@ -1,0 +1,395 @@
+Spec: m20260822_000003_seed_admin_group — seed du groupe admin interne
+
+Purpose:
+  Troisième migration appliquée par @migration::Migrator , après @miryad_api_tokens (000001) et
+    après la pose des tables `miryad_users`, `miryad_groups` et `miryad_group_memberships`
+    (000002) : elle garantit la présence d'une ligne de groupe nommée `admin` dans
+    `miryad_groups` — pure convention de nom lue par @rbac via @users::group::is_admin, sans rien
+    de spécial au schéma — et n'écrit absolument rien d'autre. Son @up délègue l'écriture à
+    @users::group::ensure_group : get-or-create, même chemin de code que la synchronisation OIDC,
+    portabilité SQLite/Postgres sans conversion @DateTimeUtc dupliquée — la raison est écrite
+    dans le commentaire d'en-tête du fichier et le source la confirme. Son @down défait le seed
+    par un @DELETE SQL brut via @ConnectionTrait::execute_unprepared. Contrat de schéma committé
+    et immuable (_feature 3 des tests de la crate) : @up fige le seed, @down le défait, toute
+    correction relève d'une migration suivante — jamais d'une réécriture ni d'un renommage,
+    l'identité de tracking étant le stem du fichier lui-même. Le seed n'attache personne : aucun
+    membership, aucun utilisateur — l'appartenance reste le monopole de @sync_group_memberships
+    et Authentik la source de vérité.
+
+Owns:
+  ./m20260822_000003_seed_admin_group.rs
+
+References:
+  ./mod.rs — déclare ce module (privé) et enregistre @Migration en troisième position de
+    @Migrator::migrations ; il owne la table de tracking dédiée @seaql_migrations_miryad_core et
+    impose, par le fait que @exec_down_with inverse l'ordre d'application, que ce @down passe
+    avant les @DROP TABLE de la 000002, vérifié au source de sea-orm-migration 2.0.2
+  ./m20260822_000002_create_users_groups.rs — cible du seed, vérifiée dans sa source :
+    `miryad_groups` (id integer auto_increment primary key, name string not null unique_key,
+    created_at timestamp_with_time_zone not null) et `miryad_group_memberships` dont la FK
+    group_id vers groups est posée en @on_delete Cascade ; sa spec propre est à produire et ses
+    @DeriveIden @User/@Group/@GroupMembership ne sont pas réutilisés ici
+  ../users/group.rs — @users::group::ensure_group et @users::group::ADMIN_GROUP_NAME (valeur
+    verbatim `admin`) importés par @up : tout le mécanisme d'écriture réelle vit dans ce fichier,
+    sous la spec /src/users/group.sdd dont les vérifications en source amont (@sea_orm @one :
+    @LIMIT 1 et @Ok(@None) sur vide) sont reprises sans re-démonstration
+  /miryad-core.sdd — contrat des tables internes préfixées `miryad_*` à tracking dédié, interdit
+    de réélire une migration committée, interdits `tracing`/`MRD-*` hérités
+  /tooling.sdd — batterie et matrice de features auxquelles ce fichier est soumis, exemption
+    `cfg(test)` pour les @expect des tests à produire
+  ../rbac.rs — consommateur aval vérifié : @rbac::evaluate, @rbac::can_create et
+    @rbac::list_access appellent @users::group::is_admin à chaque décision non publique ; le seed
+    ne change aucune réponse tant qu'aucune membership explicite n'existe
+
+Must:
+  Seeder par une seule écriture possible sur `miryad_groups`, strictement via
+    @users::group::ensure_group(@SchemaManager::get_connection, @ADMIN_GROUP_NAME) : sur base
+    fraîche, un unique @INSERT d'une ligne dont @name porte `admin` — lu par la constante, jamais
+    par un littéral dans @up — @created_at posé par @chrono::Utc::now à l'exécution, valeur
+    d'horloge non littéralee, et @id abandonné à l'auto-incrément : deux colonnes peuplées
+    (`name`, `created_at`), aucune autre, aucun défaut côté serveur — la colonne NOT NULL est
+    satisfaite par le seul fait que @ensure_group pose lui-même @created_at.
+  Écrire cela et rien d'autre : aucun second @ensure_group, aucun @INSERT en SQL brut dans @up,
+    rien dans `miryad_users` ni `miryad_group_memberships` — après @up la table des memberships
+    est vide et @users::group::is_admin répond @Ok(`false`) pour tout @user_id, y compris celui
+    posé par @users::user::resolve_user : le seed confère l'admin à personne.
+  Être idempotent par get-or-create : rejouer @up (appel direct alors que la migration est déjà
+    appliquée et trackinguée) voit le premier SELECT de @ensure_group par @users::group::Column::Name
+    court-circuiter tout @INSERT — la ligne `admin` garde son @id et son @created_at d'origine,
+    second @up `Ok(())` sans second @INSERT ; le framework de son côté ne rejoue jamais @up :
+    @exec_up_with n'itère que les migrations @Pending. Les deux couches convergent vers le même
+    résultat : une réexécution ne produit ni doublon ni erreur.
+  Consommer la connexion de migration comme un simple @ConnectionTrait : @SchemaManager::get_connection
+    rend un @SchemaManagerConnection — re-export vérifié au source de sea-orm-migration 2.0.2
+    connection.rs de @sea_orm::DatabaseExecutor — preuve d'usage de la généralité <C:
+    @ConnectionTrait> de @users::group::ensure_group : une spécialisation concrète
+    @sea_orm::DatabaseConnection ferait échouer la compilation de ce seed.
+  Conduire @down par un @DELETE SQL brut ciblant l'égalité exacte sur le nom : @execute_unprepared("DELETE FROM miryad_groups WHERE name = 'admin'") — littéral `'admin'` non lu à @ADMIN_GROUP_NAME,
+    asymétrie d'avec @up qui lit la constante, consignée en `Tasks` `[?]` et déjà signalée dans
+    /src/users/group.sdd ; l'égalité SQL sans COLLATE (aucun posé par 000002, vérifié dans sa
+    source) est binaire et sensible à la casse sur SQLite backend des tests, donc `Admin` ne lui
+    répond pas et `Admin` survit — collation Postgres à la [?] de /src/users/group.sdd.
+  Emporter par cascade, dans @down, les lignes de membership pointant vers le groupe supprimé :
+    la FK @on_delete Cascade que 000002 pose sur `miryad_group_memberships.group_id` vers
+    `miryad_groups.id` s'applique — y compris sur SQLite, backend des tests : vérifié au source
+    de sqlx-sqlite 0.9.0, @SqliteConnectOptions::new inscrit le pragma `foreign_keys = ON` dans
+    les pragmas exécutés par défaut à l'établissement de chaque connexion, mer de versions
+    interposée vérifiée jusqu'à la source ; aucun cas propre au fichier : effet hérité de la FK,
+    consigné ici parce que @down l'invoque.
+  Porter l'identité de tracking : @DeriveMigrationName (sea-orm-macros 2.0.2, expansion vérifiée
+    au source : l'implémentation de @sea_orm_migration::MigrationName rend @get_file_stem(@file!))
+    nomme cette migration du seul stem du fichier, `m20260822_000003_seed_admin_group` — clé que
+    @exec_up_with insère via @insert_migration_record après un @up réussi et @exec_down_with
+    efface via @delete_migration_record après un @down réussi, dans
+    @seaql_migrations_miryad_core que ./mod.rs pose et owne.
+  Respecter la convention de transaction vérifiée au source de sea-orm-migration 2.0.2
+    (@use_transaction par défaut @None, et @should_use_transaction de Migrator/exec.rs : @None
+    vaut @true sur Postgres, (@false sinon) : sur Postgres un @up — SELECT, @INSERT et ligne de
+    tracking — tient dans une transaction unique ouverte par @begin, de même que le @down ; sur
+    SQLite @up et @down s'exécutent sans transaction, et l'auto-réparation d'un @up interrompu
+    après son @INSERT mais avant la ligne de tracking repose alors entièrement sur le SELECT
+    court-circuit de @ensure_group au rejouage.
+  S'exécuter après 000002 et se remonter avant elle : ./mod.rs déclare ce @Migration en troisième
+    position de @Migrator::migrations, et @exec_down_with itère les migrations appliquées en ordre
+    inversé (.rev(), vérifié au source) : dans le cadre du @Migrator, @down trouve toujours une
+    table `miryad_groups` vivante ; l'appeler hors de cette séquence relève de `Raises`.
+  Ne porter aucun gating de feature : ./lib.rs expose le module `migration` sans @cfg, ./mod.rs
+    déclare les trois migrations sans @cfg, ce fichier n'en porte aucun ; @sea_orm_migration et
+    @async_trait sont des dépendances non gatées de /Cargo.toml, seul le canal de test dépend du
+    backend SQLite des dev-dependencies ; le fichier compile et s'exécute sur chaque combinaison
+    de /tooling.sdd.
+  Laisser la trace aux @info d'@exec_up_with et @exec_down_with de sea-orm-migration uniquement :
+    le fichier n'émet aucune trace propre, aucun code `MRD-*`, aucun cookie, aucun token ; le
+    seul canal d'échec est @sea_orm::DbErr.
+  Traiter le nom comme identifiant unique, sans marqueur d'origine : @up accepte une ligne
+    `admin` préexistante en @Ok sans toucher à sa forme (@id, @created_at antérieur), @down efface
+    toute ligne nommée `admin` lors de son @DELETE — y compris une ligne née d'un claim OIDC passé
+    par @sync_group_memberships ou d'un SQL manuel antérieur à l'application : la migration ne
+    pose aucune trace de provenance et n'en lit aucune.
+
+Must not:
+  Réécrire, renommer, déplacer ou dupliquer le @up ou le @down committé : @DeriveMigrationName
+    fait du stem `m20260822_000003_seed_admin_group` la clé de tracking de
+    @seaql_migrations_miryad_core, et @get_migration_with_status de sea-orm-migration 2.0.2 fait
+    échouer tout @Migrator sur une base où cette clé est enregistrée sous un fichier disparu ; le
+    littéral du @down est figé avec le reste, toute remédiation passe par une migration suivante
+    sous arbitrage de Sébastien (symétrique de /src/migration/m20260822_000001_create_api_tokens.sdd).
+  Poser du DDL dans ce fichier : @Table::create, @ColumnDef, @Index, @ForeignKey n'ont pas leur
+    place dans une migration de seed — la pose relève exclusivement de 000001 et 000002, dont ce
+    fichier consomme les tables, et un @CREATE « par prudence » inventerait un ordre de
+    dépendance que ./mod.rs ne déclare pas.
+  Attribuer un membership, un utilisateur ou un second groupe : la ligne `admin` de
+    `miryad_groups` est tout le contenu du seed ; amorcer une autorisation par migration
+    contredirait la frontière Authentik que /src/users/group.sdd pose en `Must not`.
+  Remplacer dans @up la constante @ADMIN_GROUP_NAME par le littéral `"admin"`, ou dans @down le
+    littéral par la constante : l'état figé est up-constante/down-littéral, documenté tel quel ;
+    l'uniformiser sans arbitrage masquerait la `Tasks` `[?]` au lieu de la trancher.
+  Écrire @seaql_migrations_miryad_core ou @seaql_migrations dans @up ou @down : l'écriture du
+    tracking est l'affaire exclusive du framework.
+  Envelopper @up ou @down dans une transaction propre (@manager::begin, @TransactionTrait) ni
+    surcharger @use_transaction : le @None hérité encode Postgres-transaction / SQLite-sans-transaction,
+    toute dérogation locale changerait silencieusement le comportement de rollback.
+  Émettre @println, @eprintln ou @dbg, ni fabriquer de code `MRD-*` : seul un @DbErr brut du
+    backend circule.
+
+Depends on:
+  @users::group::ensure_group — l'écriture réelle de @up, sous le contrat de /src/users/group.sdd :
+    SELECT court-circuit, @INSERT à deux colonnes avec @chrono::Utc::now, fallback de reprise sur
+    conflit de contrainte unique
+  @users::group::ADMIN_GROUP_NAME — valeur `admin` lue par @up seul (import de la ligne d'@use du
+    fichier)
+  ./m20260822_000002_create_users_groups.rs — existence préalable de `miryad_groups`, cible du
+    @DELETE, et de la FK cascade qui rend @down glissant sur `miryad_group_memberships` ; à
+    appliquer avant lui, ordre porté par ./mod.rs
+  @sea_orm_migration 2.0.2 — @MigrationTrait, @SchemaManager, @SchemaManagerConnection,
+    @DeriveMigrationName, @exec_up_with, @exec_down_with, @insert_migration_record,
+    @delete_migration_record, @use_transaction et @should_use_transaction
+  @async_trait — implémentation des deux méthodes de @MigrationTrait
+  @sea_orm transitif (ré-exporté par @sea_orm_migration) — @ConnectionTrait et
+    @execute_unprepared portés par la connexion de migration
+  ./mod.rs — enregistrement en troisième position des trois migrations internes de @Migrator,
+    table de tracking dédiée
+  @tokio et @sea_orm/sqlx-sqlite des dev-dependencies de /Cargo.toml — canal de test sur
+    `sqlite::memory:` uniquement, hors chemin de production ; @SqliteConnectOptions::new de
+    sqlx-sqlite 0.9.0 est la source contractuelle du pragma @PRAGMA `foreign_keys = ON` qui rend
+    la cascade de @down observable en test
+
+Exposes:
+  @Migration — unique `pub struct` du fichier, @derive @DeriveMigrationName, implémente
+    @MigrationTrait — inaccessible aux consommateurs de la crate, ./mod.rs gardant le module privé
+  @MigrationTrait::up et @MigrationTrait::down pour ce contrat
+  Rien d'autre : aucun énoncé @DeriveIden local, à la différence de @ApiToken en 000001 et des
+    trois énoncés de 000002 — @down écrit le nom de table `miryad_groups` en dur dans sa chaîne
+    SQL et @up ne le connaît que transitivement par @ensure_group et @users::group::Entity ;
+    aucune fonction auxiliaire ; aucun `#[cfg(test)] @mod tests` à ce jour — les douze `Scenario`
+    portent la dette de tests (`Tasks` `[ ]`).
+
+Accepts:
+  La seule entrée de @up comme de @down : un @SchemaManager fourni par @exec_up_with /
+    @exec_down_with — la connexion sous-jacente, @SchemaManagerConnection nu sur SQLite ou
+    executor de transaction sur Postgres, relève de sea-orm-migration et du choix du
+    consommateur ; le fichier ne connaît ni backend ni URL.
+  Deux préconditions d'ordre jamais vérifiées ici : @up suppose les tables de 000002 posées —
+    sinon c'est `Raises` — et @down suppose `miryad_groups` pas encore supprimée, ce que
+    l'ordre du @Migrator seul garantit.
+  Rien d'autre : aucun paramètre, aucune configuration, aucune feature, aucune valeur
+    d'environnement ; seule l'horloge de l'hôte entre dans les données, via @chrono::Utc::now pour
+    @created_at.
+
+Returns:
+  @up — `Ok(())` quand @ensure_group a rendu @Ok de son @id : le type `Ok(())` abandonne cet @id
+    et ne signale ni ne différencie création et réutilisation — la valeur de retour exacte du
+    seed est le silence.
+  @down — `Ok(())` dès que le @DELETE est exécuté, qu'une ligne soit touchée ou aucune :
+    @execute_unprepared ne rend pas de compte de lignes affectées et le fichier n'en consulte pas
+    ; le rollback est donc idempotent ici — un second @down sur seed déjà effacé est un @Ok
+    muet — contrairement au @down de la 000001 (DROP TABLE sans @if_exists) ; c'est un trait de
+    ce seed, pas une propriété de la famille.
+  Aucune autre fonction : les deux signatures de @MigrationTrait ferment la surface, ce qui clôt
+    `Accepts`.
+
+Raises:
+  @sea_orm::DbErr du backend, propagée brute par les deux seules marques `?` du fichier, sans
+    code `MRD-*` — canaux exhaustifs :
+  @up — échec du premier SELECT de @ensure_group sur base où `miryad_groups` n'existe pas
+    (000002 non appliquée, @down de 000002 déjà passé, base jamais migrée) : @DbErr remontée à
+    l'instant, aucune écriture partielle possible puisque ce SELECT est la première opération
+    tentée du fichier
+  @up — @sea_orm::DbErr::RecordNotFound fabriquée par @ensure_group, avec le message texte
+    `group admin vanished`, dans l'unique cas où l'@INSERT a échoué et la SELECT de reprise
+    revient vide ; le
+    masque @Err(_) qui jette toute autre cause d'@INSERT est le `[?]` ouvert de
+    /src/users/group.sdd — le seed l'hérite de fait, le consigner ici ne le tranche pas
+  @up — toute panne de connexion ou de serveur atteignant le SELECT, l'@INSERT ou la SELECT de
+    reprise du get-or-create
+  @down — @DbErr du @DELETE sur table `miryad_groups` absente : chemin uniquement hors séquence
+    du @Migrator (@down de 000002 déjà exécuté, ou base jamais migrée) ; à l'inverse, une table présente
+    sans ligne `admin` ne lève jamais rien : `Ok(())` avec zéro ligne affectée est la réponse
+    normale, aucune branche « seed introuvable » n'existe
+  Aucune branche eigene : @up et @down n'ont ni @if, ni boucle, ni autre `?` que ceux des deux
+    lignes de corps.
+
+Handles:
+  Rejeu complet de @migration::Migrator sur base migrée : @exec_up_with tient cette migration
+    pour @Applied d'après @seaql_migrations_miryad_core et n'appelle pas @up ; deux @up directs
+    hors cadre exercent eux l'idempotence de @ensure_group, @id et @created_at restent intacts —
+    les deux chemins ont chacun leur `Scenario`.
+  Crash SQLite entre l'@INSERT et la ligne de tracking : @exec_up_with appelle @up avant
+    @insert_migration_record et sans transaction sur ce backend (source) ; le rejouage quitte la
+    ligne déjà présente par le SELECT de @ensure_group, @Ok, puis écrit enfin le tracking —
+    auto-réparation par get-or-create, mécaniquement distincte de l'@if_not_exists de 000001.
+  Rollback partiel : @migration::Migrator::down avec @Some d'un seul step ne remonte que cette
+    migration —
+    @down efface ligne `admin`, memberships en cascade et tracking `000003` ; les tables de 000002
+    restent posées et un @up suivant re-seed dessus.
+  Remontée totale puis re-application : @Migrator::down(@None) émet ce @down avant les @DROP de
+    000002 grâce à l'inversion d'ordre du framework, et @Migrator::up(@None) recrée la ligne
+    `admin` avec un @created_at d'horloge neuve.
+  Memberships d'admin au rollback : le @DELETE cascade les memberships attachés au groupe (FK de
+    000002, pragma @PRAGMA foreign_keys ON vérifié plus haut) ; après un re-@up le groupe existe
+    de nouveau mais les ex-membres `admin` ont perdu leur ligne — seul un prochain
+    @sync_group_memberships la rattache : perte de droits consignée en `Tasks` `[?]`.
+  Ligne `admin` née hors du seed : @up l'acquitte sans écrire, @down l'efface — garantie de
+    présence par nom, pas inventaire de provenance.
+  Casse et tolérance : `Admin` (majuscule) est une ligne distincte que @down épargne sur le
+    backend SQLite des tests, et un @down sans ligne `admin` à effacer est un @Ok silencieux —
+    vérifiés aux `Scenario` de casse et de re-@down, sans inventer de normalisation que le source
+    ne fait pas.
+  Parité des surfaces : `miryad_groups` n'est pas une @MiryadResource (aucune implémentation en
+    crate, vérifications portées par /src/users/group.sdd) — ce seed n'est lu ni collecté par
+    aucune route REST, @graphql ou @mcp, ni par @ir : les trois surfaces ne rencontrent jamais ce
+    fichier, aucune asymétrie n'est créée par lui, et les divergences de chemins de lecture du
+    groupe @graphql::load_principal versus /src/users/group.rs appartiennent à leurs specs.
+  Gating : fichier universel — avec et sans `graphql`, `mcp`, `swagger-ui` sur la batterie de
+    /tooling.sdd, la ligne seedée existe dès @migration::Migrator::up quelque soit la combinaison.
+
+Tasks:
+  [ ] Convertir les douze `Scenario` en au moins douze tests nommés distincts dans un
+    `#[cfg(test)] @mod tests` de ./m20260822_000003_seed_admin_group.rs — le fichier ne porte
+    aucun test inline aujourd'hui. Fixtures `sqlite::memory:` des dev-dependencies de
+    /Cargo.toml, pattern @tokio::test des tests de ./mod.rs ; @SchemaManager::new(&db) pour les
+    appels directs @up/@down, @migration::Migrator pour le rejeu et le stem ; les migrations
+    soeurs sont atteignables par @super:: pour poser la base 000002 seule. Les assertions de
+    membership et @users::group::is_admin empruntent @users::user::resolve_user et
+    @sync_group_memberships sans rien ajouter à leurs propres contrats. Un test par scénario et
+    par nom : `up_seeds_single_admin_group` ; `up_rerun_direct_preserves_row` ;
+    `migrator_second_up_does_not_reseed` ; `seed_grants_no_membership` ;
+    `up_accepts_existing_admin_unchanged` ; `down_deletes_only_admin_row` ;
+    `down_without_table_is_dberr` ; `up_without_table_is_dberr` ;
+    `down_cascades_admin_memberships` ; `down_preserves_case_distinct_group` ;
+    `full_rollback_then_reapply_restores_seed` ; `applied_name_is_the_seed_stem`. @expect des
+    fixtures sous l'exemption `cfg(test)` de /tooling.sdd. Le test
+    `admin_group_is_seeded_by_migration` de /src/users/group.rs garde la vue consommateur du
+    seed et ne compte pas pour la couverture de ces scénarios.
+  [?] Le @down écrit le nom `'admin'` en SQL littéral sans lire @ADMIN_GROUP_NAME, @up la lit :
+    renommer la constante ferait @up germer sous le nom neuf et @down silencieux (0 ligne, @Ok
+    muet — `Returns`), ou survivre la ligne ancienne selon le sens du renommage. Déjà `[?]` de
+    /src/users/group.sdd : migration committée immuable, gèle-t-on la contrainte documentaire —
+    constante et littéral bougent ensemble, remédiation par migration suivante si elles dérivent
+    — ou arbitre-t-on autrement ? Arbitrage unique à rendre des deux côtés par Sébastien.
+  [?] Le @down cascade la destruction des memberships `admin` synchronisés depuis l'application :
+    un rollback, ou un @Migrator::down partiel, efface les lignes de `miryad_group_memberships`
+    attachées au groupe et un re-@up ne les restaure pas — l'ex-admin redevient non-admin tant
+    qu'Authentik n'a pas resynchronisé le claim. La perte de droits au rollback est-elle le
+    contrat (régénération par claim suivant) ou faut-il une migration suivante pour épargner les
+    données ?
+  [?] Le seed identifie par le nom seul et ne pose aucune trace d'origine : @up acquitte une
+    ligne `admin` préexistante sans imposer forme ni @created_at, @down efface toute ligne nommée
+    `admin`, y compris née d'un claim OIDC synchronisé avant application — la sémantique
+    présence-par-nom, sans valeur imposée ni provenance tracée, est-elle le contrat congelé de ce
+    seed, consigné ici et en miroir dans /src/users/group.sdd ?
+
+Done when:
+  Les douze `Scenario` sont chacun vérifiés par un test nommé distinct identifié dans `Tasks`,
+    tous jouables via la batterie de /tooling.sdd sur `sqlite::memory:` sans base de données
+    externe, @up et @down inchangés depuis l'approbation (immuabilité — le fichier ne reçoit plus
+    jamais de `git diff`), chaque `[?]` de `Tasks` tranché par Sébastien sans réinterprétation du
+    contrat figé et arbitré de concert avec le `[?]` de /src/users/group.sdd sur le littéral du
+    @down, et la spec approuvée par Sébastien.
+
+Scenario: @up seede une unique ligne `admin`
+  Given une base SQLite en mémoire sans aucune table
+  When @migration::Migrator::up complet est appliqué (les trois migrations internes)
+  Then @miryad_groups contient exactement une ligne de @name `admin`
+  And cette ligne porte un @created_at non null posé à l'exécution et un @id auto-incrémenté, deux
+    colonnes peuplées `name` et `created_at` rien d'autre
+  And la lookup par @users::group::ADMIN_GROUP_NAME et celle par le littéral `"admin"` retrouvent
+    la même ligne
+
+Scenario: second @up direct n'ajoute rien
+  Given les tables de 000002 posées via la @Migration soeur et un premier @up direct réussi de
+    cette @Migration sur @SchemaManager::new(&db)
+  When @up est appelé une seconde fois directement sur le même @SchemaManager de la même connexion
+  Then le second @up rend `Ok(())`
+  And @users::group::Entity::find compte toujours une seule ligne `admin`, même @id et même
+    @created_at intacts : le premier SELECT de @ensure_group a court-circuité tout @INSERT
+
+Scenario: rejeu du migrateur ne re-seed pas
+  Given une base SQLite en mémoire dont @migration::Migrator::up a réussi
+  When @migration::Migrator::up complet est appelé une seconde fois sur la même connexion
+  Then le second @up rend `Ok(())` sans exécuter @up de cette @Migration — @exec_up_with la tient
+    pour @Applied d'après @seaql_migrations_miryad_core
+  And la ligne `admin` garde le @created_at de la première application et reste unique
+
+Scenario: le seed ne confère l'admin à personne
+  Given une base SQLite en mémoire migrée par @migration::Migrator::up
+  When @users::user::resolve_user crée un utilisateur puis @users::group::is_admin sur son @user_id
+  Then @users::group::is_admin rend @Ok(`false`) : la ligne seedée ne fait aucun administrateur
+  But @miryad_group_memberships ne contient aucune ligne
+
+Scenario: ligne `admin` préexistante est acceptée telle quelle
+  Given les tables de 000002 posées via la @Migration soeur et une ligne `admin` créée à la main
+    avec un @created_at témoin de test
+  When @up de cette migration est appelé directement sur cette connexion
+  Then @up rend `Ok(())`
+  And la ligne garde son @id et son @created_at témoin et aucune seconde ligne `admin` n'existe :
+    @up par premier SELECT de @ensure_group, le seed a une sémantique de présence non de
+    conformité
+
+Scenario: @down ne retire que `admin` parmi les groupes
+  Given une base migrée par @migration::Migrator::up et un second groupe `editors` ajouté par
+    @users::group::ensure_group
+  When @down direct de cette @Migration est appelé sur @SchemaManager::new(&db)
+  Then @down rend `Ok(())` et la ligne `admin` a disparu de @miryad_groups
+  And la ligne `editors` est toujours présente
+  And un second @down immédiat rend aussi `Ok(())`, zéro ligne touchée — rollback idempotent — la
+    table `miryad_groups` survit puisque @down ne porte aucun DDL
+
+Scenario: @down sans table `miryad_groups` échoue
+  Given une base SQLite en mémoire où aucun @up n'a jamais tourné, donc sans `miryad_groups`
+  When @down direct de cette @Migration est appelé sur @SchemaManager::new(&db)
+  Then @down rend @Err d'un @sea_orm::DbErr : un @DELETE SQL sur table absente n'a aucune
+    tolérance
+  But le chemin est impossible dans le cadre @Migrator : @exec_down_with inverse l'ordre, ce
+    @down passe toujours avant les @DROP TABLE de 000002
+
+Scenario: @up sans tables échoue sans rien écrire
+  Given une base SQLite en mémoire sans aucune table (000002 non appliquée)
+  When @up direct de cette @Migration est appelé sur @SchemaManager::new(&db)
+  Then @up rend @Err d'un @sea_orm::DbErr : le premier SELECT de @ensure_group échoue et remonte
+    par le `?` du corps de @up
+  And aucune table n'apparaît : le fichier ne contient aucun DDL
+
+Scenario: @down cascade les memberships de l'admin seedé
+  Given une base migrée par @migration::Migrator::up, un utilisateur posé par
+    @users::user::resolve_user et @users::membership::sync_group_memberships le rattachant au seul
+    groupe `admin` seedé, @users::group::is_admin répondant @Ok(`true`)
+  When @down direct de cette @Migration est appelé
+  Then @down rend `Ok(())`, la ligne `admin` est supprimée et la ligne de membership qui pointait
+    vers elle est supprimée en cascade par la FK de 000002 — exécutée sur SQLite car le pragma
+    @PRAGMA foreign_keys ON de sqlx est vérifié au source
+  And @users::group::is_admin pour cet utilisateur rend @Ok(`false`) — plus aucun groupe à trouver
+  When @up direct est rejoué sur cette base
+  Then le groupe `admin` existe de nouveau mais @users::group::is_admin reste @Ok(`false`) : le
+    droit ne survit pas au rollback, seul @users::membership::sync_group_memberships rattache
+
+Scenario: `Admin` de casse distincte survit au @down
+  Given la base de 000002 appliquée, @up de cette migration appliqué et un groupe `Admin` à
+    majuscule créé en supplément par @users::group::ensure_group — deux lignes distinctes faute de
+    COLLATE posé par 000002
+  When @down direct est appelé
+  Then la ligne `admin` est supprimée et la ligne `Admin` survit, égalité binaire du backend
+    SQLite des tests
+  But ce sens de la casse est celui de SQLite et la collation Postgres relève de la `[?]` déjà
+    ouverte de /src/users/group.sdd, non tranchée ici
+
+Scenario: remontée totale puis re-application reconstruit le seed
+  Given une base SQLite en mémoire dont @migration::Migrator::up a appliqué toutes les migrations
+    et un utilisateur synchronisé par @users::membership::sync_group_memberships vers `["admin"]`,
+    donc @users::group::is_admin @Ok(`true`)
+  When @migration::Migrator::down complet puis @migration::Migrator::up complet sont rejoués
+  Then les deux rendent `Ok(())` — le @down de cette migration est passé avant les @DROP de 000002
+    que garantit l'inversion d'ordre du framework
+  And une unique ligne `admin` existe de nouveau dans @miryad_groups, @created_at plus récent que
+    celui de la première application
+  And @users::group::is_admin pour ce utilisateur rend de nouveau @Ok(`false`) : la cascade puis
+    le @DROP ont détruit le membership, la reconstruction part de zéro
+
+Scenario: le tracking nomme cette migration par son stem de fichier
+  Given une base SQLite en mémoire sans aucun tracking
+  When @migration::Migrator::up complet est appelé
+  Then @migration::MigratorTrait::get_applied_migrations compte parmi ses appliquées une migration
+    nommée exactement `m20260822_000003_seed_admin_group`
+  And ce nom est le @get_file_stem du chemin de ./m20260822_000003_seed_admin_group.rs — expansion
+    de @DeriveMigrationName vérifiée au source — et il est inscrit dans
+    @seaql_migrations_miryad_core, table dédiée ownée par ./mod.rs

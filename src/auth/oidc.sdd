@@ -1,0 +1,482 @@
+Spec: oidc — client du handshake OIDC : construction par discovery, génération de l'URL d'autorisation, échange de code avec vérification des claims `id_token` par openidconnect 4, extraction de l'identité et du claim `groups`
+
+Purpose:
+  Porter le handshake OIDC côté client pour le flow code d'authentification : construire un
+    @OidcClient depuis un @OidcConfig (URL d'émission validée par parse, client HTTP sans
+    redirection avec CA optionnel, discovery du fournisseur puis fetch du JWKS, URL de callback),
+    générer à la demande une URL d'autorisation à flux code fraîche (@CsrfToken::new_random +
+    @Nonce::new_random à chaque appel, state et nonce non persistés ici), échanger le code renvoyé
+    par le fournisseur contre un `id_token` vérifié (signature, `aud`, `iss`, `exp`, `nonce` —
+    vérifications déléguées à @openidconnect `4.0.1` sur oauth2 `5.0.0`, source amont vérifiée),
+    et remettre @OidcLoginResult : jeton brut verbatim, `sub`, `email` optionnel et claim
+    `groups`. Le fichier ne connait aucun endpoint HTTP : les handlers `login`, `callback`,
+    `logout` vivent dans ./mod.rs, qui seul persiste state/nonce (cookie pending chiffré) et
+    pose les cookies ; cette spec ne couvre que ce que ./oidc.rs garantit à cet appelant. Aucune
+    trace hors deux @tracing::error de l'échange de code, aucune écriture, aucun contournement
+    possible de la vérification.
+
+Owns:
+  ./oidc.rs
+
+References:
+  ./mod.rs — unique consommateur de production : @handler_login appelle @OidcClientTrait::authorization_url
+    et persiste `csrf:nonce` dans le cookie chiffré `miryad_oidc_pending` (@Max-Age=300) ;
+    @handler_callback contrôle le cookie (`MRD-AUTH-012`), compare `state` au CSRF attendu
+    (`MRD-AUTH-013`, @tracing::warn posé là et nulle part ici), passe le nonce lu dans le cookie à
+    @OidcClientTrait::exchange_code, puis consomme @OidcLoginResult (résolution user, sync des
+    groupes, cookie de session posé par ./cookie.rs) ; ses tests inline affirment
+    @StatusCode::BAD_GATEWAY sur deux parcours callback
+  ./error.rs et ./error.sdd — @AuthError::Oidc préfixe toute charge utile de `MRD-AUTH-003` au
+    @Display et @IntoResponse rend `502` (@StatusCode::BAD_GATEWAY) : c'est là, pas ici, que
+    vivent ces deux garanties ; sa `Raises` attribue `MRD-AUTH-009` à la charge utile des échecs
+    d'échange, alors qu'ici `009` ne sort qu'en traces @tracing::error et dans le message du
+    @expect de @send_http_request — écart arbitré en `Tasks` `[?]`
+  ./config.rs — @OidcConfig est l'unique source d'entrée (issuer, client id/secret, callback,
+    scopes, CA optionnel), lue à chaque construction, jamais depuis l'environnement ou un fichier
+  ./cookie.rs — consomme @OidcIdentity comme payload du cookie `miryad_session` ; ./state.rs —
+    @MiryadAuthState efface @OidcClient dans une @Arc<dyn @OidcClientTrait>
+  /src/users/user.rs @resolve_user et /src/users/membership.rs @sync_group_memberships —
+    consommateurs en aval de @subject, @email et @groups ; ./mod.rs est le point de jonction, ce
+    fichier ne touche ni la base ni ces fonctions
+  /src/rest/mod.rs, /src/rest/me.rs, /src/rest/admin.rs, /src/rest/tokens.rs,
+    /src/graphql/handler.rs, ./dual.rs, ./middleware.rs — tests `#[cfg(test)]` qui injectent
+    @MockOidcClient dans @MiryadAuthState : @MockOidcClient::exchange_code n'y est jamais appelé
+    avec succès (les scénarios testés s'arrêtent avant l'échange), et
+    @MockOidcClient::authorization_url est exercé par les tests de ./mod.rs
+  /Cargo.toml et /Cargo.lock — @openidconnect = `4.0.1` (enveloppe oauth2 `5.0.0`), @reqwest
+    `0.12.28` (@default-features = `false`, features @rustls-tls et @json, racines @webpki-roots),
+    @base64 `0.22`, @serde_json, @async-trait, @tracing — aucune de ces dépendances optionnelle
+    ni gateée par une feature
+  /tooling.sdd — ce fichier porte de la dette stricte recensée là : @expect_used sur l'@expect de
+    la construction de @HttpResponse (littéral `MRD-AUTH-009` comme message) et @indexing_slicing
+    sur `parts[1]` de @extract_groups_claim ; la purge ne doit rien en ajouter ici
+  /src/lib.rs — `pub mod auth` inconditionnel ; l'exemption @cfg(test) de la famille
+    panic/unwrap/indexation portée par la racine de crate couvre @MockOidcClient et le `mod tests`
+
+Must:
+  Ordre de construction figé dans @OidcClient::new, une erreur par étape, aucune requête réseau
+    avant la validation de l'étape : parse de l'issuer (@IssuerUrl::new = @url::Url::parse seul —
+    aucune exigence `https`, aucun rejet de schéma, vérifié dans la source amont d'@openidconnect)
+    → construction du client HTTP (@Certificate::from_pem → `MRD-AUTH-007`, puis `build` →
+    `MRD-AUTH-008`) → discovery → parse du callback (@RedirectUrl::new, même sémantique de parse
+    seul) — donc un callback invalide ne peut être signalé `MRD-AUTH-006` qu'après une discovery
+    réussie
+  Discovery par @CoreProviderMetadata::discover_async sur le client interne : `GET` de
+    `{issuer}/.well-known/openid-configuration` puis `GET` du `jwks_uri` du document — le fetch
+    du JWKS est partie intégrante du succès de @new, un JWKS inaccessible fait échouer la
+    construction en `MRD-AUTH-005`. La jointure est une jointure d'URL, pas une concaténation :
+    `/.well-known/openid-configuration` remplace le dernier segment d'un chemin sans slash final
+    (jointure relative, vérifiée dans la source amont d'@openidconnect). L'`issuer` du document
+    doit être égal (`==`) à l'issuer configuré (@DiscoveryError::Validation, absorbé en
+    `MRD-AUTH-005`). Les clés vérifiant les algos à clé publique sont le snapshot de ce fetch —
+    le fichier ne recharge jamais le JWKS ensuite (conséquence rotation de clés : `Tasks` `[?]`)
+  Client HTTP interne : @reqwest::redirect::Policy::none (les `3xx` de la discovery, du JWKS ou
+    du endpoint de tokens remontent tels quels à la librairie, jamais suivis) ; aucun timeout ni
+    connect_timeout configurés (défaut @reqwest vérifié : un endpoint qui ne répond pas bloque
+    l'appel indéfiniment — `Tasks` `[?]`) ; CA optionnel = contenu PEM parsé puis ajouté comme
+    racine supplémentaire (additif, vérifié dans la source amont de @reqwest côté rustls) — les
+    racines @webpki-roots par défaut restent actives, rien n'est retiré
+  URL d'autorisation (@authorization_url) : @CoreAuthenticationFlow::AuthorizationCode donc
+    `response_type=code` ; `state` = secret du @CsrfToken::new_random du même appel ; paramètre
+    `nonce` = secret du @Nonce::new_random du même appel, additionné par la librairie
+    (`add_extra_param("nonce", ...)`, vérifié dans la source amont d'@openidconnect) ;
+    `client_id` = configuré ; `redirect_uri` = la valeur posée par @set_redirect_uri à la
+    construction ; le scope `openid` est injecté automatiquement par la librairie
+    (`use_openid_scope` par défaut `true`, vérifié dans sa source) et les scopes de @OidcConfig
+    sont ajoutés après ; le filtre `!= "openid"` de cette boucle n'existe que pour empêcher la
+    duplication `openid+openid` quand la config liste déjà `openid` ; PKCE absent :
+    @set_pkce_challenge et @set_pkce_verifier ne sont jamais appelés, donc jamais de
+    `code_challenge` dans l'URL ni de `code_verifier` dans l'échange (activation = `Tasks` `[?]`)
+  Échange (@exchange_code) : `POST` sur le `token_endpoint` de la metadata via @request_async
+    avec le transport interne ; authentification client @AuthType::BasicAuth par défaut chez
+    oauth2 (vérifié dans sa source) — le secret configuré n'est porté que par cet appel-là, en
+    en-tête `Authorization` ; le corps du formulaire porte `grant_type=authorization_code`,
+    `code` et `redirect_uri` (reprise du callback configuré, vérifié dans la source amont
+    d'oauth2, `exchange_code_impl`) mais jamais `code_verifier` ; réponse non-2xx (y compris le
+    `3xx` laissé passer par @Policy::none) → @RequestTokenError rendu en charge utile
+    `MRD-AUTH-003` sans sous-code de ce fichier, précédé d'une @tracing::error portant le littéral
+    `MRD-AUTH-009: OIDC code exchange failed`
+  Vérification du token : @id_token.claims(@id_token_verifier, expected_nonce), déléguée à
+    @openidconnect sans ajout ni relaxation locale ; @id_token_verifier est celui issu de la
+    metadata (algos limités à `id_token_signing_alg_values_supported`, clé symétrique =
+    @client_secret pour les algos `HS*`). Vérifications réellement opérées par la librairie
+    (source amont vérifiée, module verification) : `iss` égal à l'issuer de la metadata ; `aud`
+    contient le `client_id` — les audiences supplémentaires passent, le claim `azp` n'est PAS
+    contrôlé (bloc commenté en amont) ; signature selon les clés du snapshot JWKS — absence de
+    clé et `kid` ambigu sont des rejets ; `exp` strictement postérieur à l'heure courante, sans
+    tolérance ni levier local ; `iat`, `acr`, `auth_time` non contrôlés par défaut (verifieurs
+    `|_| Ok(())`) ; `nonce` du payload comparé à `expected_nonce` en temps constant — tout refus
+    remonte exactement `MRD-AUTH-011: token verification failed: {e}`, quel que soit le motif
+  Extraction de succès, sans trace et sans effet de bord : @id_token_string = @ToString du token
+    (verbatim, tel que reçu) ; @subject = claim `sub` ; @email = claim `email` mappé en optionnel ;
+    @groups extrait du payload par @extract_groups_claim APRÈS vérification (le JWT n'est
+    redécodé qu'après la réussite de @claims) ; l'échange ne mute aucun état du @OidcClient, et le
+    mono-usage du code est une garantie du fournisseur, pas de ce fichier
+  @extract_groups_claim en dégradation toujours silencieuse et vide, jamais une erreur ni une
+    trace : nombre de segments `!= 3` → vide ; base64 URL-safe sans padding invalide → vide ;
+    payload non-JSON → vide ; clé `groups` absente ou non-tableau → vide ; tableau conservant
+    uniquement ses éléments @String (les non-string filtrés en silence). C'est le claim non
+    standard d'Authentik, pas un claim OIDC — l'absence n'est pas un incident
+  Rendu exact sur le fil : chaque charge produite ici porte son littéral `MRD-AUTH-0NN` en tête,
+    et @AuthError::Oidc (./error.rs) préfixe `MRD-AUTH-003: OIDC error: ` par-dessus — les codes
+    `004` à `011` sortent donc doublés (`003` + sous-code) avec `502` ; les deux échecs d'échange
+    (@map_err de @exchange_code et de @request_async) sont les seuls chemins sans sous-code
+    embarqué (payload = message nu de l'erreur amont) et les seuls à émettre les deux uniques
+    traces @tracing::error du fichier, marquées du littéral `MRD-AUTH-009`
+  @MockOidcClient (présent sous @cfg(test) seulement) est le contrat de test des appelants : URL
+    d'émission statique sans E/S, @CsrfToken::new_random/@Nonce::new_random frais par appel,
+    @exchange_code volontairement @unimplemented! (panique nommée) — ./mod.rs, ./dual.rs,
+    ./middleware.rs, /src/rest/*.rs et /src/graphql/handler.rs s'appuient sur cette panique
+    comme assertion d'absence, ce fichier doit donc la conserver telle quelle
+  Compilation inconditionnelle sur toutes les combinaisons de features : aucun
+    `#[cfg(feature = ...)]` dans ./oidc.rs, @openidconnect/@reqwest/@base64/@async-trait/@tracing
+    non optionnels dans /Cargo.toml — la batterie de /tooling.sdd exerce ce fichier sur
+    `--no-default-features` comme sur `--all-features` ; @cfg(test) est le seul gating présent
+
+Must not:
+  Persister, même brièvement, un state, un nonce, un cookie ou une session : ni
+    `miryad_oidc_pending`, ni cookie de session, ni journal de nonces — la conservation
+    appartient à ./mod.rs, et @exchange_code suppose que l'appelant rapporte lui-même le nonce
+    exact de l'appel @authorization_url qu'il prétend continuer
+  Émettre `MRD-AUTH-001`, `MRD-AUTH-002`, construire @AuthError::Oidc avec les codes `012` ou
+    `013`, ni approcher `014` à `016` : la taxonomie du fichier s'arrête à `004`..`011` en charge
+    utile (`009` en traces et message de panic seulement) ; cookies et redirections de login
+    sont le territoire ./mod.rs et ./cookie.rs, les tokens API celui de ./token.rs
+  Ajouter un chemin de panic en production : le seul arrêt existant est l'@expect de construction
+    de @HttpResponse (dette consignée /tooling.sdd) ; @send_http_request replie une méthode HTTP
+    non parseable sur @reqwest::Method::GET par @unwrap_or — aucun nouveau @unwrap(), les lints
+    @expect_used/@indexing_slicing ne doivent pas empirer
+  Lire l'environnement, un fichier ou un chemin pour configurer la CA : le champ @ca_cert est un
+    contenu PEM passé par @OidcConfig, jamais un chemin de fichier, jamais une variable
+    d'environnement
+  Ajouter une vérification ou en retirer une sur le `id_token` par rapport à ce qu'opère la
+    librairie (nonce maison, comparaison locale du `sub`, exigence du claim `groups`, contournement
+    de signature sous un flag) : @claims est appelé tel quel, tout motif de rejet se confond en
+    `MRD-AUTH-011`
+
+Depends on:
+  @openidconnect `4.0.1` — @CoreClient/@CoreProviderMetadata/@AuthorizationRequest, @CsrfToken,
+    @Nonce, @IssuerUrl/@RedirectUrl, @Scope, @TokenResponse, @IdTokenVerifier et la vérification
+    des claims enveloppée ; s'appuie sur oauth2 `5.0.0` (transport des tokens,
+    @ConfigurationError de @missing-url, @RequestTokenError) — comportements vérifiés dans la
+    source amont, pas dans la documentation
+  @reqwest `0.12.28` — @Client/@ClientBuilder (@Policy::none, CA additionnelle rustls/webpki,
+    defaut aucun timeout) et @Certificate::from_pem ; @HttpRequest/@HttpResponse de
+    @openidconnect::http (crate @http) convertis dans @send_http_request, repli @GET sur méthode
+    non parseable, @expect sur la construction de la réponse
+  @base64 `0.22` — @base64::engine::general_purpose::URL_SAFE_NO_PAD pour le payload JWT de
+    @extract_groups_claim
+  @serde_json — parse du payload (@serde_json::Value) du claim `groups`
+  @async-trait `0.1` — @OidcClientTrait ; @tracing `0.1` — les deux @tracing::error de
+    @exchange_code
+  ./config.rs (@OidcConfig) et ./error.rs (@AuthError::Oidc) — types du module, sans plus
+
+Exposes:
+  @OidcIdentity — struct `pub` à trois champs publics : @id_token (@String, JWT brut), @subject
+    (@String, claim `sub`), @email (@Option<@String>) ; aucun @impl dans ce fichier — ./cookie.rs
+    en construit aussi un lors de la relecture du cookie de session
+  @OidcLoginResult — struct `pub` : @identity et @groups (@Vec<@String> du claim Authentik) ;
+    aucun trait de sérialisation, naît uniquement de @exchange_code
+  @OidcClientTrait — trait `pub` async (@Send + @Sync) : @authorization_url(&self) →
+    (@openidconnect::url::Url, @CsrfToken, @Nonce) et @exchange_code(&self, `code`: &@str,
+    @expected_nonce: &@Nonce) async → @Result<@OidcLoginResult, @AuthError> ; consommé sous
+    @Arc<dyn @OidcClientTrait> par ./state.rs et ./mod.rs
+  @OidcClient — struct `pub` à champs privés (@inner de type privé @BuiltCoreClient, @http_client,
+    @scopes) ; constructeur @OidcClient::new(&@OidcConfig) async ; implémente @OidcClientTrait
+  @MockOidcClient — struct unitaire `pub` sous @cfg(test) seulement, impl @OidcClientTrait sans
+    réseau, ré-exporté sous @cfg(test) par ./mod.rs (`pub use oidc::MockOidcClient`)
+  Rien d'autre : @BuiltCoreClient (alias privé des six états d'endpoint
+    `EndpointSet/NotSet/NotSet/NotSet/MaybeSet/MaybeSet` = forme de @from_provider_metadata),
+    @send_http_request, @extract_groups_claim et @build_http_client sont privés
+
+Accepts:
+  @OidcClient::new : un emprunt @&@OidcConfig — issuer et callback = chaînes que @url::Url::parse
+    accepte (`http` comme `https`, tout schéma parsable passe cette porte, aucun contrôle de
+    forme ni de conformité du callback — pas de comparaison avec l'hôte de la requête, confiance
+    en la config) ; @client_id et @client_secret transmis tels quels — un secret vide produit
+    quand même une authentification Basic avec secret vide, aucune validation de non-vide ;
+    @scopes = liste de @String avec `openid` filtré ; @ca_cert = contenu PEM optionnel
+  @authorization_url : aucun paramètre ; ne consomme que @self.scopes figés à la construction
+    (modifier un @OidcConfig après @new n'a aucun effet)
+  @exchange_code : @code = le `code` du callback tel que reçu du navigateur, copié en
+    @AuthorizationCode sans validation de forme ; @expected_nonce = @Nonce exact du couple généré
+    par l'appel @authorization_url que le callback prétend continuer — nonce divergent ou absent
+    du payload → rejet `MRD-AUTH-011`, le fichier ne détient aucun état pour retrouver « le vrai »
+    nonce
+  Aucune entrée générique, aucun paramètre de feature, aucun état global lu ou écrit
+
+Returns:
+  @OidcClient::new : @Ok(@OidcClient) portant les endpoints et le JWKS du snapshot de discovery,
+    ou @Err(@AuthError::Oidc) des codes `004`/`005`/`007`/`008`
+  @authorization_url : tuple infaillible (@openidconnect::url::Url, @CsrfToken, @Nonce) dont les
+    deux secrets sont frais, non persistés et lisibles par @secret() ; l'URL ne porte JAMAIS de
+    `code_challenge` (voir `Must`)
+  @exchange_code : @Ok(@OidcLoginResult) avec @identity.id_token = chaîne JWT brute restituée par
+    @ToString (pas un payload redécodé), @subject et @email issus des claims vérifiés, @groups du
+    payload ; @Err(@AuthError::Oidc) des codes `010`/`011`, ou du message nu de l'erreur amont
+    d'échange sans sous-code
+  @extract_groups_claim (privé) : @Vec<@String> dans tous les cas — jamais @Option ni @Result —
+    vide sur toute dégradation, sinon l'ordre du tableau conservé et les non-strings retirés
+  @MockOidcClient::authorization_url : URL statique + couple frais ; @MockOidcClient::exchange_code :
+    panique @unimplemented! (assertion d'absence utilisée par les tests du crate)
+
+Raises:
+  `MRD-AUTH-004` — via @IssuerUrl::new, payload commençant par le littéral
+    `MRD-AUTH-004: invalid OIDC issuer URL: ` suivi du @Debug de @url::ParseError : issuer que
+    @url ne parse pas (le parse est le seul contrôle — `http://` comme tout schéma parsable
+    passent cette porte, c'est la discovery qui tranche ensuite) ; émis avant toute construction
+    et toute requête ; @Display complète (./error.rs) : `MRD-AUTH-003: OIDC error: MRD-AUTH-004:
+    ...`, HTTP `502`
+  `MRD-AUTH-007` — payload `MRD-AUTH-007: invalid OIDC CA cert: ` + @Display de @reqwest::Error
+    via @Certificate::from_pem : @ca_cert non vide et non parsable en certificat PEM ; avant tout
+    réseau
+  `MRD-AUTH-008` — payload `MRD-AUTH-008: failed to build OIDC HTTP client: ` + @Display de
+    @reqwest::Error via `build` du @ClientBuilder : builder refusant (cas réaliste quasi nul avec
+    rustls/webpki, jamais observé ni testable déterministement)
+  `MRD-AUTH-005` — payload `MRD-AUTH-005: OIDC discovery failed: ` + @Debug de @DiscoveryError
+    (les causes de la librairie restent lisibles dans le @Debug) : requête impossible, réponse
+    non-OK, document absent/mal parsé, `issuer` du document divergent de l'issuer configuré,
+    `jwks_uri` inaccessible ou JWKS malformé ; absorbe aussi les @reqwest::Error remontés par
+    @send_http_request pendant discovery et le fetch JWKS
+  `MRD-AUTH-006` — payload `MRD-AUTH-006: invalid OIDC redirect URL: ` + @Debug de
+    @url::ParseError : callback non parsable ; n'apparait qu'APRÈS une discovery réussie (ordre
+    figé) — callback invalide avec issuer invalide meurt donc `004`, jamais `006`
+  Échec de construction de la requête d'échange (`exchange_code` du @CoreClient, provider sans
+    `token_endpoint`) — payload = message nu de @ConfigurationError oauth2, AUCUN sous-code
+    embarqué ; la trace @tracing::error `MRD-AUTH-009: OIDC code exchange config error` est le
+    seul endroit où `009` qualifie ce chemin
+  Échec d'envoi ou de réponse du endpoint de tokens — payload = message nu de @RequestTokenError
+    ou de @reqwest::Error (erreurs OAuth `invalid_grant` etc. verbatim, sans sous-code ici),
+    précédé de la trace @tracing::error `MRD-AUTH-009: OIDC code exchange failed` ; le `3xx` du
+    endpoint tombe ici aussi (@Policy::none) sans distinction dans la charge utile
+  `MRD-AUTH-010` — payload littéral exact `MRD-AUTH-010: no id_token in response` quand une
+    réponse de tokens réussie ne contient pas le champ `id_token` (@None)
+  `MRD-AUTH-011` — payload `MRD-AUTH-011: token verification failed: ` + message de
+    @ClaimsVerificationError, pour TOUS les motifs de rejet amont confondus : signature invalide,
+    clé/JWKS manquante, `iss` divergent, `aud` sans le client, `exp` atteint (sans tolérance),
+    `nonce` absent ou divergent, algo hors liste de la metadata — le fil ne distingue jamais les
+    motifs entre eux, seul le `{e}` porte le détail amont
+  Panique hors contrat — l'@expect au message littéral `MRD-AUTH-009: failed to build HTTP
+    response from a valid status+headers` de @send_http_request : porteur du littéral `009` mais
+    panique, pas @AuthError ; dette @expect_used consignée /tooling.sdd, à purger sans faire
+    disparaitre `009` sans arbitrage (`Tasks` `[?]`)
+
+Handles:
+  Discovery en deux temps (document puis JWKS via le transport privé @send_http_request) : une
+    réponse `3xx`, un `Content-Type` inattendu ou un JSON illégal reviennent en `MRD-AUTH-005`
+    par la librairie — aucune redirection n'est jamais suivie sur les trois routes (document,
+    JWKS, tokens)
+  Le `3xx` du endpoint de tokens est traité comme une réponse non réussie ordinaire :
+    @RequestTokenError → payload sans sous-code + trace `009` ; ce cas est contractuel à cause du
+    @Policy::none choisi ici, pas d'@openidconnect
+  Le `code` arrive déjà validé côté CSRF par ./mod.rs (`012`/`013` en amont) : une relecture du
+    même code avec le bon nonce est rejetée par le fournisseur (mono-usage là-bas), ce fichier ne
+    rejoue aucun contrôle CSRF de son propre chef
+  Fournisseurs sans `email` (claim absent) : @identity.email vaut @None — la résolution d'un
+    usager sans email est le travail de ./mod.rs et /src/users, pas d'ici
+  Claim `groups` absent, vide, ou tableau avec éléments non-string : @Vec vide ou filtré en
+    silence — un login réussis sans groupe est une sortie normale (l'autorisation relève du RBAC,
+    pas de ce fichier)
+  Callback au `state` correct mais nonce de cookie désynchronisé de l'appel @authorization_url
+    effectif (double login en parallèle) : @exchange_code ne vérifie que le @expected_nonce qu'on
+    lui fournit — le rejet remonte `011` sans code distinct, la distinction relevant de l'état
+    détenu par ./mod.rs (`Tasks` `[?]`)
+  Panne réseau totale (aucun timeout, défaut @reqwest) : @send_http_request propage
+    @reqwest::Error en `005` (discovery) ou en payload sans sous-code (échange) — mais seulement
+    après une attente indéfinie (`Tasks` `[?]`)
+
+Tasks:
+  [?] `MRD-AUTH-009` ne vit qu'en deux traces @tracing::error et dans le message de panic de
+    l'@expect, alors que ./error.sdd (sa `Raises`) le présente comme code porté par la charge
+    utile des échecs d'échange : faut-il préfixer `MRD-AUTH-009:` dans la charge utile des deux
+    @map_err de @exchange_code (aligner le code sur la spec soeur), ou retirer `009` de la
+    `Raises` de ./error.sdd au motif que ce n'est pas un code du fil ?
+  [?] Découpage du handshake entre specs : la consigne de production de cette spec attendait les
+    handlers `login`, `callback`, `logout` dans ./oidc.rs — ils vivent en réalité dans ./mod.rs
+    (avec `012`/`013`, le cookie pending et les redirections post-login/post-logout). Cette spec
+    ne couvre donc que le client SDK : faut-il que ./mod.sdd (à produire) consolide le
+    contrat de flux complet endpoint par endpoint en ne référençant ici que les garanties
+    @authorization_url/@exchange_code ?
+  [?] Aucun timeout sur les trois appels réseau (aucun @timeout ni @connect_timeout sur
+    @build_http_client) : fixer un plafond (p. ex. quelques secondes) dans @build_http_client, ou
+    assumer « l'IdP qui avale les paquets bloque le handler indéfiniment » comme comportement
+    voulu ?
+  [?] JWKS = snapshot du fetch de construction (source @discover_async vérifiée) : la rotation de
+    clés du fournisseur fait échouer tous les échanges en `011` jusqu'au redémarrage de
+    l'application — garder le snapshot, ou déclencher un re-fetch du JWKS quand @openidconnect
+    remonte une clé absente ?
+  [?] PKCE jamais activé (ni @set_pkce_challenge ni @set_pkce_verifier, vérifié) : le flux
+    confidentiel à secret est conforme sans PKCE, mais des fournisseurs (p. ex. réglages
+    Authentik) peuvent l'exiger — décider si la crate active `S256`, ce qui ajouterait
+    `code_challenge` à l'URL de login et `code_verifier` à l'échange (modifierait deux lignes de
+    `Must` et trois `Scenario` de cette spec)
+  [?] Fixture des `Scenario` réseau : stratégie à trancher — mock IdP loopback @tokio::net::TcpListener
+    (@tokio en dev-dependency avec la feature @net explicite, aujourd'hui absente) servant des
+    réponses JSON fabriquées, et `id_token` HS256 pré-signés commités dans des constantes de test
+    (@exp très futur, zéro nouveau crate) ou signature au runtime (@hmac alors requis en dev) ;
+    la capture des traces @tracing des `Scenario` Échange-400 et Provider-sans-token-endpoint
+    exige @tracing-subscriber en dev ou se borne à une lecture statique — laquelle ?
+  [ ] Convertir les 24 `Scenario` en au moins 24 tests nommés distincts du `mod tests`
+    `#[cfg(test)]` de ./oidc.rs : les 3 tests inline existants couvrent les `Scenario` 21 et 22
+    et le seul cas `not-a-jwt` du `Scenario` 23 ; restent donc ≥22 tests à écrire — `#[test]` purs
+    pour 004/007, `#[tokio::test]` pour les parcours mock-IdP (005, 006, URL, échanges, mock en
+    `catch_unwind` pour l'@unimplemented!), selon la fixture arbitrée à la `Tasks` `[?]`
+    précédente ; le contrat ne déborde pas du fichier — si un mock HTTP en crate d'intégration
+    est préféré, rattacher ./tests par un `Can modify` de cette spec.
+
+Done when:
+  Chaque `Scenario` a au moins un test nommé distinct et vert dans le `mod tests` de ./oidc.rs,
+    sur features par défaut comme sur `--no-default-features` (fichier inconditionnel)
+  Chaque charge utile des `Raises` est affirmée par un test sur son littéral exact de préfixe
+    (`MRD-AUTH-0NN: ...`), sans confusion possible avec le préfixe `003` de ./error.rs
+  L'ordre de construction `004` → `007`/`008` → `005` → `006` est prouvé par des tests
+    impossibles à satisfaire dans un autre ordre (faux CA derrière issuer syntaxiquement valide,
+    faux callback derrière IdP fonctionnel)
+  Les garanties amont tenues en `Must` (scope `openid` unique, absence de `code_challenge` et de
+    `code_verifier`, `redirect_uri` dans la requête de tokens, `3xx` non suivis, Basic auth sur
+    le seul échange) sont attestées par les tests rejouant chaque appel contre le mock IdP
+  Les six `[?]` de cette spec ont une réponse de Sébastien, reflétée dans le contrat ou le code ;
+    la dette /tooling.sdd de ce fichier (un @expect_used, un @indexing_slicing) n'a pas grossi
+    avec l'ajout des tests
+
+Scenario: Issuer impossible à parser, refus 004 sans aucun contact réseau
+  Given un @OidcConfig dont `issuer_url` vaut `pas une url` et `ca_cert` @None
+  When @OidcClient::new est appelé
+  Then la réponse est @Err de @AuthError::Oidc dont la charge utile commence par `MRD-AUTH-004: invalid OIDC issuer URL: `
+  And le @Display commence par `MRD-AUTH-003: OIDC error: MRD-AUTH-004: ` (double code rendu par ./error.rs)
+  And aucune requête réseau n'a pu partir : l'erreur précède @build_http_client comme la discovery
+
+Scenario: Schéma http accepté au parse de l'issuer, c'est la discovery qui refuse 005
+  Given un @OidcConfig avec `issuer_url` = `http://127.0.0.1:9` (schéma `http`, port fermé) et `ca_cert` @None
+  When @OidcClient::new est appelé
+  Then la réponse est @Err dont la charge utile commence par `MRD-AUTH-005: OIDC discovery failed: `
+  But la charge utile ne contient aucun `MRD-AUTH-004` : `http` n'est pas un motif de refus au parse (seul @url::Url::parse opine, vérifié dans la source amont d'@openidconnect)
+
+Scenario: CA PEM invalide refusée 007 avant tout réseau
+  Given un @OidcConfig avec `issuer_url` = `http://127.0.0.1:9` et `ca_cert` = @Some de la chaîne `pas-du-pem`
+  When @OidcClient::new est appelé
+  Then la réponse est @Err dont la charge utile commence par `MRD-AUTH-007: invalid OIDC CA cert: `
+  And c'est `007` qui tombe, pas `005` : @Certificate::from_pem s'exécute avant la discovery et l'échec est donc nécessairement antérieur à toute connexion
+
+Scenario: JWKS inaccessible fait échouer toute la construction en 005
+  Given un IdP fake loopback servant un document `/.well-known/openid-configuration` valide et correspondant à son URL, dont le `jwks_uri` désigne un port fermé
+  When @OidcClient::new est appelé avec cet issuer
+  Then la réponse est @Err dont la charge utile commence par `MRD-AUTH-005: OIDC discovery failed: `
+  And l'IdP fake a bien servi le document une fois : le refus vient du second appel, le fetch du `jwks_uri`, partie intégrante de @discover_async (source vérifiée)
+
+Scenario: Document de discovery d'un issuer différent refusé 005
+  Given un IdP fake loopback complet dont le document déclare un `issuer` différent de l'`issuer_url` configuré
+  When @OidcClient::new est appelé
+  Then la réponse est @Err dont la charge utile commence par `MRD-AUTH-005: OIDC discovery failed: `
+  And jamais @Ok : la comparaison d'issuer de la librairie (@DiscoveryError::Validation absorbé) est la seule barrière, aucune trace n'est posée ici (lecture statique)
+
+Scenario: Issuer avec chemin sans slash final : la discovery tape la racine, pas le préfixe
+  Given un IdP fake loopback servant son document UNIQUEMENT sous `/reverse/.well-known/openid-configuration` (et son JWKS sous `/reverse/keys`), déclarant l'issuer `http://127.0.0.1:PORT/reverse`
+  When @OidcClient::new est appelé avec `issuer_url` = `http://127.0.0.1:PORT/reverse`
+  Then l'IdP fake enregistre un `GET /.well-known/openid-configuration` (chemin racine) et aucun `GET /reverse/.well-known/openid-configuration` : la jointure d'URL remplace le dernier segment (vérifiée dans la source amont)
+  And la réponse est @Err `MRD-AUTH-005: OIDC discovery failed: ` (le document racine sert un issuer étranger ou un 404), preuve observable que le chemin configuré a été effacé par la jointure
+
+Scenario: Callback invalide : surface après discovery, signalé 006
+  Given un IdP fake complet fonctionnel (document + JWKS) et un @OidcConfig valide sauf `redirect_url` = `pas une url`
+  When @OidcClient::new est appelé
+  Then la réponse est @Err dont la charge utile commence par `MRD-AUTH-006: invalid OIDC redirect URL: `
+  And l'IdP fake a servi le document et son JWKS avant l'échec : `006` est par construction post-réseau, l'ordre de @new l'impose
+
+Scenario: URL d'autorisation : flux code, state, nonce, openid, callback, et zéro PKCE
+  Given un IdP fake dont l'`authorization_endpoint` est une URL boucle-locale, servi à un @OidcClient construit avec `redirect_url` = `http://app.local/callback` et `scopes` = `["email", "profile"]`
+  When @authorization_url est appelé
+  Then l'URL porte l'`authorization_endpoint`, `response_type=code`, le `client_id` configuré, `state` égal au secret du @CsrfToken retourné, `nonce` égal au secret du @Nonce retourné, `redirect_uri=http://app.local/callback`
+  And le paramètre `scope` commence par `openid` (injecté par la librairie) suivi de `email` et `profile`
+  But l'URL ne porte aucun `code_challenge` ni `code_challenge_method` : PKCE jamais activé
+  And le fichier ne stocke ni state ni nonce nulle part
+
+Scenario: Scope openid demandé une seule fois même si la config liste openid
+  Given le même client de l'IdP fake mais construit avec `scopes` = `["openid", "email"]`
+  When @authorization_url est appelé
+  Then le paramètre `scope` contient `openid` exactement une fois (jamais `openid openid`) et `email` : le filtre `!= "openid"` de @authorization_url est la garantie observable anti-duplication
+
+Scenario: State et nonce frais à chaque demande d'URL
+  Given le même @OidcClient, appelé deux fois de suite
+  When les deux tuples retournés sont comparés
+  Then les quatre secrets sont non vides et aucun secret du premier appel ne réaparait dans le second
+  And chaque URL retourne contient exactement son propre `state` et son propre `nonce` — l'appelant doit conserver chaque couple pour son propre callback
+
+Scenario: Échange de code réussi rend le jeton brut, les claims et les groups
+  Given un IdP fake complet pour alg `HS256` (JWKS vide autorisé), dont `/token` rend `200` `application/json` avec un `id_token` signé HS256 avec le `client_secret` configuré, claims `aud` = [client_id], `iss` = issuer de la metadata, `nonce` = nonce attendu, `exp` très futur, `sub` = `user-1`, `email` = `user-1@example.com`, `groups` = `["admin", "editors"]`
+  When @exchange_code est appelé avec un code non vide et le @Nonce exact
+  Then la réponse est @Ok : @identity.id_token égal à la chaîne brute du JWT servi, @subject = `user-1`, @email = @Some de `user-1@example.com`, @groups = exactement `["admin", "editors"]`
+  And le serveur fake a reçu un `POST /token` avec en-tête `Authorization: Basic`, et un corps portant `grant_type=authorization_code`, `code`, `redirect_uri` du configuré — le secret du client ne voyage que sur cet appel
+  But le corps ne contient pas de `code_verifier`, et l'échange réussi n'a posé aucune trace @tracing
+
+Scenario: Réponse de tokens sans id_token, rejet 010
+  Given un IdP fake dont `/token` rend `200` avec seulement `access_token` et `token_type` (aucun champ `id_token`)
+  When @exchange_code est appelé avec le bon nonce
+  Then la réponse est @Err de charge utile exacte `MRD-AUTH-010: no id_token in response`
+
+Scenario: Nonce du id_token divergent du nonce attendu, rejet 011
+  Given un id_token fixture parfait sur tous les autres plans mais dont le claim `nonce` diffère de @expected_nonce
+  When @exchange_code est appelé avec @expected_nonce
+  Then la réponse est @Err dont la charge utile commence par `MRD-AUTH-011: token verification failed: `
+  And c'est le motif nonce du @ClaimsVerificationError amont qui porte le message — seul le rejet total se teste, le détail n'est pas contractualisé ici
+
+Scenario: id_token expiré, rejet 011 sans tolérance d'horloge
+  Given un id_token fixture identique au happy path mais dont `exp` est antérieur à l'heure courante
+  When @exchange_code est appelé avec le bon nonce
+  Then la réponse est @Err dont la charge utile commence par `MRD-AUTH-011: token verification failed: ` — la règle amont `now >= exp` → rejet, sans leeway (source vérifiée), est la seule barrière d'horloge exercée ici
+
+Scenario: id_token à signature invalide, rejet 011
+  Given un id_token fixture signé HS256 avec un secret différent du @client_secret configuré
+  When @exchange_code est appelé avec le bon nonce
+  Then la réponse est @Err dont la charge utile commence par `MRD-AUTH-011: token verification failed: ` — l'échec de signature MAC est un rejet, jamais une tolérance silencieuse
+
+Scenario: id_token destiné à un autre client, rejet 011
+  Given un id_token fixture bien signé mais de claim `aud` = `["autre-client"]`
+  When @exchange_code est appelé avec le bon nonce
+  Then la réponse est @Err dont la charge utile commence par `MRD-AUTH-011: token verification failed: ` : la vérification `aud` contient le `client_id` est celle d'@openidconnect (audiences supplémentaires acceptées, `azp` non vérifié — vérifié source amont)
+
+Scenario: id_token d'un autre issuer, rejet 011
+  Given un id_token fixture bien signé mais de claim `iss` étranger à l'issuer de la metadata
+  When @exchange_code est appelé avec le bon nonce
+  Then la réponse est @Err dont la charge utile commence par `MRD-AUTH-011: token verification failed: ` — et le message d'erreur ne révèle aucun contenu du token au-delà du motif de la librairie
+
+Scenario: Réponse d'erreur du endpoint de tokens : 003 nu, trace 009, 502 sur le fil
+  Given un IdP fake dont `/token` répond `400` avec une erreur OAuth `invalid_grant`
+  When @exchange_code est appelé avec le bon nonce
+  Then la réponse est @Err de @AuthError::Oidc dont le @Display commence par `MRD-AUTH-003: OIDC error: ` sans AUCUN sous-code `MRD-AUTH-0NN` ajouté ici : la cause amont remonte nue
+  And le rendu HTTP de @IntoResponse est `502` (contrat de ./error.rs — ce fichier ne produit que cette variante sur ce chemin)
+  And la trace @tracing::error `MRD-AUTH-009: OIDC code exchange failed` est le seul porteur du littéral `009` (lecture statique, ou test subscriber selon l'arbitrage `Tasks`)
+
+Scenario: Réponse 3xx du endpoint de tokens : non suivie, même échec qu'une 400
+  Given un IdP fake dont `/token` répond `302` avec un en-tête `Location` que le client ne doit jamais visiter
+  When @exchange_code est appelé avec le bon nonce
+  Then l'IdP fake n'a reçu aucune requête vers la cible de `Location` : @Policy::none laisse le `3xx` comme réponse non réussie
+  And la réponse est @Err sur le même chemin `003` nu plus trace `009` que le `Scenario` réponse-400
+
+Scenario: Provider sans token_endpoint : construction acceptée, échange refusé en configuration
+  Given un IdP fake complet dont le document de discovery OMET le champ `token_endpoint`
+  When @OidcClient::new est appelé, puis @exchange_code avec le bon nonce
+  Then @new répond @Ok sans objection (endpoint légalement optionnel en metadata, @EndpointMaybeSet amont)
+  But @exchange_code répond @Err dont le @Display commence par `MRD-AUTH-003: OIDC error: ` sans sous-code de ce fichier (cause @ConfigurationError de oauth2)
+  And l'IdP fake n'a reçu aucun appel `/token` : le refus est purement local, et la trace `MRD-AUTH-009: OIDC code exchange config error` est le seul endroit qui nomme `009`
+
+Scenario: Claim groups filtre silencieusement les entrées non-string
+  Given un JWT à trois segments dont le payload décodé porte `{"groups":["admin",42,"editors"]}`
+  When @extract_groups_claim est appelé
+  Then la réponse est exactement `["admin", "editors"]` : non-string retirés sans trace ni erreur, ordre d'origine conservé
+
+Scenario: Claim groups non-array, liste vide
+  Given un JWT valide dont le payload porte `"groups": "admin"` (une chaîne, pas un tableau)
+  When @extract_groups_claim est appelé
+  Then la réponse est un @Vec vide : `as_array` @None → repli @unwrap_or_default, aucune erreur possible par construction
+
+Scenario: JWT hors trois segments, liste vide
+  Given les trois entrées `not-a-jwt` (un segment), `a.b` (deux segments) et `a.b.c.d` (quatre segments)
+  When @extract_groups_claim est appelé sur chacune
+  Then les trois réponses sont des @Vec vides : la garde `parts.len() != 3` les refuse toutes, y compris le cas quatre segments qui protège l'indexation de `parts[1]` (dette @indexing_slicing consignée /tooling.sdd)
+
+Scenario: Mock de test sans réseau : URL statique, couples frais, échange volontairement paniquant
+  Given @MockOidcClient (struct unitaire sous @cfg(test), impl @OidcClientTrait)
+  When @authorization_url est appelé deux fois
+  Then chaque appel retourne l'URL `https://issuer.example.com/authorize` sans aucun E/S, avec @CsrfToken et @Nonce non vides et distincts entre appels
+  When @exchange_code est appelé avec n'importe quel code et n'importe quel nonce
+  Then l'appel panique par @unimplemented! nommé — assertion d'absence sur laquelle se fondent les tests de ./mod.rs, ./dual.rs, ./middleware.rs et /src/rest/*.rs, à préserver telle quelle

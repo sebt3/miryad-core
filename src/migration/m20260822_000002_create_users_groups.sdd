@@ -1,0 +1,431 @@
+Spec: m20260822_000002_create_users_groups — trio RBAC `miryad_users`, `miryad_groups`, `miryad_group_memberships`, deuxième migration appliquée
+
+Purpose:
+  Deuxième migration appliquée par @migration::Migrator : pose en DDL pur le trio interne du RBAC —
+    @miryad_users (identité locale liée au claim `sub` OIDC), @miryad_groups (groupes nommés, dont
+    `admin` par convention de nom seule) et @miryad_group_memberships (table d'association user↔group
+    en FK @on_delete(@ForeignKeyAction::Cascade) double, unique sur la paire). Contrat de schéma
+    committé et immuable : @up fige la pose de 3 tables, @down la défait en symétrique dans l'ordre
+    inverse des dépendances de FK, et toute correction relève d'une migration suivante — jamais d'une
+    réécriture ni d'un renommage du fichier, l'identité de tracking étant le stem du fichier lui-même.
+    Aucune ligne de données ici : le seed `admin` appartient à ./m20260822_000003_seed_admin_group.rs.
+
+Owns:
+  ./m20260822_000002_create_users_groups.rs
+
+References:
+  ./mod.rs — déclare ce module (privé) et enregistre @Migration en deuxième de trois dans @Migrator ;
+    il ownée la table de tracking dédiée @seaql_migrations_miryad_core
+  ./m20260822_000001_create_api_tokens.sdd — migration précédente : @miryad_api_tokens reste sans
+    aucune FK vers `miryad_users` (un token survit à la disparition de la ligne utilisateur), et son
+    `[?]` de tolérance de dérive sous @if_not_exists est le même qu'ici
+  ./m20260822_000003_seed_admin_group.rs — migration suivante : son @up insère via @ensure_group une
+    ligne de @miryad_groups que ce fichier pose, et son @down DELETE `miryad_groups` par SQL brut
+    avec le littéral `'admin'` — littéralement absent d'ici (vérifié à la lecture intégrale),
+    sa spec propre reste à produire sous /miryad-core.sdd
+  ../users/user.rs et ../users/user.sdd — entité @users::user::Model miroir de @miryad_users à la
+    colonne près ; @resolve_user en est le seul rédacteur
+  ../users/group.sdd — entité miroir de @miryad_groups ; @ensure_group en est le seul rédacteur ; son
+    `[?]` collation et son `[?]` littéral `'admin'` de 000003 portent sur ce que ce fichier pose
+  ../users/membership.sdd — entité miroir de @miryad_group_memberships à 3 colonnes exactement ;
+    @sync_group_memberships en est le seule rédacteur et son @ON CONFLICT cible la paire `user_id`,
+    `group_id` de l'index unique posé ici
+  /miryad-core.sdd — contrat des tables internes préfixées `miryad_*` à tracking dédié et interdit
+    de réélire une migration committée
+  /tooling.sdd — batterie et matrice de features auxquelles ce fichier est soumis
+
+Must:
+  @up pose trois tables exactement dans l'ordre — @miryad_users, @miryad_groups,
+    @miryad_group_memberships — chacune via @Table::create assorti d'@if_not_exists ; les deux FK de
+    la troisième pointent des tables posées quelques lignes plus tôt dans le même @up : cet ordre
+    parents-avant-enfant est le seul qui rend @up exécutable sur une base vide.
+  Nommage par @DeriveIden (@sea-orm-macros 2.0.2, source @derives/derive_iden.rs:41-104 lue) : la
+    variante @Table de chaque énoncé porte `#[sea_orm(iden = ...)]` avec le nom contractuel —
+    `miryad_users`, `miryad_groups`, `miryad_group_memberships`, respect du préfixe `miryad_*` de
+    /miryad-core.sdd — et toute autre variante s'identifie par snake_case heck : @User::Subject →
+    `subject`, @User::DisplayName → `display_name`, @GroupMembership::UserId → `user_id`,
+    @GroupMembership::GroupId → `group_id`.
+  @miryad_users porte cinq colonnes exactement, dans cet ordre de déclaration :
+    — `id` : @integer, @not_null, @auto_increment et @primary_key — clé primaire monocolonne ;
+    — `subject` : @string, @not_null et @unique_key ;
+    — `email` : @string seule — accepte NULL, aucune autre contrainte ;
+    — `display_name` : @string seule — accepte NULL, aucune autre contrainte ;
+    — `created_at` : @timestamp_with_time_zone et @not_null.
+    Aucune FK sortante, aucun @index supplémentaire ; la table n'est visée que par la FK entrante de
+    @miryad_group_memberships.
+  @miryad_groups porte trois colonnes exactement : `id` (même traitement PK auto-incrémenté que
+    ci-dessus), `name` : @string, @not_null et @unique_key, `created_at` : @timestamp_with_time_zone
+    et @not_null. Aucune FK, aucun @index supplémentaire.
+  @miryad_group_memberships porte trois colonnes exactement : `id` (PK @integer @auto_increment
+    @primary_key @not_null), `user_id` : @integer et @not_null seule, `group_id` : @integer et
+    @not_null seule — pas d'horodatage, pas d'unique monocolonne. Puis deux @foreign_key et un
+    @index, dans cet ordre de construction :
+    — FK `user_id` → @miryad_users.`id` avec @on_delete(@ForeignKeyAction::Cascade) ;
+    — FK `group_id` → @miryad_groups.`id` avec @on_delete(@ForeignKeyAction::Cascade) ;
+    — @Index::create() @unique() sur (`user_id`, `group_id`) dans cet ordre.
+    Aucun @on_update n'est appelé : le rendu ne porte aucune clause `ON UPDATE` (vérifié à la source
+    des deux builders de FK) et l'action de mise à jour est le défaut du backend.
+  Aucune colonne d'aucune des trois tables ne porte de défaut côté serveur : @up n'appelle jamais
+    @ColumnDef::default (vérifié au source) — le peuplement de `created_at` incombe aux appelants
+    (@resolve_user et @ensure_group fournissent @Utc::now).
+  Aucun COLLATE déclaré nulle part : ni @collate de colonne, ni @collate de table (vérifié à la
+    lecture intégrale du fichier) — l'unicité de `subject`, de `name` et de la paire
+    (`user_id`, `group_id`) compare dans la collation par défaut du backend, binaire et sensible à la
+    casse sur SQLite (Scenario dédié), collation de la base sur Postgres.
+  Rendus vérifiés au source de sea-query 1.0.2 : @ColumnDef::string produit @ColumnType::String avec
+    longueur @StringLen::None — `varchar` sur Postgres comme sur SQLite (backend/postgres/table.rs
+    et backend/sqlite/table.rs) ; @timestamp_with_time_zone produit `timestamp with time zone` sur
+    Postgres et `timestamp_with_timezone_text` sur SQLite ; @integer avec @auto_increment et
+    @primary_key produit `integer GENERATED BY DEFAULT AS IDENTITY NOT NULL PRIMARY KEY` sur
+    Postgres et `integer NOT NULL PRIMARY KEY AUTOINCREMENT` sur SQLite (doctests de
+    src/table/create.rs et mot-clé @column_spec_auto_increment_keyword) ; @unique_key produit
+    `UNIQUE` inline sur les deux dialectes.
+  Rendu de @index dans @Table::create vérifié contre l'avis du doc-comment amont — le commentaire
+    « MySQL only » de @TableCreateStatement::index (src/table/create.rs) est en décalage avec le
+    code : @prepare_table_index_expression est l'implémentation par défaut partagée par Postgres et
+    SQLite (backend/index_builder.rs, backend/postgres/index.rs) et rend la contrainte inline dans
+    le CREATE TABLE — index sans nom ⇒ pas de préfixe `CONSTRAINT "..."` et clause `UNIQUE
+    ("user_id", "group_id")` inline ; l'objet est donc non nommé côté contrat, le backend pourvoyant
+    lui-même son nom interne.
+  Rendu des FK sans nom vérifié au source : en mode création inline, Postgres omet le préfixe
+    `CONSTRAINT` quand @ForeignKey::create() n'a pas de @name (backend/postgres/foreign_key.rs) et
+    SQLite ne rend jamais le nom de FK (backend/sqlite/foreign_key.rs) — clause rendue :
+    `FOREIGN KEY (...) REFERENCES ... ON DELETE CASCADE`. Les deux FK n'ont donc pas de nom de
+    contrat exploitable par une migration suivante (Tasks `[?]`).
+  Enforcement des FK sur SQLite sans que ce fichier code quoi que ce soit : le default du connecteur
+    posé @PRAGMA foreign_keys = ON (vérifié au source de sqlx-sqlite 0.9.0 — version épinglée par
+    /Cargo.lock, et non la 0.8.6 citée par ../users/membership.sdd — src/options/mod.rs:187), donc
+    `user_id` et `group_id` inconnus sont refusés à l'insertion par les tests comme par une app
+    SQLite ; Postgres enforce nativement.
+  Identité de tracking : @DeriveMigrationName nomme cette migration par le seul stem
+    `m20260822_000002_create_users_groups` (vérifié au source de sea-orm-macros 2.0.2,
+    derives/migration.rs : @get_file_stem appliqué à @file!) — clé insérée dans
+    @seaql_migrations_miryad_core après un @up réussi et supprimée après un @down réussi (@exec.rs
+    de sea-orm-migration 2.0.2, @insert_migration_record et @delete_migration_record).
+  Respecte la convention de transaction vérifiée au source de sea-orm-migration 2.0.2 :
+    @use_transaction n'est pas surchargée, @None par défaut (lib.rs) — sur Postgres les trois CREATE
+    TABLE plus la ligne de tracking tiennent dans une transaction unique (tout ou rien), sur SQLite
+    @up s'exécute sans transaction et l'@if_not_exists de chacune des trois tables sert d'unique
+    auto-réparation d'une pose interrompue : une réexécution repose les tables manquantes et
+    accepte celles déjà posées.
+  @down émet exactement trois @drop_table — @Table::drop sans @if_exists — dans l'ordre inverse
+    strict de @up : @miryad_group_memberships, puis @miryad_groups, puis @miryad_users. Cet ordre
+    (enfant avant parents) est contractuel : il défait les dépendances de FK avant de supprimer les
+    tables référencées, et réussit de façon identique sur les deux backends utilisés sans dépendre
+    d'une tolérance backend pour un ordre renversé. Rien d'autre : les deux FK et l'unique de paire
+    disparaissent avec leur table, aucun objet indépendant ne subsiste à défaire.
+  @up renvoie `Ok(())` une fois les trois tables présentes sous leurs noms contractuels, première
+    pose comme re-pose, sans relire le schéma existant.
+  Ne porte aucun gating de feature : @migration::Migrator, ./lib.rs et ./mod.rs déclarent et
+    exposent ce module sans @cfg, le fichier compile sur chaque combinaison de /tooling.sdd, et seul
+    le canal de test dépend d'un backend (SQLite via les dev-dependencies de /Cargo.toml).
+  Laisse la trace de l'application uniquement au `tracing` @info de @exec_up_with et @exec_down_with
+    de sea-orm-migration — le fichier n'émet aucune trace propre et n'ajoute le contrat d'aucune.
+
+Must not:
+  Réécrire, renommer, déplacer ou dupliquer le @up ou le @down committé : @DeriveMigrationName fait
+    du stem `m20260822_000002_create_users_groups` la clé de tracking dans
+    @seaql_migrations_miryad_core, et @get_migration_with_status de sea-orm-migration 2.0.2 fait
+    échouer tout @Migrator sur une base où cette clé est enregistrée sous un fichier disparu quand
+    le fichier est renommé ou supprimé.
+  Écrire une ligne de données dans @up : il est du DDL pur, aucun INSERT, aucune occurrence du nom
+    `admin` — hôte du seed, le seed est 000003 et son @down est le seul DELETE `'admin'` de la série.
+  Ajouter une FK entre @miryad_api_tokens.`subject` (./m20260822_000001_create_api_tokens.rs) et
+    `miryad_users`.`subject`, ou toute FK sortante depuis `miryad_users` ou `miryad_groups` : le
+    token survit à la disparition de l'utilisateur (contrat symétrique porté par la spec de 000001)
+    et les FK de ce contrat sortent toutes de @miryad_group_memberships.
+  Ajouter une quatrième colonne à @miryad_group_memberships (`created_at`, `granted_by`, …) ou
+    retoucher la nullabilité d'une colonne posée : les trois entités miroirs de ../users/user.sdd,
+    ../users/group.sdd et ../users/membership.sdd sont bijectives à ce schéma ; tout ajout relève
+    d'une migration suivante, jamais de ce fichier.
+  Renverser l'ordre des trois @drop_table de @down ou y ajouter @if_exists : le premier point ferait
+    dépendre la remontée d'une tolérance backend au lieu de défaire proprement les FK, le second
+    fait partie du gel de contrat (Tasks `[?]`).
+  Toucher @miryad_api_tokens, @seaql_migrations_miryad_core ou toute table d'une autre migration
+    dans @up ou @down : l'écriture du tracking est l'affaire exclusive du framework.
+  Émettre @println, @eprintln ou @dbg, ni fabriquer de code `MRD-*` : seul un @DbErr brut du backend
+    circule, la `Raises` liste l'exhaustivité des branches.
+
+Depends on:
+  @sea_orm_migration 2.0.2 — @MigrationTrait, @SchemaManager, moteur de @Migrator
+  @sea_query 1.0.2 par ré-export de @sea_orm — @Table, @ColumnDef, @Index, @ForeignKey,
+    @ForeignKeyAction, @DeriveIden, sondes @has_table et @has_column
+  @DeriveMigrationName de sea-orm-macros 2.0.2 ré-exporté par @sea_orm — identité par stem de fichier
+  @async_trait — implémentation des méthodes de @MigrationTrait
+  ./mod.rs — enregistrement en deuxième des trois migrations internes de @Migrator
+  sqlx-sqlite 0.9.0 via les dev-dependencies de /Cargo.toml pour l'exécution des tests — enforcement
+    SQLite des FK déclarés ici (@PRAGMA foreign_keys=ON par défaut, source vérifiée)
+
+Exposes:
+  @Migration — unique `pub struct` du fichier, @derives @DeriveMigrationName, implémente
+    @MigrationTrait — jamais atteignable par un consommateur hors de la crate, ./mod.rs gardant le
+    module privé
+  @MigrationTrait::up et @MigrationTrait::down pour ce contrat
+  @User — énoncé privé @DeriveIden : @User::Table (`miryad_users`), @User::Id, @User::Subject,
+    @User::Email, @User::DisplayName, @User::CreatedAt
+  @Group — énoncé privé @DeriveIden : @Group::Table (`miryad_groups`), @Group::Id, @Group::Name,
+    @Group::CreatedAt
+  @GroupMembership — énoncé privé @DeriveIden : @GroupMembership::Table
+    (`miryad_group_memberships`), @GroupMembership::Id, @GroupMembership::UserId,
+    @GroupMembership::GroupId
+
+Accepts:
+  La seule entrée de @up et @down : un @SchemaManager fourni par @exec_up_with / @exec_down_with —
+    la connexion, le backend et l'éventuel enrobage transactionnel relèvent de sea-orm-migration et
+    du choix du consommateur
+  Rien d'autre : aucun paramètre, aucune configuration, aucune feature dans le fichier
+
+Returns:
+  @up — `Ok(())` une fois les trois tables présentes sous leurs noms contractuels, première pose
+    comme re-pose ; `Ok` prouve seulement la mise en place `IF NOT EXISTS`, pas la conformité des
+    schémas préexistants (vérification absente, Tasks `[?]`)
+  @down — `Ok(())` une fois les trois `DROP TABLE` exécutés dans l'ordre contractuel ; muet sur la
+    suppression des lignes de tracking, qui appartient au framework
+  Aucune autre fonction, ce qui clôt `Accepts`
+
+Raises:
+  @DbErr du backend propagé brut, sans code `MRD-*`, seuls canaux d'échec du fichier — chaque CREATE
+    ou DROP est interrompu à son failure par `?`, sans rattrapage des tables déjà posées par le même
+    @up (auto-réparation par @if_not_exists à la réexécution sur SQLite, rollback transactionnel
+    intégral sur Postgres) :
+  @up — refus du DDL (privilège) ou collision de l'un des trois noms avec une relation non-table que
+    `IF NOT EXISTS` ne saute pas (aucun cas de collision vu en test, scénario absent sans en fabuler
+    d'autre)
+  @down — @DbErr dès que l'une des trois tables est absente : `DROP TABLE` émis sans @if_exists rend
+    le rollback non idempotent sur les chemins appelant hors séquence du @Migrator ; sur Postgres un
+    ordre renversé échouerait aussi, impossible tant que @down reste écrit dans l'ordre figé ici
+  Aucune branche eigene du fichier — @up et @down n'ont ni if, ni boucle, ni autre `?` qu'un DDL
+
+Handles:
+  @up rejoué sur une base déjà conforme, et auto-réparation d'une pose SQLite interrompue entre deux
+    des trois CREATE avant la ligne de tracking : @if_not_exists sur les trois tables (chemin sans
+    transaction vérifié au source). Sur Postgres cette interruption est inatteignable — la
+    transaction unique annule tout et la réexécution repart d'une base sans les trois tables.
+  Une table préexistante hors-forme (drift posée à la main ou par un autre migrateur) : @up l'acquitte
+    sans vérifier ; le cas le plus mordant est une @miryad_group_memberships dérivée — son CREATE
+    TABLE sauté ne repose ni les deux FK ni l'unique de paire, et rien ne le signale (Tasks `[?]`,
+    Scenario dédié).
+  Rollback complet : @Migrator inversant l'ordre d'application (vérifié au source de sea-orm-migration
+    2.0.2, @exec_down_with en @rev sur les migrations appliquées), @down de ./m20260822_000003_seed_admin_group.rs
+    DELETE `miryad_groups` avant que ce fichier ne droppe la table, puis ce fichier droppe les trois,
+    puis 000001 droppe @miryad_api_tokens — chaque @down trouve ses tables d'application encore en
+    place pour sa propre besogne.
+  Suppression d'un utilisateur ou d'un groupe hors flux : les deux FK cascade emportent les lignes de
+    @miryad_group_memberships qui pointaient vers eux — ../users/membership.sdd affirme que son
+    fichier ne code aucune purge applicative, ce fichier est la seule source de ce nettoyage.
+  Un même `user_id` dans plusieurs groupes : l'unique ne porte que sur la paire complète ; deux lignes
+    (`user_id`, `group_id`) distinctes coexistent — c'est l'invariant que @sync_group_memberships
+    exploite, et son @ON CONFLICT cible des colonnes, non un nom d'index, donc lui survit au fait que
+    l'index posé ici soit sans nom.
+  Parité des surfaces : aucune des trois tables n'est une @MiryadResource — ni collection/item REST
+    générique, ni @graphql via Seaography (aucune n'est portée par le graphe d'entités exposé), ni
+    @mcp, ni @ir ; elles ne sortent en HTTP que comme pièces construites de /src/rest/admin.rs et
+    /src/rest/me.rs (noms de groupes, lecture derrière garde admin ou self), les chemins de lecture
+    étant @users::user::Entity, @users::group (helpers) et @users::membership via ./membership.rs,
+    avec le snapshot GraphQL propre à /src/graphql/principal.rs. Asymétrie interne factuelle que ce
+    fichier consigne sans trancher.
+
+Tasks:
+  [ ] Convertir les vingt `Scenario` en au moins vingt tests nommés distincts dans le @mod tests
+    `#[cfg(test)]` de ./m20260822_000002_create_users_groups.rs (le fichier n'en porte aucun
+    aujourd'hui), sur `sqlite::memory:` (pattern des tests de ./mod.rs), assertions par
+    @SchemaManager::has_table et @has_column (sonde sea-schema 0.18.1 présente dans le graphe de
+    features, vérifiée au cargo tree — même canal que les tests de /src/migration/m20260822_000001_create_api_tokens.sdd),
+    un test par scénario : `up_lays_the_three_tables`, `users_has_the_five_columns`,
+    `groups_and_memberships_have_their_columns`, `subject_unique_rejects_duplicate`,
+    `group_name_unique_rejects_duplicate`, `membership_pair_unique_rejects_duplicate`,
+    `one_user_may_join_several_groups`, `user_optional_columns_accept_null`,
+    `created_at_is_not_null_without_server_default`, `membership_rejects_unknown_user_id`,
+    `membership_rejects_unknown_group_id`, `deleting_a_user_cascades_memberships`,
+    `deleting_a_group_cascades_memberships`, `up_rerunnable_on_conform_base`,
+    `up_swallows_a_drifted_memberships_table`, `down_drops_the_three_tables`,
+    `down_errors_without_tables`, `applied_name_is_the_file_stem`,
+    `down_then_up_restores_the_schema`, `names_are_case_binary_on_sqlite`. Tests d'exécution réels
+    sur la batterie de /tooling.sdd, hors base de données externe.
+  [?] Contraintes sans nom : l'unique de paire et les deux FK CASCADE sont posés sans @name — le
+    backend les baptise hors contrat (`sqlite_autoindex_*`, `..._user_id_fkey` côté Postgres) et une
+    migration suivante ne peut pas les cibler par nom (drop/replace d'un index par son nom
+    impossible). Contrat assumé (tout se fait par les colonnes, comme le @ON CONFLICT de
+    ../users/membership.rs) ou correction par une migration suivante qui les renomme ?
+  [?] Collation et casse : aucun COLLATE déclaré sur `subject`, `name` ni la paire — binaire sur
+    SQLite (Scenario le prouve : `admin` et `Admin` coexistent), collation de la base sur Postgres.
+    ../users/user.sdd tranche « sensible à la casse sur les deux », ../users/group.sdd laisse la
+    question `[?]` pour la convention `admin`. Fixe-t-on un contrat de comparaison déterministe
+    (COLLATE porté par une migration suivante, ou normalisation dans ../users/group.rs) ou fige-t-on
+    « dépend des collations de la base de l'app » ?
+  [?] Dérive avalée par @if_not_exists : un CREATE TABLE préexistant hors-forme est acquitté sans
+    lecture du schéma — pour @miryad_group_memberships cela peut signifier une table posée sans FK
+    ni unique de paire (Scenario dédié, insertion orpheline alors `Ok`). Le `[?]` jumeau de
+    /src/migration/m20260822_000001_create_api_tokens.sdd est la même question ; une seule décision
+    pour les deux ou réponse par fichier ?
+  [?] @down non idempotent (trois @drop_table sans @if_exists, @DbErr garanti sur base absente) et
+    ordre d'FK obligatoire : gèle-t-on ce contrat de remontée stricte comme celui de 000001, ou
+    planifie-t-on la remédiation `if_exists` par une migration suivante ?
+  [?] Référence amont périmée hors de ce fichier : ../users/membership.sdd appuie l'enforcement
+    SQLite des FK sur sqlx-sqlite 0.8.6 (@options/mod.rs:185) alors que /Cargo.lock épingle 0.9.0 —
+    le même default vérifié à la 0.9.0 (src/options/mod.rs:187) porte ce contrat ; met-on à jour la
+    citation de ../users/membership.sdd ?
+  [?] Doc-comment amont en décalage : @TableCreateStatement::index est documenté « MySQL only » alors
+    que le rendu Postgres et SQLite est inline et effectif (implémentation par défaut de
+    @prepare_table_index_expression, vérifiée) ; le Scenario SQLite de l'unique de paire fige ce
+    rendu pour le backend des tests, suffit-il ou exige-t-on une preuve contractuelle du rendu Postgres ?
+
+Done when:
+  Les vingt `Scenario` sont chacun vérifiés par un test nommé distinct identifié dans `Tasks`, tous
+    jouables via la batterie de /tooling.sdd sur `sqlite::memory:` sans base de données externe,
+    @up et @down inchangés depuis l'approbation (immuabilité — le fichier ne reçoit plus jamais de
+    `git diff`), chaque `[?]` de `Tasks` tranché par Sébastien sans réinterprétation du contrat figé
+    (les tranches touchant la collation ou les noms de contraintes s'écrivent par migration
+    suivante), et la spec approuvée par Sébastien.
+
+Scenario: @up pose le trio RBAC
+  Given une base SQLite en mémoire sans aucune table
+  When @up de cette @Migration est appelé sur un @SchemaManager de cette connexion
+  Then @up retourne `Ok(())`
+  And @has_table retourne `true` pour `miryad_users`
+  And @has_table retourne `true` pour `miryad_groups`
+  And @has_table retourne `true` pour `miryad_group_memberships`
+
+Scenario: les cinq colonnes de miryad_users existent après up
+  Given une base SQLite en mémoire avec @up de cette migration appliqué avec succès
+  When l'état posé est inspecté avec @has_column
+  Then chacune de `id`, `subject`, `email`, `display_name` et `created_at` existe sur `miryad_users`
+
+Scenario: les colonnes de miryad_groups et miryad_group_memberships existent après up
+  Given une base SQLite en mémoire avec @up de cette migration appliqué avec succès
+  When l'état posé est inspecté avec @has_column
+  Then `id`, `name` et `created_at` existent sur `miryad_groups`
+  And `id`, `user_id` et `group_id` existent sur `miryad_group_memberships`
+
+Scenario: subject dupliqué est rejeté
+  Given une base SQLite en mémoire avec @up de cette migration appliqué avec succès
+  When une première ligne de @miryad_users complète est insérée avec `subject` `sub-1`, puis une
+    seconde ligne portant le même `subject`
+  Then la première insertion est `Ok`
+  And la seconde insertion échoue en @DbErr sans en contracter le message backend
+  And une seule ligne porte `subject` `sub-1` après les deux tentatives
+
+Scenario: name dupliqué est rejeté dans miryad_groups
+  Given une base SQLite en mémoire avec @up de cette migration appliqué avec succès
+  When une première ligne de @miryad_groups est insérée avec `name` `editors`, puis une seconde avec
+    le même `name`
+  Then la première insertion est `Ok`
+  And la seconde insertion échoue en @DbErr
+  And une seule ligne `editors` existe après les deux tentatives
+
+Scenario: la paire (user_id, group_id) ne peut être posée deux fois
+  Given une base SQLite en mémoire avec @up appliqué et une ligne de @miryad_users et une ligne de
+    @miryad_groups insérées, leurs @id relus
+  When une première ligne de @miryad_group_memberships (`user_id`, `group_id`) est insérée, puis une
+    seconde portant exactement la même paire
+  Then la première insertion est `Ok`
+  And la seconde insertion échoue en @DbErr
+  And une seule ligne porte cette paire
+
+Scenario: un même utilisateur peut appartenir à plusieurs groupes
+  Given une base SQLite en mémoire avec @up appliqué, un utilisateur et deux groupes insérés, leurs
+    @id relus
+  When deux lignes de @miryad_group_memberships sont insérées, l'une (`user`, `groupe-a`), l'autre
+    (`user`, `groupe-b`)
+  Then les deux insertions sont `Ok`
+  And l'utilisateur compte exactement deux lignes d'appartenance
+
+Scenario: email et display_name acceptent NULL
+  Given une base SQLite en mémoire avec @up de cette migration appliqué avec succès
+  When une ligne de @miryad_users est insérée avec `subject` et `created_at` fournis mais sans
+    `email` ni `display_name`
+  Then l'insertion est `Ok`
+  And la ligne relue rend @email et @display_name en @None
+
+Scenario: created_at est NOT NULL sans défaut serveur sur les deux tables nommées
+  Given une base SQLite en mémoire avec @up de cette migration appliqué avec succès
+  When une ligne de @miryad_users complète de `subject` mais sans `created_at` est insérée
+  Then l'insertion échoue en @DbErr
+  And une ligne de @miryad_groups complète de `name` mais sans `created_at` échoue aussi en @DbErr
+  But les mêmes lignes fournissant `created_at` s'insèrent en `Ok` sans aucun défaut serveur
+
+Scenario: un user_id inconnu est refusé par la FK
+  Given une base SQLite en mémoire avec @up appliqué et un @group_id existant
+  When une ligne de @miryad_group_memberships est insérée avec un `user_id` `9999` sans ligne dans
+    `miryad_users`
+  Then l'insertion échoue en @DbErr de violation de FK — enforcement par le @PRAGMA
+    foreign_keys=ON posé par le connecteur SQLite à la connexion (source sqlx-sqlite 0.9.0 vérifiée),
+    aucune ligne orpheline n'existe après coup
+  And ce refus ne dépend d'aucune vérification applicative : ../users/membership.rs n'en fait aucune
+
+Scenario: un group_id inconnu est refusé par la FK
+  Given une base SQLite en mémoire avec @up appliqué et un @user_id existant
+  When une ligne de @miryad_group_memberships est insérée avec un `group_id` `9999` sans ligne dans
+    `miryad_groups`
+  Then l'insertion échoue en @DbErr de violation de FK
+  And aucune ligne orpheline n'existe après coup
+
+Scenario: supprimer un utilisateur cascade sur ses appartenances
+  Given une base SQLite en mémoire avec @up appliqué, un utilisateur membre d'un groupe par une ligne
+    de @miryad_group_memberships
+  When la ligne de @miryad_users est supprimée par SQL brut
+  Then plus aucune ligne de @miryad_group_memberships ne référence ce `user_id`
+  And la ligne du groupe survit : seule la cascade de la FK `user_id` a porté sur les appartenances
+
+Scenario: supprimer un groupe cascade sur les appartenances qui le référencent
+  Given une base SQLite en mémoire avec @up appliqué, un utilisateur membre d'un groupe
+  When la ligne de @miryad_groups est supprimée par SQL brut
+  Then l'appartenance correspondante a disparu par le cascade de la FK `group_id`
+  And la ligne de @miryad_users survit
+
+Scenario: up est rejouable sur une base déjà conforme
+  Given une base SQLite en mémoire où un premier @up de cette migration a réussi
+  When @up est appelé une seconde fois sur la même base
+  Then le second @up retourne `Ok(())` sans contrôle préalable
+  And les onze colonnes contractuelles des trois tables restent toutes présentes
+
+Scenario: une miryad_group_memberships préexistante en dérive est avalée sans réparation
+  Given une base SQLite en mémoire où une relation `miryad_group_memberships` a été créée
+    manuellement avec seulement `id` et `user_id` — sans FK, sans `group_id`, sans unique de paire —
+    et où @up de cette migration n'a jamais tourné
+  When @up de cette migration est appliqué
+  Then @up retourne `Ok(())` — le `CREATE TABLE IF NOT EXISTS` saute sans lire la forme existante
+  And @has_column confirme `user_id` mais nulle part `group_id` : dérive non vérifiée, non réparée
+  And une insertion SQL complète partageant deux fois la même paire (`user_id`, `group_id`) sur des
+    @id inventés réussit en `Ok` : ni la FK ni l'unique ne protègent cette table dérivée
+  But ce comportement est une tolérance constatée, pas une prescription — Tasks `[?]`
+
+Scenario: @down défait les trois tables dans l'ordre FK
+  Given une base SQLite en mémoire après un @up réussi de cette @Migration, avec un utilisateur, un
+    groupe et une appartenance insérés
+  When @down de cette @Migration est appelé sur un @SchemaManager de cette connexion
+  Then @down retourne `Ok(())`
+  And @has_table retourne `false` pour les trois tables `miryad_users`, `miryad_groups` et
+    `miryad_group_memberships`
+  And toutes les lignes insérées ont disparu avec leurs tables
+
+Scenario: @down sur une base jamais posée échoue
+  Given une base SQLite en mémoire où @up de cette migration n'a jamais été appliqué
+  When @down est appelé sur un @SchemaManager de cette connexion
+  Then @down retourne un @DbErr, `DROP TABLE` étant émis sans `IF EXISTS` — contrat de remontée
+    strict, gelé par cette spec
+  But aucune des trois tables n'existe avant comme après l'appel
+
+Scenario: le tracking nomme cette migration par son stem de fichier
+  Given une base SQLite en mémoire sans aucun tracking
+  When @up complet est appelé sur @migration::Migrator (ses trois migrations)
+  Then @MigratorTrait::get_applied_migrations compte une migration appliquée nommée exactement
+    `m20260822_000002_create_users_groups`
+  And ce nom est le stem de ./m20260822_000002_create_users_groups.rs
+
+Scenario: remontée complète puis nouvelle application reconstruit le schéma
+  Given une base SQLite en mémoire dont @migration::Migrator a appliqué toutes les migrations
+  When @down complet puis @up complet sont rejoués sur @migration::Migrator
+  Then le second @up retourne `Ok(())`
+  And @has_table retourne de nouveau `true` pour les trois tables de ce contrat
+  And @get_applied_migrations recompte `m20260822_000002_create_users_groups`
+
+Scenario: sans COLLATE déclaré, `Admin` n'est pas `admin` sur le backend des tests
+  Given une base SQLite en mémoire migrée en entier par @migration::Migrator : le seed de
+    ./m20260822_000003_seed_admin_group.rs a posé le groupe `admin`, et aucune normalisation de
+    casse n'existe dans ce DDL
+  When une ligne de @miryad_groups est insérée par SQL brut avec `name` `Admin`
+  Then l'insertion est `Ok` : deux lignes distinctes `admin` et `Admin` coexistent sous la contrainte
+    UNIQUE, comparaison binaire sur SQLite
+  And une seconde insertion de `Admin` échoue en @DbErr : l'unicité compare bien, mais au bit près
+  But ce sens exact côté Postgres dépend de la collation de la base : Tasks `[?]`

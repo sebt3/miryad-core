@@ -1,0 +1,352 @@
+Spec: handler — montage @graphql_router, POST /api/graphql et GraphiQL
+
+Purpose:
+  Monter `POST /api/graphql` sous la feature `graphql` (et `GET /api/graphiql` sous `graphiql`)
+    à partir d'un @async_graphql::dynamic::Schema déjà construit par l'application consommatrice.
+    Le fichier ne construit ni ne valide aucun schéma : il porte le montage axum — routes à
+    chemins absolus sous `/api`, état générique via @FromRef, @Schema porté par @axum::Extension —,
+    l'authentification double (@AuthPrincipal cookie ou `Bearer`, le même extracteur qu'en REST et
+    MCP, avec l'extraction avant lecture du corps), le snapshot @GraphQlPrincipal pris par
+    @load_principal avant exécution, l'injection par requête des trois données que lisent les
+    resolvers Seaography et les hooks @MiryadHooks, et le rendu : enveloppe GraphQL à `200` pour
+    tout ce qui est exécuté, `text/plain` de @AuthError pour les refus d'auth et de base.
+
+Owns:
+  ./handler.rs
+
+References:
+  ./mod.rs — ré-exporte @graphql_router sous @crate::graphql ; le module n'est compilé que sous
+    `#[cfg(feature = "graphql")]` posé par /src/lib.rs
+  ./principal.rs — @load_principal construit le snapshot @GraphQlPrincipal (@user_id, @is_admin,
+    @groups) ; son @sea_orm::DbErr est propagé ici par `?` vers @AuthError::Database
+  ./hooks.rs — @MiryadHooks consomme les données injectées ici ; seul émetteur des codes
+    `MRD-GQL-001` et `MRD-GQL-002`, lesquels remontent dans l'enveloppe `errors` à `200` et
+    jamais comme statut HTTP posé par ce fichier
+  ./registry.rs — @PolicyRegistry et @EntityPolicy, indexés par @MiryadResource::resource_name
+    pour les hooks ; spec adjacente pas encore produite, et inconnue du routeur
+  ../auth/dual.rs — extracteur @AuthPrincipal (cookie ou `Authorization: Bearer`), @Rejection
+    @AuthError, sans repli cookie sur `Bearer` invalide
+  /src/auth/error.sdd — contrat de rendu de @AuthError (statut, corps `text/plain`, codes) ; son
+    `Tasks` `[?]` porte l'asymétrie d'enveloppe signalée sur `POST /api/graphql`
+  /src/rest/openapi.sdd — même patron de montage : chemins absolus `/api/...`, UI publique sans
+    auth (`/api/swagger-ui` sous `swagger-ui`), piège du `.nest` identique énoncé dans le
+    commentaire de doc du fichier source
+  /src/lib.rs — gate @graphql par `#[cfg(feature = "graphql")]` ; la doc racine promet
+    `POST /api/graphql` et `/api/graphiql` sous `graphiql`
+  /Cargo.toml — `graphql` active @seaography, @async-graphql, @async-graphql-axum et
+    `sea-orm/seaography` ; `graphiql` implique `graphql` et active `async-graphql/graphiql`
+  /tooling.sdd — la batterie rejoue `--no-default-features --features graphql` et
+    `--no-default-features --features graphiql`, seules combinaisons où ce fichier compile
+
+Must:
+  Compiler sous `graphql` uniquement (gate du module dans /src/lib.rs) et ne porter de `#[cfg(...)]`
+    interne que sur la route `GET /api/graphiql` et @graphiql_handler, sous `graphiql` ; `graphiql`
+    impliquant `graphql` (/Cargo.toml), le bloc `graphiql` de ce fichier n'est jamais compilé sans
+    `graphql`.
+  Exiger de l'état de l'app uniquement @MiryadAuthState: @FromRef<S> (borne vérifiée dans le
+    source d'axum 0.8.9 : @State<T> s'extrait depuis tout `S` avec @FromRef pour @T) — même
+    patron que @auth_router et @resource_router ; le @Router<S> est rendu sans état, `.with_state`
+    et le merge restent à l'app.
+  Monter les chemins absolus `/api/graphql` et `/api/graphiql`, jamais un `.nest("/api", ...)` :
+    le HTML de GraphiQL embarque son URL de fetch au rendu (@async_graphql::http::GraphiQLSource::endpoint,
+    gabarit `graphiql_v2_source.hbs` vérifié dans async-graphql 7.0.19) — un nest externe
+    désynchroniserait la route montée de l'URL que l'UI interroge (même piège que
+    @swagger_ui_router).
+  Fournir le @Schema en argument déjà finished : @SchemaError de @SchemaBuilder::finish reste
+    côté app, aucun paramètre hook, registre ou politique dans la signature ; le @Schema arrive
+    par couche @axum::Extension et est clonable à coût Arc (source async-graphql 7.0.19 vérifiée :
+    `Schema(Arc<SchemaInner>)`, `Clone` dérivé) — figé au montage, jamais réexécuté ni reconstruit
+    par requête.
+  Injecter par requête, dans cet ordre, trois données dans la @async_graphql::Request issue de
+    @GraphQLRequest::into_inner : la @sea_orm::DatabaseConnection clonée de @MiryadAuthState.db
+    (attendue en `ctx.data::<@DatabaseConnection>()` par tout resolver généré par
+    @seaography::register_entity), le snapshot @GraphQlPrincipal lu par @MiryadHooks::entity_guard,
+    @entity_filter et @before_active_model_save (hooks synchrones, zéro accès DB), et l'@AuthPrincipal
+    — le hook métier reçoit le même type de principal qu'en REST et MCP, pas un dérivé GraphQL.
+  Ordonner l'extraction de @graphql_handler en arguments — @State<@MiryadAuthState>, puis
+    @AuthPrincipal, puis @axum::Extension<@Schema>, puis @GraphQLRequest — de sorte que le refus
+    d'authentification précède toujours le parsing du corps : sans credential, aucune octet du
+    corps n'est parsé et un rejet `400` de parsing est impossible à observer.
+  Construire le snapshot @GraphQlPrincipal dans le corps du handler, via @load_principal, après
+    extraction et avant @Schema::execute — l'extraction du principal d'auth est hors du corps
+    (machinerie axum des extracteurs), le snapshot RBAC est dedans ; @sea_orm::DbErr de
+    @load_principal remonte par `?` en @AuthError::Database.
+  Rendre tout ce qui est exécuté en @GraphQLResponse, statut toujours `200`, @Content-Type
+    `application/graphql-response+json`, corps JSON de l'enveloppe `data`/`errors` — source
+    async-graphql-axum 7.0.19 vérifiée (@GraphQLResponse::into_response ne change jamais le statut,
+    n'ajoute @Cache-Control qu'en réponse @Ok) : les erreurs d'exécution, de validation et les
+    blocages des hooks ne se lisent que dans le corps.
+  Déléguer le rejet d'@AuthPrincipal et le @Err de la signature `Result<@GraphQLResponse, @AuthError>`
+    au @IntoResponse de ../auth/error.rs : `401` `text/plain` pour les codes `MRD-AUTH-001`,
+    `MRD-AUTH-002`, `MRD-AUTH-014`, `MRD-AUTH-015`, `500` pour @AuthError::Database (`MRD-AUTH-016`),
+    hors de l'enveloppe GraphQL — asymétrie consignée par /src/auth/error.sdd, tranchable ici
+    (voir `Tasks` `[?]`).
+  S'en remettre au rejet par défaut de @GraphQLRequest (@rejection::@GraphQLRejection) pour le
+    corps (source async-graphql-axum 7.0.19 vérifiée) : JSON invalide ou @Content-Type non parsable
+    → `400` au format @Debug de @ParseRequestError ; tableau JSON batch → `400` `UnsupportedBatch`
+    (@BatchRequest::into_single) ; la branche `413` (@ParseRequestError::PayloadTooLarge) exige une
+    limite que ce montage ne configure jamais (@MultipartOptions::default sans contrainte,
+    @receive_batch_json lit le corps par `read_to_end` sans plafond) — elle n'est pas observable
+    telle que montée.
+  Refuser tout autre méthode que `POST` sur `/api/graphql` par un `405` au corps vide avec en-tête
+    @Allow `POST`, sans exécuter le moindre extracteur ni consulter l'auth (source axum 0.8.9
+    vérifiée : @routing::post ne reçoit que `POST` — contrairement à @routing::get qui sert aussi
+    `HEAD` — et le @MethodRouter répond `405` avec @Allow avant tout handler).
+  Servir @graphiql_handler sans aucun extracteur ni credential : page @axum::response::Html
+    rendue par @GraphiQLSource::build().endpoint(`/api/graphql`) — le HTML embarque l'URL de fetch
+    `/api/graphql`, `defaultEditorToolsVisibility: true` (panneau Headers où coller un token API),
+    un fetcher en `credentials: 'same-origin'` (le cookie de session part donc avec la requête si
+    le navigateur en porte un) et `robots noindex`, tous vérifiés dans le gabarit et les tests du
+    source async-graphql 7.0.19 ; @routing::get faisant aussi répondre `HEAD` avec corps vide.
+  Rester muet : aucune trace @tracing, aucun @println, aucun @dbg dans le fichier ; aucune
+    construction de code `MRD-*` ici — `MRD-GQL-001`/`MRD-GQL-002` viennent de ./hooks.rs via
+    @GuardAction::Block, `MRD-AUTH-*` sont construits en amont et rendus par ../auth/error.rs.
+
+Must not:
+  Exposer `GET` (ou toute méthode en query) sur `/api/graphql`, alors même que l'extracteur amont
+    @GraphQLBatchRequest sait parser une query string en `GET` : la méthode montée est `POST` seule
+    (GraphQL-over-GET est un non à confirmer, voir `Tasks` `[?]`).
+  Ouvrir le batch en remplaçant @GraphQLRequest par @GraphQLBatchRequest : le contrat actuel est la
+    requête unique (@into_single), le tableau est un rejet `400`, pas une surface.
+  Envelopper, requalifier ou tracer un @AuthError dans ce fichier pour le faire rentrer dans
+    l'enveloppe GraphQL avant décision de Sébastien — le `text/plain` actuel est le contrat
+    constaté et le différend d'enveloppe a sa ligne `[?]` dans /src/auth/error.sdd.
+  Ajouter un `#[cfg(feature = ...)]` autre que `graphiql`, ou un fallback @Router (les chemins non
+    montés ici relèvent du `404` de l'app).
+
+Depends on:
+  @async-graphql 7 (module @dynamic) — @Schema clonable par Arc, @Request::data, @GraphiQLSource
+    sous le feature de crate `graphiql`, activé par le feature du même nom de /Cargo.toml
+  @async-graphql-axum 7 — @GraphQLRequest, @GraphQLResponse, @rejection::@GraphQLRejection
+    (sémantique vérifiée dans le source de la version 7.0.19 verrouillée par /Cargo.lock)
+  @axum 0.8 — @Router, @routing, @axum::Extension, @State, @FromRef, @axum::response::Html ;
+    table des méthodes 405/@Allow vérifiée dans axum 0.8.9
+  ./principal.rs
+  ../auth/dual.rs
+  ../auth/error.rs
+  ../auth/state.rs
+  @sea_orm 2 — @DatabaseConnection via @MiryadAuthState.db uniquement
+
+Exposes:
+  @graphql_router — seul item `pub` du fichier, ré-exporté par ./mod.rs sous
+    @crate::graphql::graphql_router ; signature @graphql_router::<S>(@Schema) -> @axum::Router<S>
+    pour `S: Clone + Send + Sync + 'static` et @MiryadAuthState: @FromRef<S>
+  Table de routes montée : `POST /api/graphql` sous `graphql` ; `GET /api/graphiql` sous
+    `graphiql` seulement — aucune route additionnelle, aucun fallback
+  Contrat fil non typé dans l'API mais observable : enveloppe `200`
+    `application/graphql-response+json`, `401`/`500` `text/plain` sur auth/base, `405` avec
+    @Allow, `400` de parsing au format @Debug, page `200` `text/html; charset=utf-8` pour GraphiQL
+  Rien d'autre : aucun type, constante ou erreur propre — @graphql_handler et @graphiql_handler
+    sont privés
+
+Accepts:
+  @graphql_router : un @async_graphql::dynamic::Schema finished — construit par l'app via
+    @seaography::Builder, hooks @MiryadHooks compris ; aucune donnée d'app n'est refusée au
+    montage, le schéma est cru de confiance
+  `POST /api/graphql` : corps JSON `{"query":…}` (content-type absent traité comme JSON, source
+    @receive_batch_body vérifiée), `application/json`, ou multipart conforme à la spec
+    GraphQL-Multipart-Request ; credential : token API `Authorization: Bearer` OU cookie de
+    session — sans repli du cookie sur un `Bearer` invalide, sémantique de ../auth/dual.rs
+  `GET /api/graphiql` : rien — aucun extracteur, aucune credential, aucun paramètre de query
+    consulté
+  L'état applicatif générique `S`, uniquement via la borne @MiryadAuthState: @FromRef<S>
+
+Returns:
+  @graphql_router : un @axum::Router<S> sans état — les routes sont cablées, l'état et le merge
+    appartiennent à l'app
+  Requête exécutée : @GraphQLResponse `200`, corps JSON enveloppe `data`/`errors`, @Content-Type
+    `application/graphql-response+json`, @Cache-Control seulement en réponse @Ok
+  Requête refusée : `401`/`500` `text/plain; charset=utf-8` corps @Display de @AuthError ; `405`
+    corps vide @Allow `POST` ; `400` corps @Debug du rejet de parsing
+  @graphiql_handler : @axum::response::Html<@String> en `200` — `HEAD` rend le même statut, corps
+    vide
+
+Raises:
+  `401` corps `MRD-AUTH-001: not authenticated (no session cookie)` : aucune credential sur
+    `POST /api/graphql` (@AuthError::NotAuthenticated via @extract_session)
+  `401` corps `MRD-AUTH-002: invalid or expired session` : cookie indéchiffrable, altéré ou `exp`
+    atteint (@AuthError::InvalidSession)
+  `401` corps `MRD-AUTH-014: invalid or unknown API token` et `401` corps
+    `MRD-AUTH-015: expired API token` : bearer inconnu/révoqué ou expiré (@AuthError::InvalidToken,
+    @AuthError::TokenExpired via @validate_token)
+  `500` corps préfixé `MRD-AUTH-016: database error: ` : @sea_orm::DbErr venu de @validate_token
+    (extraction) ou de @load_principal (corps du handler) propagé par `?` en
+    @AuthError::Database — l'un et l'autre chemin rendent identiquement, le test atteignable ferme
+    la pool et exerce le premier
+  `405` et `400` sans code `MRD-*` : méthode non montée (@axum) et corps malformé/batch
+    (@async-graphql-axum) ne portent aucun code de la taxonomie de la crate
+  `200` porteur des codes applicatifs et hooks dans l'enveloppe : `MRD-GQL-001` et `MRD-GQL-002`
+    (./hooks.rs) et les messages de @HookError — erreur applicative de l'app, sans code `MRD-*` —
+    arrivent en `errors`, ce fichier ne les produit ni ne les reformate
+  Jamais `MRD-AUTH-003` à `MRD-AUTH-013` ni `502` @AuthError::Oidc sur cette route : aucun
+    parcours OIDC ne passe par ici ; ces codes sont le contrat des routes d'auth, pas de celle-ci
+
+Handles:
+  Combinaisons de features de la matrice /tooling.sdd pour ce fichier : `graphql` seul → une
+    route ; `graphiql` (implique `graphql`) → deux ; toutes les autres combinaisons compilent le
+    fichier hors du graphe (gate de /src/lib.rs) — `--all-features` exerce les deux mêmes cas.
+  Ordre de la couche @axum::Extension(@Schema) : en axum, @Router::layer ne couvre que les routes
+    déclarées avant elle ; `/api/graphiql`, ajoutée après, ne voit jamais @Schema — sans effet sur
+    @graphiql_handler qui ne lie aucun extracteur, mais une future route de ce routeur doit
+    choisir son côté de la couche.
+  Page GraphiQL sans auth : l'URL de l'UI et l'endpoint qu'elle interroge sont publics, les
+    données restent sous credential — même compromis que `/api/swagger-ui` ; le HTML charge react
+    18 et graphiql 4 depuis l'unpkg (référence `graphiql@4` vérifiée dans le gabarit, alors que le
+    fichier du gabarit s'intitule v2 — le commentaire de doc de ce fichier, qui dit GraphiQL v4,
+    décrit le HTML réellement servi, pas la prose de la dépendance).
+  Schéma cru de confiance : @graphql_router ne vérifie pas que l'app a monté @MiryadHooks dans le
+    @seaography::Builder — un schéma construit sans hooks est servi, @PolicyRegistry ignoré, et le
+    RBAC lu par REST et MCP est contournable sur cette surface (voir `Tasks` `[?]`).
+  Asymétries de surfaces constatées, signalées sans trancher : le refus d'auth sort en
+    `text/plain` hors enveloppe ici comme sur `POST /mcp` ; REST est documenté publiquement dans
+    `/api/openapi.json`, GraphQL ne l'est pas — son introspection (@IntrospectionMode activé par
+    défaut dans @SchemaBuilder, source vérifiée) exige une requête authentifiée ; aucune route
+    GraphQL n'apparaît dans le document OpenAPI de /src/rest/openapi.rs.
+
+Tasks:
+  [?] Refus d'auth en `text/plain` hors enveloppe GraphQL sur `POST /api/graphql` : asymétrie déjà
+    consignée dans /src/auth/error.sdd (`Tasks` `[?]`, « rejet d'@AuthPrincipal contourne
+    l'enveloppe GraphQL/JSON-RPC ») — l'arbitrage se prend-il ici (envelopper @AuthError à la
+    sortie de @graphql_handler) ou globalement GraphQL+MCP ? La spec consigne l'état actuel, ne
+    le présume pas voulu.
+  [?] @graphql_router accepte tout @Schema finished, y compris construit sans @MiryadHooks ni
+    @PolicyRegistry : le contournement total du RBAC par un simple oubli de câblage de l'app est
+    il un risque accepté (confiance dans la composition de l'app) ou le montage doit-il exiger
+    une preuve de hooks ? Touche la règle transverse « une entité lue à l'identique par REST,
+    GraphQL et MCP ».
+  [?] `POST`-only sur `/api/graphql` — `GET`/`HEAD`/`PUT` → `405` — alors que l'extracteur amont
+    sait parser une query string en `GET` : GraphQL-over-GET est il un non délibéré ou un trou
+    par omission ?
+  [?] Rejets de parsing et de batch rendus par la dépendance : `400` au format @Debug
+    (`format!("{:?}")`, ni enveloppe ni code), aucun plafond de taille de corps (JSON lu par
+    `read_to_end` sans limite, @MultipartOptions::default sans contrainte, la branche `413` est
+    inatteignable telle que montée) — forme et limites à adopter, à remplacer, ou à borner ?
+  [?] Page `/api/graphiql` publique sans auth et dépendant des CDN unpkg (react 18, graphiql 4) :
+    exposition du schéma via UI ouverte, impossibilité de servir hors-ligne et absence de CSP
+    sont elles acceptées pour une route livrée par une bibliothèque ?
+  [ ] Convertir les 13 `Scenario` en au moins 13 tests distincts nommés dans le `mod tests`
+    `#[cfg(test)]` de ./handler.rs : le test existant
+    @graphql_handler_injects_database_connection_into_request_context ne couvre le scenario
+    « requête valide par token Bearer » que sur le champ `data` — il doit affermir statut `200` et
+    @Content-Type pour valider ce scenario, sans changer sa sémantique ; les scenarios GraphiQL
+    vivent filtrés par cfg (`#[cfg(feature = "graphiql")]` et une branche absente
+    `#[cfg(not(feature = "graphiql"))]`), rejoués sur les deux combinaisons `graphql` et
+    `graphiql` de /tooling.sdd ; le scenario cookie reconstruit le helper de cookie de session
+    déjà utilisé dans ../auth/dual.rs ; aucun contrat ne déborde du fichier, aucune crate
+    d'intégration séparée n'est nécessaire.
+
+Done when:
+  Chaque `Scenario` a au moins un test nommé distinct et vert dans le `mod tests` de ./handler.rs,
+    exerçant son `Then` (statut, @Content-Type et corps affirmés, pas de `contains` sur un code)
+  Les tests filtrés par feature passent sur `--no-default-features --features graphql` comme sur
+    `--no-default-features --features graphiql`, et la batterie complète de /tooling.sdd est verte
+    avec harnais sans warning nouveau sur ce fichier
+  Les cinq lignes `[?]` sont arbitrées par Sébastien et leurs suites reflétées ici ou dans le
+    code, sans que le comportement constaté ait été présumé voulu
+  La spec est relue et approuvée par Sébastien
+
+Scenario: Requête valide par token Bearer et connexion injectée
+  Given une base sqlite en mémoire migrée par @Migrator dans un @MiryadAuthState, un @Schema
+    dynamique dont le champ `dbCheck` lit la @DatabaseConnection en `ctx.data::<@DatabaseConnection>()`
+    et répond `"ok"`, et un token émis par @issue_token pour `alice`
+  When un `POST` sur `/api/graphql` avec `Authorization: Bearer <token>`,
+    `Content-Type: application/json` et le corps `{"query":"{ dbCheck }"}`, monté via
+    @graphql_router::<@MiryadAuthState> et `with_state`, appelée par @oneshot
+  Then le statut est `200` et le @Content-Type `application/graphql-response+json`
+  And le champ `data.dbCheck` du corps JSON vaut `"ok"`
+
+Scenario: Sans credential le refus précède le parsing du corps
+  Given le montage précédent
+  When un `POST` sur `/api/graphql` sans `Authorization` ni cookie, au corps JSON invalide
+    (`{"query":` tronqué) et `Content-Type: application/json`
+  Then le statut est `401` et le @Content-Type `text/plain; charset=utf-8`
+  And le corps est exactement `MRD-AUTH-001: not authenticated (no session cookie)`
+  But aucun `400` de parsing n'est observable : @AuthPrincipal s'extrait avant @GraphQLRequest
+
+Scenario: Cookie de session authentifie comme un bearer
+  Given une base migrée, un utilisateur résolu pour `alice` par @resolve_user et un cookie
+    @miryad_session valide construit par @build_set_cookie (JWT avec `exp` futur)
+  When un `POST` `{ dbCheck }` portant l'en-tête `Cookie` et aucun `Authorization`
+  Then le statut est `200` et `data.dbCheck` vaut `"ok"`
+
+Scenario: Bearer invalide rend MRD-AUTH-014 hors enveloppe
+  Given le montage minimal sans aucun cookie
+  When un `POST` `{ dbCheck }` avec `Authorization: Bearer mrd_not-a-real-token`
+  Then le statut est `401` et le corps exactement
+    `MRD-AUTH-014: invalid or unknown API token`
+  But le corps ne contient aucune enveloppe `{"errors"` — la surface est en `text/plain` sur ce
+    chemin, asymétrie consignée par /src/auth/error.sdd
+
+Scenario: Méthode GET sur /api/graphql répond 405 sans extraction
+  Given le montage minimal, avec ou sans en-tête d'autorisation valide
+  When une `GET` (et de même `HEAD` puis `PUT`) sur `/api/graphql`, y compris avec une requête
+    GraphQL valide dans la query string — `?query={ dbCheck }`
+  Then chaque statut est `405` avec en-tête @Allow `POST` et corps vide
+  And ni `MRD-AUTH-001`, ni enveloppe, ni exécution ne sont observables : aucun extracteur ne
+    tourne derrière le filtrage de méthode d'@axum
+
+Scenario: Requête batch refusée en 400 par la dépendance
+  Given un token valide de `alice`
+  When un `POST` dont le corps JSON est un tableau de deux requêtes `[{…},{…}]` avec
+    `Content-Type: application/json`
+  Then le statut est `400`
+  And le corps est le rendu @Debug `UnsupportedBatch` du @GraphQLRejection amont, pas une
+    enveloppe JSON `errors`
+
+Scenario: Corps JSON invalide refusé en 400 après auth
+  Given un token valide de `alice`
+  When un `POST` au corps texte `not json`
+  Then le statut est `400` et le corps est le rendu @Debug `InvalidRequest(…)` de la dépendance
+    (pattern `format!("{:?}")` vérifié dans async-graphql-axum 7.0.19)
+  And aucun champ n'a été exécuté : pas d'enveloppe `200`
+
+Scenario: Champ inconnu sur schéma minimal rend 200 enveloppe
+  Given un token valide et un @Schema dynamique au `Query` enregistré sans champ (Mutation et
+    Subscription `None` dans @SchemaBuilder.build)
+  When un `POST` authentifié `{ dbCheck }`
+  Then le statut est `200` et le @Content-Type `application/graphql-response+json`
+  And `errors` est un tableau non vide et `data` est `null` — le statut HTTP ne reflète jamais
+    l'erreur d'exécution ou de validation
+
+Scenario: Mutation sur schema sans type Mutation reste 200
+  Given le même schéma minimal et un token valide
+  When un `POST` `{ "query": "mutation { noop }" }`
+  Then le statut est `200`, `errors` non vide dans le corps
+  But aucun statut `4xx` n'apparaît : l'absence de `Mutation` est une erreur de validation
+    GraphQL rendue dans l'enveloppe
+
+Scenario: Snapshot du principal et principal auth lisibles en contexte
+  Given `alice` résolue en utilisateur par @resolve_user (id connu), un token valide pour elle,
+    et un @Schema exposant deux champs : `snapUserId` lisant @GraphQlPrincipal en
+    `ctx.data::<@GraphQlPrincipal>()` et renvoyant son `user_id`, `authSubject` lisant
+    @AuthPrincipal en `ctx.data::<@AuthPrincipal>()` et renvoyant son `subject`
+  When un `POST` `{ snapUserId authSubject }`
+  Then le statut est `200`, `data.snapUserId` égale l'id de l'utilisateur résolu et
+    `data.authSubject` vaut `"alice"` — les injections de @load_principal et du principal dual-auth
+    sont atteignables des resolvers exactement comme les lisent @MiryadHooks
+
+Scenario: Base indisponible rend 500 MRD-AUTH-016 sur la route
+  Given un token émis pour `alice` puis la pool de la @DatabaseConnection de l'état fermée, et
+    donc tout futur accès DB en @sea_orm::DbErr
+  When un `POST` `{ dbCheck }` avec ce bearer
+  Then le statut est `500` et le @Content-Type `text/plain; charset=utf-8`
+  And le corps commence exactement par `MRD-AUTH-016: database error: ` — @AuthError::Database tel
+    que rendu par /src/auth/error.sdd
+    (le test ferme la pool après émission du token et exerce @validate_token, extraction ; le
+    @sea_orm::DbErr de @load_principal, chemin corps du handler, converge vers le même
+    @AuthError::Database et le même rendu)
+
+Scenario: Sous graphiql la page GraphiQL est publique
+  Given la feature `graphiql` activée et @graphql_router monté, sans état authentifié requis
+  When une `GET` `/api/graphiql` sans aucune credential
+  Then le statut est `200` et le @Content-Type `text/html; charset=utf-8`
+  And le HTML contient l'endpoint `"/api/graphql"` comme URL de fetch,
+    `defaultEditorToolsVisibility: true`, le fetcher `credentials: 'same-origin'` et la
+    référence `graphiql@4` (gabarit async-graphql 7.0.19 vérifié)
+  And une `HEAD` sur `/api/graphiql` rend `200` au corps vide
+
+Scenario: Sans graphiql la route graphiql n'existe pas
+  Given la feature `graphql` sans `graphiql`, @graphql_router monté pareillement
+  When une `GET` `/api/graphiql`, avec ou sans bearer valide
+  Then le statut est `404` : la route n'est pas montée et @graphiql_handler n'est pas compilé
+  And `POST /api/graphql` reste monté et répond `401` sans credential

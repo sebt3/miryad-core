@@ -1,0 +1,411 @@
+Spec: group — entité @miryad_groups, @ensure_group en get-or-create et lectures d'appartenance @is_admin/@is_member par nom exact
+
+Purpose:
+  Être la seule porte d'entrée du groupe dans le moteur : le modèle @users::group::Model de la
+    table interne `miryad_groups` (miroir exact de la migration m20260822_000002), la constante
+    @users::group::ADMIN_GROUP_NAME (valeur `admin`) qui lie la convention admin, le get-or-create
+    @users::group::ensure_group — seule écriture de la table hors du SQL brut du `down` de la
+    migration 000003 — et les deux lectures @users::group::is_admin et @users::group::is_member,
+    seule source de vérité d'appartenance pour tout @crate::rbac et pour le garde d'admin de
+    @rest::admin::list_users_handler. Admin est une pure convention de nom lue par @is_admin : rien
+    de spécial au schéma (affirmé par le commentaire d'en-tête de ./group.rs et par l'exigence de
+    ../rbac.sdd). @ensure_group n'est appelé en production que par @sync_group_memberships
+    (./membership.rs) et par le `up` de la migration de seed 000003 ; les lectures ne créent
+    jamais rien. Aucun `#[cfg(feature = ...)]` : le fichier compile sur chaque combinaison de la
+    batterie de /tooling.sdd. Aucune trace @tracing, aucun code `MRD-*` ici : le type d'erreur est
+    @sea_orm::DbErr verbatim, les codes sont posés par les surfaces en aval.
+
+Owns:
+  ./group.rs
+
+References:
+  /miryad-core.sdd — contrat hérité : codes `MRD-<DOMAINE>-NNN` portés par les modules (aucun ici,
+    choix documenté en `Raises`), tables internes préfixées `miryad_*`, parité de lecture
+    REST/GraphQL/MCP sur la même métadonnée
+  ../rbac.rs et ../rbac.sdd — consommateur exclusif des helpers : @rbac::evaluate,
+    @rbac::can_create et @rbac::list_access appellent @is_admin et @is_member à chaque décision non
+    publique et propagent @sea_orm::DbErr par `?` ; la ligne `Handles` de ../rbac.sdd affirme
+    « groupe inconnu ⇒ @Ok(`false`) sans création » — cette spec le vérifie dans la source de
+    ./group.rs : @is_member ne contient qu'un chemin lecture, aucun insert n'y est atteignable
+  ./membership.rs — @sync_group_memberships est le premier appelant de @ensure_group en production
+    (un groupe cité dans un claim `groups` mais jamais vu y est créé à la volée) ; en retour
+    @is_member lit @membership::Entity — cycle intra-crate group↔membership assumé, les deux
+    fichiers restant des specs séparées ; la spec owning de @sync_group_memberships est
+    ./membership.sdd (à produire) et n'est pas décrite ici
+  ./mod.rs (spec ./mod.sdd à produire) — ré-exporte @ADMIN_GROUP_NAME, @Group, @is_admin,
+    @is_member à plat sous @crate::users ; @ensure_group n'est pas ré-exporté, il n'est reachable
+    que par le chemin @users::group::ensure_group (vérifié : seuls ./membership.rs et la migration
+    000003 l'empruntent)
+  /src/migration/m20260822_000002_create_users_groups.rs — pose `miryad_groups` (id integer
+    auto_increment primary key, name string not null unique_key, created_at
+    timestamp_with_time_zone not null) plus les FK cascade de `miryad_group_memberships` vers
+    users et groups et l'index unique (user_id, group_id) — vérifié dans sa source, le @Model de
+    ./group.rs doit rester ce miroir exact ligne à ligne
+  /src/migration/m20260822_000003_seed_admin_group.rs — second appelant de @ensure_group : le `up`
+    seed `admin` via exactement ce helper sur @SchemaManager::get_connection (preuve d'usage que le
+    générique @ConnectionTrait doit accepter une connexion de migration) ; son `down` supprime par
+    DELETE SQL brut avec le littéral `'admin'` sans passer par la constante — dérive signalée en
+    `Tasks` `[?]`
+  /src/rest/admin.rs — garde d'accès de `GET /api/v1/users` : appelle @is_admin sur le caller
+    résolu, puis lit @group::Entity/@group::Column::Id.is_in pour nommer les groupes (deux
+    requêtes, jamais un N+1) ; /src/rest/me.rs consomme la même @rest::admin::groups_by_user
+  /src/graphql/principal.rs — surface qui ne consomme PAS les helpers : @graphql::load_principal
+    recalcule un @graphql::GraphQlPrincipal précalculé par requête avec des @Entity::find directs
+    sur les mêmes tables ; seule la constante @ADMIN_GROUP_NAME est partagée (via
+    @HashSet::contains) ; asymétrie de chemin de lecture signalée en `Tasks` `[?]`
+  /src/mcp/registry.rs — la surface MCP délègue aux fonctions de @rest::core sans réévaluer la
+    politique : elle hérite donc des décisions @rbac, donc de ces helpers, mot pour mot
+  /src/resource.sdd — aucune de ces entités n'y est déclarée pour les groupes : @group::Entity
+    n'implémente pas @MiryadResource (vérifié dans toute la crate) ; les groupes ne sont pas une
+    ressource CRUD exposée
+  /docs/architecture.md — récit non contractuel : Authentik source de vérité des appartenances,
+    aucune API d'assignation manuelle de groupe, fraîcheur du membership acceptée pour les tokens
+
+Must:
+  Compiler sans aucun gating de feature : aucun `#[cfg(feature = ...)]` dans ./group.rs ; @sea_orm
+    et @chrono sont des dépendances non gatées de /Cargo.toml ; la batterie de /tooling.sdd exerce
+    ce fichier sur `--no-default-features` comme sur `--all-features`.
+  Miroiter exactement la table posée par m20260822_000002 dans @users::group::Model : @id @i32
+    primary key auto-increment, @name @String unique, @created_at @DateTimeUtc — les attributs
+    `#[sea_orm(primary_key)]`, `#[sea_orm(unique)]` et `table_name = "miryad_groups"` sont
+    l'interface entité↔schéma et tout écart de type ou de nullabilité est un écart de migration,
+    traité comme tel (une migration committée ne se réécrit pas).
+  Garder @users::group::ADMIN_GROUP_NAME (valeur verbatim `admin`) comme seul lien de la convention
+    admin, jamais comparé à un littéral inline dans ./group.rs : @is_admin la lit, le `up` du seed
+    000003 la lit, @graphql::load_principal la lit — toute la crate ne connaît le nom que par la
+    constante (le littéral brut du `down` de 000003 est l'exception signalée en `Tasks` `[?]`).
+  Définir @is_admin comme le strict appel à @is_member avec @ADMIN_GROUP_NAME, sans aucune logique
+    propre, sans cache, sans seconde définition de l'admin : c'est la garantie qu'il n'existe
+    qu'un seul chemin de décision admin dans la crate.
+  Ordonner @is_member en exactement deux SELECT, dans cet ordre : d'abord une lecture du groupe par
+    @Column::Name.eq(group_name) ; groupe absent ⇒ @Ok(@false) immédiat sans lire les memberships
+    ni écrire quoi que ce soit ; groupe présent ⇒ lecture de @membership::Entity filtrée
+    @membership::Column::UserId plus @membership::Column::GroupId, résultat @Option::is_some.
+  Tenir la sémantique de @sea_orm::OneOrManyWithPrelude::one vérifiée dans la source amont, pas
+    dans la doc : @sea_orm `2.0.2` (`src/executor/select.rs`, `Selector::one`, lue) applique
+    `LIMIT 1` à la requête et retourne @Ok(@None) sur résultat vide — un résultat vide n'est donc
+    jamais un @DbErr::RecordNotFound et ne peut pas transformer un groupe absent en erreur ; les
+    erreurs de requête remontent par `?`.
+  Ordonner @ensure_group en get-or-create strict : SELECT du groupe par nom ⇒ existant ⇒ @Ok de son
+    @id sans aucun insert ; sinon insert d'un @ActiveModel avec @name verbatim,
+    @created_at posé par @chrono::Utc::now(), @id laissé à l'auto-incrément ; sur @Err de cet
+    insert, SELECT de nouveau par nom et @Ok de l'@id s'il est apparu ; si la relance ne trouve
+    toujours rien, @Err d'un @sea_orm::DbErr::RecordNotFound portant le message
+    `group {name} vanished`.
+  Rester générique `<C: @sea_orm::ConnectionTrait>` sur les trois fonctions, vérifié par les deux
+    espèces d'appelants réels dans la source des appelants : @sea_orm::DatabaseConnection
+    (@crate::rbac, @rest::admin, tests inline) et @sea_orm_migration::SchemaConnection du
+    @SchemaManager (le `up` de 000003 — `ensure_group(manager.get_connection(), ADMIN_GROUP_NAME)`)
+    ; une spécialisation concrete @DatabaseConnection casserait le seed.
+  Poser @created_at à l'insertion uniquement depuis @ensure_group : @users::group::ActiveModelBehavior
+    est une implémentation vide (aucun défaut injecté en before/before_save), la colonne est NOT
+    NULL au schéma — tout appelant qui contourne @ensure_group avec un @ActiveModel doit poser
+    @created_at lui-même sous peine d'@Err en base.
+  Propager tout @sea_orm::DbErr des SELECT par `?` sans le reconvertir en refus @Ok(@false) ni le
+    wrapper en type propre : la surface REST traduit ensuite (@RestError::Database, `MRD-REST-003`,
+    porté par /src/rest/error.sdd) ; une panne d'infrastructure ne dégrade jamais silencieusement
+    un accès — comportement vérifié et requis aussi côté ../rbac.sdd.
+  Réserver l'écriture de `miryad_groups` à @ensure_group (plus le DELETE brut du `down` de 000003)
+    : ./membership.rs, ./user.rs, /src/rest/admin.rs, /src/graphql/principal.rs ne font que lire
+    @group::Entity/@group::Column — vérifié par recherche de tous les usages dans la crate.
+  Rendre @group::Entity jamais lisible ni insérable par les surfaces CRUD : aucune implémentation
+    de @MiryadResource pour cette entité n'existe ni n'est due ici ; les groupes ne sortent en
+    HTTP que comme pièce de @rest::admin::UserSummary et de /src/rest/me.rs (noms, lecture seule,
+    derrière garde admin ou self), et la parité REST/MCP tient par la délégation de
+    /src/mcp/registry.rs à @rest::core.
+
+Must not:
+  Créer ou modifier quoi que ce soit sur le chemin de @is_admin et @is_member : les deux sont du
+    strict SELECT ; @is_member sur un groupe jamais vu ne crée pas le groupe — cela confirmerait
+    l'affirmation de ../rbac.sdd par sa négation.
+  Transformer une erreur de SELECT en @Ok(@false) pour « faire passer » l'appel : seul le groupe
+    absent (résultat vide, pas une erreur) vaut `false` ; une table absente ou une connexion morte
+    donne @Err.
+  Vérifier l'existence de @user_id dans `miryad_users` : @is_member ne joint jamais ./user.rs ; un
+    @id inconnu répond `false` (aucune ligne orpheline possible, la FK
+    `miryad_group_memberships.user_id` → `miryad_users.id` de 000002 est en cascade).
+  Introduire un second marqueur d'admin : pas de booléen dans une table, pas de cas spécial dans
+    le schéma, pas de contournement de @is_member — la convention est le nom seul.
+  Cacher ou mémoriser une appartenance entre deux appels : chaque appel de @is_member est une
+    lecture fraîche des deux tables ; le snapshot GraphQL de /src/graphql/principal.rs est la seule
+    dérogation et elle appartient à son fichier (arbitrage `[?]`).
+  Émettre une trace @tracing, un @println!/@eprintln!/@dbg!, ou tout effet observable hors des
+    SELECT et de l'INSERT de @ensure_group.
+  Produire un code `MRD-*` ou un type d'erreur propre ici : @ensure_group, @is_admin, @is_member
+    renvoient @sea_orm::DbErr brut.
+  Exposer une écriture de groupe à l'appelant final : aucune fonction posée ici n'attache un
+    utilisateur à un groupe — l'écrit d'appartenance est @sync_group_memberships (./membership.rs),
+    Authentik restant la source de vérité ; @ensure_group lui-même ne touche jamais
+    `miryad_group_memberships`.
+
+Depends on:
+  @sea_orm — @DeriveEntityModel/@DeriveRelation/@PrimaryKey, @ConnectionTrait, @Set,
+    @ColumnTrait::eq, @DbErr (@sea_orm::OneOrManyWithPrelude::one vérifiée en 2.0.2 : `LIMIT 1` +
+    @Ok(@None) sur vide)
+  @chrono — @chrono::Utc::now() pour @created_at à l'insertion, horloge de l'hôte applicatif,
+    aucune valeur par défaut au niveau @ActiveModelBehavior
+  ./membership.rs — @membership::Entity et @membership::Column, seule source des appartenances
+    lues par @is_member (SELECT seul ; l'écriture est dans son propre fichier)
+  @sea_orm_migration — par les appels uniquement : @SchemaConnection du @SchemaManager de 000003
+    comme @ConnectionTrait ; ./group.rs ne l'importe pas lui-même
+  @tokio — tests inline uniquement (`@tokio::test`), dev-dependance hors chemin de production
+
+Exposes:
+  @users::group::ADMIN_GROUP_NAME — `pub const @&str`, valeur verbatim `admin`, documenté en
+    commentaire comme convention lue par le RBAC seulement
+  @users::group::Model — modèle entité `#[sea_orm(table_name = "miryad_groups")]` derives
+    @Clone/@Debug/@PartialEq avec @id (@i32, primary key), @name (@String, unique), @created_at
+    (@sea_orm::DateTimeUtc) ; @users::group::Entity, @users::group::Column, @users::group::PrimaryKey
+    et @users::group::ActiveModel générés par le derive
+  @users::group::Group — `pub type @Group = @Entity` (alias, seul nom alternatif de l'entité)
+  @users::group::Relation — @enum @vide sous @DeriveRelation : aucune relation sea-orm déclarée
+    malgré les FK du schéma ; les jointures sont faites par filtres explicites ici et chez les
+    consommateurs — donc @DeriveRelatedEntity/GraphQL ne verra jamais de relation depuis ce modèle
+  @users::group::ActiveModelBehavior — implémentation vide, aucun comportement avant-save
+  @users::group::ensure_group — `pub async fn <C: @sea_orm::ConnectionTrait>(db: &@C, name: &@str)
+    -> @Result<@i32, @sea_orm::DbErr>` (documenté : get-or-create, création à la volée sans
+    registre de noms autorisés)
+  @users::group::is_admin — `pub async fn <C: @ConnectionTrait>(db: &@C, user_id: @i32) ->
+    @Result<@bool, @DbErr>` — sans documentation propre (compte @missing_docs dans la dette de
+    /tooling.sdd)
+  @users::group::is_member — `pub async fn <C: @ConnectionTrait>(db: &@C, user_id: @i32,
+    group_name: &@str) -> @Result<@bool, @DbErr>` — sans documentation propre, même compte
+  @mod tests — trois tests inline `#[cfg(test)]` régis par cette spec (fixtures SQLite mémoire +
+    @crate::migration::Migrator), sous l'exemption cfg(test) de /tooling.sdd
+  Surface de ré-export : ./mod.rs expose @ADMIN_GROUP_NAME, @Group, @is_admin, @is_member sous
+    @crate::users ; @ensure_group reste accessible par chemin uniquement
+
+Accepts:
+  Toute connexion @C : @sea_orm::ConnectionTrait — @sea_orm::DatabaseConnection (rbac, REST,
+    tests), une transaction, ou la connexion de @sea_orm_migration::SchemaManager du seed 000003 ;
+    aucune spécialisation backend : SQLite mémoire des tests et Postgres de production suivent le
+    même code (seule la sensibilité à la casse de la comparaison SQL diverge, `[?]` en `Tasks`).
+  Un @name verbatim dans @ensure_group : aucune normalisation, aucun trim, aucune vérification —
+    `""`, espaces, casse inhabituelle sont créés tels quels si un claim les porte ; la contrainte
+    unique du schéma est le seul contrôle.
+  Un @group_name verbatim dans @is_member et un @user_id @i32 quelconque dans les deux lectures :
+    existence de l'utilisateur non vérifiée, nom de groupe jamais vu acceptable — les deux valent
+    @Ok(@false).
+  Deux tables attendues migrées : `miryad_groups` (000002, indispensable) et le seed `admin`
+    (000003) — après @crate::migration::Migrator::up complet la ligne `admin` est garantie présente
+    ; @ensure_group est idempotent et rejouable, c'est d'ailleurs ce qui rend le seed idempotent.
+
+Returns:
+  @users::group::ensure_group — @Ok(@i32) : @id de la ligne existante (chemin premier SELECT) ou de
+    la ligne insérée (chemin insert) ; la relance sur erreur d'insert retourne l'@id posé par le
+    concurrent gagnant ; @created_at n'est posé qu'à l'insertion, jamais écrasé sur une relance.
+  @users::group::is_admin et @users::group::is_member — @Ok(@true) dans le seul cas où une ligne
+    `miryad_group_memberships` (user_id, group_id) existe pour le groupe dont @name est exactement
+    equal au nom demandé ; @Ok(@false) sinon : non-membre, groupe absent, utilisateur jamais vu,
+    claim `groups` absent signifiant zéro ligne de membership.
+  @ensure_group ne renvoie aucune information de création (nouveau ou réutilisé non différenciés
+    par le type de retour) et ne touche jamais `miryad_group_memberships` : un groupe créé laisse
+    zéro membre.
+  Zéro cookie, zéro token, zéro trace, zéro valeur formatée en retour des trois fonctions.
+
+Raises:
+  @sea_orm::DbErr propagée par `?` depuis chacun des SELECT des trois fonctions et depuis l'INSERT
+    de @ensure_group : table absente (base non migrée), connexion invalide, erreur serveur — jamais
+    convertie en @Ok(@false), jamais wrappée en type propre, aucun code `MRD-*` posé ici
+    (translation par les surfaces : `MRD-REST-003` en REST via /src/rest/error.sdd).
+  @sea_orm::DbErr::RecordNotFound fabriquée par @ensure_group, message `group {name} vanished`,
+    dans le seul cas : l'insert a échoué ET la SELECT de relance ne trouve aucune ligne — erreur
+    propre produite par ./group.rs (aucun chemin de ce fichier ne passe par @require_one, le
+    pendant faillible de @one vérifié en source @sea_orm).
+  Masquage inhérent au pattern @Err(_) de @ensure_group : l'erreur d'insertion d'origine est
+    jetée quelle qu'en soit la cause, y compris une panne sans rapport avec la contrainte unique ;
+    ce que l'appelant voit est alors soit l'@id du gagnant, soit la `vanished` — signalé `[?]`.
+  Aucune panic : aucun @unwrap/@expect/@panic/@todo/@unimplemented sur le chemin de production
+    (harnais de /tooling.sdd) ; les @expect des tests inline vivent sous @cfg(test), exempts.
+
+Handles:
+  Claim `groups` absent ou utilisateur jamais synchronisé : zéro ligne de membership ⇒ @is_member
+    et @is_admin répondent @Ok(@false) pour tout nom, y compris `admin` ; la table de groupes
+    n'est pas touchée par ce chemin de lecture.
+  Base vide mais migrée : la ligne `admin` existe déjà (seed 000003 via @ensure_group), tout
+    @user_id répond `false` tant qu'aucun membership n'a été posé par @sync_group_memberships.
+  Groupe jamais vu en base : @is_member @Ok(@false) sans création, exactement comme l'affirme le
+    `Handles` de ../rbac.sdd — vérifié en source : aucun appel d'@ensure_group ni d'insert
+    n'existe dans @is_member ; la création à la volée est le monopole d'@ensure_group, appelé par
+    @sync_group_memberships (donc sur un claim) et par le seed, jamais par une lecture
+    d'autorisation.
+  @user_id inconnu (résolu nulle part dans `miryad_users`) : @Ok(@false), sans erreur ni jointure
+    de contrôle ; seule la FK du schéma garantit l'absence d'orphelins, @is_member fait confiance.
+  Concurrence de @ensure_group (deux sync concurrents citant le même nom inconnu) : perdant de la
+    course sur la contrainte unique ⇒ erreur d'insert avalée ⇒ SELECT de relance ⇒ @Ok du même
+    @id ; convergence vers une ligne unique — même mécanique que la correction de l'issue n° 3 de
+    ./membership.rs.
+  Comparaison de nom : égalité SQL `=` sur la colonne unique, sans COLLATE déclaré dans 000002 —
+    binaire et sensible à la casse sur SQLite (backend des tests : `Admin` est un groupe distinct
+    de `admin`, @is_admin @Ok(@false) pour un membre de `Admin`) ; en Postgres l'égalité dépend de
+    la collation de la colonne — dérive potentielle posée en `[?]`.
+  Suppression d'un groupe hors flux (SQL brut) : la FK cascade de 000002 emporte les lignes de
+    `miryad_group_memberships` qui pointaient vers lui ; @is_member répond alors @Ok(@false) pour
+    les anciens membres, par le même chemin « groupe absent » qu'un groupe inconnu, sans erreur.
+  Gating et surfaces : fichier non gaté — disponible avec ou sans `graphql`/`mcp` ; REST et rbac
+    consultent ces helpers à la demande (à chaque décision), MCP hérite à l'identique par
+    délégation @rest::core ; GraphQL (/src/graphql/principal.rs) recalcule un snapshot par requête
+    en contournant les helpers (asymétrie de chemin de lecture, `[?]` en `Tasks`).
+
+Example:
+  # is_member — deux SELECT, zéro écriture
+  groupe `editors` existant + ligne (user 1, groupe editors) → @Ok(@true)
+  groupe `editors` existant, user 1 non-membre → @Ok(@false)
+  groupe `ghosts` absent de miryad_groups → @Ok(@false), aucune ligne `ghosts` créée
+  user 9999 jamais créé, n'importe quel groupe → @Ok(@false) sans erreur
+  # ensure_group — get-or-create, nom verbatim
+  @ensure_group(`"auditors"`) sur base migrée → @Ok(id), une ligne `auditors`, zéro membership
+  second @ensure_group(`"auditors"`) → @Ok(même id), toujours une seule ligne
+  # is_admin — lecture seule du nom `admin`
+  membre du groupe `admin` seedé → @Ok(@true) ; membre de `Admin` seulement → @Ok(@false)
+  base non migrée → @Err(@sea_orm::DbErr) sur les trois fonctions, jamais @Ok(@false)
+
+Tasks:
+  [ ] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé, dans le
+    `#[cfg(test)] @mod tests` de ./group.rs (le contrat ne déborde pas du fichier : rbac.rs,
+    rest/admin.rs et graphql/principal.rs ont leurs propres specs et tests). Le fichier compte 3
+    tests inline : `admin_group_is_seeded_by_migration` couvre « le seed 000003 pose le groupe
+    `admin` » ; `is_member_true_for_member_false_otherwise` couvre « membre vrai, non-membre
+    faux » ; `is_member_false_for_unknown_group` couvre le volet « faux » du scénario de groupe
+    inconnu, pas l'absence de création. Créer au moins 8 nouveaux tests pour les onze scénarios,
+    un minimum de onze tests distincts in fine : `ensure_group_creates_unknown_group`,
+    `ensure_group_reuses_existing_group`, `concurrent_ensure_group_converges_to_single_row`
+    (pattern @tokio::join! du test `concurrent_syncs_for_the_same_user_do_not_violate_the_unique_constraint`
+    de ./membership.rs), `is_admin_true_for_admin_member`,
+    `is_admin_false_without_admin_membership`, `is_member_unknown_group_creates_no_row`,
+    `is_member_false_for_unknown_user_id`, `group_names_are_case_sensitive_on_test_backend`,
+    `group_helpers_propagate_dberr_when_tables_missing` (base `sqlite::memory:` non migrée, sans
+    @Migrator::up). Toutes les fixtures suivent le harnais existant : SQLite mémoire +
+    @crate::migration::Migrator::up, `l'exemption cfg(test)` de /tooling.sdd pour les @expect.
+  [?] Masquage d'erreur dans @ensure_group : l'@Err de l'insert est jeté quel qu'en soit la cause
+    (@Err(_) non nommé) et, si la SELECT de relance est vide, remplacé par
+    @DbErr::RecordNotFound(`group {name} vanished`) — une panne d'insertion sans rapport avec la
+    contrainte unique (capacité, type serveur) serait présentée comme une disparition de groupe,
+    et la cause d'origine perdue. ./user.rs (@resolve_user) documente explicitement le même
+    raccourci, @ensure_group ne le documente pas. Ce raccourci get-or-create est-il le contrat
+    assumé (et faut-il le commentaire de./user.rs en miroir) ou faut-il propager l'erreur
+    d'insertion d'origine quand la relance ne trouve rien ?
+  [?] Sens de la casse dépendant du backend : la comparaison de @name est un `=` SQL sans COLLATE
+    déclaré dans 000002 ; vérifié dans la source de la migration. Sur SQLite (tests) c'est
+    binaire — `Admin` et `admin` sont deux groupes distincts et un membre de `Admin` n'est pas
+    admin ; en Postgres l'égalité suit la collation de la colonne et une collation non binaire
+    pourrait les rendre égaux. La convention admin (`ADMIN_GROUP_NAME` exact) mérite-t-elle un
+    contrat de comparaison déterministe (COLLATE "C"/NOCASE porté par une migration suivante, ou
+    normalisation de casse dans @ensure_group/@is_member), ou l'on assume « dépendances de
+    collation à la charge de l'app » ?
+  [?] @ensure_group accepte un nom vide `""` ou whitespace-only et @sync_group_memberships
+    propage verbatim les chaînes du claim OIDC : un claim contenant une chaîne vide crée un groupe
+    nommé vide, distinct de tout, jamais nommable en clair, que @is_member sait pourtant comparer.
+    Filtre-t-on les noms vides/whitespace à l'entrée (@sync_group_memberships) ou par garde dans
+    @ensure_group, ou assume-t-on « Authentik ne renvoie jamais de nom vide » comme frontière de
+    confiance ?
+  [?] Le `down` de m20260822_000003 supprime le groupe par DELETE SQL brut avec le littéral
+    `'admin'`, sans lire @ADMIN_GROUP_NAME (le `up`, lui, passe par la constante et @ensure_group)
+    : un renommage de la constante rendrait le `down` silencieux (0 ligne supprimée, aucun
+    contrôle). Puisqu'une migration committée ne se réécrit pas : tracer la contrainte documentaire
+    (la constante et le littéral doivent bouger ensemble, corrigés au besoin par une migration
+    suivante) ou arbitrer autrement ?
+  [?] Bypass GraphQL : @graphql::load_principal recalcule @GraphQlPrincipal.{@is_admin,@groups}
+    par des @Entity::find directs sur `miryad_groups`/`miryad_group_memberships` (snapshot par
+    requête, hooks synchrones) au lieu d'appeler @is_admin/@is_member ; REST (rbac à chaque
+    décision, garde de /src/rest/admin.rs) relit à la demande. Mêmes tables, mêmes constantes,
+    deux chemins de lecture et une fraîcheur différente en cours de requête longue. Le snapshot
+    est-il le contrat GraphQL assumé (et le dire dans sa spec) ou toute surface doit-elle passer
+    par ./group.rs ?
+
+Done when:
+  Chaque `Scenario` a au moins un test Rust distinct nommé vérifiant son @Then (onze minimum dans
+    le @mod tests de ./group.rs, contre trois aujourd'hui), la batterie de /tooling.sdd passe verte
+    sur chaque combinaison de features (fichier non gaté), les lignes `[?]` de `Tasks` sont
+    arbitrées par Sébastien et reflétées dans le contrat ou le code, ./group.rs ne porte ni dette
+    harnais nouvelle, ni trace @tracing, ni code `MRD-*`, ni seconde définition de l'admin, et sa
+    spec est relue et approuvée par Sébastien.
+
+Scenario: Le seed 000003 pose le groupe `admin` après migration
+  Given une connexion `sqlite::memory:` migrée par @crate::migration::Migrator::up(None)
+  When @Entity::find est filtré @Column::Name.eq(@ADMIN_GROUP_NAME)
+  Then la ligne existe (@Option::is_some), avec @name exactement `admin`
+  And la valeur de @ADMIN_GROUP_NAME est bien le `admin` seedé : une lookup par le littéral
+    `"admin"` retrouve la même ligne (test existant `admin_group_is_seeded_by_migration`)
+
+Scenario: ensure_group sur un nom inconnu le crée et retourne son id
+  Given une base migrée où le groupe `auditors` n'existe pas et @miryad_group_memberships vide
+  When @ensure_group(db, `"auditors"`) est appelé
+  Then @Ok(id) avec l'@id d'une nouvelle ligne @name=`auditors`, @created_at non null posé par le
+    fichier (colonne NOT NULL au schéma)
+  And une seule ligne `auditors` existe
+  But @miryad_group_memberships reste vide : @ensure_group ne rattache personne
+
+Scenario: ensure_group sur un nom existant retourne le même id sans second insert
+  Given une base migrée et un premier appel @ensure_group(db, `"auditors"`) ayant réussi
+  When @ensure_group(db, `"auditors"`) est rappelé
+  Then le second @Ok porte le même @i32 id que le premier appel
+  And la table ne contient toujours qu'une ligne `auditors` : le premier SELECT court-circuite
+    tout insert
+
+Scenario: Deux ensure_group concurrents convergent vers une ligne unique
+  Given une base migrée sans groupe `ops` et deux appels @ensure_group(db, `"ops"`) lancés en
+    parallèle par @tokio::join! (même pattern que le test de course de ./membership.rs)
+  When les deux appels se terminent
+  Then les deux retournent @Ok et le même @i32 id
+  And `miryad_groups` ne contient qu'une seule ligne `ops` : la contrainte unique plus le fallback
+    de SELECT absorbent la course sans erreur pour le perdant
+
+Scenario: is_admin vrai pour un membre du groupe `admin`
+  Given une base migrée, un utilisateur obtenu par @resolve_user(db, `"admin-user"`, @None), et ses
+    appartenances synchronisées par @sync_group_memberships vers `["admin"]`
+  When @is_admin(db, user.id) est appelé
+  Then @Ok(@true) — membership (user, groupe `admin` seedé) trouvée par les deux SELECT
+    successifs de @is_member
+
+Scenario: is_admin faux sans membership `admin`, même membre d'autres groupes
+  Given une base migrée, un utilisateur @resolve_user puis @sync_group_memberships vers
+    `["editors"]` (le groupe `editors` est créé au passage par @ensure_group), et un second
+    utilisateur @resolve_user sans aucune @sync_group_memberships
+  When @is_admin est appelé pour chacun
+  Then @Ok(@false) pour les deux : être membre de n'importe quel autre groupe ne confère rien, le
+    raccourci admin de ../rbac.rs repose entièrement sur cette réponse
+
+Scenario: is_member vrai pour le membre, faux pour le non-membre du même couple base
+  Given une base migrée et un utilisateur synchronisé vers `["editors"]` par
+    @sync_group_memberships — il est membre de `editors` et de rien d'autre, notamment pas du
+    groupe seedé `admin`
+  When @is_member(db, user.id, `"editors"`) puis @is_member(db, user.id, `"admin"`)
+  Then @Ok(@true) pour `editors` et @Ok(@false) pour `admin`, sans aucune écriture entre les deux
+    (test existant `is_member_true_for_member_false_otherwise`)
+
+Scenario: Groupe inconnu : faux sans créer le groupe
+  Given une base migrée, un utilisateur quelconque et le nom `"does-not-exist"` absent de
+    `miryad_groups`
+  When @is_member(db, user.id, `"does-not-exist"`) est appelé
+  Then @Ok(@false) — premier SELECT vide, raccourci immédiat sans lire les memberships
+  And le compteur des lignes de `miryad_groups` est inchangé : la lecture d'autorisation ne crée
+    jamais le groupe cité (confirmation en source de l'affirmation de ../rbac.sdd ; le test
+    existant `is_member_false_for_unknown_group` n'assertionne que le @Ok(@false), l'assertion
+    d'absence de création est à ajouter)
+
+Scenario: Utilisateur jamais vu : faux pour tout groupe, sans erreur
+  Given une base migrée (groupe `admin` seedé) et le @user_id `9999`, jamais passé par
+    @resolve_user
+  When @is_member(db, `9999`, `"admin"`) et @is_admin(db, `9999`) sont appelés
+  Then @Ok(@false) pour les deux : aucune existence d'utilisateur n'est vérifiée, aucun
+    @sea_orm::DbErr n'est produit pour un @id orphelin — la garantie anti-orphelin est la FK du
+    schéma, pas le code
+
+Scenario: Nom exact et casse : `Admin` n'est pas `admin`
+  Given une base migrée (groupe seedé `admin` en minuscules), aucun mode de normalisation de casse
+    n'existant dans @ensure_group (test exécuté sur SQLite, backend des tests de la crate)
+  When @ensure_group(db, `"Admin"`) est appelé puis @sync_group_memberships rattache un
+    utilisateur uniquement à `"Admin"`
+  Then deux lignes distinctes coexistent (`admin` seedé et `Admin` créé), @is_member(db, user.id,
+    `"admin"`) répond @Ok(@false) et @is_admin @Ok(@false)
+  But ce sens de la casse binaire est vérifié sur SQLite et n'est pas garanti identique sous
+    Postgres sans collation explicite : c'est la ligne `[?]` de `Tasks`
+
+Scenario: Base non migrée : @Err propagé sur les trois helpers, jamais @Ok(@false)
+  Given une connexion `sqlite::memory:` sans @Migrator::up (aucune table @miryad_*)
+  When @ensure_group(db, `"x"`), @is_member(db, `1`, `"admin"`) et @is_admin(db, `1`) sont appelés
+  Then les trois retournent @Err(@sea_orm::DbErr) — le premier SELECT de chacun échoue et remonte
+    par `?`
+  But aucune des trois ne dégrade la panne d'infrastructure en refus silencieux @Ok(@false) ni ne
+    panique — même principe fail-fast qu'exigé de ../rbac.rs

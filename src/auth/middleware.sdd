@@ -1,0 +1,285 @@
+Spec: middleware — extracteur axum @AuthUser : identité extraite du seul cookie de session, injectée au handler, rejet `401` porté `MRD-AUTH-001`/`MRD-AUTH-002` sans RBAC ni token API
+
+Purpose:
+  Être l'extracteur axum du flow navigateur pur (feature 2a) : @AuthUser, @impl @FromRequestParts
+    dont @from_request_parts lit l'en-tête `Cookie` de la requête, le délègue à @extract_session
+    (./cookie.rs) avec la @cookie_key de @MiryadAuthState projeté par @FromRef, et livre au handler
+    une valeur @AuthUser (@subject, @email, @id_token) copiée verbatim de l'@OidcIdentity validé.
+    En échec, le seul rejet possible est @AuthError::@NotAuthenticated (`MRD-AUTH-001`) ou
+    @AuthError::@InvalidSession (`MRD-AUTH-002`), rendu `401` par @into_response de ./error.rs.
+    Le fichier ne contient que ce `impl`, le type et deux traces @tracing::@debug : pas d'évaluation
+    RBAC, pas de token API (./dual.rs), aucun cookie émis, aucune requête en base. Aucun
+    `#[cfg(feature = ...)]` : le fichier compile sur chaque combinaison de la batterie de
+    /tooling.sdd.
+
+Owns:
+  ./middleware.rs
+
+References:
+  /miryad-core.sdd — contrat hérité : codes `MRD-<DOMAINE>-NNN` (ici 001/002 seulement), parité
+    REST/GraphQL/MCP lue à l'identique (voir `Must`)
+  ./error.sdd — @AuthError comme @Rejection de @AuthUser : c'est @into_response de ./error.rs que
+    le client voit ; ce fichier pose la trace de rejet, ./error.rs reste muet
+  ./cookie.rs — @extract_session, seul validateur : il émet @AuthError::@NotAuthenticated et
+    @AuthError::@InvalidSession avec le contenu exact des variantes atteignables ici ;
+    @build_set_cookie construit les cookies que les tests inline valident
+  ./state.rs — @MiryadAuthState @derive @Clone : ./middleware.rs n'en lit que @cookie_key
+  ./principal.sdd — @AuthUser y est nommé comme le type adjacent propre au flow navigateur, la
+    confusion @AuthUser/@AuthPrincipal est la frontière actée entre les deux fichiers
+  ./mod.rs — ré-exporte @AuthUser à plat sous @crate::auth (ligne 18) sans gating ; ses routes
+    @auth_router (`/auth/login`, `/auth/callback`, `/auth/logout`) n'utilisent pas l'extracteur
+  ./dual.rs — extracteur parallèle @AuthPrincipal qui lit `Authorization: Bearer` avant le cookie,
+    repli interdit ; ./middleware.rs ne lit jamais `Authorization` (asymétrie arbitrée en `Tasks`)
+  /src/rest/mod.rs, /src/rest/me.rs, /src/rest/admin.rs, /src/rest/tokens.rs,
+    /src/graphql/handler.rs, /src/mcp/handler.rs — surfaces vérifiées : toutes extraient
+    @AuthPrincipal, aucune n'extrait @AuthUser (voir le `Must` de parité et `Tasks` `[?]`)
+  /docs/architecture.md — récit non contractuel : dual-auth cookie/token et extractor navigateur
+
+Must:
+  Compiler sans aucun gating de feature : aucun `#[cfg(feature = ...)]` dans ./middleware.rs,
+    @pub mod @auth non gaté dans /src/lib.rs, @axum, @cookie (feature `private`) et @tracing
+    non optionnels dans /Cargo.toml — la batterie de /tooling.sdd exerce ce contrat de
+    `--no-default-features` à `--all-features`, tests inline compris.
+  Rester opt-in par signature de handler : ./middleware.rs ne définit ni @tower @Service ni
+    @axum::@middleware ; l'unique point d'entrée est la présence de @AuthUser dans la signature.
+    Nulle route exemptée à connaître : @auth_router de ./mod.rs, GraphQL et MCP ne prennent pas
+    @AuthUser et ne lui sont donc jamais soumis ; une route qui l'omet tourne sans auth via ce
+    fichier, protégée le cas échéant par @AuthPrincipal.
+  Ne lire de @MiryadAuthState que @cookie_key, par @FromRef::@from_ref : @oidc_client, @db,
+    @post_login_redirect, @post_logout_redirect jamais lus ; aucune requête @sea_orm n'est
+    émise — témoin vérifié dans le source de sea-orm 2.0.2 (`database/mock.rs` : un
+    @MockDatabase nu y fait échouer toute requête, `query_results` buffer is empty, et
+    @into_transaction_log enregistre toute instruction exécutée).
+  Réussir par copie verbatim de l'@OidcIdentity rendu par @extract_session : @subject, @email,
+    @id_token recopiés tels quels, sans normalisation, sans validation de format, sans jamais
+    interroger l'@OidcClient ; ce fichier ne vérifie aucune signature de JWT — @id_token est un
+    matériau brut, la seule borne de fraîcheur est celle de ./cookie.rs (claim `exp`) sous
+    authentification chiffrée du cookie.
+  Poser exactement deux traces @tracing::@debug : `auth rejected: {}` avec la @Display de
+    l'erreur (donc le code `MRD-*`) avant chaque rejet, `auth ok` avec @subject en champ structuré
+    avant chaque succès — jamais @email ni @id_token dans une trace ; aucune autre trace, aucune
+    @info/@warn/@error dans le fichier (le `warn` de `MRD-AUTH-013` vit dans ./mod.rs).
+  Rendre le @Rejection sans jamais intervenir sur la sortie HTTP : c'est @into_response de
+    ./error.rs qui fixe statut et corps ; le contrat de ./middleware.rs est de ne produire que
+    @AuthError::@NotAuthenticated et @AuthError::@InvalidSession, toutes deux rendues `401`.
+  Ne toucher @parts sur le succès comme sur l'échec : @from_request_parts reçoit &mut @Parts et n'y
+    écrit pas — pas d'insertion dans @extensions, pas d'en-tête ajouté ou retiré, pas de @Set-Cookie
+    ; @AuthUser arrive uniquement comme argument du handler. Pas de renouvellement de session
+    expirée, pas de rotation de clé : la pose du cookie vit dans @handler_callback (./mod.rs), sa
+    purge dans @handler_logout (./mod.rs).
+  Porter la parité des surfaces par sa restriction même : ./middleware.rs ne sert que les routes
+    (REST de la crate et routes de l'app) qui le demandent ; GraphQL (`/src/graphql/handler.rs`)
+    et MCP (`/src/mcp/handler.rs`) vérifiés extraient @AuthPrincipal et non @AuthUser, parce que
+    @AuthUser ne peut pas valider un token `Bearer` — le contrat transverse « lue à l'identique
+    par les trois surfaces » est porté par @AuthPrincipal, pas par ce fichier ; le rendu `401`
+    texte reste commun quel que soit l'extracteur rejeteur car @Rejection = @AuthError chez les
+    deux (./error.sdd).
+
+Must not:
+  Évaluer rôles, groupes, ownership ou ligne @users : @rbac et @graphql::@load_principal relisent
+    l'appartenance en base à partir d'un principal ; l'en-tête doc du fichier le nomme
+    explicitement (« pas d'évaluation RBAC ici ») et aucune route du crate ne combine @AuthUser
+    avec une décision d'autorisation.
+  Lire l'en-tête `Authorization`, accepter un token API ou appeler @validate_token : le dual-auth
+    et son interdiction de repli silencieux sont le contrat de ./dual.rs ; les importer ici
+    dupliquerait deux extracteurs divergeants et masquerait la frontière @AuthUser/@AuthPrincipal.
+  Consigner ou réécrire @id_token : pas de vérification de signature, de réémission, de
+    rafraîchissement silencieux d'un cookie expiré — un rejet est un rejet (`401`), le client
+    repasse par le login.
+  Écrire dans @parts : @AuthUser n'est jamais @Extension ni donné à @ctx.data d'@async_graphql —
+    l'injection de principal dans @extensions/@data est le mécanisme de /src/graphql/handler.rs
+    pour @AuthPrincipal, pas celui d'ici.
+  Embarquer une notion de cookie : ./middleware.rs ne connaît @SESSION_COOKIE_NAME que via
+    @extract_session ; il ne construit, ne déchiffre, ne purge aucun cookie lui-même.
+
+Forbids:
+  @crate::auth::token — @validate_token et la table `miryad_api_tokens` appartiennent à ./dual.rs ;
+    les atteindre depuis ./middleware.rs ferait de ce fichier un second dual-auth par derrière.
+  @crate::rbac, @crate::users, @sea_orm direct — aucune autorisation, aucune lecture de base ; la
+    dépendance @sea_orm n'existe dans ce fichier que via le champ @db de ./state.rs, jamais lu.
+
+Depends on:
+  @axum 0.8 — traits @FromRequestParts, @FromRef, types @Parts ; le @impl réflexif
+    `impl<T> @FromRef<T> for T where T: @Clone` qui rend le @MiryadAuthState nu utilisable comme
+    @S est vérifié dans le source d'axum-core 0.5.6 (`src/extract/from_ref.rs`)
+  @crate::auth::cookie::@extract_session (./cookie.rs) — seule validation : absence de cookie,
+    entrée absente, échec de déchiffrement, payload JSON invalide, claim `exp` absent/atteint y
+    sont départagés @NotAuthenticated contre @InvalidSession
+  @cookie 0.18 feature `private` — @PrivateJar::@decrypt retourne @None quand l'authentification
+    ou le déchiffrement échoue, sans distinguer clé différente et valeur altérée (vérifié dans le
+    source de cookie-0.18.2, `src/secure/private.rs`)
+  @crate::auth::state::@MiryadAuthState — projeté par @FromRef, seul @cookie_key utilisé
+  @crate::auth::error::@AuthError — @Rejection porté jusqu'à @into_response (./error.rs)
+  @tracing 0.1 — niveau @debug uniquement
+  @http (via @axum) — @HeaderValue accepte des octets opaques non UTF-8 que @to_str refuse (doc
+    exemple `b"hello\xfa"`, source http-1.5.0, `src/header/value.rs`) : c'est ce qui rend
+    atteignable la branche « en-tête `Cookie` présent mais illisible »
+
+Exposes:
+  @AuthUser — `pub struct` à trois champs publics @subject (@String), @email (@Option<@String>),
+    @id_token (@String) ; aucun derive (@Clone, @Debug, @PartialEq absents), aucun accesseur, aucun
+    @impl propre hors @FromRequestParts — le handler le reçoit par valeur et ne peut que déplacer
+    ou lire ses champs ; documenté dans /src/lib.rs (doc de crate ligne 131) comme le type
+    adjacent du flow navigateur, ré-exporté à plat par ./mod.rs
+  @impl @FromRequestParts<@S> for @AuthUser, générique en @S (`S: @Send + @Sync` et
+    @MiryadAuthState: @FromRef<@S>), avec `type` @Rejection = @AuthError — une seule méthode
+    @from_request_parts (`async fn`, (&mut @Parts, &@S) -> @Result<@AuthUser, @AuthError>) :
+    pas de @Future nommé, pas de @tower @Service, pas de générateur d'extracteur
+
+Accepts:
+  L'unique en-tête consulté est `Cookie` : sa valeur est lue par @to_str, convertie en @String puis
+    passée en @Option<&@str> (@as_deref) à @extract_session — un en-tête `Cookie` non UTF-8 fait
+    échouer @to_str, devient @None et se confond avec l'absence, même @NotAuthenticated ; la
+    recherche de l'entrée `miryad_session` dans la liste des cookies appartient à ./cookie.rs
+  @state par @FromRef::@from_ref(&@S) : @S = @MiryadAuthState marche par l'impl réflexif
+    d'axum-core 0.5.6 ; un @S composé de l'app consommatrice (pattern de ./state.rs,
+    /src/rest/mod.rs pour @AuthPrincipal) doit fournir son @FromRef explicite — ./middleware.rs
+    n'exige de @S que @Send plus @Sync — pas la borne `S: 'static` (exigée plus bas par
+    @Router, pas par cet extracteur)
+  @parts en emprunt mut : rien n'y est lu d'autre que `Cookie`, rien n'y est écrit — aucun autre
+    en-tête n'est consultable par cette voie
+
+Returns:
+  @Ok(@AuthUser) : @subject, @email, @id_token mot à mot de l'@OidcIdentity de @extract_session —
+    @email @Some du claim verbatim stocké au login ou @None, @id_token jamais re-sérialisé ni
+    vérifié ; valeur possédée par le handler (@String déplacés), non duplicable (@Clone absent)
+  @Err(@AuthError) : axum rend le rejet par @into_response (./error.rs) et n'exécute pas le
+    corps du handler — le corps reçu par le client est celui de l'erreur, jamais @subject
+
+Raises:
+  `MRD-AUTH-001` via @AuthError::@NotAuthenticated → `401` : en-tête `Cookie` absent, en-tête
+    `Cookie` non UTF-8, ou aucune entrée `miryad_session` dans l'en-tête — émis par
+    @extract_session, rendu corps `MRD-AUTH-001: not authenticated (no session cookie)` (./error.rs)
+  `MRD-AUTH-002` via @AuthError::@InvalidSession → `401` : cookie `miryad_session` indéchiffrable
+    (clé de @MiryadAuthState différente de celle du cookie, valeur altérée ou re-signée — causes
+    confondues, vérifié cookie-0.18.2), payload JSON interne invalide, claim `exp` absent ou
+    illisible du JWT stocké, `exp` atteint, horloge antérieure à l'epoch — rendu corps
+    `MRD-AUTH-002: invalid or expired session` (./error.rs)
+  Les quatre autres variantes de @AuthError sont inatteignables par @AuthUser : @AuthError::@Oidc
+    (aucun appel @oidc_client), @AuthError::@InvalidToken et @AuthError::@TokenExpired (le module
+    @token est tenu en `Forbids`), @AuthError::@Database (aucune requête — @db jamais lu) ; aucun
+    autre code `MRD-*` ne peut sortir de ce chemin d'extraction
+
+Handles:
+  Trois états du matériau d'entrée : absent (`401` `MRD-AUTH-001`), présent et déchiffrable avec
+    `exp` futur (succès), présent mais invalide ou expiré (`401` `MRD-AUTH-002`) — aucun quatrième
+    ; les cas fins (multi-cookies, `exp` illisible, payload corrompu) sont départagés par
+    @extract_session et ne sortent d'ici qu'à travers ces deux codes
+  En-tête `Cookie` illisible en UTF-8 : même destin que absent — la @to_str ratée est avalée en
+    @None, aucune trace distincte, aucun code propre
+  Requête `Bearer` sans cookie : rejet `401` `MRD-AUTH-001` comme un navigateur anonyme —
+    l'en-tête `Authorization` n'est pas consulté ; le client token doit viser @AuthPrincipal
+    (./dual.rs)
+  Traces d'effet de bord : une @debug `auth rejected: {}` par rejet (le @Display porte le code
+    `MRD-*`, pas le @id_token), une @debug `auth ok` par succès (@subject en champ structuré
+    nommé `subject` — même convention qu'à ./mod.rs) — @email/@id_token hors des traces
+
+Tasks:
+  [?] @AuthUser n'est extrait par aucune route de la crate : @graphql_handler, @mcp_handler et les
+    handlers axum de /src/rest/mod.rs (cinq), /src/rest/me.rs, /src/rest/admin.rs et
+    /src/rest/tokens.rs (trois) extraient tous @AuthPrincipal. @AuthUser reste-t-il une surface
+    publique maintenue pour le flow navigateur des apps consommatrices (feature 2a), ou une
+    surface résiduelle à déprécier ? Sa forme API n'aide pas à décider : pas de @Clone, pas de
+    @Debug, champs publics non documentés (dette @missing_docs de /tooling.sdd) — dépréciation ou
+    stabilisation avec derives à ajouter ?
+  [?] @AuthUser ignore totalement l'en-tête `Authorization` : la même requête avec un bearer
+    invalide et un cookie valide passe en session ici (`200`), alors qu'elle est rejetée `401` par
+    @AuthPrincipal (./dual.rs, « pas de repli silencieux »). Cette divergence entre les deux
+    extracteurs du même crate est-elle le contrat assumé du flow navigateur (l'en-tête
+    appartient à qui l'a posé) ou un écart à refermer — et dans ce cas par quel comportement ?
+  [ ] Convertir les 10 `Scenario` ci-dessous en au moins 10 tests Rust distincts nommés dans le
+    `#[cfg(test)] mod tests` inline de ./middleware.rs — deux tests inline existent :
+    @protected_without_cookie_returns_401 n'affirme que le statut `401` sans le corps ni le code
+    `MRD-AUTH-001`, @protected_with_valid_session_passes_and_exposes_subject n'affirme @subject
+    sans @email ni @id_token : les achever (corps exact, trois champs) et écrire les huit
+    manquants — dépendances de test déjà en place (@tokio::test, @oneshot de @tower,
+    @MockDatabase de @sea_orm, @Key de @cookie). Le contrat ne déborde pas du fichier, aucune
+    crate d'intégration séparée requise.
+
+Done when:
+  Les 10 `Scenario` ont chacun au moins un test nommé distinct et vert dans ./middleware.rs (au
+    moins 10 tests contre 2 aujourd'hui), chaque @Then affirmé par chaîne exacte (statut, corps
+    `text/plain`, trois champs reçus) sans `contains` sur un code.
+  Les deux lignes `[?]` de `Tasks` sont arbitrées par Sébastien et leurs suites reflétées dans le
+    contrat ou le code.
+  ./middleware.rs reste dépourvu de `#[cfg(feature = ...)]` et d'aucun @use hors @axum,
+    ./cookie.rs, ./error.rs, ./state.rs et @tracing, et la batterie de /tooling.sdd passe verte
+    sur chaque combinaison de features, `cargo fmt --check` compris.
+
+Scenario: session valide — les trois champs parviennent au handler par valeur
+  Given un @MiryadAuthState dont @cookie_key est @Key::@from(&[0u8; 64]) et un cookie
+    `miryad_session` construit par @build_set_cookie pour @subject `user-123`, @email @Some de
+    `test@example.com`, @id_token JWT à `exp` dans une heure
+  And une route `GET /protected` dont le handler prend @AuthUser par valeur et concatène
+    @subject, @email et @id_token séparés par un caractère `|`
+  When @oneshot sert la requête portant l'en-tête `Cookie` de ce cookie
+  Then le statut est `200`
+  And le corps est exactement `user-123|test@example.com|<jwt>` — les trois champs sont ceux de
+    l'@OidcIdentity, verbatim, et le handler en est possesseur
+
+Scenario: en-tête Cookie absent — 401 avec code MRD-AUTH-001
+  Given la même route et le même @MiryadAuthState
+  When une requête sans aucun en-tête `Cookie` atteint @from_request_parts
+  Then le statut est `401`
+  And le corps lu par @axum::body::to_bytes est exactement `MRD-AUTH-001: not authenticated (no session cookie)`
+  But le handler ne s'exécute pas : le corps reçu n'est pas @subject
+
+Scenario: en-tête Cookie sans entrée miryad_session — 401 MRD-AUTH-001
+  Given une requête dont l'en-tête `Cookie` vaut `theme=dark; XSRF=abc; _ga=42` — aucun cookie
+    nommé `miryad_session`
+  When @AuthUser extrait l'identité
+  Then le statut est `401`
+  And le corps est exactement `MRD-AUTH-001: not authenticated (no session cookie)`
+
+Scenario: cookie scellé d'une autre clé — 401 MRD-AUTH-002, indistinguable d'une altération
+  Given un cookie `miryad_session` construit par @build_set_cookie avec une @Key distincte de
+    celle de @MiryadAuthState
+  When la requête le présente à l'extracteur
+  Then le statut est `401`
+  And le corps est exactement `MRD-AUTH-002: invalid or expired session` — @PrivateJar::@decrypt
+    rend @None sans distinguer clé étrangère et valeur re-signée (vérifié cookie-0.18.2)
+
+Scenario: session dont le claim exp est passé — 401 MRD-AUTH-002
+  Given un cookie légitime (même @Key) dont l'@id_token embarque un `exp` déjà dépassé
+  When @from_request_parts évalue @extract_session
+  Then l'@Err est @AuthError::@InvalidSession rendu `401`
+  And le corps est exactement `MRD-AUTH-002: invalid or expired session`
+
+Scenario: cookie légitime mais id_token sans claim exp lisible — 401 MRD-AUTH-002
+  Given un cookie construit par @build_set_cookie pour un @id_token de forme trois segments dont
+    le payload ne contient pas de claim `exp`
+  When l'extracteur déchiffre le cookie
+  Then @extract_session rend @AuthError::@InvalidSession — le cookie se déchiffre mais ne prouve
+    aucune fraîcheur
+  And le client reçoit `401` au corps `MRD-AUTH-002: invalid or expired session`
+
+Scenario: en-tête Cookie non UTF-8 — traité comme absent, 401 MRD-AUTH-001
+  Given une requête construite avec @Request::builder et un en-tête `Cookie` posé via
+    @HeaderValue::@from_bytes sur des octets opaques non UTF-8 (acceptés par le crate @http,
+    refusés par @to_str)
+  When l'extracteur lit la valeur
+  Then le statut est `401` au corps `MRD-AUTH-001: not authenticated (no session cookie)` —
+    la @to_str ratée rend l'en-tête illisible indiscernable de son absence
+
+Scenario: bearer sans cookie — 401 MRD-AUTH-001, Authorization jamais consulté
+  Given une requête portant l'en-tête `Authorization: Bearer un-token-importe-aucune-importance`
+    et aucun en-tête `Cookie`
+  When @AuthUser extrait
+  Then le statut est `401` au corps `MRD-AUTH-001: not authenticated (no session cookie)`
+  But @validate_token et le @db de @MiryadAuthState ne sont jamais touchés — le bearer est
+    invisible pour ce fichier
+
+Scenario: mock @db nu — aucune requête exécutée sur une extraction valide
+  Given un @MiryadAuthState dont @db est un @MockDatabase nu — vérifié en sea-orm 2.0.2, toute
+    requête y échoue (`query_results` buffer is empty)
+  When une requête à session valide réussit `200`
+  Then @into_transaction_log de la connexion est vide — @subject arrive par le seul chemin du
+    cookie, @db n'est jamais atteint
+
+Scenario: état composé de l'app consommatrice via FromRef explicite
+  Given un @AppState local au module tenant @auth (un @MiryadAuthState) et @other (un @i32), avec
+    @impl @FromRef<@AppState> for @MiryadAuthState projetant @auth — @S = @AppState
+  When une requête à session valide traverse @from_request_parts puis @with_state
+  Then le statut est `200` et le handler lit @subject validé
+  And l'état réflexif nu (@S = @MiryadAuthState) marche par l'impl blanket d'axum-core 0.5.6 —
+    les deux formes d'état sont le contrat générique

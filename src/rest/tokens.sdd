@@ -1,0 +1,457 @@
+Spec: tokens — self-service des tokens API
+
+Purpose:
+  Monter les trois routes HTTP self-service de la table `miryad_api_tokens` sous le préfixe `/api/v1` :
+    `GET` liste paginée des tokens du principal, `POST` émission d'un token pour soi — seule réponse
+    de toute la surface qui porte le secret en clair, une seule fois — et `DELETE` révocation d'un
+    token à soi. Page « mon compte », jamais admin : chaque handler reste strictement restreint au
+    @principal.subject et aucune voie d'à-côté (autre fichier, autre surface, autre token) ne permet
+    de lister ou révoquer le bien d'autrui. L'authentification elle-même est déléguée à l'extracteur
+    dual-auth @AuthPrincipal ; l'écriture en base est déléguée au moteur ../auth/token.rs
+    (../auth/token.sdd) ; la normalisation de pagination à ../query.rs (../query.sdd). Le fichier
+    n'émet aucune trace et ne dépend d'aucune feature.
+
+Owns:
+  ./tokens.rs
+    Y compris son module `#[cfg(test)] mod tests` inline (cinq tests à la rédaction), qui vit dans
+    le fichier et est régi par la présente spec.
+
+References:
+  ../auth/token.sdd — contrat du moteur consommé : secret `mrd_` + `43` caractères base64url, hash
+    SHA-256 hex seul persisté, @issue_token sans validation du `name`, @revoke_token suppression
+    physique sans filtre @subject et @Ok même sur `0` ligne, expiration à borne `<=`
+  ../query.sdd — contrat pagination : @Pagination::from_raw (page ramenée à `1`, per_page dans
+    `[1, 1000]`), @PagedResult écho pur à cinq clés, faits @sea_orm vérifiés au source amont
+  ../migration/m20260822_000001_create_api_tokens.sdd — schéma des sept colonnes lues/projetées,
+    UNIQUE sur `token_hash`, absence d'index sur `subject` (la `[?]` de cette spec est mise en jeu
+    par le filtre du `GET`)
+  ./error.rs — @RestError et ses codes `MRD-REST-001` à `MRD-REST-004` (spec propre à produire,
+    ./miryad-core.sdd `Tasks`) ; rendu `(status, Display)` en texte, pas JSON
+  ../auth/error.sdd — codes `MRD-AUTH-001`, `MRD-AUTH-014`, `MRD-AUTH-015`, `MRD-AUTH-016` rendus
+    par l'extracteur en amont de ce fichier, sans conversion ici
+  ./mod.rs — déclare @tokens sans @cfg et n'owne rien de ce fichier ; aucun appelant de
+    @tokens_router dans la crate (seul le test inline le merge) : l'app consommatrice le monte
+  /.specdd/bootstrap.project.md — contrats transverses (codes `MRD-*`, `tracing`, parité des
+    surfaces) ; /tooling.sdd — batterie et harnais appliqués au fichier
+
+Must:
+  @tokens_router nest exactement le préfixe `/api/v1` et n'y monte que deux chemins : `/tokens`
+    avec méthodes `GET` et `POST`, et `/tokens/{id}` avec méthode `DELETE` seule. Aucun routeur
+    intermédiaire n'expose ici de `PUT`/`PATCH` ni de route admin ; aucun chemin n'existe hors du
+    préfixe, figé comme dans les routeurs de ressources.
+  Les trois handlers requièrent l'extracteur @AuthPrincipal et @State<@MiryadAuthState> avant tout
+    autre extracteur : l'authentification (Bearer `Authorization` ou cookie de session, Bearer
+    gagnant sans repli silencieux) est entièrement celle de ../auth/dual.rs — le fichier ne lit
+    lui-même ni en-tête @Authorization, ni cookie, ni client OIDC, et ne consomme de
+    @MiryadAuthState que le champ @db.
+  @list_tokens_handler filtre par @Column::Subject.eq(&@principal.subject) — égalité @String verbatim,
+    sans @join, sans consultation de @crate::users : ni utilisateur admin, ni membre d'un groupe, ni
+    aucun principal ne sort de ce filtre ; le @subject d'une session et le @subject d'un token ne se
+    recouvrent que caractère pour caractère.
+  La liste paginature via @sea_orm::Paginator 2.0.2 (faits vérifiés au source `executor/paginator.rs`) :
+    @num_items_and_pages d'abord (division majorante, `0` ligne rend `0` page), puis
+    @fetch_page(@page - `1`) soit `LIMIT @per_page OFFSET @per_page * (@page - 1)` ; l'invariant
+    @page >= `1` de ../query.sdd garantit que le `page - 1` du fichier ne sous-fléchit jamais.
+  @TokenSummary projette par @From<@crate::auth::token::Model> exactement @id, @name, @created_at,
+    @expires_at et @last_used_at — @subject et @token_hash ne sont sérialisés nulle part. Le secret
+    en clair n'apparaît qu'une seule fois dans toute la surface : le champ @token de @CreatedToken,
+    issu de @IssuedToken.token à l'émission POST ; aucune lecture ultérieure ne peut le reconstituer
+    (la base ne porte que l'empreinte, ../auth/token.sdd).
+  Le POST appelle @issue_token(&@auth.db, &@principal.subject, &@body.name, @body.expires_at) : le
+    @subject titulaire vient du principal authentifié, jamais du corps ; le succès rend le `200` de
+    @Json<@CreatedToken> avec exactement les clés `id` et `token`.
+  Le DELETE suit cet ordre, contractuel et observable : @ApiToken::find_by_id(@id).one — absence de
+    la ligne rend @RestError::NotFound (`404`) — puis comparaison @record.subject != @principal.subject
+    rendant @RestError::Forbidden (`403`) — puis @revoke_token par @id, sans filtre propre — puis
+    @StatusCode::NO_CONTENT (`204`) sans corps. L'existence est donc vérifiée avant la propriété.
+  @DbErr remonte par `?` en @RestError::Database (`MRD-REST-003`, `500`) — comptage, fetch de page,
+    @find_by_id ; les @AuthError de @issue_token/@revoke_token passent par @to_rest_error, @match
+    explicite sans @From<@AuthError> générique : @Database → @RestError::Database, toute autre
+    variante → @RestError::Internal (display préfixé `MRD-REST-004`, `500`).
+  @issue_token et @revoke_token ne produisent en pratique que @AuthError::Database (garanti par
+    ../auth/token.sdd) : la branche @other de @to_rest_error est une conversion défensive sans
+    chemin atteignable ni test inline (voir `Tasks` `[?]`).
+  Le fichier n'émet aucune trace : pas de @tracing importé, et la famille @println/@eprintln/@dbg
+    est interdite par /tooling.sdd — les erreurs sortent brutes par le @Display de @RestError.
+  Aucun `#[cfg(feature = ...)]` ne gate le fichier : ./mod.rs déclare @tokens sans condition, le
+    @rest de ./lib.rs aussi — le fichier compile sur toutes les combinaisons de la batterie
+    /tooling.sdd (`static-frontend` défaut, `--no-default-features`, `swagger-ui`, `graphql`,
+    `graphiql`, `mcp`, `--all-features`).
+  Le wire JSON est celui de @PagedResult : exactement les cinq clés `items`, `page`, `per_page`,
+    @total_items, @total_pages (../query.sdd), chaque item un @TokenSummary à exactement cinq clés ;
+    @DateTimeUtc se sérialise en RFC 3339 avec suffixe `Z` (chrono 0.4.45 vérifié au source
+    `datetime/serde.rs` : sérialisation par défaut `write_rfc3339` avec @SecondsFormat::AutoSi et
+    @use_z @true) et un @Option::None rend `null`.
+
+Must not:
+  Sortir de la sémantique du moteur pour cette surface — flag `revoked`, purge ou filtre de
+    @subject enfiché dans @revoke_token : la suppression physique sans filtre appartient au contrat
+    ../auth/token.sdd et l'inversiserait pour tous les appelants Rust directs.
+  Confondre le `422` rendu ici avec une erreur applicative @HookError : sur cette surface le `422`
+    est le @JsonDataError d'axum (corps anglais « Failed to deserialize the JSON body into the
+    target type », vérifié au source), jamais @RestError::Application — deux enveloppes `422`
+    distinctes ne doivent pas être amalgamées.
+  Retirer @subject ou @token_hash de la privation de rendu, ou remonter le clair par un futur champ
+    de @TokenSummary : la projection fermée à cinq champs est la barrière, la modifier est une
+    correction de contrat, pas un ajout de champ.
+  Accepter un `sort`, un `filter` ou tout paramètre de liste sans décision : ./mod.rs a un
+    @ListParams avec @filter, celui du fichier n'en a pas, et `filter` envoyé ici est silencieusement
+    ignoré par @serde — greffer des options par analogie avec les listes de ressources inventerait
+    une surface non contractée.
+
+Forbids:
+  @crate::users — aucune vérification d'appartenance, de compte ou de groupe n'a lieu ici
+  @crate::rbac — le self-service ne passe pas par les politiques d'entité
+  @crate::auth::oidc et @crate::auth::cookie — l'authentification est faite en amont par
+    l'extracteur, ce fichier ne parle ni OIDC ni session
+  @crate::graphql, @crate::mcp, @utoipa — les surfaces génériques et l'artefact OpenAPI ne sont pas
+    entretenus depuis ici (asymétries consignées en `Handles` et `[?]`)
+
+Depends on:
+  @sea_orm 2.0.2 — sémantiques vérifiées au source pour ce contrat : @find_by_id().one() rend
+    @Ok(@None) sur absence ; @Paginator @fetch_page = `LIMIT/OFFSET` avec index de page zéro ;
+    @num_items_and_pages rend @ItemsAndPagesNumber en division majorante ; @delete_by_id().exec()
+    (va via @revoke_token) rend @Ok même sur `0` ligne affectée
+  @axum 0.8.9 — @Router::nest, @get/@post/@delete, extracteurs @State/@Query/@Path/@Json ; rejets
+    vérifiés au source : @Query non deserializable → `400` ; @Path<@i32> invalide → `400` ; @Json
+    syntaxe invalide → `400`, @Json déserialisable mais hors type (champ requis absent, @expires_at
+    non RFC 3339) → `422`, @Content-Type `application/json` absent → `415` ; méthode hors @MethodRouter
+    → `405` avec en-tête @Allow construite par axum ; l'ordre de rejet suit l'ordre des extracteurs
+    (auth jugée avant @Query/@Path/@Json)
+  ./error.rs — @RestError : @NotFound `MRD-REST-001` → `404`, @Forbidden `MRD-REST-002` → `403`,
+    @Database `MRD-REST-003` (par @From<@sea_orm::DbErr>) → `500`, @Internal `MRD-REST-004` → `500` ;
+    ces variantes rendent `(status, Display)` en texte brut — les codes `MRD-*` sont possédés par
+    ./error.rs, cette spec ne les consomme
+  ../auth/token.rs via @crate::auth — @ApiToken, @Column, @Model, @issue_token, @revoke_token ;
+    format du secret et écritures fixés par ../auth/token.sdd
+  ../auth/dual.rs et ../auth/principal.rs — l'extracteur @AuthPrincipal et @principal.subject ;
+    les `401` (`MRD-AUTH-001`/`MRD-AUTH-014`/`MRD-AUTH-015`) naissent là-bas
+  ../auth/state.rs — @MiryadAuthState ; seul @db (@DatabaseConnection) est touché par le fichier
+  ../query.rs — @Pagination::from_raw et @PagedResult ; fenêtre `per_page` `[1, 1000]`, @page sans
+    plafond, clés wire à cinq noms
+  @serde/@serde_json/@chrono 0.4.45 — @Deserialize de @ListParams (champs @Option<@u64> implicites)
+    et @CreateTokenBody (@name requis, @expires_at @Option RFC 3339 acceptant `Z` ou décalage,
+    refusé sans fuseau) ; @Serialize de @TokenSummary/@CreatedToken/@PagedResult
+  ../migration/m20260822_000001_create_api_tokens.rs — table `miryad_api_tokens` et ses sept
+    colonnes ; `subject` non indexé, le `GET` filtre par balayage (dette portée par la spec de la
+    migration, immuable)
+  /tooling.sdd — tests exécutables sans base externe : `sqlite::memory:` + @Migrator::up +
+    @tower::ServiceExt::oneshot, motif déjà en place dans le module de tests
+
+Exposes:
+  @tokens_router<@S>() -> @Router<@S> — seule fonction `pub` du fichier ; bornes `S: @Clone + @Send
+    + @Sync + 'static` et @MiryadAuthState: @FromRef<@S> ; sans gating de feature ; vue par les
+    consommateurs sous @crate::rest::tokens::tokens_router — aucun appelant interne à la crate,
+    l'app le merge elle-même
+  @TokenSummary — `pub struct`, derives @Debug/@Clone/@PartialEq/@serde::Serialize ; champs `pub`
+    @id (@i32), @name (@String), @created_at (@DateTimeUtc), @expires_at et @last_used_at
+    (@Option<@DateTimeUtc>)
+  impl @From<@crate::auth::token::Model> for @TokenSummary — projection `pub` fermée aux cinq champs
+  Visibilités privées mais contractuelles car observables sur le wire, régulées ici : @ListParams
+    (@page/@per_page @Option<@u64>), @CreateTokenBody (@name @String, @expires_at
+    @Option<@DateTimeUtc>), @CreatedToken (@id, @token), @to_rest_error, @list_tokens_handler,
+    @create_token_handler, @delete_token_handler
+
+Accepts:
+  Sur les trois routes : @Authorization `Bearer <token>` valide ou cookie de session valide (contrat
+    dual-auth de ../auth/dual.rs) ; les deux présents → le token gagne ; Bearer invalide/expiration →
+    `401` sans jamais redemander le cookie
+  `GET` : query `page` et `per_page` en @u64 optionnels — absents → `1`/`100` via @from_raw, `0` →
+    `1`, `> 1000` → `1000` (../query.sdd) ; non numérique, négatif ou hors portée @u64 → `400` de
+    l'extracteur avant tout accès base (asymétrie `0`-vs-négatif héritée de la `[?]` de ../query.sdd) ;
+    tout autre paramètre, `filter` compris, ignoré silencieusement
+  `POST` : @Content-Type `application/json` exigé ; champ `name` — @str obligatoire, `""` et non-ASCII
+    admis, stockés verbatim par le moteur ; champ `expires_at` — RFC 3339 (@Z ou décalage), @Option::None
+    sinon = sans expiration, une valeur déjà passée est admise à l'émission (moteur ; `Tasks` `[?]`
+    côté REST) ; champs inconnus ignorés (@CreateTokenBody n'a ni @subject ni @owner : aucun corps ne
+    peut cibler un autre titulaire)
+  `DELETE` : un seul segment d'URL, parsé en @i32 — `0` et les négatifs atteignent le contrôle
+    d'existence et rendent `404` ; `/api/v1/tokens/abc` ou tout dépassement de @i32 → `400` de
+    l'extracteur @Path sans requête SQL ; aucun corps ni paramètre lu
+
+Returns:
+  `GET` → `200` @Json<@PagedResult<@TokenSummary>> : items à cinq clés, `expires_at`/`last_used_at`
+    en `null` quand absents, dates en RFC 3339 `Z` ; page hors limite → `items` `[]` avec totaux réels
+    et @page demandé renvoyé tel quel ; table sans token du principal → `total_items` `0`,
+    `total_pages` `0`, `items` `[]`
+  `POST` réussi → `200` (pas `201` — figé `[?]`), corps exactement `@id` (PK de la ligne insérée) et
+    @token (`mrd_` + `43` caractères base64url, `47` au total) ; ni @name ni @expires_at n'y sont
+    rendus — le GET seul les montre ensuite
+  `DELETE` réussi → `204`, corps vide
+  Erreurs de @RestError → corps texte @Display sans enveloppe JSON : `404` « MRD-REST-001: resource
+    not found », `403` « MRD-REST-002: access denied », `500` « MRD-REST-003/004: … »
+
+Raises:
+  @RestError::NotFound (`MRD-REST-001`, `404`) : `DELETE` quand @id ne trouve aucune ligne — contrôlé
+    avant la propriété
+  @RestError::Forbidden (`MRD-REST-002`, `403`) : `DELETE` quand la ligne existe mais
+    @record.subject != @principal.subject — égalité @String stricte, sensible à la casse
+  @RestError::Database (`MRD-REST-003`, `500`) : tout @DbErr — comptage et fetch du `GET`,
+    @find_by_id du `DELETE`, insertion de @issue_token du `POST` (collision UNIQUE `token_hash`
+    incluse, bien que le secret soit tiré fort), DELETE de @revoke_token
+  @RestError::Internal (`MRD-REST-004`, `500`) : uniquement via le fallback de @to_rest_error sur un
+    @AuthError non-@Database — variante que le moteur ne produit pas sur ces deux voies, branche
+    défensive jamais atteinte (`Tasks` `[?]`)
+  Rendues en amont sur les trois routes par l'extracteur, jamais converties ici : `401`
+    `MRD-AUTH-001` (aucun identifiant), `401` `MRD-AUTH-014` (Bearer inconnu/révoqué), `401`
+    `MRD-AUTH-015` (Bearer expiré), `500` `MRD-AUTH-016` (panne base dans @validate_token) —
+    possession ../auth/error.sdd
+  Rejets d'axum hors taxonomie `MRD-*`, produits par les extracteurs avant les handlers : `400`
+    query/path invalides, `400` syntaxe JSON, `415` @Content-Type manquant, `422` déserialization
+    @Json (@name manquant, @expires_at hors RFC 3339), `405` méthode non enregistrée
+  Aucune erreur applicative : @HookError/@RestError::Application ne transitent jamais par ce fichier
+
+Handles:
+  Ordre du `DELETE` existence → propriété : l'appelante distingue « ce token existe et n'est pas à
+    toi » (`403`) de « ce token n'existe pas » (`404`) ; sur des @id @i32 séquentiels c'est un oracle
+    d'existence sur toute la table — tranché `[?]` en `Tasks`, la normalisation à `404` unique étant
+    la correction naturelle si Sébastien la choisit
+  @revoke_token après garde ne vise que l'@id : token disparu entre find, contrôle et revoke (double
+    révocation concurrente) → `0` ligne physiquement retirée, @exec amont rend @Ok (vérifié au
+    source) → `204` ; le révoqué devient indiscernable de l'inexistant, sans rollback ni trace
+  Comptage et fetch de page sont deux requêtes distinctes et non transactionnelles : sous issue/revoke
+    concurrents, les totaux et les @items peuvent se contredire — chaque nombre est lu exactement, rien
+    ne les aligne entre les deux requêtes
+  Aucun @order_by n'est posé sur le `GET` : l'ordre rendu est celui du backend (SQLite : rowid en
+    pratique), et sea-orm lui-même documente le manquement par son commentaire `// LINT: warn if
+    paginator is used without an order by clause` (source `executor/paginator.rs`) — paginer sans tri
+    peut doubler ou sauter des lignes entre deux pages ; `Tasks` `[?]`
+  Un @page extrême passe : @query ne le borne pas et le `per_page * (@page - 1)` amont n'est gardé
+    nulle part (panic en debug au-delà de `1` GiB de rangée, offset circulaire en release) ; ../query.sdd
+    porte ce risque en ses `Tasks`, la décision est à propager ici — `Tasks` `[?]`
+  Principal session sur une table sans ligne pour son @subject : `GET` rend une page vide, jamais une
+    erreur — session et tokens ne partagent que la chaîne @subject
+  Parité des surfaces — consignée, non tranchée : les trois routes ne vivent qu'en REST ; aucune
+    déclaration @utoipa (../rest/openapi.rs ne documente que les chemins CRUD des @MiryadResource —
+    vérifié), aucune entrée @ir, aucune opération GraphQL (@seaography paginant par curseurs propres),
+    aucun tool MCP ; la table sans @MiryadResource échappe au libellé strict de la parité
+    /.specdd/bootstrap.project.md — l'asymétrie remonte en `Tasks` `[?]`
+
+Tasks:
+  [ ] Convertir chaque `Scenario` en un test nommé distinct du `#[cfg(test)] mod tests` de
+    ./tokens.rs (motif @test_db()/@test_state()/@app()/@request() déjà en place, `sqlite::memory:` +
+    @Migrator::up + @tower::ServiceExt::oneshot, sans base externe) — `22` `Scenario`, cinq tests
+    inline existants conservés et étendus : `list_only_returns_the_caller_own_tokens` (isolation, à
+    étendre au cas admin), `create_then_list_returns_the_token_without_the_cleartext_value`
+    (projection sans secret, à étendre aux cinq clés exactes par item),
+    `owner_can_revoke_their_own_token` (`204`, à affirmer corps vide), `cannot_revoke_someone_else_token`
+    (`403` + victime vivante), `deleting_an_unknown_token_returns_not_found` (`404`, à étendre à
+    l'@id négatif) — et dix-sept à créer :
+    unauthenticated_requests_are_rejected_on_the_three_routes ;
+    invalid_or_expired_bearer_is_rejected_without_cookie_fallback ;
+    session_cookie_lists_empty_then_self_issues ;
+    caller_last_used_at_is_visible_on_the_request_that_authenticates_it ;
+    requested_page_is_echoed_and_sliced ; out_of_range_page_keeps_empty_items_and_totals ;
+    non_numeric_page_query_is_rejected_with_bad_request ;
+    issued_response_is_ok_with_only_id_and_secret ;
+    body_cannot_claim_another_subject_unknown_fields_ignored ;
+    missing_name_is_unprocessable_and_empty_name_accepted ; invalid_json_body_is_bad_request ;
+    post_without_json_content_type_is_unsupported_media_type ; future_expiry_is_stored_then_listed ;
+    malformed_expiry_string_is_unprocessable ; past_expiry_issues_a_dead_secret (gelé seulement après
+    le tranché `[?]` ci-dessous) ; non_numeric_or_overflowing_path_id_is_bad_request ;
+    other_methods_are_method_not_allowed_and_unprefixed_paths_are_not_found
+  [ ] À la purge du harnais (/tooling.sdd) : commentaires `///` sur les cinq champs `pub` de
+    @TokenSummary (@id, @name, @created_at, @expires_at, @last_used_at) — dette `missing_docs` du
+    fichier, le `///` du structurat ne les couvre pas.
+  [?] `DELETE` : ordre existence-avant-propriété (`403` réservé aux tokens existants d'autrui) — les
+    @id étant des entiers séquentiels, un appelant non propriétaire peut énumérer l'existence des
+    tokens de la table. Gèle-t-on la clarté `403`/`404`, ou normalise-t-on autrui-inexistant en `404`
+    unique pour tarir l'oracle ?
+  [?] `POST` réussi en `200` sans en-tête localisation : gèle-t-on `200`, ou l'artefact REST attendu
+    est-il `201` (décision de contrat, pas de refactor — les deux tests inline à la rédaction
+    assertent `200`) ?
+  [?] @expires_at déjà passé accepté au `POST` : la réponse `200` rend un secret en clair
+    immédiatement mort (seul le format RFC 3339 malformé est `422`). Ajoute-t-on une validation côté
+    REST, ou fige-t-on le pass-through du moteur (../auth/token.sdd l'a déjà gelé au niveau Rust) ?
+  [?] Parité des surfaces pour la gestion de tokens : ni GraphQL ni MCP n'exposent d'opération
+    d'émission/liste/révocation, et les trois routes absentes de l'artefact OpenAPI et de l'@ir. La
+    règle transverse /.specdd/bootstrap.project.md proscrit un décalage entre surfaces mais ne vise
+    que les @MiryadResource, et @miryad_api_tokens ne l'est pas (../auth/token.sdd) — reconnaît-on le
+    self-service comme exception REST-only, ou planifie-t-on au minimum la déclaration OpenAPI des
+    trois routes ?
+  [?] `GET` sans @order_by et `subject` non indexé : pagination non déterministe entre pages (le
+    commentaire amont « LINT: warn if paginator is used without an order by clause » l'atteste) et
+    balayage complet à chaque liste. Pose-t-on un @order_by (choix de colonne ? @created_at ? @id ?)
+    et un index `subject` par une migration suivante — la 001 étant immuable —, ou gèle-t-on l'ordre
+    dépendant du backend et le scan actuel ?
+  [?] @page sans plafond sur ces routes : l'overflow de l'offset amont est la `[?]` déjà ouverte dans
+    ../query.sdd — tranche-t-on la borne en amont (@query, profitant aux trois listes) ou traite-t-on
+    le cas ici ? Sans réponse, le fichier rend le handler paniquable en profil debug.
+  [?] Branche @RestError::Internal de @to_rest_error : le moteur ne produisant que @AuthError::Database
+    sur @issue_token/@revoke_token (garanti ../auth/token.sdd), la variante est jamais atteinte et
+    jamais testable sans móc du moteur, inaccessible au test inline. Gèle-t-on la conversion
+    défensive `500` `MRD-REST-004` comme contrat, ou la mapping doit-elle devenir totale-autrui-erreurs
+    à expliciter ?
+
+Done when:
+  Les `22` `Scenario` sont chacun vérifiés par un test nommé distinct du module de tests inline de
+    ./tokens.rs (cinq existants aux noms ci-dessus, dix-sept créés — mapping de `Tasks`), joués
+    verts par la batterie /tooling.sdd sur toutes les combinaisons de features (fichier sans gating,
+    chaque combinaison doit le compiler), sans base de données externe.
+  Le fichier touché ne porte aucun avertissement clippy nouveau (harnais strict + pedantic +
+    `missing_docs` sur ce qu'il expose — task de purge ouverte ci-dessus).
+  Les sept `[?]` de `Tasks` ont une décision de Sébastien reflétée dans la présente spec.
+  La spec est relue et approuvée par Sébastien ; les `Scenario` ne deviennent tests que sous l'agent
+    implementer, jamais par cette spécification reverse.
+
+Scenario: les trois routes sans identifiant rendent `401`
+  Given une base `miryad_api_tokens` migrée et le routeur @tokens_router mergé sur un
+    @MiryadAuthState
+  When `GET /api/v1/tokens`, `POST /api/v1/tokens` au corps `{"name":"x"}` et
+    `DELETE /api/v1/tokens/1` sont envoyés sans @Authorization ni cookie
+  Then chaque réponse porte `401`
+  And le corps est `MRD-AUTH-001: not authenticated (no session cookie)`
+  And aucun token n'a été créé en base
+
+Scenario: Bearer invalide ou expiré rend `401` sans repli sur le cookie de session
+  Given un Bearer inconnu `mrd_nexiste-pas`, un Bearer expiré (émis avec @expires_at passé) et un
+    cookie de session par ailleurs valide pour le même @subject
+  When `GET /api/v1/tokens` est envoyé avec le Bearer inconnu et le cookie
+  Then la réponse est `401` au corps `MRD-AUTH-014: invalid or unknown API token`
+  But le cookie n'est jamais réessayé — le Bearer est un choix explicite (../auth/dual.rs)
+  And avec le Bearer expiré à la place, la réponse est `401` au corps `MRD-AUTH-015: expired API
+    token`
+
+Scenario: cookie de session liste vide puis émission pour soi
+  Given un principal de session `session-user` et un token pré-existant du @subject `bob`
+  When `GET /api/v1/tokens` avec le seul cookie
+  Then `200`, `total_items` `0`, `items` `[]`
+  When `POST /api/v1/tokens` avec le corps `{"name":"mon CLI"}` et le même cookie
+  Then `200` avec un secret préfixé `mrd_`
+  And le GET suivant avec ce nouveau Bearer rend `total_items` `1`, et le token `bob` reste invisible
+
+Scenario: liste strictement au subject du principal, sans passe-droit admin
+  Given un token nommé `alice-visible` du @subject `alice`, un token `bob-visible` du @subject `bob`,
+    et un Bearer du @subject `admin` résolu et membre du groupe `admin` de la migration 003
+  When `GET /api/v1/tokens` avec le Bearer d'alice
+  Then seul `alice-visible` apparaît
+  When la même requête part avec le Bearer d'admin
+  Then une page vide est rendue
+  But aucun principal, admin compris, ne voit le token d'un autre @subject
+
+Scenario: projection a exactement cinq champs, jamais secret, hash ni subject
+  Given un token émis pour alice, sans expiration
+  When alice fait `GET /api/v1/tokens`
+  Then le corps a exactement les clés `items`, `page`, `per_page`, `total_items` et `total_pages`
+  And l'item a exactement les clés `id`, `name`, `created_at`, `expires_at` et `last_used_at`
+  And `expires_at` et `last_used_at` sont `null`, `created_at` est une date RFC 3339 à suffixe `Z`
+  But nulle part du corps n'apparaissent le secret en clair, une sous-chaîne de `token_hash` ou le
+    mot `subject`
+
+Scenario: le last_used_at du token porte la trace de la requete qui vient de l'authentifier
+  Given un Bearer alice fraichement émis dont la ligne a @last_used_at @None
+  When alice appelle `GET /api/v1/tokens` avec ce Bearer
+  Then `200`
+  And l'item de ce Bearer porte un @last_used_at @Some : @validate_token de l'extracteur a écrit
+    l'horodatage avant la lecture de la page (`AuthPrincipal` extrait avant le handler)
+
+Scenario: page demandee est echoee et tranchee
+  Given cinq tokens du @subject alice en base (un émetteur de session plus quatre via le moteur)
+  When `GET /api/v1/tokens?page=2&per_page=2`
+  Then `200` avec `page` `2`, `per_page` `2`, `total_items` `5`, `total_pages` `3`
+  And `items` contient exactement `2` éléments — offset amont `per_page * (page - 1)` vérifié chez
+    @sea_orm 2.0.2
+  And `page=0` rend `page` `1` et `per_page` absent rend `100` (@Pagination::from_raw de ../query.sdd)
+
+Scenario: page hors limite rend items vides et totaux preservés
+  Given un unique token d'alice
+  When `GET /api/v1/tokens?page=99&per_page=10`
+  Then `200`, `items` `[]`, `page` echoé `99`, `total_items` `1`, `total_pages` `1`
+  But rien n'est ramené à la dernière page — @page n'a pas de plafond, l'overflow amont est la
+    `[?]` de `Tasks` héritée de ../query.sdd
+
+Scenario: page non numerique rejete avant toute lecture
+  When `GET /api/v1/tokens?page=abc` avec un Bearer valide
+  Then `400` du rejet @Query d'axum
+  And le handler n'est jamais atteint : la base reste inchangée et aucune ligne n'est lue
+
+Scenario: emission rend `200` avec seulement l'`id` et le secret `mrd_`
+  Given un Bearer alice frais
+  When `POST /api/v1/tokens` avec le corps `{"name":"cli"}` (sans `expires_at`)
+  Then `200` (@StatusCode::OK, pas `201` — `[?]` de `Tasks`)
+  And le corps a exactement deux clés : `id` et `token`
+  And `token` commence par `mrd_` suivi de `43` caractères base64url
+  And `id` est le PK de la nouvelle ligne, retrouvée par le `GET` suivant avec une @name `cli`
+
+Scenario: aucun corps ne peut cibler un autre subject, champs inconnus ignores
+  Given un Bearer alice frais et un Bearer bob
+  When `POST /api/v1/tokens` avec le corps `{"name":"x","subject":"bob","owner_id":9}`
+  Then `200`
+  And le `GET` d'alice montre `x` parmi ses tokens
+  But le `GET` de bob ne montre pas `x` : le @subject émis vient du principal, @CreateTokenBody
+    n'a pas de champ @subject et ignore le surplus par @serde sans @deny_unknown_fields
+
+Scenario: name manquant en `422`, name vide accepté en `200`
+  When `POST /api/v1/tokens` avec le corps `{"expires_at":null}`
+  Then `422` — @JsonDataError d'axum « Failed to deserialize the JSON body into the target type »
+  When `POST /api/v1/tokens` avec le corps `{"name":""}`
+  Then `200` — le moteur stocke le @name @String vide verbatim (../auth/token.sdd : aucune
+    validation)
+
+Scenario: corps JSON syntaxiquement invalide rend `400`
+  When `POST /api/v1/tokens` avec @Content-Type `application/json` et le corps brut `{name:`
+  Then `400` — @JsonSyntaxError d'axum, distinct du `422` de désaccord de type
+  And aucun token n'est créé
+
+Scenario: POST sans Content-Type application/json rend `415`
+  When `POST /api/v1/tokens` avec un corps valide en octets mais sans en-tête @Content-Type
+  Then `415` « Expected request with `Content-Type: application/json` » (source axum vérifiée)
+  And le corps n'est jamais lu comme @CreateTokenBody — l'auth a passé avant, la base est intacte
+
+Scenario: expires_at futur est stocke puis rendu par la liste
+  Given un Bearer alice frais
+  When `POST /api/v1/tokens` avec `{"name":"temporel","expires_at":"2030-09-20T00:00:00Z"}`
+  Then `200` sans echoed d'@expires_at dans la réponse
+  When le nouveau secret authente un `GET /api/v1/tokens`
+  Then `200` et l'item correspondant porte `expires_at` à l'instant `2030-09-20T00:00:00Z` à la
+    seconde près, @name `temporel`
+
+Scenario: expires_at hors RFC 3339 rend `422`
+  When `POST /api/v1/tokens` avec `{"name":"x","expires_at":"demain"}`, puis avec
+    `{"name":"x","expires_at":"2030-09-20 00:00:00"}` (naïf sans fuseau)
+  Then `422` dans les deux cas : @JsonDataError (@serde exige RFC 3339, `Z` ou décalage acceptés)
+  And aucun token n'est créé par ces tentatives
+
+Scenario: expires_at deja passe emis en `200` avec secret mort
+  Given un Bearer alice frais
+  When `POST /api/v1/tokens` avec `{"name":"zombie","expires_at":"2000-01-01T00:00:00Z"}`
+  Then `200` avec un secret `mrd_` en clair
+  But immédiatement, aucune route authentifiée avec ce secret ne passe : `401`
+    `MRD-AUTH-015` (comportement fige seulement par le tranché `[?]` de `Tasks`)
+  And la liste montre l'item avec ce même @expires_at passé
+
+Scenario: revoke du proprietaire rend `204` corps vide puis disparition
+  Given alice authentifiée par son Bearer d'amorçage et un second token d'alice d'@id T
+  When `DELETE /api/v1/tokens/` suivi de la valeur T, avec le Bearer d'amorçage
+  Then `204` et corps vide
+  And le `GET` d'alice suivant a un @total_items diminué et aucun item d'@id T
+  And la ligne est physiquement absente (suppression du moteur, pas un flag)
+
+Scenario: revoke d'un id d'autrui rend `403` et laisse la victime vivante
+  Given les Bearer alice et bob, et le token de bob d'@id T
+  When `DELETE /api/v1/tokens/` suivi de T avec le Bearer d'alice
+  Then `403` au corps texte `MRD-REST-002: access denied`
+  And la ligne T est inchangée : @validate_token sur le secret de bob rend encore @subject bob
+  But alice n'apprend jamais le @subject du titulaire — la table ne fuit que l'existence
+
+Scenario: id inconnu ou negatif rend `404` avant le controle de propriete
+  Given un Bearer alice frais
+  When `DELETE /api/v1/tokens/999999` puis `DELETE /api/v1/tokens/-1` avec le Bearer d'alice
+  Then chaque réponse est `404` au corps `MRD-REST-001: resource not found`
+  And @id négatif est un @i32 recevable parsé par @Path : c'est @find_by_id qui tranche, pas le
+    routeur
+  And cet ordre existence-avant-propriete est l'oracle gelé par le `[?]` de `Tasks`
+
+Scenario: id de chemin non numerique ou trop grand rend `400`
+  Given un Bearer alice frais
+  When `DELETE /api/v1/tokens/abc` puis `DELETE /api/v1/tokens/2147483648` (au-dessus de @i32::MAX)
+  Then chaque réponse est `400` du rejet @Path d'axum
+  And aucune requête SQL n'est émise — le handler n'est pas atteint
+
+Scenario: methodes non enregistrees en `405`, chemin sans prefixe en `404`
+  Given le routeur @tokens_router seul mergé
+  When `PUT /api/v1/tokens`, `PATCH /api/v1/tokens`, `POST /api/v1/tokens/1`
+  Then chaque réponse est `405` (@MethodRouter d'axum, en-tête @Allow posé par axum, pas par le
+    fichier)
+  When `GET /tokens` sans le préfixe
+  Then `404` : rien n'existe hors du nest `/api/v1`

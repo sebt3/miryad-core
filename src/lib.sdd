@@ -1,0 +1,275 @@
+Spec: lib — surface publique de la crate, gating de features, documentation racine
+
+Purpose:
+  Racine de la crate bibliothèque `miryad-core` : déclare toute la surface publique — onze
+    modules publics —, gate les trois modules liés à une feature optionnelle
+    (`static-frontend`, `graphql`, `mcp`), porte la documentation de la crate (page d'entrée
+    servie par docs.rs) et l'en-tête racine d'exemption `test` du harnais. Fichier
+    d'agrégation, de gating et de documentation : il n'héberge aucun comportement ; tout
+    détail de contrat d'un module appartient à sa spec adjacente.
+
+Owns:
+  ./lib.rs
+
+Can read:
+  /Cargo.toml — graphe `[features]`, harnais `[lints]`, métadonnées docs.rs ; la racine les
+    reflète sans les posséder (propriétaire : `/miryad-core.sdd`).
+
+References:
+  /tooling.sdd — c'est lui qui limite le `Can modify` de `./lib.rs` à l'en-tête d'exemption
+    `test`
+  /.github/workflows/workflows.sdd — CI sans `cargo doc`, ce qui conditionne la vérification
+    effective des lints rustdoc
+  /docs/architecture.md — récit d'architecture, linké par la documentation racine
+  /docs/roadmap.md — priorisation, linké par la documentation racine
+
+Must:
+  Déclarer toute la surface publique — exactement onze `pub mod` — et respecter le gating du
+    graphe `[features]` de `/Cargo.toml` : @frontend gated par `static-frontend` (feature par
+    défaut), @graphql gated par `graphql`, @mcp gated par `mcp`.
+  Ne poser aucun gating de feature au niveau racine pour `swagger-ui` et `graphiql` : ces
+    deux features ne changent rien à la surface racine ; leur `#[cfg(feature = ...)]` vit
+    dans `./rest/openapi.rs` et `./graphql/handler.rs`.
+  Documenter chaque déclaration par un commentaire `///` de rôle, sans contredire le
+    documentation interne `//!` du fichier enfant : la page docs.rs agrège les deux sources.
+  Nommer dans le tableau des features de la documentation exactement les cinq features de
+    `[features]` de `/Cargo.toml`, avec effet, dépendances lourdes et implication
+    (`graphiql` implique `graphql`) conformes à ce fichier.
+  Décrire dans la documentation de surface les routes réellement montées par les enfants :
+    collection et item `/api/v1/{resource}` paginés (@rest::resource_router),
+    `POST /api/graphql` sous `graphql`, `POST /mcp` — cinq tools par entité
+    (@mcp::mcp_router) — sous `mcp`, `/api/openapi.json` hors feature
+    (@rest::openapi::openapi_router), `/api/swagger-ui` sous `swagger-ui`, `/api/graphiql`
+    sous `graphiql`, IR via @ir::resource_ir et @ir::IrRegistry.
+  Documenter @query comme la pagination utilisée aujourd'hui par REST, sans laisser entendre
+    que @graphql ou @mcp consomment déjà @query.
+  Ne laisser aucun lien du bloc `//!` produire un avertissement `rustdoc::broken_intra_doc_links`
+    selon la feature sélectionnée : les références aux modules gated doivent rester valables
+    quand @frontend, @graphql ou @mcp ne sont pas compilés.
+  Documenter @HookError dans le bloc `//!` comme une erreur applicative de l'application
+    consommatrice, exclue de la taxonomie `MRD-<DOMAINE>-NNN` que la crate réserve à ses erreurs
+    internes.
+  Accepter que le quickstart `rust,ignore` serve d'orientation et ne soit pas compilé par la
+    matrice de `/tooling.sdd`, tant qu'il ne prétend pas constituer une recette de build complète
+    sans ses dépendances d'exemple.
+  Porter l'exemption de la famille stricte par `#![cfg_attr(test, allow(...))]` : la liste de
+    l'attribut contient exactement les treize lints `deny` de la famille stricte de
+    `[lints.clippy]` de `/Cargo.toml`, ni plus ni moins ; les groupes `pedantic` et `cargo`
+    restent `deny` sous `cfg(test)`. L'exemption ne couvre que la compilation `cfg(test)` de
+    la bibliothèque, pour que les modules `#[cfg(test)] mod tests` enfants en héritent sans
+    `#[allow]` dispersés.
+  Garder `#![cfg_attr(docsrs, feature(doc_cfg))]` comme convention docs.rs, sans exiger qu'un
+    consommateur `#[doc(cfg(...))]` l'utilise aujourd'hui ; le canal stable n'est pas le moyen
+    canonique de vérifier cette ligne.
+  Garder le bloc `//!` comme documentation de crate complète — titre, schéma d'architecture,
+    installation, démarrage rapide, promesse des trois surfaces REST, GraphQL et MCP lues
+    depuis la seule métadonnée @resource::MiryadResource, tableau de features, conventions
+    `tracing`, codes `MRD-<DOMAINE>-NNN`, tables `miryad_*` — ce qui satisfait
+    `rustdoc::missing_crate_level_docs` à chaque doc build.
+  Garder `#![warn(...)]` sur `rustdoc::broken_intra_doc_links` et
+    `rustdoc::missing_crate_level_docs`, actifs sur toute combinaison de features.
+  Garder `#![doc(html_root_url = ...)]` égal au champ `documentation` de `/Cargo.toml`
+    (`https://docs.rs/miryad-core`).
+
+Must not:
+  Héberger du code de runtime, une implémentation de trait ou un `pub use` de racine : la
+    surface publique est exactement la liste des onze déclarations ; un ré-export racine
+    changerait la forme de l'API publique et exige une révision de spec avec Sébastien.
+  Détailler le comportement d'un module enfant — signatures, règles RBAC, handlers, codes
+    `MRD-*` par domaine : chaque module a sa spec adjacente pour autorité.
+  Imposer un code `MRD-*` sur @HookError, y compris par les conventions de la documentation
+    racine : elle reste l'erreur applicative de l'application consommatrice, restituée sans
+    taxonomie de la crate.
+  Étendre l'exemption de la famille stricte hors `cfg(test)` : un `#![allow]` inconditionnel
+    neutraliserait le harnais de `/tooling.sdd` sur le code de production.
+  Déclarer hors de son `#[cfg]` protecteur un module dont la dépendance est optionnelle :
+    `tower-http` via `./frontend.rs`, `seaography` et `async-graphql` via `./graphql/mod.rs`,
+    `vynil-core` via `./mcp/mod.rs`.
+
+Depends on:
+  ./auth/mod.rs
+  ./frontend.rs
+    Compilé seulement sous `static-frontend` ; seul consommateur de `tower-http`.
+  ./graphql/mod.rs
+    Compilé seulement sous `graphql` ; apporte `seaography` et `async-graphql`.
+  ./ir.rs
+  ./mcp/mod.rs
+    Compilé seulement sous `mcp` ; seul consommateur de `vynil-core`.
+  ./migration/mod.rs
+  ./query.rs
+  ./rbac.rs
+  ./resource.rs
+  ./rest/mod.rs
+  ./users/mod.rs
+
+Exposes:
+  @auth — OIDC, cookies de session, tokens API, extracteurs axum ; toujours compilé.
+  @frontend — service SPA @frontend::static_frontend_router ; gated par `static-frontend`.
+  @graphql — @graphql::graphql_router sur schéma Seaography ; gated par `graphql`.
+  @ir — @ir::resource_ir et @ir::IrRegistry pour le générateur frontend ; toujours compilé.
+  @mcp — @mcp::mcp_router et @mcp::McpToolRegistry ; gated par `mcp`.
+  @migration — @migration::Migrator et ses migrations `miryad_*` ; toujours compilé.
+  @query — @query::Pagination et @query::PagedResult ; toujours compilé.
+  @rbac — @rbac::can_read, @rbac::can_create, @rbac::can_write, @rbac::list_access,
+    @rbac::ListAccess ; toujours compilé.
+  @resource — @resource::MiryadResource et @resource::AccessPolicy, contrat central ;
+    toujours compilé.
+  @rest — @rest::resource_router, @rest::RestEntity, module @rest::openapi
+    (@rest::openapi::openapi_router hors feature, @rest::openapi::swagger_ui_router sous
+    `swagger-ui`) ; toujours compilé.
+  @users — utilisateurs, groupes, appartenances, comptes de service ; toujours compilé.
+  Aucun `pub use` à la racine : les chemins consommés sont `miryad_core::<module>::…`,
+    exactement ceux promis par la documentation racine.
+  Quatre attributs de crate : `#![cfg_attr(docsrs, feature(doc_cfg))]`,
+    `#![doc(html_root_url = "https://docs.rs/miryad-core")]`,
+    `#![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]`,
+    `#![cfg_attr(test, allow(...))]` (treize lints de la famille stricte).
+  Bloc `//!` de documentation racine et son tableau de cinq features, dont trois seulement
+    (`static-frontend`, `graphql`, `mcp`) gate la surface visible ici ; `swagger-ui` et
+    `graphiql` y sont documentées sans effet racine.
+
+Accepts:
+  La sélection de features du graphe `[features]` de `/Cargo.toml` (défaut
+    `static-frontend`, plus `swagger-ui`, `graphql`, `graphiql` qui implique `graphql`,
+    `mcp`) comme seule entrée de la matrice de surface.
+  Les flags de compilation activables sur la racine : `test` (profil de test cargo) et
+    `docsrs` (rustdoc, via `rustdoc-args` de `[package.metadata.docs.rs]` de `/Cargo.toml`).
+  Aucune entrée runtime : la racine ne définit ni fonction ni état ; les entrées des surfaces
+    vivent dans les modules enfants.
+
+Returns:
+  La surface publique par combinaison de features — huit modules toujours compilés (@auth, @ir,
+    @migration, @query, @rbac, @resource, @rest, @users) auxquels s'ajoutent @frontend sous
+    les features par défaut, @graphql sous `graphql` (donc aussi sous `graphiql`, qui
+    l'implique), @mcp sous `mcp`, et les onze sous `--all-features`.
+
+Raises:
+  Erreur dure `E0554` (`#![feature ...]` refusé sur channel stable) si `cargo doc` est lancé
+    avec `--cfg docsrs` sur la toolchain stable du dépôt — vérifié localement ; la doc
+    publique de la 0.1.3 sur docs.rs est pourtant construite, la vérification de cette ligne
+    relevant de docs.rs ou d'un canal compatible `feature`.
+  Aucun avertissement `rustdoc::broken_intra_doc_links` du bloc `//!`, y compris quand une
+    feature gated est absente ; la correction attendue est une forme de lien robuste au graphe de
+    features, pas la désactivation du lint.
+  Aucune erreur runtime : la racine n'émet pas de code `MRD-*` ; les codes `MRD-*` restent
+    le contrat des specs enfants.
+
+Handles:
+  Les combinaisons de la matrice de `/tooling.sdd` : défaut, `--no-default-features`,
+    `swagger-ui` seule (aucun effet racine), `graphql`, `graphiql`, `mcp`, `--all-features`.
+  L'absence d'une feature gated : le module n'est pas déclaré du tout — pas de squelette
+    d'API ni d'erreur de substitution.
+  Le profil `test` : l'exemption porte sur la cible unitaire entière de la bibliothèque (y
+    compris les fonctions de production compilées sous `cfg(test)`) ; la cible de production
+    garde tous les `deny`, et c'est elle qui prouve le harnais.
+  Le flag `docsrs` : ouvre la ligne `feature(doc_cfg)` ; aucun `#[doc(cfg(...))]` ne la
+    consomme aujourd'hui, et cette convention est vérifiée sur le canal docs.rs compatible plutôt
+    que par la matrice stable de `/tooling.sdd`.
+  La cible exécutable `miryad` (`./bin/miryad.rs`) : crate cible distincte, hors de portée
+    des attributs de la racine.
+
+Tasks:
+  [ ] Convertir les douze `Scenario` en au moins douze tests nommés et distincts, un par scenario,
+    avec la correspondance exacte suivante : « surface par défaut complète » →
+    `default_surface_compiles` ; « graphql gated par la feature graphql » →
+    `graphql_gated_compiles` ; « graphiql implique graphql à la racine » →
+    `graphiql_implies_graphql` ; « mcp gated par la feature mcp » → `mcp_gated_compiles` ;
+    « static-frontend retiré garde le reste de la surface » → `static_frontend_absent_surface` ;
+    « chemins documentés résolus sans ré-export racine » → `documented_paths_resolve` ;
+    « exemption alignée exactement sur la famille stricte » → `test_lint_exemption_alignment` ;
+    « commentaire de @query aligne la réalité » → `query_doc_matches_reality` ;
+    « documentation de @HookError » → `hook_error_doc` ; « cargo doc propre sur les combinaisons
+    de features » → `doc_links_feature_stable` ; « surface complète en toutes features » →
+    `all_features_surface` ; « l'exécutable miryad reste hors de l'exemption racine » →
+    `bin_target_unaffected`. Aucune vérification ne peut rester implicite ou déléguée sans test.
+  [ ] Après l'échec attendu des tests ou vérifications ci-dessus, corriger `./lib.rs` : aligner
+    le commentaire de @query sur l'usage REST actuel, fiabiliser les liens du bloc `//!` sur
+    chaque combinaison de features, et documenter @HookError comme exception de la taxonomie
+    `MRD-*`.
+  [ ] Rejouer la batterie complète de `/tooling.sdd` plus `cargo doc` sur chaque combinaison de
+    features utilisée par les scenario doc.
+
+Done when:
+  La spec porte exactement douze `Scenario` et est validée par au moins douze tests nommés et
+    distincts, un par scenario, dont la correspondance est listée dans `Tasks` ; les scenario
+    traduisibles en tests Rust passent sur chaque combinaison de la matrice de features ;
+    `cargo doc` ne rapporte aucun lien intra-doc non résolu sur les combinaisons de
+    `/tooling.sdd` ; @query et @HookError sont documentés conformément aux décisions de Sébastien ;
+    la spec est approuvée par Sébastien.
+
+Scenario: surface par défaut complète
+  Given la bibliothèque compilée avec les features par défaut
+  When un test de consommateur référence @auth, @frontend, @ir, @migration, @query, @rbac,
+    @resource, @rest et @users
+  Then les neuf chemins `miryad_core::…` compilent
+
+Scenario: graphql gated par la feature graphql
+  Given un build `--no-default-features --features graphql`
+  When la cible de test de la bibliothèque référence @graphql sous
+    `#[cfg(feature = "graphql")]`
+  Then @graphql::graphql_router est résolvable
+
+Scenario: graphiql implique graphql à la racine
+  Given un build `--no-default-features --features graphiql`, sans `graphql` demandée
+    explicitement
+  When une référence à @graphql compilée sous `#[cfg(feature = "graphiql")]`
+  Then @graphql est résolvable, l'implication de feature tenant depuis la racine
+
+Scenario: mcp gated par la feature mcp
+  Given un build `--no-default-features --features mcp`
+  When la cible de test référence @mcp sous `#[cfg(feature = "mcp")]`
+  Then @mcp::mcp_router et @mcp::McpToolRegistry sont résolvables
+
+Scenario: static-frontend retiré garde le reste de la surface
+  Given un build `--no-default-features`
+  When la bibliothèque compile
+  Then @rest, @resource et @ir sont toujours disponibles
+  And @frontend n'est pas déclaré et `tower-http` n'est pas dans le graphe de dépendances
+
+Scenario: chemins documentés résolus sans ré-export racine
+  Given un test qui référence @auth::MiryadAuthState, @auth::auth_router,
+    @auth::AuthPrincipal, @auth::middleware::AuthUser, @resource::MiryadResource,
+    @resource::AccessPolicy, @rest::resource_router, @rest::openapi::openapi_router,
+    @ir::resource_ir, @ir::IrRegistry et @migration::Migrator
+  When il compile sans importer aucun symbole directement sous @miryad_core
+  Then chaque chemin promis par la documentation racine résout
+  But aucun `pub use` de racine n'est nécessaire pour les atteindre
+
+Scenario: exemption alignée exactement sur la famille stricte
+  Given la table `[lints.clippy]` de `/Cargo.toml`, dont dix-huit `deny` dont treize de la
+    famille stricte
+  When la liste de l'attribut `#![cfg_attr(test, allow(...))]` de `./lib.rs` est comparée à
+    la famille stricte
+  Then les deux listes sont identiques, et aucun lint des groupes `pedantic` ou `cargo` n'y
+    figure
+
+Scenario: commentaire de @query aligne la réalité
+  Given la documentation racine générée avec n'importe quelle combinaison de features
+  When @query est présentée
+  Then elle est décrite comme la pagination utilisée aujourd'hui par REST
+  But ni @graphql ni @mcp ne sont présentés comme consommant déjà @query
+
+Scenario: documentation de @HookError
+  Given la documentation racine générée avec n'importe quelle combinaison de features
+  When la convention `MRD-<DOMAINE>-NNN` est présentée
+  Then @HookError est explicitement présentée comme l'erreur applicative de l'application
+    consommatrice, exclue des codes `MRD-*`
+
+Scenario: cargo doc propre sur les combinaisons de features
+  Given `cargo doc` lancé sur une combinaison de `/tooling.sdd`
+  When la documentation est générée
+  Then aucun avertissement `rustdoc::broken_intra_doc_links` n'est émis
+  And les modules publics prévus par la feature sélectionnée apparaissent sur la page racine avec
+    leur documentation
+
+Scenario: surface complète en toutes features
+  Given un build `--all-features`
+  When un test de consommateur référence @auth, @frontend, @graphql, @ir, @mcp, @migration,
+    @query, @rbac, @resource, @rest et @users
+  Then les onze chemins `miryad_core::…` compilent
+
+Scenario: l'exécutable miryad reste hors de l'exemption racine
+  Given la cible binaire `miryad` dont la source est `./bin/miryad.rs`
+  When `cargo clippy --all-targets` tourne
+  Then son code reste soumis aux `deny` de la famille stricte, l'exemption `test` de la
+    racine ne l'atteignant pas

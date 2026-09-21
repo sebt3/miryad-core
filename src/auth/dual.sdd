@@ -1,0 +1,346 @@
+# Spec produite par spec-reverse : elle décrit le comportement tal quel du code existant.
+# Aucun de ses comportements accidentels ne devient contrat avant relecture par Sébastien.
+
+Spec: dual — extracteur dual-auth axum de @AuthPrincipal : Bearer token API résolu d'abord, cookie de session en repli, aucun repli silencieux sur un Bearer reconnu
+
+Purpose:
+  Unifier le point d'entrée d'authentification des trois surfaces du moteur (REST, GraphQL, MCP) :
+    une seule implémentation de @FromRequestParts produit @AuthPrincipal à partir d'un token API
+    (`Authorization: Bearer`) ou du cookie de session chiffré, et fixe l'ordre de résolution (Bearer
+    d'abord, cookie ensuite), la priorité quand les deux sont présents, et l'irréversibilité du
+    chemin Bearer — un Bearer reconnu mais invalide ne retombe jamais sur le cookie. Le fichier ne
+    contient aucune logique de credential : il délègue l'analyse et le déchiffrement à
+    @extract_session et le hachage et la lookup à @validate_token ; son contrat propre est l'ordre
+    de résolution exact, les deux formes de principal rendu, les codes `MRD-AUTH-NNN` transités et
+    leurs effets de bord.
+
+Owns:
+  ./dual.rs
+
+References:
+  /src/lib.rs — `pub mod auth` sans gating ; doc de la crate pointant ce module pour le dual-auth
+  ./mod.rs — déclare `pub mod dual` sans gating ; rien de ce fichier n'est ré-exporté,
+    @AuthPrincipal ré-exporté vient de ./principal.rs
+  ./error.sdd — contrat de rendu de @AuthError (statut, corps texte, `Content-Type`) : c'est lui
+    qui fixe les `401`/`500` observés sur le fil pour le rejet de cet extracteur
+  ./middleware.rs — frontière voisine : @AuthUser, extracteur cookie-only du flow navigateur ; la
+    confusion entre les deux extracteurs est l'erreur de frontière locale la plus plausible
+  /src/rest/mod.rs, /src/rest/admin.rs, /src/rest/me.rs, /src/rest/tokens.rs — handlers REST
+    consommant @AuthPrincipal comme extracteur
+  /src/graphql/handler.rs, /src/mcp/handler.rs — handlers GraphQL et MCP consommant @AuthPrincipal
+    comme extracteur : les trois surfaces résolvent avec le présent fichier
+  /src/rest/openapi.rs — ne déclare que le schéma de sécurité `bearer_auth` côté OpenAPI, le cookie
+    HttpOnly étant écarté de l'`Authorize` pour une raison documentée chez lui
+  /docs/architecture.md — formule l'ordre « Bearer d'abord, pas de repli sur le cookie » ; la
+    comparaison doc ↔ code est menée dans `Must`
+
+Must:
+  Ordre de résolution strict : `Authorization` est consultée en premier — première valeur seule,
+    dans l'ordre du fil, comportement de @get sur @HeaderMap vérifié dans le source de http 1.5.0 —
+    et le Bearer n'est reconnu que si @to_str sur @HeaderValue réussit sur cette valeur puis que
+    @strip_prefix trouve le préfixe `Bearer ` exactement : `B` majuscule, aucune variante de casse,
+    un seul espace (vérifié dans le code). À la première reconnaissance, le résultat de
+    @validate_token est rendu immédiatement, et l'en-tête `Cookie` n'est jamais lu
+  Tout autre état de l'en-tête `Authorization` — absente, vide, valeur ne commençant pas par
+    `Bearer ` (y compris `Basic …`, schème en casse basse `bearer …`, `Bearer` sans espace final),
+    ou valeur contenant un octet non visible en ASCII (`to_str` n'accepte que `0x20..=0x7E` et la
+    tabulation, vérifié dans le source de http 1.5.0) — est traité comme une absence : le chemin
+    cookie reprend la main
+  Cette définition large du « non-Bearer » est le seul écart constaté entre le commentaire de doc
+    du fichier — qui promet « pas de repli silencieux si l'en-tête Bearer est présent » — et le
+    code : seule une valeur commençant exactement par `Bearer ` compte comme choix explicite du
+    client (voir `Tasks` `[?]`)
+  Chemin cookie : lit la première valeur seule de l'en-tête `Cookie`, dont le nom est normalisé en
+    casse insensible par @HeaderMap (`cookie:` et `COOKIE:` matchent aussi — normalisation des noms
+    vérifiée dans le source de http 1.5.0), et passe la valeur verbatim à @extract_session : jamais
+    d'analyse de cookie, de déchiffrement, de contrôle d'`exp` sans passer par ./cookie.rs
+  Aucun repli silencieux : une fois le préfixe `Bearer ` reconnu, l'erreur renvoyée par
+    @validate_token (@AuthError::InvalidToken, @AuthError::TokenExpired ou @AuthError::Database)
+    est restituée telle quelle comme @Rejection, sans seconde tentative via @extract_session
+  Principal rendu par @validate_token sur le chemin token : @subject pris de la colonne `subject`
+    de la ligne `miryad_api_tokens`, @source valu @PrincipalSource::ApiToken avec @token_id égal à
+    la clé primaire `id` de cette ligne, @email toujours @None — le chemin token ne porte jamais
+    d'email, même si l'app en connaît un pour ce `subject` (l'enrichissement est downstream, chez
+    @resolve_user de /src/users)
+  Principal rendu sur le chemin session : @subject, @email (peut être @None) et @id_token issus du
+    payload JSON déchiffré du cookie ; le JWT n'est pas revérifié ici, seul sa claim `exp` a été
+    contrôlée par @extract_session
+  Effet de bord unique du chemin token : chaque requête Bearer écrit exactement une ligne de
+    `miryad_api_tokens` (`last_used_at` rafraîchi par @validate_token), que le handler downstream
+    réussisse ou non ; le chemin cookie ne fait aucun accès à la base — @db de @MiryadAuthState
+    n'est touché depuis ce fichier que par @validate_token
+  Le matériel du token est opaque et utilisé brut après `Bearer ` : `Bearer  <token>` (deux
+    espaces) authentifie un token commençant par cet espace supplémentaire ; `Bearer ` seul
+    authentifie la chaîne vide — les deux finissent en @AuthError::InvalidToken faute de hash
+    correspondant, le format `mrd_` n'est jamais revérifié à la validation
+  L'état n'est lu que par @from_ref de @FromRef sur @MiryadAuthState : les bornes `@S: @Send +
+    @Sync` et `@MiryadAuthState: @FromRef<@S>` sont tout ce que porte l'impl — l'état concret de
+    l'app n'est jamais supposé, seule sa projection compte
+  Compilation inconditionnelle : aucun `#[cfg(feature = ...)]` dans le fichier, pas de gating dans
+    ./mod.rs ni sur `pub mod auth` de /src/lib.rs — la batterie de ./tooling.sdd doit compiler et
+    exercer ce contrat sur `--no-default-features` comme sur `--all-features`
+  Mutisme de traces : cet extracteur n'émet aucun événement @tracing, en succès comme en rejet —
+    asymétrie constatée avec @AuthUser de ./middleware.rs qui trace `auth ok` et `auth rejected`
+    sur chaque chemin (voir `Tasks` `[?]`) ; nulle valeur de token ni de cookie ne saurait sortir
+    d'ici à l'avenir sans changer ce contrat
+  Parité des surfaces : la même implémentation fournit @AuthPrincipal aux handlers REST (CRUD
+    `/api/v1`, admin, `me`, `tokens`), à `POST /api/graphql` et à `POST /mcp` — ordre, priorité et
+    codes sont identiques sur les trois surfaces. Asymétries constatées, hors du périmètre de ce
+    fichier : le rejet rend en `text/plain` hors enveloppe GraphQL/MCP (./error.sdd et sa tâche
+    `[?]`) et les déclarations de sécurité des surfaces sont déséquilibrées (voir `Tasks` `[?]`)
+
+Must not:
+  Réimplémenter ici une partie de l'analyse, du déchiffrement, du contrôle d'`exp`, du hachage ou
+    de la lookup : @extract_session et @validate_token seules font foi, et une dérive entre cet
+    extracteur et @AuthUser de ./middleware.rs ne doit jamais passer par ce fichier
+  Construire ou réécrire une variante de @AuthError « à la volée » : les codes rendus sur le fil
+    sont exactement ceux émis par les deux fonctions déléguées, ce fichier ne choisit que leur chemin
+  Tenter le cookie après qu'un Bearer a été reconnu, ou fusionner les deux chemins en un principal
+    mixte
+  Définir ici un timeout, un retry ou une limitation anti-force-brute sur la requête de base du
+    chemin token : ces contrats vivent dans les couches @tower de l'app, pas dans une
+    implémentation de @FromRequestParts
+  Atteindre @db ou @cookie_key autrement que par @from_ref et le chemin des deux appels délégués
+
+Depends on:
+  @axum 0.8 — import direct unique du fichier : traits @FromRequestParts et @FromRef, type @Parts,
+    constante @AUTHORIZATION
+  ./cookie.rs — @extract_session : exécuteur unique du chemin cookie, source de tout `MRD-AUTH-001`
+    et `MRD-AUTH-002` observés ici
+  ./token.rs — @validate_token : exécuteur unique du chemin Bearer, source de `MRD-AUTH-014`,
+    `MRD-AUTH-015`, `MRD-AUTH-016` et de l'écriture de `last_used_at`
+  ./principal.rs — @AuthPrincipal, sujet de l'impl, et @PrincipalSource avec ses deux variantes
+  ./state.rs — @MiryadAuthState : @cookie_key pour le chemin cookie, @db pour le chemin token
+  ./error.rs — @AuthError comme type @Rejection ; son rendu HTTP est le contrat de ./error.sdd
+  @http 1.5.0 (transitif via @axum) — sémantiques vérifiées dans le source : @get de @HeaderMap
+    renvoie la première valeur d'un en-tête multi-valué, @to_str de @HeaderValue échoue hors
+    `0x20..=0x7E` et tabulation, @from_bytes de @HeaderName normalise les noms en casse basse
+
+Exposes:
+  `impl @FromRequestParts<@S> for @AuthPrincipal` borné par `@S: @Send + @Sync` et
+    `@MiryadAuthState: @FromRef<@S>` — seul item défini par le fichier, aucune autre définition ni
+    ré-export
+  @from_request_parts — la résolution asynchrone : `(&mut @Parts, &@S) ->
+    @Result<@AuthPrincipal, @AuthError>`
+  `@type Rejection = @AuthError` — le type de rejet visible par @axum, rendu sur le fil par ./error.sdd
+  Nulle fonction publique appelable par son nom : aucun item de la crate ne référence `auth::dual::`
+    textuellement ; la surface d'entrée est la seule résolution de trait quand un handler réclame
+    @AuthPrincipal en extracteur
+
+Accepts:
+  &mut @Parts — aucune mutation ; seules `Authorization` et `Cookie` sont lues parmi les en-têtes,
+    via @get de @HeaderMap (première valeur seule pour chacune)
+  Tout @S tel que `@MiryadAuthState: @FromRef<@S>` — aucun type d'état concret n'est supposé
+  L'en-tête `Authorization` (constante @AUTHORIZATION) : la seule valeur reconnue est `Bearer `
+    suivi du matériel du token, qui reste opaque ici — le format `mrd_` regarde ./token.rs
+  L'en-tête `Cookie` : le détail (nom `miryad_session`, chiffrement, claims) regarde
+    intégralement @extract_session
+  Aucun autre signal d'authentification : ni query param, ni en-tête custom, sous quelque nom que
+    ce soit
+
+Returns:
+  Ok(@AuthPrincipal) dont @source est @PrincipalSource::Session : @subject et @email du payload
+    déchiffré (@email peut être @None), @id_token identique octet pour octet à celui du payload
+  Ok(@AuthPrincipal) dont @source est @PrincipalSource::ApiToken : @subject de la ligne
+    `miryad_api_tokens`, @token_id égal à sa clé primaire, @email égal à @None
+  Nulle autre forme de succès : un principal Bearer portant un email, ou un @source incohérent avec
+    le chemin résolu, violerait ce contrat
+
+Raises:
+  Uniquement par le type @Rejection = @AuthError, jamais construite ici — tous les codes sont
+    transités par les deux fonctions déléguées. Le rendu (statut, corps texte) est ./error.sdd :
+    `401` pour 001, 002, 014 et 015, `500` pour 016
+  `MRD-AUTH-001` par @AuthError::NotAuthenticated : aucun cookie `miryad_session` dans la seule
+    première en-tête `Cookie` lue ; aussi le sort d'une requête portant une `Authorization`
+    non-Bearer sans cookie
+  `MRD-AUTH-002` par @AuthError::InvalidSession, porté par @extract_session : cookie
+    non déchiffrable (clé différente, altéré), payload JSON invalide, claim `exp` absente ou
+    illisible, horloge antérieure à l'epoch, ou `exp` atteinte
+  `MRD-AUTH-014` par @AuthError::InvalidToken : chemin Bearer seul — aucune ligne de
+    `miryad_api_tokens` au hash SHA-256 reçu, donc token inconnu, révoqué, vide ou parasité
+    d'espaces
+  `MRD-AUTH-015` par @AuthError::TokenExpired : `expires_at` de la ligne atteint, même un cookie
+    valide pourtant présent
+  `MRD-AUTH-016` par @AuthError::Database : tout @DbErr de @sea_orm du chemin Bearer, SELECT de
+    `miryad_api_tokens` comme écriture de `last_used_at` ; le chemin cookie n'est jamais atteint,
+    une session valide authentifie une base en panne
+  Nul code de `MRD-AUTH-003` à `MRD-AUTH-013` ne transite par ce fichier : les erreurs OIDC et de
+    callback lui sont inaccessibles, ce qui exclut tout `502` issu de cet extracteur ; @HookError
+    n'y a pas davantage de chemin
+
+Handles:
+  Absence totale de credential : chemin cookie, rejet `MRD-AUTH-001`
+  `Authorization` d'un schème autre que le Bearer exact (`Basic`, `bearer` en casse basse, valeur
+    vide ou non lisible en ASCII) : traitée comme une en-tête absente, le cookie reprend la main —
+    choix assumé ou brèche, c'est l'arbitrage de Sébastien (voir `Tasks` `[?]`)
+  Bearer présent mais invalide, expiré, révoqué, ou base en panne sur le chemin token : rejet
+    définitif ; le cookie, même présent et valide, n'est pas consulté
+  En-têtes multi-valués : la première valeur `Authorization` compte seule, la première en-tête
+    `Cookie` aussi ; rien des valeurs suivantes ne saurait être lu (comportement @get de @HeaderMap)
+  Matériel de token parasité : espaces initiaux ou chaîne vide après le préfixe passent tels quels
+    à @validate_token, sans trim ni sanitisation
+
+Tasks:
+  [?] Casse du schème : @strip_prefix sur `Bearer ` est sensible à la casse, donc
+    `authorization: bearer <token valide>` sans cookie tombe en « absence de credential »
+    (`MRD-AUTH-001`) et le token valide n'est jamais essayé — contrat assumé en casse sensible, ou
+    relaxation du schème comme l'exige RFC 7235/9110 (schème case-insensitive) ?
+  [?] Schème non-Bearer avec cookie valide : `Basic …` + session valide authentifie par la session,
+    alors que le commentaire de doc annonce « en-tête Bearer présent = choix explicite, pas de
+    repli » — le critère reste-t-il le préfixe `Bearer ` strict (un cookie accepté derrière tout
+    autre schème) ou toute `Authorization` doit-elle être refusée comme tentative Bearer manquée ?
+    Question de sécurité, arbitrage de Sébastien requis
+  [?] Ambiguïté multi-valeurs : seule la première valeur de chaque en-tête `Authorization` et la
+    première en-tête `Cookie` sont lues — contrat retenu (le premier gagne) ou refus exprès de
+    l'ambiguïté ? Aujourd'hui une requête portant un Bearer valide en seconde en-tête est traitée
+    comme anonyme
+  [?] Mutisme contre ./middleware.rs : @AuthUser trace `auth ok`/`auth rejected`, le dual-auth ne
+    trace rien — prévoir des traces @tracing au niveau `debug` sur cet extracteur (sans leak du
+    token ni du cookie) ou le silence est-il voulu ?
+  [?] Parité déclarative des surfaces : OpenAPI ne déclare que `bearer_auth` (cookie HttpOnly
+    écarté de l'`Authorize`, raison documentée dans /src/rest/openapi.rs), GraphQL et MCP ne
+    déclarent rien — le runtime est identique grâce à ce fichier, l'écart déclaratif est-il assumé
+    ou une dette à combler ?
+  [ ] Convertir les 18 `Scenario` en au moins 18 tests distincts nommés dans le mod @tests
+    `#[cfg(test)]` de ./dual.rs — le contrat ne déborde pas du fichier : tout s'exerce comme les
+    tests existants (sqlite en mémoire, @Router, @oneshot de @tower), aucun crate d'intégration
+    séparé requis
+    Les 5 tests inline existants ne couvrent aucun scenario en entier : @bearer_token_authenticates
+      et @session_cookie_authenticates_when_no_bearer_header n'affirment ni @token_id, ni @email, ni
+      l'@id_token de leur `Then` ; @bearer_header_wins_over_cookie_when_both_present doit voir son
+      cookie valide remplacé par un cookie indéchiffrable pour prouver qu'il n'est jamais lu ;
+      @neither_credential_is_rejected et @invalid_bearer_token_does_not_fall_back_to_cookie
+      n'affirment qu'un statut — corps `MRD-AUTH-*` absent, comptés non couvrants. Renforcer ces 5
+      et écrire 13 tests neufs pour les scenarios 6 à 18
+
+Done when:
+  Chacun des 18 `Scenario` a au moins un test nommé distinct et vert, sur les features par défaut
+    comme sur `--no-default-features` (fichier inconditionnel), affirmant le corps exact du rejet
+    (pas seulement le statut) et la variante exacte de @PrincipalSource sur les succès
+  La batterie de ./tooling.sdd passe verte sur ce fichier sans un warning, et son mutisme
+    @tracing est certifié par lecture statique (aucun appel, aucun @println, aucun @dbg)
+  Les cinq lignes `[?]` de `Tasks` sont arbitrées par Sébastien et leur suite reflétée dans le
+    contrat ou le code
+
+Scenario: Bearer token valide seul
+  Given un token émis par @issue_token pour le subject `token-user`, et aucune en-tête `Cookie`
+  When la route protégée extrait @AuthPrincipal
+  Then le principal a @subject `token-user`
+  And son @source est @PrincipalSource::ApiToken avec @token_id égal à la clé primaire de la ligne émise
+  And son @email est @None
+
+Scenario: Cookie de session valide seul
+  Given un cookie `miryad_session` valide signé de @cookie_key, de subject `session-user` et d'email `session@example.com`
+  But aucune en-tête `Authorization`
+  When la route protégée extrait @AuthPrincipal
+  Then le principal a @subject `session-user`
+  And son @email est @Some portant exactement `session@example.com`
+  And son @source est @PrincipalSource::Session, @id_token identique octet pour octet à celui du payload du cookie
+
+Scenario: Bearer évince le cookie sans le lire
+  Given un token Bearer valide
+  And une en-tête `Cookie` portant une valeur indéchiffrable (clé différente)
+  When la route protégée extrait @AuthPrincipal
+  Then la résolution réussit par le chemin token avec @source @PrincipalSource::ApiToken
+  But le cookie invalide n'est jamais examiné : aucun @AuthError::InvalidSession ne surgit
+
+Scenario: Aucune credential
+  Given une requête sans `Authorization` et sans `Cookie`
+  When la route protégée extrait @AuthPrincipal
+  Then le rejet est @AuthError::NotAuthenticated
+  And la réponse HTTP est `401` avec le corps exact `MRD-AUTH-001: not authenticated (no session cookie)`
+
+Scenario: Bearer invalide sans repli sur le cookie valide
+  Given un `Authorization: Bearer mrd_inconnu` jamais émis
+  And un cookie de session valide
+  When la route protégée extrait @AuthPrincipal
+  Then le rejet est @AuthError::InvalidToken, HTTP `401`, corps exact `MRD-AUTH-014: invalid or unknown API token`
+  But le cookie valide n'est jamais consulté
+
+Scenario: Token expiré rendu par 015 sans repli
+  Given un token enregistré avec un `expires_at` passé
+  And un cookie de session valide présents tous deux
+  When la route protégée extrait @AuthPrincipal
+  Then le rejet est @AuthError::TokenExpired avec le corps exact `MRD-AUTH-015: expired API token`
+  But ni `MRD-AUTH-001` ni de session acceptée : la distinction `014`/`015` ne se voit que par le corps
+
+Scenario: Token revoqué rendu par 014
+  Given un token émis puis revoqué par @revoke_token, et aucune en-tête `Cookie`
+  When la route protégée extrait @AuthPrincipal
+  Then le rejet est @AuthError::InvalidToken avec le corps `MRD-AUTH-014: invalid or unknown API token`,
+    indiscernable ici du token inconnu
+
+Scenario: Session expirée rendue par 002
+  Given un cookie `miryad_session` bien formé dont la claim `exp` est passée, sans `Authorization`
+  When la route protégée extrait @AuthPrincipal
+  Then le rejet est @AuthError::InvalidSession avec le corps exact `MRD-AUTH-002: invalid or expired session`
+
+Scenario: Session signée d'une autre clé rendue par 002
+  Given un cookie construit avec un @cookie_key différent de celui porté par @MiryadAuthState
+  When la route protégée extrait @AuthPrincipal
+  Then le rejet est @AuthError::InvalidSession avec le corps exact `MRD-AUTH-002: invalid or expired session`
+  But pas `MRD-AUTH-001` : le cookie a été trouvé puis refusé, non pas absent
+
+Scenario: Schème Basic retombe sur le cookie
+  Given un `Authorization: Basic dXNlcjpwYXNz` et un cookie de session valide
+  When la route protégée extrait @AuthPrincipal
+  Then le principal est @source @PrincipalSource::Session — un schème `Basic` n'est pas un choix
+    Bearer pour le code, le cookie reprend la main (voir `Tasks` `[?]`)
+
+Scenario: Schème en casse basse retombe sur le chemin cookie
+  Given une en-tête `authorization` en casse basse dont la valeur commence par `bearer ` et porte un
+    token valide enregistré en base
+  But aucune en-tête `Cookie`
+  When la route protégée extrait @AuthPrincipal
+  Then le rejet est @AuthError::NotAuthenticated avec le corps `MRD-AUTH-001: not authenticated (no session cookie)`
+  But pas `MRD-AUTH-014` : le token valide n'est jamais tenté, le préfixe strict `Bearer ` tranche
+    seul le chemin (comportement accidentel `[?]` des `Tasks`)
+
+Scenario: Bearer de token vide est un chemin définitif
+  Given une `Authorization` de valeur exactement `Bearer ` seule, et un cookie de session valide
+  When la route protégée extrait @AuthPrincipal
+  Then la chaîne vide est hashée et cherchée comme un vrai token : rejet @AuthError::InvalidToken
+    avec le corps `MRD-AUTH-014: invalid or unknown API token`
+  And le cookie n'est pas consulté
+
+Scenario: Espace parasite du bearer aucun trim
+  Given une `Authorization` portant `Bearer ` puis un espace puis un token valide enregistré, avec
+    un cookie de session valide en plus
+  When la route protégée extrait @AuthPrincipal
+  Then le matériel passé à @validate_token commence par cet espace et la lookup ne trouve rien :
+    rejet @AuthError::InvalidToken (`MRD-AUTH-014`)
+  But aucune seconde tentative trimée ni repli sur le cookie
+
+Scenario: Deux en-têtes Authorization la première seule compte
+  Given une première en-tête `Authorization: Basic x` suivie d'une seconde
+    `Authorization: Bearer <token valide>`
+  But aucune en-tête `Cookie`
+  When la route protégée extrait @AuthPrincipal
+  Then le rejet est @AuthError::NotAuthenticated (`MRD-AUTH-001`) : le Bearer de la seconde en-tête
+    n'est jamais vu (comportement @get de @HeaderMap, voir `Tasks` `[?]`)
+
+Scenario: Octet illisible de Authorization retombe sur le cookie
+  Given une en-tête `Authorization` dont la valeur est `Bearer ` suivi de l'octet `0xFF` — posée via
+    @from_bytes de @HeaderValue, qui ne refuse que NUL, CR et LF — et un cookie de session valide
+  When la route protégée extrait @AuthPrincipal
+  Then @to_str échoue et la valeur est traitée comme absente
+  And le principal est @source @PrincipalSource::Session, sans qu'aucune trace ne sorte de ce fichier
+
+Scenario: Deux en-têtes Cookie la première seule compte
+  Given une première en-tête `Cookie: autre=1` suivie d'une seconde `Cookie: miryad_session=<cookie valide>`
+  When la route protégée extrait @AuthPrincipal
+  Then le rejet est @AuthError::NotAuthenticated (`MRD-AUTH-001`) : le cookie de session de la
+    seconde en-tête n'est jamais lu (voir `Tasks` `[?]`)
+
+Scenario: Table token absente rendue 016 en 500
+  Given une base sans migration appliquée (table `miryad_api_tokens` inexistante)
+  And une `Authorization: Bearer quoi_que_ce_soit`
+  When la route protégée extrait @AuthPrincipal
+  Then le rejet est @AuthError::Database, HTTP `500`, corps commençant par `MRD-AUTH-016: database error: `
+
+Scenario: Session insensible à une base absente
+  Given la même base sans migration appliquée
+  And un cookie de session valide, aucune `Authorization`
+  When la route protégée extrait @AuthPrincipal
+  Then l'extraction réussit avec @source @PrincipalSource::Session
+  But aucune écriture de `last_used_at` : le chemin cookie ne touche jamais @db

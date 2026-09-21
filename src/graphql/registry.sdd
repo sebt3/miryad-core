@@ -1,0 +1,333 @@
+Spec: registry — @PolicyRegistry : politique @MiryadResource par entité pour le pont Seaography
+
+Purpose:
+  Accumulateur côté GraphQL du pont entre Seaography à l'exécution et @MiryadResource à la
+    compilation : @PolicyRegistry consigne par entité montée ce qu'un hook synchrone doit lire
+    pour décider — politique de lecture et d'écriture, nom brut de @owner_column et hook de
+    création effacé @EntityPolicy::before_create monomorphisé à l'enregistrement — que
+    @graphql::hooks relit sous l'identifiant `&str` que @seaography passe à ses hooks. Le fichier
+    ne décide rien : aucune évaluation d'autorisation, aucun code `MRD-*`, aucun accès base,
+    aucune trace, aucune écriture en base. L'effacement de type est là parce que @MiryadResource
+    n'est pas dyn-compatible (./resource.sdd) et que @seaography::LifecycleHooksInterface ne
+    transporte qu'une `&mut dyn` @std::any::Any.
+  Participation aux surfaces : ce fichier ne sert que GraphQL. REST et MCP monomorphisent
+    @MiryadResource ou se dispatchent sur des noms d'outils qu'ils construisent eux-mêmes
+    (@mcp::McpToolRegistry relit ses propres clés, boucle fermée) ; seule GraphQL dépend d'un
+    identifiant venant du moteur amont — c'est ce qui l'expose au fossé consigné en `References`.
+    La conversion de colonne (@Iden::to_string) est la même que @ir::resource_ir : la métadonnée
+    propriétaire lue est identique entre l'IR frontend et le pont GraphQL.
+  Gating : aucune condition `#[cfg(feature = ...)]` à l'intérieur du fichier ; lui et ses tests
+    inline ne compilent que sous `graphql`, via la déclaration `#[cfg(feature = "graphql")]` de
+    ../lib.rs ; `graphiql` implique `graphql` (/Cargo.toml) ; toute autre combinaison ne compile
+    pas ce fichier du tout.
+
+Owns:
+  ./registry.rs
+
+References:
+  ./resource.sdd — contrat central @MiryadResource/@AccessPolicy/@HookError, et son `[!]` #19,
+    hérité ici sans être re-tranché : l'identifiant que @seaography passe aux hooks de
+    @LifecycleHooksInterface vient du nom de table SQL converti en `UpperCamelCase` (défaut de
+    @EntityObjectBuilder::type_name : @heck::ToUpperCamelCase appliqué à @EntityName::table_name
+    — vérifié dans la source `seaography-2.0.0-rc.9`, fichiers `src/outputs/entity_object.rs` et
+    `src/mutation/entity_create_one_mutation.rs`), jamais de @MiryadResource::resource_name — que
+    ce registre indexe pourtant. @PolicyRegistry::get retourne donc @None pour tout identifiant
+    que @seaography peut passer (`Recipes` pour la table `recipes`, `Tags` pour `tags`), même
+    quand le template aligne table et nom déclaré : `Recipes` n'est pas `recipes`, seul un nom
+    déclaré littéralement en CamelCase se retrouverait. Rien n'est re-décidé ici : la clé
+    @MiryadResource::resource_name est l'état du code ; le bug est tranché par Sébastien
+    (fail-closed attendu sur clé inconnue, branche `fix/graphql-policy-key-mismatch` du flux de
+    correction de /.specdd/bootstrap.project.md, instruit notamment par cette spec) — la ligne de
+    clé sera réécrite par la spec avant le code du fix, pas contournée ici.
+  ./hooks.rs — seul consommateur du registre et seul appelateur de @EntityPolicy::before_create
+    (champ `pub(crate)`) ; c'est lui qui transforme l'absence chez @get en @GuardAction::Allow
+    (fail-open actuel) et il porte @MRD-GQL-001 et @MRD-GQL-002 — décisions et codes qui ne
+    naissent pas dans ./registry.rs.
+  ./mod.rs — ré-exporte @EntityPolicy et @PolicyRegistry sous @miryad_core::graphql ; son gating
+    et ses déclarations relèvent de sa propre spec ./mod.sdd.
+  ../ir.rs — fixture testée de divergence table/nom (`tags` pour @MiryadResource::resource_name
+    `recipe-tags`) : preuve que le template peut dissocier les deux chaînes ; @ir::IrRegistry
+    conserve son mapping table→nom pour résoudre les references, @PolicyRegistry ne conserve
+    aucune table — asymétrie constatée : l'IR sait résoudre, le pont GraphQL indexe en aveugle.
+  ../lib.rs — porte `#[cfg(feature = "graphql")]` sur @crate::graphql : condition de compilation
+    du fichier et de ses tests inline ; contrat de gating porté par ../lib.sdd.
+  /Cargo.toml — features : `graphql` active @seaography, @async_graphql, @async_graphql_axum et
+    `sea-orm/seaography` ; `graphiql` implique `graphql`.
+  /tooling.sdd — harnais : la dette `expect_used` portée par @call_before_create et les manques
+    `missing_docs` des items publics non documentés de ce fichier y sont comptés, purge module
+    par module.
+  /miryad-core.sdd — hérité : parité REST/GraphQL/MCP lue depuis la seule métadonnée, codes
+    `MRD-*` réservés à la crate, @HookError hors taxonomie, règle une spec par fichier.
+
+Must:
+  Utiliser la chaîne exacte rendue par @MiryadResource::resource_name comme clé d'enregistrement :
+    aucune normalisation de casse, aucune conversion CamelCase/snake_case, aucun appel à @table_name
+    dans le fichier. Ce que @PolicyRegistry::get retrouve est à l'octet près ce que
+    @PolicyRegistry::register::<E> a écrit. (État courant : le fix de `[!]` #19 introduira une
+    autre clé après arbitrage, spec d'abord.)
+  Copier les politiques sans les juger : @EntityPolicy::read et @EntityPolicy::write reçoivent
+    @MiryadResource::read_policy et @MiryadResource::write_policy déclarés, sans fusion et sans
+    dépendance au principal ; les deux champs restent indépendants.
+  Convertir la colonne propriétaire une seule fois, à l'enregistrement, via @Iden::to_string —
+    helper de @sea_query::Iden qui rend l'identifiant @Iden::unquoted brut et sans guillemets
+    (vérifié dans la source `sea-query 1.0.2`, fichier `src/types/iden/core.rs` : ce @to_string
+    n'est pas @std::string::ToString ni @std::fmt::Display, et @sea_orm::Iden est importé dans le
+    fichier précisément pour cet appel) : @sea_orm::Column::OwnerId → `owner_id`.
+    @EntityPolicy::owner_column est une @Option de @String, jamais un @sea_orm::Column typé, parce
+    que le pont n'atteint pas @E::Column au runtime ; un `None` de @MiryadResource::owner_column
+    traverse tel quel.
+  Effacer le type du hook à l'enregistrement, pas à l'appel : le champ @EntityPolicy::before_create
+    reçoit l'item-fonction @call_before_create::<E>, coerci en pointeur de fonction au moment de
+    @PolicyRegistry::register::<E> ; après cela, le registre ne sait plus rien de `E`.
+  Dispatch mutateur et transparent : sur @Ok, @call_before_create écrit en place dans la référence
+    effacée l'ActiveModel retourné par @MiryadResource::before_create (swap @std::mem::replace puis
+    réécriture via la référence de @downcast_mut) et retourne @Ok de `()` ; sur @Err, le @HookError
+    est remonté inchangé par `?`. Le dispatch est synchrone, sans `await`, sans IO, sans trace —
+    aligné sur la signature sync amont (./resource.sdd, source `seaography-2.0.0-rc.9`).
+  Indexer en lecture exacte et sensible à la casse : @PolicyRegistry::get compare la `&str` passée
+    aux clés `&'static str` telles quelles, sans repli, sans appariement insensible à la casse,
+    sans insertion à la volée — clé absente → @None. Les conséquences de ce @None
+    (@GuardAction::Allow fail-open, absence de clause propriétaire, hook non appelé) appartiennent
+    à ./hooks.rs et à la décision `[!]` #19, jamais à ce fichier.
+  Respecter les conditions d'appel du champ effacé telles que les garantit l'amont (vérifié dans
+    la source `seaography-2.0.0-rc.9`) : @graphql::hooks n'appelle @EntityPolicy::before_create que
+    pour @OperationType::Create, avec une politique retrouvée et @crate::auth::AuthPrincipal présent
+    dans les données de requête ; @seaography a construit l'objet effacé de type `E::ActiveModel`
+    (la macro @register_entity! monomorphise @register_entity_mutations sur @Entity et @ActiveModel
+    du module), peuplé par @prepare_active_model (`A::default` puis @try_set par colonne, clé
+    primaire auto-incrémentée ignorée), et n'invoque @before_active_model_save que dans les
+    mutations créatrices (`src/mutation/entity_create_one_mutation.rs` et
+    `src/mutation/entity_create_batch_mutation.rs`) — après guard et parsing d'input, avant
+    @insert ; @OperationType::Update et @OperationType::Delete ne l'appellent jamais. Le pointeur
+    lui-même est total : appelable dans n'importe quel ordre et à n'importe quelle fréquence, sans
+    état interne.
+  Rendre @PolicyRegistry::new équivalent à @Default (dérivé) : registre vide ; ne rien stocker d'un
+    principal ni de connexion — @crate::auth::AuthPrincipal ne fait que traverser la signature du
+    dispatch.
+
+Must not:
+  Évaluer ici une politique : aucune comparaison au principal, aucune notion d'admin ou de groupe,
+    aucune construction de @sea_orm::Condition — @EntityPolicy est une donnée lue, les décisions
+    vivent dans @graphql::hooks et @crate::rbac.
+  Pré-compenser le fix `[!]` #19 par une bidouille de clé dans ce fichier (indexer sur `table_name`
+    en CamelCase, remonter les casses, lookup insensible à la casse, double index) : le fossé a son
+    arbitrage et sa branche de correction ; ce contrat décrit l'état, le fix passera par la
+    réécriture de cette spec avant le code.
+  Sérialiser @EntityPolicy ou @PolicyRegistry (aucun dérivé @serde) : l'artefact vers le frontend
+    est @crate::ir ; ce pont se consomme en process.
+  Matérialiser le registre en état global caché (@std::sync::LazyLock, fuite de `&'static mut`,
+    thread-local) : il est passé par valeur à @graphql::hooks::MiryadHooks::new qui en devient
+    propriétaire, un seul par schéma monté.
+
+Depends on:
+  @crate::resource — @MiryadResource borne de @register, @AccessPolicy et @HookError circulent
+    dans les champs et le pointeur ; source unique des métadonnées, dépendance interne non gatée.
+  @crate::auth::AuthPrincipal — seul type paramètre du dispatch effacé, traversé, jamais stocké.
+  @sea_orm::ActiveModelTrait et @sea_orm::Iden — @ActiveModelTrait::default (membre du trait,
+    vérifié dans la source `sea-orm 2.0.2`, fichier `src/entity/active_model.rs`) pour le swap de
+    @std::mem::replace ; @Iden pour la conversion de colonne. @sea_orm est dépendance obligatoire
+    de /Cargo.toml.
+  @std::any::Any, @std::collections::HashMap, @std::mem::replace — std uniquement.
+  ./hooks.rs, ./mod.rs et l'app consommatrice dépendent de ce fichier, jamais l'inverse ;
+    @seaography et @async_graphql ne sont pas importés ici — la source amont n'intervient que
+    comme preuve vérifiée des conditions d'appel.
+
+Exposes:
+  @EntityPolicy — structure publique, derives @Debug et @Clone seulement (pas @Copy à cause de
+    @Option<@String>, pas @PartialEq, pas @serde) ; quatre champs :
+    `read: @AccessPolicy` et `write: @AccessPolicy` — publics, politiques telles que déclarées ;
+    `owner_column: @Option<@String>` — public, nom @Iden brut de la colonne propriétaire, `None`
+    pour une entité sans propriétaire ;
+    @EntityPolicy::before_create — `pub(crate)` : pointeur sur `fn` recevant `&mut dyn`
+    @std::any::Any et @crate::auth::AuthPrincipal, retournant @Ok de `()` ou @Err d'un @HookError ;
+    atteignable seulement depuis @crate::graphql, monomorphisé sur l'entité enregistrée, mutateur
+    en place de l'ActiveModel effacé.
+  @PolicyRegistry — structure tuple publique sur @HashMap de `&'static str` vers @EntityPolicy,
+    champ privé, derives @Debug et @Default. Pas de longueur, pas d'itération, pas de suppression,
+    pas d'accesseur `contains` — la seule lecture est @PolicyRegistry::get.
+  @PolicyRegistry::new — `fn new() -> Self`, équivalent à @Default : registre vide.
+  @PolicyRegistry::register — `fn register<E: MiryadResource>(&mut self) -> &mut Self` : consigne
+    un @EntityPolicy dont @read et @write sont les politiques lues du trait, @owner_column la
+    conversion @Iden et @before_create l'item-fonction @call_before_create::<E> ; style builder,
+    retourne l'emprunt mutable de soi, enchaînable. Deux enregistrements sur la même clé : le
+    second remplace silencieusement le premier (@HashMap::insert), politique et pointeur inclus,
+    sans signal — question tenue en `Tasks`.
+  @PolicyRegistry::get — `fn get(&self, entity: &str) -> Option<&EntityPolicy>` : lookup exact sur
+    la clé, @None si la clé est absente. Ce @None est aujourd'hui transformé en fail-open par
+    ./hooks.rs ; la correction attendue (fail-closed) est portée par `[!]` #19 — voir
+    `References`.
+  Chemins publics : @miryad_core::graphql::EntityPolicy et @miryad_core::graphql::PolicyRegistry
+    via le ré-export de ./mod.rs ; rien d'autre ne sort du fichier — @call_before_create reste
+    privé.
+
+Accepts:
+  @PolicyRegistry::register : aucune valeur d'entrée, seulement la borne `E : MiryadResource` ; à
+    appeler une fois par entité montée, en parallèle de @seaography::Builder::register_entity de
+    l'app — le registre ne pilote pas le builder amont et ne vérifie pas ce parallélisme, à la
+    charge de l'app (obligation déclarée par le doc-comment, aucun lien de compilation ne
+    l'impose).
+  @PolicyRegistry::get : n'importe quelle `&str` sans contrainte de forme — y compris des noms
+    jamais déclarés, y compris au format `UpperCamelCase` que @seaography passe à ses hooks.
+  Le dispatch effacé (@call_before_create) : une référence mutable `&mut dyn` @std::any::Any que
+    l'appelant garantit être @E::ActiveModel du type enregistré derrière ce pointeur, plus un
+    @crate::auth::AuthPrincipal de lecture seule (session ou token API, indifférents).
+
+Returns:
+  @PolicyRegistry::new — un registre vide.
+  @PolicyRegistry::register — l'emprunt mutable de soi, enchaînable.
+  @PolicyRegistry::get — @Some de l'@EntityPolicy stockée (emprunt lié à la durée de vie du
+    registre, jamais un clone), ou @None sans effet de bord.
+  Dispatch de @EntityPolicy::before_create — @Ok de `()` après écriture en place du modèle muté,
+    ou @Err du @HookError du hook, inchangé.
+
+Raises:
+  Aucun code `MRD-<DOMAINE>-NNN` : le fichier n'en définit et n'en émet aucun. @MRD-GQL-001 et
+    @MRD-GQL-002 naissent dans ./hooks.rs ; @HookError reste l'erreur applicative hors taxonomie
+    (contrat hérité de /miryad-core.sdd).
+  Seule traversée d'erreur prévue : @Err d'un @HookError remonté par @MiryadResource::before_create
+    via le dispatch — code applicatif libre et message conservés à l'identique.
+  Seul abort hors @Err : @panic par @expect de @call_before_create si l'objet effacé reçu n'est pas
+    @E::ActiveModel du type derrière ce pointeur — message
+    `active_model type matches the entity registered under this name`. Cet @expect est du code de
+    production, dette `expect_used` comptée par /tooling.sdd (question des `Tasks`). Via
+    ./hooks.rs il n'est déclenchable que si clé et type se retrouvent désalignés : inatteignable
+    tant que `[!]` #19 laisse @None sur tout identifiant amont, redevient atteignable si une
+    entité se fait écraser sa clé par une autre (@PolicyRegistry::register dupliqué).
+  Aucune erreur de base possible : @sea_orm n'est mobilisé qu'au niveau des types et de @Default.
+
+Handles:
+  Registre vide (aucune entité montée en GraphQL) : @get toujours @None, fail-open côté hooks,
+    aucune trace ni erreur — le fichier seul ne dit rien.
+  Entités avec propriétaire (colonne convertie en son nom @Iden) et sans propriétaire (`None`
+    traversant sans valeur par défaut).
+  Entités sans hook métier : l'identité par défaut de @MiryadResource::before_create est effacée
+    et enregistrée comme n'importe quel override — pas de branche « a un hook ? » dans la
+    structure.
+  Enregistrement en double sur une clé : remplacement muet complet de l'@EntityPolicy et du
+    pointeur par ceux du dernier `E` enregistré ; aucune API (longueur, énumération, `contains`)
+    ne permet de détecter la perte après coup.
+  Type effacé en décalage avec le type enregistré : @panic @expect documenté en `Raises` — branche
+    qu'aucun test existant du fichier n'exécute.
+  Clé absente : @None, sans normalisation préalable ni création d'entrée.
+
+Tasks:
+  [ ] Convertir chaque `Scenario` en au moins un test nommé distinct, au total au moins neuf
+    tests dans le module de tests inline `#[cfg(test)]` de ./registry.rs — le contrat ne déborde
+    pas du fichier ; l'intégration moteur↔hooks vit dans ./hooks.rs et relève de sa spec
+    ./hooks.sdd. État des lieux : quatre tests inline existants —
+    `register_then_lookup_returns_expected_policy` (couvre partiellement « politiques et colonne
+    relues telles que déclarées » ; l'absence sous la casse amont manque),
+    `unregistered_entity_returns_none` (couvre « clé absente »),
+    `before_create_dispatch_mutates_the_downcast_active_model` (couvre « dispatch sur @Ok » ; la
+    vérification des champs `NotSet` préservés est à renforcer),
+    `before_create_dispatch_propagates_hook_error` (couvre « erreur du hook remontée »). À créer :
+    `register_key_is_exactly_the_declared_resource_name` (présence sous `"recipes"`, absence sous
+    `"Recipes"`), `owner_column_none_stays_none` (nouvelle fixture sans propriétaire),
+    `default_before_create_dispatch_is_identity` (fixture sans override de
+    @MiryadResource::before_create),
+    `before_create_dispatch_panics_on_type_mismatch` (`should_panic`, message exact),
+    `duplicate_registration_overwrites_previous_policy` (deux fixtures même nom déclaré,
+    politiques distinctes).
+  [?] Sur l'@Err du dispatch : @std::mem::replace a déjà consommé l'ActiveModel passé et le `?`
+    court-circuite la réécriture — la référence effacée de l'appelant ressort à l'état @Default de
+    l'ActiveModel, la valeur d'origine perdue. Sans conséquence observable aujourd'hui car
+    ./hooks.rs bloque l'insert sur @Err. Contracte-t-on cet écrasement, ou rend-on le swap
+    atomique (restauration de la valeur d'origine sur @Err) ?
+  [?] Sur @call_before_create : son @expect est du code de production sous `deny` `expect_used`
+    (dette comptée /tooling.sdd). À la purge du module graphql : garde-fou d'invariant assumé
+    (commentaire de justification citant cette spec) ou remontée d'une erreur contrôlée ? Le
+    désalignement clé/type redevient atteignable selon la forme que prendra le fix `[!]` #19 —
+    trancher les deux ensemble.
+  [?] Sur @MiryadResource::resource_name dupliqué entre deux entités : @PolicyRegistry::register
+    écrase sans signal, alors que la surface REST rend le même conflit visible au montage par un
+    @panic via @axum (./rest/mod.sdd, scénario des routeurs en chevauchement). Exige-t-on une
+    détection de collision dans @PolicyRegistry::register, ou le fix `[!]` #19 doit-il d'abord
+    redéfinir la clé pour que la question se repose autrement ?
+
+Done when:
+  Chaque `Scenario` ci-dessus est vérifié par au moins un test nommé distinct — au moins neuf
+    tests inline de ./registry.rs, comptés après renforcement du test de mutation existant — et
+    la batterie de /tooling.sdd est verte sur les combinaisons qui compilent le fichier
+    (`--no-default-features --features graphql`, `--features graphiql`, `--all-features`) comme
+    sur `--no-default-features`, qui doit l'exclure sans erreur.
+  Les trois lignes `[?]` ci-dessus ont été arbitrées par Sébastien et reportées dans le contrat ;
+    `[!]` #19 n'a pris aucune décision nouvelle ici — il reste consigné en `References` dans
+    l'état tranché de ./resource.sdd.
+  Aucun `Scenario` de cette spec ne décrit encore un comportement attendu du fix
+    `fix/graphql-policy-key-mismatch` : le contrat post-fix s'écrira quand la décision de clé sera
+    arbitrée, spec avant code.
+
+Scenario: enregistrement sous la chaîne exacte de @MiryadResource::resource_name
+  Given un @PolicyRegistry neuf et la fixture `recipe` du fichier (table SQL `recipes`,
+    @MiryadResource::resource_name déclarée `"recipes"`)
+  When @PolicyRegistry::register::<@recipe::Entity> est appelé
+  Then @PolicyRegistry::get retrouve une politique sous la clé exacte `"recipes"`
+  And @PolicyRegistry::get retourne @None sous `"Recipes"` — la forme `UpperCamelCase` que
+    @seaography passe réellement à ses hooks, vérifiée dans sa source, ne se retrouve jamais ici
+    (état consigné par `[!]` #19 de ./resource.sdd, pas un contrat de nommage à atteindre)
+
+Scenario: politiques et colonne propriétaire relues telles que déclarées
+  Given un registre contenant `recipe` : lecture `Public`, écriture `OwnerOnly`,
+    @MiryadResource::owner_column @Some de @sea_orm::Column::OwnerId
+  When la politique est relue via @PolicyRegistry::get
+  Then @EntityPolicy::read est @AccessPolicy::Public et @EntityPolicy::write est
+    @AccessPolicy::OwnerOnly, lus indépendamment l'un de l'autre
+  And @EntityPolicy::owner_column est @Some de la chaîne `owner_id` — l'identifiant @Iden brut et
+    sans guillemets, pas le nom de variante `OwnerId`, pas le nom de table
+
+Scenario: entité sans propriétaire garde @owner_column à None
+  Given une fixture de test déclarant @MiryadResource::owner_column comme `None` (référentiel
+    partagé), enregistrée dans un registre neuf
+  When sa politique est relue via @PolicyRegistry::get
+  Then @EntityPolicy::owner_column est `None` — aucune valeur par défaut n'est inventée pour une
+    entité sans colonne propriétaire
+
+Scenario: clé absente retourne None sans rien consigner
+  Given un @PolicyRegistry neuf
+  When @PolicyRegistry::get est appelé avec `"does-not-exist"`
+  Then le résultat est @None
+  And l'appel n'insère ni ne modifie aucune entrée — @get est total et sans effet de bord
+
+Scenario: dispatch sur Ok écrit le modèle muté en place
+  Given la politique de `recipe` relue du registre (hook : titre en majuscules) et un
+    @recipe::ActiveModel dont seul @title est posé à `tarte`, @id et @owner_id restant `NotSet`
+  When le pointeur @EntityPolicy::before_create est appelé dessus avec un principal de test
+  Then le résultat est @Ok de `()`
+  And le modèle effacé porte @title `TARTE`, muté dans la référence d'origine
+  And les champs `NotSet` n'ont pas été remplacés par des valeurs posées
+
+Scenario: hook par défaut du trait s'efface comme les autres
+  Given une fixture de test qui ne surdéclare pas @MiryadResource::before_create, enregistrée, et
+    un ActiveModel de cette entité aux valeurs connues
+  When le pointeur @EntityPolicy::before_create est appelé avec un @crate::auth::AuthPrincipal
+  Then le résultat est @Ok de `()` et l'ActiveModel est conservé champ par champ — l'identité par
+    défaut du trait est effacée et dispatchée sans branche spéciale
+  And le principal est traversé sans que l'identité en dépende
+
+Scenario: erreur du hook remontée verbatim
+  Given la politique de `recipe` (hook rejetant un titre vide par un @HookError::with_code portant
+    `RECIPE-001` et `title must not be empty`)
+  When le pointeur @EntityPolicy::before_create est appelé avec un ActiveModel au titre posé vide
+  Then le résultat est @Err : @code @Some `RECIPE-001` et @message `title must not be empty`,
+    inchangés
+  But aucun préfixe `MRD-` n'apparaît dans l'erreur produite par ce chemin
+
+Scenario: désalignement de type effacé panique par expect
+  Given un registre où `recipe` est enregistré, la politique relue sous `"recipes"`, et un
+    ActiveModel d'une autre entité de test enregistrée sous une autre clé
+  When le pointeur @EntityPolicy::before_create de `recipe` est appelé sur cet ActiveModel d'un
+    autre type
+  Then le dispatch s'interrompt par @panic avec le message
+    `active_model type matches the entity registered under this name`
+  And aucune mutation ni @Err n'est possible sur ce chemin — c'est le seul abort hors @Err du
+    fichier, branche jamais testée aujourd'hui (dette `expect_used` des `Tasks`)
+
+Scenario: second enregistrement sur la même clé écrase le premier
+  Given deux entités de test distinctes déclarant chacune @MiryadResource::resource_name
+    `"shared-name"` avec des @AccessPolicy différents
+  When elles sont enregistrées l'une puis l'autre dans le même @PolicyRegistry
+  Then @PolicyRegistry::get avec `"shared-name"` retourne la politique de lecture et d'écriture de
+    la seconde
+  And la politique de la première n'est plus atteignable nulle part — @PolicyRegistry::register
+    n'a pas averti de la collision et le registre n'expose ni longueur ni énumération pour la
+    détecter

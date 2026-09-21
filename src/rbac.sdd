@@ -1,0 +1,492 @@
+Spec: rbac — évaluateur RBAC générique : décisions lecture, écriture, création et filtrage de liste sur @MiryadResource
+
+Purpose:
+  Porte la décision d'autorisation row-level de la crate : évalue les @AccessPolicy déclarés par
+    @MiryadResource pour une entité contre un principal déjà résolu, avec un enregistrement déjà
+    chargé quand il y en a un — @rbac::can_read et @rbac::can_write sur l'enregistrement,
+    @rbac::can_create à la création, @rbac::list_access pour les listes avec une restriction
+    retournée plutôt qu'un booléen (@rbac::ListAccess). Admin gagne toujours avant toute autre
+    règle, @AccessPolicy::OwnerOnly compare la colonne propriétaire de l'enregistrement à
+    l'@users::user::Model::id via réflexion @sea_orm, sans jamais récupérer l'enregistrement en
+    base, et @AccessPolicy::OwnerOnly sans @MiryadResource::owner_column refuse (fail-closed) en
+    lecture comme en liste. Le fichier ne décide que d'un enregistrement, d'une création ou d'une
+    condition de listage — jamais d'une mutation en base, d'un appel HTTP ou d'une trace — et sa
+    réponse est toujours un @Result avec @sea_orm::DbErr propagé, jamais une panic ou un défaut.
+    Le fichier ne porte aucun `#[cfg(feature = ...)]` : il compile sur chaque combinaison de la
+    batterie de /tooling.sdd, `--no-default-features` compris, et le module est déclaré sans gating
+    par ./lib.sdd. Il n'émet à ce jour aucun code `MRD-*`.
+
+Owns:
+  ./rbac.rs
+
+References:
+  /miryad-core.sdd — contrat hérité : codes `MRD-<DOMAINE>-NNN` portés par les modules, parité de
+    lecture REST/GraphQL/MCP sur la seule métadonnée @resource::MiryadResource
+  ./lib.sdd — déclare @rbac sans gating de feature, sans ré-export à la racine
+  ./resource.sdd — contrat amont dont ce fichier consomme les déclarations ; sa ligne `[?]`
+    documente déjà l'incohérence @AccessPolicy::OwnerOnly sans
+    @resource::MiryadResource::owner_column comme « comportement non défini » au niveau du trait ;
+    les décisions réelles de refus sont ici
+  /tooling.sdd — dette stricte `unreachable` (×2) tracée globalement, dont les deux seules
+    occurrences de production sont dans ./rbac.rs, et matrice de batteries de vérification
+  /docs/architecture.md — récit : admin est une convention de groupe sans rien de spécial au
+    schéma, lecture par @users::group::is_admin seulement, limite acceptée des tokens API quant à
+    la fraîcheur de membership
+  ./rest/core.rs — appelant direct : @rest::core::list, @rest::core::get, @rest::core::create et
+    @rest::core::update/@delete consultent ces quatre entrées puis traduisent `false`, @false et
+    @rbac::ListAccess::Forbidden en @RestError::Forbidden (`MRD-REST-002`)
+  ./mcp/registry.rs — vérifié, les cinq outils MCP délèguent aux fonctions de @rest::core sans
+    réévaluer la politique : la surface MCP hérite mot pour mot des décisions de ./rbac.rs
+  ./graphql/hooks.rs — surface GraphQL qui ne consomme pas ces fonctions : @graphql::MiryadHooks
+    relit @AccessPolicy lui-même sur un @graphql::GraphQlPrincipal précalculé par requête ; ses
+    écarts avec ./rbac.rs sont remontés en `Tasks` de la présente spec.
+
+Must:
+  Compiler sans aucun gating de feature : aucun `#[cfg(feature = ...)]` dans ./rbac.rs ;
+    dépendances @sea_orm, @crate::resource et @crate::users toutes obligatoires dans /Cargo.toml ;
+    vérifié sur chaque combinaison de /tooling.sdd, `--no-default-features` d'abord.
+  Déléguer @rbac::can_read et @rbac::can_write à un évaluateur interne unique @rbac::evaluate
+    alimenté par @MiryadResource::read_policy (respectivement @MiryadResource::write_policy) plus
+    @MiryadResource::owner_column, pour que lire et écrire suivent la même table de décision, avec
+    pour seule différence la politique lue.
+  Décider au niveau enregistrement (@rbac::can_read, @rbac::can_write), dans cet ordre et sans
+    jamais récupérer l'enregistrement en base : @AccessPolicy::Public répond `true` avant toute
+    requête ; sinon admin (@users::group::is_admin à la demande) répond `true` sur toute politique
+    restante ; sinon @AccessPolicy::AdminOnly répond `false` ; @AccessPolicy::Group répond
+    @users::group::is_member du nom désigné ; @AccessPolicy::OwnerOnly répond `false` si
+    @MiryadResource::owner_column est `None` (fail-closed écrit), sinon la comparaison d'égalité, à
+    @sea_orm::Value niveau, de la valeur lue par @sea_orm::ModelTrait::get sur l'enregistrement
+    passé avec la valeur construite par @sea_orm::Value::from sur @users::user::Model::id.
+  Tenir la comparaison de l'alinéa précédent vérifiée dans la source amont, non dans la doc :
+    @sea_orm `2.0.2` dépend de @sea-query `1.0.2` avec la feature `hashable-value` activée sans
+    condition, dont une implémentation manuelle de @std::cmp::PartialEq (@sea-query 1.0.2,
+    `src/value/hashable_value.rs`, lue) ne compare que des variantes identiques : aucun
+    @sea_orm::Value::BigInt ni aucune valeur texte ne peut égaler un @sea_orm::Value::Int, @None ne
+    peut égaler une valeur @Some d'@sea_orm::Value::Int, et le seul cas où un enregistrement
+    @AccessPolicy::OwnerOnly est accordé hors admin est un i32 strictement égal.
+  Décider @rbac::can_create sur @MiryadResource::write_policy seule, sans jamais consulter
+    @MiryadResource::read_policy ni @MiryadResource::owner_column : @AccessPolicy::Public et
+    @AccessPolicy::OwnerOnly répondent @Ok `true` sans aucune requête ; @AccessPolicy::AdminOnly
+    répond le @Result de @users::group::is_admin ; @AccessPolicy::Group répond `true` si
+    @users::group::is_admin, sinon le @Result de @users::group::is_member.
+  Décider @rbac::list_access sur @MiryadResource::read_policy seule : @AccessPolicy::Public répond
+    @rbac::ListAccess::Unrestricted avant toute requête ; sinon admin répond
+    @rbac::ListAccess::Unrestricted ; @AccessPolicy::AdminOnly répond @rbac::ListAccess::Forbidden ;
+    @AccessPolicy::Group répond @rbac::ListAccess::Unrestricted si @users::group::is_member, sinon
+    @rbac::ListAccess::Forbidden ; @AccessPolicy::OwnerOnly avec colonne déclarée répond
+    @rbac::ListAccess::FilterByOwner ; @AccessPolicy::OwnerOnly sans colonne déclarée répond
+    @rbac::ListAccess::Forbidden (même fail-closed écrit que @rbac::evaluate, commenté comme tel
+    dans ./rbac.rs).
+  Construire la condition portée par @rbac::ListAccess::FilterByOwner comme une conjonction
+    @sea_orm::Condition::all().add de l'égalité de @MiryadResource::owner_column avec
+    @users::user::Model::id — une seule clause d'égalité, jamais une disjonction — afin que
+    @rest::core::list la combine en AND avec tout filtre utilisateur sans jamais laisser passer une
+    ligne d'un autre propriétaire.
+  Lire les @Result<@bool, @sea_orm::DbErr> de @users::group::is_admin et @users::group::is_member
+    avec `?` et propager toute @sea_orm::DbErr vers l'appelant, sans les reconvertir en décision de
+    refus `false` ; la surface REST traduit ça en @RestError::Database et pose `MRD-REST-003`.
+  Réserver toute autorisation au seul @sea_orm::Value::from de @users::user::Model::id, sans
+    notion d'un quelconque compte de service, session, type de token ou autre attribut du principal
+    dans ./rbac.rs : un compte de service @users::ensure_service_account est un
+    @users::user::Model comme les autres, et la distinction session / token API est effacée en
+    amont dans @crate::auth::AuthPrincipal avant d'arriver ici.
+  Réserver au module @users le nom de groupe admin `"admin"` lu par @users::group::is_admin, seedé
+    par la migration @crate::migration et peuplé uniquement par @sync_group_memberships — aucune
+    API n'attache un utilisateur au groupe admin dans cette crate, ./rbac.rs ne fait que poser la
+    question.
+  Rendre le fail-closed @AccessPolicy::OwnerOnly sans colonne écrit et explicite en lecture
+    (enregistrement et liste) pour tout appelant non-admin, documenté dans les commentaires de
+    @rbac::evaluate et de @rbac::list_access comme un choix de refus explicite plutôt qu'un risque
+    d'accès non voulu.
+
+Must not:
+  Évaluer une permission depuis un token, un cookie, un rôle d'un claim ou un champ de
+    @crate::auth::AuthPrincipal : ./rbac.rs ne connaît que @users::user::Model et le couple
+    @MiryadResource/@sea_orm ; la preuve d'appartenance vient seulement de
+    @users::group::is_admin et @users::group::is_member, par jointure @users::membership, jamais
+    d'un champ booléen porté par une table.
+  Inventer un code `MRD-*` ici : les `MRD-REST-002`, `MRD-REST-003` et `MRD-GQL-001` des surfaces
+    vivent dans leurs modules respectifs ; ./rbac.rs retourne des booléens et @sea_orm::DbErr,
+    rien d'autre.
+  Faire une trace avec @tracing, imprimer sur stdout/stderr, ou déclencher un effet visible autre
+    que les requêtes SELECT des helpers @users — ./rbac.rs ne mute aucune table, ne verrouille
+    rien, ne log rien.
+  Exposer la décision de permission GraphQL comme déjà couverte par ./rbac.rs : @graphql::hooks ne
+    passe pas par @rbac::evaluate ni par @rbac::list_access et peut donc dévier — les écarts sont
+    `[?]` de ce fichier, pas une parité supposée.
+  Décider une mutation en base, insérer, mettre à jour ou supprimer dans les chemins de décision :
+    ./rbac.rs est pure lecture, l'insertion appartient à @rest::core::create et consorts.
+  Laisser @rbac::evaluate être appelé par un autre module que ./rbac.rs lui-même : il reste privé
+    par absence de @pub, seuls @rbac::can_read et @rbac::can_write l'appellent en production, et
+    seul le @mod tests local l'invoque directement pour forcer une politique que les fixtures ne
+    déclarent pas.
+
+Depends on:
+  @sea_orm — @DatabaseConnection, @Condition, @Value, @ModelTrait, @DbErr et @sea_orm::Condition::all
+    pour la condition @rbac::ListAccess::FilterByOwner
+  ./resource.rs — @AccessPolicy et @MiryadResource, seule source des politiques et de la colonne
+    propriétaire évaluées
+  ./users/group.rs — @users::group::is_admin et @users::group::is_member comme seule source de
+    vérité d'appartenance, groupe `"admin"` seule convention sans rien de spécial au schéma
+  ./users/user.rs — @users::user::Model et son @id comme identité évaluée
+  @sea-query `1.0.2` — par la feature `hashable-value` activée par @sea_orm `2.0.2` : la sémantique
+    d'égalité de @sea_orm::Value vérifiée dans sa source, qui borne @AccessPolicy::OwnerOnly à un
+    i32 strictement égal
+
+Exposes:
+  @rbac::can_read — `pub async fn can_read<E>(db, user: &@users::user::Model, record: &E::Model)
+    -> @Result<bool, @sea_orm::DbErr> where E: @MiryadResource, E::Model: @sea_orm::ModelTrait<Entity = E>`
+    — décision au niveau enregistrement sur @MiryadResource::read_policy
+  @rbac::can_write — même signature sous le nom @rbac::can_write, sur @MiryadResource::write_policy
+  @rbac::can_create — `pub async fn can_create<E>(db, user: &@users::user::Model) ->
+    @Result<@bool, @sea_orm::DbErr> where E: @MiryadResource` — décision création, aucun
+    enregistrement reçu
+  @rbac::list_access — `pub async fn list_access<E>(db, user: &@users::user::Model) ->
+    @Result<@rbac::ListAccess, @sea_orm::DbErr> where E: @MiryadResource` — restriction pour un
+    listage, jamais un booléen, jamais une exécution de la requête
+  @rbac::ListAccess — énum public @Debug (dérivé @Debug seul) à trois variants
+    @rbac::ListAccess::Unrestricted, @rbac::ListAccess::FilterByOwner(@sea_orm::Condition) et
+    @rbac::ListAccess::Forbidden ; @Condition interne n'est ni @Copy ni comparable, d'où l'absence
+    de @PartialEq dérivé
+  @rbac::evaluate — fonction privée sans @pub, alimentée par @MiryadResource + politique + colonne
+    explicites, partagée par @rbac::can_read et @rbac::can_write et directement exercée par
+    @mod tests uniquement
+
+Accepts:
+  Un principal sous forme @users::user::Model — donc après @resolve_user en amont, jamais un
+    @crate::auth::AuthPrincipal brut ni un token, ni un cookie, ni un claim de session
+  Un enregistrement en @E::Model pour @rbac::can_read et @rbac::can_write — ./rbac.rs ne charge
+    jamais l'objet qu'il évalue, à l'appelant de l'avoir déjà récupéré (@rest::core::get,
+    @rest::core::update) ou construit (test)
+  Une connexion @sea_orm valide pour @users::group::is_admin et @users::group::is_member ; tables
+    internes @miryad_users/@miryad_groups/@miryad_group_memberships attendues présentes et migrées
+  Un type d'entité satisfaisant @MiryadResource — toute entité du trait, propriétaire déclarée ou
+    non, en lecture comme en écriture, sans regard particulier aux groupes ou comptes de service
+    déclarés par ailleurs
+
+Returns:
+  @rbac::can_read, @rbac::can_write, @rbac::can_create — @Ok(@true) quand la politique accorde le
+    principal, @Ok(`false`) quand elle le refuse ou qu'un @AccessPolicy::OwnerOnly sans colonne est
+    évalué hors admin
+  @rbac::list_access — @rbac::ListAccess::Unrestricted quand rien ne borne le listage (publique,
+    admin, ou groupe autorisé), @rbac::ListAccess::FilterByOwner (condition d'égalité unique
+    colonne=utilisateur) sur @AccessPolicy::OwnerOnly avec colonne déclarée hors admin,
+    @rbac::ListAccess::Forbidden sinon — refus avant toute construction de requête (traduit par
+    @RestError::Forbidden en aval, `MRD-REST-002` porté par @rest::error.rs)
+  Aucune trace, aucun cookie, aucun token, aucune écriture base en retour — ./rbac.rs ne produit
+    que le résultat
+
+Raises:
+  Aucun code `MRD-*` dans ./rbac.rs — la propagation remonte des erreurs, chaque surface pose ses
+    propres codes en aval.
+  @sea_orm::DbErr levée par @users::group::is_admin ou @users::group::is_member : une table
+    manquante, une connexion invalide ou une erreur serveur annule toute décision et remonte @Err
+    au lieu d'un `false` silencieux.
+  Panic @std::unreachable!("handled above") dans @rbac::evaluate et dans @rbac::list_access, sur
+    une branche @AccessPolicy::Public déclarée inatteignable par les retours anticipés au-dessus —
+    jamais atteint par une exécution normale, mais comptabilisé dette stricte `unreachable` par
+    /tooling.sdd.
+  Aucune erreur inventée par @rbac::can_create : @AccessPolicy::OwnerOnly sans colonne déclarée ne
+    pose aucune exception, aucun avertissement, aucune panic — simplement une autorisation `true`
+    qui crée un owner inexistant, asymétrie signalée en `Tasks` ci-dessous.
+
+Handles:
+  Toute politique pour toute combinaison : @AccessPolicy::Public accord avant requête ; admin
+    accord avant la table de décision ; @AccessPolicy::AdminOnly refusé hors admin ;
+    @AccessPolicy::Group accordé au membre du groupe nommé (admin n'a pas besoin d'en faire partie
+    — vérifié) ; @AccessPolicy::OwnerOnly colonne absente refusé hors admin ; colonne présente
+    égalité stricte d'i32 (un owner d'un autre type ou NULL jamais accordé).
+  Cas @AccessPolicy::Group où le groupe cité n'existe jamais en base : @users::group::is_member
+    répond @Ok(`false`) sans lever d'erreur, l'accès est refusé comme pour un non-membre.
+  Cas @AccessPolicy::OwnerOnly avec colonne @Some mais valeur @None sur la ligne : comparée à
+    @sea_orm::Value::from(i32) elle ne matche jamais, donc `false` éternel hors admin — documenté
+    en `[?]`.
+  Cas d'une colonne propriétaire typée autre qu'i32 (i64/u32/String…) : jamais égal (variante
+    différente), refus éternel hors admin, aucun avertissement compilateur — remonte en `[?]`
+    ci-dessous.
+  Chemins Public avant toute query, @rbac::can_create sans colonne OwnerOnly et @rbac::list_access
+    Public — trois cas où ./rbac.rs ne lit aucune table, vérifiables sur une connexion aux tables
+    absentes (scénarios dédiés).
+  @AccessPolicy::Group à la création : admin et membres du groupe passent, tous les autres refusés ;
+    un compte de service provisionné avec @users::ensure_service_account suit le même chemin que
+    n'importe quel utilisateur.
+  Écarts surface par surface — GraphQL ne consomme pas ce module, ses écarts sur @AccessPolicy::OwnerOnly
+    sans colonne sont remontés en `Tasks`.
+
+Example:
+  # Matrice de décision complète — R/W: rbac::can_read/can_write avec enregistrement passé ; C:
+  # rbac::can_create sans enregistrement ; L: rbac::list_access ; col: MiryadResource::owner_column.
+  read/write × `Public` × tout principal → `true`, sans contrôle d'admin ni d'appartenance
+  read/write × admin × `AdminOnly`|`Group`|`OwnerOnly` → `true` (admin gagne partout)
+  read/write × non-admin × `AdminOnly` → `false`
+  read/write × membre du groupe nommé × `Group` → `true` ; non-membre → `false`
+  read/write × hors admin × `OwnerOnly` avec col Some et valeur égale à l'id → `true`
+  read/write × hors admin × `OwnerOnly` avec col Some et valeur différente, NULL ou d'un autre type → `false`
+  read/write × hors admin × `OwnerOnly` avec col None → `false` (fail-closed écrit)
+  create × `Public` → `true` sans requête ; create × `OwnerOnly` → `true` sans requête, col jamais consultée
+  create × `AdminOnly` × admin → `true` ; create × `AdminOnly` × non-admin → `false`
+  create × `Group` × admin ou membre → `true` ; non-membre → `false`
+  list × `Public` ou admin × tout → @rbac::ListAccess::Unrestricted (Public : avant toute requête)
+  list × non-admin × `AdminOnly` → @rbac::ListAccess::Forbidden
+  list × non-admin × `Group` × membre du groupe → @rbac::ListAccess::Unrestricted ; non-membre → @rbac::ListAccess::Forbidden
+  list × non-admin × `OwnerOnly` avec col Some → @rbac::ListAccess::FilterByOwner (colonne = @id)
+  list × non-admin × `OwnerOnly` avec col None → @rbac::ListAccess::Forbidden
+
+Tasks:
+  [ ] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé, un test par
+    scénario minimum, dans le `#[cfg(test)] mod tests` de ./rbac.rs, avec les fixtures manquantes
+    ajoutées. Huit tests inline existent déjà et couvrent : « Lecture `Public` : tout principal
+    passe » → `public_policy_always_allows` ; « Écriture `OwnerOnly` : propriétaire passe, autre
+    refusé, admin passe » → `owner_only_allows_owner_denies_others_allows_admin` ; « Lecture
+    `Group` : membre passe, admin passe, étranger refusé » →
+    `group_policy_allows_member_and_admin_denies_others` ; « Écriture `AdminOnly` : non-admin
+    refusé » → `admin_only_denies_non_admin` ; « fail-closed enregistrement sans colonne
+    propriétaire » → `owner_only_without_owner_column_is_fail_closed` ; « Listage `Public` : non
+    restreint » → `list_access_public_is_unrestricted` ; « Listage `OwnerOnly` : filtre pour
+    non-admin, non filtré pour admin » →
+    `list_access_owner_only_filters_for_non_admin_but_not_admin` ; « Listage `Group` : non restreint
+    pour membre, interdit pour étranger » →
+    `list_access_group_policy_forbidden_without_membership`.
+    Seize tests à créer, un par scénario restant : `admin_only_write_policy_allows_admin` ;
+    `owner_only_read_policy_allows_owner_and_denies_others` ;
+    `admin_shortcut_wins_before_ownerless_fail_closed` ;
+    `filter_by_owner_condition_returns_only_own_rows` ;
+    `list_access_owner_only_without_column_forbids_non_admin_but_not_admin` ;
+    `list_access_admin_only_forbids_non_admin_and_allows_admin` ;
+    `group_unknown_denies_without_creating_group` ;
+    `list_uses_read_policy_and_create_uses_write_policy` ;
+    `can_create_public_or_owner_only_never_queries_db` ;
+    `can_create_admin_only_grants_admin_denies_others` ;
+    `can_create_group_grants_admin_and_member_only` ;
+    `can_create_owner_only_without_column_still_allows` ;
+    `public_reads_create_list_never_touch_missing_tables` ;
+    `non_public_paths_propagate_dberr_when_tables_missing` ;
+    `owner_only_null_owner_value_denies_non_admin` ;
+    `service_account_follows_group_membership_as_regular_user`. Les fixtures `drafts` (read `Group
+    "drafts"`, write Group "maintainers"), `memos` (OwnerOnly read et write, owner_column `None`),
+    `bulletins` (read `AdminOnly`, write `Public`), `ledgers` (OwnerOnly read et write, owner
+    column Option<i32>) restent à ajouter au mod tests. Chaque test utilise une connexion SQLite
+    mémoire migrée par @crate::migration, sauf les scénarios de propagation qui veulent une base
+    non migrée.
+  [?] @rbac::can_create ne consulte jamais @MiryadResource::owner_column : un @AccessPolicy::OwnerOnly
+    déclaré sur une entité sans colonne voit la création accordée (`true`) alors que la lecture
+    enregistrement, la liste et ./graphql/hooks.rs (qui bloque avec un motif `MRD-GQL-001`) refusent
+    le même enregistrement/la même opération, et alors que le commentaire d'en-tête de ./rbac.rs
+    promet un fail-closed pour OwnerOnly sans owner_column. Faut-il écrire un `false` explicite
+    pour que la création suive le fail-closed des autres chemins, ou considérer qu'un owner absent
+    est un détail d'appelant et documenter l'asymétrie comme contrat ?
+  [?] Le pont GraphQL ./graphql/hooks.rs, sur un enregistrement `OwnerOnly` sans colonne, retourne
+    un @GuardAction::Allow + @entity_filter `None` en Read : la liste voit toutes les lignes de
+    toutes les entités, contrairement à ./rbac.rs qui retourne `false`. Fausse asymétrie à tracer
+    comme bug à corriger côté ./graphql/hooks.rs (fail-closed attendu), ou contrat GraphQL distinct
+    à assumer et documenter ?
+  [?] Un enregistrement dont la colonne propriétaire déclarée `Some` porte la valeur `None` ne
+    matche jamais l'id d'un i32 hors admin : un propriétaire sans valeur est un trou de propriété
+    éternellement refusé. Est-ce le contrat attendu (et faut-il le documenter dans
+    @MiryadResource::owner_column) ou une donnée cassée qui devrait plutôt faire remonter une
+    erreur de cohérence ?
+  [?] Pour une entité déclarant sa colonne propriétaire dans un type d'identifiant autre qu'i32,
+    @sea_orm::Value ne matche jamais @sea_orm::Value::from(@users::user::Model::id) : le refus est
+    absolu et silencieux hors admin. Faut-il imposer un type de colonne (contrat
+    @MiryadResource::owner_column), logger l'incohérence, ou normaliser la comparaison
+    (@sea_orm::Value → type cible avant égalité) ?
+  [?] @rbac::evaluate et @rbac::list_access contiennent chacun un @std::unreachable!("handled
+    above") sur une branche @AccessPolicy::Public déjà court-circuitée, comptés dans la dette
+    stricte `unreachable` de /tooling.sdd. Purger maintenant en reformulant (ex. un seul `match`
+    complet éliminant la duplication), ou attendre la purge programmée dans /tooling.sdd ?
+  [ ] Rejouer la batterie complète de /tooling.sdd après conversion des seize tests et après chaque
+    arbitrage `[?]`, pour que le ratio tests/scenario et le harnais restent verts sur toutes les
+    combinaisons de features.
+
+Done when:
+  Les vingt-quatre scénarios ont chacun au moins un test distinct nommé (huit existants + seize
+    créés), la batterie /tooling.sdd est verte sur chaque combinaison de features, et ./rbac.rs ne
+    porte plus de dette stricte `unreachable` si l'arbitrage de la dernière ligne `[?]` le demande.
+  La spec est relue et approuvée par Sébastien après réponse explicite aux cinq `[?]` de `Tasks` —
+    aucune des asymétries (création OwnerOnly sans colonne, fail-open GraphQL, valeurs None et
+    types non-i32) ne reste un comportement accidentel passé sous silence.
+
+Scenario: Lecture `Public` : tout principal authentifié passe
+  Given la fixture recipe avec `read_policy` @AccessPolicy::Public, un utilisateur `anyone` sans
+    groupe, et un enregistrement recipe dont @MiryadResource::owner_column vaut `999` ne
+    correspondant à personne
+  When @rbac::can_read est appelé sur cette fixture
+  Then @Ok(@true) est retourné, l'accord étant décidé par la politique publique avant toute
+    vérification
+
+Scenario: Écriture `OwnerOnly` : propriétaire passe, autre refusé, admin passe
+  Given la fixture recipe (write @AccessPolicy::OwnerOnly, colonne propriétaire déclarée) et trois
+    utilisateurs résolus : `owner`, `other` et `admin-user` membre du groupe `"admin"`
+  When @rbac::can_write est appelé trois fois sur un enregistrement dont @MiryadResource::owner_column
+    vaut l'@users::user::Model::id de `owner`
+  Then @Ok(`true`) pour `owner`, @Ok(`false`) pour `other`, @Ok(@true) pour `admin-user` — le
+    raccourci admin passe avant la comparaison
+
+Scenario: Lecture `Group` : membre passe, admin passe, autres refusés
+  Given une fixture ingredient dont @MiryadResource::read_policy est @AccessPolicy::Group avec le
+    nom `"editors"`, un utilisateur `member` de `"editors"`, un utilisateur `admin-user` de
+    `"admin"` seulement et un utilisateur `stranger` sans groupe
+  When @rbac::can_read est appelé sur un enregistrement déjà construit pour les trois
+  Then `true` pour les deux premiers (membre, puis admin par raccourci), `false` pour `stranger`
+
+Scenario: Écriture `AdminOnly` : non-admin refusé
+  Given la fixture ingredient dont @MiryadResource::write_policy est @AccessPolicy::AdminOnly et un
+    utilisateur `stranger` sans aucune appartenance
+  When @rbac::can_write est appelé sur un enregistrement déjà construit
+  Then `false` — le contrôle d'administration, déjà fait, n'a pas trouvé cet utilisateur
+
+Scenario: Écriture `AdminOnly` : admin passe de définition
+  Given la même fixture ingredient et un utilisateur `admin-user` dont la seule appartenance est
+    `"admin"`
+  When @rbac::can_write est appelé sur un enregistrement déjà construit
+  Then `true` par le raccourci admin qui précède le match — @AccessPolicy::AdminOnly est la
+    politique même du groupe admin
+
+Scenario: Lecture `OwnerOnly` : propriétaire passe, non-propriétaire refusé
+  Given une fixture note dont @MiryadResource::read_policy est @AccessPolicy::OwnerOnly avec
+    colonne propriétaire déclarée et deux utilisateurs `owner` et `other`
+  When @rbac::can_read est appelé pour chacun sur un enregistrement note appartenant à `owner`
+  Then `true` pour `owner` et `false` pour `other` : la politique de lecture est lue
+    indépendamment de celle d'écriture
+
+Scenario: fail-closed enregistrement quand `OwnerOnly` n'a pas de colonne
+  Given la fixture ingredient dont @MiryadResource::owner_column déclare `None`, un utilisateur
+    `stranger` et @rbac::evaluate interne appelé avec @AccessPolicy::OwnerOnly forcé en paramètre
+  When l'évaluation est lancée sur un enregistrement déjà construit
+  Then `false`, sans panic (@unwrap impossible, voir /tooling.sdd) ni autorisation par défaut — un
+    désaccord de déclaration se refuse, et le commentaire de @rbac::evaluate documente ce choix
+    explicite
+
+Scenario: raccourci admin bat le fail-closed sans colonne
+  Given la fixture ingredient dont @MiryadResource::owner_column déclare `None` et @rbac::evaluate
+    interne forcé avec @AccessPolicy::OwnerOnly, plus un utilisateur `admin-user` membre de `"admin"`
+  When l'évaluation forcée est lancée sur un enregistrement déjà construit
+  Then `true` pour `admin-user` — le raccourci admin précède le fail-closed qui frappe le non-admin
+
+Scenario: Listage `Public` : non restreint sans contrôle d'appartenance
+  Given une base migrée, un utilisateur `anyone` sans groupe et la fixture recipe dont
+    @MiryadResource::read_policy est @AccessPolicy::Public
+  When @rbac::list_access est appelé sur la fixture recipe
+  Then @rbac::ListAccess::Unrestricted, sans aucun contrôle d'admin ni d'appartenance
+
+Scenario: Listage `OwnerOnly` : filtre pour non-admin, non filtré pour admin
+  Given la fixture note (read @AccessPolicy::OwnerOnly, colonne déclarée), un utilisateur `owner`
+    sans droits admin et un utilisateur `admin-user` membre de `"admin"`
+  When @rbac::list_access est appelé sur la fixture note pour chacun
+  Then @rbac::ListAccess::FilterByOwner d'abord, @rbac::ListAccess::Unrestricted ensuite
+
+Scenario: la condition `FilterByOwner` ne rend que les lignes du demandeur
+  Given une base migrée contenant deux enregistrements note, un appartenant à `owner`, un
+    appartenant à `other` et un @rbac::ListAccess::FilterByOwner obtenu par @rbac::list_access pour
+    `owner`
+  When la @sea_orm::Condition emportée est ajoutée en `filter` à une requête
+    `note::Entity::find().all(db)`
+  Then le résultat ne contient que l'enregistrement de `owner` — ni filtrage total, ni absence de
+    filtrage, la condition étant une conjunction @sea_orm::Condition::all().add d'une seule égalité
+    sur @users::user::Model::id
+
+Scenario: Listage `OwnerOnly` sans colonne : interdit non-admin, libre admin
+  Given une fixture `memos` nouvelle (read et write @AccessPolicy::OwnerOnly,
+    @MiryadResource::owner_column `None`), un utilisateur `stranger` et un utilisateur `admin-user`
+    membre de `"admin"`
+  When @rbac::list_access est appelé sur la fixture `memos` pour chacun
+  Then @rbac::ListAccess::Forbidden pour `stranger` — le même fail-closed écrit qu'en
+    enregistrement, commenté comme tel dans @rbac::list_access ; mais @rbac::ListAccess::Unrestricted
+    pour `admin-user`, le raccourci admin gagnant avant la vérification de colonne absente
+
+Scenario: Listage `AdminOnly` : interdit hors groupe admin
+  Given une fixture `bulletins` nouvelle dont @MiryadResource::read_policy est
+    @AccessPolicy::AdminOnly et @MiryadResource::write_policy est @AccessPolicy::Public, un
+    utilisateur `anyone` sans groupe et un utilisateur `admin-user` membre de `"admin"`
+  When @rbac::list_access est appelé sur la fixture `bulletins` pour chacun
+  Then @rbac::ListAccess::Forbidden pour `anyone`, @rbac::ListAccess::Unrestricted pour `admin-user`
+
+Scenario: Listage `Group` : libre pour membre, refusé pour autre
+  Given la fixture ingredient (read @AccessPolicy::Group avec le nom `"editors"`), un utilisateur
+    `member` de `"editors"` et un utilisateur `stranger` sans appartenance
+  When @rbac::list_access est appelé sur la fixture ingredient pour chacun
+  Then @rbac::ListAccess::Unrestricted pour `member`, @rbac::ListAccess::Forbidden pour `stranger`
+
+Scenario: groupe inconnu : refus sans créer quoi que ce soit
+  Given une base migrée où le groupe `"ghosts"` n'est jamais apparu dans une
+    @sync_group_memberships, un utilisateur `stranger` et une fixture `drafts` dont la politique de
+    lecture est @AccessPolicy::Group avec le nom `"ghosts"`
+  When @rbac::can_read puis @rbac::list_access sont appelés sur la fixture `drafts`
+  Then `false`, puis @rbac::ListAccess::Forbidden — un groupe jamais vu se comporte comme un
+    non-membre et n'est pas créé : @users::group::is_member ne crée que ce que @ensure_group crée
+    ailleurs, pas ici
+
+Scenario: la lecture de création dépend de write, la liste de read
+  Given la fixture ingredient, politique de lecture @AccessPolicy::Group avec le nom `"editors"` et
+    politique d'écriture @AccessPolicy::AdminOnly, plus un utilisateur `member` appartenant au
+    groupe `"editors"` seul
+  When @rbac::list_access puis @rbac::can_create sont appelés avec `member`
+  Then @rbac::ListAccess::Unrestricted — @MiryadResource::read_policy seule gouverne le listage —
+    et `false` : @MiryadResource::write_policy seule gouverne la création, et le droit de lecture
+    ne donne aucun droit de créer
+
+Scenario: `can_create` répond `Public` et `OwnerOnly` sans toucher la base
+  Given une connexion `sqlite::memory:` non migrée (aucune table @crate::migration) et des
+    utilisateurs construits en mémoire (pas via @users::resolve_user)
+  When @rbac::can_create est appelé sur la fixture recipe (@AccessPolicy::OwnerOnly en écriture)
+    puis sur la fixture `bulletins` (@AccessPolicy::Public en écriture)
+  Then @Ok `true` dans les deux cas — toute requête sur `miryad_groups` aurait produit une erreur
+    de table absente : les deux @Ok prouvent qu'aucune requête n'est émise
+
+Scenario: Création `AdminOnly` : seul admin passe
+  Given une base migrée, un utilisateur `stranger` et un utilisateur `admin-user` membre de
+    `"admin"`, et la fixture ingredient (write @AccessPolicy::AdminOnly)
+  When @rbac::can_create est appelé pour chacun sur la fixture ingredient
+  Then `true` pour `admin-user`, `false` pour `stranger`
+
+Scenario: Création `Group` : membre passe, admin passe, autres refusés
+  Given une fixture `drafts` dont la politique d'écriture est @AccessPolicy::Group avec le nom
+    `"maintainers"`, un utilisateur `maintainer` synchronisé vers `"maintainers"`, un utilisateur
+    `admin-user` de `"admin"` seulement, et un utilisateur `stranger`
+  When @rbac::can_create est appelé pour chacun sur la fixture `drafts`
+  Then `true` pour `maintainer` (règle du groupe nommé) et `admin-user` (raccourci admin avant
+    @users::group::is_member), `false` pour `stranger`
+
+Scenario: Création `OwnerOnly` sans colonne : encore autorisée aujourd'hui
+  Given la fixture `memos` (@AccessPolicy::OwnerOnly en écriture, @MiryadResource::owner_column
+    `None`) et un utilisateur `stranger` sur une base migrée
+  When @rbac::can_create est appelé sur la fixture `memos`
+  Then @Ok `true` — @rbac::can_create ne consulte jamais la colonne : comportement actuel observé,
+    contradictoire avec le fail-closed de lecture/listing et avec le blocage `MRD-GQL-001` de
+    GraphQL, arbitrage demandé sous `Tasks`
+
+Scenario: raccourci `Public` n'émet aucune requête
+  Given une connexion `sqlite::memory:` sans passer par @crate::migration, un utilisateur et des
+    enregistrements construits en mémoire (pas de @users::resolve_user)
+  When @rbac::can_read est appelé sur la fixture recipe (read @AccessPolicy::Public),
+    @rbac::can_write sur la fixture `bulletins` (write @AccessPolicy::Public) et @rbac::list_access
+    sur la fixture recipe
+  Then @Ok sans erreur dans les trois cas — @AccessPolicy::Public précédant @users::group::is_admin,
+    les tables absentes ne peuvent rien observablement casser sur ces trois chemins
+
+Scenario: tables d'appartenance manquantes : @Err propagé, pas de refus silencieux
+  Given la même connexion non migrée, un utilisateur et des enregistrements construits en mémoire
+  When @rbac::can_read, @rbac::can_write, @rbac::can_create puis @rbac::list_access sont appelés
+    sur la fixture ingredient (policies @AccessPolicy::Group et @AccessPolicy::AdminOnly, toutes
+    deux non-@AccessPolicy::Public)
+  Then @Err(@sea_orm::DbErr) remontée sur les quatre appels — une panne d'infrastructure ne
+    dégrade jamais en `false` silencieuse ; mais @rbac::list_access sur la fixture recipe
+    (@AccessPolicy::Public en lecture) sur la même connexion non migrée retourne bien
+    @rbac::ListAccess::Unrestricted
+
+Scenario: enregistrement dont la colonne propriétaire vaut `None` : refusé hors admin
+  Given une fixture `ledgers` nouvelle avec politique read et write @AccessPolicy::OwnerOnly et
+    colonne propriétaire de type Option<i32>, un enregistrement dont cette colonne porte `None`, un
+    utilisateur `requester` et un utilisateur `admin-user` membre de `"admin"`
+  When @rbac::can_write est appelé pour chacun sur cet enregistrement
+  Then `false` car `None` ne matche jamais un i32 ; et `true` pour `admin-user` — seul chemin vers
+    un enregistrement dépourvu de propriétaire, l'égalité ne dépendant ni du nom de colonne ni du
+    rôle
+
+Scenario: compte de service évalué comme n'importe quel utilisateur
+  Given deux comptes de service provisionnés par @users::ensure_service_account sur une base
+    migrée — `svc-admin` avec le groupe `"admin"`, `svc-plain` sans appartenance — et un
+    enregistrement note appartenant à un `owner` différent des deux
+  When @rbac::can_write est appelé sur cet enregistrement pour chaque compte de service
+  Then `true` pour `svc-admin`, `false` pour `svc-plain` — les évaluations ignorent la nature du
+    principal : seule l'appartenance @users::group::is_admin compte, identique à un humain

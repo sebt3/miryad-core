@@ -1,0 +1,527 @@
+Spec: mod — contrat d'agrégation du module rest : montage du routeur et de la surface CRUD générique
+
+Purpose:
+  Agrégation et montage de la surface REST générique de la crate : ./mod.rs déclare les six
+    sous-modules du module @rest avec leur visibilité, définit @RestEntity (éligibilité d'une
+    entité au routeur) et @rest::resource_router — l'unique surface CRUD générique — qui monte
+    `/api/v1/{resource_name}` (`GET`+`POST`) et `/api/v1/{resource_name}/{id}`
+    (`GET`+`PUT`+`DELETE`) pour chaque entité @MiryadResource éligible. Le fichier est un
+    assembleur : ses cinq handlers extracteurs ne font que recevoir @State, @AuthPrincipal,
+    @Path/@Query/@Json et déléguer sans logique aux fonctions `pub(crate)` de ./core.rs — aucune
+    évaluation RBAC, aucune normalisation de pagination, aucune injection de propriétaire, aucun
+    appel de hook, aucune construction d'erreur `MRD-*` n'a lieu ici. C'est cette délégation
+    unique qui fonde la parité des surfaces de /miryad-core.sdd : la surface MCP
+    (/src/mcp/registry.rs) appelle les mêmes fonctions @rest::core et ./openapi.rs déclare les
+    mêmes chemins. Le fichier ne porte aucun `#[cfg(feature = ...)]` : il compile sur toute la
+    matrice de /tooling.sdd, `--no-default-features` compris, et le module est déclaré sans
+    gating par ../lib.sdd.
+
+Structure:
+  ./core.rs — sous-module `pub(crate)` déclaré ici, logique CRUD sans axum : @rest::core::list,
+    @get, @create, @update, @delete, seules destinations des cinq handlers ; sa spec propre le
+    describe
+  ./error.rs — sous-module `pub` @error::RestError avec codes `MRD-REST-001`..`MRD-REST-004` et
+    variante applicative @HookError ; seul type d'erreur des signatures de handlers
+  ./admin.rs — sous-module `pub` : @admin::users_router sur `GET /api/v1/users`, helper
+    `pub(crate)` @admin::groups_by_user ; monté par l'app consommatrice, jamais par
+    @resource_router
+  ./me.rs — sous-module `pub` : @me::me_router sur `GET /api/v1/me` ; monté par l'app, jamais
+    par @resource_router
+  ./tokens.rs — sous-module `pub` : @tokens::tokens_router sur `/api/v1/tokens` ; monté par
+    l'app, jamais par @resource_router
+  ./openapi.rs — sous-module `pub` : @openapi::resource_openapi (fragment OpenAPI des cinq
+    routes CRUD), @openapi::openapi_router hors feature et @openapi::swagger_ui_router sous
+    `swagger-ui` ; ses chemins suivent le préfixe figé de @resource_router
+    # Les six enfants sont déclarés par ./mod.rs mais non ownés : chacun garde sa spec adjacente
+    # (à produire) ; ./mod.rs n'est autorité que sur le montage.
+
+Owns:
+  ./mod.rs
+    Y compris son `#[cfg(test)] mod tests` inline : douze tests `#[tokio::test]` à la rédaction,
+    trois fixtures d'entités (`recipe`, `ingredient`, `widget`) et les helpers `test_db`,
+    `test_state`, `app`, `bearer_for`, `json_request`, `json_body` — ils vivent dans le fichier
+    et sont régis par la présente spec.
+
+References:
+  /miryad-core.sdd — contrat hérité : lecture identique REST/GraphQL/MCP depuis la seule
+    métadonnée @MiryadResource, codes `MRD-<DOMAINE>-NNN` réservés à la crate, exception
+    @HookError, préfixe `/api/v1` de la feature 6
+  ../lib.sdd — déclare @rest sans gating, expose @rest::resource_router et @rest::RestEntity
+    comme surface du module et impose que la doc racine décrive les routes réellement montées
+  ../resource.sdd — contrat amont dont @RestEntity restreint l'accès au routeur ; sa spec
+    reconnaît deux tests inline du fichier (`before_create_hook_mutation_is_applied_at_insert`,
+    `before_create_hook_error_blocks_insert_without_mrd_code`) comme couvrant son scenario
+    « position du hook dans la création » : le contrat déborde du fichier, ces tests vivent ici
+    sans que le contrat soit dupliqué dans la présente spec
+  ../query.sdd — @Pagination::from_raw est le point unique de normalisation atteint par la
+    surface via @rest::core::list ; le test inline `list_pagination_returns_requested_page` est
+    cité par cette spec comme matière de preuve sur le fil HTTP, et @ListParams de ./mod.rs y
+    est nommé comme l'entrée query de la surface REST
+  ../rbac.sdd — les décisions @rbac::list_access, @can_read, @can_write, @can_create sont
+    traduites en refus par ./core.rs en aval ; ./mod.rs ne fait que monter les routes qui y
+    passent
+  /src/auth/state.sdd — @MiryadAuthState est le sous-état que chaque handler extrait via
+    @axum::extract::State et @FromRef ; le contrat de ce type est le sien, pas celui d'ici
+  /src/auth/dual.sdd — l'@impl @FromRequestParts for @AuthPrincipal que consomment les cinq
+    handlers vit là (dual-auth bearer-prioritaire) ; ./mod.rs n'en est que le consommateur
+  /docs/architecture.md — récit : préfixe `/api/v1` figé (feature 6), contrainte assumée de
+    clé primaire unique `i32` documentée à la section de @RestEntity
+  /tooling.sdd — harnais et batterie sur chaque combinaison de features ; la preuve de
+    non-gating du fichier est le run `--no-default-features`
+
+Must:
+  Compiler sans aucun gating de feature : ./mod.rs ne contient pour seul attribut @cfg que
+    `#[cfg(test)]` de son module de tests ; @axum, @sea_orm, @serde, @crate::auth,
+    @crate::query et @crate::resource sont tous des dépendances non optionnelles de
+    /Cargo.toml ; vérifié sur chaque combinaison de /tooling.sdd, `--no-default-features`
+    d'abord.
+  Déclarer exactement six sous-modules et leur visibilité : @admin `pub`, @core `pub(crate)`
+    (la logique CRUD reste interne à la crate — /src/mcp/registry.rs l'atteint par chemin
+    @crate), @error `pub`, @me `pub`, @openapi `pub`, @tokens `pub` — et aucun @pub @use de
+    racine de module : hors ./mod.rs, seul @rest::RestEntity et @rest::resource_router sont
+    atteignables sous `miryad_core::rest::` direct.
+  Monter pour chaque @E: @RestEntity exactement deux chemins et cinq méthodes, le préfixe
+    `/api/v1` étant figé en dur dans @resource_router (feature 6) et le nom de chemin venant de
+    @MiryadResource::resource_name() par @format! au montage : `/api/v1/{resource_name}` avec
+    @get(@list_handler) et @post(@create_handler), `/api/v1/{resource_name}/{id}` avec
+    @get(@get_handler), @put(@update_handler) et @delete(@delete_handler) — pas d'autre verbe,
+    pas de @fallback, pas de filtre, pas de middleware, pas de @with_state sur le @Router
+    retourné.
+  Définir @RestEntity comme le seul filtre d'éligibilité, par une @impl blanket sur toute entité
+    satisfaisant @MiryadResource avec @Model: @Serialize + @DeserializeOwned +
+    @IntoActiveModel<@Self::@ActiveModel> + @Sync, @ActiveModel: @ActiveModelTrait(Entity =
+    @Self) + @Send, et @PrimaryKey: @PrimaryKeyTrait(ValueType = @i32) +
+    @PrimaryKeyToColumn(Column = @Self::@Column) — l'@impl blanket (`impl<E> RestEntity for E
+    where ...`) rend toute @impl manuelle impossible et inutile ; la borne @ValueType = @i32
+    est la limite documentée du crate (clé primaire unique, cf. /docs/architecture.md).
+  Tenir vérifié dans le source amont, non dans la doc : @sea-orm `2.0.2` donne aux clés
+    composées un @PrimaryKeyTrait::@ValueType @tuple (`type ValueType = (i32, i32)` —
+    sea-orm-macros et les entités expansées de sea-orm-codegen, lus) — une clé composée est
+    donc exclue à la compilation par @RestEntity, avant que le @expect de
+    @rest::core::primary_key_column puisse servir ; @axum-core `0.5.6` (lu) fournit l'@impl
+    @réflexive @FromRef<@T> for @T (@T: @Clone), ce qui fait marcher
+    @resource_router::<@E, @MiryadAuthState> sans rien implanter, tandis qu'un état concret
+    composite d'app doit fournir son propre @FromRef pour @MiryadAuthState ; @axum `0.8.9`
+    (lu) applatit chaque @nest par @PathRouter::nest (les routes ressortissent préfixées
+    `/api/v1/...`), fusionne deux @MethodRouters de verbes disjoints sur un même chemin et
+    rend une erreur `Overlapping method route` propagée en @panic par @Router::merge quand un
+    verbe se recouvre, rejette @Path/@Query mal typés en `400`, @Json syntaxiquement invalide
+    en `400`, @Json en décalage de forme en `422`, @Content-Type @application/json manquant en
+    `415`, et route @HEAD vers le handler @get avec corps retiré.
+  Exiger de @resource_router le bound d'état @S: @Clone + @Send + @Sync + 'static avec
+    @MiryadAuthState: @FromRef<@S> — même forme que @auth::auth_router et les trois routeurs
+    enfants ; la composition d'état côté app reste exactement le pattern axum standard,
+    miryad-core n'impose aucune structure concrète.
+  Extraire dans chaque handler, dans cet ordre de signature contractuel, @State(@MiryadAuthState)
+    puis @AuthPrincipal puis @Path/@Query/@Json : les cinq routes exigent toutes une
+    authentification dual-auth (bearer prioritaire sur cookie, sans repli, contrat de
+    /src/auth/dual.sdd), et @axum exécutant les extracteurs de gauche à droite, un refus
+    d'authentification (@AuthError → `401`/`500`) précède tout parsing de corps, de query ou de
+    chemin.
+  Déléguer chaque corps de handler, sans rien ajouter, à la fonction homologue de ./core.rs
+    avec `auth.db`, le principal et les entrées brutes : @list_handler→@rest::core::list
+    (@page/@per_page/@filter transmis @Option @bruts, jamais normalisés ni lus ici),
+    @get_handler→@rest::core::get, @create_handler→@rest::core::create,
+    @update_handler→@rest::core::update, @delete_handler→@rest::core::delete — ./mod.rs
+    n'appelle ni @rbac, ni @query, ni @users, ni @MiryadResource::before_create ; c'est cette
+    indivisibilité de la délégation qui fait que REST et MCP lisent une entité à l'identique.
+  Rendre @list_handler `200` avec @Json<@PagedResult<@E::Model>> (les cinq clés wire de
+    ../query.sdd), @get_handler/@create_handler/@update_handler `200` avec @Json<@E::Model>, et
+    @delete_handler `204` @StatusCode::NO_CONTENT sans corps en @Ok, le discard du @Ok(()) de
+    @rest::core::delete étant le seul traitement de sortie de ce handler.
+  Propager toute @Err de ./core.rs vers la réponse par `?` sans la retransformer : la variante
+    @error::RestError reçue est rendue telle que par son @IntoResponse (propriété de
+    ./error.rs) — ./mod.rs ne construit, ne nome et n'écrit aucun code `MRD-REST-*` en
+    production.
+  N'émettre aucune trace dans le fichier : zéro appel @tracing en production dans ./mod.rs —
+    les refus `401` par @AuthPrincipal sur ces routes ne laissent donc aucune trace portée par
+    la crate sur cette surface (écart avec @auth::middleware qui trace en @debug) ; la question
+    de l'exigence de trace est ouverte en `Tasks`.
+  Accepter la fusion de plusieurs @rest::resource_router dans un @Router hôte : chaque @nest
+    du même préfixe `/api/v1` est applati indépendamment par @axum (fait vérifié ci-dessus),
+    l'app fixture des tests inline en assemble trois (recipes, ingredients, widgets) et le
+    @with_state final unique scelle l'état — ./mod.rs ne pose jamais de @fallback, celui de
+    l'hôte ou le @NotFound par défaut d'@axum reste maître de tout chemin non monté.
+  Garder l'en-tête `//!` du fichier aligné sur la doc de ../lib.sdd : `resource_router` monte
+    bien `GET/POST /api/v1/{resource}` et `GET/PUT/DELETE /api/v1/{resource}/{id}` avec « RBAC
+    et pagination automatiques » — comprendre « via ./core.rs », la doc ne doit promettre une
+    page sans pagination ni un accès anonyme.
+
+Must not:
+  Composer lui-même @admin::users_router, @me::me_router, @tokens::tokens_router ou les
+    routeurs ./openapi.rs dans le @Router retourné par @rest::resource_router : chaque appel ne
+    monte que les deux chemins de @E ; un « super-routeur » imposerait à l'app des surfaces
+    qu'elle n'a pas choisies et dupliquerait la responsabilité d'assemblage de l'hôte.
+  Évaluer une permission, filtrer par propriétaire, normaliser @page/@per_page, poser la
+    colonne propriétaire ou appeler @MiryadResource::before_create dans un handler de ./mod.rs :
+    ces règles sont l'objet de ./core.rs ; les remonter ici casserait la délégation que la
+    surface MCP consomme au même niveau.
+  Enregistrer un verbe hors liste sur les chemins montés — @head, @options, @patch, @delete sur
+    la collection, @post sur l'item, @method_router@.any — : les `405` avec en-tête @Allow
+    produit par @axum font partie du contrat observable et un verbe ajouté serait une nouvelle
+    surface non déclarée par ./openapi.rs.
+  Accepter un préfixe ou un patron de chemin en paramètre : `/api/v1` est en dur (feature 6 —
+    éliminer par construction la collision avec des routes SPA) et le seul nom injecté est
+    celui de @MiryadResource::resource_name().
+  Ré-exporter en racine de module les symboles enfants (@RestError, @users_router, @me_router,
+    @tokens_router, @openapi::*) : ../lib.sdd réserve les ré-exports et le module les laisse à
+    leur chemin complet.
+  Poser un @fallback, un @layer, une @RouteLayer ou un @with_state sur le @Router avant retour,
+    ou implémenter @RestEntity à la main / la réserver à une liste fermée : seule l'@impl
+    blanket la fournit.
+  Écrire `MRD-REST-*`, @print/@eprintln/@dbg ou @tracing en production dans ./mod.rs : les
+    codes vivent dans ./error.rs, les traces — et leur absence — sont documentées ci-dessus.
+
+Depends on:
+  @axum `0.8` (`0.8.9` lock, source lue) — @Router, @routing::@get/@put/@post/@delete,
+    extracteurs @State/@Query/@Path/@Json, @FromRef, @StatusCode ; comportements de montage et
+    de rejet listés dans `Must`, vérifiés dans les sources `axum-0.8.9`/`axum-core-0.5.6`
+  @sea_orm `2` — @EntityTrait, @ActiveModelTrait, @IntoActiveModel, @PrimaryKeyTrait,
+    @PrimaryKeyToColumn comme bornes de @RestEntity uniquement ; ./mod.rs n'émet aucune
+    requête
+  @serde — @Serialize + @Deserialize dans les bornes de @RestEntity ; @derive
+    @serde::Deserialize de @ListParams
+  ./core.rs — les cinq fonctions @async `pub(crate)` que les handlers délèguent intégralement
+  ./error.rs — @error::RestError, type d'erreur de retour des cinq handlers et son
+    @IntoResponse (codes `MRD-REST-001`..`MRD-REST-004`, pass-through @HookError)
+  /src/auth/mod.rs — @AuthPrincipal (extracté par l'@impl @FromRequestParts de
+    /src/auth/dual.rs) et @MiryadAuthState, sous-état extrait via @State + @FromRef
+  ../query.rs — @PagedResult comme DTO de réponse de @list_handler ; la normalisation
+    @Pagination regarde ./core.rs et ./query.sdd, jamais ./mod.rs
+  ../resource.rs — @MiryadResource, métadonnée d'où @RestEntity dérive ses bornes et
+    @resource_name la seconde composante de chaque chemin
+
+Exposes:
+  @RestEntity — @trait @pub marqueur au corps vide, documenté @/// ; super-condition :
+    @MiryadResource avec @Model: @Serialize + @DeserializeOwned +
+    @IntoActiveModel<@ActiveModel> + @Sync, @ActiveModel: @ActiveModelTrait(Entity = @Self) +
+    @Send, @PrimaryKey: @PrimaryKeyTrait(ValueType = @i32) + @PrimaryKeyToColumn(Column =
+    @Column)      ; @impl blanket `impl<E> RestEntity for E where ...` — aucune @impl manuelle
+    possible, l'éligibilité se déduit de @MiryadResource + @serde + PK `i32`
+  @rest::resource_router — `pub fn resource_router<E, S>() -> @Router<S>` where `E: RestEntity`,
+    `S: Clone + Send + Sync + 'static`, `MiryadAuthState: FromRef<S>` ; sans argument, sans
+    @State attaché, sans @Result ni @panic de son fait ; les routes réellement montées sont
+    celles de `Must`
+  Les six déclarations de sous-modules : @admin, @core (à visibilité `pub(crate)` — la logique
+    CRUD n'est pas surface de crate), @error, @me, @openapi, @tokens
+  @ListParams — @struct @privée (sans @pub) à trois champs @Option : @page @u64, @per_page
+    @u64, @filter @String, @derive @serde::Deserialize @sans @deny_unknown_fields ; l'entrée
+    query de @list_handler, homonyme des @ListParams @privées de ./admin.rs et ./tokens.rs
+  @list_handler, @get_handler, @create_handler, @update_handler, @delete_handler — fonctions
+    @async @privées (module-private), jamais appelables hors ./mod.rs ni exposées
+  En-tête `//!` du module et sa promesse des deux groupes de chemins sous `/api/v1`
+  `#[cfg(test)] mod tests` inline — douze `#[tokio::test]` nommés, fixtures @recipe,
+    @ingredient (@read @Group `editors`, @write @AdminOnly) et @widget (hook
+    @before_create mutateur/rejectant `WIDGET-001`), mappés dans `Tasks`
+
+Accepts:
+  @rest::resource_router — aucune entrée runtime ; les seules entrées sont les types de
+    compilation @E et @S. @S direct = @MiryadAuthState fonctionne par l'@impl réflexive de
+    @FromRef ; état composite d'app = @FromRef<@S> for @MiryadAuthState à charge de l'app
+  Assemblage hôte attendu — `Router::new().merge(resource_router::<E1, S>())
+    .merge(resource_router::<E2, S>())...with_state(state)` : le @Router est retourné sans
+    état, l'hôte appelle @with_state une fois ; ./mod.rs fonctionne sur @S quelconque tant que
+    le @FromRef résout
+  Surface collection — query string `page` et `per_page` parsés en @u64 par @axum @Query sur
+    @ListParams, `filter` en @String ; paramètres inconnus ignorés (aucun @deny_unknown_fields) ;
+    `page=abc` ou `page=-1` rejetés `400` par @QueryRejection avant tout handler (typage @u64,
+    ../query.sdd documente cette asymétrie zéro/négatif)
+  Surface item — un seul segment `{id}` parsé en @i32 par @Path : chaîne non numérique, signe
+    moins ou valeur hors `[-2147483648, 2147483647]` → rejet @FailedToDeserializePathParams
+    `400` (statuts vérifiés dans axum `0.8.9`) ; aucun parsing d'id n'existe dans ./mod.rs
+  Corps `POST`/`PUT` — le JSON de @E::Model entier, @Content-Type @application/json requis ;
+    la clé primaire et la colonne propriétaire présentes dans le corps sont acceptées ici et
+    neutralisées en aval par ./core.rs — ./mod.rs ne valide ni ne stripppe rien lui-même
+  Authentification — en-tête `Authorization: Bearer <token>` valide, sinon cookie de session
+    chiffré ; un en-tête présent sans préfixe `Bearer ` tombe sur la branche cookie (contrat
+    d'extraction de /src/auth/dual.sdd) ; sans aucun des deux, @AuthError::@NotAuthenticated
+
+Returns:
+  Sur la route collection — `200` avec @Json<@PagedResult<@E::Model>> en @Ok de
+    @rest::core::list (clés `items`, `page`, `per_page`, `total_items`, `total_pages`) ;
+    `200` avec @Json<@E::Model> du créé pour `POST` (statut `200`, jamais `201` — arbitrage
+    ouvert en `Tasks`)
+  Sur la route item — `200` @Json<@E::Model> pour @get/@update ; `204` @NO_CONTENT corps vide
+    pour @delete
+  Sur @Router — un @Router<@S> sans état, @fallback ni @layer ; chemins inconnus → `404` du
+    @fallback par défaut d'@axum ; verbe hors liste sur chemin monté → `405` avec en-tête
+    @Allow (`GET,HEAD,POST` sur la collection, `GET,HEAD,PUT,DELETE` sur l'item — composition
+    vérifiée dans les tests sources de @MethodRouter) ; @HEAD servi par le handler @get avec
+    corps retiré
+  @ListParams — jamais un @Result : l'extraction query échoue ou réussit avant ./mod.rs
+
+Raises:
+  ./mod.rs ne construit aucune erreur lui-même — zéro appel de constructeur @RestError, zéro
+    littéral `MRD-` en production ; la colonne d'erreurs est le pass-through de ./core.rs rendu
+    par ./error.rs : `MRD-REST-001` (`404`, ressource absente), `MRD-REST-002` (`403`, refus
+    RBAC), `MRD-REST-003` (`500`, @DbErr), @RestError::@Application du @HookError applicatif
+    (`422` avec corps JSON `{code, message}`, @code libre sans `MRD-*`, restitué sans
+    taxonomie de la crate)
+  `MRD-REST-004` (@Internal) n'est pas atteignable depuis les cinq handlers CRUD — seul
+    ./tokens.rs l'introduit en enveloppant @AuthError ; asymétrie notée en `Tasks`
+  Hors @RestError, les rejets d'extracteurs répondent avant ./mod.rs : @AuthError de
+    l'extraction @AuthPrincipal — `401` (`MRD-AUTH-001`, `MRD-AUTH-002`, `MRD-AUTH-014`,
+    `MRD-AUTH-015`) ou
+    `500` (`MRD-AUTH-016`, panne base de @validate_token) ; rejets @axum `400` (@Query/@Path
+    mal typés), `400` (@Json syntaxe), `415` (@Content-Type manquant), `422` (@JsonDataError —
+    même statut `422` que @HookError mais corps texte @axum, sans champ `message`)
+  Aucune @panic en production : le @expect de @rest::core::primary_key_column n'est pas
+    atteignable pour une clé composée, rejetée à la compilation par la borne @ValueType de
+    @RestEntity (fait @sea-orm vérifié)
+
+Handles:
+  Assemblage multi-entités : n @resource_router aux @resource_name distincts se fusionnent sous
+    le même préfixe `/api/v1` applati — chemins disjoints, @with_state unique de l'hôte ; les
+    trois entities de l'app fixture (recipes/ingredients/widgets) en sont la preuve inline
+  Collision de montage : deux routers enregistrant le même verbe sur le même chemin applati (deux
+    @MiryadResource déclarant le même `resource_name`, ou le routeur hôte montant lui-même
+    `GET /api/v1/recipes`) → @PathRouter::route appelle @merge_for_path, l'erreur
+    `Overlapping method route` remonte et @Router::merge @panic au montage (@track_caller),
+    jamais à la requête ; verbes disjoints d'un hôte (ex. @patch maison sur le chemin de la
+    collection) se fusionnent dans le @MethodRouter sans conflit, les routes du moteur
+    restant intactes
+  Authentification + requête invalide : l'ordre des extracteurs (gauche à droite) fait qu'une
+    requête sans credentials valides répond `401` même avec corps JSON invalide ou query
+    mal typée — le `401` précède tout `400`/`422` possible
+  Absence de paramètres query : @Option::None transmis tels quels à @rest::core::list ; la
+    normalisation en `1`/`100` avec plafond `1000` appartient à @Pagination::from_raw
+    (../query.sdd) — le wire observe la page normalisée, jamais celle brute
+  `filter` demandé sur entité sans @MiryadResource::filter_column : la requête aboutit `200`
+    sans erreur — l'ignorance est un contrat de ./core.rs (@match qui ignore @filter quand la
+    colonne est @None), pas de ./mod.rs
+  Chaîne de @resource_name non validée par ./mod.rs : un nom contenant `/` crée un segment de
+    plus et un nom en `{...}` devient un paramètre @matchit par le @format! de montage — la
+    validation du nom déclaré reste à la charge de l'app
+  Page hors bornes : `page=999` → `200` avec @items vide et totaux réels (comportement amont
+    @sea_orm documenté par ../query.sdd) ; `page=0` → `200` avec écho `page` normalisé `1`
+  Clé primaire composée, @Model sans @Deserialize ou entité hors bornes @RestEntity :
+    exclusion à la compilation de @resource_router — le routeur ne peut pas être monté pour
+    une entité non @serde avec PK `i32`
+  Combinaisons de features : défaut (`static-frontend`), `--no-default-features`, seules,
+    cumulées ou `--all-features` — le fichier et ses routes ne changent sur aucune de ces
+    combinaisons (aucun @cfg @feature) ; `swagger-ui`, `graphql`, `graphiql`, `mcp` ne
+    concernent ./mod.rs par aucune ligne
+
+Tasks:
+  [ ] Convertir les dix-sept `Scenario` ci-dessous en au moins dix-sept tests nommés distincts
+    du `#[cfg(test)] mod tests` de ./mod.rs (un par scenario), plus un doctest `compile_fail`
+    porté par la doc de @RestEntity pour le scenario d'exclusion de clé composée :
+    « La route collection expose GET et POST » → `collection_route_serves_get_and_post` ;
+    « Verbe hors liste répond 405 avec Allow » → `unlisted_verb_returns_405_with_allow` ;
+    « HEAD passe par le handler GET de la collection » → `head_is_served_by_collection_get` ;
+    « La route item répond GET, PUT et DELETE » → `item_route_serves_get_put_delete` ;
+    « id non numérique répond 400 avant tout handler » → `non_numeric_id_returns_400` ;
+    « id hors portée i32 répond 400 » → `id_out_of_i32_range_returns_400` ;
+    « Chemin inconnu sous le préfixe monté répond 404 » → `unknown_path_under_mount_returns_404` ;
+    « Refus d'authentification précède tout parsing de corps et de query » →
+    `auth_rejection_short_circuits_body_and_query` ; « Paramètre query mal typé répond 400 avec
+    credentials valides » → `malformed_query_returns_400_when_authenticated` ; « page et
+    per_page à zéro sont renvoyés normalisés » → `wire_observes_normalized_pagination` ;
+    « Corps JSON invalide est refusé avant le hook » →
+    `invalid_json_body_refuses_before_hook` ; « Trois entités coexistent sous le préfixe figé » →
+    `three_entities_coexist_under_fixed_prefix` ; « Le routeur hôte qui ajoute un verbe
+    complémentaire coexiste avec les routes CRUD » → `host_complementary_verb_coexists` ;
+    « Deux routers en chevauchement sur un même verbe paniquent au montage, pas à la requête » →
+    `overlapping_verb_merge_panics_at_assembly` ; « Le cookie de session traverse la surface
+    CRUD » → `session_cookie_round_trips_crud` ; « Entité sans serde ou avec clé composée est
+    exclue à la compilation » → doctest `compile_fail` `rest_entity_rejects_non_i32_pk` (le
+    doctest échoue à la compilation → test réussit) ; « Surface disponible sans aucune
+    feature » → test ordinaire `rest_surface_available_without_default_features`, prouvé par
+    le run `--no-default-features` de la batterie de /tooling.sdd, précédent de
+    ../resource.sdd.
+  [ ] Cartographier sans les dupliquer les douze tests inline existants — ils sont la preuve
+    vivante que ./mod.rs délègue fidèlement : `create_ignores_client_supplied_owner`,
+    `list_filters_by_owner_for_non_admin_but_not_for_admin`, `list_pagination_returns_requested_page`,
+    `list_filter_combines_with_owner_restriction`, `list_ingredients_forbidden_without_group_membership`,
+    `update_forbidden_for_non_owner_allowed_for_owner`, `update_ignores_client_supplied_owner`,
+    `update_with_invalid_owner_id_in_body_does_not_fail`,
+    `get_and_delete_nonexistent_recipe_return_404` et `entity_without_hook_override_is_unaffected`
+    exercent ./core.rs et ../rbac.sdd vus depuis la surface assemblée (specs enfants à produire) ;
+    `before_create_hook_mutation_is_applied_at_insert` et
+    `before_create_hook_error_blocks_insert_without_mrd_code` couvrent le scenario « position
+    du hook dans la création » de ../resource.sdd, qui les revendique explicitement. Ils
+    restent ici (le fichier les ownne), leurs `Then` ne redéfinissent pas le contrat de la
+    présente spec.
+  [?] Le fragment OpenAPI de ./openapi.rs ne déclare que `200`/`403`/`404` (et `204` pour
+    delete) tandis que la surface réellement montée répond aussi `400` (rejets @Query/@Path/@Json),
+    `401` (@AuthError), `415` (@Content-Type) et `500` (`MRD-REST-003`) ; `list` n'y déclare que
+    `200` alors que le test inline `list_ingredients_forbidden_without_group_membership` prouve
+    le `403` ; `POST` répond `200` (jamais `201 Created`) et le fragment l'écrit `200` « Créé ».
+    Complète-t-on @openapi::resource_openapi (spec de ./openapi.rs une fois écrite), assume-t-on
+    un document volontairement minimal, et le `200` de création devient-il contrat explicite ?
+  [?] Le statut `422` est commun au @JsonDataError d'@axum (corps texte) et au
+    @RestError::@Application du @HookError (corps JSON `{code, message}`) : un client ne
+    distingue les deux que par le corps. Arbitre-t-on une distinction de statut, un format de
+    corps unifié, ou suppose-t-on le client branché sur la présence de `code` ?
+  [?] ./mod.rs ne porte aucune @trace, et le refus @AuthPrincipal sur les routes CRUD ne
+    produit aucune trace portée par la crate (à l'inverse de l'extraction @AuthUser de
+    /src/auth/middleware.rs). Le harnais impose @tracing « pour toute trace » mais n'impose pas
+    de tracer : exige-t-on une trace @debug au montage (routes de l'entité E) ou au refus sur
+    cette surface, ou l'observation reste-t-elle explicitement à la @TraceLayer de l'hôte ?
+  [?] @ListParams n'a pas de @deny_unknown_fields — un paramètre inconnu dans la query est
+    silencieusement ignoré ; et @E::Model @sans @deny_unknown_fields ignore aussi les champs
+    JSON inconnus en `POST`/`PUT`. Garde-t-on cette tolérance comme contrat d'entrée de la
+    surface REST (elle est aujourd'hui un défaut de @serde, pas une décision écrite) ?
+  [ ] Rejouer la batterie complète de /tooling.sdd (toutes les combinaisons de features de
+    /AGENTS.md, dont `--no-default-features` comme preuve de non-gating, plus
+    `cargo test --doc` pour le @compile_fail) après création des tests.
+
+Done when:
+  Chaque `Scenario` de la présente spec dispose d'au moins un test nommé distinct vérifiant son
+    `Then` (17 tests — dont un doctest `compile_fail`), les douze tests inline existants restent
+    verts et cartographiés sans duplication de contrat, et la batterie de /tooling.sdd passe
+    verte sur toutes les combinaisons de features avec `-- -D warnings`.
+  ../resource.sdd continue de reconnaître ses deux scenarios de hook couverts par les tests
+    inline d'./mod.rs, et la présente spec n'en redécrive pas le contenu.
+  Les lignes `[?]` ci-dessus ont reçu une décision de Sébastien reflétée dans la spec, et la
+    spec est relue et approuvée par lui — aucune tolérance (@deny_unknown_fields, `200` en
+    création, silence des traces, écart OpenAPI) ne reste un comportement accidentel tacite.
+
+Scenario: La route collection expose GET et POST
+  Given une app construite en mergeant @rest::resource_router de l'entité `recipe` des tests
+    inline, @with_state(@MiryadAuthState) sur sqlite migré, et un token API Bearer valide
+  When un `GET /api/v1/recipes` authentifié est envoyé
+  Then la réponse est `200` avec un corps @PagedResult aux cinq clés wire, @items vide sur base
+    vierge (`[]`)
+  When un `POST /api/v1/recipes` authentifié avec un corps du @Model valide est envoyé
+  Then la réponse est `200` avec le @Model créé, et le `GET` suivant le contient
+
+Scenario: Verbe hors liste répond 405 avec Allow
+  Given le même app
+  When un `PATCH /api/v1/recipes` authentifié est envoyé
+  Then la réponse est `405` sans jamais atteindre @rest::core (aucune requête en base)
+  And l'en-tête `Allow` de la réponse contient `GET`, `HEAD` et `POST` — composition du
+    @MethodRouter d'@axum vérifiée dans sa source
+  But aucune erreur `MRD-REST-*` n'apparaît dans le corps : le `405` vient d'@axum, pas de la
+    crate
+
+Scenario: HEAD passe par le handler GET de la collection
+  Given le même app et un token valide
+  When un `HEAD /api/v1/recipes` est envoyé
+  Then la réponse est `200`, produite par @list_handler avec le corps retiré (@axum route @HEAD
+    sur @get — source `0.8.9` vérifiée)
+  And @HEAD seul ne déclenche aucune écriture ni aucune trace en base
+
+Scenario: La route item répond GET, PUT et DELETE
+  Given une recette créée via `POST /api/v1/recipes` par son propriétaire (fixture `recipe`
+    @write @OwnerOnly) avec le @id renvoyé
+  When un `GET /api/v1/recipes/{id}` authentifié est envoyé
+  Then `200` avec le @Model de la ligne
+  When un `PUT /api/v1/recipes/{id}` porteur d'un @Model modifié est envoyé par le propriétaire
+  Then `200` avec le @Model modifié
+  And un `DELETE /api/v1/recipes/{id}` du même propriétaire répond `204` avec corps vide, et le
+    `GET` qui suit répond `404` `MRD-REST-001`
+
+Scenario: id non numérique répond 400 avant tout handler
+  Given le même app et un token valide
+  When un `GET /api/v1/recipes/abc` est envoyé
+  Then la réponse est `400` — rejet @FailedToDeserializePathParams d'@axum (statut vérifié dans
+    la source `0.8.9`), pas `404`
+  And le corps ne porte aucun code `MRD-REST-*` : @get_handler n'est jamais appelé, @Path<@i32>
+    échoue avant
+
+Scenario: id hors portée i32 répond 400
+  Given le même app et un token valide
+  When un `GET /api/v1/recipes/3000000000` (supérieur à `i32::MAX`) est envoyé
+  Then la réponse est `400`, même rejet @Path que pour l'id non numérique — la borne @i32 de la
+    signature de @get_handler est observable sur le fil
+  But la borne @RestEntity qui impose cette @ValueType `i32` au montage est un contrôle de
+    compilation, pas runtime
+
+Scenario: Chemin inconnu sous le préfixe monté répond 404
+  Given le même app seule, sans @fallback ni @route d'hôte
+  When un `GET /api/v1/ghosts` authentifié est envoyé
+  Then la réponse est `404` du @fallback par défaut d'@axum — ./mod.rs ne pose aucun @fallback
+    et rien d'autre n'est monté sous `/api/v1` que les chemins des entités mergées
+  And aucun code `MRD-REST-*` n'apparaît : `MRD-REST-001` viendrait de ./core.rs, jamais atteint
+    pour un chemin inexistant
+
+Scenario: Refus d'authentification précède tout parsing de corps et de query
+  Given l'app fixture à trois entités, sans aucun credential (ni Bearer, ni cookie)
+  When un `POST /api/v1/recipes` au corps @JSON syntaxiquement invalide est envoyé
+  Then la réponse est `401` `MRD-AUTH-001`, pas `400` : l'extraction @AuthPrincipal précède
+    @Json dans l'ordre de signature
+  When un `GET /api/v1/recipes?page=abc` sans credential est envoyé
+  Then la réponse est `401`, pas `400` — @Query n'est pas non plus atteint
+
+Scenario: Paramètre query mal typé répond 400 avec credentials valides
+  Given l'app fixture et un token valide
+  When un `GET /api/v1/recipes?page=abc` est envoyé
+  Then la réponse est `400` — rejet @QueryRejection d'@axum (vérifié source), @rest::core::list
+    jamais appelé
+  And un `GET /api/v1/recipes?page=2&inconnu=1` réussit en revanche `200` : @ListParams n'a pas
+    de @deny_unknown_fields, le paramètre inconnu est ignoré (question ouverte en `Tasks`)
+
+Scenario: page et per_page à zéro sont renvoyés normalisés
+  Given l'app fixture, un token valide et trois recettes créées par le même propriétaire
+  When un `GET /api/v1/recipes?page=0&per_page=0` est envoyé
+  Then la réponse est `200` avec `page` rendu `1` et `per_page` rendu `1` dans le corps
+    @PagedResult — la normalisation vue ici est celle de @Pagination::from_raw via
+    @rest::core::list, contrat de ../query.sdd
+  But ./mod.rs ne normalise rien lui-même : @list_handler ne fait que passer les @Option
+
+Scenario: Corps JSON invalide est refusé avant le hook
+  Given l'app fixture avec l'entité `widget` dont @before_create mutte le libellé
+  When un `POST /api/v1/widgets` authentifié avec un corps @JSON syntaxiquement invalide est
+    envoyé
+  Then la réponse est `400` (rejet @JsonSyntaxError d'@axum) et le hook n'est jamais appelé :
+    aucune ligne insérée, aucun code `WIDGET-001` n'apparaît
+  When le même `POST` est envoyé sans en-tête @Content-Type @application/json
+  Then la réponse est `415` (rejet @MissingJsonContentType, source vérifiée)
+  But un corps @JSON valide de mauvaise forme renvoie `422` @JsonDataError — statut partagé
+    avec le `422` @HookError, question arbitrée en `Tasks`
+
+Scenario: Trois entités coexistent sous le préfixe figé
+  Given l'app fixture des tests inline : trois @rest::resource_router (recipes, ingredients,
+    widgets) mergés dans le même @Router sous le même préfixe `/api/v1` applati par @axum
+  When des `GET` authentifiés sur `/api/v1/recipes` et `/api/v1/widgets` sont envoyés
+  Then chacun répond `200` avec la page de SON entité — un stranger voit les widgets
+    (@read @Public) mais un `GET /api/v1/ingredients` répond `403` `MRD-REST-002` (politique
+    @Group `editors`) : les routeurs ne se marchent pas dessus
+  And @with_state unique scelle l'état des trois nest sans conflit de montage
+
+Scenario: Le routeur hôte qui ajoute un verbe complémentaire coexiste avec les routes CRUD
+  Given un routeur hôte qui enregistre lui-même `PATCH /api/v1/recipes` vers son handler, puis
+    merge @rest::resource_router::<@recipe::Entity, @MiryadAuthState>() — @merge d'@axum fusionne
+    les @MethodRouters à verbes disjoints (source vérifiée)
+  When un `PATCH /api/v1/recipes` authentifié est envoyé
+  Then le handler hôte répond, @list_handler n'est pas concerné
+  And un `GET /api/v1/recipes` continue d'être servi par @list_handler — la fusion n'a rien
+    écrasé
+
+Scenario: Deux routers en chevauchement sur un même verbe paniquent au montage, pas à la requête
+  Given un routeur hôte qui enregistre lui-même `GET /api/v1/recipes` vers son handler
+  When @merge est appelé avec @rest::resource_router::<@recipe::Entity, @MiryadAuthState>()
+    — même chemin applati, verbe @get en commun
+  Then @Router::merge @panic avec le message `Overlapping method route` de @merge_for_path
+    (@axum `0.8.9`, @track_caller), avant toute requête
+  And le même @panic frappe deux @MiryadResource déclarant le @resource_name identique —
+    ./mod.rs ne déduplique rien : l'unicité du nom d'entité est une charge de l'app
+
+Scenario: Le cookie de session traverse la surface CRUD
+  Given l'app fixture avec un @cookie de session chiffré valide (construit comme dans les
+    tests de /src/auth/dual.rs) et aucun en-tête @Bearer
+  When un `GET /api/v1/recipes` muni du cookie est envoyé
+  Then la réponse est `200` : @list_handler consomme @AuthPrincipal extrait par la branche
+    cookie de l'@impl @FromRequestParts (/src/auth/dual.sdd) — la surface montée n'a rien
+    d'exclusif aux tokens API
+  And la restriction RBAC appliquée est celle de l'utilisateur du cookie, l'asymétrie interne
+    bearer/cookie étant le contrat de ./../auth/dual.sdd, pas d'ici
+
+Scenario: Entité sans serde ou avec clé composée est exclue à la compilation
+  Given une entité @sea_orm de test dont la clé primaire est composée (ou à défaut un @Model ne
+    dérivant pas @Deserialize) qui implémente pourtant @MiryadResource
+  When @rest::resource_router::<@CetteEntité, @MiryadAuthState> est écrit
+  Then la compilation échoue sur les bornes de @RestEntity : `sea-orm 2` donne aux clés
+    composées un @ValueType @tuple (vérifié dans les sources amont), jamais @i32
+  And la vérification vit dans un doctest `compile_fail` porté par la doc de @RestEntity — le
+    doctest passe quand la compilation échoue
+
+Scenario: Surface disponible sans aucune feature
+  Given un build `--no-default-features` de la crate — ./mod.rs ne porte aucun
+    `#[cfg(feature = ...)]`
+  When la cible de test de la bibliothèque s'exécute sur cette combinaison dans la batterie de
+    /tooling.sdd
+  Then @rest::resource_router et @rest::RestEntity compilent et les douze tests inline tournent
+    verts, comme sur `--all-features`
+  But aucune feature de /tooling.sdd n'est nécessaire au montage de la surface CRUD

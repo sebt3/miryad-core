@@ -1,0 +1,251 @@
+Spec: membership — table d'association `miryad_group_memberships` et sa réconciliation exclusive depuis le claim groupes
+
+# Produite par spec-reverse sur le comportement actuel du code ; les [?] de Tasks sont à trancher par Sébastien avant relecture.
+
+Purpose:
+  Déclarer l'entité SeaORM de la table d'appartenance utilisateur↔groupe `miryad_group_memberships`
+    et exposer @sync_group_memberships, unique chemin d'écriture de cette table : réconciliation
+    complète des appartenances d'un utilisateur depuis un ensemble de noms de groupes, source de vérité
+    Authentik (cf. /docs/architecture.md, section RBAC). Appelée à chaque login OIDC (callback de
+    /src/auth/mod.rs, cf. References) et à chaque provisionnement @ensure_service_account ; aucune API
+    d'assignation manuelle n'existe et n'est prévue.
+
+Owns:
+  ./membership.rs
+
+References:
+  /docs/architecture.md — RBAC : Authentik seule source de vérité des appartenances, aucune API d'assignation
+  /src/auth/mod.rs — callback de login OIDC : appelé réel de @sync_group_memberships après @resolve_user, depuis
+    le claim `groups` extrait par @extract_groups_claim (contexte de lecture sur l'écrivant, pas une
+    dépendance de ce fichier)
+
+Must:
+  @Model déclare exactement les trois colonnes `id` (pk auto-incrément), `user_id`, `group_id`, non
+    null, mappées de façon bijective sur la table `miryad_group_memberships` de la migration
+    /src/migration/m20260822_000002_create_users_groups.rs — rien de plus (pas d'horodatage, pas de
+    colonne hors migration).
+  L'insertion d'une appartenance omet `id` : @ActiveModel est construit avec `..Default::default()` et
+    le @Default de @ActiveValue est @ActiveValue::NotSet (source sea-orm 2.0.2, `entity/active_value.rs:219-227`) ;
+    l'auto-incrément est posé par la base. L'@ActiveModelBehavior implantée est nue : aucun hook
+    before/after n'exécute de logique.
+  @sync_group_memberships est réconciliation complète, pas additif : chaque nom du slice `groups` reçu
+    est résolu ou créé par @ensure_group, l'état courant est relu par @Entity::find filtré sur `user_id`
+    (sans jointure ni ordre), toute ligne dont le `group_id` est absent du claim est supprimée par
+    @Entity::delete_by_id, tout groupe voulu absent de l'instantané est inséré. Un slice vide supprime
+    donc toutes les appartenances de l'utilisateur, les lignes de `miryad_groups` survivant.
+  La cible du ON CONFLICT à l'insertion est exactement @Column::UserId puis @Column::GroupId, et doit
+    continuer à porter ces deux colonnes dans cet ordre : c'est l'index unique (`user_id`, `group_id`) de
+    m20260822_000002 que la cible appaire. Source sea-orm 2.0.2 (`query/insert.rs` et ses doctests) :
+    Postgres et SQLite rendent `ON CONFLICT ("user_id", "group_id") DO NOTHING` — un index unique absent
+    ou de colonnes réordonnées fait échouer l'insert PostgreSQL à l'exécution ; MySQL rend le polyfill
+    sans cible d'index `ON DUPLICATE KEY UPDATE id = id`.
+  Le perdant d'une course n'échoue pas : l'insertion déjà posée par un appel concurrent retourne
+    @TryInsertResult::Conflicted et non une erreur — @TryInsert::exec mappe @DbErr::RecordNotInserted
+    (0 ligne insérée ou RETURNING vide) vers Conflicted (`executor/insert.rs:101-111` et `448-486`) ; la
+    suppression d'une ligne déjà supprimée entre-temps retourne @Ok avec @DeleteResult::rows_affected à
+    `0`, sans erreur (`executor/delete.rs:127-141`). C'est le correctif de l'issue #3 (double callback
+    OIDC) ; l'instantané des ids courants n'est jamais rafraîchi pendant la boucle d'insertion.
+  Les écritures ne sont pas atomisées par ce fichier : générique sur @ConnectionTrait,
+    @sync_group_memberships n'ouvre aucune transaction ; passer une transaction rend suppressions et
+    insertions commitables ensemble. Les appelants actuels passent la connexion du pool (voir Tasks `[?]`).
+  L'existence de `user_id` n'est pas vérifiée applicativement : le seul garde-fou est la FK `user_id` →
+    `miryad_users.id` (et `group_id` → `miryad_groups.id`) de m20260822_000002, en force sur les deux
+    backends utilisés — SQLite par `PRAGMA foreign_keys = ON` posé dès la connexion (source sqlx-sqlite
+    0.8.6 `options/mod.rs:185`, défaut des tests en `sqlite::memory:` ; le driver rusqlite de sea-orm le
+    pose aussi, `driver/rusqlite.rs:271`), PostgreSQL nativement — mais un id inconnu inséré ici échoue
+    en FK et non en erreur métier.
+  Les noms de groupes traversent le fichier intacts : aucun trim, aucune déduplication, aucun changement
+    de casse, aucun filtrage avant @ensure_group.
+  Le nettoyage des lignes orphelines vient du schéma, pas du code : `on delete cascade` sur les deux FK
+    (m20260822_000002). @sync_group_memberships ne code aucune purge des références pendantes.
+  Parité des surfaces : @Entity n'a aucun @DeriveRelatedEntity (@Relation est un enum vide) et aucune
+    @MiryadResource — la table n'est exposée en CRUD sur aucune surface REST, GraphQL ou MCP, ni dans
+    l'IR. Elle est lue à l'identique par les trois via @is_member/@is_admin (`./group.rs`),
+    `rest::admin::groups_by_user` et `graphql::principal` ; aucune surface ne l'écrit. Cette absence
+    d'écriture côté surface est unilatérale par conception, pas une dette : l'écriture est le monopole
+    de la voie login/provisioning.
+  Le fichier compile sans gating : aucune `#[cfg(feature = ...)]` ; le module @users est déclaré non-gaté
+    dans `/src/lib.rs` — le fichier est concerné par toutes les combinaisons de la batterie /tooling.sdd.
+
+Must not:
+  Exposer une API d'assignation d'appartenance manuelle (route REST, mutation GraphQL, tool MCP ou
+    fonction d'ajout isolée) : @sync_group_memberships est l'unique chemin d'écriture, Authentik reste la
+    seule source de vérité.
+  Retoucher les lignes de `miryad_groups` ou de `miryad_users` : ne jamais purger un groupe disparu du
+    claim, ne jamais poser une appartenance sans passer par @ensure_group.
+  Ajouter une variante à @Relation ou un @DeriveRelatedEntity : la table doit rester hors du graphe
+    Seaography ; l'exposer aux surfaces demande une décision de contrat, pas une dérive de typage.
+  Decoder le claim `groups` du JWT ici : l'extraction appartient à `/src/auth/oidc.rs` ; ce fichier reçoit
+    des noms déjà extraits.
+  Mapper @DbErr vers un type d'erreur d'une surface (REST/GraphQL/MCP) ou inventer un code maison : la
+    propagation est brute (voir Tasks `[?]` pour la frontière `MRD-*`).
+
+Depends on:
+  ./group.rs — @ensure_group : résolution et création à la volée des `group_id` référencés
+  @sea_orm 2.0.2 — @DeriveEntityModel, execs génériques sur @ConnectionTrait (@Entity::find,
+    @Entity::delete_by_id, @Entity::insert avec `on_conflict_do_nothing_on`)
+  /src/migration/m20260822_000002_create_users_groups.rs — contrat de schéma : pk auto-incrément, deux FK
+    `on delete cascade`, index unique (`user_id`, `group_id`)
+  ./user.rs — @resolve_user (utilisé par les tests inline pour obtenir un `user_id` existant)
+
+Exposes:
+  @Model — ligne @DeriveEntityModel de `miryad_group_memberships` : champs publics `id: i32`,
+    `user_id: i32`, `group_id: i32`, sans @Serialize ni @PartialModel
+  @ActiveModel — @ActiveValue::NotSet par colonne via @Default
+  @Entity, @Column (`id`, `user_id`, `group_id`), @PrimaryKey (`id`, auto-incrément) — dérivés de
+    @DeriveEntityModel
+  @Relation — enum @DeriveRelation vide : entité sans relation, invisible au graphe d'entités
+  @ActiveModelBehavior — implantation nue, aucun hook
+  @GroupMembership — alias public de @Entity
+  @sync_group_memberships — fonction publique asynchrone
+    `async fn sync_group_memberships<C: @ConnectionTrait>(db: &C, user_id: i32, groups: &[String]) -> Result<(), @DbErr>`
+  @GroupMembership et @sync_group_memberships sont réexportés par le module parent (spec voisine ./mod.rs,
+    via `crate::users`)
+
+Accepts:
+  @sync_group_memberships — trois arguments :
+    db — référence @ConnectionTrait : pool, connexion unique ou transaction ; rien n'est ouvert ici
+    user_id — identifiant interne `i32` de `miryad_users` (jamais le claim `sub`) ; existence non vérifiée
+      par la fonction, la FK seule garde-fou
+    groups — `&[String]` de noms du claim `groups` d'Authentik (login) ou de la liste de
+      @ensure_service_account ; lu comme la vérité complète à chaque appel ; le slice vide est une entrée
+      valide
+
+Returns:
+  `Result<(), @DbErr>` — @Ok ne charrie aucune information : ni les lignes ajoutées, ni les lignes
+    retirées, ni la trace des insertions absorbées par le skip concurrent.
+
+Raises:
+  Aucune erreur à code `MRD-*` dans ce fichier ; toutes les pannes remontent en @DbErr brut propagé par
+    `?` :
+  @ensure_group : erreur de requête sur `miryad_groups`, ou @DbErr::RecordNotFound (message
+    `group {name} vanished`) si la ligne disparaît entre l'insertion ratée et la relecture
+  find/insert/delete : erreur de connexion, de contrainte non ciblée, ou d'auto-incrément inaccessible —
+    les conflits ciblés sur (`user_id`, `group_id`) ne remontent pas (voir Must sur le ON CONFLICT)
+  Violation de FK à l'insertion quand `user_id` n'existe pas dans `miryad_users` : enforcement SQLite par
+    le pragma vérifié plus haut, FK native PostgreSQL
+
+Handles:
+  Slice `groups` vide : suppression de toutes les appartenances de l'utilisateur, groupes préservés
+  Nom de groupe inconnu : création à la volée du groupe par @ensure_group avant insertion de l'appartenance
+  Nom dupliqué dans le claim : deux tentatives d'insertion sur la même paire, la seconde absorbée par le
+    ON CONFLICT — une seule ligne finale, sans déduplication applicative
+  Appels concurrents pour un même `user_id` (double callback OIDC, issue #3) : perdant silencieux, état
+    final égal au set voulu
+  `user_id` inconnu : rejet en violation de FK à la première insertion
+  Ligne déjà supprimée par un concurrent : @DeleteResult à `0`, pas d'erreur
+  Table `miryad_groups` injoignable : @ensure_group échoue avant la phase de suppression — aucune
+    suppression partielle n'est écrite sur cet enchaînement
+  Suppression d'un utilisateur ou d'un groupe : lignes d'appartenances emportées par le
+    `on delete cascade` du schéma, sans aucune intervention de ce fichier
+  Claim `groups` absent ou malformé en amont : @extract_groups_claim (/src/auth/oidc.rs) produit un slice
+    vide, et ce fichier y réconcilie une table vidée pour l'utilisateur (voir Tasks `[?]` — cas sensible)
+
+Tasks:
+  [ ] Convertir chaque `Scenario` de cette spec en un test distinct nommé dans le `mod tests`
+    `#[cfg(test)]` de ./membership.rs — aucun contrat ne déborde du fichier, pas de crate d'intégration
+    nécessaire : les 4 tests inline existants couvrent les scenarios d'ajout, de purge partielle,
+    d'idempotence et de concurrence (sync_adds_missing_groups_including_unknown_ones,
+    second_sync_with_fewer_groups_removes_stale_memberships, sync_is_idempotent,
+    concurrent_syncs_for_the_same_user_do_not_violate_the_unique_constraint) ; 7 tests à ajouter (mapping
+    entité↔migration, purge par claim vide, nom dupliqué, FK sur `user_id` inconnu, échec de @ensure_group
+    avant suppressions, cascade de suppression d'utilisateur, cascade de suppression de groupe) — total
+    11 tests distincts pour 11 `Scenario`.
+  [?] Le token Authentik sans claim `groups` (ou malformé → slice vide chez @extract_groups_claim) vide
+    réellement toutes les appartenances de l'utilisateur à chaque login, `admin` inclus (comportement
+    actuel) : contrat voulu, ou distinguer claim manquant et claim vide ?
+  [?] Le nom dupliqué dans le claim est absorbé en silence par le ON CONFLICT : dédupliquer le claim en
+    entrée de @sync_group_memberships, ou le skip reste-t-il le contrat ?
+  [?] @sync_group_memberships doit-elle ouvrir une transaction interne ? Aujourd'hui une panne en cours de
+    boucle (suppressions passées, insertion échouée) laisse l'utilisateur partiellement réconcilié, et
+    aucun appelant (callback OIDC, @ensure_service_account) ne passe de transaction.
+  [?] Zéro trace @tracing dans ce fichier, ni sur les suppressions ni sur les insertions : ajouter un
+    `debug`/`warn` par réconciliation, conforme à l'esprit du contrat transverse `tracing` ?
+  [?] Les @DbErr sortants ne portent aucun code `MRD-*` : le contrat de codage commence-t-il aux surfaces
+    qui les traduisent, ou @users doit-il déjà coder ses erreurs ?
+  [?] Un nom vide dans le claim traverse vers @ensure_group qui crée un groupe nommé `` : le filtrage en
+    entrée est du devoir de @sync_group_memberships, de @ensure_group, ou est-il assumé absent ?
+
+Done when:
+  Chacun des 11 `Scenario` dispose d'au moins un test distinct qui vérifie son `Then`, les 4 tests inline
+    existants compris (règle N `Scenario` ≤ N tests de /miryad-core.sdd).
+  La batterie de /tooling.sdd passe verte sur toutes les combinaisons de features pour ce fichier (module
+    non-gaté : toutes le compilent).
+  Chaque tâche `[?]` a une décision de Sébastien, retranscrite en ligne `Must`/`Handles` ou en `Scenario`
+    si elle change le contrat.
+  Le schéma de m20260822_000002 reste intact : cette spec ne justifie jamais une réécriture de migration
+    committée, seulement une migration suivante si un `[?]` tranche un changement de contrainte.
+
+Scenario: Mapping de l'entité sur sa migration
+  Given une base SQLite en mémoire migrée par `Migrator::up`
+  When une ligne complète est insérée dans `miryad_group_memberships` par une requête SQL brute avec des
+    `user_id` et `group_id` existants
+  And la ligne est relue par @Entity::find
+  Then @Model hydrate exactement les trois champs `id`, `user_id`, `group_id`
+  And l'entité ne porte ni horodatage ni champ absent du schéma
+
+Scenario: La sync ajoute les appartenances en créant les groupes inconnus
+  Given un utilisateur résolu par @resolve_user, sans aucune appartenance
+  When @sync_group_memberships est appelé avec deux noms de groupes jamais vus
+  Then l'utilisateur possède exactement deux appartenances
+  And chaque nom a été résolu ou créé dans `miryad_groups` par @ensure_group
+
+Scenario: La deuxième sync amputée retire les appartenances surannées
+  Given un utilisateur membre des groupes `admin` et `editors` posés par une première sync
+  When @sync_group_memberships est rejoué avec le seul nom `editors`
+  Then l'appartenance `admin` est supprimée par @Entity::delete_by_id
+  And l'utilisateur ne conserve que l'appartenance `editors`
+  But la ligne de groupe `admin` dans `miryad_groups` survit
+
+Scenario: La même sync rejouée est idempotente
+  Given un utilisateur membre d'un groupe posé par une première sync
+  When @sync_group_memberships est rejoué avec exactement le même claim
+  Then le second appel retourne `Ok(())`
+  And il n'existe qu'une seule ligne d'appartenance pour ce couple
+  And l'insertion superflue est absorbée par le ON CONFLICT ciblé, la ligne existante n'est pas modifiée
+
+Scenario: Deux syncs simultanées du même utilisateur ne violent pas la contrainte unique
+  Given un utilisateur résolu et un claim de deux noms de groupes
+  When deux appels @sync_group_memberships concourent pour le même `user_id` (test `tokio::join!`)
+  Then les deux appels retournent `Ok(())`
+  And chaque couple (`user_id`, `group_id`) apparaît exactement une fois
+  And le perdant de la course voit son insertion rendre @TryInsertResult::Conflicted sans remonter d'erreur
+
+Scenario: Une sync à claim vide purge toutes les appartenances
+  Given un utilisateur membre de `admin` et `editors`
+  When @sync_group_memberships est appelé avec le slice vide
+  Then l'utilisateur n'a plus aucune appartenance
+  But les lignes de groupes `admin` et `editors` restent dans `miryad_groups`
+
+Scenario: Un nom dupliqué dans le claim produit une seule appartenance
+  Given un utilisateur résolu sans appartenances
+  When @sync_group_memberships est appelé avec le même nom de groupe listé deux fois
+  Then l'appel retourne `Ok(())`
+  And l'utilisateur possède exactement une appartenance vers ce groupe
+  And la seconde tentative d'insertion de la paire a été absorbée par le ON CONFLICT
+
+Scenario: Une sync sur un utilisateur inconnu échoue en violation de FK
+  Given un identifiant `i32` sans ligne dans `miryad_users`
+  When @sync_group_memberships est appelé avec un nom de groupe
+  Then l'insertion échoue et @sync_group_memberships retourne un @DbErr de violation de FK (enforcement
+    `PRAGMA foreign_keys = ON` sur SQLite de test, FK native sur PostgreSQL)
+  And aucune appartenance n'existe pour cet identifiant
+
+Scenario: Une panne de ensure_group interrompt avant toute suppression
+  Given un utilisateur membre de deux groupes, et la table `miryad_groups` supprimée par SQL brut
+  When @sync_group_memberships est appelé avec un claim complet
+  Then l'appel retourne un @DbErr propagé de @ensure_group
+  And les deux appartenances de l'utilisateur sont intactes : la boucle des noms s'exécute avant
+    suppressions et insertions
+
+Scenario: La suppression d'un utilisateur cascade sur ses appartenances
+  Given un utilisateur membre d'un groupe
+  When la ligne de cet utilisateur est supprimée par @crate::users::user::Entity::delete_by_id
+  Then plus aucune ligne de `miryad_group_memberships` ne référence ce `user_id`
+  And ce nettoyage vient du `on delete cascade` du schéma, écrit par aucune ligne de ./membership.rs
+
+Scenario: La suppression d'un groupe cascade sur les appartenances qui le référencent
+  Given un utilisateur membre du groupe `editors`
+  When la ligne du groupe `editors` est effacée de `miryad_groups` par SQL brut (le moteur ne le fait jamais)
+  Then l'appartenance correspondante a disparu par le cascade de la FK `group_id`
+  And @sync_group_memberships ne repose sur aucune purge applicative des références pendantes

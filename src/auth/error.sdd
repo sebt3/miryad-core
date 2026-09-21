@@ -1,0 +1,309 @@
+Spec: error — type @AuthError du module auth : codes `MRD-AUTH-NNN`, mapping variante → statut HTTP et rendu de corps axum
+
+Purpose:
+  Centraliser les échecs du module auth — flow OIDC, cookie de session, tokens API, extracteurs
+    axum — dans un seul type public @AuthError à six variantes, chacune portant un code unique
+    `MRD-AUTH-NNN` dans sa @Display, et définir leur rendu HTTP via @IntoResponse : statut exact,
+    corps texte égal à la @Display, aucune trace. Le fichier ne construit lui-même aucune erreur :
+    il reçoit celles de ./cookie.rs, ./token.rs, ./oidc.rs et ./mod.rs (via @From<@sea_orm::DbErr>)
+    et décide du sort sur le fil pour les trois surfaces montées du crate (REST, GraphQL, MCP).
+
+Owns:
+  ./error.rs
+
+References:
+  ./mod.rs — ré-exporte @AuthError à plat sous @crate::auth et construit @AuthError::Oidc avec les
+    codes internes `MRD-AUTH-012` (cookie pending) et `MRD-AUTH-013` (CSRF) ; ses tests inline
+    affirment @StatusCode::BAD_GATEWAY sur deux parcours callback
+  ./cookie.rs — seul émetteur de @AuthError::NotAuthenticated et @AuthError::InvalidSession, via
+    @extract_session
+  ./token.rs — seul émetteur de @AuthError::InvalidToken et @AuthError::TokenExpired, via
+    @validate_token ; @issue_token, @revoke_token et @ensure_token propagent les @sea_orm::DbErr
+    par l'opérateur `?`
+  ./oidc.rs — émetteur de @AuthError::Oidc avec les codes internes `MRD-AUTH-004` à
+    `MRD-AUTH-011` dans la charge utile
+  ./middleware.rs — @AuthUser expose @AuthError comme type @Rejection ; c'est @into_response de ce
+    fichier que le client voit (trace de rejet posée là, pas ici)
+  ./dual.rs — @AuthPrincipal (dual-auth cookie ou `Bearer`) expose @AuthError comme @Rejection
+  /src/rest/tokens.rs — convertit @AuthError en @RestError par la fonction explicite
+    @to_rest_error : aucun From<@AuthError> générique n'existe et ce fichier ne doit pas en
+    introduire
+  /src/rest/error.rs — contraste de rendu : @RestError::Application émet du @Json, @AuthError
+    n'émet que du texte
+  /src/graphql/handler.rs — @graphql_handler retourne `Result<@GraphQLResponse, @AuthError>`, donc
+    le rejet d'@AuthPrincipal et les @sea_orm::DbErr de @load_principal rendus par ce fichier
+  /src/mcp/handler.rs — @mcp_handler consomme @AuthPrincipal en extracteur : le rejet passe par ce
+    fichier avant toute enveloppe JSON-RPC
+  /src/users/service_account.rs — @ensure_service_account extrait le @sea_orm::DbErr de
+    @AuthError::Database et transforme les autres variantes en @sea_orm::DbErr::Custom
+
+Must:
+  Table de rendu invariante et exhaustive, sans `match` à joker — ce match de @into_response liste
+    les six variantes nommément, donc l'ajout d'une variante interrompt la compilation jusqu'à son
+    arbitrage de statut :
+    @AuthError::NotAuthenticated → `401` (@StatusCode::UNAUTHORIZED)
+    @AuthError::InvalidSession → `401` (@StatusCode::UNAUTHORIZED)
+    @AuthError::Oidc, quelle que soit sa charge utile → `502` (@StatusCode::BAD_GATEWAY)
+    @AuthError::InvalidToken → `401` (@StatusCode::UNAUTHORIZED)
+    @AuthError::TokenExpired → `401` (@StatusCode::UNAUTHORIZED)
+    @AuthError::Database, quel que soit son @sea_orm::DbErr → `500` (@StatusCode::INTERNAL_SERVER_ERROR)
+  Corps de réponse = octets exacts de la @Display de la variante, sans enveloppe ni caractère
+    ajouté ; en-tête `Content-Type` = `text/plain; charset=utf-8`, vérifié dans le source
+    d'axum-core 0.5.6 : la conversion @IntoResponse de @String transite par @Cow<'static, str> et
+    pose cet en-tête (`mime::TEXT_PLAIN_UTF_8`), et le tuple (@StatusCode, @String) applique le
+    statut par-dessus
+  Littéraux @Display par variante — rien d'autre ne doit sortir :
+    @AuthError::NotAuthenticated : `MRD-AUTH-001: not authenticated (no session cookie)`
+    @AuthError::InvalidSession : `MRD-AUTH-002: invalid or expired session`
+    @AuthError::Oidc : préfixe `MRD-AUTH-003: OIDC error: ` suivi de la charge utile @String
+      verbatim (patron `{0}` — aucun filtre, aucune troncature, aucune sanitisation, y compris si
+      la charge utile contient elle-même un sous-code `MRD-AUTH-NNN`)
+    @AuthError::InvalidToken : `MRD-AUTH-014: invalid or unknown API token`
+    @AuthError::TokenExpired : `MRD-AUTH-015: expired API token`
+    @AuthError::Database : préfixe `MRD-AUTH-016: database error: ` suivi de la @Display de
+      @sea_orm::DbErr embarqué — un @sea_orm::DbErr::Custom de texte `boom` rend exactement
+      `MRD-AUTH-016: database error: Custom Error: boom`, préfixe `Custom Error: ` vérifié dans le
+      source de sea-orm 2.0.2
+  Tout message @Display commence par le code de sa variante ; les codes `MRD-AUTH-004` à
+    `MRD-AUTH-013` ne sont pas des variantes de cet enum et ne passent sur le fil que dans la
+    charge utile de @AuthError::Oidc, sous le préfixe `MRD-AUTH-003`
+  @Error::source ne vaut @Some que pour @AuthError::Database, et retourne alors le
+    @sea_orm::DbErr embarqué — sémantique vérifiée dans le source de thiserror-impl 2.0.20
+    (`prop.rs::source_field` compte un champ `#[from]` comme source) ; les cinq autres variantes
+    valent @None, y compris @AuthError::Oidc dont la charge utile @String n'est pas une source
+  Rendu sans défaillance : @into_response consomme `self` par valeur et retourne un
+    @axum::response::Response — aucun chemin d'échec, aucun repli ; statut et corps proviennent
+    mécaniquement de la même variante consommée par le `match`
+  Compilation inconditionnelle sur toutes les combinaisons de features du crate : aucun
+    `#[cfg(feature = ...)]` dans le fichier, @axum, @thiserror et @sea-orm non optionnels dans
+    `/Cargo.toml`, `pub mod auth` non gateé dans `/src/lib.rs` — la batterie de `tooling.sdd` sur
+    `--no-default-features` doit compiler et exercer ce contrat comme sur `--all-features`
+  Parité des surfaces pour le rejet d'authentification : même statut et même corps texte sur REST
+    (rejets de @AuthUser et @AuthPrincipal), GraphQL `POST /api/graphql` et MCP `POST /mcp` —
+    asymétrie constatée et documentée : sur les deux dernières, la rejection d'extracteur
+    contourne l'enveloppe JSON/JSON-RPC de la surface (voir `Tasks` `[?]`)
+  @AuthError::InvalidToken et @AuthError::TokenExpired sont confondues au niveau HTTP (`401`) :
+    seul le code du corps distingue `MRD-AUTH-014` de `MRD-AUTH-015` pour le client
+
+Must not:
+  Émettre le moindre événement @tracing dans @Display ou @into_response — les traces de rejet
+    vivent chez les appelants (@middleware pose `auth rejected`, ./mod.rs pose le `warn` de
+    `MRD-AUTH-013`) ; ce fichier reste muet, ce qui interdit d'y ajouter une trace sans changer la
+    spec
+  Mélanger @HookError ou un code `MRD-` d'un autre domaine dans cet enum — @HookError est l'erreur
+    applicative de l'application consommatrice (sans code `MRD-*`, rendu par @RestError::Application
+    en @Json), et @AuthError ne porte que `MRD-AUTH-NNN`
+  Rendre le corps d'erreur en @Json ou en HTML — le contrat du fil est `text/plain` pour l'auth,
+    la forme @Json de @RestError::Application n'est pas transposable ici
+  Modifier un littéral @Display, un code `MRD-AUTH-NNN` ou un cellule de la table
+    variante → statut sans arbitrage de Sébastien : ces chaînes sont le contrat fil des clients du
+    template miryad et des tests inline de ./mod.rs, ./middleware.rs et ./dual.rs, qui affirment
+    déjà `401` et `502`
+
+Depends on:
+  @axum 0.8 — traits @IntoResponse et @StatusCode ; l'en-tête de contenu réellement posé est celui
+    de sa dépendance axum-core 0.5.6 (source vérifié, voir `Must`)
+  @thiserror 2 — derives @Debug, @Display et @Error, plus le @From<@sea_orm::DbErr> généré par
+    l'attribut `#[from]` (sémantique de source vérifiée dans thiserror-impl 2.0.20)
+  @sea_orm 2 — type @sea_orm::DbErr comme charge utile de @AuthError::Database (Display vérifiée
+    dans sea-orm 2.0.2)
+
+Exposes:
+  @AuthError — enum `pub` à six variantes, derives @Debug et @thiserror::Error uniquement ; ni
+    @Clone ni @PartialEq : les consommateurs matchent sur la valeur ou la référence
+    @AuthError — il n'existe aucun autre `impl` de ce type dans la crate, @IntoResponse est le seul
+  @AuthError::NotAuthenticated — variante unitaire, code `MRD-AUTH-001`
+  @AuthError::InvalidSession — variante unitaire, code `MRD-AUTH-002`
+  @AuthError::Oidc — variante tuple d'un @String, code `MRD-AUTH-003` ; la charge utile est
+    l'espace libre où les appelants logent les codes `MRD-AUTH-004` à `MRD-AUTH-013`
+  @AuthError::InvalidToken — variante unitaire, code `MRD-AUTH-014`
+  @AuthError::TokenExpired — variante unitaire, code `MRD-AUTH-015`
+  @AuthError::Database — variante tuple d'un @sea_orm::DbErr sous `#[from]`, code `MRD-AUTH-016`
+  @IntoResponse pour @AuthError — la conversion HTTP définie ici, seule implémentation manuelle du
+    fichier
+  @From<@sea_orm::DbErr> pour @AuthError — conversion générée par `#[from]`, empruntée par
+    l'opérateur `?` de tout appel SeaORM du module et de @graphql_handler
+  @Display publique dérivée — les six messages portant code listés dans `Must`
+
+Accepts:
+  @IntoResponse::into_response : `self` par valeur — l'erreur est mue, plus aucune inspection
+    possible après le rendu, et le `match` ne lie aucune charge utile (motif `(_)`) avant de la
+    reformater via @Display
+  @From<@sea_orm::DbErr> : un @sea_orm::DbErr nu, sans perte — c'est le point d'entrée des erreurs
+    de base dans la taxonomie auth
+  @Display : un emprunt `&self` ; la charge utile @String de @AuthError::Oidc et le
+    @sea_orm::DbErr de @AuthError::Database sont formatés par leur propre @Display, sans
+    conversion intermédiaire
+  Aucune entrée générique, aucun paramètre de feature, aucun état global
+
+Returns:
+  @IntoResponse::into_response : @axum::response::Response au statut de la table de `Must`, au
+    corps exactement égal aux octets de la @Display, à l'en-tête `Content-Type`
+    `text/plain; charset=utf-8`, sans corps @Json ni en-tête d'authentification supplémentaire —
+    la conversion ne produit jamais d'erreur
+  @From<@sea_orm::DbErr> : @AuthError::Database conservant l'erreur d'origine accessible par
+    @Error::source
+  @Display : un @String lancé par le code `MRD-AUTH-NNN` de la variante, rien d'autre
+
+Raises:
+  `MRD-AUTH-001` via @AuthError::NotAuthenticated : émis par @extract_session (./cookie.rs) quand
+    l'en-tête `Cookie` est absent ou quand le cookie @miryad_session n'y figure pas
+  `MRD-AUTH-002` via @AuthError::InvalidSession : émis par @extract_session quand le cookie se
+    déchiffre mal (clé différente, cookie altéré ou re-signé), que la charge utile JSON dérivée est
+    invalide, que la claim `exp` est absente ou illisible du JWT, que l'horloge système est
+    antérieure à l'epoch, ou que `exp` est atteint
+  `MRD-AUTH-003` via @AuthError::Oidc : émis par ./oidc.rs (`MRD-AUTH-004` issuer invalide,
+    `MRD-AUTH-005` discovery, `MRD-AUTH-006` redirect URL, `MRD-AUTH-007` certificat CA,
+    `MRD-AUTH-008` construction du client HTTP, `MRD-AUTH-009` échange de code, `MRD-AUTH-010`
+    `id_token` absent, `MRD-AUTH-011` vérification du token) et ./mod.rs (`MRD-AUTH-012` cookie
+    pending absent, invalide ou malformé ; `MRD-AUTH-013` state CSRF divergent), plus les échecs du
+    @Response::builder avec une charge utile brute non codée
+  `MRD-AUTH-014` via @AuthError::InvalidToken : émis par @validate_token (./token.rs) quand aucune
+    ligne ne correspond au hash SHA-256 reçu — token inconnu comme token révoqué
+  `MRD-AUTH-015` via @AuthError::TokenExpired : émis par @validate_token quand l'enregistrement a
+    un `expires_at` antérieur ou égal à @Utc::now
+  `MRD-AUTH-016` via @AuthError::Database : produit par l'opérateur `?` sur l'insertion de
+    @issue_token, les requêtes de @validate_token, la suppression de @revoke_token, les deux
+    chemins de @ensure_token (./token.rs), et sur le @sea_orm::DbErr de @load_principal remonté par
+    @graphql_handler (/src/graphql/handler.rs)
+  Ce fichier lui-même ne construit aucune variante : les six codes naissent tous chez les appelants
+    cités en `References`
+
+Handles:
+  Rejet d'authentification sans challenge : les quatre variantes `401` (@AuthError::NotAuthenticated,
+    @AuthError::InvalidSession, @AuthError::InvalidToken, @AuthError::TokenExpired) rendent nu,
+    hors en-tête `WWW-Authenticate` (décision à trancher, voir `Tasks` `[?]`)
+  Échec du fournisseur OIDC comme du flow de callback : @AuthError::Oidc rend `502` quelle que soit
+    la cause, y compris `MRD-AUTH-012` et `MRD-AUTH-013` pourtant pilotés par le client (voir
+    `Tasks` `[?]`)
+  Panne d'infrastructure : @AuthError::Database rend `500` avec le message @sea_orm::DbErr verbatim
+    sur le fil (voir `Tasks` `[?]`)
+  Distinction fine au seul corps de réponse : @AuthError::InvalidToken contre @AuthError::TokenExpired,
+    et sous-code interne dans la charge utile de @AuthError::Oidc contre le préfixe `MRD-AUTH-003`
+  Consommation par les surfaces : @AuthError sert de @Rejection aux extracteurs @AuthUser
+    (./middleware.rs) et @AuthPrincipal (./dual.rs), et de type d'erreur de @graphql_handler ; les
+    surfaces REST protégées, `POST /api/graphql` et `POST /mcp` rendent donc ce fichier telle quelle
+
+Tasks:
+  [?] `MRD-AUTH-012` et `MRD-AUTH-013` (callback piloté par le client : cookie pending, state CSRF)
+    rendus `502` : faut-il un statut `4xx` pour ces échecs, ou le `502` de @AuthError::Oidc est-il
+    le choix délibéré de tout regrouper sous « le fournisseur/le flow a échoué » ? (les tests
+    ./auth/mod.rs affirment @StatusCode::BAD_GATEWAY aujourd'hui)
+  [?] Double code dans le corps : @AuthError::Oidc préfixe `MRD-AUTH-003` une charge utile elle-même
+    codée (`MRD-AUTH-003: OIDC error: MRD-AUTH-012: missing oidc_pending cookie`) — lequel des deux
+    est le code unique que le contrat transverse promet aux clients et à l'IR ?
+  [?] Fuites par le corps : `500` renvoie le @sea_orm::DbErr verbatim et `502` les erreurs du
+    fournisseur sans sanitisation — faut-il des corps génériques avec détail en log @tracing, ou
+    l'exposition brute est-elle voulue (diagnostics d'ops) ?
+  [?] `401` sans `WWW-Authenticate` : faut-il un défi (p. ex. `Bearer` sur `POST /api/graphql` et
+    `POST /mcp`) ou les `401` du crate restent-ils sans en-tête d'authentification ?
+  [?] Asymétrie d'enveloppe : sur `POST /api/graphql` (/src/graphql/handler.rs) et `POST /mcp`
+    (/src/mcp/handler.rs), le rejet d'@AuthPrincipal sort en `text/plain` hors de l'enveloppe
+    GraphQL/JSON-RPC — asymétrie assumée ou violation à corriger de la règle « la même
+    métadonnée lue à l'identique par les trois surfaces » ?
+  [ ] Convertir les 14 `Scenario` en au moins 14 tests distincts nommés dans le `mod tests`
+    `#[cfg(test)]` inline de ./error.rs : le fichier compte zéro test inline à ce jour ; écarts à
+    couvrir intégralement, les 5 tests siblings qui affirment déjà un statut (./middleware.rs un
+    `401`, ./dual.rs deux `401`, ./mod.rs deux `502`) n'affirment ni le corps, ni le code `MRD-*`,
+    ni le `Content-Type` et n'exercent pas le contrat de ce fichier
+    en continuations si nécessaire ; les six tests de rendu HTTP tournent sous `#[tokio::test]` en
+    lisant le corps avec @axum::body::to_bytes (dev-dependencies déjà présentes via les tests de
+    ./mod.rs) — le contrat ne déborde pas du fichier, aucun test d'intégration séparé requis
+
+Done when:
+  Les 14 `Scenario` ont chacun au moins un test nommé distinct et vert dans le `mod tests` de
+    ./error.rs, sur features par défaut comme sur `--no-default-features` (fichier inconditionnel)
+  La table variante → code → statut → corps → `Content-Type` et la distinction de @Error::source
+    sont affirmées par les tests sans réinterprétation : assertion par chaîne exacte, pas de
+    `contains` sur le code
+  Le mutisme @tracing de `Must not` est certifié par lecture statique du fichier (aucun appel
+    @tracing, @println, @dbg)
+  Les cinq lignes `[?]` de `Tasks` sont arbitrées par Sébastien et leurs suites reflétées dans le
+    contrat ou le code
+
+Scenario: Display 001 cookie de session absent
+  Given l'erreur @AuthError::NotAuthenticated construite directement
+  When la @Display est évaluée par `to_string`
+  Then la chaîne renvoyée est exactement `MRD-AUTH-001: not authenticated (no session cookie)`
+
+Scenario: Display 002 session invalide
+  Given l'erreur @AuthError::InvalidSession construite directement
+  When la @Display est évaluée par `to_string`
+  Then la chaîne renvoyée est exactement `MRD-AUTH-002: invalid or expired session`
+
+Scenario: Display 003 charge utile transmise verbatim
+  Given l'erreur @AuthError::Oidc dont la charge utile @String vaut `issuer unreachable`
+  When la @Display est évaluée par `to_string`
+  Then la chaîne renvoyée est exactement `MRD-AUTH-003: OIDC error: issuer unreachable`
+  And la charge utile suit le préfixe `MRD-AUTH-003: OIDC error: ` octet pour octet, sans filtre ni troncature
+
+Scenario: Display 014 token inconnu ou révoqué
+  Given l'erreur @AuthError::InvalidToken construite directement
+  When la @Display est évaluée par `to_string`
+  Then la chaîne renvoyée est exactement `MRD-AUTH-014: invalid or unknown API token`
+
+Scenario: Display 015 token expiré
+  Given l'erreur @AuthError::TokenExpired construite directement
+  When la @Display est évaluée par `to_string`
+  Then la chaîne renvoyée est exactement `MRD-AUTH-015: expired API token`
+
+Scenario: Display 016 DbErr embarqué
+  Given l'erreur @AuthError::Database encapsulant @sea_orm::DbErr::Custom de texte `boom`
+  When la @Display est évaluée par `to_string`
+  Then la chaîne renvoyée est exactement `MRD-AUTH-016: database error: Custom Error: boom` (préfixe de @sea_orm::DbErr vérifié dans sea-orm 2.0.2)
+
+Scenario: rendu HTTP 401 pour 001
+  Given l'erreur @AuthError::NotAuthenticated
+  When @IntoResponse::into_response est appelée
+  Then le statut est `401`
+  And le corps lu par @axum::body::to_bytes est exactement `MRD-AUTH-001: not authenticated (no session cookie)`
+  And l'en-tête @CONTENT_TYPE vaut `text/plain; charset=utf-8`
+
+Scenario: rendu HTTP 401 pour 002
+  Given l'erreur @AuthError::InvalidSession
+  When @IntoResponse::into_response est appelée
+  Then le statut est `401`
+  And le corps lu par @axum::body::to_bytes est exactement `MRD-AUTH-002: invalid or expired session`
+  And l'en-tête @CONTENT_TYPE vaut `text/plain; charset=utf-8`
+
+Scenario: rendu HTTP 502 pour 003
+  Given l'erreur @AuthError::Oidc dont la charge utile @String vaut `discovery failed`
+  When @IntoResponse::into_response est appelée
+  Then le statut est `502`
+  And le corps lu par @axum::body::to_bytes est exactement `MRD-AUTH-003: OIDC error: discovery failed`
+  And l'en-tête @CONTENT_TYPE vaut `text/plain; charset=utf-8`
+
+Scenario: rendu HTTP 401 pour 014
+  Given l'erreur @AuthError::InvalidToken
+  When @IntoResponse::into_response est appelée
+  Then le statut est `401`
+  And le corps lu par @axum::body::to_bytes est exactement `MRD-AUTH-014: invalid or unknown API token`
+  And l'en-tête @CONTENT_TYPE vaut `text/plain; charset=utf-8`
+
+Scenario: rendu HTTP 401 pour 015
+  Given l'erreur @AuthError::TokenExpired
+  When @IntoResponse::into_response est appelée
+  Then le statut est `401`
+  And le corps lu par @axum::body::to_bytes est exactement `MRD-AUTH-015: expired API token`
+  And l'en-tête @CONTENT_TYPE vaut `text/plain; charset=utf-8`
+
+Scenario: rendu HTTP 500 pour 016
+  Given l'erreur @AuthError::Database encapsulant @sea_orm::DbErr::Custom de texte `boom`
+  When @IntoResponse::into_response est appelée
+  Then le statut est `500`
+  And le corps lu par @axum::body::to_bytes est exactement `MRD-AUTH-016: database error: Custom Error: boom`
+  And l'en-tête @CONTENT_TYPE vaut `text/plain; charset=utf-8`
+
+Scenario: erreur SeaORM convertie par l'opérateur de propagation
+  Given un @sea_orm::DbErr::Custom de texte `connection lost`
+  When la conversion @From générée par `#[from]` est appliquée — le chemin qu'emprunte
+    l'opérateur `?` dans @issue_token, @validate_token, @revoke_token, @ensure_token et @graphql_handler
+  Then la valeur obtenue est @AuthError::Database conservant l'erreur d'origine
+  And sa @Display vaut exactement `MRD-AUTH-016: database error: Custom Error: connection lost`
+
+Scenario: source présente sur 016 seulement
+  Given une valeur de chacune des six variantes de @AuthError, @AuthError::Database encapsulant @sea_orm::DbErr::Custom de texte `boom`
+  When @Error::source est appelée sur chacune
+  Then la réponse est @Some, égal au @sea_orm::DbErr embarqué, pour @AuthError::Database seulement
+    (`#[from]` vaut `#[source]`, vérifié dans le source de thiserror-impl 2.0.20)
+  But la réponse est @None pour les cinq autres variantes, @AuthError::Oidc compris

@@ -1,0 +1,444 @@
+Spec: openapi — contrat public OpenAPI et Swagger UI
+
+Purpose:
+  Construire et servir le contrat public OpenAPI de la crate : un fragment @utoipa::openapi::@OpenApi
+    par entité montée (@openapi::@resource_openapi — 5 routes CRUD, schéma du @Model, enveloppe de
+    pagination @Paged{Model}, exigence de sécurité Bearer unique), fusionnable par
+    @utoipa::openapi::@OpenApi::@merge, et deux montages HTTP : @openapi::@openapi_router (toujours
+    compilé, sert `GET /api/openapi.json`) et @openapi::@swagger_ui_router (sous la seule feature
+    `swagger-ui`, sert l'UI sur `/api/swagger-ui` et son propre `/api/openapi.json`).
+  Garder ce document comme l'artefact public de la séparation voulue par /miryad-core.sdd : l'IR
+    frontend (@ir) est l'artefact interne, `openapi.json` reste le contrat externe, et aucune extension
+    `x-miryad-*` n'entre ici. Le fichier ne décide aucune autorisation et n'accède à aucune base : il
+    décrit des routes montées ailleurs (./mod.rs) et sert un document JSON déjà construit.
+
+Owns:
+  ./openapi.rs
+
+Can read:
+  ./mod.rs — le préfixe `/api/v1` réellement monté par @rest::@resource_router et les @ListParams
+    `page`/`per_page`/`filter` que consomme @list_handler — le document doit décrire ces routes-là
+  ./core.rs — sémantique effective de `filter` (appliqué seulement si @MiryadResource::filter_column est
+    @Some) et statut `200` de la création (jamais `201`)
+  ./error.rs — les codes réellement émis sur ces routes (`MRD-REST-001` en `404`, `MRD-REST-002` en
+    `403`, `422` JSON {code, message} pour @HookError, `MRD-REST-003`/`MRD-REST-004` en `500`) — corps
+    que le document ne restitue pas
+  ../auth/dual.rs — le @str::strip_prefix("Bearer ") consommé une seule fois, qui fonde la description
+    exigée du schéma Bearer
+  ../auth/error.rs — `MRD-AUTH-014` : l'échec produit quand le préfixe est collé deux fois
+  /Cargo.toml — @utoipa dépendance non optionnelle, @utoipa-swagger-ui optionnelle sous
+    `swagger-ui = [dep:utoipa-swagger-ui]`
+
+References:
+  /miryad-core.sdd — interdit d'étendre le document OpenAPI d'extensions de scaffolding `x-miryad-*` ;
+    deux publics, deux artefacts
+  ../lib.sdd — la racine déclare @openapi_router hors feature et @swagger_ui_router sous `swagger-ui`,
+    et pose qu'aucun gating racine n'existe pour `swagger-ui` : le `#[cfg]` vit dans ce fichier
+  ../query.sdd — les cinq clés wire de @PagedResult, que le schéma @Paged{Model} reproduit champ pour
+    champ ; la normalisation qu'il impose (`page >= 1`, `1 <= per_page <= 1000`) n'est en revanche pas
+    déclarée dans le document
+  ../ir.sdd — l'autre artefact de la séparation : @ir ne consomme jamais ce document ; la réciproque
+    vaut ici
+  ../resource.sdd — @MiryadResource, lu en amont de @RestEntity dont ce fichier hérite via
+    @OpenApiEntity
+  /docs/architecture.md — section « OpenAPI + Swagger UI » : choix de l'API bas niveau de @utoipa (ni
+    la macro @utoipa::@path ni @utoipa_axum, incompatibles avec des handlers génériques), enveloppe de
+    pagination construite à la main faute de @ToSchema sur @PagedResult, point d'attention
+    `#[schema(as = NomUnique)]`
+  /tooling.sdd — la matrice qui prouve ce gating : `swagger-ui` monte @swagger_ui_router,
+    `--no-default-features` le retire et garde tout le reste
+
+Must:
+  Compiler sous toute la matrice de /tooling.sdd, avec un gating exactement réduit à une option : le
+    fichier ne porte que deux `#[cfg(feature = "swagger-ui")]` — celui de @openapi::@swagger_ui_router
+    et celui de son test inline ; @OpenApiEntity, @openapi::@resource_openapi et
+    @openapi::@openapi_router ne portent aucun `#[cfg]`, et @utoipa est une dépendance non optionnelle
+    de /Cargo.toml — vérifié dans ces deux sources, conformément à ../lib.sdd (aucun gating racine pour
+    `swagger-ui`).
+  Décrire dans @resource_openapi les cinq routes telles que @rest::@resource_router les monte :
+    `GET`/`POST` sur `/api/v1/{resource}` et `GET`/`PUT`/`DELETE` sur `/api/v1/{resource}/{id}`, avec le
+    préfixe `/api/v1` (figé dans le crate, feature 6) et le segment `{id}` à l'identique — toute
+    dérive d'ici est un désaccord entre le document publié et les routes réellement servies.
+  Enregistrer dans les @components du fragment le schéma du @Model sous @ToSchema::name() (nom porté
+    par `#[schema(as = …)]` dans les fixtures — `Recipe`), plus les schémas imbriqués rapportés par
+    @ToSchema::schemas à leurs propres noms, plus l'enveloppe @Paged{nom du schéma du model} construite
+    à la main.
+  Épingler le schéma @Paged{Model} à exactement cinq propriétés toutes requises — `items` (tableau de
+    références vers le schéma du model), `page`, `per_page`, `total_items`, `total_pages` (quatre
+    `integer` nues) — mêmes clés que les cinq champs sérialisés de @PagedResult de ../query.rs : les
+    deux fichiers ne sont reliés par aucun lien de compilation, seule l'identité des clés tient le
+    contrat.
+  Déclarer sur l'opération `GET` de collection trois query parameters non requis — `page` et `per_page`
+    (`integer`) et `filter` (`string`) — et sur chacune des trois opérations d'item le path parameter
+    `id` (`integer`, requis) ; ni @format (`int32`/`int64`) ni bornes (`1`, plafond `1000` de @query) ne
+    sont déclarés sur ces schémas.
+  Déclarer par opération les statuts et corps suivants, descriptions en français literalles : liste
+    `200` « Liste paginée » en `application/json` (référence vers @Paged{Model}) ; création corps
+    requis @Model en `application/json`, réponses `200` « Créé » (@Model, `application/json`) et `403`
+    « Refusé » ; lecture `200` « Trouvé », `403`, `404` « Non trouvé » ; mise à jour corps @Model,
+    `200` « Mis à jour », `403`, `404` ; suppression `204` « Supprimé » sans contenu, `403`, `404`. Les
+    réponses d'erreur sont déclarées sans schéma de corps.
+  Déclarer un @utoipa::openapi::security::@SecurityScheme @Http @Bearer, enregistré sous le nom literal
+    `bearer_auth`, avec une description non nulle — le fichier porte la phrase exacte « Coller le token
+    seul, sans le préfixe "Bearer" : Swagger UI l'ajoute automatiquement. », visible telle quelle dans
+    le JSON servi — ajout du fix de l'issue #21 (PR #23, commit 6cf92d5) : côté serveur, le
+    @str::strip_prefix("Bearer ") de ../auth/dual.rs ne retire le préfixe qu'une fois, et coller un
+    préfixe `Bearer` dans le champ « Authorize » le double, ce qui fait échouer l'auth avec
+    `MRD-AUTH-014`. Le contrat testé par le fichier est une description présente mentionnant « bearer »
+    à n'importe quelle casse ; la phrase complète est le wording en vigueur, pas une formule libre.
+  N'autoriser que l'authentification par token API dans le schéma : aucun @SecurityScheme pour le
+    cookie de session — il est @HttpOnly et chiffré, inutilisable depuis le champ « Authorize » de
+    Swagger UI (décision documentée de /docs/architecture.md).
+  Poser le fragment comme document à fusionner, pas fini : @openapi::@resource_openapi ne renseigne
+    pas @Info (titre/version) — une @utoipa::openapi::@OpenApi::@merge ne fusionne jamais `info` ;
+    l'app remplit ces champs sur le document final. En sérialisé, le fragment rendu porte donc
+    `openapi` à `3.1.0` (défaut @utoipa vérifié dans sa source) et un `info` aux `title` et `version`
+    vides tant que l'app ne les a pas renseignés.
+  Publier une exigence de sécurité globale unique — un seul @SecurityRequirement référençant
+    `bearer_auth` avec une liste de scopes vide — qui s'applique aux cinq opérations sans override
+    opération par opération.
+  Compter sur @utoipa::openapi::@OpenApi::@merge pour dédoublonner entre fragments, sémantiques
+    vérifiées dans la source @utoipa-5.5.0 (et non dans ses doc-comments) : schémas et security schemes
+    comparés par nom — en cas d'homonymes le premier document gagne, l'apport du second est écarté en
+    silence ; exigences de sécurité comparées par égalité d'objet entier, la duplication tombée ;
+    chemins fusionnés par @PathItem — sur un chemin déjà présent seules les opérations manquantes sont
+    ajoutées.
+  Servir dans @openapi::@openapi_router une unique route, `GET /api/openapi.json`, sans aucun extracteur
+    d'authentification ni requirement @FromRef : le document est public et infallible, réponse `200`
+    `application/json` (@axum::@Json) du document sérialisé ; le document est cloné à chaque requête
+    depuis la copie possédée par le routeur — son contenu est fixé à la construction, jamais observé
+    après coup.
+  Monter @openapi::@swagger_ui_router sur les chemins absolus `/api/swagger-ui` et
+    `/api/openapi.json` — jamais par un `.nest` externe, car @utoipa_swagger_ui::@SwaggerUi::url fixe
+    aussi l'URL interrogée par le JS de l'UI — comportement vérifié dans la source
+    `utoipa-swagger-ui-9.0.2/src/axum.rs` : `GET /api/swagger-ui` sans barre finale répond une
+    redirection `303 See Other` vers `/api/swagger-ui/`, la version avec barre finale et ses sous-chemins
+    servent l'UI, et le `.url(...)` enregistre son propre `GET /api/openapi.json` rendant le document
+    en JSON.
+  Rendre les deux mécanismes de `/api/openapi.json` exclusifs l'un de l'autre : combiner
+    @openapi_router et @swagger_ui_router dans un même @Router fait paniquer axum au montage
+    (« Overlapping method route. Handler for `GET /api/openapi.json` already exists ») — vérifié dans
+    la source @axum-0.8.9 (@MethodRouter::@merge propage l'erreur, @Router::@merge la convertit via
+    `panic_on_err!`) ; l'app
+    choisit l'un ou l'autre, comme le dit déjà le commentaire du fichier.
+  Garde-fous de pureté : aucune trace @tracing — le fichier n'en émet aucune —, aucune connexion de
+    base, aucun mot-clé @async dans le code de production, aucun effet de bord ; les routeurs n'exigent
+    que `@S: @Clone + @Send + @Sync + 'static`, sans @MiryadAuthState ni @FromRef.
+  Garantir l'absence de toute extension du document : le fichier ne construit jamais d'
+    @Extensions — ni en racine, ni par chemin, ni par opération — et ne nomme aucun préfixe `x-` ; le
+    JSON sérialisé d'un fragment (ou de fragments fusionnés) ne contient aucune clé `x-miryad-*`,
+    interdiction héritée de /miryad-core.sdd dont ce fichier est l'artefact tentant.
+
+Must not:
+  Ajouter une extension `x-miryad-*` (ou toute clé `x-`) au document pour pousser du scaffolding
+    frontend vers l'outillage du template `miryad` : la séparation des deux artefacts est le contrat de
+    /miryad-core.sdd et de ../ir.sdd, et l'IR se consomme via @ir::@IrRegistry, jamais via
+    `openapi.json`.
+  Consommer @ir::@resource_ir, @ir::@IrRegistry ou importer quoi que ce soit de ../ir.rs ici : le sens
+    de dépendance déclaré par ../ir.sdd est IR→jamais-OpenAPI ; croiser les deux replierait les artefacts.
+  Réutiliser le schéma `Paged{Model}` comme source de vérité côté @query (importer @PagedResult pour le
+    décrire) ou renommer/ajouter une clé d'un côté sans l'autre : la duplication assumée est le contrat,
+    la divergence silencieuse des clés wire en est la rupture.
+  Fixer un @Info (titre, version) dans un fragment : @OpenApi::@merge n'en fusionne pas la valeur — un
+    renseigné ici serait silencieusement perdu à la fusion, et l'app doit renseigner le document final.
+  Déclarer ici les routes GraphQL (`POST /api/graphql`) ou MCP (`POST /mcp`) : surfaces gated par leurs
+    propres features, hors du graphe de compilation de ce fichier — le document ne décrit que REST (la
+    question de couvrir les autres routes REST du crate est ouverte en `Tasks`).
+  Réécrire les schémas avec la macro @utoipa::@path ou @utoipa_axum : ils exigent une fonction concrète
+    par route, incompatible avec les handlers génériques par entité — choix acté et documenté dans
+    /docs/architecture.md ; de même ne pas exiger un @ToSchema écrit à la main sur @PagedResult.
+  Déclarer la création en `201` : le handler de ./mod.rs répond `200` avec le modèle créé (test inline
+    `openapi_router_serves_the_spec_as_json` de ./mod.rs côté surface) ; le document doit décrire le
+    `200` réellement émis.
+  Poser @swagger_ui_router ou son test hors de leur `#[cfg(feature = "swagger-ui")]` : @utoipa_swagger_ui
+    est optionnelle, un `#[cfg]` manquant casse la compilation `--no-default-features`.
+
+Depends on:
+  @utoipa 5 — @OpenApi/@OpenApiBuilder, @Paths::@add_path_operation, @ComponentsBuilder,
+    @OperationBuilder/@ParameterBuilder/@RequestBodyBuilder/@ResponseBuilder, schémas @Object/@Array,
+    @SecurityScheme/@HttpBuilder/@SecurityRequirement, traits @ToSchema/@PartialSchema ; dépendance non
+    optionnelle de /Cargo.toml, donc compilation sur toute la matrice.
+  @utoipa_swagger_ui 9 (feature `axum`) — @SwaggerUi monté par @swagger_ui_router ; optionnel,
+    exactement sous `swagger-ui`.
+  @axum — @Router, @Json, @routing::@get ; porteur du refus explicite de double montage (panic au
+    merge, vérifié source @axum-0.8.9).
+  ./mod.rs — @crate::rest::@RestEntity, supertrait de @OpenApiEntity ; le préfixe monté et les query
+    parameters réels vivent là, lus en lecture seule (Can read).
+  ../query.rs — contrat wire uniquement, sans aucun import de code : @PagedResult n'est pas nommé par
+    ./openapi.rs ; seules les cinq clés relient les deux fichiers.
+  # Section `#[cfg(test)]` du fichier : fixtures d'entités SeaORM avec @utoipa::@ToSchema dérivé et
+  # `#[schema(as)]`, exercées via @tokio, @tower et @serde_json (dev-dependencies de /Cargo.toml)
+  # uniquement sous `cfg(test)`.
+
+Exposes:
+  @OpenApiEntity — `pub trait OpenApiEntity: @RestEntity<Model: @ToSchema> {}` avec implémentation
+    blanket (`impl<@E> @OpenApiEntity for @E where @E: @RestEntity<@Model: @ToSchema>`) ; aucune méthode,
+    rien à implémenter par entité au-delà de @MiryadResource + @ToSchema (+ `#[schema(as)]` d'usage,
+    non forcé par le compilateur) ; compilé hors feature.
+  @openapi::@resource_openapi — `pub fn @resource_openapi<@E: @OpenApiEntity>() -> @OpenApi`, pure, sans
+    `#[cfg]`, compilée sur toute la combinaison y compris `--no-default-features`.
+  @openapi::@openapi_router — `pub fn @openapi_router<@S>(@spec: @OpenApi) -> @axum::@Router<@S>` où
+    `@S: @Clone + @Send + @Sync + 'static`, sans `#[cfg]` ; possède le document (passé par valeur).
+  @openapi::@swagger_ui_router — `pub fn @swagger_ui_router<@S>(@spec: @OpenApi) -> @axum::@Router<@S>`,
+    mêmes bornes, seul élément du fichier gated par `#[cfg(feature = "swagger-ui")]` (avec son test).
+  @BEARER_SECURITY_SCHEME — constante privée valant literal `bearer_auth`, nom sous lequel le schéma
+    apparaît dans `components.securitySchemes` (clé sérialisée en camelCase par @utoipa) et dans l'unique
+    exigence de sécurité globale ; privée mais épinglée ici car son littéral est une clé du JSON publié.
+  Aucun `pub use` ; chemins publics @miryad_core::rest::@openapi::{@OpenApiEntity, @resource_openapi,
+    @openapi_router, @swagger_ui_router} — ce que promet déjà ../lib.sdd.
+
+Accepts:
+  @resource_openapi : un type @E satisfying @RestEntity — c'est-à-dire @MiryadResource, @Model
+    @Serialize + @DeserializeOwned + @Sync + @IntoActiveModel, clé primaire unique `i32` — plus
+    @Model: @utoipa::@ToSchema ; rien au runtime, aucune base, aucun contexte. La devise de nom unique
+    du schéma (`#[schema(as)]`) est une exigence d'usage documentée, pas une borne du compilateur.
+  @openapi_router / @swagger_ui_router : un document @OpenApi déjà construit et fusionné par l'appelant,
+    passé par valeur ; tout @S satisfaisant les trois bornes — aucun lien avec @MiryadAuthState ni avec
+    un état applicatif.
+  Entrée de compilation : le graphe de features de /Cargo.toml ; seul `swagger-ui` change la surface
+    exposée par ce fichier.
+
+Returns:
+  @resource_openapi : un @OpenApi dont `paths` contient exactement deux entrées (`/api/v1/{resource}`,
+    `/api/v1/{resource}/{id}`) portant les cinq opérations décrites ; `components` contient le schéma du
+    @Model sous son nom @ToSchema, ses schémas imbriqués, @Paged{nom} à cinq clés toutes requises, et
+    `securitySchemes` à la seule entrée `bearer_auth` (schéma @Http @Bearer décrit plus haut) ;
+    `security` à un seul élément `{"bearer_auth": []}` ; `openapi` sérialisé `3.1.0` ; `info` par défaut
+    (@utoipa n'en connaît pas d'absent : `title`/`version` chaînes vides) jusqu'au renseignement par
+    l'app ; `servers`, `tags`, `external_docs` et `extensions` absents (non sérialisés).
+  @openapi_router : un @Router d'exactement une route ; `GET /api/openapi.json` → `200`,
+    `application/json`, corps = sérialisation @serde du document possédé par le routeur ; toute autre
+    méthode ou voie relève du fallback @axum (`405`/`404`).
+  @swagger_ui_router : un @Router qui redirige `GET /api/swagger-ui` (`303` @StatusCode::@SEE_OTHER) vers
+    `/api/swagger-ui/`, sert l'UI sur cette voie et ses sous-chemins, et sert `GET /api/openapi.json` en
+    JSON (document passé à @SwaggerUi::url).
+
+Raises:
+  Aucun code `MRD-<DOMAINE>-NNN` : le fichier n'en émet et n'en définit aucun — @resource_openapi est
+    infaillible (`-> @OpenApi` direct), les routeurs ne construisent aucune réponse d'erreur eux-mêmes ;
+    @HookError n'y a aucun usage.
+  Échecs observables hors du fichier, contractualisés comme tels : double montage @openapi_router +
+    @swagger_ui_router → panic @axum au startup (message « Overlapping method route. Handler for
+    `GET /api/openapi.json` already exists », source @axum-0.8.9, vérifiée) ; erreur de service interne
+    de la part de @utoipa_swagger_ui sur un asset de l'UI → `500` émis par la dépendance (source
+    `utoipa-swagger-ui-9.0.2/src/axum.rs`), hors taxonomie de la crate ; voie inconnue → `404` du fallback
+    @axum.
+  Aucun échec de sérialisation à la construction : @OpenApi::@merge et les builders @utoipa n'ont pas de
+    branche d'erreur ; la seule sérialisation @serde_json réelle a lieu à la requête, dans @axum::@Json.
+
+Handles:
+  Fusion de fragments de plusieurs entités : chemins distincts coexistent ; homonymes de schémas — deux
+    entités dérivant un @ToSchema nu portent toutes deux le nom du type @Model et @utoipa ne garde que
+    le premier schéma rencontré, en silence (source @utoipa-5.5.0 vérifiée) ; /docs/architecture.md en
+    fait l'exigence `#[schema(as)]` côté app, que le trait @OpenApiEntity ne peut pas forcer — question
+    ouverte en `Tasks`.
+  Collision du nom d'enveloppe : une entité dont le schéma s'appellerait `PagedX`, homonyme du
+    `Paged{Model}` d'une autre, tombe sous la même règle — premier schéma gagné, le second écarté en
+    silence.
+  Entité sans @MiryadResource::filter_column : le query parameter `filter` reste déclaré sur sa liste
+    — ./core.rs l'ignore sans erreur quand aucune colonne de filtre n'est déclarée (source vérifiée) ;
+    sur-déclaration ouverte en `Tasks`.
+  Entité dont @ToSchema::schemas rapporte des schémas imbriqués : ils sont enregistrés à leurs noms, sans
+    filtre ni renommage ; un @Model feuille n'ajoute rien.
+  `page`/`per_page` hors bornes ou non numériques au sens @query : la normalisation et le rejet `400`
+    vivent dans la surface (../query.sdd, extracteurs @axum) ; le document, lui, ne déclare ni format ni
+    bornes — écart de déclaration ouvert avec les réponses d'erreur en `Tasks`.
+  Document servi : aucun en-tête @Authorization requis ; le même document est rendu à chaque requête,
+    cloné sans égard pour un changement du `@spec` d'origine (il est possédé par le routeur).
+  Feature `swagger-ui` absente : @swagger_ui_router et son test inline n'existent pas ; @openapi_router
+    conserve seul `GET /api/openapi.json` — la preuve inverse (route `/api/swagger-ui` en `404` sans la
+    feature) est un `Scenario` de cette spec.
+
+Tasks:
+  [?] Couverture du document : @resource_openapi fragmente les routes CRUD montées par l'app, mais le
+    crate monte aussi @rest::@users_router (`GET /api/v1/users`), @rest::@me_router (`GET /api/v1/me`),
+    @rest::@tokens_router (`/api/v1/tokens`), @auth::@auth_router (`/auth/*`) et, sous leurs features,
+    @graphql::@graphql_router (`POST /api/graphql`) et @mcp::@mcp_router (`POST /mcp`) — aucune de ces
+    routes n'a de fragment dans la crate, et un `openapi.json` construit à coups de
+    @resource_openapi::@merge ne les mentionne pas. L'asymétrie REST interne (admin/me/tokens absents du
+    contrat documenté) est-elle le périmètre voulu d'OpenAPI (décision à consigner ici), ou le crate
+    doit-il fournir des fragments pour ses propres routes ? (GraphQL et MCP hors document par nature de
+    surface, hors question.)
+  [?] Le query parameter `filter` est déclaré sur la liste de toute entité, y compris celles qui ne
+    déclarent pas de @MiryadResource::filter_column — ./core.rs l'ignore alors silencieusement
+    (vérifié). Le document sur-déclare : garder tel quel, ou @resource_openapi doit-il lire
+    @filter_column pour ne déclarer `filter` que quand il agit ?
+  [?] Le document n'ajoute aux réponses déclarées ni `400` (rejet @serde des query parameters / corps
+    malformés, émis par @axum), ni `401` (@auth::@AuthPrincipal refusant le cookie/token absent —
+    `MRD-AUTH-014` entre autres), ni `422` (corps JSON {code, message} de @HookError via
+    @RestError::@Application de ./error.rs), ni `500` (`MRD-REST-003`/`MRD-REST-004`) ; les `403` et
+    `404` déclarés sont de plus sans schéma de corps alors que serveur répond une chaîne textuelle
+    `MRD-REST-…`. Contrat public = sous-ensemble connu (et il faut l'écrire comme tel) ou document à
+    compléter de ces réponses ?
+  [?] Homonymes de schémas en fusion : deux @ToSchema sans `#[schema(as)]` portent le nom @Model et la
+    fusion écarte le second en silence (source @utoipa vérifiée) ; /docs/architecture.md pose
+    `#[schema(as)]` en exigence d'usage non forcée par @OpenApiEntity. Le risque reste-t-il un point
+    d'attention documentaire, ou une vérification (refus, détection au merge) est-elle due aux
+    consommateurs ?
+  [ ] Convertir les treize `Scenario` en au moins treize tests nommés distincts du `#[cfg(test)] mod
+    tests` de ./openapi.rs — le contrat ne déborde pas du fichier —, sept tests inline existants
+    conservés et six à créer, avec la correspondance exacte suivante :
+    « @resource_openapi déclare les cinq routes CRUD » →
+      `resource_openapi_declares_expected_paths_and_methods` (existant) ;
+    « l'enveloppe Paged{Model} broche les cinq clés de @PagedResult » →
+      `resource_openapi_declares_model_and_paged_schemas` (existant, à étendre : vérifier les cinq
+      clés de @PagedRecipe, leurs cinq marques `required`, et `items` comme tableau de références vers
+      `Recipe`) ;
+    « paramètres `page`/`per_page`/`filter` en query et `id` en path » →
+      `resource_openapi_declares_query_and_path_parameters` (à créer) ;
+    « chaque opération déclare son jeu de statuts et ses corps » →
+      `resource_openapi_declares_operations_responses_and_bodies` (à créer) ;
+    « le fragment ne fixe pas @Info, version OpenAPI `3.1.0` » →
+      `resource_openapi_fragment_leaves_info_unset_and_versions_3_1_0` (à créer) ;
+    « le schéma `bearer_auth` porte la description anti-préfixe » →
+      `resource_openapi_declares_bearer_security_scheme` (existant, décrit l'état depuis le fix #23) ;
+    « fusionner deux fragments d'entités expose toutes les routes » →
+      `merged_fragments_expose_all_paths_without_collision` (existant) ;
+    « la fusion garde un schéma et une exigence de sécurité uniques » →
+      `merging_fragments_does_not_duplicate_the_security_scheme` (existant) ;
+    « @openapi_router sert le document JSON sans authentification » →
+      `openapi_router_serves_the_spec_as_json` (existant ; la requête du test n'envoie déjà aucun en-tête
+      @Authorization — l'assertion du caractère public est dans ce `Scenario`) ;
+    « @swagger_ui_router (feature `swagger-ui`) sert l'UI et son propre JSON » →
+      `swagger_ui_router_serves_the_ui` (existant sous `#[cfg(feature = "swagger-ui")]`, à étendre :
+      `GET /api/swagger-ui` en redirection, `GET /api/swagger-ui/` en `200`, `GET /api/openapi.json` en
+      JSON du même document) ;
+    « hors feature `swagger-ui`, `/api/swagger-ui` répond `404` » →
+      `swagger_ui_route_absent_without_feature` (à créer sous `#[cfg(not(feature = "swagger-ui"))]`,
+      monté sur @openapi_router seul — s'exécute sur le run `--no-default-features` de /tooling.sdd) ;
+    « combiner les deux routeurs fait paniquer axum au montage » →
+      `merging_openapi_and_swagger_ui_routers_panics` (à créer sous `#[cfg(feature = "swagger-ui")]`,
+      `#[should_panic(expected = "Overlapping method route")]`, test synchrone — le panic est levé par
+      @Router::@merge) ;
+    « le document publié ne porte aucune extension `x-miryad-*` » →
+      `resource_openapi_emits_no_x_miryad_extension` (à créer : sérialiser un fragment et une fusion,
+      affirmer l'absence de toute clé `x-miryad-`).
+  [ ] Rejouer la matrice de /tooling.sdd sur le fichier : `--no-default-features` (preuve du non-gating
+    de @openapi_router et du @Scenario hors feature), `--features swagger-ui` (UI, JSON et panic),
+    défaut et `--all-features`, clippy `-D warnings` sur chaque combinaison — `missing_docs` et les
+    `pedantic` sur les trois items publics déjà documentés ne doivent pas bouger.
+
+Done when:
+  La spec porte exactement treize `Scenario`, chacun vérifié par son test nommé distinct dans le
+    `#[cfg(test)] mod tests` de ./openapi.rs (sept conservés, six créés — treize tests minimum),
+    exerçant son `Then` sans invention supplémentaire.
+  @openapi_router est servi sur `--no-default-features` (le `Scenario` hors feature le prouve),
+    @swagger_ui_router l'est sous `swagger-ui`, et le montage combiné panique — les trois faits le sont
+    par test, pas par commentaire.
+  Les clés du schéma @Paged{Model} restent identiques aux clés wire de @PagedResult (contrat relu contre
+    ../query.sdd après toute évolution d'un côté ou de l'autre).
+  Aucune clé `x-miryad-*` n'apparaît dans un document sérialisé, la tâche de preuve l'ayant vérifié.
+  Les quatre lignes `[?]` de `Tasks` ont été arbitrées par Sébastien et portées dans `Must`, `Handles`
+    ou `Tasks`, et Sébastien a approuvé la spec — le comportement accidentel (sur-déclaration du `filter`,
+    sous-déclaration des réponses d'erreur, silence de la fusion sur homonymes) ne devient contrat
+    qu'à ce prix.
+
+Scenario: @resource_openapi déclare les cinq routes CRUD
+  Given la fixture @recipe::Entity, @MiryadResource nommée `recipes` avec un @Model dérivant @ToSchema
+    sous le nom `Recipe`
+  When @resource_openapi::<@recipe::@Entity>() construit le fragment
+  Then le chemin `/api/v1/recipes` porte les opérations `GET` et `POST`
+  And le chemin `/api/v1/recipes/{id}` porte les opérations `GET`, `PUT` et `DELETE`
+  And aucun autre chemin n'apparaît dans les chemins du fragment
+
+Scenario: l'enveloppe Paged{Model} broche les cinq clés de @PagedResult
+  Given le fragment de @recipe::@Entity
+  When ses @components sont inspectés
+  Then le schéma `PagedRecipe` existe, à côté du schéma `Recipe`
+  And ses propriétés sont exactement `items`, `page`, `per_page`, `total_items` et `total_pages` — les
+    cinq clés wire de @PagedResult de ../query.rs, identiques champ pour champ
+  And les cinq sont marquées requises
+  And `items` est un tableau dont l'élément est la référence vers le schéma `Recipe`
+
+Scenario: paramètres `page`, `per_page` et `filter` en query, `id` en path
+  Given le fragment de @recipe::@Entity
+  When les paramètres de ses opérations sont inspectés
+  Then l'opération `GET /api/v1/recipes` déclare exactement trois query parameters non requis : `page`
+    et `per_page` en `integer`, `filter` en `string`
+  And chacune des opérations d'item déclare le path parameter `id`, `integer`, requis
+  But aucun `format` (`int32`, `int64`) ni aucune borne (`1`, plafond `1000` de @query) n'est déclaré sur
+    ces schémas
+
+Scenario: chaque opération déclare son jeu de statuts et ses corps
+  Given le fragment de @recipe::@Entity
+  When les réponses et corps de ses cinq opérations sont inspectés
+  Then `GET` collection répond `200` « Liste paginée » en `application/json` avec référence vers
+    `PagedRecipe`, et rien d'autre
+  And `POST` collection a un corps requis `application/json` référençant `Recipe`, et répond `200` « Créé »
+    (`Recipe`) et `403` « Refusé »
+  And `GET` item répond `200` « Trouvé » (`Recipe`), `403` « Refusé » et `404` « Non trouvé »
+  And `PUT` item a un corps requis référençant `Recipe` et répond `200` « Mis à jour », `403`, `404`
+  And `DELETE` item répond `204` « Supprimé » sans contenu, `403` et `404`
+  But aucuns `400`, `401`, `422` ou `500` ne sont déclarés
+
+Scenario: le fragment ne fixe pas Info et se versionne OpenAPI 3.1.0
+  Given le fragment brut produit par @resource_openapi::<@recipe::@Entity>()
+  When il est construit avant toute fusion
+  Then son @Info porte titre et version vides — le fragment ne fixe pas les métadonnées, l'app les
+    renseigne sur le document final après @merge, qu'une fusion ne fusionne pas
+  And sérialisé, il porte le champ `openapi` égal à `3.1.0` (défaut @utoipa vérifié dans la source amont)
+
+Scenario: le schéma bearer_auth porte la description anti-préfixe
+  Given le fragment de @recipe::@Entity
+  When son @components expose `securitySchemes`
+  Then l'entrée `bearer_auth` est un @SecurityScheme @Http de schéma @Bearer
+  And sa description est présente et mentionne « bearer » à n'importe quelle casse — wording en vigueur :
+    coller le token seul, sans le préfixe `Bearer`, que Swagger UI ajoute lui-même (fix #21/#23 : collé
+    par le client, le préfixe est doublé et l'auth échoue en `MRD-AUTH-014`)
+  And une unique exigence de sécurité globale `{"bearer_auth": []}` s'applique aux opérations
+  But aucun schéma pour le cookie de session n'est déclaré
+
+Scenario: fusionner deux fragments d'entités expose toutes les routes
+  Given les fragments de @recipe::@Entity (`recipes`) et @ingredient::@Entity (`ingredients`)
+  When ils sont fusionnés par @OpenApi::@merge
+  Then les quatre chemins `/api/v1/recipes`, `/api/v1/recipes/{id}`, `/api/v1/ingredients` et
+    `/api/v1/ingredients/{id}` sont tous présents avec leurs opérations
+
+Scenario: la fusion garde un schéma de sécurité et une exigence uniques
+  Given la fusion des fragments de @recipe::@Entity et @ingredient::@Entity, chacun déclarant
+    `bearer_auth`
+  When le document fusionné est inspecté
+  Then `securitySchemes` ne contient `bearer_auth` qu'une fois — dédoublonné par nom (sémantique @utoipa
+    vérifiée dans la source)
+  And la sécurité globale fusionnée compte exactement une exigence — dédoublonnée par égalité d'objet
+
+Scenario: openapi_router sert le document JSON sans authentification
+  Given le fragment de @recipe::@Entity monté seul par @openapi_router, sans aucun autre routeur
+  When un client envoie `GET /api/openapi.json` sans en-tête @Authorization
+  Then la réponse est `200`, et le corps se relit comme un document @OpenApi valide
+  And le document servi contient `/api/v1/recipes`
+  And la route ne dépend d'aucun état applicatif ni d'@MiryadAuthState
+
+Scenario: swagger_ui_router sert l'UI et son propre JSON sous la feature
+  Given la bibliothèque compilée avec la feature `swagger-ui` et @swagger_ui_router monté avec le
+    fragment de @recipe::@Entity — seul, sans @openapi_router
+  When `GET /api/swagger-ui` est demandé sans barre finale
+  Then la réponse est une redirection `303 See Other` (@StatusCode::@SEE_OTHER) vers `/api/swagger-ui/`
+    (montage vérifié dans la source
+    `utoipa-swagger-ui-9.0.2`)
+  When `GET /api/swagger-ui/` puis `GET /api/openapi.json` sont demandés
+  Then le premier répond `200` avec l'UI, et le second répond le document en JSON — l'UI sert son propre
+    `/api/openapi.json`, d'où l'exclusion de @openapi_router
+
+Scenario: hors feature swagger-ui la route de l'UI répond 404
+  Given la bibliothèque compilée `--no-default-features`, sans `swagger-ui` — @swagger_ui_router n'existe
+    pas à la compilation
+  When @openapi_router seul est monté et que `GET /api/swagger-ui` est demandé
+  Then la réponse est `404` du fallback @axum — aucune route d'UI n'a été enregistrée
+  But `GET /api/openapi.json` de @openapi_router reste servi `200`
+
+Scenario: combiner les deux routeurs fait paniquer le montage
+  Given la feature `swagger-ui` activée et un @Router dans lequel l'app fusionne @openapi_router(spec)
+    puis @swagger_ui_router(spec) du même document
+  When @Router::@merge enregistre les deux gestionnaires `GET /api/openapi.json`
+  Then le montage panique en startup avec « Overlapping method route. Handler for
+    `GET /api/openapi.json` already exists » (refus vérifié source @axum-0.8.9)
+  But les monter l'un ou l'autre — pas les deux — ne panique jamais
+
+Scenario: le document publié ne porte aucune extension x-miryad
+  Given un fragment @resource_openapi::<@recipe::@Entity>() puis la fusion avec celui de
+    @ingredient::@Entity
+  When chacun est sérialisé en JSON
+  Then aucune clé commençant par `x-miryad-` n'apparaît nulle part dans le document — ni en racine, ni
+    sous les chemins, ni sous les schémas
+  And l'artefact interne du scaffolding reste @ir::@IrRegistry, que ce document ne contient pas

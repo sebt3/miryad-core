@@ -1,0 +1,376 @@
+Spec: mod — contrat d'agrégation du module graphql
+
+Purpose:
+  Agrégation et gating du module GraphQL de la crate : ./mod.rs déclare les quatre sous-modules
+    @handler (privé), @hooks, @principal, @registry et opère le ré-export sélectif de leurs six
+    items `pub` — @graphql_router, @MiryadHooks, @GraphQlPrincipal, @load_principal, @EntityPolicy,
+    @PolicyRegistry. Il ne définit aucun type, aucune fonction, aucun état, aucune erreur : toute
+    logique (schéma, hooks RBAC, snapshot de principal, registre de politique) vit chez les
+    enfants, chacun gardant sa spec adjacente propre. Le fichier porte aussi, héritée de
+    /miryad-core.sdd, la promesse du gating : le module compile sous la feature `graphql` seule,
+    posée à la déclaration de ../lib.sdd, qui tire @seaography, @async-graphql,
+    @async-graphql-axum et surtout la feature Cargo `sea-orm/seaography` de `sea-orm` — activée
+    ici, faute de quoi @DeriveRelatedEntity ne génère rien et les relations disparaissent en
+    silence du schéma (fix #20, commit `2c74320`). Le `#[cfg(feature = "graphiql")]` de la route
+    `GET /api/graphiql` vit dans ./handler.rs (lignes 24 et 55, vérifié au source) et ne concerne
+    pas ./mod.rs, strictement identique sous `graphql` et sous `graphiql`.
+
+Structure:
+  ./handler.rs — sous-module `mod` (privé) : @graphql_router et ses handlers internes
+    @graphql_handler, @graphiql_handler ; seul @graphql_router est ré-exporté ; sa spec propre le
+    décrit
+  ./hooks.rs — sous-module `pub` : @MiryadHooks, pont @LifecycleHooksInterface vers les
+    politiques (@entity_guard, @entity_filter, @before_active_model_save), porteur des motifs
+    `MRD-GQL-001` et `MRD-GQL-002` ; sa spec propre le décrit
+  ./principal.rs — sous-module `pub` : @GraphQlPrincipal (snapshot précalculé par requête) et
+    @load_principal ; sa spec propre le décrit
+  ./registry.rs — sous-module `pub` : @PolicyRegistry (index par @MiryadResource::resource_name)
+    et @EntityPolicy ; sa spec propre le décrit
+    # Les quatre enfants sont déclarés par ./mod.rs mais non ownés : ./mod.rs n'est autorité que
+    # sur les déclarations de modules et les ré-exports.
+
+Owns:
+  ./mod.rs
+    Y compris tout `#[cfg(test)] mod tests` inline ou doctest porté par son bloc `//!` : le
+    fichier n'en porte aucun à la rédaction (13 lignes : en-tête `//!`, quatre déclarations,
+    quatre @pub @use) et ces preuves sont à créer par `Tasks`.
+
+References:
+  /miryad-core.sdd — contrat hérité : parité des trois surfaces lues à l'identique depuis la seule
+    métadonnée @MiryadResource, codes `MRD-<DOMAINE>-NNN` dont le domaine `MRD-GQL`, exception
+    @HookError, et la ligne `Must` racine qui impose `graphiql` impliquant `graphql` et `graphql`
+    activant `sea-orm/seaography`
+  ../lib.sdd — déclare @graphql sous `#[cfg(feature = "graphql")]`, interdit tout `pub use` de
+    racine, pose que `graphiql` ne change rien à la surface racine (son cfg vit ici en ./handler.rs)
+    et promet `POST /api/graphql` sous `graphql` et `GET /api/graphiql` sous `graphiql` — promesses
+    tenues par @graphql_router, dont la présence même de ce ré-export est l'engagement du fichier
+  /Cargo.toml — graphe `[features]` : `graphql = ["dep:seaography", "dep:async-graphql",
+    "dep:async-graphql-axum", "sea-orm/seaography"]`, `graphiql = ["graphql",
+    "async-graphql/graphiql"]` ; lecture seule, propriétaire /miryad-core.sdd
+  /docs/architecture.md — récit « API GraphQL » : rejet du RBAC natif Seaography/SeaORM, pont
+    @LifecycleHooksInterface, motif d'assemblage par l'app (`Builder::register_entity` +
+    @PolicyRegistry::register en parallèle), fix #20 (@DeriveRelatedEntity sous feature Cargo de
+    `sea-orm`, motif attendu `Relation` + `DeriveRelatedEntity`) et épinglement `async-graphql`/
+    `async-graphql-axum` à `"7"` — jamais `"8"`, sous peine de rupture de typage du @Schema de
+    Seaography
+  ../resource.sdd — métadonnée @MiryadResource dont @PolicyRegistry::register est le seul port
+    d'entrée GraphQL ; le miroir @graphql::@EntityPolicy y est revendiqué
+  /tooling.sdd — batterie sur chaque combinaison de features : c'est elle qui prouve le gating
+    (`--no-default-features`, `--features graphql`, `--features graphiql`, `--all-features`)
+
+Must:
+  Porter le gating comme pur effet de la déclaration de ../lib.sdd : `#[cfg(feature = "graphql")]`
+    est posé sur `pub mod graphql` dans ../lib.rs ; ./mod.rs n'en porte aucun et n'en répète
+    aucun — conséquence d'atomicité : les quatre enfants et les six ré-exports compilent ou
+    disparaissent ensemble sur ce seul cfg, jamais partiellement.
+  Fixer la surface publique du module, identique sur toute combinaison contenant `graphql` : les
+    six items en chemins courts `miryad_core::graphql::*` (@graphql_router, @MiryadHooks,
+    @GraphQlPrincipal, @load_principal, @EntityPolicy, @PolicyRegistry), les trois modules `pub`
+    ./hooks.rs, ./principal.rs, ./registry.rs joignables en chemins longs, ./handler.rs et ses
+    handlers inaccessibles hors du fichier — et rien d'autre.
+  Tenir vérifié au source amont, non à la doc, ce que `graphql` active dans `sea-orm` et pourquoi :
+    dans `sea-orm-macros 2.0.2`, `derives/related_entity.rs` (lu), la génération de
+    @DeriveRelatedEntity est tout entière sous `#[cfg(feature = "seaography")]` ; sous
+    `#[cfg(not(feature = "seaography"))]` l'extension renvoie un `TokenStream` vide — sans la
+    feature Cargo `sea-orm/seaography` de `sea-orm` (distincte de la crate @seaography), le derive
+    ne génère silencieusement aucune impl @seaography::@RelationBuilder et l'entité cesse d'être
+    traversable dans le schéma, sans aucune erreur de compilation pour le signaler : c'est le
+    piège du fix #20 (commit `2c74320`, « Closes #20 »), d'où `"sea-orm/seaography"` dans la
+    feature `graphql` de miryad-core, unifié par Cargo dans le graphe de l'app consommatrice ;
+    ./mod.rs est le point de la crate dont la compilation dépend de cet état et doit le préserver
+    (cf. `Must not`).
+  Assurer la parité d'identité des surfaces (/miryad-core.sdd) par ./registry.rs : la politique
+    GraphQL d'une entité ne peut exister que via @PolicyRegistry::register pour `E: MiryadResource`
+    — @EntityPolicy n'a hors ./registry.rs aucun constructeur (champ @before_create `pub(crate)`,
+    pas de @derive @Default : littéral impossible hors de la crate, vérifié au source ; cf.
+    Scenario « aucune politique hors register ») ; ./mod.rs ne propose ni ne laisse passer aucune
+    autre porte d'entrée de politique vers le schéma.
+  Rester identique sous `graphql` et sous `graphiql` : le fichier ne mentionne pas `graphiql` du
+    tout — aucune déclaration, ré-export ou visibilité ne change selon cette feature ; la seule
+    différence observable sous `graphiql` est la route `GET /api/graphiql` montée par
+    @graphql_router, contrat de ./handler.rs — asymétrie de surface signalée ici, portée par
+    l'enfant.
+  N'assembler aucun état applicatif : ./mod.rs ne construit aucun @Schema, n'appelle aucun
+    @seaography::@Builder, n'enregistre aucune entité, ne pose aucun @with_state ; @graphql_router
+    est générique sur l'état @S avec la seule borne @MiryadAuthState: @FromRef<@S> — même forme que
+    @auth::auth_router et @rest::resource_router — et ne présume donc d'aucun état concret d'app.
+  N'émettre aucune trace ni erreur en production : zéro @tracing, aucun littéral `MRD-GQL-` écrit
+    ici (les motifs `MRD-GQL-001` et `MRD-GQL-002` sont portés par ./hooks.rs), aucune impression ;
+    ./mod.rs ne peut pas paniquer de son propre fait — le fichier ne contient aucune ligne
+    exécutable.
+  Garder l'en-tête `//!` aligné sur la promesse réelle : rôle (« API GraphQL dynamique via
+    Seaography — RBAC via `LifecycleHooksInterface` »), mention de l'exigence de la feature
+    `graphql` — jamais de `graphiql`, dont l'effet n'est pas porté par ce fichier — et deux liens
+    intra-doc `crate::graphql::@graphql_router` et `crate::graphql::@PolicyRegistry` qui résolvent
+    en permanence puisque ./mod.rs ne compile que sous `graphql`.
+
+Must not:
+  Ajouter un gating interne au fichier — un `#[cfg(feature = ...)]` sur une déclaration ou un
+    ré-export, `graphiql` inclus : le cfg racine de ../lib.sdd suffit à tout le gating, et le seul
+    cfg de détail utile (la route `graphiql`) vit déjà ./graphql/handler.rs ; un cfg `graphiql` en
+    ./mod.rs contredirait ../lib.sdd (« `graphiql` ne change rien à la surface racine ; son cfg
+    vit dans ./graphql/handler.rs ») et briserait la parité `graphql`/`graphiql` posée en `Must`.
+  Passer ./handler.rs en `pub` ou ré-exporter @graphql_handler ou @graphiql_handler : la surface
+    HTTP passe uniquement par @graphql_router ; ouvrir ./handler.rs offrirait un chemin doublon
+    `miryad_core::graphql::handler::graphql_router` et exposerait des handlers que l'app n'appelle
+    jamais directement.
+  Héberger un type, une erreur, un trait, un helper ou une logique de câblage sous prétexte que le
+    module agrège quatre enfants (défaut partagé, macro de montage, type façade @GraphQLError) :
+    le contrat d'un mod.rs de la crate est déclaratif ; @rest::RestEntity et @rest::resource_router
+    vivent dans ./rest/mod.rs parce que ./rest/mod.rs les définit, pas parce qu'un mod.rs en
+    héberge — toute définition posée ici sortirait de l'objet des specs d'enfants.
+  Reporter l'activation de `sea-orm/seaography` sur la default de la crate ou sur une charge de
+    l'app : `graphql` en est le porteur unique contracté par /miryad-core.sdd et argumenté en
+    `Must` ; l'ôter du graphe ferait disparaître les relations des schémas sans erreur (piège #20
+    vérifié au source), et la déplacer en default imposerait une génération de code qui référence
+    des chemins `seaography::` aux builds d'app excluant `graphql`, dont le graphe n'a pas la
+    dépendance @seaography.
+  Décrire ici le détail des six items (signatures complètes, règles RBAC, codes `MRD-GQL`) : la
+    présente spec a autorité sur déclarations et ré-exports seulement ; le menu appartient à
+    ./handler.sdd, ./hooks.sdd, ./principal.sdd, ./registry.sdd.
+
+Depends on:
+  Graphe `[features]` de /Cargo.toml (lecture) — `graphql` et ses trois dépendances optionnelles
+    + `sea-orm/seaography` ; `graphiql` qui implique `graphql`
+  ./handler.rs — @graphql_router, seul item ré-exporté d'un module privé
+  ./hooks.rs — @MiryadHooks et les motifs `MRD-GQL-001`/`MRD-GQL-002` ; le @HookError applicatif
+    qu'il restitue en chaîne, sans taxonomie de la crate
+  ./principal.rs — @GraphQlPrincipal et @load_principal (une lecture DB par requête, avant
+    @schema.execute)
+  ./registry.rs — @PolicyRegistry et @EntityPolicy, seul vecteur de politique GraphQL, branché sur
+    ../resource.rs
+  @seaography `2.0.0-rc.9`, @async-graphql `7`, @async-graphql-axum `7` — actifs par `graphql` ;
+    ./mod.rs ne les référence pas directement mais ne compile qu'avec eux ; épinglement de
+    versions porté par /docs/architecture.md
+  /src/auth/state.sdd et /src/auth/dual.sdd — @MiryadAuthState (borne @FromRef de @graphql_router)
+    et @AuthPrincipal (extraction dual-auth) que la surface montée consomme — contrat des enfants,
+    pas d'ici
+
+Exposes:
+  @graphql_router — `pub fn graphql_router<S>(schema: Schema) -> axum::Router<S>` where `S: Clone
+    + Send + Sync + 'static`, `MiryadAuthState: FromRef<S>` ; @Schema =
+    `async_graphql::dynamic::Schema`, passé par valeur, déjà monté par l'app via @seaography ;
+    générique sur l'état @S uniquement, jamais sur une entité — un routeur pour tout le schéma,
+    asymétrie de forme assumée avec @rest::resource_router::<@E, @S> (un par entité) ; monte
+    `POST /api/graphql`, plus `GET /api/graphiql` sous `graphiql` (routes réelles : ./handler.rs) ;
+    ré-exporté depuis un module privé
+  @MiryadHooks — `pub struct` (champ @PolicyRegistry privé), @MiryadHooks::new(@PolicyRegistry),
+    @impl @LifecycleHooksInterface ; ré-exporté et joignable en @graphql::hooks::@MiryadHooks
+  @PolicyRegistry — `pub struct` à index `HashMap<&str, EntityPolicy>` privé, @new,
+    @register::<@E>() -> `&mut Self` pour `E: MiryadResource`, @get(&str) ->
+    `Option<&EntityPolicy>` ; @derive @Debug + @Default ; aussi joignable en
+    @graphql::registry::@PolicyRegistry
+  @EntityPolicy — `pub struct` @derive @Debug + @Clone, champs `pub` @read, @write
+    (@AccessPolicy), @owner_column (`Option<String>`), champ @before_create `pub(crate)` —
+    non constructible hors de ./registry.rs ; la forme complète est le contrat de ./registry.sdd
+  @GraphQlPrincipal — `pub struct` @derive @Debug + @Clone, champs `pub` @user_id (@i32),
+    @is_admin (@bool), @groups (`HashSet<String>`) ; aussi joignable en
+    @graphql::principal::@GraphQlPrincipal
+  @load_principal — `pub async fn load_principal(db: &DatabaseConnection, principal:
+    &AuthPrincipal) -> Result<GraphQlPrincipal, DbErr>` ; aussi joignable en
+    @graphql::principal::@load_principal
+  Les quatre déclarations de modules — ./handler.rs `mod` privé (@graphql_handler et
+    @graphiql_handler inaccessibles hors ./handler.rs), ./hooks.rs, ./principal.rs, ./registry.rs
+    `pub mod` — donc double adressage de chaque item public enfant, chemin court ré-exporté et
+    chemin long (arbitrage `Tasks` `[?]`)
+  L'en-tête `//!` et ses deux liens vers les deux items de capteur (@graphql_router,
+    @PolicyRegistry) — deux des six items, les quatre autres ne sont pas cités ; aucun
+    `#[cfg(test)] mod tests` inline à la rédaction — les preuves du fichier sont à créer (`Tasks`)
+
+Accepts:
+  ./mod.rs — aucune entrée runtime : aucune fonction, aucun état ; les seules entrées sont les
+    sélections du graphe `[features]` (/Cargo.toml) et la compilation des enfants
+  @graphql_router, ré-exporté — un @Schema déjà construit par l'app (Builder Seaography + hooks
+    câblés par elle) et un état @S résolvant @FromRef de @MiryadAuthState ; ./mod.rs ne valide,
+    ne complète et ne construit ce @Schema sous aucune combinaison
+  Adressage consommateur — chemins courts `miryad_core::graphql::@X` garantis par les ré-exports ;
+    chemins longs `miryad_core::graphql::registry::@PolicyRegistry` etc. garantis par les trois
+    `pub mod` ; les deux formes désignent les mêmes items
+  Hors `graphql` et `graphiql` — aucune entrée : le module n'est pas déclaré, le chemin
+    `miryad_core::graphql` n'existe pas (`Returns`, `Raises`)
+
+Returns:
+  ./mod.rs ne retourne rien — zéro fonction ; il retourne une surface par combinaison de features :
+  défaut (`static-frontend`), `--no-default-features`, `swagger-ui` seul, `mcp` seul — module
+    absent : les chemins `miryad_core::graphql::*` ne résolvent pas, sans erreur de substitution
+  `--no-default-features --features graphql` et `--all-features` — les six items en chemins
+    courts, trois modules `pub` en chemins longs, un module privé ; @graphql_router montant
+    `POST /api/graphql` (route réelle : ./handler.rs)
+  `--no-default-features --features graphiql`, sans que `graphql` soit nommée — surface strictement
+    identique par implication, @graphql_router y montant en plus `GET /api/graphiql` (contrat
+    ./handler.rs) ; ../lib.sdd couvre la même implication à la racine
+
+Raises:
+  ./mod.rs ne construit ni ne propage aucune erreur, aucun code, aucune @panic — aucune ligne
+    exécutable ; les codes du domaine `MRD-GQL-001` et `MRD-GQL-002` sont écrits en ./hooks.rs et
+    ./hooks.sdd arbitrera leur enveloppe (`Tasks` `[?]`)
+  Modes de défaillance de gating, côté compilation — sans `graphql`/`graphiql` : toute import
+    `miryad_core::graphql::*` échoue (`E0432`/`E0433`, module non déclaré, ../lib.sdd) ; avec la
+    feature mais sans `sea-orm/seaography` dans le graphe : échec silencieux — @derive sans effet,
+    schéma amputé de ses relations, aucune erreur pour le dire (piège #20, vérifié au source
+    `sea-orm-macros 2.0.2`) ; le mode d'échec attendu est préventif — le contrat est que le graphe
+    reste conforme, pas qu'une erreur rattrape la dérive
+  Sur la surface montée (délégation, specs enfants à venir) — @DbErr de @load_principal et
+    @AuthError de @graphql_handler remontés via `?` par ./handler.rs ; refus RBAC en
+    @GuardAction::@Block @Option<@String> (./hooks.rs, @seaography ne transporte qu'une chaîne) ;
+    @HookError du @before_create restitué sans taxonomie `MRD-*` ; ./mod.rs ne retransforme rien,
+    ne pouvant rien — le `.expect` de dispatch du downcast dans ./registry.rs est dette harnais
+    préexistante de /tooling.sdd à la charge de ./registry.sdd
+
+Handles:
+  Toute la matrice /tooling.sdd — défaut, `--no-default-features`, `swagger-ui`, `graphql`,
+    `graphiql`, `mcp`, `--all-features` : `swagger-ui`, `mcp` et `static-frontend` n'ont aucune
+    prise sur ./mod.rs (aucun cfg croisé) ; la combinaison `graphql` + `mcp` compile (débloquée
+    historiquement par le bump @vynil-core `0.7.4`, commit `6384a68`) — deux modules gateés
+    coexistents, sans interference
+  Absence de feature demandée explicitement (`--no-default-features`, ou défaut) : module
+    simplement non déclaré — pas de squelette, pas de stub, pas d'erreur ; même loi que
+    ../lib.sdd pour @frontend et @mcp
+  Vie interne à la crate : les enfants s'appellent entre eux par `crate::graphql::*` (./handler.rs
+    importe `crate::graphql::principal::@load_principal` ; ./hooks.rs relit
+    `crate::graphql::principal::@GraphQlPrincipal` et `crate::graphql::registry::@PolicyRegistry`) ;
+    aucun autre module de la crate n'importe @crate::graphql (vérifié au source) — @rest, @mcp,
+    @users, @auth ignorent cette surface : la parité des surfaces se joue sur @MiryadResource et
+    @rbac, pas sur le module
+  Deux registres parallèles à la charge de l'app : @PolicyRegistry et @Builder::register_entity de
+    Seaography ne sont reliés par rien d'automatisé — si l'enregistrement de politique manque pour
+    une entité présente au schéma, @entity_guard de ./hooks.rs répond @GuardAction::@Allow par
+    défaut : fail-open sur entité non enregistrée, en asymétrie du fail-closed `MRD-GQL-001` ;
+    risque d'intégration signalé en `Tasks` `[?]`, contrat de ./hooks.sdd à venir
+  Asymétries de surface constatées entre GraphQL, REST et MCP (signalées, non corrigées —
+    chaque arbitrage est de spec d'enfant ou de Sébastien) : pagination — ./query.rs n'est pas
+    consommé ici, @PagedResult ne s'applique pas, Seaography porte sa propre pagination ; un
+    @Schema global ici contre un routeur par entité en REST ; enveloppe d'erreur non typée
+    (@GuardAction Block @String) contre @RestError typé côté REST ; @OpenAPI et @ir ne décrivent
+    pas le schéma GraphQL
+
+Tasks:
+  [ ] Convertir les six `Scenario` en au moins six preuves nommées distinctes, une par scenario,
+    avec la correspondance : « six ré-exports résolvent sous `graphql` » →
+    `graphql_surface_six_reexports_resolve`, dans le `#[cfg(test)] mod tests` inline à créer dans
+    ./mod.rs (sa seule compilation sous `graphql` prouve l'atomicité du gating ; chaîne
+    @PolicyRegistry::new + @register::<@E> + @get sur une fixture du pattern `recipe` de
+    ./registry.rs) ; « surface pleine sous graphiql par implication » →
+    `graphiql_implies_full_surface`, dans le même module inline sous `#[cfg(feature =
+    "graphiql")]` ; « le module est absent sans graphql ni graphiql » →
+    `graphql_surface_absent_without_feature`, portée par les runs nommés
+    `cargo test --no-default-features` et `cargo test --no-default-features --features swagger-ui`
+    de la batterie /tooling.sdd — précédent : le scenario « Surface disponible sans aucune
+    feature » de ../rest/mod.sdd prouvé de même, une négation de compilation ne pouvant vivre
+    dans la cible qu'elle nie ; « handler reste caché derrière son ré-export » → doctest
+    `compile_fail` du bloc `//!` (`use miryad_core::graphql::handler;` — `E0603`, stable sur la
+    matrice : collecté seulement quand le module compile, sa cause d'échec ne dépend d'aucune
+    feature) ; « chemins courts et chemins d'enfant désignent les mêmes types » →
+    `graphql_paths_alias_module_reexports`, inline ; « aucune politique hors register » → doctest
+    `compile_fail` du bloc `//!` (littéral @EntityPolicy complet hors crate — `E0451` sur le
+    champ `pub(crate)` @before_create).
+  [?] ./hooks.rs, ./principal.rs et ./registry.rs sont `pub mod` alors que tous leurs items `pub`
+    sont déjà ré-exportés en chemin court : chaque item a deux adresseurs (`graphql::@PolicyRegistry`
+    et `graphql::registry::@PolicyRegistry`) tandis que ./handler.rs est `mod` — homogénéise-t-on
+    les quatre en `mod` + six ré-exports comme surface unique, ou le double adressage est-il un
+    contrat assumé (docs.rs arbore alors l'arborescence) ? Décision de surface publique à trancher
+    avec Sébastien ; ./mod.rs garde les déclarations actuelles dans les deux cas.
+  [?] Enveloppe d'erreur du domaine `MRD-GQL` : `MRD-GQL-001` et `MRD-GQL-002` voyagent en
+    @String dans @GuardAction::@Block (./hooks.rs), faute de type de domaine typé — contrainte de
+    @seaography —, en asymétrie de @RestError ; ./rest/error.sdd a déjà signalé l'écart :
+    l'arbitrage appartient à ./hooks.sdd à venir — Sébastien confirme-t-il le code `MRD-GQL-NNN`
+    en message libre comme contrat du domaine, ou exige-t-on une enveloppe structurée ?
+  [?] ./hooks.rs renvoie deux fois à `docs/features/7b-hooks-metier-crud.md` (commentaires de
+    lignes 96 et 121) — fichier supprimé, .specdd/bootstrap.project.md actant qu'il n'y a plus de
+    design de feature dans `docs/features/` : réorienter ces commentaires vers
+    /docs/architecture.md (section « API GraphQL ») ou vers la future ./hooks.sdd ? Correction à
+    faire dans ./hooks.rs, hors des Owns d'ici, signalée parce que ./mod.rs déclare l'enfant.
+  [?] Fail-open d'enregistrement : ./hooks.rs répond @GuardAction::@Allow quand une entité du
+    schéma n'a pas de ligne dans @PolicyRegistry — asymétrie avec le fail-closed `MRD-GQL-001` ;
+    le module n'offre aucun lien entre @Builder::register_entity et @PolicyRegistry::register, les
+    deux gestes étant à la charge de l'app (/docs/architecture.md l'assume). Exige-t-on un
+    fail-closed (refus d'entité inconnue du registre) ou l'Allow par défaut reste-t-il le contrat,
+    arbitré en ./hooks.sdd ?
+  [ ] Rejouer la batterie complète de /tooling.sdd (toutes les combinaisons de /AGENTS.md,
+    `--no-default-features` comme preuve d'absence et `--features graphiql` comme preuve
+    d'implication, plus `cargo test --doc` pour les deux doctests `compile_fail`) après création
+    des preuves ; les quatre `[?]` ci-dessus sont portés aux specs enfants ou tranchés ici.
+
+Done when:
+  Chaque `Scenario` de la présente spec est couvert par sa preuve nommée distincte — deux tests
+    inline du `#[cfg(test)] mod tests` de ./mod.rs, deux doctests `compile_fail` de son bloc
+    `//!`, et deux runs nommés de la batterie pour l'absence — soit au moins six preuves pour six
+    scenarios ; la batterie de /tooling.sdd passe verte sur toutes les combinaisons de features
+    avec `-- -D warnings`, `--no-default-features` prouvant l'absence du module et
+    `--features graphiql` l'implication sans déclaration de `graphql` ; les lignes `[?]` ont reçu
+    une décision de Sébastien reportée dans la spec (double adressage, enveloppe `MRD-GQL`,
+    commentaires orphelins, fail-open d'enregistrement), chacune portée vers la spec d'enfant
+    concernée si c'est elle qui doit la porter ; la spec est relue et approuvée par lui.
+
+Scenario: six ré-exports résolvent sous graphql
+  Given un build `--no-default-features --features graphql` de la bibliothèque
+  When un test inline de ./mod.rs — compilé seulement sous `graphql`, lui-même preuve d'atomicité —
+    référence @graphql_router, @MiryadHooks, @GraphQlPrincipal, @load_principal, @EntityPolicy et
+    @PolicyRegistry par leurs seuls chemins courts `crate::graphql::*` et instancie
+    @PolicyRegistry::@new puis @register::<@E> puis @get("recipes") sur une fixture entité du
+    pattern `recipe` de ./registry.rs
+  Then la cible de test compile et le test passe : la surface courte complète est résolue sans
+    jamais passer par un chemin d'enfant
+  But `crate::graphql::handler::graphql_router` n'y est pas constructible — la négation vit dans
+    le scenario « handler reste caché derrière son ré-export »
+
+Scenario: surface pleine sous graphiql par implication
+  Given un build `--no-default-features --features graphiql`, sans que `graphql` soit nommée
+    nulle part — l'implication `graphiql = ["graphql", "async-graphql/graphiql"]` de /Cargo.toml
+    suffit
+  When un test inline de ./mod.rs sous `#[cfg(feature = "graphiql")]` référence les six mêmes items
+    en chemins courts
+  Then la cible compile et le test passe : module et surface sont présents par la seule implication
+  And @graphql_router monté dans cette app de test sert aussi `GET /api/graphiql` — la route
+    réelle et son HTML sont le contrat de ./handler.rs (spec à produire), ./mod.rs ne changeant
+    aucune ligne entre les deux combinaisons
+
+Scenario: le module est absent sans graphql ni graphiql
+  Given la bibliothèque en features par défaut (`static-frontend` seule), puis en
+    `--no-default-features`, puis en `--no-default-features --features swagger-ui`
+  When la compilation et les tests de la crate tournent sur ces trois runs de la batterie
+    /tooling.sdd
+  Then la compilation réussit : aucune déclaration de la crate ne référence @graphql, le module
+    n'est pas déclaré — pas de squelette, pas de stub, pas d'erreur de substitution, @rest, @mcp
+    et @auth montent normalement
+  And toute import `miryad_core::graphql::*` par un consommateur échoue à la compilation
+    (`E0432`/`E0433`) — preuve hors crate, ./mod.rs n'étant pas compilé pour la porter
+
+Scenario: handler reste caché derrière son ré-export
+  Given le module compilé sous toute combinaison contenant `graphql` (donc `graphiql`)
+  When un consommateur écrit `use miryad_core::graphql::handler;` ou importe
+    `miryad_core::graphql::handler::graphql_router`
+  Then la compilation échoue — ./handler.rs est déclaré `mod` privé, réservé au sous-arbre du
+    module (`E0603`) — et `miryad_core::graphql::graphql_router` résout en revanche, par le
+    `pub use` de ./mod.rs
+  And la preuve stable sur la matrice est un doctest `compile_fail` porté par le bloc `//!` :
+    collecté seulement quand le module compile, sa cause d'échec (visibilité) ne dépend d'aucune
+    feature
+  But `crate::graphql::hooks::@MiryadHooks`, `crate::graphql::principal::@load_principal` et
+    `crate::graphql::registry::@PolicyRegistry` restent joignables — l'asymétrie d'un enfant
+    privé contre trois `pub` est le contrat déclaré ici, arbitrage en `Tasks` `[?]`
+
+Scenario: chemins courts et chemins d'enfant désignent les mêmes types
+  Given un build avec `graphql`
+  When un test inline de ./mod.rs lie `crate::graphql::@PolicyRegistry` et
+    `crate::graphql::registry::@PolicyRegistry` à une même variable typée, et même vérification
+    pour @MiryadHooks/@hooks, @GraphQlPrincipal/@principal, @load_principal/@principal,
+    @EntityPolicy/@registry
+  Then la compilation type-vérifie et le test passe : un item, deux adresseurs, aucune divergence
+    de type ni de visibilité entre les deux formes
+  And @register::<@E> appelé par l'un ou l'autre des deux chemins écrit dans le même registre —
+    les alias sont le même type, pas des newtype
+
+Scenario: aucune politique hors PolicyRegistry::register
+  Given une application consommatrice hors de la crate miryad-core
+  When elle tente de construire un @EntityPolicy par littéral de struct, même en nommant ses
+    quatre champs
+  Then la compilation échoue (`E0451` : le champ @before_create est `pub(crate)`, invisible hors
+    de ./registry.rs ; @EntityPolicy ne dérive pas @Default, pas de repli `..Default::default()`) —
+    vérifié au source de ./registry.rs et prouvé par un doctest `compile_fail` du bloc `//!` de
+    ./mod.rs, stable sur la matrice comme celui du module privé
+  And en revanche @PolicyRegistry::@new suivi de @register::<@E> compile et alimente @get : la
+    politique GraphQL n'entre dans le module que par @MiryadResource, ce qui fonde la parité de
+    lecture avec REST et MCP de /miryad-core.sdd
+  But @graphql_router accepte volontiers un @Schema dont une entité manque au @PolicyRegistry :
+    ./mod.rs n'assemble rien et n'avertit pas de l'oubli — fail-open en `Tasks` `[?]`

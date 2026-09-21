@@ -1,0 +1,611 @@
+Spec: registry — @McpToolRegistry : tools CRUD générés par entité @MiryadResource
+
+Purpose:
+  Porter le dispatch des cinq tools CRUD de la surface MCP : chaque entité @MiryadResource montée
+    par @McpToolRegistry::register est atteignable par nom à l'exécution (dispatch par chaîne comme
+    en GraphQL — @tools/call arrive avec un nom, pas un type Rust), et chacun des cinq bras de
+    @McpOp délègue ligne à ligne à @rest::core::list, @rest::core::get, @rest::core::create,
+    @rest::core::update et @rest::core::delete. Aucune autorisation, aucune pagination, aucun
+    invariant de clé primaire ou de colonne propriétaire n'est décidé ou réévalué ici : la parité
+    REST/MCP est structurelle — le contrat de ces décisions vit ./../rest/core.sdd.
+  Le fichier ne possède que trois choses : les enveloppes locales de désérialisation des
+    @arguments (@ListParams, @IdParams ou @E::Model nu selon @McpOp), la frontière de traduction
+    @RestError → @McpError par le @From de ./error.rs, et le registre @HashMap<@'static str,
+    @Box<@dyn @McpEntity>> qui ne retient que la clé nommée et le dispatcheur monomorphisé. Rien
+    de @MiryadResource n'est copié au registre — ni politique, ni colonne, ni hook ;
+    @graphql::EntityPolicy snapshotte ses @AccessPolicy et efface son hook @before_create en
+    pointeur sur `dyn` @std::any::Any à l'enregistrement (./../graphql/registry.rs). Ici chaque
+    politique, colonne et hook est relu en direct sur le trait, par la chaîne déléguée, à chaque
+    appel.
+  Aucun `#[cfg(feature = ...)]` dans le source : le fichier ne compile que sous les combinaisons
+    portant la feature `mcp`, via `#[cfg(feature = "mcp")] pub mod mcp` de ./../lib.rs
+    (./../lib.sdd) et `mod registry;` de ./mod.rs. Codes `MRD-*` construits par le fichier :
+    `MRD-MCP-005` (@McpError::InvalidParams) et `MRD-MCP-004` (@McpError::Render) seuls ;
+    `MRD-MCP-001`/002/003 transitent sans perte par @From<@RestError> ; `MRD-MCP-006`
+    (@McpError::UnknownTool) n'a ici aucun chemin de construction — la clé inconnue est tranchée
+    en amont par ./handler.rs. Zéro trace @tracing, zéro @axum, zéro envelope JSON-RPC, zéro
+    statut HTTP.
+  Amont vérifié au source du registre (`vynil-core 0.7.4`, `~/.cargo/registry/src`) : aucun
+    module ni source mcp, jsonrpc ou tool — @vynil-core n'apporte aucun registre d'outils MCP,
+    seul @vynil_core::hbs::HandleBars y est consommé, par ./format.rs et ./handler.rs, jamais par
+    ce fichier ; le dispatch de ./registry.rs est intégralement propre à miryad-core.
+
+Owns:
+  ./registry.rs
+
+References:
+  /miryad-core.sdd — contrat hérité : un code `MRD-*` par erreur interne, @HookError hors
+    taxonomie, lecture à l'identique par REST/GraphQL/MCP, au moins un test distinct par `Scenario`
+  /.specdd/bootstrap.project.md — contrats transverses : @tracing seul, gating de features
+    déclaré par la spec, une spec par fichier, tests rattachés au contrat exercé
+  /tooling.sdd — matrice de batteries : ./registry.rs n'est compilé que sous `--features mcp` et
+    `--all-features` ; aucun site de dette stricte dans le fichier à la rédaction — les @expect
+    et @unwrap des tests inline vivent sous l'exemption racine de ./../lib.rs
+  ./../lib.sdd — gating `mcp` de @mcp et promesse de surface « cinq tools par entité »,
+    @mcp::mcp_router et @mcp::McpToolRegistry
+  ./../rest/core.sdd — autorité déléguée : ordre des décisions, `404`-puis-`403`, invariants PK
+    et @owner_column, hook @before_create et son @Err @HookError ; ses `References` consignent le
+    présent fichier comme second appelant des cinq fonctions et consignent déjà le test inline
+    `update_dispatch_accepts_id_alongside_full_model_body` — la spec-ci décrit la délégation,
+    jamais le contrat délégué
+  ./../rest/mod.sdd — @rest::RestEntity : @Model @Serialize + @DeserializeOwned +
+    @IntoActiveModel + @Sync, @ActiveModel @Send, PK unique ValueType @i32 — limite propriété de
+    ./../rest/mod.rs, reprise telle quelle par la bound de @register
+  ./../resource.sdd — métadonnée relue en direct par la chaîne déléguée ; le scenario « position
+    du hook dans la création » y est créditée aux deux tests nommés de ./../rest/mod.rs
+    (`before_create_hook_mutation_is_applied_at_insert`,
+    `before_create_hook_error_blocks_insert_without_mrd_code`) — non dupliqué ici
+  ./../rbac.sdd — sa ligne `References` affirme, vérifié : les cinq outils MCP délèguent à
+    @rest::core sans réévaluer la politique ; ce contrat est la vérification de cette absence
+  ./error.rs — @McpError et son @From<@RestError> : @RestError::NotFound → `MRD-MCP-002`,
+    @RestError::Forbidden → `MRD-MCP-001`, @RestError::Database → `MRD-MCP-003`,
+    @RestError::Application → @McpError::Application sans code `MRD-*`, @RestError::Internal →
+    `MRD-MCP-007` ; codes JSON-RPC @rpc_code/@data rendus par ./handler.rs — contrat ./error.sdd
+  ./handler.rs — seul appelant du fichier : compose les cinq noms `{resource_name}_list`,
+    `{resource_name}_get`, `{resource_name}_create`, `{resource_name}_update`,
+    `{resource_name}_delete` (table @OPERATIONS + @strip_suffix), itère @registry.entities.values()
+    pour `tools/list`, lit @registry.format pour le rendu, décide @McpError::UnknownTool sur nom
+    invalide ou clé absente — l'enveloppe JSON-RPC et les @inputSchema annoncés sont le contrat
+    de ./handler.sdd
+  ./format.rs — @OutputFormat : stocké par ./registry.rs sans jamais être lu ni appliqué ici ;
+    tout rendu (@RenderShape, templates @Json/@Yaml/@Markdown/@Custom, @Value::Null de
+    @McpOp::Delete) est le contrat de ./format.sdd — les questions de rendu y renvoient
+  ./protocol.rs — @JsonRpcRequest/@JsonRpcResponse : jamais nommés depuis ce fichier
+
+Must:
+  Déléguer sans jamais re-décider : chaque bras de @McpOp appelle exactement une des cinq
+    fonctions de @rest::core (@McpOp::List → @rest::core::list, @McpOp::Get → @rest::core::get,
+    @McpOp::Create → @rest::core::create, @McpOp::Update → @rest::core::update, @McpOp::Delete →
+    @rest::core::delete), en transmettant tels quels la @sea_orm::DatabaseConnection, la référence
+    @crate::auth::AuthPrincipal et les paramètres bruts ; les cinq bras ne nomment ni @rbac, ni
+    @users::resolve_user, ni @query, ni une accessseur de @MiryadResource — la parité REST/MCP
+    est cette identité de chemin, pas une coïncidence de rendu.
+  Lire les @arguments avant de déléguer, toute envelope refusée rendant
+    @McpError::InvalidParams (`MRD-MCP-005`, message @serde recopié dans @Display) sans
+    @rest::core appelé ni base touchée : @McpOp::List via @ListParams, @McpOp::Get et
+    @McpOp::Delete via @IdParams, @McpOp::Create avec les @arguments désérialisés directement en
+    @E::Model, @McpOp::Update en deux passes : @IdParams sur @params.clone() d'abord, @E::Model
+    sur l'original ensuite.
+  Tenir la double passe de @McpOp::Update comme contrat, pas comme détail : @id lu sur la copie,
+    modèle complet relu séparément, parce qu'une enveloppe @#[serde(flatten)] consommerait le
+    champ @id au profit du champ nommé et laisserait @E::Model sans sa PK non optionnelle —
+    régression documentée en commentaire du source et gravée par le test inline
+    `update_dispatch_accepts_id_alongside_full_model_body` ; l'@id passé à @rest::core::update est
+    celui de @IdParams, jamais celui du corps — @rest::core::update force le @WHERE (contrat
+    ./../rest/core.sdd).
+  Rendre tout succès en valeur @serde_json : @McpOp::List rend @serde_json::to_value du
+    @query::PagedResult, @McpOp::Get/@McpOp::Create/@McpOp::Update @serde_json::to_value du
+    E::Model retourné par @rest::core — mêmes types et même @Serialize que le @Json de la surface
+    REST, d'où un corps de succès identique entre les deux surfaces pour la même exécution ; tout
+    échec de sérialisation rend @McpError::Render (`MRD-MCP-004`).
+  Rendre @McpOp::Delete @Ok(@serde_json::Value::Null) sans @serde_json::to_value : @rest::core::delete
+    rend @Ok(()) et le fichier n'inspecte rien — seul @Ok fabriquable sans modèle ; le rendu de ce
+    @Value::Null selon @OutputFormat est ./format.sdd, y renvoyer.
+  Tenir le registre : @McpToolRegistry::new(format) vide la map et stocke le @OutputFormat —
+    jamais relu ni modifié par ./registry.rs, seul ./handler.rs lit @registry.format au rendu ;
+    @register<E: @RestEntity> insère la @Box de @McpEntityImpl::<E> (état : @std::marker::PhantomData
+    seul) sous la clé @E::resource_name() en `&'static str`, sémantique @HashMap::insert — une clé
+    déjà présente est remplacée en silence, sans erreur ni trace — et renvoie @&mut @Self pour
+    chaînage ; @McpEntity est un @trait @#[async_trait] @Send + @Sync, exigé par le partage
+    @Arc<@McpToolRegistry> de ./handler.rs.
+  Ne rien retenir de @MiryadResource hors la clé : aucun @AccessPolicy, @Column, copie de
+    politique ou pointeur de hook n'existe dans @McpToolRegistry ni dans @McpEntityImpl —
+    @rbac et @rest::core relisent le trait en direct à chaque appel délégué ; le trait étant
+    statique, aucun snapshot ne peut dériver : la différence d'effacement avec
+    @graphql::EntityPolicy est une divergence de forme, pas de verdict.
+  N'exposer que le registre hors-module : @McpToolRegistry @pub (chemin
+    @miryad_core::mcp::McpToolRegistry, ré-export ./mod.rs), ses deux champs @pub(crate) (@format,
+    @entities) lus par ./handler.rs seul ; hors crate, seuls @new et @register sont utilisables —
+    @McpOp, @McpEntity, @McpEntityImpl, @ListParams et @IdParams ne sortent pas du module.
+  Laisser @McpOp (@pub(crate), @Debug/@Clone/@Copy/@PartialEq/@Eq) porter l'alternative
+    d'exactement cinq opérations @List/@Get/@Create/@Update/@Delete sur laquelle ./handler.rs
+    retombe après @strip_suffix des cinq suffixes @_list, @_get, @_create, @_update, @_delete —
+    le @PartialEq n'est consommé qu'en amont, pour le choix @RenderShape ; ./registry.rs ne
+    tranche aucun aspect de rendu.
+  Traduire sans perdre de décision : tout @Err de @rest::core traverse par le @From<@RestError>
+    de ./error.rs et garde sa variante (@Forbidden, @NotFound, @Database, @Application d'un
+    @HookError jamais affublé d'un code `MRD-*`) ; ./registry.rs ne renomme, ne fusionne ni
+    n'enveloppe aucune décision.
+  Rester muet et non conforme à aucune dette du harnais : aucune trace @tracing, aucun
+    @println!/@eprintln!/@dbg!, aucun @unwrap/@expect/@panic/indexation/arithmetic hors des tests
+    inline sous `#[cfg(test)]` (exemption racine ./../lib.rs) ; @McpToolRegistry, @new et
+    @register portent leur `///` (`missing_docs`).
+  Ignorer totalement l'identité : @crate::auth::AuthPrincipal transit par référence, aucun de ses
+    champs n'est lu ici (@subject, @email, @source) — session et token API indiscernables à cette
+    frontière, comme dans ./../rest/core.rs.
+
+Must not:
+  Réévaluer une autorisation, normaliser une pagination, retoucher une colonne ou appeler un
+    hook : aucun appel à @rbac::*, @query::Pagination, @users::*, @MiryadResource::before_create
+    ni à une mutation @sea_orm directe dans ./registry.rs — toute règle recopiée ici créerait le
+    fork REST/MCP que ./../rest/core.rs existe à empêcher.
+  Construire @McpError::UnknownTool (`MRD-MCP-006`), une @JsonRpcResponse, un statut HTTP ou une
+    @RestError::Internal/@McpError::Internal (`MRD-MCP-007`, sans chemin non plus côté
+    ./../rest/core.rs) — le fichier ne peut ni les lever ni les voir.
+  Donner un code `MRD-*` à @HookError ou en construire un hors ses deux variantes propres
+    (@InvalidParams, @Render) et du @From<@RestError>.
+  Poser @#[serde(deny_unknown_fields)] sur @IdParams : @McpOp::Update relit le corps complet
+    avec l'@id dans la même envelope — l'intolérance aux clés inconnues casserait structurellement
+    toute update ; la tolérance est un choix de conception, consignée, pas un oubli.
+  Snapshotter politiques, colonnes ou hook dans le registre, effacés ou non : l'effacement à
+    l'enregistrement est le choix de ./../graphql/registry.rs ; y importer un @EntityPolicy
+    MCP ferait vieillir une métadonnée hors du trait et romprait la promesse de lecture unique.
+  Trier, ordonner ou promettre un ordre d'insertion ou d'exposition : @entities est un
+    @std::collections::HashMap et ./handler.rs itère @values() pour `tools/list` — aucun ordre
+    n'existe à contracter ici.
+  Downcaster la @Box<@dyn @McpEntity>, brancher sur @AuthPrincipal::source, un cookie ou un type
+    de token, ou introduire @axum, un timeout ou un retry : ./registry.rs appelle et attend, via
+    le trait, sans rien inspecter d'autre que @McpOp.
+  Mutualiser @ListParams avec ./../rest/mod.rs (copie locale assumée : sans `#[serde(default)]`
+    côté REST, avec côté MCP, comportement identique vérifié au source @serde — le cas @Option
+    dispense l'attribut) ni imposer un refactor partagé, hors du périmètre de cette spec.
+
+Depends on:
+  ./error.rs — @McpError, @McpError::InvalidParams et @McpError::Render construits ici,
+    @From<@RestError> appliqué par le `?` des cinq bras (./error.sdd)
+  ./format.rs — @OutputFormat : type du champ @format, stocké par @new, jamais invoqué ici
+    (./format.sdd)
+  ./../rest/core.rs — @rest::core::list, @rest::core::get, @rest::core::create,
+    @rest::core::update, @rest::core::delete : seules fonctions CRUD appelées (./../rest/core.sdd)
+  ./../rest/error.rs — @RestError : monnaie d'erreur traversée sans que ./registry.rs lise une
+    variante (codes produits à la source : `MRD-REST-001/002/003`, ./../rest/core.sdd)
+  ./../rest/mod.rs — @rest::RestEntity : bound de @register et de l'@impl @McpEntity, limite PK
+    unique ValueType @i32 (./../rest/mod.sdd)
+  ./../auth/mod.rs — @crate::auth::AuthPrincipal, transit opaque (./../auth/principal.sdd)
+  ./../lib.rs — gating `mcp` indirect et exemption `#[cfg(test)]` de la famille stricte héritée
+    par les tests inline (./../lib.sdd)
+  @sea_orm — @DatabaseConnection au seul type ; @EntityTrait/@Model/@ActiveModel atteints par le
+    supertrait @MiryadResource de @RestEntity, aucune mutation @sea_orm directe (sea-orm `2`,
+    dépendance obligatoire de /Cargo.toml)
+  @serde_json — @Value, @from_value, @to_value ; @null → `invalid type: unit value, expected
+    struct` vérifié au source `serde_json 1.0.151` (impl @Deserializer for @Value : @Null →
+    @visit_unit, `value/de.rs`) ; clé absente : non-@Option → @Err(@missing_field), @Option →
+    @None — vérifié au source `serde 1.0.229` (@private::de::missing_field → @visit_none)
+  @async_trait — méthode @async de @McpEntity boxée en @dyn ; @serde, @serde_json et @async-trait
+    sont non optionnels dans /Cargo.toml ; @vynil-core est la seule dépendance gated `mcp` et ce
+    fichier ne le consomme pas — aucun contrat de registre amont hérité (vérifié au source)
+
+Exposes:
+  @mcp::McpToolRegistry — @pub struct, gated `mcp`, ré-exporté par ./mod.rs (chemin de
+    consommation @miryad_core::mcp::McpToolRegistry) ; deux champs @pub(crate) : @format :
+    @OutputFormat et @entities : @HashMap<@'static str, @Box<@dyn @McpEntity>> — opaques hors
+    crate, lus par ./handler.rs
+  @McpToolRegistry::new — `pub fn new(format: @OutputFormat) -> @Self` : registre vide au format
+    choisi une fois pour l'app
+  @McpToolRegistry::register — `pub fn register<E: @RestEntity>(&mut self) -> &mut @Self` :
+    exactement une insertion sous @E::resource_name() rend dispatchables les cinq tools
+    `{resource_name}_list`, `{resource_name}_get`, `{resource_name}_create`,
+    `{resource_name}_update`, `{resource_name}_delete` — composition des noms, descriptions et
+    @inputSchema de `tools/list` : ./handler.rs
+  @McpOp — @pub(crate) @enum {@List, @Get, @Create, @Update, @Delete}, derives @Debug, @Clone,
+    @Copy, @PartialEq, @Eq ; jeton de dispatch ./handler.rs ↔ ./registry.rs
+  @McpEntity — @pub(crate) @trait @#[async_trait] : @Send + @Sync ;
+    `fn resource_name(&self) -> &'static str` et
+    `async fn call(&self, op: @McpOp, db: &@sea_orm::DatabaseConnection,
+    principal: &@crate::auth::AuthPrincipal, params: @serde_json::Value)
+    -> @Result<@serde_json::Value, @McpError>`
+  Items privés mais contractuels (invisible hors du fichier, régis par la présente spec) :
+    @McpEntityImpl<E> — tuple struct @std::marker::PhantomData seul, @impl @McpEntity pour tout
+    @E: @RestEntity, @resource_name relayant @E::resource_name() ; @ListParams — @page :
+    @Option<@u64>, @per_page : @Option<@u64>, @filter : @Option<@String>, chacun
+    `#[serde(default)]`, aucun @deny_unknown_fields ; @IdParams — @id : @i32 seul champ, requis,
+    aucun @deny_unknown_fields.
+  Rien d'autre : aucun @pub use, aucune fonction libre, aucune macro, aucun type public supplémentaire.
+
+Accepts:
+  @new : n'importe quelle valeur d'@OutputFormat — aucune validation de template à ce niveau, la
+    validation du template est ./format.sdd.
+  @register : tout @E satisfaisant @rest::RestEntity (donc @MiryadResource, @Model
+    @Serialize + @DeserializeOwned + @IntoActiveModel + @Sync, @ActiveModel @Send, PK unique
+    ValueType @i32) ; un type hors bornes est refusé à la compilation, jamais au runtime.
+  @call : un @McpOp ; une @sea_orm::DatabaseConnection partagée sur base migrée des tables
+    @crate::migration (@users::resolve_user côté @rest::core exige @miryad_users) et de la table
+    de l'entité ; un @crate::auth::AuthPrincipal déjà authentifié (rejet `401`/JSON-RPC non
+    authentifié tranché en amont, ./handler.rs et ./../auth/dual.rs) ; @params — le @Value des
+    @arguments de `tools/call`, possédé, clonée une seule fois (première passe de @McpOp::Update).
+  Formes d'@arguments acceptées, enveloppe @Object JSON exigée pour les cinq opérations :
+    @McpOp::List — clés absentes → @None (`#[serde(default)]` et cas @Option implicite @serde,
+    vérifié source), @page/@per_page entiers @u64 stricts, @filter @String, clés inconnues
+    tolérées ; @McpOp::Get/@McpOp::Delete — @id exigé, entier dans le plage @i32 (chaîne `3`,
+    flottant `3.0`, hors plage, clé absente → refus) ; @McpOp::Create — le corps est lu comme
+    @E::Model : colonne non-@Option absente — PK @i32 comprise, vérifié source @serde — refusée,
+    colonne @Option absente acceptée en @None, colonnes inconnues tolérées ; @McpOp::Update —
+    @id de dispatch et corps @E::Model complet dans la même envelope, l'@id du corps servant à
+    rien comme cible (@rest::core::update force la sienne).
+  Bornes comparées à REST (parité de décision, vocabulaire propre) : `page`/`per_page` @u64 et
+    @id @i32 sont les mêmes bornes que @axum::extract::Query/@Path de ./../rest/mod.rs — un rejet
+    `400` REST se rejoue `MRD-MCP-005` d'ici.
+
+Returns:
+  @McpOp::List — @Ok de @serde_json::to_value du @query::PagedResult : objet à cinq clés
+    @items/@page/@per_page/@total_items/@total_pages, clé par clé identique au @Json de la surface
+    REST pour la même exécution (normalisation bornée des page/per_page : ./../query.sdd via
+    @rest::core, renvoyé) ; table vide et hors-limite : @items vide et totaux réels, jamais un
+    @Err (délégué ./../rest/core.sdd).
+  @McpOp::Get/@McpOp::Create/@McpOp::Update — @Ok de @serde_json::to_value du E::Model rendu par
+    @rest::core : @McpOp::Get l'image relue avant mutation, @McpOp::Create la ligne insérée (PK
+    attribuée par la base, owner autorisé, mutations du hook incluses), @McpOp::Update l'image
+    relu après @UPDATE — les trois invariants sont décidés ./../rest/core.sdd, constatés ici.
+  @McpOp::Delete — @Ok(@serde_json::Value::Null) seul : ni ligne supprimée, ni nombre de lignes
+    touchées ; une cible déjà partie reste un succès (@rest::core::delete ignore son
+    @DeleteResult — ./../rest/core.sdd).
+  Tout @Err est un @McpError : @InvalidParams, @Render, ou la variante venue de @From<@RestError>
+    (@Forbidden, @NotFound, @Database, @Application) — ./registry.rs ne retourne @Result d'aucun
+    autre type et ne produit jamais @UnknownTool ni @Internal.
+
+Raises:
+  `MRD-MCP-005` (@McpError::InvalidParams) — cinq chemins de désérialisation : @ListParams
+    (@McpOp::List), @IdParams (@McpOp::Get, @McpOp::Delete), @E::Model (@McpOp::Create), @IdParams
+    puis @E::Model (@McpOp::Update, deux passes) ; message @serde recopié dans @Display
+    ("missing field `title`", "invalid type: unit value, expected struct @ListParams", hors
+    plage @u64/@i32, etc.) ; la base n'est jamais atteinte sur ces chemins — observable, un
+    @McpError::Database concurrent n'est jamais construit avant la délégation.
+  `MRD-MCP-004` (@McpError::Render) — l'échec de @serde_json::to_value sur @McpOp::List,
+    @McpOp::Get, @McpOp::Create, @McpOp::Update (un @Serialize de @E::Model ou de
+    @query::PagedResult qui échoue) ; @McpOp::Delete ne peut jamais l'atteindre (aucune
+    sérialisation de résultat) ; le même code `MRD-MCP-004` sert aussi à l'échec de rendu
+    @Handlebars en aval (./../format.rs) — divergence de message vs construction, ouverte `[?]`
+    dans `Tasks`.
+  `MRD-MCP-001`/002/003 par traversée @From<@RestError> — @Forbidden (décision @rbac rendue
+    @RestError::Forbidden par @rest::core : refus de liste, de @McpOp::Get, d'@Err de
+    @rbac::can_write sur @McpOp::Update/@McpOp::Delete, refus @rbac::can_create sur
+    @McpOp::Create) ; @NotFound (relecture @None sur @McpOp::Get/@McpOp::Update/@McpOp::Delete,
+    avant toute consultation de politique — l'ordre est ./../rest/core.sdd) ; @Database (tout
+    @sea_orm::DbErr propagé, table non migrée comprise) ; @McpError::Application d'un @HookError
+    (@McpOp::Create uniquement, position du hook ./../resource.sdd) — sans code `MRD-*`,
+    @HookError::@code/@message intacts.
+  `MRD-MCP-007` (@McpError::Internal) — jamais construit : ni ici, ni par la chaîne déléguée
+    (@RestError::Internal sans chemin, ./../rest/core.sdd).
+  `MRD-MCP-006` (@McpError::UnknownTool) — jamais construit ici : ./registry.rs ne reçoit que des
+    clés existantes et des @McpOp valides, le suffixe inconnu et la clé absente sont des
+    @JsonRpcResponse::err `-32601` fabriqués par ./handler.rs avant tout appel de @call —
+    asymétrie signalée de responsabilité, pas un trou.
+  Aucun panic : aucun @unwrap/@expect/@panic!/@unreachable!/indexation non gardée en production ;
+    @async_trait ne peut propaguer qu'une @Err typée ; le @Box<@dyn @McpEntity> ne sera jamais
+    downcasté donc jamais de panique de type (comparer : @graphql::call_before_create, son
+    pendant GraphQL, @expect sur un downcast — ./../graphql/registry.sdd).
+
+Handles:
+  Base non migrée ou table d'entité absente : @McpError::Database dès @users::resolve_user ou la
+    relecture (@rest::core), jamais une branche locale — mais un refus de politique rendu avant
+    requête (@rbac::ListAccess::Forbidden sur @McpOp::List) sort @Forbidden même sans table : les
+    deux branches viennent de ./../rest/core.sdd et transitent intactes.
+  @arguments @null (absents du tout) : cinq @McpError::InvalidParams déterministes — @unit n'est
+    pas @Object, vérifié source @serde_json ; or ./handler.rs default `arguments` à @Value::Null
+    et n'annonce aucune propriété requise sur `_list` : un `tools/call` sans @arguments est
+    systématiquement `MRD-MCP-005`, même pour un listifiable entièrement optionnel — ouvert `[?]`
+    dans `Tasks`.
+  Clés inconnues : tolérées partout (aucun @deny_unknown_fields) — @McpOp::Update l'exige
+    structurellement (corps + @id dans la même envelope) ; un `page` de typo typé correct mais
+    hors modèle, ex. `_list` avec `{"limit":5}`, est ignoré en silence, aligné sur le @Query
+    @axum de REST.
+  @page/@per_page/@filter normalisés en @Option bruts vers @rest::core::list via
+    @params.filter.as_deref() — bornes, `0`, énormes et hors-limite relèvent de @query via
+    @rest::core (./../query.sdd, ./../rest/core.sdd) ; @filter appliqué uniquement si
+    @MiryadResource::@filter_column est déclaré — sinon ignoré silencieusement, délégué.
+  @E::Model avec @Option colonnes : absences acceptées en @None (source @serde) ; PK présente
+    dans le corps de @McpOp::Create exigée par @serde puis retirée par @rest::core::create —
+    l'appelant doit envoyer un `id` que la base réattribue (exigence aussi côté @Json REST,
+    parité tenue ; friction de cette PK exigée puis sacrifiée, ouverte `[?]` dans `Tasks`).
+  Collision de clés à l'@insertion : même clé, deux types différents → second @register écrase en
+    silence, la première entité disparaît de `tools/list` et du dispatch sans erreur ni trace
+    (semantics @HashMap::insert) ; même type réenregistré → idempotent, une entrée. Ouvert `[?]`.
+  Itération @HashMap : ordre de @entities non trié, non stable entre exécutions — `tools/list`
+    (./handler.rs) expose dans cet ordre ; tout test d'ensemble doit être en assertion d'ensemble
+    (les deux clés présentes), jamais de liste ordonnée.
+  Identité : principal de session JWT ou de token API strictement indiscernables à ce niveau —
+    @source non lu, parité avec ./../rest/core.rs (./../auth/dual.rs unifie en amont).
+  Zéro trace à ce jour dans ./registry.rs (@tracing requis pour toute trace future, contrat
+    transverse /.specdd/bootstrap.project.md) ; zéro écriture hors des mutations déléguées de
+    ./../rest/core.rs.
+
+Tasks:
+  [ ] Convertir les dix-neuf `Scenario` en au moins dix-neuf tests Rust nommés et distincts —
+    deux tests inline existent, dix-sept à créer dans le `mod tests` `#[cfg(test)]` de
+    ./registry.rs (fixtures `recipe`/`alice`/`test_db` existantes à réutiliser, fixtures
+    additionnelles à porter ici ; les tests ne compilent que sous `--features mcp` et
+    `--all-features` de la batterie /tooling.sdd). Correspondance : « enregistrement : une entrée
+    par nom, relue à l'identique » → test inline existant
+    `register_makes_entity_dispatchable_by_name` ; « update : @id sur une copie, corps en seconde
+    passe — régression @flatten » → test inline existant
+    `update_dispatch_accepts_id_alongside_full_model_body` (c'est aussi la preuve que le créneau
+    MCP du hook default identité traverse @rest::core::create — crédit ./../resource.sdd lui est
+    dû, ses deux tests de ./../rest/mod.rs cités en `References` ne sont pas la propriété de
+    cette spec et ne comptent pas ici) ; À créer : « chaînage et re-registration idempotente » →
+    `register_chains_and_reregistration_is_idempotent` ; « collision de @resource_name :
+    remplacement silencieux » → `register_collision_of_resource_name_replaces_silently` (fixture
+    seconde entité même @resource_name, assertion `get` vide sur l'ancienne — comportement acté
+    par le `[?]` ci-dessous) ; « rien de @MiryadResource n'est retenu, politiques relues en
+    direct » → `registry_retains_no_metadata_reads_trait_live` (fixture compteuse de
+    @resource_name de @read_policy : deux @McpOp::Get délégués, compteur strictement croissant —
+    preuve d'absence de snapshot) ; « `_list` sans arguments : trois @None » →
+    `list_sans_arguments_egale_a_core_list_sans_options` (valeur de dispatch ==
+    @serde_json::to_value(@rest::core::list(@db, @p, @None, @None, @None)) — comparaison directe,
+    la parité est le contrat) ; « page/per_page/filter transmis une fois » →
+    `list_arguments_forwarded_verbatim` ; « @arguments @null : `MRD-MCP-005` sur les cinq
+    tools » → `null_arguments_rejected_before_any_dispatch` (cinq bras paramétrés, table intacte
+    après each) ; « typage strict des paramètres de liste, clés absentes et inconnues tolérées » →
+    `list_params_strict_typing_tolerates_unknown_keys` ; « `_get` : @Ok/@Forbidden/@NotFound sans
+    re-décision » → `get_dispatch_restitue_ok_forbidden_notfound` (fixture `secret` @AdminOnly
+    sans membership pour @McpError::Forbidden, assertion `matches!` sur les trois variantes) ;
+    « `_get` : @id absent ou hors @i32 » → `get_id_missing_or_off_i32_is_invalid_params`
+    (absent, `"3"`, `3.0`, `3000000000` ; table intacte) ; « `_create` : invariants PK/owner
+    atteints par la délégation » → `create_delegation_ignores_pk_and_body_owner` (corps `id`
+    `4242`, owner étranger : @Ok porteur d'une PK attribuée et de l'owner du principal — assertion
+    côté dispatch, verdict ./../rest/core.sdd non re-décrit) ; « colonne non-@Option absente,
+    @Option absente en @None » → `create_non_option_column_required_option_column_none` (fixture
+    avec @Option<@String> : le champ @Option manquant compile en @None, `title` manquant →
+    `MRD-MCP-005`, table intacte) ; « @HookError traverse sans code `MRD-*` » →
+    `create_hook_error_crosses_without_mrd_code` (fixture hook rejetant `WIDGET-001` : variante
+    @Application, @Display sans `MRD-`, @message intact, compte de lignes inchangé) ; « `_update`
+    : @Id de dispatch gagne sur celui du corps » →
+    `update_uses_dispatch_id_not_body_id_as_target` (deux lignes, `McpOp::Update` @Id ligne une,
+    corps @Id ligne deux : seule la ligne une mute) ; « `_update` : sans @id ou corps incomplet,
+    `MRD-MCP-005` sans écriture » → `update_missing_id_or_incomplete_body_invalid_params_no_write`
+    ; « `_delete` : @Value::Null, inconnu `MRD-MCP-002`, refus `MRD-MCP-001` » →
+    `delete_returns_json_null_then_unknown_id_not_found` ; « exposition en ensemble, jamais en
+    ordre » → `registry_exposes_entities_as_a_set_not_an_order` (deux entités, assertions
+    d'appartenance — toute assertion d'ordre est proscrite, `[?]` ci-dessous) ; « traduction @RestError
+    sans perte de décision, jamais @UnknownTool d'ici » →
+    `rest_to_mcp_error_translation_loses_no_decision` (table absente → @Database
+    `MRD-MCP-003` ; @AdminOnly refusé → @Forbidden ; @id inconnu → @NotFound ; aucune variante
+    @UnknownTool/@Internal observable par @call). Le rendu du fil (formes yaml/markdown,
+    @RenderShape, enrobe JSON-RPC `-320xx`) n'est pas testé ici — ./format.sdd et ./handler.sdd (à
+    produire) le prendront.
+  [?] @arguments absents (défaut @Value::Null de @ToolCallParams côté ./handler.rs) →
+    `MRD-MCP-005` sur les cinq tools, y compris `_list` dont l'@inputSchema n'exige rien : un
+    `tools/call` sans @arguments est rejeté d'avance. Faut-il accepter @null comme `{}` (au moins
+    pour @McpOp::List), et la correction vit-elle ici ou côté ./handler.rs ? À trancher avec les
+    deux specs, aucune des surfaces ne doit bouger seule (règle de parité /.specdd/bootstrap.project.md).
+  [?] Collision silencieuse à @register : deux entités déclarant le même @resource_name → la
+    seconde écrase la première (`@HashMap::insert`), sans erreur, sans trace, et la première
+    devient inatteignable. Tient-on ce dernier-gagne pour loi, @register refuse-t-il (retourner
+    un refus ? une trace @debug! ?), ou la collision se refuse-t-elle au montage ./handler.rs ?
+  [?] Ordre d'exposition : @HashMap → `tools/list` dans un ordre non garanti, non trié, non
+    stable ; le contrat testable est l'ensemble, pas la liste. Garantit-on un tri par nom — et
+    donc où, ./handler.rs ou en sortie de @McpToolRegistry — ou l'ordre reste-t-il hors contrat ?
+  [?] @McpError::Render (`MRD-MCP-004`) : son message @Error « template render error » (./error.rs)
+    ne décrit que le rendu @Handlebars, alors que ./registry.rs construit le même variant pour une
+    échec de @serde_json::to_value — écart commentaire/emploi. Le message doit-il couvrir les deux
+    sources (contrat à rendre dans ./error.sdd) ?
+  [?] @McpOp::Create/@McpOp::Update exigent la PK dans le corps (@i32 non-@Option, exigence @serde
+    vérifiée source) que @rest::core::create retire et @rest::core::update écrase — parité avec
+    @Json REST tenue, mais @inputSchema de ./handler.rs annonce un objet libre. Le contrat
+    actuel — appeler MCP forcé d'envoyer une PK sacrifiée (souvent `0`) — est-il la règle assumée
+    ou une friction à trancher ?
+
+Done when:
+  La spec porte exactement dix-neuf `Scenario` et chacun est vérifié par au moins un test nommé
+    distinct : les deux tests inline existants consignés nommément ci-dessus, plus dix-sept tests
+    créés dans ./registry.rs` ; le nombre de tests distincts est supérieur ou égal au nombre de
+    `Scenario` (`/miryad-core.sdd`).
+  La batterie de /tooling.sdd est verte sur toute la matrice — ./registry.rs et ses tests ne
+    compilent que sous `--features mcp` et `--all-features`, les autres combinaisons ne prouvent
+    que leur absence — zéro warning clippy (strict, @pedantic, @cargo, @missing_docs) sur le
+    fichier touché, `cargo fmt --check` compris, aucune dette stricte ajoutée (le fichier n'en
+    porte aucune hors `cfg(test)` à la rédaction).
+  Les cinq lignes `[?]` de `Tasks` ont une décision écrite de Sébastien et la spec est relue par
+    lui — aucun comportement accidentel (arguments nuls, collision, ordre, PK exigée puis
+    message @Render) ne reste un contrat silencieux.
+  La parité MCP/REST est prouvée au moins par les scenarios de traduction et de `_list`, en
+    comparaison d'appels @rest::core directs, et `npx specdd lint` de la présente spec est à zero ;
+    la ligne `src/mcp/registry.sdd` de /miryad-core.sdd peut alors passer à `[x]`.
+
+Scenario: enregistrement : une entrée par nom, relue à l'identique
+  Given un @McpToolRegistry::new(@OutputFormat::Json) vide et l'entité fixture `recipe` de
+    ./registry.rs, dont @MiryadResource::@resource_name est `recipes` et non son type Rust
+    `recipe::Entity`
+  When @register::<recipe::Entity> est appelé
+  Then @entities contient exactement une entrée, clé `recipes` — la valeur de @E::resource_name,
+    pas le nom du type
+  And @McpEntity::@resource_name de cette entrée retourne `recipes`, prouvant le relai statique au
+    trait
+  And le test de ce scenario est le test inline existant `register_makes_entity_dispatchable_by_name`
+
+Scenario: enregistrement : chaînage builder et re-registration du même type idempotente
+  Given un registre neuf
+  When @register::<recipe::Entity> est appelé puis chaîné (@&mut @Self rendu) sur un second
+    @register du même type
+  Then chaque appel renvoie le registre modifié, permettant la chaîne `registry.register::<A>()`
+    `.register::<B>()`
+  And @entities compte une seule entrée pour `recipes` — la re-registration ne duplique rien et ne
+    rend aucune erreur
+
+Scenario: enregistrement : collision de @resource_name entre deux entités, remplacement silencieux
+  Given une fixture `alt` de type distinct dont @MiryadResource::@resource_name retourne aussi
+    `recipes`, et un registre où `recipe::Entity` est déjà enregistré
+  When @register::<alt::Entity> est appelé sur la même clé
+  Then aucun message d'erreur, aucune trace : @HashMap::insert a remplacé la @Box — l'ancienne
+    entité n'est plus atteignable par @entities.get(`recipes`) et a disparu de l'exposition
+    ./handler.rs
+  And le test fige le remplacement actuel (`get` sur l'ancienne clé ne répond plus le premier
+    type) — la question de qualification (refus ? écrasement assumé ?) est la ligne `[?]` de
+    `Tasks`, pas une décision de ce test
+
+Scenario: enregistrement : rien de @MiryadResource n'est retenu, les politiques sont relues en direct
+  Given une fixture dont @MiryadResource::@read_policy est un compteur incrémenté à chaque lecture
+    puis retournant @AccessPolicy::Public, et une table pleine d'une ligne
+  When deux @McpEntity::@call successifs de @McpOp::Get traversent la délégation vers
+    @rest::core::get
+  Then le compteur a STRICTEMENT crû entre les deux appels : la politique est relue sur le trait à
+    chaque appel délégué, en direct
+  And @McpToolRegistry ne possède structurellement aucun champ politique, colonne ou hook — à
+    comparer au @EntityPolicy de ./../graphql/registry.rs qui snapshotte et efface le hook en
+    pointeur `dyn` @std::any::Any : la clé MCP ne porte que le nom et le type effacé
+
+Scenario: `_list` sans arguments : trois @None transmis tels quels à @rest::core::list
+  Given une base migrée avec la table `recipes` pleine de deux lignes et un appel
+    @McpEntity::@call(@McpOp::List, @db, @alice, @json!(@Object vide))
+  When l'appel est dispatché
+  Then le @Value::Object rendu est identique, octet pour octet, à @serde_json::to_value du @query::PagedResult
+    retourné par @rest::core::list::<E>(@db, @alice, @None, @None, @None) appelé en direct dans le
+    même test — l'égalité des deux surfaces est la preuve de la non-réévaluation
+  And les cinq clés @items/@page/@per_page/@total_items/@total_pages sont présentes (normalisation
+    interne @query : ./../query.sdd, renvoyé)
+
+Scenario: `_list` : @page, @per_page et @filter lus puis délégués une seule fois
+  Given une fixture `recipe` avec @filter_column déclarée sur @title et une table de trois lignes
+    (deux `Tarte`, une `Pain`), et les @arguments `{"page":1,"per_page":2,"filter":"Tarte"}`
+  When @McpOp::List est dispatché
+  Then le @Value::Object rendu égale @serde_json::to_value de @rest::core::list(db, @alice,
+    @Some(1), @Some(2), @Some("Tarte")) — les trois valeurs sont transmises telles quelles,
+    @params.filter en @as_deref, aucune lecture intermédiaire
+  And @filter sans @filter_column déclarée n'est pas relu ici : son sort (ignoré silencieusement)
+    est le contrat ./../rest/core.sdd, renvoyé
+
+Scenario: tout outil appelé avec @arguments @null est `MRD-MCP-005` avant tout accès base
+  Given une base migrée avec table `recipes` pleine et les cinq @McpOp
+  When @McpEntity::@call est appelé sur chacun des cinq avec @params valant
+    @serde_json::Value::Null — le cas où `tools/call` omet @arguments (défaut @Value de
+    ./handler.rs)
+  Then chacun des cinq rend @McpError::InvalidParams (`MRD-MCP-005`, @Display portant
+    `invalid type: unit value` vérifié source @serde_json) — @null n'est pas @Object, même pour un
+    `_list` dont toutes les propriétés sont optionnelles
+  And aucune ligne n'a été écrite ni lue : la base est intacte après les cinq tentatives
+  And la qualification de cette dureté (accepter @null comme `{}` ?) est la ligne `[?]` de `Tasks`
+
+Scenario: paramètres de liste mal typés : `MRD-MCP-005`, clés absentes et inconnues tolérées
+  Given @McpOp::List sur table pleine et les trois jeux d'@arguments suivants :
+    `{"page":"abc"}`, `{"per_page":-1}`, `{"filter":42}`
+  When chacun est dispatché
+  Then chacun rend @McpError::InvalidParams avant tout appel à @rest::core::list — chaîne, négatif
+    et non-@String heurtent le typage @u64/@String strict de @ListParams, observable par une table
+    d'entité absente qui ne produit alors aucune @Database
+  When un quatrième jeu `{"zzz":true}` est dispatché, puis un cinquième @Object vide
+  Then les deux réussissent : clés inconnues tolérées (aucun @deny_unknown_fields), clés absentes
+    → @None (@#[serde(default)] et cas @Option @serde vérifiés source)
+
+Scenario: `_get` : modèle @Ok, refus `MRD-MCP-001`, inconnu `MRD-MCP-002` — décisions de @rest::core seules
+  Given une table `recipes` avec une ligne d'alice, une fixture `secret` @AccessPolicy::@AdminOnly
+    avec une ligne, et @alice sans appartenance admin
+  When trois @McpOp::Get sont dispatchés : ligne d'@alice avec `{"id":n}`, ligne de `secret`
+    avec `{"id":n}`, @id jamais inséré avec `{"id":n}`
+  Then le premier rend @Ok du @Value::Object du modèle, identique au @serde_json::to_value du
+    @rest::core::get direct — pas de second jugement de politique dans ./registry.rs
+  And le second rend @McpError::Forbidden (`MRD-MCP-001`), le troisième @McpError::NotFound
+    (`MRD-MCP-002`) — les deux depuis @From<@RestError>, l'ordre `404`-puis-`403` est celui de
+    ./../rest/core.sdd, constaté non re-décrit
+
+Scenario: `_get` : @id absent ou hors @i32 est `MRD-MCP-005` sans requête
+  Given @McpOp::Get sur base dont la table de l'entité est ABSENTE (seules les tables
+    @crate::migration existent) — toute atteinte de la base produirait une @Database visible
+  When @arguments est `{}` absent @id, `{"id":"3"}`, `{"id":3.0}`, puis `{"id":3000000000}`
+  Then chacun rend @McpError::InvalidParams (`MRD-MCP-005`), jamais @Database : la lecture
+    @IdParams (@i32 exigé, chaîne/flottant/hors-plage refusés) échoue avant @rest::core::get —
+    borne @i32 identique à @axum::extract::Path côté REST, vocabulaire MCP seul
+
+Scenario: `_create` : le corps part entier, @rest::core::create garde les invariants PK et owner
+  Given la fixture `recipe` (@write @AccessPolicy::OwnerOnly, @owner_column @Some) et un corps
+    d'@arguments portant `{"id":4242,"title":"Tarte","owner_id":999}` pour @alice
+  When @McpOp::Create est dispatché (les @arguments lus directement en @E::Model, sans enveloppe)
+  Then @Ok porte un @serde_json::to_value du modèle inséré : @id attribué par la base, différent
+    de `4242`,
+    @owner_id égal au @users::user::@id résolu d'@alice, jamais `999` — les deux invariants sont
+    appliqués par @rest::core::create via la délégation, ./registry.rs ne les connaît pas
+  And la mutation du hook @before_create default (identité sur cette fixture) traverse le même
+    chemin que ./../rest/mod.rs — crédit et tests de position dus au contrat ./../resource.sdd,
+    non
+    dupliqués ici
+
+Scenario: `_create` : colonne non-@Option absente rejetée avant la base, colonne @Option absente est @None
+  Given une fixture `draft` avec une colonne @Option<@String> `note`, une colonne `title`
+    obligatoire, la table migrée, et deux jeux d'@arguments pour @McpOp::Create : sans `id`,
+    puis sans `title` mais avec `note` absent
+  When chacun est dispatché
+  Then aucun des deux n'atteint @rest::core::create — @McpError::InvalidParams sur « missing field »,
+    table intacte : les colonnes non-@Option (PK @i32 comprise, vérifié source @serde) sont
+    exigées par la lecture @serde du corps ; `note` absent n'a jamais été une raison de refus (cas
+    @Option implicite source @serde)
+  And un troisième jeu complet `{"id":0,"title":"ok"}` sans @note réussit avec @note à @None
+
+Scenario: création MCP : @HookError du hook applicatif traverse sans code `MRD-*`
+  Given une fixture dont @MiryadResource::@before_create rejette un @title vide par
+    @HookError::with_code("WIDGET-001", "label must not be empty"), table migrée, principal autorisé
+  When @McpOp::Create est dispatché avec le corps que le hook rejette
+  Then @Err est @McpError::Application portant le @HookError intact : @Display == @message
+    d'origine, @code `WIDGET-001` lisible, aucune chaîne `MRD-` nulle part — ./registry.rs n'a
+    rien empaqueté, la destination @RestError::Application puis @From sont ./../rest/core.sdd et
+    ./error.rs
+  And aucune ligne n'a été insérée ; la position exacte du hook dans @rest::core::create reste le
+    contrat ./../resource.sdd, prouvé par les deux tests ./../rest/mod.rs qui y sont consignés
+
+Scenario: `_update` : @id lu sur une copie, corps relu en passe deux — la régression @flatten ne revient pas
+  Given la fixture inline existante : création via @McpOp::Create d'une recette, puis
+    @McpOp::Update avec @arguments portant à la fois @id et toutes les colonnes du modèle
+  When @update_dispatch_accepts_id_alongside_full_model_body (test inline existant) s'exécute
+  Then la double passe réussit (jamais « missing field `id` ») : @IdParams lu sur @params.clone(),
+    @E::Model relu sur l'original — @#[serde(flatten)] aurait consommé @id et fait échouer @E::Model
+    sur sa PK non optionnelle, c'est la régression gravée par le commentaire du source
+  And le titre muté est visible sur le modèle @Ok — le modèle complet est bien parvenu à
+    @rest::core::update
+
+Scenario: `_update` : @id de dispatch divergent de celui du corps — la cible reste l'@id de dispatch
+  Given deux lignes `R1` et `R2` d'@alice créées via @McpOp::Create
+  When @McpOp::Update est dispatché avec @id de dispatch `R1.id` et un @E::Model corps portant
+    `"id": R2.id` et un nouveau @title
+  Then la ligne `R1` est mutée et `R2` est intacte après appel — c'est l'@id de @IdParams qui est
+    passé à @rest::core::update, jamais celui du corps, et @rest::core::update force le @WHERE
+    (./../rest/core.sdd) ; le @Ok rendu porte `R1.id`
+
+Scenario: `_update` : sans @id ou sans modèle complet, `MRD-MCP-005` sans écriture
+  Given une ligne existante d'@alice et @McpOp::Update
+  When @arguments est `{"title":"x"}` sans @id (première passe @IdParams), puis `{"id":n,
+    "owner_id":0}` sans @title (seconde passe @E::Model)
+  Then chacun rend @McpError::InvalidParams — la passe qui échoue est la première des deux sur le
+    premier jeu, la seconde sur le second jeu, observable au message @serde respectif
+  And dans les deux cas la ligne existante est inchangée et aucune erreur @Database/@Forbidden
+    n'a été fabriquée : aucune validation d'enveloppe n'atteint la base
+
+Scenario: `_delete` : @Value::Null pour seul succès, inconnu `MRD-MCP-002`, refus `MRD-MCP-001`
+  Given une ligne d'@alice, et un second @McpOp::Delete du même @id après succès, plus une
+    ligne de fixture `secret` et @alice non-admin
+  When les trois cas sont dispatchés avec `{"id":n}` respectif
+  Then le premier rend @Ok de @serde_json::Value::Null — pas de @serde_json::to_value de modèle, pas de compte de
+    lignes, et le modèle n'est jamais resérialisé ; le rendu de null selon @OutputFormat est
+    ./format.sdd, y renvoyer
+  And le second (ligne déjà partie) rend @McpError::NotFound (`MRD-MCP-002`, relecture @None de
+    @rest::core::delete), le troisième @McpError::Forbidden (`MRD-MCP-001`) — décisions
+    traversées, non re-décidées
+
+Scenario: deux entités enregistrées sont exposées en ensemble, jamais en ordre
+  Given un registre où `recipe::Entity` et une fixture `ingredient` ont été @register
+  When `tools/list`-aval (./handler.rs) itère @entities.values() et que le test énumère les clés
+  Then les deux clés `recipes` et `ingredients` sont présentes — assertion d'appartenance
+    uniquement, cinq tools par clé où la composition ./handler.rs relève du seul ./handler.rs
+  But aucun ordre n'est vérifiable : @HashMap @std::collections::HashMap n'offre ni tri ni ordre
+    d'insertion, et une assertion sur un ordre fixé serait un test instable — l'acte d'un tri
+    éventuel est la ligne `[?]` de `Tasks`
+
+Scenario: traduction @RestError → @McpError sans perte de décision, @UnknownTool jamais construit d'ici
+  Given une base où la table de la fixture `secret` est ABSENTE, un @id inconnu demandé sur une
+    table présente, et @alice sans droits sur `secret` présente
+  When trois @McpEntity::@call sont dispatchés : @McpOp::Get sur `secret` (table absente),
+    @McpOp::Delete d'un @id jamais inséré, @McpOp::Get d'une ligne `secret` présente
+  Then les trois @Err sont distinctement @McpError::Database (`MRD-MCP-003`), @McpError::NotFound
+    (`MRD-MCP-002`) et @McpError::Forbidden (`MRD-MCP-001`) — mêmes verdicts que la surface REST
+    sur les mêmes entrées brutes, traduits par le seul @From<@RestError> de ./error.rs, aucune
+    variante fusionnée
+  And @call ne peut retourner @McpError::UnknownTool (`MRD-MCP-006`) ni @McpError::Internal
+    (`MRD-MCP-007`) : ni l'un ni l'autre n'a de chemin de construction dans ./registry.rs — le
+    premier est tranché par ./handler.rs sur le nom/suffixe avant @call, le second n'a de chemin
+    ni ici ni dans la chaîne déléguée

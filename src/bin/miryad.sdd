@@ -1,0 +1,257 @@
+Spec: miryad — executable CLI de scaffolding (squelette)
+
+Purpose:
+  Fournir l'exécutable `miryad` livré avec le paquet de la crate : cible `[[bin]]` enregistrée
+    dans /Cargo.toml, squelette de derive @clap — @Cli structure unité privée, @main réduit à
+    l'appel de @Cli::parse() et rien d'autre. L'exécutable ne scaffold rien aujourd'hui : zéro
+    sous-commande, zéro option maison, zéro fichier lu ou écrit. Sa seule surface observable est
+    l'aide, la version et le rejet des arguments invalides. Le comportement promis par le
+    commentaire de documentation — « génère une application depuis un modèle de données » —
+    dépend du tranchage du format du modèle de données, question ouverte de /miryad-core.sdd :
+    cette spec fige l'état du squelette, pas la promesse. Crate séparée de la librairie :
+    l'exemption `test` de la racine de crate ../lib.rs ne l'atteint pas.
+
+Owns:
+  ./miryad.rs
+
+Can read:
+  ../lib.rs — vérification à la source : l'exemption `#![cfg_attr(test, allow(...))]` est un
+    attribut de la racine de crate librairie ; ./miryad.rs est une autre crate de racine, sans
+    en-tête d'exemption
+  /Cargo.toml — cible `[[bin]]` (name `miryad`, path `src/bin/miryad.rs`), table `[lints]`,
+    absence de feature sur @clap, version du paquet porteuse du message `--version`
+  /Cargo.lock — pile clap résolue sur laquelle les garanties de sortie sont vérifiées
+
+References:
+  ../lib.sdd — son `Handles` et son Scenario « l'exécutable miryad reste hors de l'exemption
+    racine » attestent que la cible binaire est hors de portée des attributs de la racine
+  /tooling.sdd — harnais applicable à cette cible sans exemption ; en-tête `test` réservé à la
+    lib et aux crates de /tests/
+  /src/ir.sdd — son `Must not` interdit tout exécutable ou sous-commande produisant le fichier
+    IR dans miryad-core ; frontière à trancher pour l'avenir du CLI (ligne `[?]` de `Tasks`)
+  /docs/roadmap.md — cadre « Grandes étapes vers un scaffolding utilisable », sans item tranché
+    pour le CLI
+
+Must:
+  Compiler et se comporter à l'identique sur toute combinaison de features de /tooling.sdd :
+    aucun `#[cfg(feature = ...)]` dans le fichier, @clap non optionnel dans /Cargo.toml, aucune
+    entrée dans le graphe de features.
+  Réduire @main à l'expression unique `Cli::parse();` : l'exécutable ne crée ni n'écrit aucun
+    fichier, n'ouvre aucune connexion base ou réseau, ne lance aucun sous-processus et n'émet
+    aucune trace @tracing. Silencieux par défaut.
+  Garder clap comme seul producteur des sorties : l'aide porte en ligne d'about le commentaire
+    de documentation de @Cli, exactement — `CLI de scaffolding miryad — génère une application
+    depuis un modèle de données.` — ; le message de version est bâti par @clap_derive depuis
+    `CARGO_PKG_VERSION`, donc suit /Cargo.toml sans changement ici.
+  N'émettre que deux codes de sortie : `0` (argv vide accepté ; demandes d'aide et de version)
+    et `2` (tout argv invalide — `USAGE_CODE` de clap, valeur `2` vérifiée dans le source de
+    @clap_builder 4.6.6). Aucun autre code observable, aucun appel direct à @std::process::exit.
+  Rester sans dette propre de la famille stricte du harnais : aucune forme `unwrap`, `expect`,
+    `panic!`, `todo!`, `unimplemented!`, `dbg!`, `println!`, `eprintln!`, indexation brute ou
+    arithmétique — les dix lignes du fichier le constatent aujourd'hui —, ce crate bin ne
+    pouvant hériter d'aucune exemption `test` (vérifié : l'en-tête est dans `../lib.rs`, autre
+    crate ; /src/lib.sdd l'affirme et le teste).
+
+Must not:
+  Implanter le scaffolding avant son contrat : sous-commande (`init`, `generate`), lecture d'un
+    modèle de données, import de @miryad_core — la racine déclare le fichier squelette et le
+    format du modèle n'est pas tranché ; toute sous-commande ajoutée est un contrat nouveau à
+    faire approuver par Sébastien, pas un détail d'implémentation.
+  Écrire sur stdout ou stderr hors de clap : aide, version et erreurs viennent exclusivement des
+    points de restitution de @clap_builder ; `print_stdout` et `print_stderr` sont `deny` au
+    harnais et aucun contournement n'est ici justifié.
+  Lire une variable d'environnement, stdin ou un fichier de configuration comme entrée : la
+    feature `env` de clap est absente de /Cargo.toml, stdin n'est jamais ouvert ; introduire une
+    entrée implicite serait un contrat sans arbitrage.
+
+Depends on:
+  @clap 4, features `derive` plus les features par défaut (non optionnel dans /Cargo.toml ;
+    pile résolue clap 4.6.6 / @clap_builder 4.6.6 / @clap_derive 4.6.4 vérifiée dans
+    /Cargo.lock, sans `env`) — seul crate importé par le fichier
+  /Cargo.toml — enregistrement de la cible `[[bin]]` `miryad`, table `[lints]` applicable à
+    toute cible du paquet
+  la cible librairie /src/lib.rs — cargo la compile avant de pouvoir linter le binaire, alors
+    que ce fichier n'importe pas @miryad_core ; sa dette masque aujourd'hui la preuve du
+    harnais sur cette cible (ligne `[!]` de `Tasks`)
+
+Exposes:
+  @main — point d'entrée de l'exécutable `miryad`, `fn main()` sans paramètre et de type `()` ;
+    le résultat de @Cli::parse() est évalué puis ignoré : l'observable est le processus, pas
+    une valeur retournée
+  @Cli — `struct Cli;` unité privée dérivant @clap::Parser, attribuée
+    `#[command(name = "miryad", version)]` ; aucun `pub` : rien d'importable depuis une autre
+    crate
+  exécutable `miryad` — la cible `[[bin]]` est embarquée dans le paquet publié au même titre que
+    la librairie
+  surface CLI réelle — options `-h`, `--help`, `-V`, `--version` uniquement, générées par clap
+    sur la structure vide avec les textes par défaut `Print help` et `Print version` ; zéro
+    argument positionnel, zéro sous-commande, zéro autre option
+
+Accepts:
+  argv — @clap::Parser::parse lit @std::env::args_os ; seules formes acceptées : aucun argument
+    après le nom du programme, `-h` ou `--help`, `-V` ou `--version`
+  aucune variable d'environnement, rien sur stdin, aucun fichier de configuration
+  toute combinaison de features de /tooling.sdd à la compilation — les features sont invisibles
+    d'ici, le fichier n'appelle pas la librairie
+  à @Cli::parse() : des @clap::ArgMatches sans champ à renseigner — @Cli est unité, aucune
+    conversion ne peut échouer
+
+Returns:
+  de @main : rien — le code de sortie du processus porte le résultat observable : `0` quand le
+    parse aboutit (argv vide) et pour l'aide et la version ; `2` pour tout argv invalide
+  sur stdout : l'aide complète en réponse à `-h` ou `--help` — ligne d'about, ligne `Usage:`
+    nommant le programme appelé, bloc `Options:` listant `-h, --help` `Print help` et
+    `-V, --version` `Print version` — puis, en réponse à `-V` ou `--version`, la ligne
+    `miryad <version>` et son saut de ligne, version compilée depuis `CARGO_PKG_VERSION`
+    (`0.1.3` à la rédaction, valeur lue dans /Cargo.toml) ; aucune autre sortie
+  sur stderr : le texte d'erreur de clap dans les cas `2` ; jamais rien pour l'aide ou la
+    version — vérifié @clap_builder 4.6.6 : les kinds `DisplayHelp` et `DisplayVersion` sont
+    routés sur stdout, tout le reste sur stderr
+  @Cli::parse() ne rend jamais d'erreur à @main : sur erreur de parse, @clap_builder imprime
+    puis termine par @clap::error::Error::exit — `0` pour aide et version, `2` sinon
+
+Raises:
+  Aucun code `MRD-<DOMAINE>-NNN` : l'exécutable n'en émet aucun, @HookError n'y a aucun usage,
+    et cette spec n'en réserve pas — les codes `MRD-*` restent le contrat des erreurs internes
+    de la librairie
+  Aucune erreur observable par le code appelant : @main ne renvoie rien et @Cli::parse() avorte
+    le processus à la place — l'échec observable est le couple (stderr, code `2`)
+
+Handles:
+  argv vide : no-op — parse réussi, @main revient, code `0`, aucune émission.
+  `-h` et `--help` rendent le même texte (structure vide sans aide longue : pas de mention
+    `see more`) ; `-V` et `--version` pareillement.
+  Argument inconnu — positionnel (`generate`) ou option (`--model`) : message contenant
+    `unexpected argument`, code `2` ; le nom d'usage affiché dans le message suit le basename
+    d'argv[0], pas l'attribut `name`.
+  Scan gauche à droite : le premier flag d'affichage rencontré interrompt la lecture
+    (@clap_builder rend l'Err de l'action à la rencontre, vérifié) ; ainsi `--version generate`
+    rend la version tandis que `generate --version` échoue `2` avant d'examiner `--version`.
+  Invocation sous un autre nom (copie ou renommage du binaire) : la ligne `Usage:` suit le nom
+    invoqué (`bin_name` posé depuis argv[0]) alors que `--version` affiche `miryad ` — template
+    qui lit le `name` figé, indépendant d'argv[0].
+  stdout fermé tôt (tube coupé) : l'erreur d'écriture est avalée par @clap::error::Error::exit
+    (vérifié : `let _ = self.print()`) ; le code de sortie reste celui du contrat.
+  Conversion de @clap::ArgMatches vers @Cli : branche inatteignable — structure unité sans
+    champ à remplir.
+
+Tasks:
+  [?] Format du modèle de données à trancher par Sébastien — question ouverte héritée de la
+    ligne `./src/bin/` de /miryad-core.sdd : aucun format n'est lu ni accepté par le code
+    aujourd'hui. Quel modèle d'entrée (fichier, stdin, répertoire) et sous quelle sous-commande
+    ? Le texte d'about « génère une application depuis un modèle de données » devient-il contrat
+    ou change-t-il quand le premier comportement réel arrive ?
+  [?] Frontière CLI / IR : /src/ir.sdd tient en `Must not` « Créer dans miryad-core un
+    exécutable ou une sous-commande CLI qui produit le fichier IR », alors que
+    @ir::IrRegistry::write_to_file existe dans la lib et que la crate embarque l'exécutable
+    `miryad` — squelette muet aujourd'hui, donc pas de violation. Le CLI futur devra-t-il
+    appeler @ir::IrRegistry — ce qui retournerait ce `Must not` — ou la production d'IR
+    reste-t-elle exclusivement à l'application consommatrice du template ?
+  [?] Placement des tests et exemption du harnais pour le crate bin : @Cli::parse() lit l'argv
+    courant du processus, donc un module `#[cfg(test)] mod tests` inline ne peut faire tourner
+    le vrai CLI que par @std::process::Command, et la variable `CARGO_BIN_EXE_<name>` — qui donne
+    le chemin de l'exécutable construit — n'est posée que pour les tests d'intégration et les
+    benches (vérifié dans la référence Cargo), pas dans les tests unitaires du bin. Un test
+    inline ne couvrirait que @Cli::try_parse_from, sans les codes de sortie. Faut-il la crate
+    `./tests/cli.rs` (rattachée à cette spec, en-tête `test` de /tooling.sdd) ou une exemption
+    équivalente portée par la racine de ./miryad.rs est-elle admise ?
+  [!] Le harnais ne peut pas encore prouver la propreté de ce fichier : `cargo clippy
+    --all-targets` comme `cargo clippy --bin miryad` (features par défaut et
+    `--no-default-features`) échouent sur les 55 erreurs `deny` et 136 warnings `missing_docs`
+    de la lib — cargo compile la lib avant la cible bin, qui n'est jamais atteinte (mesure du
+    jour de la spec). Le fichier est propre à l'examen — aucune forme de la famille stricte —
+    mais la batterie /tooling.sdd ne le prouvera qu'après la purge module par module. À ne
+    fermer qu'avec un passage `cargo clippy --all-targets -- -D warnings` atteignant la cible.
+  [ ] Convertir les six `Scenario` en au moins six tests distincts nommés, sur le pattern des
+    cibles bin : crate d'intégration `./tests/cli.rs`, exécutable lancé par
+    @std::process::Command via `env!("CARGO_BIN_EXE_miryad")` (variable posée par cargo pour
+    les tests d'intégration — vérifié), assertions sur code de sortie, stdout et stderr, en
+    sous-chaînes stables ou octet pour octet ; la version attendue se déduit de
+    `env!("CARGO_PKG_VERSION")`, jamais d'un littéral. Correspondance : « Lancement sans
+    argument réussit sans rien faire » → `empty_invocation_is_silent_and_exits_0` ;
+    « --help affiche l'about du squelette » → `help_prints_about_and_flags_on_stdout_exit_0` ;
+    « --version rend la version du paquet » → `version_prints_package_version_exit_0` ;
+    « Un argument inconnu est refusé avec le code 2 » → `unknown_argument_exits_2_on_stderr` ;
+    « Le premier flag d'affichage rencontré gagne » →
+    `first_display_flag_wins_over_later_arguments` ; « Renommé, l'aide suit l'appel, la version
+    `miryad` reste » → `renamed_invocation_changes_usage_only`. `./tests/cli.rs` sera rattachée
+    à cette spec à sa création — règle de `.specdd/bootstrap.project.md` : les fichiers de
+    /tests/ n'ont pas de spec propre — et portera l'en-tête d'exemption `test` que /tooling.sdd
+    réserve à ces crates.
+
+Done when:
+  La spec porte exactement six `Scenario` et au moins six tests distincts nommés vérifiant
+    chacun son `Then`, joués par `cargo test` : codes `0` et `2`, streams, ligne d'about, forme
+    `miryad <version>`, sans littéral de version figé.
+  La sortie d'aide reste fidèle au commentaire de @Cli et au template de version, vérifié par
+    les tests ci-dessus.
+  La ligne `[!]` est close : `cargo clippy --all-targets -- -D warnings` atteint et passe la
+    cible bin après purge de la dette lib.
+  Les questions `[?]` sont arbitrées par Sébastien et leurs réponses portées dans `Must`,
+    `Handles` ou `Tasks`.
+  `npx specdd lint src/bin/miryad.sdd` sort sans erreur et Sébastien a approuvé la spec —
+    l'état de squelette ne devient contrat qu'à ce prix.
+
+Scenario: Lancement sans argument réussit sans rien faire
+  Given le binaire `miryad` compilé, @Cli n'exigeant aucun argument
+  When il est lancé sans aucun argument
+  Then le code de sortie est `0`
+  And stdout est vide
+  And stderr est vide
+  And aucune sortie latérale — ni fichier écrit, ni connexion ouverte : no-op complet
+
+Scenario: --help affiche l'about du squelette sur stdout
+  Given le binaire `miryad` compilé
+  When il est lancé avec l'argument `--help`, ou avec `-h`
+  Then le code de sortie est `0`
+  And stderr est vide
+  And stdout porte la ligne d'about — texte exact du commentaire de @Cli — puis une ligne
+    commençant par `Usage:` et nommant le programme appelé
+  And le bloc `Options:` liste `-h, --help` avec le texte `Print help` sans mention d'aide
+    longue (`see more` absent sur structure vide) et `-V, --version` avec `Print version`
+
+Scenario: --version rend la version du paquet
+  Given le binaire `miryad` compilé avec la version courante de /Cargo.toml
+  When il est lancé avec l'argument `--version`, ou `-V`
+  Then le code de sortie est `0`
+  And stdout est exactement `miryad ` suivi de la version du paquet — `CARGO_PKG_VERSION`
+    compilée dans le binaire, pas un littéral figé dans la spec — et d'un saut de ligne
+  And stderr est vide
+
+Scenario: Un argument inconnu est refusé avec le code 2
+  Given @Cli ne déclare ni sous-commande ni argument positionnel — le scaffolding n'existe pas
+    encore
+  When le binaire est lancé avec l'argument `generate`
+  Then le code de sortie est `2`
+  And stderr porte un message contenant `unexpected argument`
+  And stdout reste vide
+  When il est lancé avec l'option inconnue `--model`
+  Then le résultat est identique : même classe de refus, même code `2`
+
+Scenario: Le premier flag d'affichage rencontré gagne
+  Given un parse de clap qui rend l'action d'affichage dès la rencontre du flag, sans relire la
+    suite
+  When le binaire est lancé avec `--version generate`
+  Then stdout porte la ligne de version et le code de sortie est `0` — le flag est rencontré
+    avant l'argument inconnu
+  When il est lancé avec `generate --version`
+  Then le code de sortie est `2` et stdout reste vide — l'argument inconnu est rencontré le
+    premier, `--version` n'est jamais examiné
+  When il est lancé avec `--help --version`
+  Then stdout porte l'aide et non la version — `--help` premier gagne
+
+Scenario: Renommé, l'aide suit l'appel, la version reste miryad
+  Given une copie du binaire rebaptisée `miryad-scaffold`, invoquée sous ce nom
+  When `--help` est passé à `miryad-scaffold`
+  Then la ligne `Usage:` affiche `miryad-scaffold` — clap nomme l'usage d'après le basename
+    d'argv[0]
+  When `--version` est passé à `miryad-scaffold`
+  Then la ligne commence par `miryad ` — le template de version lit le `name` figé par
+    `#[command(name = "miryad")]`, indépendant d'argv[0]
+  And les codes de sortie restent `0` dans les deux cas
+
+Example:
+  Etat du contrat tel que compilé : @Cli est une structure unité privée dérivant de la macro
+    @clap::Parser ; @main vaut `Cli::parse();` ; le message de version rendu aujourd'hui est
+    `miryad 0.1.3` ; seuls codes de sortie observables : `0` — argv vide, aide, version — et
+    `2` — tout argv invalide.

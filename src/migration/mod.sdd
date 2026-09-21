@@ -1,0 +1,262 @@
+Spec: mod — @Migrator : ordre d'application des migrations internes et table de tracking dédiée
+
+Purpose:
+  Agrégation des migrations internes de la crate : @Migrator enregistre exactement les trois
+    @Migration filles 001 → 002 → 003 dans un ordre figé et fait porter leur tracking par la table
+    @seaql_migrations_miryad_core au lieu du défaut @seaql_migrations, pour coexister sur la même
+    connexion avec le @MigratorTrait métier de l'application consommatrice (contrat racine des
+    tables `miryad_*` à tracking propre). Fichier de déclaration pure : aucune logique, aucun
+    gating de feature, aucune erreur propre — tout @DbErr est celui brut de sea-orm-migration ou
+    du backend, appliquée par @crate::migration::Migrator::up selon la doc de @../lib.rs.
+
+Owns:
+  ./mod.rs
+
+References:
+  /miryad-core.sdd — Must des tables internes livrées « avec leur propre table de tracking de
+    migrations, pour coexister avec les migrations de l'application consommatrice »
+  /tooling.sdd — batterie et matrice de features auxquelles ce fichier compile sans gating
+  /Cargo.toml — dépendance `sea-orm-migration = "2"` (résolue 2.0.2, vérifié au source du registre),
+    dev-dependencies SQLite/tokio du test inline
+  ./m20260822_000001_create_api_tokens.sdd — contrat fille 001, pose du premier schéma
+  ./m20260822_000002_create_users_groups.rs — contrat fille 002 (spec propre encore à produire)
+  ./m20260822_000003_seed_admin_group.rs — contrat fille 003 (spec propre encore à produire),
+    seed dépendant de @crate::users
+  ../lib.rs — declaration @pub mod migration sans @cfg, doc d'usage @Migrator::up(&db, None)
+
+Must:
+  @migrations de @Migrator renvoie exactement trois @Box, dans cet ordre et pas un de plus :
+    @m20260822_000001_create_api_tokens::Migration, puis
+    @m20260822_000002_create_users_groups::Migration, puis
+    @m20260822_000003_seed_admin_group::Migration.
+  Ordre d'application = ordre du @Vec écrit ici, vérifié au source de sea-orm-migration 2.0.2 :
+    @get_migration_files préserve l'ordre de @migrations, @exec_up_with itère les pending dans cet
+    ordre, aucun tri ni graphe de dépendance n'existe (@MigrationOrder a disparu en 2.x) — toute
+    correction d'ordre passe par la réécriture de cette liste (elle-même gelée, voir `Must not`).
+  Remontée @down en ordre inverse vérifiée au source (@into_iter().rev() de @exec_down_with sur la
+    liste des appliquées en ordre @migrations) : 003 d'abord (le seed @DELETE sa ligne avant que
+    002 ne droppe ses tables), puis 002, puis 001.
+  @migration_table_name surchargée renvoie @Alias::new("seaql_migrations_miryad_core").into_iden()
+    — nom exact 28 caractères, sous la limite Postgres de 63 donc jamais tronqué — appelé par le
+    framework à chaque @install, lecture du tracking, @insert_migration_record et
+    @delete_migration_record ; c'est la seule surcharge avec @migrations des deux méthodes
+    surchargées par le fichier.
+  Le nom dédié est le moyen exact de la coexistence, vérifié au source de
+    @get_migration_with_status (sea-orm-migration 2.0.2) : toute entrée de la table de tracking
+    lue absente de la liste du migrateur courant produce un @DbErr::Custom (« Migration file of
+    version '…' is missing, this migration has been applied but its file is missing ») — deux
+    migrateurs partageant @seaql_migrations font échouer systématiquement le second lancé, d'où
+    la table propre.
+  Le nom @seaql_migrations_miryad_core est réservé à la crate ; la coexistence n'est vraie que si
+    l'app consommatrice conserve le défaut @seaql_migrations ou tout nom distinct de celui-ci.
+  La table dédiée est auto-créée par @install au premier appel de @up ou de toute méthode de
+    lecture du tracking : @create_table_from_entity de @seaql_migrations::Entity avec
+    @if_not_exists — structure (deux colonnes `version`, `applied_at`) imposée par l'entité du
+    framework, jamais par ce fichier.
+  Aucun gating de feature : les trois @mod de sous-modules, @Migrator, l'@impl et
+    @crate::migration ne portent aucun @cfg — le fichier compile sur chaque combinaison de
+    /tooling.sdd ; seul le canal de test dépend d'un backend (SQLite des dev-dependencies).
+  @Migrator est le seul item @pub du fichier ; @steps (@Option<@u32>) de @up/@down, vérifié au
+    source : @None applique tout, @Some(@n) limite aux @n premiers pending en ordre
+    d'enregistrement, @Some(@0) n'applique rien mais installe quand même la table de tracking.
+  Le fichier n'émet aucune trace propre, aucun @println/@dbg, et ne fabrique aucun code `MRD-*` :
+    les traces `tracing` @info d'application (@Applying migration '…') viennent du framework ;
+    sous @cfg(test) le fichier porte un @AppMigrator de test illustrant le consommatrice au
+    défaut @seaql_migrations et un unique @#[tokio::test] de coexistence.
+
+Must not:
+  Réordonner, retirer ou renommer un enregistrement de @migrations ou son fichier fille :
+    @get_migration_with_status compare des ensembles de noms — un simple réordonnement n'est
+    jamais signalé sur une base appliquée, alors qu'il casse @up d'une base vide si 003 passe
+    avant 002 (table `miryad_groups` absente du INSERT du seed) et casse @down si 002 remonte
+    avant 003 (@DELETE sur une table droppée).
+  Changer le nom de la table de tracking sans arbitrage explicite et migration d'état : @install
+    recrée @if_not_exists une table vide sous le nom nouveau, les trois filles se croient
+    pending et se rejouent en silence sur une base déjà posée (salve grâce aux @if_not_exists
+    des filles, seed idempotent) — la perte de tracking est silencieuse.
+  Exposer une @Migration fille (@pub mod, @pub use) : ./mod.rs garde les trois @mod privés, un
+    type de fille atteignable hors de la crate gèlerait une référence publique sur un fichier
+    interne dont l'identité de tracking est le stem.
+  Écrire à la main dans @seaql_migrations_miryad_core : @migrations et @migration_table_name sont
+    le seul code du fichier, le peuplement et la purge du tracking appartiennent exclusivement à
+    @insert_migration_record et @delete_migration_record du framework.
+  Émettre une trace, un @println ou une erreur @MRD-* depuis ce fichier : il ne fait que déclarer
+    et brancher les trois filles sur le moteur.
+
+Depends on:
+  @sea_orm_migration 2.0.2 — @MigratorTrait, @MigrationTrait, @DynIden et le moteur hérité
+    (@install, @exec_up_with, @exec_down_with, @get_migration_with_status, @seaql_migrations)
+  @sea_orm — @DynIden et le ré-export @sea_orm::sea_query utilisés ici : @Alias et @IntoIden (import
+    en tête de fichier pour le @into_iden)
+  ./m20260822_000001_create_api_tokens.rs — première enregistrée (premier schéma `miryad_*`)
+  ./m20260822_000002_create_users_groups.rs — deuxième enregistrée (tables RBAC et FK internes)
+  ./m20260822_000003_seed_admin_group.rs — troisième enregistrée (seed, seule qui appelle du code
+    de la crate : @crate::users::group::ensure_group)
+
+Exposes:
+  @Migrator — @unit struct @pub, sans @cfg, sans donnée ni constructeur
+  @MigratorTrait impl pour @Migrator — les deux seules méthodes surchargées : @migrations (liste
+    d'enregistrement figée) et @migration_table_name (@DynIden `seaql_migrations_miryad_core`)
+  Avec l'@impl, héritées non surchargées et atteignables par la consommatrice sous
+    @sea_orm_migration::MigratorTrait importé : @up, @down, @status, @fresh, @refresh, @reset,
+    @install, @uninstall, @get_migration_files, @get_migration_models, @get_migration_with_status,
+    @get_pending_migrations, @get_applied_migrations, et les variantes sans DDL
+    @get_migration_with_status_read_only, @get_pending_migrations_read_only,
+    @get_applied_migrations_read_only
+  Aucun @pub use ni ré-export des @mod filles
+
+Accepts:
+  @up et @down : une connexion @DatabaseConnection ou @Transaction (via
+    @IntoSchemaManagerConnection) et @steps (@Option<@u32>) — la signature documentée par
+    @crate::migration::Migrator::up(&db, None) dans @../lib.rs
+  Les méthodes de lecture et @install : une @&C @ConnectionTrait ; les variantes read-only
+    supportent un utilisateur sans privilège DDL (aucun @CREATE TABLE émis, vérifié au source)
+  @get_migration_files : aucun argument, aucune I/O — la liste d'enregistrement est calculable
+    sans base branchée
+  Rien d'autre : ni configuration, ni feature, ni paramètre transmise à @Migrator
+
+Returns:
+  @up et @down : @Result<@(), @DbErr> — @Ok ne garantit que ce que each fille garantit de son
+    @up/@down plus la cohérence des lignes de tracking, rien sur la forme préexistante du schéma
+  @migrations : trois @Box<dyn @MigrationTrait> exactement, en ordre d'enregistrement
+  @migration_table_name : un @DynIden frais à chaque appel, de contenu constant
+  @get_migration_models : lignes du tracking triées par @version ascissant (@Order::Asc vérifié au
+    source), indépendamment de l'ordre d'exécution ; @get_migration_with_status et les listes
+    pending/applied renvoient les éléments en ordre @migrations
+
+Raises:
+  Aucun code `MRD-*` — le fichier ne construit lui-même aucune erreur, chaque @DbErr est propagé
+    brut de sea-orm-migration ou du backend :
+  @install : @DbErr si la création de @seaql_migrations_miryad_core est refusée (privilège DDL)
+  @get_migration_with_status → @DbErr::Custom « Migration file of version '…' is missing… » dès
+    qu'une entrée de la table de tracking n'a pas de fichier enregistré correspondant : fille
+    renommée ou supprimée, tracking falsifié, ou autre migrateur ayant volé le nom dédié
+  Fille en échec : son @DbErr remonte par @?, la séquence s'arrête là, aucune ligne de tracking
+    n'est insérée pour cette migration (transaction enrôlée sur Postgres, vérifié source), et
+    aucune pending suivante n'est tentée
+  @steps @Some(@0) ne lève rien : @Ok avec application vide (chemin source vérifié)
+
+Handles:
+  Base vide : @install puis application 001 → 002 → 003 puis trois lignes de tracking dans la
+    table dédiée — l'ordre enregistre rend la 003 toujours capable de voir les tables posées par
+    002 dans la même course de @up
+  Base déjà appliquée : second @up ne trouve aucun pending, retourne @Ok sans rien appliquer
+  Connexion partagée avec un migrateur de l'app consommatrice au défaut @seaql_migrations, dans
+    les deux ordres d'installation : chaque migrateur ne compare jamais que ses entrées, le
+    @DbErr::Custom de contamination ne peut pas se déclencher — c'est le contrat du nom dédié,
+    démontré par le test inline @composes_with_an_independent_migrator_sharing_the_default_table_name
+  @steps : @None complet, @Some(@n) préfixe borné en ordre d'enregistrement, @Some(@0) install
+    seul, @down @Some(@k) défait les @k dernières appliquées en ordre inverse
+  Échec partiel d'une séquence @up : la migration faillie garde zéro ligne de tracking et bloque
+    seule la suite — rejouer @up retraverse par la même table dédiée
+  Parité des surfaces : @Migrator n'expose rien sur REST, GraphQL, MCP, OpenAPI ni @ir — aucune
+    table `miryad_*` n'est @MiryadResource, le module n'a donc aucune asymétrie de surface à
+    aligner (les asymétries self-service sont consignées côté filles, voir
+    ./m20260822_000001_create_api_tokens.sdd)
+
+Tasks:
+  [ ] Convertir les neuf `Scenario` en au moins neuf tests nommés distincts dans le
+    `#[cfg(test)] mod tests` de ./mod.rs, sur `sqlite::memory:` (pattern du test inline
+    existant), la batterie de /tooling.sdd sans base externe : le test inline existant
+    @composes_with_an_independent_migrator_sharing_the_default_table_name couvre le scénario de
+    coexistence consommatrice-après, huit tests à créer — liste pure sans base
+    (@get_migration_files), nom et teneur du tracking dédié, absence du défaut
+    @seaql_migrations, @steps @Some(@1) et @Some(@0), second @up idempotent, @down @Some(@1) sur
+    003, et consommatrice-avant-miryad-core.
+  [?] @fresh et @reset hérités non surchargés sont destructeurs au-delà du module : @fresh passe
+    par @drop_everything et droppe toutes les tables de la connexion, celles de l'app
+    consommatrice comprises — sur la connexion partagée que ce fichier rend justement possible,
+    l'outil efface plus que `miryad_*`. Les masque-t-on (nouveau type wrapper) ou les laisse-t-on
+    avec seul un avertissement documentaire ?
+  [?] @steps @Some(@n) expose une migration partielle : un run calé après 002 laisse le moteur
+    sans groupe admin (003 pending) et rien dans @Migrator ne signalise l'écart. Wrapper @up pour
+    forcer @None côté miryad-core, ou responsabilité du caller documentée ?
+  [?] Le nom de tracking `seaql_migrations_miryad_core` ne porte pas le préfixe `miryad_*` que la
+    spec racine impose aux tables internes « avec leur propre table de tracking » : confirme-t-on
+    l'intention (le préfixe `seaql_` marque la table comme tracking pour l'outillage et les
+    autres migrateurs sea-orm) ou arbitre-t-on un renommage — lequel orpheline le tracking déjà
+    posé et demande une procédure de report des lignes ?
+  [?] @get_migration_models trie ses lignes par @version ascissant : les trois stems actuels
+    trient par bonheur dans l'ordre d'enregistrement, une future migration au nom hors chronologie
+    lexicographique inverserait la vue de lecture (l'exécution reste en ordre @Vec). Accepte-t-on
+    cette vue lexicographique comme contrat implicite ou impose-t-on une règle de nommage des
+    fichiers de migration ?
+  [?] L'@AppMigration du test inline, déclarée dans ./mod.rs, enregistre son entrée de test sous
+    le nom `mod` (@get_file_stem appliqué au stem de ./mod.rs — vérifié au source de
+    sea-orm-macros 2.0.2) : inoffensif tant que les tables sont distinctes, trompeur au premier
+    partage de table (@DbErr::Custom citant `mod` sans rapport avec une cause miryad). La renome
+    ou déplace-t-on dans une fixture dédiée ?
+
+Done when:
+  Les neuf `Scenario` sont chacun vérifiés par au moins un test nommé distinct identifié dans
+    `Tasks`, la batterie de /tooling.sdd passe verte sur toutes les combinaisons de features (le
+    fichier compile sans gating, elle l'inclut partout), chaque `[?]` de `Tasks` est tranché par
+    Sébastien sans réécriture des deux méthodes surchargées, et la spec est approuvée par lui.
+
+Scenario: @migrations enregistre exactement les trois internes en ordre figé
+  Given une crate compilée, aucune base branchée
+  When @Migrator::get_migration_files est appelé dans un test
+  Then la liste compte exactement trois entries dans l'ordre `m20260822_000001_create_api_tokens`,
+    `m20260822_000002_create_users_groups`, `m20260822_000003_seed_admin_group`
+  And chaque entry porte le statut @MigrationStatus::Pending avant tout contact base
+
+Scenario: le tracking dédié porte les trois entrées sous seaql_migrations_miryad_core
+  Given une base SQLite en mémoire sans aucune table
+  When @Migrator::up(@db, @None) retourne @Ok(())
+  Then la sonde @has_table répond @true pour `seaql_migrations_miryad_core`
+  And @Migrator::get_migration_models rend exactement trois lignes dont les @version sont les trois
+    noms d'enregistrement
+
+Scenario: le défaut seaql_migrations n'est jamais créé par le Migrator miryad-core
+  Given une base SQLite en mémoire où seul @Migrator::up(@db, @None) a réussi
+  When la sonde lit l'existence de `seaql_migrations` puis une lecture SQL brute de cette table est
+    tentée
+  Then la sonde répond @false
+  And la lecture brute échoue en @DbErr, table absente
+
+Scenario: steps Some(1) n'applique que la tête de l'ordre
+  Given une base SQLite en mémoire sans aucune table
+  When @Migrator::up(@db, @Some(@1)) retourne
+  Then le résultat est @Ok(())
+  And @has_table répond @true pour `miryad_api_tokens` et @false pour `miryad_users`
+  And @Migrator::get_migration_models rend la seule ligne `m20260822_000001_create_api_tokens`
+
+Scenario: steps Some(0) installe le tracking sans rien appliquer
+  Given une base SQLite en mémoire sans aucune table
+  When @Migrator::up(@db, @Some(@0)) retourne
+  Then le résultat est @Ok(())
+  And `seaql_migrations_miryad_core` existe (@has_table @true) avec zéro ligne rendue par
+    @Migrator::get_migration_models
+  And aucune des tables `miryad_*` des trois filles n'existe
+
+Scenario: un second up applique rien quand tout est appliqué
+  Given une base SQLite en mémoire où @Migrator::up(@db, @None) a appliqué les trois filles
+  When un second @Migrator::up(@db, @None) est appelé
+  Then le résultat est @Ok(())
+  And @Migrator::get_pending_migrations rend une liste vide
+  And @Migrator::get_migration_models compte toujours trois lignes
+
+Scenario: down d'un pas défait la dernière appliquée, la seed 003
+  Given une base SQLite en mémoire où @Migrator::up(@db, @None) a appliqué les trois filles
+  When @Migrator::down(@db, @Some(@1)) retourne
+  Then le résultat est @Ok(())
+  And @Migrator::get_applied_migrations ne rend plus que 001 puis 002 dans l'ordre @migrations
+  And @Migrator::get_pending_migrations rend la seule entrée `m20260822_000003_seed_admin_group`
+  And @has_table répond @true pour `miryad_groups` — le rollback de 002 n'a pas été touché
+
+Scenario: le migrateur consommatrice au tracking défaut s'installe après miryad-core
+  Given une base SQLite en mémoire où @Migrator::up(@db, @None) a appliqué les trois filles, et un
+    @AppMigrator de test gardant le @migration_table_name par défaut
+  When @AppMigrator::up(@db, @None) retourne @Ok(())
+  Then @has_table répond @true pour `seaql_migrations`
+  And rejouer @Migrator::up(@db, @None) après le run de l'app retourne encore @Ok(()) — c'est le
+    test inline existant @composes_with_an_independent_migrator_sharing_the_default_table_name
+
+Scenario: la consommatrice installée en tête ne contamine pas le tracking miryad-core
+  Given une base SQLite en mémoire où seul @AppMigrator::up(@db, @None) a d'abord tourné sous le
+    défaut @seaql_migrations
+  When @Migrator::up(@db, @None) est appelé
+  Then le résultat est @Ok(()) sans @DbErr::Custom de version manquante
+  And les trois tables de schéma `miryad_*` sont posées et les entrées miryad ne sont couchées que
+    dans `seaql_migrations_miryad_core`
+  And `seaql_migrations` ne contient que l'entrée du migrateur applicatif
