@@ -1,0 +1,103 @@
+Spec: Harnais qualité (clippy, rustfmt, lints)
+
+Platform: clippy 0.1.97 (stable 1.97.1), rustfmt stable, table [lints] de Cargo.toml
+
+Purpose:
+  Définir le harnais qui guide les agents d'implémentation et le validateur : formatage
+    rustfmt, lints clippy/rustc portés par la table `[lints]` de `Cargo.toml`, et la batterie
+    de commandes à repasser verte avant toute clôture de tâche. Le harnais est un outil de
+    guidage, pas une cosmétique : ce qu'il interdit est la liste des raccourcis que les agents
+    sont censés ne jamais prendre, et ce qu'il impose est ce qui rend un contrat vérifiable.
+
+Owns:
+  ./rustfmt.toml
+
+Can modify:
+  ./Cargo.toml
+  ./src/lib.rs
+  ./tests/*.rs
+
+Must:
+  Contenir dans `[lints.clippy]`, en `deny` et `priority = -1`, les groupes `pedantic` et
+    `cargo`, et la famille stricte : `unwrap_used`, `expect_used`, `panic`, `unreachable`,
+    `dbg_macro`, `todo`, `unimplemented`, `print_stdout`, `print_stderr`,
+    `arithmetic_side_effects`, `indexing_slicing`, `unwrap_in_result`, `panic_in_result_fn`.
+  Contenir dans `[lints.rust]` `unsafe_code = "forbid"`.
+  Contenir `missing_docs = "warn"` dans `[lints.rust]`, et non `deny` : c'est un lint rustc, un
+    `deny` rendrait `cargo build` et `cargo test` impossibles à lancer et bloquerait donc la
+    purge de la dette qu'il est censé piloter. L'escalade en erreur bloquante est assurée par le
+    `-D warnings` de la CI (`./.github/workflows/workflows.sdd`).
+  Tolérer la famille panic/unwrap/indexation uniquement sous `cfg(test)` : exemption globale
+    portée par la racine de crate dans ./src/lib.rs pour la librairie, et par un en-tête
+    équivalent dans chaque crate de ./tests/ — une crate d'intégration n'hérite pas des
+    attributs de la librairie. Le droit `Can modify` sur ./src/lib.rs et ./tests/*.rs ne couvre
+    **que** cet en-tête d'exemption : le `Owns` de la spec du fichier (`./src/lib.sdd`, une fois
+    écrite) reste l'autorité sur tout le reste de ces fichiers.
+  Lancer le harnais et les tests sur **chaque** combinaison de features : défaut
+    (`static-frontend`), `--no-default-features`, `swagger-ui`, `graphql`, `graphiql`, `mcp`,
+    `--all-features`. Les analyses `pedantic` (`must_use_candidate`, `missing_errors_doc`)
+    dépendent du graphe de features : une combinaison non rejouée laisse passer des avertissements.
+  Tolérer `multiple_crate_versions` en `allow` : ses doublons sont imposés par les dépendances
+    amont (mer de versions derrière SeaORM, axum, openidconnect et seaography), `cargo update`
+    ne les déduplique pas, et ce n'est pas un signal d'implémentation.
+  Formatter avec `cargo fmt --check` à la toolchain stable : `./rustfmt.toml` ne contient
+    aucune option instable, aucun toolchain nightly n'est nécessaire.
+  Exposer la batterie canonique dans ./AGENTS.md, reprise à l'identique par l'agent `validator`.
+
+Must not:
+  Accepter un `#[allow(...)]` d'un lint du harnais dans du code de production sans commentaire
+    de justification d'une ligne citant la spec concernée.
+  Réduire le niveau d'un lint déjà présent du harnais sans décision explicite de Sébastien.
+  Introduire une option rustfmt instable sans décision explicite de Sébastien : elle imposerait
+    une toolchain nightly en CI et reformaterait tout le dépôt.
+
+References:
+  ./.github/workflows/workflows.sdd
+
+Scenario: unwrap ajouté dans du code touché
+  Given une tâche d'implémentation ajoute un `.unwrap()` sur un `Result` dans du code de production
+  When le validateur lance `cargo clippy --all-features --all-targets`
+  Then la compilation clippy échoue sur ce lint en `deny`
+  And la tâche est rejetée et remonte dans la synthèse du validateur
+
+Scenario: lint visible sur une seule combinaison de features
+  Given un lint `pedantic` que seule la combinaison `--no-default-features` déclenche
+  When le validateur lance le harnais sur la matrice de features
+  Then la combinaison concernée échoue et la tâche est rejetée
+
+Scenario: exemption en test
+  Given un module `#[cfg(test)]` de la librairie utilisant abondamment `.expect()`
+  When le harnais clippy tourne sur `--all-targets`
+  Then aucun warning de la famille stricte n'est émis pour ce module
+
+Scenario: indexation directe en production
+  Given du code de production qui lit `vec[0]` sans garde
+  When le harnais clippy tourne
+  Then `indexing_slicing` est rejeté en `deny`
+  And la correction attendue est un `get()` traité ou une branche explicite, pas un `#[allow]`
+
+Tasks:
+  [ ] Purger la dette du harnais à l'adoption : 56 erreurs de production en features par défaut,
+    67 en `--all-features`, plus 136 avertissements `missing_docs` (160 en `--all-features`).
+    Répartition détaillée dans les trois tâches ci-dessous.
+  [ ] Purger la dette stricte de production : `arithmetic_side_effects` 3, `expect_used` 2 à 3,
+    `unreachable` 2 et `indexing_slicing` 4 (`src/auth/mod.rs` deux fois, `src/auth/cookie.rs`,
+    `src/auth/oidc.rs` au point de départ, mesures `--lib --all-features`).
+  [ ] Purger la dette `pedantic` de production : `missing_errors_doc` 18, `doc_markdown` 12,
+    `must_use_candidate` 7 à 11, `match_same_arms` 3, `items_after_statements` 2,
+    `enum_glob_use` 1, `too_many_lines` 1, `map_unwrap_or` 2.
+  [ ] Documenter les items publics manquants : `missing_docs` 136 en features par défaut,
+    160 en `--all-features` au point de départ.
+  [ ] Basculer `missing_docs` en `deny` quand la crate est à zéro avertissement, en gardant
+    l'exemption `cfg(test)`.
+  [ ] Décider (Sébastien) si `cargo audit` entre dans la CI : l'`AGENTS.md` de l'ancien workflow
+    le listait dans les commandes de validation, alors qu'aucun job de CI ne le lance et qu'il
+    n'est pas installé sur ce poste.
+  [ ] Décider (Sébastien) si `./rustfmt.toml` adopte les options instables
+    (`imports_granularity`, `comment_width`, `group_imports`), ce qui impose nightly en CI et
+    reformate tout le dépôt.
+
+Done when:
+  `cargo clippy --all-targets -- -D warnings`, la même commande sur chacune des combinaisons de
+    features listées plus haut, et `cargo fmt --check` sortent sans un seul avertissement, et
+    `./miryad-core.sdd` ne porte plus de tâche ouverte de dette harnais.

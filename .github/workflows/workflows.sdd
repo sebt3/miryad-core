@@ -1,0 +1,80 @@
+Spec: CI et publication (GitHub Actions)
+
+Platform: GitHub Actions, ubuntu-latest, toolchain stable (dtolnay/rust-toolchain@stable), rustfmt et clippy inclus dans la toolchain stable
+
+Purpose:
+  Garder la crate saine par les tests sur la matrice de features, vérifier le formatage, faire
+    tourner le harnais clippy, publier sur crates.io et créer la release GitHub sur un tag `v*`
+    dont la version correspond à `Cargo.toml`. Cette spec définit ce que la CI doit prouver ;
+    les fichiers `.yml` n'en sont que la traduction.
+
+Owns:
+  ./ci.yml
+  ./publish.yml
+
+Can read:
+  ../../tooling.sdd
+  ../../miryad-core.sdd
+
+References:
+  ../../tooling.sdd: état du harnais et calendrier du `-D warnings`
+
+Must:
+  Déclencher les tests sur `push` et `pull_request` vers `main`.
+  Lancer `cargo test` au moins en features par défaut (`static-frontend`), en
+    `--no-default-features`, et en `--all-features`.
+  Rejouer le harnais clippy sur chaque combinaison de features (`--no-default-features`,
+    défaut, `swagger-ui`, `graphql` avec `--all-targets`, `mcp`, `--all-features`), le `-D
+    warnings` escaladant tout avertissement résiduel hors `[lints]` : ce que
+    `../../tooling.sdd` déclare interdit doit casser la CI, pas seulement le poste de travail.
+  Vérifier le formatage avec `cargo fmt -- --check` sur la toolchain stable (aucune option
+    instable dans `../../rustfmt.toml`).
+  Mettre en cache lesArtifacts Cargo entre les steps (`Swatinem/rust-cache`).
+  Refuser un tag `v*` dont la version ne correspond pas à celle de `Cargo.toml` avant toute
+    publication.
+  Lancer les tests avant `cargo publish` dans le job de publication.
+  Créer la release GitHub uniquement après la réussite du job de publication (`needs: publish`).
+  Publier avec `CARGO_REGISTRY_TOKEN` lu depuis les secrets, jamais en clair dans le workflow.
+
+Must not:
+  Publier alors que les tests ou le harnais ont échoué.
+  Dockeriser, déployer, appliquer un chart ou brancher un secret PostgreSQL dans cette CI :
+    miryad-core est une bibliothèque, la chaîne de déploiement de l'application appartient à
+    `miryad`.
+  Publier depuis une branche autre qu'un tag `v*`.
+
+Depends on:
+  ../../tooling.sdd
+  ../../miryad-core.sdd
+
+Scenario: régression sur une feature isolée
+  Given un changement qui ne compile qu'avec les features par défaut
+  When le job de tests ou le job clippy atteint la combinaison `mcp`
+  Then cette combinaison échoue et bloque le merge
+  And les autres combinaisons continuent de s'exécuter, pour que chaque écart soit visible
+
+Scenario: tag désaligné
+  Given un tag `v0.2.0` est poussé alors que `Cargo.toml` porte la version `0.1.3`
+  When le workflow de publication démarre
+  Then le job échoue avant tout `cargo publish`
+
+Scenario: harnais contourné
+  Given un `#[allow(clippy::unwrap_used)]` sans justification de spec est introduit dans du
+    code de production
+  When le job clippy tourne en `--all-features`
+  Then l'avertissement escaladé en `-D warnings` fait échouer le job
+  And la revue demande la correction, pas un `#[allow]` de plus
+
+Tasks:
+  [ ] Allonger les jobs de test et de clippy sur la matrice complète de features (`--no-default-features`,
+    `swagger-ui`, `graphql`, `mcp`) — l'état actuel ne teste que défaut et `--all-features`, et
+    ne teste aucune combinaison `--no-default-features`.
+  [ ] Confirmer que le job clippy garde `-- -D warnings` dès que `../../tooling.sdd` est à zéro
+    dette : le harnais est en `deny` à l'adoption, donc la CI est rouge tant que la purge n'est
+    pas finie — c'est l'effet voulu, pas une raison de retirer le drapeau.
+  [ ] Décider s'il faut séparer `test`, `fmt` et `clippy` en jobs dédiés dès que la matrice est
+    jouée (parallélisme, lisibilité des échecs).
+
+Done when:
+  La CI prouve les tests, le harnais et le formatage sur chaque combinaison de features, et un
+    tag dont la version ne correspond pas à `Cargo.toml` ne publie rien.

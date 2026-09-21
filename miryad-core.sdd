@@ -1,0 +1,161 @@
+Spec: miryad-core
+
+Platform: Rust edition 2024, toolchain stable (1.97.1 à l'adoption du harnais), axum 0.8, SeaORM 2, Seaography 2.0.0-rc.9
+
+Purpose:
+  Moteur générique derrière le template d'application **miryad** : auth OIDC + cookies de
+    session + tokens API, RBAC/ownership par entité, API REST, GraphQL et MCP lues depuis la
+    même métadonnée, OpenAPI, IR pour le scaffolding frontend et migrations internes. La
+    promesse (« 80 % de l'application vient gratuitement ») tient parce que le modèle est
+    opinionated : axum, SeaORM et Seaography sont imposés, et une application déclarant ses
+    entités n'écrit qu'une implémentation de @MiryadResource par entité. Crate publiée sur
+    crates.io et GitHub, API instable avant `1.0`, licence BSD-3-Clause.
+
+Structure:
+  ./src/: moteur de la crate — chaque fichier `.rs` y a sa spec `.sdd` du même basename dans le
+    même répertoire (`src/auth/oidc.rs` ↔ `src/auth/oidc.sdd`)
+  ./src/auth/: OIDC, cookies, tokens API, dual-auth, extracteurs axum
+  ./src/rest/: routeur CRUD générique, endpoints d'admin/self-service, OpenAPI
+  ./src/graphql/: montage Seaography dynamique, principal, hooks
+  ./src/mcp/: serveur JSON-RPC, tools CRUD générés, mise en forme des sorties
+  ./src/users/: utilisateurs, groupes, appartenances, comptes de service
+  ./src/migration/: migrations SeaORM internes `miryad_*`, une spec par migration
+  ./src/bin/: CLI `miryad` (scaffolding) — squelette, format du modèle de données non tranché
+  ./tests/: crates d'intégration, rattachées à la spec du contrat inter-surface exercé
+  ./docs/: récit d'architecture (`architecture.md`) et priorisation (`roadmap.md`)
+  ./: specs transverses `tooling.sdd` (harnais) et `.github/workflows/workflows.sdd` (CI)
+
+Owns:
+  ./Cargo.toml
+  ./Cargo.lock
+  ./README.md
+  ./LICENSE
+  ./.gitignore
+  ./AGENTS.md
+  ./CLAUDE.md
+  ./docs/architecture.md
+  ./docs/roadmap.md
+  ./.opencode/agents/*.md
+
+Can read:
+  ./.specdd/bootstrap.project.md
+
+References:
+  ./tooling.sdd
+  ./.github/workflows/workflows.sdd
+
+Must:
+  Séparer strictement le contrat de la vérification : aucun fichier de `src/` ne reçoit une
+    ligne de code sans que sa spec `.sdd` ait été approuvée par Sébastien, et sans que les
+    tests dérivés de ses `Scenario` aient été écrits et exécutés en échec d'abord (flux
+    spec → test → implémentation, `.specdd/bootstrap.project.md`).
+  Exiger la batterie complète de `./tooling.sdd` (tests et harnais sur chaque combinaison de
+    features, `cargo fmt --check`) avant qu'une ligne de `Tasks` passe à `[x]`.
+  Lire les trois surfaces — REST, GraphQL, MCP — depuis la seule métadonnée déclarée par
+    @MiryadResource (@resource_name, @read_policy, @write_policy, @owner_column,
+    @label_column, @before_create) : ajouter une entité = implémenter ce trait, rien de plus.
+  Porter un code d'erreur unique `MRD-<DOMAINE>-NNN` sur toute erreur interne de la crate.
+  Exiger la relation une-spec-par-fichier et la bijectivité décrite dans
+    `.specdd/bootstrap.project.md` : chaque fichier de `src/` possède sa spec adjacente du même
+    basename, sans description déportée sur des fichiers qu'elle n'owne pas et sans regroupement
+    par défaut.
+  Exiger qu'une spec empêche toute réinterprétation d'implémentation : chaque item exposé,
+    génération, feature, branche, état d'erreur, code `MRD-*`, effet de bord et invariant observable
+    a une exigence vérifiable ou un `Scenario` déterministe.
+  Exiger qu'une spec de N `Scenario` soit accompagnée d'au moins N tests distincts nommés, chacun
+    vérifiant le `Then` de son `Scenario` — les tests inline ou rattachés par `Owns`/`Can modify`
+    comptent seulement s'ils exercent réellement le contrat.
+  Garder les gating de features tels que déclarés dans `Cargo.toml` : `static-frontend` activée
+    par défaut (dépendance légère, attendue par la quasi-totalité des applications), `graphiql`
+    impliquant `graphql`, `graphql` activant `sea-orm/seaography` (sans quoi
+    @DeriveRelatedEntity ne génère rien et les relations disparaissent de l'API), `mcp`
+    n'embarquant `vynil-core` que en `hbs` et `crypto` (`default-features = false`).
+  Livrer les tables internes préfixées `miryad_*` avec leur propre table de tracking de
+    migrations, pour coexister avec les migrations de l'application consommatrice.
+  Publier une documentation utilisable sur docs.rs : le module @lib.rs porte la documentation
+    de la crate, et `[package.metadata.docs.rs]` active les features documentables.
+
+Must not:
+  Écrire ou maintenir du code par entité dans la crate, ni exiger un boilerplate par entité de
+    l'application consommatrice : c'est exactement ce que le trait central doit supprimer.
+  Embarquer un Dockerfile, un chart Helm, une documentation de déploiement CNPG/Authentik ou le
+    générateur frontend TypeScript : ces artefacts appartiennent à `miryad` (template), et cette
+    crate reste une bibliothèque publiable.
+  Étendre le document OpenAPI avec des extensions internes de scaffolding (`x-miryad-*`) : deux
+    publics, deux artefacts — l'IR frontend (@ir::resource_ir, @ir::IrRegistry) est l'artefact
+    interne, @rest::openapi reste le contrat public.
+  Réélire une migration committée : un schéma déjà posé se corrige par une migration suivante.
+  Mélanger @HookError, erreur applicative de l'application consommatrice, avec la taxonomie
+    `MRD-*` de la crate.
+  Inventer une règle de contrat, une priorité de roadmap ou un comportement de surface sans
+    arbitrage de Sébastien ; ni pousser (`git push`) sans demande explicite de lui.
+  Regrouper plusieurs fichiers de `src/` sous une spec sans démonstration d'un contrat
+    indivisible approuvé ; la bijectivité fichier ↔ spec est la règle, pas une préférence.
+  Valider une spec dont la prose laisserait l'implémentation interpréter le comportement, ou
+    dont le nombre de tests vérifiables serait inférieur au nombre de `Scenario`.
+
+Depends on:
+  SeaORM 2 (@sea_orm, @sea_orm_migration)
+  axum 0.8 (@axum) et @tower, @tower-http derrière `static-frontend`
+  openidconnect 4 (@openidconnect)
+  Seaography 2.0.0-rc.9 et async-graphql 7, derrière les features `graphql` et `graphiql`
+  utoipa 5 (@utoipa), @utoipa-swagger-ui derrière `swagger-ui`
+  vynil-core 0.7.4 (`hbs`, `crypto`), derrière la feature `mcp`
+  ./tooling.sdd
+
+Tasks:
+  [ ] Spec `src/lib.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/resource.sdd` produite (spec-reverse), revue, et rattachant `tests/resource.rs`.
+  [ ] Spec `src/query.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/rbac.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/ir.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/frontend.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/auth/mod.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/auth/config.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/auth/oidc.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/auth/cookie.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/auth/token.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/auth/dual.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/auth/middleware.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/auth/principal.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/auth/state.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/auth/error.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/users/mod.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/users/user.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/users/group.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/users/membership.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/users/service_account.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/rest/mod.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/rest/core.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/rest/admin.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/rest/me.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/rest/tokens.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/rest/error.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/rest/openapi.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/graphql/mod.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/graphql/registry.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/graphql/handler.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/graphql/hooks.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/graphql/principal.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/mcp/mod.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/mcp/registry.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/mcp/handler.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/mcp/protocol.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/mcp/format.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/mcp/error.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/migration/mod.sdd` produite (spec-reverse) puis revue par Sébastien.
+  [ ] Spec `src/migration/m20260822_000001_create_api_tokens.sdd` produite puis revue.
+  [ ] Spec `src/migration/m20260822_000002_create_users_groups.sdd` produite puis revue.
+  [ ] Spec `src/migration/m20260822_000003_seed_admin_group.sdd` produite puis revue.
+  [ ] Spec `src/bin/miryad.sdd` produite (spec-reverse) puis revue par Sébastien — Trancher le
+    format du modèle de données, question ouverte du CLI.
+  [ ] Purger la dette du harnais module par module, selon le calendrier de `./tooling.sdd`.
+  [ ] Décider si le moteur de workflow (roadmap 7/9) entre dans une spec, son option
+    d'implémentation étant en standby — ne pas speculer un module sans moteur choisi.
+
+Done when:
+  Chaque fichier de `src/` est couvert par une spec `.sdd` relue et approuvée par Sébastien, sans
+    regroupement non justifié ni description flou, `tests/resource.rs` est rattaché à une spec,
+    chaque `Scenario` dispose d'au moins un test distinct vérifiant son `Then`, le nombre de tests
+    est supérieur ou égal au nombre de `Scenario`, et la batterie de `./tooling.sdd` passe verte
+    sur toutes les combinaisons de features avec `-- -D warnings`.
