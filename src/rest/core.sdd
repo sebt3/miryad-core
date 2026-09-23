@@ -21,6 +21,14 @@ Purpose:
     /tooling.sdd, `--no-default-features` compris. Zéro trace @tracing, zéro cookie, zéro token à
     ce jour ; les effets d’écriture sont les mutations de l’entité et le get-or-create de
     @users::resolve_user, y compris sur les lectures et sur les requêtes au final refusées.
+  Amendement du 2026-09-23 (miroir de ./../resource.sdd, demandé par Sébastien, motivé par
+    ./../workflow/definition.sdd) : @rest::core::update et @rest::core::delete appellent désormais
+    @MiryadResource::before_update et @MiryadResource::before_delete, positionnés symétriquement à
+    @before_create dans @rest::core::create — après @rbac::can_write, avant les invariants de
+    sécurité de chaque opération. Exception actée au principe de parité : ./../graphql ne les appelle
+    jamais (asymétrie déjà constatée pour le chemin GraphQL en général, `Handles`, mais cette fois
+    délibérée pour ces deux hooks précisément, pas seulement une conséquence de l'architecture
+    Seaography — voir ./../resource.sdd `Purpose`).
 
 Owns:
   ./core.rs
@@ -32,7 +40,8 @@ References:
     par surface : ce fichier est partagé, il ne choisit de surface aucune
   /tooling.sdd — dette stricte tracée : l’@expect de @rest::core::primary_key_column est un des
     sites `expect_used` de production, la soustraction `pagination.page - 1` un des sites
-    `arithmetic_side_effects` ; la batterie court ici sous les sept combinaisons de features
+    `arithmetic_side_effects` ; la batterie court ici sous les huit combinaisons de features
+    (sept plus `workflow`, amendement 2026-09-23)
   ./../lib.sdd — @rest déclaré sans gating ; @rest::core n’est jamais visible hors de la crate
   ./mod.rs — contrat ./mod.sdd : possesseur de @RestEntity (PK unique @i32 assumée comme
     limitation), des handlers et de leurs statuts de succès `200`/`204`, premier appelant des cinq
@@ -71,7 +80,7 @@ References:
 
 Must:
   Compiler sans aucun gating de feature : ./core.rs ne porte aucun `#[cfg(feature = ...)]` ; le
-    fichier compile sur les sept combinaisons de /tooling.sdd, `--no-default-features` d’abord,
+    fichier compile sur les huit combinaisons de /tooling.sdd, `--no-default-features` d’abord,
     preuve qu’aucune règle de sécurité d’attend une feature pour exister.
   Rester le dénominateur commun vérifié des surfaces : @rest::core::list, @rest::core::get,
     @rest::core::create, @rest::core::update et @rest::core::delete sont les seules implémentations
@@ -104,17 +113,34 @@ Must:
     ne tourne que si la création est autorisée, et retrait de PK comme injection de propriétaire
     s’exécutent après lui, sans condition : un hook aux ordres du client qui reverrouillerait la PK
     ou l’owner est déjoué par l’ordre même de la séquence — le même ordre vaut pour la surface MCP,
-    qui délègue (./../mcp/registry.rs vérifié).
+    qui délègue (./../mcp/registry.rs vérifié). Même garantie pour @MiryadResource::before_update
+    (avant le forçage de PK et la reconduction d’owner, amendement 2026-09-23) : un hook hostile ne
+    peut pas plus dévier une mise à jour qu’une création.
   Réserver l’injection de colonne au couple @AccessPolicy::OwnerOnly (lu sur @write_policy) +
     @MiryadResource::owner_column @Some, dans @rest::core::create et dans @rest::core::update :
     hors de ce couple @owner_column est une colonne ordinaire du corps (asymétrie remontée en
     `Tasks [?]`), et @MiryadResource::read_policy ne gouverne jamais l’injection.
-  Forcer dans @rest::core::update, après @rest::core::mark_all_set, la cible et la colonne :
+  Appeler @MiryadResource::before_update dans @rest::core::update juste après
+    @rest::core::mark_all_set, avant les deux invariants ci-dessous — même position relative que
+    @before_create dans @rest::core::create (amendement 2026-09-23, ./../resource.sdd) :
+    `before_update(active, existing, principal)` reçoit l’ActiveModel déjà marqué par
+    `mark_all_set` et `existing` (la même ligne déjà relue pour @rbac::can_write) ; son @Err est
+    mappé @RestError::Application sans transformation, sans qu’aucun invariant n’ait encore modifié
+    l’ActiveModel ; son @Ok remplace l’ActiveModel porté en aval.
+  Forcer dans @rest::core::update, après @MiryadResource::before_update, la cible et la colonne :
     @ActiveModelTrait::set de la PK à
-    @sea_orm::Value::from(id du chemin) — une PK divergente du corps ne peut déplacer la cible —
+    @sea_orm::Value::from(id du chemin) — une PK divergente du corps ou du hook ne peut déplacer la
+    cible —
     puis @ActiveModelTrait::set de @MiryadResource::owner_column à la valeur @sea_orm::Value extraite
-    par @sea_orm::ModelTrait::get de @existing : le corps ne transfère jamais la propriété, y compris
+    par @sea_orm::ModelTrait::get de @existing : ni le corps ni le hook ne transfèrent jamais la
+    propriété, y compris
     pour un admin que @rbac::can_write laisse passer sans jamais lire de colonne.
+  Appeler @MiryadResource::before_delete dans @rest::core::delete juste après @rbac::can_write, avant
+    toute émission de `DELETE` (amendement 2026-09-23, ./../resource.sdd) : `before_delete(existing,
+    principal)` reçoit la ligne relue ; son @Err est mappé @RestError::Application sans
+    transformation et interrompt avant que @sea_orm::EntityTrait::delete_by_id ne soit atteint ; son
+    @Ok(()) laisse la suppression se poursuivre inchangée — aucun ActiveModel n’existe à ce point,
+    rien à muter.
   Écrire le corps intégralement : @rest::core::mark_all_set promeut chaque @ActiveValue::Unchanged
     porteur de valeur en @ActiveValue::Set (le @NotSet sans valeur reste @NotSet) — vérifié en
     sea-orm `2.0.2` (@sea_orm::Update::one ne met dans `SET` que les @ActiveValue::Set ; une `SET`
@@ -154,9 +180,11 @@ Must not:
     `@write_policy == @AccessPolicy::OwnerOnly` de l’injection ; aucune lecture de groupe, aucun
     is_admin, aucune comparaison de propriétaire pour décider — réévaluer ici créerait précisément le
     fork REST/MCP/GQL que ce fichier existe pour empêcher.
-  Appeler @MiryadResource::before_create dans @rest::core::update ou @rest::core::delete, ou y
-    inventer un hook d’update/delete : le hook est réservé à la création par parité @seaography
-    (./../resource.sdd) ; un tel appel serait un hook fantôme sur deux surfaces seulement.
+  Appeler @MiryadResource::before_create dans @rest::core::update ou @rest::core::delete, ou
+    @MiryadResource::before_update/@MiryadResource::before_delete dans une opération autre que la
+    leur : chaque hook reste réservé à son opération, jamais réutilisé pour une autre par commodité
+    (amendement 2026-09-23 : ./core.rs appelle désormais les trois hooks, un par opération d’écriture,
+    plus jamais seulement @before_create).
   Faire confiance à la PK du corps, à @rest::core::create (elle est retirée par
     @ActiveModelTrait::not_set, la base attribue) comme à @rest::core::update
     (le `WHERE` est l’id du chemin) : aucune ligne ciblée ou créée par un choix client.
@@ -331,11 +359,16 @@ Handles:
     chemin, @ActiveModelTrait::set force le `WHERE` (PK exclue de `SET`, vérifié
     @sea_orm::Update::one), la ligne autorisée est la seule
     touchée ; hook hostile — un @MiryadResource::before_create qui re-poserait PK et owner est
-    déjoué, @ActiveModelTrait::not_set et @ActiveModelTrait::set lui sont postérieurs dans ./core.rs.
-  Hook : entité sans surcharge → @MiryadResource::before_create identité, insertion inchangée ;
-    hook mutateur → mutation visible sur la ligne insérée ; hook @Err → @RestError::Application,
-    insertion non tentée ; @rest::core::update/@rest::core::delete → hook jamais appelé (aucun
-    chemin de code ne l’appelle).
+    déjoué, @ActiveModelTrait::not_set et @ActiveModelTrait::set lui sont postérieurs dans ./core.rs ;
+    même déjouement pour un @MiryadResource::before_update hostile (amendement 2026-09-23), le
+    forçage de PK et la reconduction d’owner lui sont postérieurs de façon identique.
+  Hook : entité sans surcharge → @MiryadResource::before_create/@before_update identité (ActiveModel
+    inchangé), @before_delete `Ok(())` ; hook mutateur (@before_create/@before_update) → mutation
+    visible sur la ligne écrite ; hook @Err (les trois) → @RestError::Application, écriture non
+    tentée ; @rest::core::update appelle @MiryadResource::before_update juste après
+    @rest::core::mark_all_set, @rest::core::delete appelle @MiryadResource::before_delete juste après
+    @rbac::can_write (amendement 2026-09-23, `Must` — avant cet amendement, aucun chemin de code ne
+    les appelait).
   Courses (aucun verrou, aucune transaction) : @update dont la ligne disparaît entre @sea_orm::EntityTrait::find_by_id
     et @ActiveModelTrait::update → @sea_orm::DbErr::RecordNotUpdated propagé → @RestError::Database
     `500` — branche jamais exercée par un test (`Tasks [?]`) ; @delete dont la ligne disparaît entre
@@ -360,7 +393,29 @@ Example:
     @AccessPolicy::OwnerOnly et @MiryadResource::owner_column @Some → @ActiveModelTrait::insert.
     Un hook qui re-forge PK ou owner est défait par les lignes qui le suivent.
 
+  # Ordre contractuel de @rest::core::update (amendement 2026-09-23) — même discipline.
+  @users::resolve_user → @sea_orm::EntityTrait::find_by_id(id).one → @RestError::NotFound sinon →
+    @rbac::can_write sur @existing → @RestError::Forbidden sinon, hook jamais appelé →
+    @rest::core::mark_all_set → @MiryadResource::before_update(active, existing, principal) →
+    @RestError::Application(@HookError) sinon → @ActiveModelTrait::set de la PK à l’id du chemin →
+    @ActiveModelTrait::set de @MiryadResource::owner_column depuis @existing →
+    @ActiveModelTrait::update.
+
+  # Ordre contractuel de @rest::core::delete (amendement 2026-09-23).
+  @users::resolve_user → @sea_orm::EntityTrait::find_by_id(id).one → @RestError::NotFound sinon →
+    @rbac::can_write sur @existing → @RestError::Forbidden sinon, hook jamais appelé →
+    @MiryadResource::before_delete(existing, principal) → @RestError::Application(@HookError) sinon →
+    @sea_orm::EntityTrait::delete_by_id.
+
 Tasks:
+  [ ] Amendement du 2026-09-23 (@before_update, @before_delete) : convertir les quatre nouveaux
+    `Scenario` en tests nommés distincts dans ./mod.rs (même style que les tests existants de hook de
+    création) : « mutation before_update écrite, invariants après » →
+    `before_update_hook_mutation_is_applied_at_update` ; « rejet before_update sans code MRD » →
+    `before_update_hook_error_blocks_update_without_mrd_code` ; « hook update hostile déjoué » →
+    `update_hook_hostile_ne_contourne_les_invariants` ; « rejet before_delete, aucun DELETE » →
+    `before_delete_hook_error_blocks_delete_without_mrd_code`. Dépend de l’implémentation de
+    ./../resource.sdd (mêmes quatre nouveaux hooks) — les deux amendements s’implémentent ensemble.
   [?] L’existence est un oracle : @get/@update/@delete répondent `404` (@RestError::NotFound) avant
     `403` (@RestError::Forbidden), donc un appelant sans aucun droit distingue par `404`/`403` une
     ligne existante d’une ligne absente sur toute entité, `@AccessPolicy::AdminOnly` compris. Oracle
@@ -452,17 +507,21 @@ Tasks:
     la relecture de cette spec, jamais en silence.
 
 Done when:
-  Les vingt-sept `Scenario` disposent chacun d’au moins un test nommé distinct vérifiant son `Then`
-    (mapping `Tasks` tenu, zéro test inline dans ./core.rs aujourd’hui donc tout est à créer ou à
-    rattacher explicitement), et la batterie /tooling.sdd est verte sur chaque combinaison de
-    features, ./core.rs ne portant aucune dette stricte au-delà des deux sites connus.
-  Les huit `[?]` de `Tasks` — oracle d’existence, provisioning, `OwnerOnly` sans colonne, colonne
-    hors `OwnerOnly`, TOCTOU, filtre non typé, page extrême, `201` de @create — ont une décision
-    écrite de Sébastien, la spec amendée en conséquence, et aucune de ces branches ne reste un comportement
-    accidentel implicite.
+  Les trente-et-un `Scenario` (vingt-sept originaux, quatre de l’amendement
+    @before_update/@before_delete du 2026-09-23) disposent chacun d’au moins un test nommé distinct
+    vérifiant son `Then` (mapping `Tasks` tenu, zéro test inline dans ./core.rs aujourd’hui donc tout
+    est à créer ou à rattacher explicitement), et la batterie /tooling.sdd est verte sur chaque
+    combinaison de features, ./core.rs ne portant aucune dette stricte au-delà des deux sites connus.
+  Les huit `[?]` originaux de `Tasks` — oracle d’existence, provisioning, `OwnerOnly` sans colonne,
+    colonne hors `OwnerOnly`, TOCTOU, filtre non typé, page extrême, `201` de @create — ont une
+    décision écrite de Sébastien, la spec amendée en conséquence, et aucune de ces branches ne reste
+    un comportement accidentel implicite.
   La parité ./../mcp/registry.rs est prouvée au moins par le scenario portant, sous `--features mcp`,
     et la compilation sans feature est prouvée sur `--no-default-features` ; ./../graphql/hooks.sdd,
-    à sa production, porte l’asymétrie de surface déjà signalée en `References`.
+    à sa production, porte l’asymétrie de surface déjà signalée en `References`, y compris pour
+    @before_update/@before_delete (`Purpose`, amendement 2026-09-23).
+  L’amendement @before_update/@before_delete est cohérent avec son miroir dans ./../resource.sdd
+    (signatures, position d’appel) — les deux specs sont relues et approuvées ensemble.
   La spec est relue et approuvée par Sébastien, puis la ligne correspondante de /miryad-core.sdd
     peut passer à `[x]`.
 
@@ -692,6 +751,45 @@ Scenario: delete : décision sur ligne relue, suppression par PK, `0` ligne rest
   But une suppression concurrente entre la relecture et le SQL (à piloter en dehors d’une ligne)
     rendrait @sea_orm::DeleteResult::rows_affected `0` sans que ./core.rs le lise — @Ok quand même,
     `204`, TOCTOU `[?]` en `Tasks`
+
+Scenario: update : la mutation du hook before_update est écrite, mais les invariants restent après lui
+  Given une fixture @AccessPolicy::OwnerOnly dont @MiryadResource::before_update majuscule un champ,
+    une ligne existante appartenant à l'appelant, corps porteur d'une PK divergente de l'id du chemin
+    et d'un owner étranger
+  When @rest::core::update est appelé par un utilisateur autorisé
+  Then @ActiveModelTrait::update retourne une ligne : id du chemin (PK du corps ignorée), owner égal à
+    celui d'@existing (owner du corps ignoré, celui posé par le hook compris), et la mutation du hook
+    visible sur la ligne — le hook est lu avant, les deux invariants écrivent après, exactement comme
+    @before_create
+
+Scenario: update réjecté par before_update : @RestError::Application sans code `MRD-*`
+  Given une fixture dont @MiryadResource::before_update rejette une transition invalide par un
+    @HookError `WIDGET-002`, une ligne existante que @rbac::can_write autorise
+  When @rest::core::update est appelé avec un corps qui déclenche le rejet
+  Then @RestError::Application porte le @HookError intact : @code `WIDGET-002`, @message d'origine,
+    aucun préfixe `MRD-` — et @ActiveModelTrait::update n'est pas appelé : @Err du hook interrompt
+    avant le forçage de PK
+  And la ligne en base reste inchangée (aucune écriture partielle)
+
+Scenario: update hook hostile : PK et owner qu'il re-forge sont annulés par les invariants
+  Given une fixture @AccessPolicy::OwnerOnly dont @MiryadResource::before_update re-pose la PK de
+    l'ActiveModel à une valeur différente de l'id du chemin et @owner_column sur un autre utilisateur,
+    appelé par le propriétaire actuel
+  When @rest::core::update s'exécute
+  Then la ligne mise à jour est celle de l'id du chemin (jamais celle forgée par le hook) et son
+    propriétaire reste celui d'@existing (jamais celui forgé par le hook) : @ActiveModelTrait::set de
+    la PK et de l'owner sont postérieurs au hook dans ./core.rs, exactement comme pour
+    @before_create
+
+Scenario: delete réjecté par before_delete : @RestError::Application, aucun DELETE émis
+  Given une fixture dont @MiryadResource::before_delete rejette la suppression d'une ligne dont un
+    champ vaut `"locked"`, avec un @HookError `WIDGET-LOCKED`, une ligne `"locked"` que @rbac::can_write
+    autorise
+  When @rest::core::delete est appelé sur cette ligne
+  Then @RestError::Application porte le @HookError intact (@code `WIDGET-LOCKED`) et
+    @sea_orm::EntityTrait::delete_by_id n'est jamais atteint — la ligne reste en base
+  And un appel sur une ligne sans ce champ verrouillé supprime normalement, prouvant que le rejet est
+    conditionnel au hook et non systématique
 
 Scenario: Parité MCP : la surface MCP rend les mêmes décisions, traduites sans décision propre
   Given une base sous `feature mcp`, un appel @McpOp::List, un autre @McpOp::Create, d’abord pour

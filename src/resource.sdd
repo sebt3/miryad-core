@@ -4,12 +4,24 @@ Purpose:
   Définit la seule déclaration que l'application consommatrice implémente par entité SeaORM :
     erreur applicative @HookError, politique d'accès @AccessPolicy et trait @MiryadResource (nom
     exposé, politiques de lecture et d'écriture, colonne propriétaire, colonne de filtre, colonne
-    de libellé, hook métier de création). Le fichier ne déclare rien d'exécutable : ni évaluation
-    d'autorisation, ni IO, ni trace, ni code `MRD-*`. La promesse héritée de /miryad-core.sdd —
-    ajouter une entité = implémenter ce trait, et rien de plus — tient parce que REST, GraphQL et
-    MCP lisent ces métadonnées à l'identique et que le miroir @ir les exporte telles quelles.
+    de libellé, hooks métier de création, de mise à jour et de suppression). Le fichier ne déclare
+    rien d'exécutable : ni évaluation d'autorisation, ni IO, ni trace, ni code `MRD-*`. La promesse
+    héritée de /miryad-core.sdd — ajouter une entité = implémenter ce trait, et rien de plus — tient
+    parce que REST, GraphQL et MCP lisent ces métadonnées à l'identique et que le miroir @ir les
+    exporte telles quelles.
   Le fichier ne porte aucun `#[cfg(feature = ...)]` : il compile sur toute la matrice de
     /tooling.sdd, `--no-default-features` compris — contractué en première ligne de `Must`.
+  Amendement du 2026-09-23 (demandé par Sébastien, motivé par ./workflow/definition.sdd : une
+    définition de workflow doit être revalidée à la mise à jour, pas seulement à la création) :
+    introduit @MiryadResource::before_update et @MiryadResource::before_delete. Exception explicite,
+    actée par Sébastien, au principe de parité de /miryad-core.sdd et à la règle qu'elle portait
+    jusqu'ici dans ce fichier (« pas de hook update/delete tant que Seaography reste create-only ») —
+    les deux nouveaux hooks se déclenchent sur REST et MCP, jamais sur GraphQL (Seaography
+    `2.0.0-rc.9` ne pilote son hook équivalent, @LifecycleHooksInterface::before_active_model_save,
+    qu'à l'insertion). L'asymétrie est documentée ici, dans /src/rest/core.sdd (séquence
+    d'appel) et devra l'être dans ./graphql/hooks.sdd à sa rédaction (encore « en attente » à ce
+    jour) — un décalage assumé et tracé, pas silencieux, pour cette paire de hooks seulement ; le
+    principe de parité reste la règle par défaut pour tout le reste du contrat.
 
 Owns:
   ./resource.rs
@@ -39,19 +51,40 @@ Must:
     d'école « recettes partagées, modifiables par leur auteur » ; aucune fusion implicite.
   Rendre tous les accessseurs indépendants du principal et de tout contexte : fonctions statiques
     retournant les valeurs déclarées, sans récepteur ; @crate::auth::AuthPrincipal n'entre que dans
-    @MiryadResource::before_create, en lecture seule.
+    @MiryadResource::before_create, @MiryadResource::before_update et @MiryadResource::before_delete,
+    en lecture seule.
   Réserver @MiryadResource::before_create à la création, après le contrôle @rbac::can_create et
     avant l'insertion — miroir de @seaography::LifecycleHooksInterface.before_active_model_save,
     que @seaography `2.0.0-rc.9` ne déclenche que sur un insert (vérifié dans la source amont :
     seules @entity_create_one_mutation et @entity_create_batch_mutation l'appellent).
-  Fixer la signature de @MiryadResource::before_create comme synchrone, sans point d'attente : le
-    hook amont est synchrone (source `seaography-2.0.0-rc.9`) ; un hook asynchrone romprait
-    l'identité des trois surfaces. Le hook est donc un calcul pur sur l'ActiveModel.
+  Réserver @MiryadResource::before_update à la mise à jour, après @rbac::can_write (évalué sur la
+    ligne relue avant mise à jour) et après @rest::core::mark_all_set, avant les deux invariants de
+    @rest::core::update (forçage de la PK à l'id du chemin, reconduction de @owner_column depuis la
+    ligne relue) — position symétrique à @MiryadResource::before_create sur la séquence de création,
+    contractée dans /src/rest/core.sdd. `existing`, le @Model relu avant mise à jour (même valeur que
+    celle déjà utilisée pour évaluer @rbac::can_write), est prêté en lecture seule en plus de
+    l'ActiveModel à écrire — un hook qui doit comparer avant/après (ex. valider une transition d'état)
+    n'a pas besoin de relire la base lui-même.
+  Réserver @MiryadResource::before_delete à la suppression, après @rbac::can_write (évalué sur la
+    ligne relue) et avant l'exécution du `DELETE` — aucun ActiveModel n'existe pour une suppression,
+    seul `existing` (le @Model relu) est prêté en lecture seule ; un @Err interrompt avant toute
+    requête `DELETE`.
+  Fixer la signature de @MiryadResource::before_create, @MiryadResource::before_update et
+    @MiryadResource::before_delete comme synchrones, sans point d'attente : @before_create reste un
+    miroir du hook Seaography, lui-même synchrone (source `seaography-2.0.0-rc.9`) ; @before_update et
+    @before_delete n'ont aucun homologue Seaography à miroiter (ils ne se déclenchent pas sur ce
+    chemin, `Purpose`) mais restent synchrones par cohérence de signature avec @before_create et parce
+    qu'aucun besoin d'IO n'a été identifié pour un hook de validation — un hook qui aurait besoin
+    d'IO reste un cas non couvert par ce contrat, à instruire séparément s'il se présente.
   Garantir qu'une implémentation de @MiryadResource::before_create ne peut pas contourner les
     invariants appliqués après elle sur la création : le retrait de la clé primaire choisie par le
     client et l'injection du propriétaire sous `OwnerOnly` restent les derniers mots — comportement
     effectif de @rest::core::create que l'outil MCP de création réutilise (./mcp/registry.rs
     délègue à @rest::core::create, vérifié).
+  Garantir la même chose pour @MiryadResource::before_update : le forçage de la PK à l'id du chemin et
+    la reconduction de @owner_column depuis `existing` restent postérieurs au hook dans
+    @rest::core::update — un hook hostile qui tenterait de déplacer la cible ou de transférer la
+    propriété est défait par le même ordre que sur la création.
   Définir @HookError comme l'erreur applicative de l'application consommatrice : @code est un code
     applicatif libre à la charge de l'app et ne porte jamais de code `MRD-*` de la crate ; `None`
     quand l'app n'a pas de code. Le fichier lui-même n'émet et ne construit jamais de `MRD-*`.
@@ -80,9 +113,15 @@ Must not:
   Évaluer, décider ou exécuter une autorisation ici : l'évaluation par enregistrement
     (@rbac::can_read, @rbac::can_write, @rbac::can_create, @rbac::list_access) et les gardes de
     surface vivent ailleurs — ce fichier ne connaît ni base de données ni @users.
-  Déclarer un hook métier d'update ou de delete tant que le miroir @seaography est create-only : un
-    hook qui ne se déclencherait pas à l'identique sur les trois surfaces viole le contrat de
-    parité de /miryad-core.sdd — règle déjà énoncée par le commentaire de @before_create.
+  Laisser croire que @MiryadResource::before_update ou @MiryadResource::before_delete se
+    déclenchent sur GraphQL : Seaography `2.0.0-rc.9` ne pilote @LifecycleHooksInterface::before_active_model_save
+    qu'à l'insertion (vérifié source, `Must`) — les deux hooks ne s'exécutent que sur REST et MCP
+    (chemin @rest::core::update/@rest::core::delete, partagé par les deux surfaces). Exception actée
+    par Sébastien (2026-09-23, `Purpose`) au principe général de parité de /miryad-core.sdd : documentée
+    ici, dans /src/rest/core.sdd, et à documenter dans ./graphql/hooks.sdd à sa rédaction — jamais
+    silencieuse, mais une exception, pas un relâchement général de la règle de parité pour le reste du
+    contrat (@read_policy, @write_policy, @owner_column, @filter_column, @label_column,
+    @before_create restent lus à l'identique par les trois surfaces).
   Construire @HookError depuis le runtime de miryad-core pour une panne qui ne vient pas d'un hook
     applicatif : une erreur interne de la crate porte son propre code `MRD-*` dans son module.
   Introduire de l'asynchrone, de l'IO ou de l'état partageable dans ce contrat : les déclarations
@@ -93,7 +132,8 @@ Depends on:
     dépendance obligatoire non gatée de /Cargo.toml.
   @serde::Serialize — dérivé de @AccessPolicy ; @serde est une dépendance obligatoire avec la
     feature `derive`, jamais optionnelle : le dérivé survit à toutes les combinaisons de features.
-  ./auth/principal.rs — @crate::auth::AuthPrincipal, seul paramètre du hook @before_create.
+  ./auth/principal.rs — @crate::auth::AuthPrincipal, paramètre commun aux trois hooks @before_create,
+    @before_update et @before_delete.
   # Direction de dépendance respectée : @rbac, @ir, @rest, @graphql et @mcp dépendent de ce
   # fichier, jamais l'inverse ; ils ne sont nommés en amont que comme preuves de contrat (parité,
   # signature, effacement de type), jamais comme dépendances.
@@ -120,7 +160,9 @@ Exposes:
     (`None` = entité sans notion de propriétaire, référentiel partagé).
     Méthodes avec défaut : `fn filter_column()` → `None` (pas de filtre de liste),
     `fn label_column()` → `None`, `fn before_create(active, principal)` → identité (`Ok` de
-    l'ActiveModel inchangé, principal ignoré via `let _ =`).
+    l'ActiveModel inchangé, principal ignoré via `let _ =`), `fn before_update(active, existing,
+    principal)` → identité (`Ok` de l'ActiveModel inchangé, `existing` et `principal` ignorés),
+    `fn before_delete(existing, principal)` → `Ok(())` (`existing` et `principal` ignorés).
     Aucune méthode à récepteur : distribution statique uniquement, pas de forme @dyn.
   Aucun ré-export de la racine : chemins publics @miryad_core::resource::HookError,
     @miryad_core::resource::AccessPolicy, @miryad_core::resource::MiryadResource (convention de
@@ -135,6 +177,13 @@ Accepts:
     `Unchanged` ou `NotSet` telles que fournies par l'appelant — côté REST, la clé primaire client y
     est encore présente) et une référence @crate::auth::AuthPrincipal (@subject, @email optionnel,
     @source de session ou token API) — lecture seule, ignorée par le défaut.
+  @MiryadResource::before_update reçoit le même ActiveModel complet que @before_create (après
+    @rest::core::mark_all_set) plus `existing: &Self::Model`, la ligne relue avant mise à jour
+    (identique à celle qu'@rbac::can_write a déjà évaluée), et le même @crate::auth::AuthPrincipal —
+    lecture seule sur les deux, ignorés par le défaut.
+  @MiryadResource::before_delete reçoit `existing: &Self::Model` (la ligne relue) et le même
+    @crate::auth::AuthPrincipal — aucun ActiveModel, rien à muter, lecture seule, ignorés par le
+    défaut.
   Les accessseurs ne prennent aucune entrée : fonctions statiques, sans instance, sans base, sans
     principal.
 
@@ -144,19 +193,23 @@ Returns:
     déclarée, telle quelle.
   @MiryadResource::owner_column, @MiryadResource::filter_column, @MiryadResource::label_column —
     @Some de la colonne déclarée ou `None` (défauts de @filter_column et @label_column).
-  @MiryadResource::before_create — @Ok de l'ActiveModel (inchangé par défaut, muté par override) ou
-    @Err d'un @HookError (@code `None` ou libre, @message porté).
+  @MiryadResource::before_create et @MiryadResource::before_update — @Ok de l'ActiveModel (inchangé
+    par défaut, muté par override) ou @Err d'un @HookError (@code `None` ou libre, @message porté).
+  @MiryadResource::before_delete — @Ok(()) par défaut ou @Err d'un @HookError.
   @HookError::new — un @HookError avec @code à `None` ; @HookError::with_code — @code à @Some du
     code passé.
 
 Raises:
   Aucun code `MRD-<DOMAINE>-NNN` : le fichier n'en émet aucun, n'en définit aucun — sa seule erreur
     est @HookError, hors taxonomie par contrat hérité.
-  Aucun échec : aucun accessseur faillible, pas de @Result hors @before_create, aucun panic, aucun
+  Aucun échec : aucun accessseur faillible, pas de @Result hors des trois hooks, aucun panic, aucun
     @unwrap ni @expect (famille stricte interdite par /tooling.sdd hors `cfg(test)`).
   Seule traversée d'erreur possible : un @HookError remonté par l'override de
-    @MiryadResource::before_create — erreur de l'application que chaque surface restitue dans son
-    vocabulaire propre sans lui imposer de code de la crate.
+    @MiryadResource::before_create, @MiryadResource::before_update ou @MiryadResource::before_delete
+    — erreur de l'application que chaque surface restitue dans son vocabulaire propre sans lui
+    imposer de code de la crate. GraphQL ne peut jamais rendre le @HookError d'@before_update ou
+    @before_delete puisqu'elle ne les appelle jamais (`Purpose`, `Must not`) — seuls REST et MCP le
+    peuvent.
   Aucune erreur de base de données possible : @sea_orm n'est utilisé qu'au niveau des types.
 
 Handles:
@@ -165,14 +218,34 @@ Handles:
     `AdminOnly`).
   Entités sans filtre de liste et sans libellé déclarés (défauts `None` de @filter_column et
     @label_column).
-  Entités sans hook métier (défaut identité de @before_create) comme avec hook mutateur ou
-    rejetant (@HookError avec ou sans code).
+  Entités sans hook métier (défaut identité de @before_create/@before_update, défaut `Ok(())` de
+    @before_delete) comme avec hook mutateur ou rejetant (@HookError avec ou sans code) — les trois
+    hooks suivent le même patron indépendamment l'un de l'autre : une entité peut surdéclarer
+    @before_create seul, @before_update seul, les deux, ou aucun.
   Incohérence déclarative `OwnerOnly` sans @owner_column : compilable, sans enforcement de ce
     fichier ; le fail-closed effectif est un choix aval documenté dans @rbac (voir `Tasks`).
+  Surface GraphQL sur une entité dont @before_update ou @before_delete est surdéclaré : la mutation
+    Seaography s'exécute sans jamais appeler le hook — une mise à jour ou suppression qu'un hook REST
+    aurait rejetée réussit silencieusement côté GraphQL. Comportement assumé (`Purpose`), pas un bug
+    de ce fichier ; à documenter pour l'app consommatrice dans ./graphql/hooks.sdd et
+    `docs/architecture.md`.
 
 Tasks:
-  [ ] Convertir les vingt `Scenario` en au moins vingt tests nommés distincts, un par scenario.
-    État des lieux : 0 test inline dans ./resource.rs, 2 tests rattachés existants dans
+  [ ] Amendement du 2026-09-23 (@before_update, @before_delete) : convertir les six nouveaux
+    `Scenario` en tests distincts nommés, dans ../tests/resource.rs (fixtures étendues avec des
+    entités de test dédiées, réutilisant `recipe`/`ingredient` où le scenario n'exige pas de nouveau
+    comportement métier) : « @before_update par défaut » → `default_before_update_is_identity_and_ignores_existing` ;
+    « mutation par override de @before_update » → `before_update_override_can_compare_existing_and_reject`
+    ; « invariants postérieurs à @before_update » → `before_update_hook_hostile_ne_contourne_les_invariants`
+    (miroir de `create_hook_hostile_ne_contourne_les_invariants` de ./rest/core.rs, côté update) ;
+    « @before_delete par défaut » → `default_before_delete_is_ok_and_ignores_existing` ; « rejet par
+    override de @before_delete » → `before_delete_override_rejects_with_free_form_error` ;
+    « before_update/before_delete absents de GraphQL » → `graphql_mutations_skip_before_update_and_before_delete`
+    compilé sous `#[cfg(feature = "graphql")]`. Ces six tests dépendent de ./rest/core.rs et
+    ./rest/mod.rs implémentant effectivement l'appel aux deux nouveaux hooks (amendement de
+    /src/rest/core.sdd, à river avec ou avant celui-ci) — non exécutables avant cette implémentation.
+  [ ] Convertir les vingt `Scenario` originaux en au moins vingt tests nommés distincts, un par
+    scenario. État des lieux : 0 test inline dans ./resource.rs, 2 tests rattachés existants dans
     ../tests/resource.rs, 1 scenario couvert par des tests de la surface déléguée — soit 17 tests à
     créer dans ../tests/resource.rs. Correspondance scenario → test : « construction de @HookError
     sans code » → `hook_error_new_leaves_code_none` ; « code applicatif libre porté par @HookError »
@@ -232,15 +305,20 @@ Tasks:
     alors qu'elle est invérifiable ici ?
 
 Done when:
-  La spec porte exactement vingt `Scenario` et chaque `Scenario` est vérifié par au moins un test
-    nommé distinct au total : 17 tests rattachés créés dans ../tests/resource.rs, 2 tests rattachés
-    existants, plus les 2 tests de ./rest/mod.rs qui couvrent le scenario « position du hook dans la
-    création » — 21 tests distincts pour 20 `Scenario`.
+  La spec porte exactement vingt-six `Scenario` (vingt originaux, six de l'amendement
+    @before_update/@before_delete du 2026-09-23) et chaque `Scenario` est vérifié par au moins un
+    test nommé distinct au total : 17 tests rattachés créés dans ../tests/resource.rs pour les
+    scenarios originaux, 2 tests rattachés existants, 2 tests de ./rest/mod.rs pour « position du
+    hook dans la création », plus 6 tests rattachés pour l'amendement — 27 tests distincts pour 26
+    `Scenario`.
   Les tests passent sur chaque combinaison de la matrice de /tooling.sdd, y compris
     `--no-default-features` pour la preuve de non-gating et `--features graphql` pour le seuil
-    GraphQL.
-  Les quatre lignes `[?]` ci-dessus ont été arbitrées par Sébastien et la spec relue par lui, sans
-    assertion déléguée ni comportement accidentel devenu contrat silencieux.
+    GraphQL (scenario d'absence des deux nouveaux hooks compris).
+  Les quatre lignes `[?]` originales ci-dessus ont été arbitrées par Sébastien et la spec relue par
+    lui, sans assertion déléguée ni comportement accidentel devenu contrat silencieux.
+  L'amendement @before_update/@before_delete est cohérent avec son miroir dans /src/rest/core.sdd
+    (position d'appel dans @rest::core::update/@rest::core::delete) — les deux specs sont relues et
+    approuvées ensemble, pas l'une sans l'autre.
 
 Scenario: construction de @HookError sans code
   Given un message fourni en `&str` puis un message fourni en `String`
@@ -383,3 +461,52 @@ Scenario: position du hook dans la création
     visible sur la ligne insérée, et un @HookError bloque l'insertion sans qu'aucun code `MRD-*`
     n'apparaisse
   And un refus RBAC préalable n'appelle pas le hook
+
+Scenario: @before_update par défaut est une identité, existing prêté mais ignoré
+  Given l'entité `recipe`, qui ne surdéclare pas @MiryadResource::before_update, une ligne existante
+    et un ActiveModel de mise à jour posé sur toutes ses colonnes
+  When @MiryadResource::before_update est appelée avec l'ActiveModel, `existing` et un
+    @crate::auth::AuthPrincipal quelconque
+  Then le résultat est @Ok de l'ActiveModel inchangé, champ par champ
+  And aucun panic ni lecture observable de `existing` ou du principal par le défaut
+
+Scenario: mutation de l'ActiveModel par un override de @before_update
+  Given une entité de test dont @MiryadResource::before_update relit `existing.label` et rejette la
+    mise à jour si le nouveau `label` de l'ActiveModel est identique à `existing.label` (transition
+    no-op interdite), sinon laisse passer inchangé
+  When le hook est appelé avec un `existing.label` de `"draft"` et un ActiveModel de `label` `"draft"`
+    puis avec un ActiveModel de `label` `"published"`
+  Then le premier appel rend @Err(HookError) et le second @Ok(active) inchangé — la comparaison
+    n'est possible que parce que `existing` est prêté séparément de l'ActiveModel à écrire
+
+Scenario: before_update ne peut pas contourner le forçage de PK ni la reconduction d'owner
+  Given une entité @AccessPolicy::OwnerOnly en écriture dont @MiryadResource::before_update tente de
+    poser la PK de l'ActiveModel à une valeur différente de l'id du chemin et l'@owner_column à un
+    utilisateur autre que le propriétaire existant
+  When une mise à jour est exécutée via @rest::core::update
+  Then la ligne mise à jour est celle de l'id du chemin (jamais celle forgée par le hook) et son
+    propriétaire reste celui de `existing` (jamais celui forgé par le hook) — les deux invariants de
+    @rest::core::update s'appliquent après le hook, le déjouant comme pour @before_create
+
+Scenario: @before_delete par défaut autorise, existing prêté mais ignoré
+  Given l'entité `ingredient`, qui ne surdéclare pas @MiryadResource::before_delete, et une ligne
+    existante
+  When @MiryadResource::before_delete est appelée avec `existing` et un @crate::auth::AuthPrincipal
+    quelconque
+  Then le résultat est @Ok(())
+  And aucun panic ni lecture observable de `existing` ou du principal par le défaut
+
+Scenario: rejet par un override de @before_delete
+  Given une entité de test dont @MiryadResource::before_delete rejette la suppression d'une ligne dont
+    `existing.status` vaut `"locked"`, avec un @HookError de code `"WIDGET-LOCKED"`
+  When @rest::core::delete est exécuté sur une ligne `"locked"` puis sur une ligne d'un autre statut
+  Then le premier appel rend @Err(HookError { code: Some("WIDGET-LOCKED"), .. }) et aucun `DELETE`
+    n'est émis ; le second supprime normalement
+
+Scenario: before_update et before_delete ne se déclenchent jamais sur GraphQL
+  Given une entité dont @MiryadResource::before_update et @MiryadResource::before_delete rejettent
+    systématiquement (espions comptant leurs appels)
+  When une mutation GraphQL de mise à jour puis de suppression est exécutée sur cette entité (feature
+    `graphql`)
+  Then les deux mutations réussissent (aucun hook n'a été appelé, les deux espions restent à zéro) —
+    contrairement à REST/MCP sur la même entité, où les deux mêmes appels seraient rejetés

@@ -70,6 +70,13 @@ Sébastien, pas d'implémentation avant les tests dérivés de la spec.
 - Une entité déclarée par @MiryadResource est lue **à l'identique** par REST, GraphQL et MCP :
   tout comportement ajouté sur une surface doit être honoré sur les deux autres. Un décalage
   fonctionnel entre surfaces est un no-go, pas une dette.
+  Exception nommée (actée par Sébastien le 2026-09-23, tracée dans `./src/resource.sdd`) :
+  @MiryadResource::before_update et @MiryadResource::before_delete ne se déclenchent que sur
+  REST et MCP — Seaography `2.0.0-rc.9` ne pilote son hook équivalent qu'à l'insertion. Cette
+  exception ne vaut que pour cette paire de hooks, est documentée (`resource.sdd`,
+  `rest/core.sdd`, puis `graphql/hooks.sdd` et `docs/architecture.md`), et un validateur ne
+  tient pas son absence côté GraphQL pour un décalage ; la règle par défaut reste la règle
+  pour tout le reste.
 - Frontière de dépôt : miryad-core est une bibliothèque publiée sur crates.io, pas un
   déployable. Dockerfile, chart Helm, doc de déploiement CNPG/Authentik et générateur
   frontend TypeScript vivent dans `miryad` (le template), pas dans ce dépôt.

@@ -1,13 +1,16 @@
 Spec: mod — @Migrator : ordre d'application des migrations internes et table de tracking dédiée
 
 Purpose:
-  Agrégation des migrations internes de la crate : @Migrator enregistre exactement les trois
-    @Migration filles 001 → 002 → 003 dans un ordre figé et fait porter leur tracking par la table
-    @seaql_migrations_miryad_core au lieu du défaut @seaql_migrations, pour coexister sur la même
-    connexion avec le @MigratorTrait métier de l'application consommatrice (contrat racine des
-    tables `miryad_*` à tracking propre). Fichier de déclaration pure : aucune logique, aucun
-    gating de feature, aucune erreur propre — tout @DbErr est celui brut de sea-orm-migration ou
-    du backend, appliquée par @crate::migration::Migrator::up selon la doc de @../lib.rs.
+  Agrégation des migrations internes de la crate : @Migrator enregistre les @Migration filles 001 →
+    002 → 003, inconditionnelles, puis 004 (`m20260923_000001_create_workflow_definitions`,
+    amendement 2026-09-23) **seulement** sous `#[cfg(feature = "workflow")]` — première migration
+    gated de la crate, table `miryad_workflow_definitions` n'existant que pour une app qui active le
+    moteur de workflow. Le tracking porte par la table @seaql_migrations_miryad_core au lieu du
+    défaut @seaql_migrations, pour coexister sur la même connexion avec le @MigratorTrait métier de
+    l'application consommatrice (contrat racine des tables `miryad_*` à tracking propre). Fichier de
+    déclaration pure : aucune logique, aucune erreur propre — tout @DbErr est celui brut de
+    sea-orm-migration ou du backend, appliquée par @crate::migration::Migrator::up selon la doc de
+    @../lib.rs.
 
 Owns:
   ./mod.rs
@@ -22,20 +25,28 @@ References:
   ./m20260822_000002_create_users_groups.rs — contrat fille 002 (spec propre encore à produire)
   ./m20260822_000003_seed_admin_group.rs — contrat fille 003 (spec propre encore à produire),
     seed dépendant de @crate::users
+  ./m20260923_000001_create_workflow_definitions.sdd — contrat fille 004 (amendement 2026-09-23,
+    spec produite dans ce lot, son `.rs` reste à écrire), gated `workflow`, pose
+    `miryad_workflow_definitions` (../workflow/definition.sdd)
   ../lib.rs — declaration @pub mod migration sans @cfg, doc d'usage @Migrator::up(&db, None)
 
 Must:
-  @migrations de @Migrator renvoie exactement trois @Box, dans cet ordre et pas un de plus :
+  @migrations de @Migrator renvoie trois @Box inconditionnels, dans cet ordre et pas un de plus :
     @m20260822_000001_create_api_tokens::Migration, puis
     @m20260822_000002_create_users_groups::Migration, puis
-    @m20260822_000003_seed_admin_group::Migration.
+    @m20260822_000003_seed_admin_group::Migration — suivis, uniquement sous `#[cfg(feature =
+    "workflow")]` (amendement 2026-09-23), d'un quatrième :
+    @m20260923_000001_create_workflow_definitions::Migration.
   Ordre d'application = ordre du @Vec écrit ici, vérifié au source de sea-orm-migration 2.0.2 :
     @get_migration_files préserve l'ordre de @migrations, @exec_up_with itère les pending dans cet
     ordre, aucun tri ni graphe de dépendance n'existe (@MigrationOrder a disparu en 2.x) — toute
-    correction d'ordre passe par la réécriture de cette liste (elle-même gelée, voir `Must not`).
+    correction d'ordre passe par la réécriture de cette liste (elle-même gelée pour les trois
+    premières entrées, voir `Must not`) ; 004 est toujours en dernière position quand elle est
+    présente, jamais insérée avant 003.
   Remontée @down en ordre inverse vérifiée au source (@into_iter().rev() de @exec_down_with sur la
-    liste des appliquées en ordre @migrations) : 003 d'abord (le seed @DELETE sa ligne avant que
-    002 ne droppe ses tables), puis 002, puis 001.
+    liste des appliquées en ordre @migrations) : sous `workflow`, 004 d'abord, puis 003 (le seed
+    @DELETE sa ligne avant que 002 ne droppe ses tables), puis 002, puis 001 ; hors `workflow`, 003
+    d'abord comme avant l'amendement.
   @migration_table_name surchargée renvoie @Alias::new("seaql_migrations_miryad_core").into_iden()
     — nom exact 28 caractères, sous la limite Postgres de 63 donc jamais tronqué — appelé par le
     framework à chaque @install, lecture du tracking, @insert_migration_record et
@@ -53,9 +64,11 @@ Must:
     lecture du tracking : @create_table_from_entity de @seaql_migrations::Entity avec
     @if_not_exists — structure (deux colonnes `version`, `applied_at`) imposée par l'entité du
     framework, jamais par ce fichier.
-  Aucun gating de feature : les trois @mod de sous-modules, @Migrator, l'@impl et
-    @crate::migration ne portent aucun @cfg — le fichier compile sur chaque combinaison de
-    /tooling.sdd ; seul le canal de test dépend d'un backend (SQLite des dev-dependencies).
+  Gating de feature limité à la quatrième entrée (amendement 2026-09-23) : le @mod de
+    `m20260923_000001_create_workflow_definitions` et son insertion dans le @Vec de @migrations sont
+    seuls sous `#[cfg(feature = "workflow")]` — les trois premiers @mod, @Migrator, l'@impl et
+    @crate::migration restent sans @cfg, le fichier compile sur chaque combinaison de /tooling.sdd ;
+    seul le canal de test dépend d'un backend (SQLite des dev-dependencies).
   @Migrator est le seul item @pub du fichier ; @steps (@Option<@u32>) de @up/@down, vérifié au
     source : @None applique tout, @Some(@n) limite aux @n premiers pending en ordre
     d'enregistrement, @Some(@0) n'applique rien mais installe quand même la table de tracking.
@@ -155,6 +168,13 @@ Handles:
     ./m20260822_000001_create_api_tokens.sdd)
 
 Tasks:
+  [x] Amendement du 2026-09-23 (migration 004 gated `workflow`) : une app qui active `workflow`,
+    applique 004, puis reconstruit sans `workflow` se retrouve avec une entrée de tracking
+    (`seaql_migrations_miryad_core`) que le @Migrator reconstruit ne connaît plus — même
+    @DbErr::Custom « Migration file … is missing » que le cas de deux migrateurs partageant une
+    table (`Must`). Sébastien (2026-09-23) : aucun garde-fou de code — une fois `workflow` activée,
+    plus de retour en arrière supporté, documenté comme tel (`docs/architecture.md`, à la clôture),
+    rien de plus.
   [ ] Convertir les neuf `Scenario` en au moins neuf tests nommés distincts dans le
     `#[cfg(test)] mod tests` de ./mod.rs, sur `sqlite::memory:` (pattern du test inline
     existant), la batterie de /tooling.sdd sans base externe : le test inline existant
@@ -188,10 +208,12 @@ Tasks:
     ou déplace-t-on dans une fixture dédiée ?
 
 Done when:
-  Les neuf `Scenario` sont chacun vérifiés par au moins un test nommé distinct identifié dans
-    `Tasks`, la batterie de /tooling.sdd passe verte sur toutes les combinaisons de features (le
-    fichier compile sans gating, elle l'inclut partout), chaque `[?]` de `Tasks` est tranché par
-    Sébastien sans réécriture des deux méthodes surchargées, et la spec est approuvée par lui.
+  Les dix `Scenario` (neuf originaux, un pour l'amendement 2026-09-23) sont chacun vérifiés par au
+    moins un test nommé distinct identifié dans `Tasks`, la batterie de /tooling.sdd passe verte sur
+    les huit combinaisons de features (le fichier compile sans gating sur ses trois premières
+    migrations partout, la quatrième seulement sous `workflow`), les cinq `[?]` originaux de `Tasks`
+    sont tranchés par Sébastien sans réécriture des deux méthodes surchargées, et la spec est
+    approuvée par lui.
 
 Scenario: @migrations enregistre exactement les trois internes en ordre figé
   Given une crate compilée, aucune base branchée
@@ -260,3 +282,12 @@ Scenario: la consommatrice installée en tête ne contamine pas le tracking miry
   And les trois tables de schéma `miryad_*` sont posées et les entrées miryad ne sont couchées que
     dans `seaql_migrations_miryad_core`
   And `seaql_migrations` ne contient que l'entrée du migrateur applicatif
+
+Scenario: la quatrième migration n'existe que sous la feature workflow
+  Given deux builds de test, l'un sans la feature `workflow`, l'autre avec
+  When @Migrator::migrations() est appelé dans chacun puis @Migrator::up(@db, @None) exécuté sur une
+    base neuve
+  Then sans `workflow`, exactement trois entrées apparaissent dans
+    `seaql_migrations_miryad_core` et la table `miryad_workflow_definitions` n'existe pas
+  And avec `workflow`, quatre entrées apparaissent, la quatrième après les trois premières, et
+    `miryad_workflow_definitions` existe

@@ -1,12 +1,12 @@
 Spec: lib — surface publique de la crate, gating de features, documentation racine
 
 Purpose:
-  Racine de la crate bibliothèque `miryad-core` : déclare toute la surface publique — onze
-    modules publics —, gate les trois modules liés à une feature optionnelle
-    (`static-frontend`, `graphql`, `mcp`), porte la documentation de la crate (page d'entrée
-    servie par docs.rs) et l'en-tête racine d'exemption `test` du harnais. Fichier
-    d'agrégation, de gating et de documentation : il n'héberge aucun comportement ; tout
-    détail de contrat d'un module appartient à sa spec adjacente.
+  Racine de la crate bibliothèque `miryad-core` : déclare toute la surface publique — douze
+    modules publics (amendement 2026-09-23 : @workflow, roadmap 9) —, gate les quatre modules liés
+    à une feature optionnelle (`static-frontend`, `graphql`, `mcp`, `workflow`), porte la
+    documentation de la crate (page d'entrée servie par docs.rs) et l'en-tête racine d'exemption
+    `test` du harnais. Fichier d'agrégation, de gating et de documentation : il n'héberge aucun
+    comportement ; tout détail de contrat d'un module appartient à sa spec adjacente.
 
 Owns:
   ./lib.rs
@@ -24,15 +24,16 @@ References:
   /docs/roadmap.md — priorisation, linké par la documentation racine
 
 Must:
-  Déclarer toute la surface publique — exactement onze `pub mod` — et respecter le gating du
-    graphe `[features]` de `/Cargo.toml` : @frontend gated par `static-frontend` (feature par
-    défaut), @graphql gated par `graphql`, @mcp gated par `mcp`.
+  Déclarer toute la surface publique — exactement douze `pub mod` (amendement 2026-09-23) — et
+    respecter le gating du graphe `[features]` de `/Cargo.toml` : @frontend gated par
+    `static-frontend` (feature par défaut), @graphql gated par `graphql`, @mcp gated par `mcp`,
+    @workflow gated par `workflow`.
   Ne poser aucun gating de feature au niveau racine pour `swagger-ui` et `graphiql` : ces
     deux features ne changent rien à la surface racine ; leur `#[cfg(feature = ...)]` vit
     dans `./rest/openapi.rs` et `./graphql/handler.rs`.
   Documenter chaque déclaration par un commentaire `///` de rôle, sans contredire le
     documentation interne `//!` du fichier enfant : la page docs.rs agrège les deux sources.
-  Nommer dans le tableau des features de la documentation exactement les cinq features de
+  Nommer dans le tableau des features de la documentation exactement les six features de
     `[features]` de `/Cargo.toml`, avec effet, dépendances lourdes et implication
     (`graphiql` implique `graphql`) conformes à ce fichier.
   Décrire dans la documentation de surface les routes réellement montées par les enfants :
@@ -41,11 +42,17 @@ Must:
     (@mcp::mcp_router) — sous `mcp`, `/api/openapi.json` hors feature
     (@rest::openapi::openapi_router), `/api/swagger-ui` sous `swagger-ui`, `/api/graphiql`
     sous `graphiql`, IR via @ir::resource_ir et @ir::IrRegistry.
+  Documenter @workflow (amendement 2026-09-23) comme ne montant **aucune** route sur le
+    `axum::Router` de l'app : ses services (@workflow::DagInterpreter, @workflow::StepDispatcher)
+    parlent le protocole `restate-sdk`, servis par leur propre `HttpServer` que l'app consommatrice
+    construit et lie elle-même (`Endpoint::builder().bind(...)`) — une intégration de forme
+    différente des trois autres surfaces, à ne pas présenter comme une route de plus dans le même
+    tableau.
   Documenter @query comme la pagination utilisée aujourd'hui par REST, sans laisser entendre
     que @graphql ou @mcp consomment déjà @query.
   Ne laisser aucun lien du bloc `//!` produire un avertissement `rustdoc::broken_intra_doc_links`
     selon la feature sélectionnée : les références aux modules gated doivent rester valables
-    quand @frontend, @graphql ou @mcp ne sont pas compilés.
+    quand @frontend, @graphql, @mcp ou @workflow ne sont pas compilés.
   Documenter @HookError dans le bloc `//!` comme une erreur applicative de l'application
     consommatrice, exclue de la taxonomie `MRD-<DOMAINE>-NNN` que la crate réserve à ses erreurs
     internes.
@@ -84,7 +91,10 @@ Must not:
     neutraliserait le harnais de `/tooling.sdd` sur le code de production.
   Déclarer hors de son `#[cfg]` protecteur un module dont la dépendance est optionnelle :
     `tower-http` via `./frontend.rs`, `seaography` et `async-graphql` via `./graphql/mod.rs`,
-    `vynil-core` via `./mcp/mod.rs`.
+    `vynil-core` via `./mcp/mod.rs` ; `restate-sdk`, `uuid`, `async-trait`, `tokio` (entrée
+    `[dependencies]` `optional = true`, activée par `workflow` seule) et `vynil-core` (activé une
+    seconde fois, feature `rhai` en plus de `hbs`/`crypto`) via `./workflow/mod.rs` (amendement
+    2026-09-23).
 
 Depends on:
   ./auth/mod.rs
@@ -94,13 +104,17 @@ Depends on:
     Compilé seulement sous `graphql` ; apporte `seaography` et `async-graphql`.
   ./ir.rs
   ./mcp/mod.rs
-    Compilé seulement sous `mcp` ; seul consommateur de `vynil-core`.
+    Compilé seulement sous `mcp` ; seul consommateur de `vynil-core` sous `hbs`/`crypto`.
   ./migration/mod.rs
   ./query.rs
   ./rbac.rs
   ./resource.rs
   ./rest/mod.rs
   ./users/mod.rs
+  ./workflow/mod.rs
+    Compilé seulement sous `workflow` ; apporte `restate-sdk`, une seconde activation de
+    `vynil-core` (feature `rhai`), `uuid`, `async-trait`, `tokio` en dépendance optionnelle
+    activée par `workflow` seule (amendement 2026-09-23).
 
 Exposes:
   @auth — OIDC, cookies de session, tokens API, extracteurs axum ; toujours compilé.
@@ -118,20 +132,24 @@ Exposes:
     (@rest::openapi::openapi_router hors feature, @rest::openapi::swagger_ui_router sous
     `swagger-ui`) ; toujours compilé.
   @users — utilisateurs, groupes, appartenances, comptes de service ; toujours compilé.
+  @workflow — @workflow::DagInterpreter, @workflow::StepDispatcher (services Restate, non montés
+    sur `axum::Router`, `Must`), @workflow::MiryadWorkflowStep, @workflow::StepRegistry,
+    @workflow::RhaiStep, @workflow::client::{WorkflowConfig, register_deployment, trigger_run},
+    l'entité `WorkflowDefinition` ; gated par `workflow` (amendement 2026-09-23).
   Aucun `pub use` à la racine : les chemins consommés sont `miryad_core::<module>::…`,
     exactement ceux promis par la documentation racine.
   Quatre attributs de crate : `#![cfg_attr(docsrs, feature(doc_cfg))]`,
     `#![doc(html_root_url = "https://docs.rs/miryad-core")]`,
     `#![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]`,
     `#![cfg_attr(test, allow(...))]` (treize lints de la famille stricte).
-  Bloc `//!` de documentation racine et son tableau de cinq features, dont trois seulement
-    (`static-frontend`, `graphql`, `mcp`) gate la surface visible ici ; `swagger-ui` et
-    `graphiql` y sont documentées sans effet racine.
+  Bloc `//!` de documentation racine et son tableau de six features, dont quatre
+    (`static-frontend`, `graphql`, `mcp`, `workflow`) gatent la surface visible ici ; `swagger-ui`
+    et `graphiql` y sont documentées sans effet racine.
 
 Accepts:
   La sélection de features du graphe `[features]` de `/Cargo.toml` (défaut
     `static-frontend`, plus `swagger-ui`, `graphql`, `graphiql` qui implique `graphql`,
-    `mcp`) comme seule entrée de la matrice de surface.
+    `mcp`, `workflow`) comme seule entrée de la matrice de surface.
   Les flags de compilation activables sur la racine : `test` (profil de test cargo) et
     `docsrs` (rustdoc, via `rustdoc-args` de `[package.metadata.docs.rs]` de `/Cargo.toml`).
   Aucune entrée runtime : la racine ne définit ni fonction ni état ; les entrées des surfaces
@@ -141,7 +159,8 @@ Returns:
   La surface publique par combinaison de features — huit modules toujours compilés (@auth, @ir,
     @migration, @query, @rbac, @resource, @rest, @users) auxquels s'ajoutent @frontend sous
     les features par défaut, @graphql sous `graphql` (donc aussi sous `graphiql`, qui
-    l'implique), @mcp sous `mcp`, et les onze sous `--all-features`.
+    l'implique), @mcp sous `mcp`, @workflow sous `workflow` (amendement 2026-09-23), et les
+    douze sous `--all-features`.
 
 Raises:
   Erreur dure `E0554` (`#![feature ...]` refusé sur channel stable) si `cargo doc` est lancé
@@ -156,7 +175,8 @@ Raises:
 
 Handles:
   Les combinaisons de la matrice de `/tooling.sdd` : défaut, `--no-default-features`,
-    `swagger-ui` seule (aucun effet racine), `graphql`, `graphiql`, `mcp`, `--all-features`.
+    `swagger-ui` seule (aucun effet racine), `graphql`, `graphiql`, `mcp`, `workflow`
+    (amendement 2026-09-23), `--all-features`.
   L'absence d'une feature gated : le module n'est pas déclaré du tout — pas de squelette
     d'API ni d'erreur de substitution.
   Le profil `test` : l'exemption porte sur la cible unitaire entière de la bibliothèque (y
@@ -169,8 +189,11 @@ Handles:
     des attributs de la racine.
 
 Tasks:
-  [ ] Convertir les douze `Scenario` en au moins douze tests nommés et distincts, un par scenario,
-    avec la correspondance exacte suivante : « surface par défaut complète » →
+  [ ] Amendement du 2026-09-23 (@workflow) : convertir le nouveau `Scenario` en un test nommé
+    distinct, `workflow_gated_compiles` — même méthode que `mcp_gated_compiles`, sous
+    `--no-default-features --features workflow`.
+  [ ] Convertir les douze `Scenario` originaux en au moins douze tests nommés et distincts, un par
+    scenario, avec la correspondance exacte suivante : « surface par défaut complète » →
     `default_surface_compiles` ; « graphql gated par la feature graphql » →
     `graphql_gated_compiles` ; « graphiql implique graphql à la racine » →
     `graphiql_implies_graphql` ; « mcp gated par la feature mcp » → `mcp_gated_compiles` ;
@@ -190,12 +213,13 @@ Tasks:
     features utilisée par les scenario doc.
 
 Done when:
-  La spec porte exactement douze `Scenario` et est validée par au moins douze tests nommés et
-    distincts, un par scenario, dont la correspondance est listée dans `Tasks` ; les scenario
-    traduisibles en tests Rust passent sur chaque combinaison de la matrice de features ;
-    `cargo doc` ne rapporte aucun lien intra-doc non résolu sur les combinaisons de
-    `/tooling.sdd` ; @query et @HookError sont documentés conformément aux décisions de Sébastien ;
-    la spec est approuvée par Sébastien.
+  La spec porte exactement treize `Scenario` (douze originaux, un pour l'amendement @workflow du
+    2026-09-23) et est validée par au moins treize tests nommés et distincts, un par scenario, dont
+    la correspondance est listée dans `Tasks` ; les scenario traduisibles en tests Rust passent sur
+    chaque combinaison de la matrice de features (les huit de /tooling.sdd) ; `cargo doc` ne
+    rapporte aucun lien intra-doc non résolu sur les combinaisons de `/tooling.sdd` ; @query et
+    @HookError sont documentés conformément aux décisions de Sébastien ; la spec est approuvée par
+    Sébastien.
 
 Scenario: surface par défaut complète
   Given la bibliothèque compilée avec les features par défaut
@@ -219,6 +243,14 @@ Scenario: mcp gated par la feature mcp
   Given un build `--no-default-features --features mcp`
   When la cible de test référence @mcp sous `#[cfg(feature = "mcp")]`
   Then @mcp::mcp_router et @mcp::McpToolRegistry sont résolvables
+
+Scenario: workflow gated par la feature workflow
+  Given un build `--no-default-features --features workflow`
+  When la cible de test référence @workflow sous `#[cfg(feature = "workflow")]`
+  Then @workflow::DagInterpreter, @workflow::StepDispatcher, @workflow::MiryadWorkflowStep et
+    @workflow::StepRegistry sont résolvables
+  But aucune route n'apparaît sur un `axum::Router` construit sans que l'app n'appelle elle-même
+    `Endpoint::builder()` — @workflow ne s'accroche à aucun routeur axum (`Must`)
 
 Scenario: static-frontend retiré garde le reste de la surface
   Given un build `--no-default-features`
@@ -265,8 +297,8 @@ Scenario: cargo doc propre sur les combinaisons de features
 Scenario: surface complète en toutes features
   Given un build `--all-features`
   When un test de consommateur référence @auth, @frontend, @graphql, @ir, @mcp, @migration,
-    @query, @rbac, @resource, @rest et @users
-  Then les onze chemins `miryad_core::…` compilent
+    @query, @rbac, @resource, @rest, @users et @workflow
+  Then les douze chemins `miryad_core::…` compilent
 
 Scenario: l'exécutable miryad reste hors de l'exemption racine
   Given la cible binaire `miryad` dont la source est `./bin/miryad.rs`
