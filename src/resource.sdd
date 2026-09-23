@@ -232,18 +232,20 @@ Handles:
 
 Tasks:
   [ ] Amendement du 2026-09-23 (@before_update, @before_delete) : convertir les six nouveaux
-    `Scenario` en tests distincts nommés, dans ../tests/resource.rs (fixtures étendues avec des
-    entités de test dédiées, réutilisant `recipe`/`ingredient` où le scenario n'exige pas de nouveau
-    comportement métier) : « @before_update par défaut » → `default_before_update_is_identity_and_ignores_existing` ;
-    « mutation par override de @before_update » → `before_update_override_can_compare_existing_and_reject`
-    ; « invariants postérieurs à @before_update » → `before_update_hook_hostile_ne_contourne_les_invariants`
-    (miroir de `create_hook_hostile_ne_contourne_les_invariants` de ./rest/core.rs, côté update) ;
-    « @before_delete par défaut » → `default_before_delete_is_ok_and_ignores_existing` ; « rejet par
-    override de @before_delete » → `before_delete_override_rejects_with_free_form_error` ;
-    « before_update/before_delete absents de GraphQL » → `graphql_mutations_skip_before_update_and_before_delete`
-    compilé sous `#[cfg(feature = "graphql")]`. Ces six tests dépendent de ./rest/core.rs et
-    ./rest/mod.rs implémentant effectivement l'appel aux deux nouveaux hooks (amendement de
-    /src/rest/core.sdd, à river avec ou avant celui-ci) — non exécutables avant cette implémentation.
+    `Scenario` en tests distincts nommés — statut après implémentation (validateur 2026-09-23) :
+    les quatre tests directs vivent dans ../tests/resource.rs (`default_before_update_is_identity_and_ignores_existing`,
+    `before_update_override_can_compare_existing_and_reject`, `default_before_delete_is_ok_and_ignores_existing`,
+    `before_delete_override_rejects_with_free_form_error` — le dernier au niveau trait, code
+    `"WIDGET-LOCKED"` intact) ; le scenario « invariants postérieurs » et le versant surface du rejet
+    de delete sont portés par ./rest/mod.rs (`update_hook_hostile_ne_contourne_les_invariants`,
+    `before_delete_hook_error_blocks_delete_without_mrd_code` — même délegation que « position du
+    hook dans la création » par les tests de la surface appelante). Reste non couvert :
+    « before_update/before_delete absents de GraphQL » — aucun harnais d'exécution de mutations
+    Seaography n'existe dans le dépôt ; la preuve est à ce jour la source vendue
+    `seaography-2.0.0-rc.9` (@LifecycleHooksInterface::before_active_model_save appelé uniquement
+    par les deux mutations de création, vérifiée par le validateur). Arbitrage Sébastien en fin de
+    cycle : harnais GraphQL neuf ou preuve par lecture consignée. `graphql_mutations_skip_before_update_and_before_delete`
+    en attente de ce truchement.
   [ ] Convertir les vingt `Scenario` originaux en au moins vingt tests nommés distincts, un par
     scenario. État des lieux : 0 test inline dans ./resource.rs, 2 tests rattachés existants dans
     ../tests/resource.rs, 1 scenario couvert par des tests de la surface déléguée — soit 17 tests à

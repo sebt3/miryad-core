@@ -37,8 +37,9 @@ Structure:
 
 Owns:
   ./mod.rs
-    Y compris son `#[cfg(test)] mod tests` inline : douze tests `#[tokio::test]` à la rédaction,
-    trois fixtures d'entités (`recipe`, `ingredient`, `widget`) et les helpers `test_db`,
+    Y compris son `#[cfg(test)] mod tests` inline : seize tests `#[tokio::test]` à la rédaction
+    (dont quatre de l'amendement hooks du 2026-09-23), cinq fixtures d'entités (`recipe`,
+    `ingredient`, `widget`, `doodad` et `hostile`) et les helpers `test_db`,
     `test_state`, `app`, `bearer_for`, `json_request`, `json_body` — ils vivent dans le fichier
     et sont régis par la présente spec.
 
@@ -139,8 +140,9 @@ Must:
     de l'exigence de trace est ouverte en `Tasks`.
   Accepter la fusion de plusieurs @rest::resource_router dans un @Router hôte : chaque @nest
     du même préfixe `/api/v1` est applati indépendamment par @axum (fait vérifié ci-dessus),
-    l'app fixture des tests inline en assemble trois (recipes, ingredients, widgets) et le
-    @with_state final unique scelle l'état — ./mod.rs ne pose jamais de @fallback, celui de
+    l'app fixture des tests inline en assemble cinq (recipes, ingredients, widgets, doodads,
+    hostiles) et le @with_state final unique scelle l'état — ./mod.rs ne pose jamais de
+    @fallback, celui de
     l'hôte ou le @NotFound par défaut d'@axum reste maître de tout chemin non monté.
   Garder l'en-tête `//!` du fichier aligné sur la doc de ../lib.sdd : `resource_router` monte
     bien `GET/POST /api/v1/{resource}` et `GET/PUT/DELETE /api/v1/{resource}/{id}` avec « RBAC
@@ -210,9 +212,10 @@ Exposes:
   @list_handler, @get_handler, @create_handler, @update_handler, @delete_handler — fonctions
     @async @privées (module-private), jamais appelables hors ./mod.rs ni exposées
   En-tête `//!` du module et sa promesse des deux groupes de chemins sous `/api/v1`
-  `#[cfg(test)] mod tests` inline — douze `#[tokio::test]` nommés, fixtures @recipe,
+  `#[cfg(test)] mod tests` inline — seize `#[tokio::test]` nommés, fixtures @recipe,
     @ingredient (@read @Group `editors`, @write @AdminOnly) et @widget (hook
-    @before_create mutateur/rejectant `WIDGET-001`), mappés dans `Tasks`
+    @before_create mutateur/rejectant `WIDGET-001`), plus @doodad et l'entité `hostile` pour les
+    hooks @before_update/@before_delete (amendement 2026-09-23), mappés dans `Tasks`
 
 Accepts:
   @rest::resource_router — aucune entrée runtime ; les seules entrées sont les types de
@@ -329,7 +332,7 @@ Tasks:
     feature » → test ordinaire `rest_surface_available_without_default_features`, prouvé par
     le run `--no-default-features` de la batterie de /tooling.sdd, précédent de
     ../resource.sdd.
-  [ ] Cartographier sans les dupliquer les douze tests inline existants — ils sont la preuve
+  [ ] Cartographier sans les dupliquer les seize tests inline existants — ils sont la preuve
     vivante que ./mod.rs délègue fidèlement : `create_ignores_client_supplied_owner`,
     `list_filters_by_owner_for_non_admin_but_not_for_admin`, `list_pagination_returns_requested_page`,
     `list_filter_combines_with_owner_restriction`, `list_ingredients_forbidden_without_group_membership`,
@@ -368,7 +371,7 @@ Tasks:
 
 Done when:
   Chaque `Scenario` de la présente spec dispose d'au moins un test nommé distinct vérifiant son
-    `Then` (17 tests — dont un doctest `compile_fail`), les douze tests inline existants restent
+    `Then` (17 tests — dont un doctest `compile_fail`), les seize tests inline existants restent
     verts et cartographiés sans duplication de contrat, et la batterie de /tooling.sdd passe
     verte sur toutes les combinaisons de features avec `-- -D warnings`.
   ../resource.sdd continue de reconnaître ses deux scenarios de hook couverts par les tests
@@ -522,6 +525,6 @@ Scenario: Surface disponible sans aucune feature
     `#[cfg(feature = ...)]`
   When la cible de test de la bibliothèque s'exécute sur cette combinaison dans la batterie de
     /tooling.sdd
-  Then @rest::resource_router et @rest::RestEntity compilent et les douze tests inline tournent
+  Then @rest::resource_router et @rest::RestEntity compilent et les seize tests inline tournent
     verts, comme sur `--all-features`
   But aucune feature de /tooling.sdd n'est nécessaire au montage de la surface CRUD

@@ -45,7 +45,7 @@ References:
   ./../lib.sdd — @rest déclaré sans gating ; @rest::core n’est jamais visible hors de la crate
   ./mod.rs — contrat ./mod.sdd : possesseur de @RestEntity (PK unique @i32 assumée comme
     limitation), des handlers et de leurs statuts de succès `200`/`204`, premier appelant des cinq
-    fonctions ; ses douze tests inline exercent ce contrat (mapping en `Tasks`)
+    fonctions ; ses seize tests inline exercent ce contrat (mapping en `Tasks`)
   ./error.rs — @RestError, la seule monnaie d’erreur de ./core.rs : codes, @IntoResponse `403`/
     `404`/`422`/`500` et absence de toute variante `201`/`409` ; contrat ./error.sdd
   ./openapi.rs — cohérence wire vérifiée : le document ne prévoit pour le CRUD générique que `200`,
@@ -408,7 +408,7 @@ Example:
     @sea_orm::EntityTrait::delete_by_id.
 
 Tasks:
-  [ ] Amendement du 2026-09-23 (@before_update, @before_delete) : convertir les quatre nouveaux
+  [x] Amendement du 2026-09-23 (@before_update, @before_delete) : convertir les quatre nouveaux
     `Scenario` en tests nommés distincts dans ./mod.rs (même style que les tests existants de hook de
     création) : « mutation before_update écrite, invariants après » →
     `before_update_hook_mutation_is_applied_at_update` ; « rejet before_update sans code MRD » →
@@ -461,7 +461,7 @@ Tasks:
     parité) ? Arbitrage à rendre dans ./mod.sdd, consigné ici.
   [ ] Convertir les vingt-sept `Scenario` de cette spec en au moins vingt-sept tests Rust distincts
     nommés, un scenario minimum par test ; ./core.rs ne porte aucun test inline à la rédaction (0
-    tests), les preuves actuelles sont les douze tests de ./mod.rs (exercices par routeur avec états
+    tests), les preuves actuelles sont les seize tests de ./mod.rs (exercices par routeur avec états
     HTTP) et deux de ./../mcp/registry.rs, rattachés ci-dessous sans être la propriété de ./core.rs :
     « provisioning avant »/« tables internes absentes » → nouveaux `list_provisionne_puis_refuse_sur_table_absente`
     et `toutes_operations_sans_tables_utilisateurs_sont_database` (./core.rs mod tests, sqlite
