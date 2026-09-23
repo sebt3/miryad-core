@@ -1,0 +1,209 @@
+Spec: rhai_step — kind natif `"rhai"`, exécution d'un script via `vynil-core`
+
+Purpose:
+  Porter le seul `impl MiryadWorkflowStep` (./step.sdd) fourni par la crate elle-même : kind
+    `"rhai"`, exécution d'un script via `vynil_core::engine::Script` (feature `rhai` de `vynil-core`,
+    même dépendance débloquée pour la feature `mcp` — roadmap 7/9, `AGENTS.md`). Traduit
+    `config`/`inputs` (opaques, ./step.sdd) vers l'API de `Script` (`set_dynamic`, `eval_map_json`),
+    traduit tout échec Rhai en @StepError non-retryable — un script qui échoue une fois échouera de
+    la même façon à la prochaine tentative, rien à gagner à rejouer.
+  Fichier neuf, conception, API de `vynil-core` `0.7.4` vérifiée dans son source local (crate déjà en
+    cache, pas seulement sa documentation) : `Script::new_bare(resolver_path: Vec<String>) -> Script`
+    construit un moteur Rhai déjà enrichi de tous les helpers de `vynil-core` (hash, chrono, semver,
+    yaml, glob, et sous feature les helpers `crypto`/`password`/`oci`/`shell`) ainsi que des fonctions
+    `import_run`/`import_template` de convention kuberest (résolution de modules par
+    `resolver_path`) ; `Script::eval_map_json(&mut self, script: &str) -> Result<serde_json::Value,
+    vynil_core::Error>` évalue une expression Rhai qui doit se réduire à une `Map` (`#{ ... }`) et la
+    rend en JSON.
+
+Owns:
+  ./rhai_step.rs
+
+References:
+  ./step.sdd — @MiryadWorkflowStep, @StepError ; ce fichier est le premier (et seul, à la rédaction)
+    `impl` concret du trait dans la crate
+  ./dispatcher.sdd — seul appelant indirect (via @StepRegistry, construit par l'app qui enregistre ce
+    kind) ; ce fichier ne parle jamais `restate-sdk`
+  `vynil-core` `0.7.4`, module `engine` (`src/engine.rs`, vérifié en local) — `Script`, `Script::new_bare`,
+    `Script::set_dynamic`, `Script::eval_map_json`
+  `vynil-core` `0.7.4`, `src/lib.rs` — `vynil_core::Error`, `#[derive(thiserror::Error)]`, variante
+    `RhaiError(Box<rhai::EvalAltResult>)` pertinente ici
+
+Must:
+  `RhaiStep` — struct `pub`, un champ privé `resolver_path: @Vec<@String>` (chemins de résolution de
+    modules Rhai, transmis tel quel à `Script::new_bare`). `RhaiStep::new(resolver_path:
+    @Vec<@String>) -> Self` — l'app consommatrice fournit ses propres chemins si elle veut permettre
+    l'`import` d'une bibliothèque Rhai partagée entre workflows (`import name as imp`, convention
+    kuberest déjà câblée par `Script::add_common`, ./step.sdd). `impl Default for RhaiStep` rend
+    `RhaiStep { resolver_path: Vec::new() }` — **miryad-core n'ajoute lui-même aucun chemin** :
+    `StepRegistry::register(RhaiStep::default())` (./step.sdd) laisse `import` toujours échouer
+    (`ErrorModuleNotFound`, capturé par `import_run`/`import_template`, jamais une erreur brute) ;
+    `StepRegistry::register(RhaiStep::new(vec!["./scripts".into()]))` est la décision explicite de
+    l'app, jamais un défaut de la crate. Décision de Sébastien (2026-09-23) : capacité présente,
+    jamais activée par défaut.
+  Aucun état mutable au-delà de `resolver_path` (posé une fois à la construction, jamais réécrit) :
+    aucun `Script`/`Engine` porté par le struct — un `Script` est construit et jeté à chaque `run`,
+    jamais réutilisé entre deux invocations, pour qu'aucune variable de script d'une invocation ne
+    fuite vers une autre.
+  `RhaiConfig` — struct privée, `#[derive(Deserialize)]`, un champ : `script: @String` (texte source
+    Rhai). Désérialisée depuis le `config: @serde_json::Value` opaque de @MiryadWorkflowStep::run via
+    `serde_json::from_value`.
+  `impl MiryadWorkflowStep for RhaiStep` :
+    `kind() -> &'static str` rend `"rhai"`.
+    `async fn run(&self, config, inputs) -> Result<serde_json::Value, StepError>` :
+    1. `serde_json::from_value::<RhaiConfig>(config.clone())` — @Err → @StepError { retryable: false,
+      message: format!("config rhai invalide: {e}") } (config mal formé, ne se corrige pas en
+      rejouant).
+    2. `self.resolver_path.clone()` capturé par la fermeture `move` avant `tokio::task::spawn_blocking`
+      (`Must not` en explique la raison de `spawn_blocking`) : à l'intérieur,
+      `Script::new_bare(resolver_path)` (le clone capturé — `vec![]` uniquement si `RhaiStep` a été
+      construit par `Default`) ; `set_dynamic("inputs", &Value::Object(inputs.into_iter().collect()))`
+      (conversion infaillible : @HashMap<@String, @Value> vers @serde_json::Map<@String, @Value> ne
+      peut pas échouer, aucun @Result à cette étape, contrairement à une conversion par
+      `serde_json::to_value`) ; `set_dynamic("config", &config)` (le `config` complet, `script`
+      compris, exposé tel quel — un script qui a besoin d'un champ de configuration au-delà de
+      `script` lui-même y accède par `config.mon_champ`) ; puis `eval_map_json(&rhai_config.script)`.
+    3. @Err(vynil_core::Error) → @StepError { retryable: false, message: e.to_string() } (@Display de
+      `vynil_core::Error`, dérivée `thiserror`, porte déjà le contexte utile — `"Rhai script error:
+      {0}"` pour un @RhaiError, vérifié source).
+    4. @Err(@tokio::task::JoinError) du `spawn_blocking` lui-même (panic à l'intérieur du bloc
+      bloquant) → @StepError { retryable: false, message: format!("rhai task panicked: {e}") }.
+    5. @Ok(valeur) → @Ok(valeur), la @serde_json::Value rendue par `eval_map_json` telle quelle,
+      aucune enveloppe.
+  Compiler uniquement sous la combinaison de features `workflow` **et** `vynil-core/rhai` (`Depends
+    on` — jamais l'un sans l'autre).
+
+Must not:
+  Appeler `Script::eval_map_json` (ou toute méthode de `Script`) directement dans le corps `async` de
+    `run`, hors `spawn_blocking` : l'évaluation Rhai est synchrone et potentiellement longue (script
+    fourni par un admin, boucle ou récursion possible côté Rhai) — l'exécuter directement bloquerait
+    le thread de travail tokio qui sert aussi, dans le même processus `StepDispatcher`
+    (./dispatcher.sdd), d'autres invocations `execute` concurrentes sans rapport avec ce script :
+    un script lent d'un kind `"rhai"` ne doit pas dégrader la latence d'un autre kind.
+  Réutiliser un `Script` entre deux appels de `run`, ou le stocker sur `RhaiStep` : chaque invocation
+    reçoit un moteur Rhai neuf — aucune variable, aucun état de `Scope` ne survit d'un step à l'autre,
+    même pour deux steps du même kind dans le même DAG.
+  Rendre `StepError { retryable: true }` pour un échec de script ou de désérialisation de `config` :
+    les deux causes sont déterministes vis-à-vis de l'entrée — rejouer ne change jamais le résultat
+    (contrairement à un kind qui appellerait un service externe, hors périmètre de ce fichier).
+  Exposer aux scripts autre chose que `inputs` et `config` : pas de fonction Rhai supplémentaire
+    enregistrée par ce fichier au-delà de ce que `Script::new_bare` fournit déjà — un besoin
+    additionnel (accès DB, appel HTTP) est un nouveau kind, pas une extension de celui-ci.
+
+Forbids:
+  `restate_sdk::*`, `reqwest::*` dans ./rhai_step.rs
+
+Depends on:
+  `vynil-core` `0.7.4` (dépendance déjà présente, feature `rhai` actuellement seulement activée sous
+    `mcp` — à activer aussi sous `workflow`, Cargo.toml : `workflow = [...,
+    "vynil-core?/rhai"]` unifié par Cargo si `mcp` et `workflow` sont actifs ensemble, sans conflit)
+    — `vynil_core::engine::Script`, `vynil_core::Error`
+  ./step.rs — @MiryadWorkflowStep, @StepError
+  @tokio (actuellement dépendance de développement seulement de /Cargo.toml — à promouvoir en
+    dépendance normale sous la feature `workflow`, `spawn_blocking` exige un runtime tokio réel, pas
+    seulement pour les tests) — `tokio::task::spawn_blocking`
+  @serde_json — désérialisation de `RhaiConfig`, construction de la valeur `inputs`
+
+Exposes:
+  `RhaiStep` — struct `pub`, champ `resolver_path` privé ; `RhaiStep::new(Vec<String>)` et `impl
+    Default` `pub` — l'app consommatrice l'enregistre elle-même
+    (`StepRegistry::register(RhaiStep::default())` ou `RhaiStep::new(...)`, ./step.sdd) ; ce fichier
+    ne l'enregistre pas lui-même, pas plus qu'un kind d'app ne s'auto-enregistre.
+
+Accepts:
+  `run` : un `config` dont la désérialisation en `RhaiConfig` peut échouer (`Must`, étape 1) ; un
+    `inputs` toujours bien formé (garanti par ./interpreter.rs en amont, ./step.sdd) — jamais
+    interprété au-delà de sa conversion en variable Rhai.
+
+Returns:
+  `run` : la @serde_json::Value rendue par le script (toujours un objet JSON, `eval_map_json` ne
+    peut rendre qu'une `Map` Rhai convertie) ou @Err(StepError), toujours `retryable: false`.
+
+Raises:
+  Aucun code `MRD-WORKFLOW-*` : @StepError n'en porte jamais (./step.sdd, contrat transverse
+    @HookError-like pour les erreurs de kind).
+
+Handles:
+  Script qui ne se réduit pas à une `Map` (ex. `42` ou une chaîne nue) : `eval_map_json` échoue côté
+    `vynil-core` (le `eval_with_scope::<Map>` type-vérifie à l'exécution), remonté en @StepError non
+    retryable — pas une erreur distincte pour ce cas, le message vient tel quel de `vynil_core::Error`.
+  Script qui accède à `inputs` ou `config` sans qu'un des deux ne soit défini pour son besoin (ex.
+    `inputs.A` quand `A` n'est pas une dépendance déclarée) : erreur Rhai d'exécution (variable/champ
+    indéfini), remontée par le même chemin — ./rhai_step.rs ne pré-valide pas le script contre le DAG,
+    ./interpreter.rs ne lui fournit que les entrées réellement déclarées (./step.sdd).
+  Panic à l'intérieur du bloc `spawn_blocking` (bug de `vynil-core`/`rhai`, jamais observé mais non
+    exclu par du code Rust arbitraire chargé dynamiquement) : capturé par `JoinError`, jamais un panic
+    qui remonte au thread appelant — cohérent avec l'isolation par tâche déjà vérifiée pour
+    ./dispatcher.rs (spike 2026-09-23, panic isolation).
+
+Tasks:
+  [x] Résolution de module Rhai : Sébastien (2026-09-23) — sans chemin de résolution, aucun `import`
+    n'est possible ; miryad-core n'en ajoute délibérément aucun lui-même (pas de bibliothèque de
+    script embarquée par la crate), mais une app fille doit pouvoir le faire au besoin. Résolu par
+    `RhaiStep::new(resolver_path)`/`RhaiStep::default()` (`Must`) — la portée de fichiers exposée à
+    un script (risque de lecture arbitraire sur le pod si le chemin est mal choisi) reste le choix et
+    la responsabilité de l'app qui fournit `resolver_path`, jamais un défaut de la crate.
+  [?] Le champ unique de `RhaiConfig` (`script`) suffit-il, ou un kind `"rhai"` réel a-t-il besoin
+    d'un second champ (ex. `timeout_ms` pour borner un script qui boucle, au-delà du filet de
+    `RunRetryPolicy`/`ServiceOptions` déjà posé par ./dispatcher.sdd au niveau de l'invocation
+    entière, pas du script individuellement) ?
+  [ ] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./rhai_step.rs — aucun
+    serveur Restate requis (le kind s'exécute et se teste sans `restate-sdk`, ./step.sdd), une base
+    sqlite non plus (aucune dépendance DB dans ce fichier).
+
+Done when:
+  Les `Scenario` ont chacun un test nommé distinct et vert, sur la combinaison de features
+    `workflow` + `vynil-core/rhai`.
+  Le `[?]` restant (second champ de `RhaiConfig`) est arbitré par Sébastien.
+  ./step.sdd est approuvée avant ou avec cette spec.
+  La spec est relue et approuvée par Sébastien avant qu'une ligne de ./rhai_step.rs soit écrite.
+
+Scenario: script simple retourne une Map JSON
+  Given un `RhaiConfig { script: "#{ greeting: \"hello \" + inputs.name }" }`, `inputs = {"name":
+    json!(\"Ada\")}`
+  When `RhaiStep::run` est appelé avec `config = json!({"script": "#{ greeting: \"hello \" +
+    inputs.name }"})` et cet `inputs`
+  Then le résultat est @Ok(json!({"greeting": "hello Ada"}))
+
+Scenario: config sans champ script est rejeté avant toute évaluation
+  Given `config = json!({"not_a_script": 1})`
+  When `RhaiStep::run` est appelé
+  Then le résultat est @Err(StepError { retryable: false, message: "config rhai invalide: ..." }) —
+    aucun `Script` n'est construit
+
+Scenario: script qui échoue à l'exécution rend une erreur non-retryable
+  Given `config = json!({"script": "throw \"boom\""})`
+  When `RhaiStep::run` est appelé
+  Then le résultat est @Err(StepError { retryable: false, .. }), message portant le texte de l'erreur
+    Rhai (`vynil_core::Error::RhaiError` sous-jacent, vérifié par la présence de la sous-chaîne
+    `"boom"` dans le message)
+
+Scenario: script qui ne rend pas une Map échoue proprement
+  Given `config = json!({"script": "42"})`
+  When `RhaiStep::run` est appelé
+  Then le résultat est @Err(StepError { retryable: false, .. }) — pas de panic, pas de @Ok d'une
+    valeur non-objet
+
+Scenario: config accessible au script au-delà du champ script
+  Given `config = json!({"script": "#{ x: config.extra }", "extra": 7})`
+  When `RhaiStep::run` est appelé avec `inputs` vide
+  Then le résultat est @Ok(json!({"x": 7})) — `config` est exposé en entier au script, pas seulement
+    son champ `script`
+
+Scenario: deux appels successifs n'interfèrent jamais
+  Given un premier appel dont le script pose une variable globale via `add_common`-like convention
+    (ex. tente de redéfinir `assert`), suivi d'un second appel avec un script indépendant qui
+    utiliserait `assert` normalement
+  When les deux appels s'exécutent l'un après l'autre sur la même instance de `RhaiStep`
+  Then le second appel se comporte comme si le premier n'avait jamais eu lieu — deux `Script`
+    distincts, aucun état partagé
+
+Scenario: RhaiStep::default() n'ouvre aucun import, RhaiStep::new(...) le permet
+  Given un `RhaiStep::default()` et, séparément, un `RhaiStep::new(vec!["<répertoire de fixture avec
+    un module 'lib.rhai'>".into()])`
+  When un script `"#{ x: import(\"lib\")::value() }"` (ou équivalent utilisant `import_run`) est
+    évalué par chacune des deux instances
+  Then l'instance `default()` échoue (module introuvable, capturé par la convention
+    `import_run`/`ErrorModuleNotFound` de `Script::add_common` plutôt qu'une erreur brute non
+    catégorisée) et l'instance `new(...)` réussit et rend la valeur du module importé — miryad-core
+    ne fournit aucun chemin par défaut, l'app en fournissant un obtient la capacité

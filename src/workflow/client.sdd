@@ -1,0 +1,260 @@
+Spec: client — connexion à un cluster Restate self-hosté, enregistrement du déploiement, déclenchement d'un run
+
+Purpose:
+  Porter le seul point de la crate qui parle HTTP nu à un serveur Restate (admin API et ingress) :
+    @client::register_deployment (enregistrement idempotent, appelé explicitement par l'app
+    consommatrice à son démarrage, même idiome que @users::ensure_service_account — roadmap 2c) et
+    @client::trigger_run (déclenchement asynchrone d'une exécution de @DagInterpreter, jamais
+    bloquant sur sa complétion). Aucune autre partie de la crate n'importe @reqwest pour parler à
+    Restate : ./interpreter.rs et ./rhai_step.rs (et tout futur `impl MiryadWorkflowStep`) parlent au
+    cluster exclusivement par le protocole `restate-sdk` (@Context, invocations entrantes), jamais en
+    sortant par HTTP — ./client.rs est la seule porte sortante.
+  Suit la décision actée avec Sébastien : un seul cluster Restate self-hosté par cluster
+    Kubernetes (pas d'opérateur, StatefulSet trivial packagé en vynil box — hors périmètre de cette
+    crate, /miryad-core.sdd) ; le statut d'un run n'est jamais dupliqué en base par miryad-core, il
+    se lit en proxy direct de Restate (décision Sébastien, ce fichier ne le fait pas encore — pas de
+    fonction de lecture de statut ici, seulement écriture/déclenchement, une lecture de statut est un
+    fichier séparé à spécifier si le besoin se confirme).
+  Fichier neuf, conception (pas de code existant, pas de spec-reverse). Le format exact de requête et
+    de réponse de Restate `1.x` cité dans ce fichier a été vérifié en direct contre un `restate-server`
+    local (conteneur `docker.restate.dev/restatedev/restate:latest`), pas seulement contre sa
+    documentation — chaque exemple de `Must`/`Raises` porte le statut HTTP et le corps exacts observés.
+
+Owns:
+  ./client.rs
+
+References:
+  ./error.sdd — @WorkflowError et @classify_transport_error, consommés sur chaque `.send()`/`.json()`
+  ./definition.sdd (à rédiger) — @DagSteps et @StepDefinition, type de payload sérialisé par
+    @client::trigger_run ; ./client.rs ne possède pas ce type, seulement son utilisation en paramètre
+    générique-lié par @serde::Serialize
+  ./interpreter.sdd (à rédiger) — service Restate `DagInterpreter`, handler `run`, nom de service et
+    de handler consommés en dur par @client::trigger_run (`"DagInterpreter"`, `"run"`)
+  /miryad-core.sdd — frontière de dépôt : le packaging Kubernetes du serveur Restate lui-même
+    (StatefulSet, chart) n'est pas de ce dépôt
+
+Must:
+  @client::register_deployment(config: &WorkflowConfig, http: &reqwest::Client) ->
+    Result<(), WorkflowError> : `POST {config.admin_url}/deployments`, corps JSON
+    `{"uri": config.deployment_url, "force": true}`, `content-type: application/json`. Un statut `2xx`
+    rend @Ok(()) sans inspecter le corps de réponse (id de déploiement, révision, liste de services
+    découverts — non consommés par ce fichier). Un statut hors `2xx` rend @WorkflowError::RestateRejected
+    avec le statut et le corps verbatim.
+  `force: true` n'est pas optionnel — deuxième spike ciblé (2026-09-23, même méthode : `restate-server`
+    local, cycle enregistrer/modifier le schéma exposé/réenregistrer) : `POST /deployments` avec
+    seulement `{"uri": ...}` sur une `uri` déjà enregistrée répond `200` mais **ne redécouvre pas le
+    schéma** — même id de déploiement, même révision, le nouveau handler ajouté au code reste
+    invisible (vérifié : son invocation après ce ré-enregistrement rend `404`
+    `"the service '...' exists, but the handler '...' was not found, check that the handler exists in
+    the latest registered service version"`). Avec `"force": true` dans le corps, le même
+    ré-enregistrement fait passer la révision à `2` et le nouveau handler devient invocable
+    immédiatement. `force` a beau documenter un défaut `true` dans le schéma OpenAPI de l'admin API
+    (`GET /openapi`, composant `RegisterHttpDeploymentRequest`), le comportement observé quand le champ
+    est absent du corps JSON est celui d'un `force` à `false` — @client::register_deployment ne se fie
+    jamais à un défaut serveur non vérifié à l'exécution, il pose le champ explicitement à chaque appel.
+  @client::trigger_run(config: &WorkflowConfig, http: &reqwest::Client, dag: &DagSteps) ->
+    Result<RunHandle, WorkflowError> : génère `run_key` en @uuid::Uuid::new_v4 (`to_string`, format
+    hyphéné standard), puis `POST {config.ingress_url}/DagInterpreter/{run_key}/run/send`, corps JSON
+    = `dag` sérialisé par @serde_json, `content-type: application/json`. Vérifié en direct : un
+    statut `202` répond le corps `{"invocationId": "inv_...", "status": "Accepted"}` ; l'en-tête
+    `x-restate-id` porte la même valeur que `invocationId` du corps — ./client.rs lit le champ du
+    corps, pas l'en-tête, pour ne dépendre que d'un seul mécanisme. Un statut hors `2xx` rend
+    @WorkflowError::RestateRejected (vérifié en direct : un nom de service inconnu répond `404`,
+    corps `{"code":404,"message":"service '<nom>' not found, make sure to register the service
+    before calling it.","source":"ingress"}`).
+  Suffixe `/send` systématique, jamais la forme bloquante `POST
+    /DagInterpreter/{run_key}/run` (sans suffixe) : un DAG peut s'exécuter arbitrairement longtemps,
+    bloquer une requête HTTP entrante de miryad-core (REST, MCP) sur sa complétion violerait le choix
+    déjà acté de ne pas dupliquer/attendre l'état d'un run ici.
+  `RunHandle` porte exactement `run_key: String` (la clé générée, nécessaire pour tout appel ultérieur
+    ciblant ce workflow — signal, statut) et `invocation_id: String` (`invocationId` du corps de
+    réponse, identifiant Restate global de l'invocation, indépendant du couple service/clé). Les deux
+    sont retournés à l'appelant de @client::trigger_run — c'est à lui (une future surface REST/MCP de
+    déclenchement, hors périmètre de ce fichier) de décider lequel il expose.
+  `Idempotency-Key` non posé par ce fichier : chaque appel de @client::trigger_run génère une clé de
+    run neuve (@uuid::new_v4), donc deux appels ne sont jamais la même invocation Restate. Décision de
+    Sébastien (2026-09-23) : la déduplication d'un double déclenchement n'est pas un sujet de cette
+    crate — ./client.rs ne pose jamais `Idempotency-Key` lui-même. Si un appelant de haut niveau veut
+    fusionner deux soumissions équivalentes, c'est à lui de le faire avant d'appeler
+    @client::trigger_run (par exemple en réutilisant délibérément une clé côté application) ; ce
+    fichier ne fournit aucun mécanisme pour ça. À documenter dans docs/architecture.md à la clôture de
+    la feature, comme un choix de périmètre explicite, pas un oubli.
+  Un seul @reqwest::Client construit par l'appelant et prêté aux deux fonctions (`&reqwest::Client`,
+    jamais possédé) : ./client.rs ne construit pas de client HTTP lui-même, pour que l'app
+    consommatrice partage pool de connexions et configuration TLS avec le reste de ses appels sortants
+    — même principe que le @sea_orm::DatabaseConnection prêté partout ailleurs dans la crate.
+  Rester silencieux : aucun @tracing, @println!, @eprintln!, @dbg! — cohérent avec ./error.sdd et le
+    contrat transverse.
+  Compiler uniquement sous `#[cfg(feature = "workflow")]`.
+
+Must not:
+  Attendre la complétion d'un run dans @client::trigger_run, ni exposer de fonction de lecture de
+    statut dans ce fichier : la décision actée (proxy Restate direct, pas de duplication d'état) vit
+    dans un fichier séparé quand le besoin se précise, jamais improvisée ici en ajoutant un GET.
+  Réutiliser une `run_key` fournie par l'appelant : Restate garantit qu'un handler `run` de workflow
+    ne s'exécute qu'une fois par clé (contrat @workflow du SDK Restate, vérifié doc `docs.restate.dev`)
+    — laisser l'appelant choisir la clé risquerait une résolution silencieuse vers un run déjà
+    terminé plutôt qu'un nouveau déclenchement, sans erreur visible.
+  Parser ou réinterpréter le corps JSON d'un rejet Restate (`code`/`message`/`source`) : il est
+    transporté verbatim dans @WorkflowError::RestateRejected::body, la structure exacte appartient à
+    Restate et n'est pas contractualisée ici (./error.sdd, `Must not`).
+  Importer `restate-sdk` : ce fichier ne parle jamais le protocole d'invocation Restate (côté
+    service), seulement HTTP nu côté client — la frontière avec ./interpreter.rs est stricte.
+
+Forbids:
+  `restate_sdk::*` dans ./client.rs — la dépendance service (`restate-sdk`) et la dépendance client
+    HTTP (`reqwest`) restent dans deux fichiers séparés, jamais mélangées
+
+Depends on:
+  @reqwest 0.12 (lock `0.12.28`, `rustls-tls` + `json`) — @reqwest::Client, @RequestBuilder::json,
+    @Response::status, @Response::json, @Response::text
+  @uuid 1 (lock `1.25.0`, transitive existante — à promouvoir en dépendance directe de /Cargo.toml
+    sous la feature `workflow`, features `v4`) — @uuid::Uuid::new_v4
+  @serde (derive @Serialize) — sérialisation de @DagSteps, prêtée par ./definition.rs
+  ./error.rs — @WorkflowError, @classify_transport_error
+
+Exposes:
+  @WorkflowConfig — struct `pub`, trois champs `pub` @String : `admin_url`, `ingress_url`,
+    `deployment_url` (l'URL que Restate doit pouvoir appeler pour joindre ce processus — le port
+    d'écoute `restate-sdk` de ./interpreter.rs). Aucune lecture d'environnement dans ce fichier :
+    l'app consommatrice construit @WorkflowConfig elle-même, même convention que
+    @auth::OidcConfig (./../auth/config.sdd) — miryad-core ne lit jamais l'environnement pour son
+    propre compte.
+  @RunHandle — struct `pub`, deux champs `pub` @String : `run_key`, `invocation_id`
+  @client::register_deployment — `pub async fn register_deployment(config: &WorkflowConfig, http:
+    &reqwest::Client) -> Result<(), WorkflowError>`
+  @client::trigger_run — `pub async fn trigger_run(config: &WorkflowConfig, http: &reqwest::Client,
+    dag: &DagSteps) -> Result<RunHandle, WorkflowError>`
+
+Accepts:
+  @WorkflowConfig déjà construit et validé par l'appelant — aucune validation de forme d'URL dans ce
+    fichier (une `admin_url` vide ou non-URL échoue à la construction de la requête @reqwest, classée
+    @WorkflowError::RestateUnreachable par ./error.sdd). Décision de Sébastien (2026-09-23) :
+    ./client.rs ne restreint ni n'inspecte la forme de `deployment_url` (IP de pod vs nom de `Service`
+    Kubernetes) — c'est à l'application consommatrice de savoir ce qu'elle expose et comment Restate
+    doit la joindre, pas à cette crate d'en décider ou de le deviner. Recommandation d'usage (un
+    `Service` stable, pas une IP de pod éphémère) documentée dans docs/architecture.md à la clôture,
+    jamais imposée en code.
+  @client::trigger_run : un &DagSteps déjà validé structurellement (acyclique, dépendances
+    résolues) par ./definition.rs avant d'atteindre ce fichier — ./client.rs ne revalide rien, il
+    sérialise tel quel
+
+Returns:
+  @client::register_deployment : @Ok(()) sur tout `2xx`, sans distinction entre premier
+    enregistrement et réutilisation d'un déploiement identique
+  @client::trigger_run : @Ok(RunHandle) sur `202` avec `invocationId` décodé ; toute autre forme de
+    succès HTTP (`2xx` hors `202`) non observée au spike — traitée comme `202` (le corps est décodé
+    de la même façon, `Tasks [?]` si Restate venait à distinguer)
+
+Raises:
+  `MRD-WORKFLOW-001` (@WorkflowError::RestateUnreachable) — serveur Restate injoignable sur
+    `admin_url` ou `ingress_url` (connexion refusée, DNS, timeout) ; ./error.sdd porte la
+    classification exacte
+  `MRD-WORKFLOW-002` (@WorkflowError::RestateRejected) — deux sites : `POST {admin_url}/deployments`
+    hors `2xx` (URI ou schéma rejeté) ; `POST {ingress_url}/DagInterpreter/{run_key}/run/send` hors
+    `2xx` (service `DagInterpreter` non enregistré — vérifié en direct, corps exact cité en `Must` —
+    ou DAG rejeté dès la désérialisation d'entrée par ./interpreter.rs)
+  `MRD-WORKFLOW-003` (@WorkflowError::Serialization) — corps de réponse Restate qui ne se décode pas
+    en la forme attendue (`{"invocationId": String, "status": String}` pour @trigger_run)
+
+Handles:
+  Ordre de décision identique dans les deux fonctions : `.send()` d'abord (échec réseau →
+    @classify_transport_error) ; puis lecture du statut sur la réponse reçue (hors `2xx` →
+    @WorkflowError::RestateRejected construit à la main, corps lu par @Response::text) ; puis, pour
+    @trigger_run seulement, décodage JSON du corps `2xx` (échec → @classify_transport_error via
+    @Response::json).
+  Redémarrage/relance multiple de @client::register_deployment au boot de plusieurs réplicas de la
+    même app (même `deployment_url`, typiquement un `Service` Kubernetes stable — recommandation
+    documentée, pas une contrainte de ce fichier, voir `Accepts`) : chaque appel répond `2xx`
+    indépendamment, aucun état partagé entre réplicas n'est nécessaire côté miryad-core.
+  Risque documenté par Restate lui-même sur `force: true` (schéma OpenAPI de l'admin API, champ
+    `force`) : « can lead inflight invocations to an unrecoverable error state ». Poser `force: true`
+    à chaque boot est nécessaire (sans lui, une évolution réelle du schéma reste invisible, spike
+    ci-dessus) mais un déploiement applicatif qui change le schéma pendant que des invocations sont en
+    cours sur l'ancien peut les casser — c'est un risque de rollout (chevauchement d'anciens/nouveaux
+    pods derrière le même `Service` le temps d'un rolling update Kubernetes), pas quelque chose que
+    ./client.rs peut détecter ou empêcher depuis un seul appel HTTP synchrone. Hors périmètre de ce
+    fichier de l'atténuer ; à documenter clairement dans docs/architecture.md comme un risque
+    opérationnel du self-host (stratégie de rollout, `Tasks`).
+
+Tasks:
+  [x] `deployment_url` : Sébastien (2026-09-23) — pas de restriction ni de validation de forme dans
+    cette crate, décision reflétée dans `Accepts` et `Handles`. Reste ouvert, hors périmètre de ce
+    fichier : documenter la recommandation (`Service` Kubernetes stable) dans docs/architecture.md.
+  [x] Comportement de @client::register_deployment sur changement de schéma : vérifié par spike
+    (2026-09-23, détail en `Must`) — `force: true` requis, sans quoi le nouveau schéma reste
+    invisible sans erreur visible. Reste ouvert : documenter dans docs/architecture.md le risque
+    d'invocations en cours cassées par un `force: true` pendant un rollout (`Handles`), comme risque
+    opérationnel du self-host plutôt que comme contrat de cette crate.
+  [x] Déduplication de double déclenchement : Sébastien (2026-09-23) — hors périmètre de cette crate,
+    décision reflétée dans `Must`. Reste ouvert : documenter ce choix de périmètre dans
+    docs/architecture.md.
+  [ ] Convertir les `Scenario` de cette spec en tests distincts nommés dans `mod tests` de
+    ./client.rs, contre un serveur HTTP de test (`wiremock` ou équivalent — absent des dépendances
+    actuelles, à ajouter en `dev-dependencies` sous la feature `workflow`, choix d'implémentation
+    laissé à la rédaction du test) plutôt que contre un vrai `restate-server` — le spike a vérifié la
+    forme réelle du protocole, les tests de cette spec vérifient que ./client.rs la respecte, pas que
+    Restate se comporte comme documenté.
+
+Done when:
+  Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
+  Les trois décisions de `Tasks` sont reflétées dans docs/architecture.md à la clôture de la feature
+    (`Service` Kubernetes stable recommandé, risque `force: true` sur rollout, déduplication hors
+    périmètre) — aucune n'est laissée en `[?]` non documenté.
+  ./error.sdd est approuvée avant ou avec cette spec (dépendance directe, pas de test de ./client.rs
+    ne peut s'écrire sans @WorkflowError stabilisé).
+  La spec est relue et approuvée par Sébastien avant qu'une ligne de ./client.rs soit écrite.
+
+Scenario: enregistrement réussi
+  Given un serveur de test répondant `200` avec un corps de déploiement valide sur `POST /deployments`
+  When @client::register_deployment est appelé avec une @WorkflowConfig pointant ce serveur
+  Then le résultat est @Ok(()), le corps de la requête envoyée est exactement `{"uri":
+    "<deployment_url>", "force": true}`, l'en-tête `content-type` est `application/json`
+
+Scenario: le schéma changé n'est repris qu'avec force: true
+  Given un serveur de test qui simule le comportement observé au spike : répond `200` avec la même
+    révision de déploiement quel que soit le corps reçu tant que `force` n'est pas `true`, et incrémente
+    la révision simulée quand `force: true` est reçu
+  When @client::register_deployment est appelé
+  Then la requête capturée porte toujours `"force": true` dans le corps — ./client.rs ne pose jamais
+    un `POST /deployments` sans ce champ, il n'y a pas de branche de code qui l'omette
+
+Scenario: enregistrement rejeté par l'admin API
+  Given un serveur de test répondant `400` avec le corps `{"message":"invalid uri"}` sur
+    `POST /deployments`
+  When @client::register_deployment est appelé
+  Then le résultat est @Err(WorkflowError::RestateRejected { status: 400, body:
+    "{\"message\":\"invalid uri\"}" })
+
+Scenario: enregistrement sur serveur injoignable
+  Given une @WorkflowConfig dont `admin_url` ne répond à aucune connexion
+  When @client::register_deployment est appelé
+  Then le résultat est @Err(WorkflowError::RestateUnreachable(_))
+
+Scenario: déclenchement réussi génère une clé neuve et poste sur /send
+  Given un serveur de test qui capture la requête reçue et répond `202` avec
+    `{"invocationId":"inv_test123","status":"Accepted"}`
+  When @client::trigger_run est appelé deux fois avec la même @DagSteps
+  Then les deux requêtes capturées ciblent `POST /DagInterpreter/{run_key}/run/send` avec des
+    `run_key` distincts (format UUID v4 hyphéné) — jamais la même clé pour deux appels
+  And chaque résultat est @Ok(RunHandle) dont `invocation_id` vaut `"inv_test123"` et `run_key` vaut
+    la clé générée pour cet appel précis
+
+Scenario: déclenchement sur service non enregistré
+  Given un serveur de test répondant `404` avec le corps exact observé au spike
+    `{"code":404,"message":"service 'DagInterpreter' not found, make sure to register the service
+    before calling it.","source":"ingress"}`
+  When @client::trigger_run est appelé
+  Then le résultat est @Err(WorkflowError::RestateRejected { status: 404, body: <ce corps verbatim> })
+
+Scenario: déclenchement avec réponse au format inattendu
+  Given un serveur de test répondant `202` avec un corps JSON valide mais sans le champ
+    `invocationId` (ex. `{"status":"Accepted"}` seul)
+  When @client::trigger_run décode la réponse
+  Then le résultat est @Err(WorkflowError::Serialization(_))
+
+Scenario: le corps envoyé à trigger_run est le DagSteps tel quel, sans enveloppe
+  Given une @DagSteps de fixture à deux steps
+  When @client::trigger_run construit la requête
+  Then le corps JSON capturé par le serveur de test désérialise en la même @DagSteps — aucun
+    champ ajouté (pas de `run_key` dans le corps, il ne vit que dans l'URL), aucun champ retiré

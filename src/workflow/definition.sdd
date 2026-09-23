@@ -1,0 +1,338 @@
+Spec: definition — entité `WorkflowDefinition`, forme du DAG, validation structurelle
+
+Purpose:
+  Porter l'entité @MiryadResource `WorkflowDefinition` (table `miryad_workflow_definitions`) : le
+    seul endroit où un DAG de workflow est stocké et administré — CRUD gratuit sur REST/GraphQL/MCP
+    par le mécanisme générique de la crate, exactement la promesse « un admin doit pouvoir définir un
+    workflow sans redéploiement » du roadmap (feature 7/9). Porte aussi `StepDefinition` (la forme
+    d'un step tel que stocké : `id`, `depends_on`, `kind`, `config` — consommée telle quelle par
+    ./interpreter.rs pour marcher le graphe et par ./dispatcher.rs via `StepInvocation`, ./dispatcher.sdd)
+    et `validate_dag`, la seule fonction de validation structurelle du DAG de toute la crate
+    (id dupliqué, dépendance vers un step absent, cycle, DAG vide) — rendant @WorkflowError::InvalidDag
+    (`MRD-WORKFLOW-004`, ./error.sdd, amendée pour cette spec).
+  Fichier neuf, conception. Décision de conception : la validation structurelle passe par
+    `MiryadWorkflowStep::before_create` (@HookError, `422`, `/src/resource.sdd`) et non par
+    `sea_orm::ActiveModelBehavior::before_save` (@DbErr, `500` via @RestError::Database) — ce dernier
+    aurait fait passer une erreur de configuration du DAG (faute de l'admin qui l'écrit) pour une
+    panne serveur, malgré le message `MRD-WORKFLOW-004:` préservé dans le texte.
+  Sébastien (2026-09-23) : la revalidation à la mise à jour (gap hérité de l'asymétrie déjà actée
+    `/src/rest/core.sdd`, « hook réservé à la création ») doit être comblée — `/src/resource.sdd` et
+    `/src/rest/core.sdd` ont été amendées le même jour pour introduire
+    `MiryadResource::before_update` et `MiryadResource::before_delete` (hors périmètre de ce fichier :
+    amendement possédé par ces deux specs, pas par ./definition.rs). `WorkflowDefinition::before_update`
+    appelle `validate_dag` exactement comme `before_create` (`Must`) — reste `Tasks [ ]`
+    implémentation, bloqué sur l'implémentation (pas la spec, déjà écrite) de ces deux fichiers
+    amendés. Comme `before_create`, ces deux hooks ne se déclenchent pas sur le chemin GraphQL
+    (Seaography ne pilote ses hooks `before_active_model_save` qu'à l'insertion, `/src/graphql/hooks.sdd`
+    en attente) — asymétrie documentée au niveau transverse (`/src/resource.sdd`,
+    `docs/architecture.md`), pas
+    seulement ici.
+  Sébastien (2026-09-23) : `AccessPolicy::AdminOnly` en lecture/écriture (`Must`) n'est qu'un défaut —
+    une application fille doit pouvoir le resserrer ou l'assouplir (ex. chaque utilisateur possède ses
+    propres workflows, `AccessPolicy::OwnerOnly`) sans réimplémenter l'entité. Les règles orphelines de
+    Rust interdisent à l'app de fournir son propre `impl MiryadResource for Entity` (ni le trait ni le
+    type ne lui sont locaux) : la configurabilité passe par une cellule de configuration au démarrage
+    (`WorkflowPolicy`, `configure_policy`, `Must`), pas par une seconde implémentation du trait.
+
+Owns:
+  ./definition.rs
+
+References:
+  ./error.sdd — @WorkflowError::InvalidDag (`MRD-WORKFLOW-004`), amendée par cette spec ; seul site de
+    construction de cette variante
+  ./step.sdd — `StepDefinition::id`/`depends_on` alimentent `inputs` (une entrée par dépendance) au
+    moment où ./interpreter.rs appelle `StepRegistry`/`StepDispatcher` — ./definition.rs ne connaît pas
+    @MiryadWorkflowStep, il ne fait que stocker `kind`/`config` en `@String`/`@serde_json::Value` opaques
+  ./dispatcher.sdd — `StepDefinition` a exactement les mêmes noms de champ que `StepInvocation` moins
+    `inputs` (`kind`, `config`) : ./interpreter.rs (à rédiger) construit un `StepInvocation` à partir
+    d'un `StepDefinition` plus l'`inputs` qu'il assemble, jamais l'inverse
+  /src/resource.sdd — @MiryadResource, @HookError, @AccessPolicy : contrat hérité, `before_create`
+    utilisé ici pour la première fois par un fichier qui n'est *pas* un exemple de la doc crate
+  /src/rest/core.sdd — précédent direct de la limite « hook seulement à la création » invoquée en
+    `Purpose` ; ./definition.rs ne réinterprète rien de ce contrat, il en hérite la conséquence
+  @sea_orm 2.0.2 — `FromJsonQueryResult` (`src/entity/prelude.rs`, vérifié source : dérivable sur un
+    struct portant `Serialize`/`Deserialize`, colonne `Json` inférée sans attribut
+    `#[sea_orm(column_type = "Json")]` explicite, vérifié `tests/common/features/json_struct.rs` du
+    crate) — porte `steps: DagSteps` du `Model`
+  ./../users/group.sdd — modèle de forme suivi pour la table (`miryad_*`, `id: i32` PK auto-incrémenté,
+    `created_at: DateTimeUtc`), sans `updated_at` : aucune autre entité de la crate n'en porte, pas
+    d'introduction isolée de cette convention ici
+
+Must:
+  `StepDefinition` — struct `pub`, `#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]`,
+    quatre champs `pub` : `id: @String`, `depends_on: @Vec<@String>`, `kind: @String`,
+    `config: @serde_json::Value`. Aucune validation portée par le type lui-même — n'importe quel
+    `StepDefinition` isolé est constructible, seule la liste complète d'un DAG est validable
+    (`validate_dag`).
+  `DagSteps` — struct `pub` tuple à un champ `pub`, `DagSteps(pub @Vec<StepDefinition>)`,
+    `#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, FromJsonQueryResult)]`. Enveloppe fine,
+    aucune logique — c'est le type de la colonne `steps` du `Model`, choisi plutôt qu'un `Vec<StepDefinition>`
+    nu parce que `FromJsonQueryResult` (vérifié source @sea_orm `2.0.2`) s'applique à un struct, pas
+    directement à un `Vec`.
+  `validate_dag(steps: &[StepDefinition]) -> Result<(), WorkflowError>`, `pub(crate)`, seule fonction
+    de validation structurelle de toute la crate, dans cet ordre exact (le premier échec rencontré
+    interrompt, aucun cumul de plusieurs erreurs) :
+    1. `steps.is_empty()` → @Err(WorkflowError::InvalidDag("le DAG ne contient aucun step".into()))
+    2. Id dupliqué : parcours dans l'ordre de la liste, premier `id` déjà vu →
+      @Err(WorkflowError::InvalidDag(format!("step id dupliqué: {id}")))
+    3. Dépendance pendante : parcours dans l'ordre de la liste puis de `depends_on`, premier `dep` de
+      `depends_on` absent de l'ensemble des id (déjà garanti sans doublon par l'étape 2) →
+      @Err(WorkflowError::InvalidDag(format!("le step {step} dépend de {dep}, absent de ce DAG")))
+    4. Cycle : tri topologique de Kahn (degré entrant = taille de `depends_on`, file initiale = steps
+      de degré `0`, dans l'ordre de la liste d'origine) ; si le nombre de steps traités par
+      l'algorithme est inférieur à `steps.len()` une fois la file épuisée, cycle détecté — le premier
+      step de la liste d'origine resté non traité identifie l'erreur :
+      @Err(WorkflowError::InvalidDag(format!("cycle détecté impliquant le step {id}"))) (couvre aussi
+      l'auto-dépendance `depends_on: [id lui-même]`, cas particulier d'un cycle de longueur un, sans
+      branche séparée)
+    5. Sinon @Ok(())
+  `Entity`/`Model`/`ActiveModel` via `#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize,
+    Deserialize)]` sur `Model`, `#[sea_orm(table_name = "miryad_workflow_definitions")]` : `id: @i32`
+    (`#[sea_orm(primary_key)]`), `name: @String` (`#[sea_orm(unique)]`), `steps: DagSteps`,
+    `owner_id: @Option<@i32>` (sans contrainte `FOREIGN KEY`, même choix de couplage lâche que
+    `ApiToken::subject`, roadmap 2b), `created_at: @DateTimeUtc`.
+  `WorkflowPolicy` — struct `pub`, `#[derive(Debug, Clone, Copy)]`, deux champs `pub` : `read:
+    AccessPolicy`, `write: AccessPolicy`. `impl Default` rend `WorkflowPolicy { read:
+    AccessPolicy::AdminOnly, write: AccessPolicy::AdminOnly }` — le défaut documenté en `Purpose`.
+  `configure_policy(policy: WorkflowPolicy)`, `pub fn`, seule façon de changer le défaut : pose
+    `policy` dans une cellule `static POLICY: @std::sync::OnceLock<WorkflowPolicy>` module-privée.
+    Appelée au plus une fois, avant que le serveur applicatif ne commence à servir des requêtes (même
+    idiome de configuration au démarrage que ./client::register_deployment et
+    @users::ensure_service_account, roadmap 2c) — un second appel panique
+    (`#[allow(clippy::expect_used)]` avec commentaire d'une ligne citant cette spec, seul site
+    d'exemption de ce fichier, même traitement que la collision de @StepRegistry::register,
+    ./step.sdd). Ne jamais appeler `configure_policy` n'est un usage valide : la cellule non posée
+    retombe sur `WorkflowPolicy::default()`.
+  `impl MiryadResource for Entity` : `resource_name() -> "workflows"` ; `read_policy() ->
+    POLICY.get().copied().unwrap_or_default().read` ; `write_policy() ->
+    POLICY.get().copied().unwrap_or_default().write` ; `owner_column() -> Some(Column::OwnerId)`
+    (toujours `Some`, y compris sous le défaut `AdminOnly` — `/src/rest/core.sdd` n'injecte/ne filtre
+    par `owner_column` que lorsque la politique effective vaut `OwnerOnly`, donc une colonne déclarée
+    mais inutilisée sous `AdminOnly` est un no-op vérifié par la spec amont, pas un comportement non
+    défini en pratique) ; `filter_column() -> Some(Column::Name)` ; `label_column() ->
+    Some(Column::Name)`.
+  `before_create(active, principal) -> Result<ActiveModel, HookError>` : lit `active.steps` (toujours
+    `ActiveValue::Set` ou `ActiveValue::Unchanged` à ce point de la séquence, après
+    `rest::core::mark_all_set`, avant l'insertion, position déjà contractualisée par
+    `/src/rest/core.sdd`), appelle `validate_dag(&steps.0)` ; @Err(WorkflowError::InvalidDag(msg)) →
+    @Err(HookError::new(msg)) — **sans code** (`HookError::code: None`), délibérément : le message
+    `MRD-WORKFLOW-004: {msg}` produit par la @Display de @WorkflowError n'est pas réutilisé tel quel
+    ici, seul `msg` (la partie libre) traverse — un code `MRD-*` dans un @HookError contredirait le
+    contrat transverse même si le canal est techniquement libre de contenu (`/.specdd/bootstrap.project.md`).
+    @Ok(active) inchangé sinon — pas de mutation, contrairement à un hook applicatif typique.
+  `before_update(active, existing, principal) -> Result<ActiveModel, HookError>` (@MiryadResource,
+    amendé `/src/resource.sdd` le 2026-09-23) : même traitement que `before_create`, appliqué à
+    `active.steps` (toujours `Set` à ce point, après `rest::core::mark_all_set`, avant les invariants
+    PK/owner de `rest::core::update`, position contractualisée par `/src/rest/core.sdd` amendée le
+    même jour) — `existing` n'est jamais lu par cette implémentation, `validate_dag` ne compare pas
+    l'ancien et le nouveau DAG, elle valide seulement le nouveau dans l'absolu, exactement comme à la
+    création.
+  `before_delete` n'est **pas** surdéclaré par `WorkflowDefinition` : aucune règle métier ne s'oppose
+    à la suppression d'une définition de workflow dans cette itération — le défaut identité de
+    `MiryadResource::before_delete` (`Ok(())`) s'applique tel quel.
+  Compiler uniquement sous `#[cfg(feature = "workflow")]`.
+
+Must not:
+  Valider `steps` dans `Deserialize` de `DagSteps` ni dans un `ActiveModelBehavior::before_save` :
+    `before_create` aujourd'hui, `before_create` + `before_update` une fois l'amendement transverse
+    livré (`Purpose`) — une seule famille de portes de validation, jamais une validation dupliquée à un
+    second endroit.
+  Interpréter `kind` ou `config` d'un `StepDefinition` : ce fichier ne sait pas quels kinds existent
+    (./step.sdd, `StepRegistry`, construit par l'app) — `kind: "rhai"` référencé nulle part dans ce
+    fichier, aucun cas spécial pour le kind natif de ./rhai_step.sdd.
+  Donner un code `MRD-*` au @HookError construit par `before_create` : voir `Must`, contrat transverse.
+  Permettre un second appel à `configure_policy` de réussir silencieusement : un second appel est une
+    erreur de configuration de l'app (deux composants qui tentent de fixer la politique), jamais un
+    remplacement silencieux — `Must`.
+  Lire `POLICY` ou construire un `WorkflowPolicy` en dehors de `read_policy`/`write_policy`/
+    `configure_policy` : trois points d'accès, pas plus, pour que la politique effective reste
+    traçable à la lecture du fichier.
+
+Forbids:
+  `restate_sdk::*`, `reqwest::*` dans ./definition.rs — ni Restate ni HTTP nu, seulement SeaORM et la
+    validation pure
+
+Depends on:
+  ./error.rs — @WorkflowError, `InvalidDag` (`MRD-WORKFLOW-004`)
+  /src/resource.rs — @MiryadResource, @HookError, @AccessPolicy
+  /src/auth/principal.rs — @AuthPrincipal (paramètre inutilisé de `before_create`, cohérent avec le
+    défaut du trait qui l'ignore aussi)
+  @sea_orm 2 (lock `2.0.2`) — `DeriveEntityModel`, `FromJsonQueryResult`, `ActiveValue`
+  @serde (derive) + @serde_json::Value — forme de `config`
+  @std::sync::OnceLock — cellule `POLICY`, aucune dépendance externe
+
+Exposes:
+  `StepDefinition` — struct `pub`, quatre champs `pub`
+  `DagSteps` — struct `pub`, un champ `pub` (tuple)
+  `validate_dag` — `pub(crate) fn validate_dag(steps: &[StepDefinition]) -> Result<(), WorkflowError>`
+  `WorkflowPolicy` — struct `pub`, deux champs `pub`, `Default`
+  `configure_policy` — `pub fn configure_policy(policy: WorkflowPolicy)`
+  `Entity`, `Model`, `ActiveModel`, `Column` — générés par `DeriveEntityModel`, `pub` (convention
+    `DeriveEntityModel`)
+  `impl MiryadResource for Entity`
+
+Accepts:
+  `validate_dag` : n'importe quelle tranche de `StepDefinition`, y compris vide, y compris avec des
+    `id` ou `depends_on` de contenu arbitraire (chaînes vides comprises — une chaîne vide est un `id`
+    comme un autre, sans traitement spécial)
+  `before_create` : un `ActiveModel` déjà construit par `rest::core::mark_all_set` depuis le corps
+    client (REST) ou l'équivalent GraphQL/MCP — ./definition.rs ne construit jamais lui-même
+    l'`ActiveModel` initial
+
+Returns:
+  `validate_dag` : @Ok(()) ou @Err(WorkflowError::InvalidDag) — jamais une autre variante de
+    @WorkflowError (les trois premières sont réservées aux échecs réseau de ./client.rs)
+  `before_create` : @Ok(active) inchangé sur DAG valide, @Err(HookError) sinon
+
+Raises:
+  `MRD-WORKFLOW-004` par @WorkflowError::InvalidDag, exclusivement depuis `validate_dag` — traduit en
+    @HookError sans code au seul point d'entrée `before_create` (`Must`), donc rendu `422` côté REST
+    (`/src/rest/error.sdd`, @RestError::Application) et son équivalent MCP (`data.code` absent, message
+    seul) — jamais un `500`, jamais @RestError::Database pour cette cause.
+
+Handles:
+  Ordre des quatre causes : une liste à la fois vide n'atteint jamais la vérification de doublon (le
+    cas vide sort en premier), une liste avec doublon n'atteint jamais la vérification de dépendance
+    pendante sur l'id dupliqué en question (les deux occurrences comptent comme un seul id présent une
+    fois la première rencontrée), une dépendance pendante empêche toujours d'atteindre le tri
+    topologique (un `depends_on` invalide ferait échouer le calcul de degré entrant de façon
+    indéfinie sinon) — chaque étape suppose les précédentes passées.
+  Auto-dépendance (`id: "A"`, `depends_on: ["A"]`) : détectée par l'étape 4 (cycle de longueur un),
+    jamais par l'étape 3 (la dépendance existe bel et bien dans le DAG, ce n'est pas une dépendance
+    pendante) — un seul id `"A"` dans le message d'erreur, pas de distinction avec un cycle plus long.
+  DAG à un seul step sans dépendance : valide, `validate_dag` rend @Ok(()) — le cas trivial n'est pas
+    un cas d'erreur.
+  Mise à jour d'une définition existante (`rest::core::update`) : revalidée par
+    `WorkflowDefinition::before_update` exactement comme la création (`Must`) — un DAG
+    structurellement invalide soumis par une mise à jour rend @RestError::Application (`422`) avant
+    toute écriture, plus de gap depuis l'amendement du 2026-09-23. Suppression (`rest::core::delete`)
+    : non gardée, `Must` — aucune règle ne s'oppose à supprimer une définition de workflow.
+  Politique jamais posée (`configure_policy` non appelée) : `read_policy`/`write_policy` retombent sur
+    `WorkflowPolicy::default()` (`AdminOnly`/`AdminOnly`) — comportement identique à un appel explicite
+    de `configure_policy(WorkflowPolicy::default())`, aucune différence observable.
+  Politique posée à `OwnerOnly` en écriture : `rest::core::create` (`/src/rest/core.sdd`, `Must`)
+    injecte automatiquement `owner_id` depuis l'utilisateur créateur, aucune logique supplémentaire
+    dans ./definition.rs — le comportement vient entièrement de la déclaration `owner_column`.
+
+Tasks:
+  [ ] `before_update`/`before_delete` sur @MiryadResource : spec de `/src/resource.sdd` et
+    `/src/rest/core.sdd` amendée le 2026-09-23 (signatures et position d'appel décrites en `Must`),
+    implémentation encore à faire — ./definition.rs ne peut pas être implémenté avant ces deux
+    fichiers (même dépendance que pour `before_create` et le reste de la crate).
+  [ ] Écrire `/src/migration/m20260923_000001_create_workflow_definitions.rs` — sa spec `.sdd` est
+    produite dans le lot du 2026-09-23, seul le code reste à faire ; suit le format des trois
+    migrations existantes (`/src/migration/m20260822_*`), table `miryad_workflow_definitions`,
+    colonnes de `Must` ci-dessus, `owner_id` nullable sans contrainte `FOREIGN KEY`.
+  [ ] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./definition.rs : aucun
+    test existant, fichier neuf. `validate_dag` se teste sans base (fonction pure) ; `before_create`,
+    `configure_policy`/`WorkflowPolicy` et la conformité @MiryadResource (RBAC, `filter_column`,
+    `label_column`) se testent avec une base sqlite mémoire, même fixture que ./../rest/mod.rs —
+    `configure_policy` ne peut être appelée qu'une fois par processus de test (`OnceLock`), les tests
+    qui la couvrent l'isolent dans un processus dédié ou acceptent l'ordre d'exécution (`Tasks [?]`
+    d'implémentation, pas de conception).
+
+Done when:
+  Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
+  ./error.sdd (amendée) est approuvée avant ou avec cette spec.
+  La migration associée a sa propre spec approuvée avant que ./definition.rs n'insère quoi que ce soit
+    en base (les tests peuvent tourner sur un schéma sqlite créé ad hoc en attendant, comme
+    ./../users/group.rs le fait pour ses propres tests).
+  L'amendement `before_update`/`before_delete` de `/src/resource.sdd` et `/src/rest/core.sdd` est
+    approuvé avant que ./definition.rs implémente `before_update` — cette spec peut être approuvée et
+    son `before_create` implémenté indépendamment, `before_update` restant `Tasks [ ]` jusque-là.
+  La spec est relue et approuvée par Sébastien avant qu'une ligne de ./definition.rs soit écrite.
+
+Scenario: DAG vide est invalide
+  Given une liste de `StepDefinition` vide
+  When `validate_dag` est appelé
+  Then le résultat est @Err(WorkflowError::InvalidDag("le DAG ne contient aucun step".into()))
+
+Scenario: id dupliqué est détecté avant toute autre vérification
+  Given deux `StepDefinition` de même `id: "A"`, le second avec un `depends_on` pointant vers un id
+    par ailleurs absent (qui serait aussi une dépendance pendante)
+  When `validate_dag` est appelé
+  Then le résultat est @Err(WorkflowError::InvalidDag("step id dupliqué: A".into())) — pas l'erreur de
+    dépendance pendante, qui ne serait vue qu'après cette étape
+
+Scenario: dépendance pendante est détectée avant le tri topologique
+  Given deux `StepDefinition` sans id dupliqué, l'un `depends_on: ["absent"]` où `"absent"` ne
+    correspond à aucun `id` de la liste
+  When `validate_dag` est appelé
+  Then le résultat est @Err(WorkflowError::InvalidDag("le step ... dépend de absent, absent de ce
+    DAG".into())) avec l'id du step dépendant substitué
+
+Scenario: cycle direct entre deux steps
+  Given deux `StepDefinition`, `"A"` avec `depends_on: ["B"]`, `"B"` avec `depends_on: ["A"]`
+  When `validate_dag` est appelé
+  Then le résultat est @Err(WorkflowError::InvalidDag(_)) mentionnant `"A"` (premier de la liste
+    d'origine) — jamais @Ok, jamais une boucle infinie dans l'algorithme
+
+Scenario: auto-dépendance est un cycle de longueur un
+  Given un seul `StepDefinition`, `"A"` avec `depends_on: ["A"]`
+  When `validate_dag` est appelé
+  Then le résultat est @Err(WorkflowError::InvalidDag(_)) mentionnant un cycle impliquant `"A"` — pas
+    l'erreur de dépendance pendante (`"A"` existe bien dans le DAG)
+
+Scenario: DAG valide à plusieurs couches passe sans erreur
+  Given quatre `StepDefinition` : `"A"` sans dépendance, `"B"` et `"C"` dépendant de `"A"`, `"D"`
+    dépendant de `"B"` et `"C"`
+  When `validate_dag` est appelé
+  Then le résultat est @Ok(())
+
+Scenario: before_create traduit InvalidDag en HookError sans code
+  Given un `ActiveModel` dont `steps` est `ActiveValue::Set` d'un `DagSteps` structurellement invalide
+    (cycle), un @AuthPrincipal quelconque
+  When `before_create` est appelé
+  Then le résultat est @Err(HookError { code: None, message: "cycle détecté impliquant le step
+    ..." }) — le message ne porte jamais le préfixe `MRD-WORKFLOW-004:` de la @Display de
+    @WorkflowError, seule la partie libre traverse
+
+Scenario: before_create laisse passer un DAG valide sans le muter
+  Given un `ActiveModel` dont `steps` est `ActiveValue::Set` d'un `DagSteps` structurellement valide
+  When `before_create` est appelé
+  Then le résultat est @Ok(active) où `active.steps` est strictement identique (même valeur, même
+    variante `ActiveValue`) à l'entrée — aucune mutation, contrairement à un hook applicatif qui
+    dériverait un champ
+
+Scenario: before_update rejette une mise à jour vers un DAG invalide, existing ignoré
+  Given une définition existante valide (`existing`), un `ActiveModel` de mise à jour dont `steps` est
+    `ActiveValue::Set` d'un `DagSteps` structurellement invalide (dépendance pendante)
+  When `before_update` est appelé avec l'ActiveModel, `existing` et un @AuthPrincipal quelconque
+  Then le résultat est @Err(HookError { code: None, message: "le step ... dépend de ..." }) — la
+    validation ne compare jamais à `existing`, elle ne juge que le nouveau DAG dans l'absolu
+
+Scenario: before_update laisse passer une mise à jour vers un DAG valide
+  Given une définition existante (`existing`, DAG quelconque valide ou non), un `ActiveModel` de mise
+    à jour dont `steps` est `ActiveValue::Set` d'un `DagSteps` structurellement valide
+  When `before_update` est appelé
+  Then le résultat est @Ok(active) inchangé — un `existing` lui-même invalide (créé avant que la
+    validation n'existe, ou avant l'amendement du 2026-09-23) ne bloque pas une mise à jour qui le
+    corrige
+
+Scenario: before_delete n'est pas surdéclaré, le défaut du trait s'applique
+  Given l'implémentation `MiryadResource for Entity` de `WorkflowDefinition`
+  When on vérifie si `before_delete` est surdéclaré
+  Then aucune surdéclaration n'existe dans ./definition.rs — l'appel de `rest::core::delete` invoque
+    le défaut de @MiryadResource (`Ok(())`), vérifié par `/src/resource.sdd` et non par ce fichier
+
+Scenario: conformité MiryadResource sous le défaut, sans configure_policy
+  Given l'implémentation `MiryadResource for Entity`, `configure_policy` jamais appelée dans ce
+    processus de test
+  When `resource_name`, `read_policy`, `write_policy`, `owner_column`, `filter_column`, `label_column`
+    sont appelés
+  Then les valeurs sont exactement `"workflows"`, `AccessPolicy::AdminOnly`, `AccessPolicy::AdminOnly`,
+    `Some(Column::OwnerId)`, `Some(Column::Name)`, `Some(Column::Name)` — conformes à `Must`, vérifiées
+    par un test direct plutôt que déduites de la lecture du code
+
+Scenario: configure_policy change la politique effective
+  Given `configure_policy(WorkflowPolicy { read: AccessPolicy::Public, write:
+    AccessPolicy::OwnerOnly })` appelé une fois
+  When `read_policy` et `write_policy` sont appelés ensuite
+  Then ils rendent respectivement `AccessPolicy::Public` et `AccessPolicy::OwnerOnly` — plus jamais
+    `AdminOnly`, `owner_column` reste `Some(Column::OwnerId)` inchangé
+
+Scenario: un second appel à configure_policy panique
+  Given `configure_policy` déjà appelée une fois dans ce processus
+  When `configure_policy` est appelée une seconde fois, avec n'importe quelle valeur
+  Then l'appel panique — la première politique posée reste celle lue par tout appel de `read_policy`/
+    `write_policy` antérieur à la panique

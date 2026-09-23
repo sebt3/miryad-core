@@ -1,0 +1,273 @@
+Spec: dispatcher — service Restate `StepDispatcher`, exécution durable d'un step par kind
+
+Purpose:
+  Porter l'unique service Restate qui exécute un step de workflow, quel que soit son kind :
+    `StepDispatcher`, service `#[service]` (non keyé, sans état Restate) avec un seul handler,
+    `execute`. Reçoit `{kind, config, inputs}` (./interpreter.rs l'appelle par
+    `ctx.request(RequestTarget::Service { name: "StepDispatcher", handler: "execute" }, ...)`,
+    ./client.sdd et le spike Restate ont établi ce mécanisme), résout `kind` dans un @StepRegistry
+    (./step.sdd) construit par l'app consommatrice, enveloppe l'exécution trouvée dans exactement un
+    `ctx.run()`, et traduit @StepError en @HandlerError/@TerminalError selon `retryable`. C'est le seul
+    fichier de la crate qui relie le monde @MiryadWorkflowStep (Rust pur, ./step.sdd) au monde
+    `restate-sdk` (./interpreter.sdd, ce fichier) — ./step.rs ne connaît pas Restate, ./interpreter.rs
+    ne connaît pas @StepRegistry, ./dispatcher.rs est la jointure des deux et rien d'autre.
+  Raison d'être architecturale (spike Restate 2026-09-22, ./step.sdd `Purpose`) : `restate-sdk` lie ses
+    services à la compilation (`Endpoint::builder().bind(...)`), aucun enregistrement dynamique par
+    kind n'est possible — un seul service Restate existe pour tous les kinds, la dynamique vit
+    entièrement côté @StepRegistry en Rust pur.
+  Fichier neuf, conception. Le protocole de traduction @HandlerError/@TerminalError cité en `Must` est
+    vérifié dans le source du crate `restate-sdk` `0.12.1` (`src/errors.rs`), pas seulement contre sa
+    documentation.
+
+Owns:
+  ./dispatcher.rs
+
+References:
+  ./step.sdd — @MiryadWorkflowStep, @StepError, @StepRegistry (`dispatch`, `pub(crate)`) : seul
+    consommateur de @StepRegistry::dispatch de toute la crate
+  ./interpreter.sdd (à rédiger) — seul appelant de `StepDispatcher::execute`, construit `inputs` avant
+    chaque appel depuis les sorties collectées des dépendances déjà terminées d'un step
+  ./client.sdd — ne dépend pas de ce fichier et réciproquement (frontière stricte HTTP nu / service
+    Restate déjà posée par ./client.sdd, `Must not`) ; le spike qui a établi `ctx.request(...).call()`
+    comme mécanisme de fan-out est référencé ici pour mémoire, pas comme dépendance de code
+
+Must:
+  `StepInvocation` — struct `pub(crate)`, `#[derive(Serialize, Deserialize)]`, trois champs :
+    `kind: @String`, `config: @serde_json::Value`, `inputs: @HashMap<@String, @serde_json::Value>`.
+    Forme du corps de requête de `StepDispatcher::execute`, consommée via `Json<StepInvocation>`
+    (wrapper `restate_sdk::prelude::Json`, requis pour tout type non primitif traversant le protocole
+    `restate-sdk`, vérifié au spike : un struct nu sans ce wrapper ne satisfait pas les bornes internes
+    du SDK).
+  `StepDispatcher` — struct `pub`, un champ privé `registry: StepRegistry` ; `pub fn new(registry:
+    StepRegistry) -> Self`. L'app consommatrice construit son @StepRegistry (./step.sdd), le passe à
+    `StepDispatcher::new`, puis lie l'instance à l'`Endpoint` `restate-sdk` (`Endpoint::builder()
+    .bind(StepDispatcher::new(registry))...`, hors périmètre de ce fichier — c'est le code de boot de
+    l'app, pas une fonction exposée par miryad-core).
+  `#[service(name = "StepDispatcher")]` sur `StepDispatcher`, un seul handler :
+    `async fn execute(&self, ctx: Context<'_>, req: Json<StepInvocation>) -> Result<Json<@serde_json::Value>,
+    HandlerError>`. Corps exact :
+    1. Décompose `req` en `kind`, `config`, `inputs`.
+    2. `ctx.run(move || async move { ... }).await` — un seul `ctx.run()` par invocation de `execute`,
+      jamais plus : à l'intérieur, `self.registry.dispatch(&kind, config, inputs)` (./step.sdd) puis,
+      si @Ok, `.await` du futur retourné. Un @Err de `dispatch` (kind inconnu — seule erreur que
+      cette fonction rend avant le `.await`, ./step.sdd) est traduit en `404` par la `Must` « Kind
+      inconnu » ci-dessous, jamais par `step_error_to_handler_error` ; le @StepError rendu par le
+      futur attendu (le `run` du kind) est traduit par cette dernière fonction, avant que la
+      fermeture ne retourne.
+    3. Le `?` sur le résultat de `ctx.run(...).await` (type @Result<Json<Value>, TerminalError>,
+      signature vérifiée au spike : `ctx.run` retourne toujours un échec en @TerminalError, jamais en
+      @HandlerError, quel que soit ce que la fermeture a retourné) convertit vers le type de retour du
+      handler via `From<TerminalError> for HandlerError` (vérifié `src/errors.rs` de `restate-sdk`
+      `0.12.1`).
+  `step_error_to_handler_error(e: StepError) -> HandlerError`, fonction privée, seul site de
+    traduction de toute la crate :
+    `e.retryable == true` → `HandlerError::from(e)` (le blanket `impl<E: Into<Box<dyn StdError + Send
+      + Sync>>> From<E> for HandlerError` de `restate-sdk`, vérifié source, range l'erreur en
+      `HandlerErrorInner::Retryable` — Restate retente `execute` selon la politique configurée au
+      `bind()` du service, jamais une politique posée par ce fichier, voir la nouvelle `Must` sur
+      `ServiceOptions` ci-dessous)
+    `e.retryable == false` → `HandlerError::from(TerminalError::new(e.message))` (`code` HTTP par
+      défaut `500` — un @StepError d'un kind trouvé est toujours une panne applicative/serveur, jamais
+      une erreur de configuration du DAG, qui a son propre chemin ci-dessous)
+  Kind inconnu (`StepRegistry::dispatch` rend @Err avant tout `.await`) : chemin distinct de celui d'un
+    @StepError applicatif — Sébastien (2026-09-23), un kind absent du registre est une erreur du DAG
+    lui-même (une « erreur utilisateur », au sens HTTP une `4xx`), jamais une panne du service (`5xx`).
+    Traduit par `HandlerError::from(TerminalError::new_with_code(404, format!("kind inconnu:
+    {kind}")))` — jamais via `step_error_to_handler_error`, qui reste réservé aux @StepError
+    effectivement rendus par un `run()` trouvé. `StepRegistry::dispatch` rend toujours ce @StepError
+    avec `retryable: false` (./step.sdd) mais ./dispatcher.rs ne s'appuie pas sur ce champ pour cette
+    branche précise : le code `404` est posé explicitement, pas dérivé de `retryable`.
+  `ServiceOptions` posée par l'app au `bind()` de `StepDispatcher`, jamais par ce fichier : Sébastien
+    (2026-09-23) — pas de retry permanent, relancer un run bloqué doit être une action manuelle du
+    point de vue de miryad-core, et chaque application doit pouvoir choisir ses propres règles de
+    retry. Spike ciblé (2026-09-23, méthode : un kind qui panique délibérément, lié avec
+    `ServiceOptions::new().retry_policy_max_attempts(2).retry_policy_pause_on_max_attempts()`) :
+    confirme qu'après `2` tentatives, l'invocation passe en statut `paused` (observé via
+    `POST /query` de l'admin API, `sys_invocation.status`), pas `failed`, pas retentée une troisième
+    fois — un opérateur doit explicitement la relancer ou l'annuler (CLI/UI Restate, hors périmètre de
+    cette crate). Sans configuration explicite, le défaut serveur est un retry exponentiel indéfini
+    (confirmé par le même spike avant application de `ServiceOptions` : le kind panique en boucle sans
+    jamais s'arrêter tant que le processus reste vivant). Comme `StepDispatcher::new` (`Must`
+    ci-dessus), ./dispatcher.rs ne possède pas l'appel `.bind()` — il ne peut donc pas imposer cette
+    politique lui-même. Il expose `recommended_options() -> restate_sdk::endpoint::ServiceOptions`
+    (`pub fn`, sans argument, `retry_policy_max_attempts(5).retry_policy_pause_on_max_attempts()`) que
+    l'app peut utiliser telle quelle, ignorer, ou surcharger — jamais appliquée automatiquement.
+  Rester silencieux : aucun @tracing, @println!, @eprintln!, @dbg! — cohérent avec ./step.sdd et
+    ./error.sdd, le contrat transverse.
+  Compiler uniquement sous `#[cfg(feature = "workflow")]`.
+
+Must not:
+  Appeler `.retry_policy(...)` sur `ctx.run()` lui-même : la politique de retry qui gouverne à la fois
+    les @StepError retryable et les panics du `run()` d'un kind est celle configurée au `bind()` du
+    service via `ServiceOptions` (`Must` ci-dessus, confirmée par spike : un panic sans `ctx.run()`
+    dédié suit la même politique qu'une @StepError retryable non capturée par un `.retry_policy()`
+    explicite — un seul mécanisme, pas deux à maintenir en cohérence).
+  Traduire un kind inconnu par la même fonction qu'un @StepError applicatif, ni lui donner le code
+    `500` : chemins et codes distincts, voir `Must`.
+  Envelopper l'exécution du kind dans plus d'un `ctx.run()`, ou appeler `ctx.run()` en dehors de
+    `execute` : un step = un `ctx.run()`, exactement l'invariant vérifié au spike pour la mémoïsation
+    (un step déjà journalisé n'est jamais rejoué après une reprise sur crash).
+  Intercepter un panic du `run()` d'un kind par un mécanisme propre à ce fichier (`catch_unwind`,
+    `tokio::task::spawn` dédié) : inutile, vérifié par spike (2026-09-23, méthode : un kind de fixture
+    qui panique délibérément, invoqué pendant qu'une invocation concurrente `ping`-like est servie) —
+    un panic dans la fermeture de `ctx.run()` n'interrompt que l'invocation en cours (isolation par
+    tâche tokio du serveur HTTP `restate-sdk`), le processus `StepDispatcher` reste debout et continue
+    de servir les autres invocations sans dégradation observée.
+  Importer `reqwest` : la frontière avec ./client.rs (HTTP nu vs protocole `restate-sdk`) est stricte
+    dans les deux sens.
+
+Forbids:
+  `reqwest::*` dans ./dispatcher.rs
+
+Depends on:
+  `restate-sdk` 0.12 (lock `0.12.1`, feature `http_server` déjà requise par ./interpreter.sdd — à
+    ajouter en dépendance directe de /Cargo.toml sous la feature `workflow`, premier fichier de la
+    crate à en avoir réellement besoin (./client.sdd et ./step.sdd l'interdisent explicitement)) —
+    `#[service]`, `#[handler]`, `Context`, `Json`, `HandlerError`, `TerminalError`,
+    `ContextSideEffects::run`
+  ./step.rs — @StepRegistry, @StepError, @MiryadWorkflowStep (indirectement, via le futur retourné par
+    `dispatch`)
+  @serde (derive) + @serde_json — forme de `StepInvocation` et du corps de retour
+
+Exposes:
+  `StepInvocation` — struct `pub(crate)`, trois champs, `Serialize` + `Deserialize`
+  `StepDispatcher` — struct `pub`, `new` `pub`, champ `registry` privé
+  `recommended_options` — `pub fn recommended_options() -> restate_sdk::endpoint::ServiceOptions`,
+    sans argument, rend `ServiceOptions::new().retry_policy_max_attempts(5)
+    .retry_policy_pause_on_max_attempts()`. Convenience pure (aucun effet de bord, aucun état) : l'app
+    l'utilise à son `bind()` (`StepDispatcher::new(registry).into_service_definition()
+    .options(recommended_options())`) ou construit la sienne — ./dispatcher.rs ne l'applique jamais
+    lui-même, il n'a pas la main sur l'`Endpoint`.
+  Le service Restate `StepDispatcher` (nom d'enregistrement) avec son handler `execute` — surface
+    consommée uniquement via le protocole `restate-sdk` par ./interpreter.rs, jamais par un import Rust
+    direct (aucune fonction `pub` de logique métier en dehors de la forme service)
+
+Accepts:
+  `execute` : un `Json<StepInvocation>` déjà désérialisé par `restate-sdk` depuis le corps envoyé par
+    ./interpreter.rs — aucune validation de forme supplémentaire, `kind`/`config`/`inputs` transmis
+    tels quels à `StepRegistry::dispatch`
+
+Returns:
+  `execute` : `Ok(Json(value))` où `value` est le @serde_json::Value retourné par `run` du kind trouvé,
+    tel quel (aucune enveloppe, aucune métadonnée ajoutée) ; `Err(HandlerError)` selon la traduction de
+    `Must` sur tout échec (kind inconnu ou @StepError du kind)
+
+Raises:
+  Aucun code `MRD-WORKFLOW-*` : ce fichier ne construit aucun @WorkflowError (./error.sdd reste borné à
+    ./client.rs) — ses seules erreurs sont les types `restate-sdk` (@HandlerError, @TerminalError), qui
+    ne portent pas la taxonomie interne de la crate, cohérent avec la façon dont @StepError lui-même
+    n'en porte pas (./step.sdd, `Raises`).
+
+Handles:
+  Step retryable qui échoue puis réussit : l'invoker Restate rejoue la fermeture entière de `ctx.run()`
+    (donc réexécute `StepRegistry::dispatch` et `run` du kind depuis le début, pas une reprise
+    partielle) jusqu'à succès, jusqu'à épuisement de `ServiceOptions::retry_policy_max_attempts` (si
+    l'app en a posé un — sinon indéfiniment, `Handles` ci-dessous), ou jusqu'à pause — implication pour
+    l'auteur d'un kind : un `run()` qui se déclare `retryable: true` doit être idempotent ou tolérant à
+    une réexécution complète, ./step.rs n'impose rien de ce côté (à documenter dans docs/architecture.md
+    à la clôture, pas un contrat vérifiable ici).
+  Step non-retryable : un seul passage dans `ctx.run()`, `TerminalError` immédiate, aucune tentative
+    supplémentaire — le run global du DAG (./interpreter.rs) voit l'échec au premier essai, quelle que
+    soit la `ServiceOptions` posée par l'app (`retryable: false` court-circuite toute politique de
+    retry, elle ne s'applique qu'aux échecs retryable et aux panics).
+  Deux invocations concurrentes de `execute` (deux steps de kinds différents fan-outés par
+    ./interpreter.rs dans la même couche du DAG) : chacune sa propre invocation Restate, son propre
+    `ctx.run()`, aucun état partagé entre elles dans `StepDispatcher` au-delà du @StepRegistry
+    immuable après construction — pas de verrou, pas de file d'attente posée par ce fichier.
+  App qui ne configure aucune `ServiceOptions` au `bind()` de `StepDispatcher` (ignore
+    `recommended_options`, n'en pose pas la sienne) : retry indéfini par défaut serveur, confirmé par
+    spike — un step retryable dont la cause ne se résorbe jamais (dépendance externe durablement
+    indisponible, kind buggé qui panique systématiquement) retient le run correspondant pour toujours,
+    sans jamais passer en `paused`. C'est un choix de l'app, pas une lacune de ./dispatcher.rs : la
+    recommandation documentée (`Must`, docs/architecture.md à la clôture) existe précisément pour
+    qu'une app n'atterrisse pas ici par omission.
+  Panic du `run()` d'un kind : reste dans la même invocation Restate que l'invocation `execute` en
+    cours, gouverné par la même `ServiceOptions` qu'un @StepError retryable non capturée par un
+    `.retry_policy()` explicite sur `ctx.run()` (jamais posé ici, `Must not`) — vérifié par spike,
+    `Tasks`. Aucune autre invocation `StepDispatcher` en cours, sur le même processus ou un autre, n'est
+    affectée.
+
+Tasks:
+  [x] Isolation des panics : vérifié par spike (2026-09-23, détail en `Must` et `Must not`) — un panic
+    dans `run()` n'affecte que l'invocation en cours, le processus `StepDispatcher` reste debout, et le
+    même mécanisme `ServiceOptions` (`retry_policy_max_attempts` + `retry_policy_pause_on_max_attempts`)
+    qui borne les @StepError retryable borne aussi les panics, sans code d'isolation dédié dans ce
+    fichier.
+  [x] Code HTTP du kind inconnu : Sébastien (2026-09-23) — `404` (erreur utilisateur/DAG), jamais `500`
+    (réservé aux pannes applicatives réelles d'un kind trouvé). Décision reflétée dans `Must`.
+  [x] Politique de retry par défaut : Sébastien (2026-09-23) — pas de retry permanent, relancer un run
+    bloqué est une action manuelle, chaque app doit pouvoir personnaliser sa politique. Résolu par
+    `ServiceOptions` posée au `bind()` (app) plutôt qu'un `RunRetryPolicy` posé par ./dispatcher.rs
+    (impossible de toute façon : ./dispatcher.rs ne possède pas l'appel `.bind()`) ; `recommended_options`
+    fournit un défaut raisonnable optionnel. Reste ouvert, hors périmètre de ce fichier : documenter
+    dans docs/architecture.md que l'absence de `ServiceOptions` au `bind()` reproduit le retry indéfini
+    du serveur.
+  [ ] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./dispatcher.rs, contre un
+    @StepRegistry de fixtures — sans serveur Restate réel : la forme du protocole (`ctx.run`,
+    @HandlerError/@TerminalError) est vérifiée par les tests de l'écosystème `restate-sdk`
+    lui-même, les tests de cette spec vérifient que ./dispatcher.rs construit les bonnes valeurs, pas
+    que `restate-sdk` se comporte comme documenté (même principe que ./client.sdd).
+
+Done when:
+  Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
+  ./step.sdd est approuvée avant ou avec cette spec (dépendance directe, @StepRegistry/@StepError
+    stabilisés).
+  La spec est relue et approuvée par Sébastien avant qu'une ligne de ./dispatcher.rs soit écrite.
+
+Scenario: step retryable devient HandlerError retryable
+  Given un @StepRegistry avec un kind de fixture dont `run` rend systématiquement @StepError {
+    retryable: true, message: "indisponible" }
+  When `step_error_to_handler_error` est appelé sur cette erreur
+  Then le @HandlerError produit encapsule l'erreur d'origine sans passer par @TerminalError (vérifiable
+    par le fait qu'il ne provient pas de `From<TerminalError>` — distinction observable via le message
+    affiché, préfixé `"Retryable error: "` par `HandlerErrorInner::Retryable`, vérifié source
+    `restate-sdk` `0.12.1`)
+
+Scenario: step non-retryable devient HandlerError terminal
+  Given un @StepError { retryable: false, message: "config invalide" }
+  When `step_error_to_handler_error` est appelé
+  Then le @HandlerError produit encapsule une @TerminalError de code `500` et de message "config
+    invalide" — @Display du @HandlerError ne porte jamais le préfixe `"Retryable error: "`
+
+Scenario: kind inconnu produit une erreur 404, distincte d'un StepError applicatif
+  Given un @StepRegistry sans le kind `"absent"` enregistré
+  When `StepDispatcher::execute` est invoqué avec `StepInvocation { kind: "absent".into(), config:
+    json!(null), inputs: HashMap::new() }`
+  Then le résultat est une erreur terminale de code `404` et de message `"kind inconnu: absent"` —
+    jamais construite par `step_error_to_handler_error`, jamais le code `500` du scenario précédent
+
+Scenario: recommended_options pose un plafond de tentatives et une pause, jamais un retry indéfini
+  Given `recommended_options()`
+  When son rendu @Debug est inspecté (les champs de `ServiceOptions` sont `pub(crate)` dans
+    `restate-sdk` `0.12.1`, inaccessibles directement hors du crate — @Debug, dérivé publiquement, est
+    le seul point d'observation possible depuis ./dispatcher.rs, vérifié par spike : `format!("{opts:?}")`
+    produit entre autres `retry_policy_max_attempts: Some(5), retry_policy_on_max_attempts:
+    Some(Pause)`)
+  Then la chaîne @Debug contient `"retry_policy_max_attempts: Some(5)"` et
+    `"retry_policy_on_max_attempts: Some(Pause)"` — jamais `retry_policy_max_attempts: None` (qui
+    reproduirait le retry indéfini du serveur), jamais `Some(Kill)` (qui empêcherait la relance
+    manuelle voulue)
+
+Scenario: un panic dans run() n'affecte qu'une seule invocation
+  Given un @StepRegistry avec un kind de fixture `"boom"` dont `run` panique systématiquement, un
+    second kind `"stable"` dont `run` réussit toujours, `StepDispatcher` lié avec `recommended_options()`
+  When `StepDispatcher::execute` est invoqué pour `"boom"`, puis pour `"stable"` sur la même instance de
+    processus
+  Then l'invocation `"boom"` échoue (observable côté serveur Restate comme une invocation en échec
+    puis, après épuisement des tentatives, `paused` — hors périmètre du test unitaire de ce fichier,
+    vérifié par spike) sans jamais empêcher l'invocation `"stable"` de réussir normalement
+
+Scenario: résultat du kind trouvé transite intact
+  Given un @StepRegistry avec un kind de fixture `"echo"` dont `run` retourne `config` inchangée
+  When `StepDispatcher::execute` est invoqué avec `StepInvocation { kind: "echo".into(), config:
+    json!({"a": 1}), inputs: HashMap::new() }`
+  Then le résultat est `Ok(Json(json!({"a": 1})))`, structurellement identique à la `config` d'entrée
+
+Scenario: un seul ctx.run() par invocation de execute
+  Given un kind de fixture qui incrémente un compteur externe (`Arc<AtomicUsize>`, capturé par la
+    fixture) à chaque exécution de son `run`
+  When `StepDispatcher::execute` est invoqué une fois pour ce kind, en dehors de tout contexte de
+    reprise sur crash (un seul passage, pas de rejouissance de journal)
+  Then le compteur vaut exactement `1` après l'invocation — un seul appel à `run`, confirmant qu'aucun
+    chemin de ./dispatcher.rs n'appelle `StepRegistry::dispatch` ou le futur qu'il retourne plus d'une
+    fois par invocation réussie

@@ -1,0 +1,207 @@
+Spec: m20260923_000001_create_workflow_definitions — table `miryad_workflow_definitions`, quatrième schéma interne, première gated `workflow`
+
+Purpose:
+  Quatrième migration appliquée par @migration::Migrator, et la première dont l'enregistrement dans
+    @Migrator::migrations est conditionnel (`#[cfg(feature = "workflow")]`, ../mod.sdd amendée le
+    2026-09-23) : pose la table interne @miryad_workflow_definitions — un DAG de workflow stocké en
+    JSON (`steps`), nom unique, propriétaire optionnel (`owner_id`, sans contrainte de clé
+    étrangère), horodatage de création. Contrat de schéma committé et immuable au même titre que les
+    trois premières migrations (/miryad-core.sdd, roadmap : « on ajoute la migration suivante ») :
+    @up fige la pose, @down la défait en symétrique, toute correction relève d'une migration
+    suivante — jamais d'une réécriture de ce fichier une fois approuvé.
+  Fichier neuf, conception (pas de code existant, pas de spec-reverse). Le rendu SQL cité en `Must`
+    est vérifié dans le source local de `sea-query` `1.0.2` (`src/backend/{postgres,sqlite}/table.rs`),
+    même méthode que ./m20260822_000001_create_api_tokens.sdd.
+
+Owns:
+  ./m20260923_000001_create_workflow_definitions.rs
+
+References:
+  ./mod.rs — déclare ce module (privé, sous `#[cfg(feature = "workflow")]`) et l'enregistre en
+    quatrième position dans @Migrator, seulement quand `workflow` est active (amendement 2026-09-23)
+  ./m20260822_000001_create_api_tokens.sdd — modèle de forme suivi ici (structure de spec, colonnes
+    sans défaut serveur, `IF NOT EXISTS`/`DROP TABLE` sans `IF EXISTS`, absence de FK délibérée pour
+    `owner_id` comme pour `subject`)
+  ../workflow/definition.sdd — @workflow::definition::Model mappe en un-à-un les cinq colonnes posées
+    ici ; `Entity`, `ActiveModel`, `impl MiryadResource` sont les lecteurs et rédacteurs contractuels
+    de cette table, au travers du CRUD générique de la crate (REST/GraphQL/MCP)
+  /miryad-core.sdd — contrat des tables internes préfixées `miryad_*` à tracking dédié et interdit de
+    réélire une migration committée
+  /tooling.sdd — batterie et matrice de features (huit combinaisons depuis l'amendement 2026-09-23) ;
+    cette migration n'est exercée que sous `workflow` et `--all-features`
+
+Must:
+  @up pose @WorkflowDefinition::Table sous le nom `miryad_workflow_definitions` — énoncé @DeriveIden
+    privé porteur de `#[sea_orm(iden = "miryad_workflow_definitions")]` — respectant le préfixe
+    `miryad_*`.
+  Pose cinq colonnes exactement, dans cet ordre de déclaration, via @Table::create assorti
+    d'@if_not_exists :
+    — `id` : @integer, @not_null, @auto_increment et @primary_key — clé primaire monocolonne ;
+    — `name` : @string, @not_null et @unique_key ;
+    — `steps` : @json (`ColumnDef::json()`, jamais `.json_binary()`), @not_null — un DAG vide de
+      contenu n'est pas représentable en NULL, `workflow::definition::validate_dag` refuse de toute
+      façon une liste de steps vide (../workflow/definition.sdd) mais au niveau colonne, seule la
+      présence d'une valeur JSON est garantie, jamais sa forme ;
+    — `owner_id` : @integer seule, sans @not_null ni @unique — accepte NULL, aucune contrainte
+      @foreign_key vers `miryad_users` (délibéré, même choix que `miryad_api_tokens.subject`,
+      ./m20260822_000001_create_api_tokens.sdd `Must not` — une définition de workflow survit à la
+      disparition de son propriétaire) ;
+    — `created_at` : @timestamp_with_time_zone et @not_null.
+  Aucune des cinq colonnes ne porte de défaut côté serveur : `up` n'appelle jamais @ColumnDef::default
+    — le peuplement de `created_at` incombe au consommateur (@rest::core::create ne le pose pas
+    lui-même ; l'app qui implémente `IntoActiveModel` pour `WorkflowDefinition` en décide, hors
+    périmètre de cette migration).
+  Ne pose que deux contraintes sur la table : la clé primaire monocolonne sur `id` et la contrainte
+    UNIQUE monocolonne sur `name` — aucun @index, aucune @foreign_key, aucune autre colonne @unique.
+  Rendu vérifié au source de sea-query `1.0.2` : `ColumnType::Json` (`ColumnDef::json()`) produit
+    `json` sur Postgres (`src/backend/postgres/table.rs`) et `json_text` sur SQLite
+    (`src/backend/sqlite/table.rs`) — jamais `jsonb`/`jsonb_text` (`ColumnType::JsonBinary`, non
+    utilisé ici) ; les quatre autres colonnes suivent le rendu déjà vérifié par
+    ./m20260822_000001_create_api_tokens.sdd (`@string` → `varchar`, `@timestamp_with_time_zone` →
+    `timestamp with time zone`/SQLite équivalent, `@integer` + `@auto_increment` + `@primary_key` →
+    identité générée, `@unique_key` → `UNIQUE` inline, `@if_not_exists` → `IF NOT EXISTS`).
+  Le type Rust de la colonne `steps` (`DagSteps`, ../workflow/definition.sdd) est inféré `Json` par
+    `DeriveEntityModel` via son derive `FromJsonQueryResult`, sans attribut `#[sea_orm(column_type =
+    "Json")]` explicite — vérifié par la fixture `tests/common/features/json_struct.rs` du crate
+    `sea-orm` `2.0.2`, dont le champ `json_value: KeyValue` (même dérive) ne porte pas cet attribut
+    non plus ; cette migration pose donc la même colonne que celle que `DeriveEntityModel` attend du
+    `Model`, sans divergence à surveiller entre les deux fichiers.
+  Identité de tracking : @DeriveMigrationName nomme cette migration par le seul stem du fichier,
+    `m20260923_000001_create_workflow_definitions`, insérée dans `seaql_migrations_miryad_core`
+    après un `up` réussi, seulement quand `workflow` est active (../mod.sdd).
+  @down émet exactement un @drop_table sur `miryad_workflow_definitions` — @Table::drop sans
+    @if_exists — et rien d'autre.
+  @up renvoie `Ok(())` une fois la table posée sur une base vide comme sur une base où la table
+    existe déjà dans la forme attendue, sans relire le schéma existant — même comportement que
+    ./m20260822_000001_create_api_tokens.sdd, dérive acquittée en silence.
+  Compiler uniquement sous `#[cfg(feature = "workflow")]`, posé par `../mod.rs` autour du `mod`
+    déclarant ce fichier — première migration de la crate à porter ce gating (les trois précédentes
+    en sont dépourvues).
+  Laisse la trace de l'application uniquement au `tracing` @info de sea-orm-migration — aucune trace
+    propre.
+
+Must not:
+  Réécrire, renommer, déplacer ou dupliquer le @up ou le @down une fois cette spec approuvée : même
+    règle d'immuabilité que les trois migrations précédentes.
+  Ajouter une clé étrangère depuis `owner_id` vers `miryad_users`, ni depuis `steps` vers quoi que ce
+    soit : aucune FK dans ce fichier (`Must`).
+  Écrire une ligne de données dans `up` : DDL pur, aucun INSERT.
+  Toucher une quelconque table d'une autre migration ou `seaql_migrations_miryad_core` dans `up` ou
+    `down`.
+  Émettre `println!`/`eprintln!`/`dbg!`, ni fabriquer de code `MRD-*`.
+  Poser la colonne `steps` en `JsonBinary` (`jsonb`) : au-delà de la simplicité du premier schéma, un
+    passage à `jsonb` plus tard (index GIN sur le contenu du DAG, par exemple) est un changement de
+    colonne, donc une migration suivante — jamais une réécriture de celle-ci.
+
+Depends on:
+  @sea_orm_migration `2.0.2` — @MigrationTrait, @SchemaManager
+  @sea_query `1.0.2` par ré-export de @sea_orm — @Table, @ColumnDef (dont `.json()`), @DeriveIden
+  @DeriveMigrationName de sea-orm-macros `2.0.2` ré-exporté par @sea_orm
+  @async_trait — implémentation des méthodes de @MigrationTrait
+  ./mod.rs — enregistrement en quatrième position, sous `#[cfg(feature = "workflow")]`
+
+Exposes:
+  @Migration — unique `pub struct` du fichier, jamais atteignable hors de la crate (module privé)
+  @MigrationTrait::up et @MigrationTrait::down pour ce contrat
+  @WorkflowDefinition — énoncé privé @DeriveIden : `Table` (`miryad_workflow_definitions`), `Id`,
+    `Name`, `Steps`, `OwnerId`, `CreatedAt`
+
+Accepts:
+  La seule entrée de @up et @down : un @SchemaManager fourni par @exec_up_with / @exec_down_with
+  Rien d'autre : aucun paramètre, aucune configuration au-delà du gating de compilation
+
+Returns:
+  @up — `Ok(())` une fois la table présente sous le nom contractuel
+  @down — `Ok(())` une fois `DROP TABLE` exécuté
+  Aucune autre fonction
+
+Raises:
+  @DbErr du backend propagé brut, sans code `MRD-*` : `up` sur refus de DDL ou collision de nom non
+    sautée par `IF NOT EXISTS` (non vu en test) ; `down` sur table absente (`DROP TABLE` sans
+    `IF EXISTS`, non idempotent, même contrat que 001).
+
+Handles:
+  `up` rejoué sur une base déjà conforme (`IF NOT EXISTS`).
+  Une table préexistante du même nom hors-forme : acquittée sans vérification, même comportement que
+    001.
+  La remontée partielle : `down` ne s'exécute qu'après celui de 001/002/003 restés en place — cette
+    migration n'a aucune dépendance entrante, sa suppression ne fait disparaître aucun objet d'une
+    autre migration.
+  Compilation sans la feature `workflow` : le module entier disparaît, aucune trace de
+    `miryad_workflow_definitions` dans le graphe de migrations ni dans le binaire compilé.
+  Parité des surfaces : à la différence de `miryad_api_tokens` (self-service uniquement),
+    `miryad_workflow_definitions` **est** une @MiryadResource (../workflow/definition.sdd) — lue à
+    l'identique par REST, GraphQL et MCP via le CRUD générique, sans route dédiée comme
+    `/api/v1/tokens`.
+
+Tasks:
+  [ ] Convertir les `Scenario` en tests nommés distincts dans le `#[cfg(test)] mod tests` de
+    ./m20260923_000001_create_workflow_definitions.rs, sur `sqlite::memory:`, sous
+    `--features workflow` uniquement (fichier absent des autres combinaisons) : pattern identique à
+    ./m20260822_000001_create_api_tokens.rs (`SchemaManager::has_table`/`has_column`).
+  [?] `owner_id` ne porte aucun index, alors qu'un futur filtre de liste par propriétaire
+    (`AccessPolicy::OwnerOnly` configuré via `workflow::definition::configure_policy`,
+    ../workflow/definition.sdd) le lirait à chaque `list` filtrée. Contrat assumé (table
+    vraisemblablement petite, un DAG par automatisation) ou dette à corriger par une migration
+    suivante ?
+  [?] Même question que 001 sur `down` non idempotent et sur l'acquittement silencieux d'une table en
+    dérive (`IF NOT EXISTS` sans vérification de forme) : gèle-t-on ces deux contrats comme pour 001,
+    par cohérence, ou est-ce l'occasion de les corriger puisque ce fichier est neuf ? Une réponse
+    différente entre 001 (gelée) et 004 (neuve) introduirait une incohérence de comportement entre
+    migrations internes.
+
+Done when:
+  Les huit `Scenario` sont chacun vérifiés par un test nommé distinct, jouables via la batterie de
+    /tooling.sdd sous `--features workflow` sans base de données externe, `up` et `down` inchangés
+    depuis l'approbation, chaque `[?]` de `Tasks` tranché par Sébastien, et la spec approuvée par lui.
+  ../workflow/definition.sdd est approuvée avant ou avec cette spec — les cinq colonnes doivent
+    correspondre exactement au `Model` qu'elle contractualise.
+
+Scenario: up pose miryad_workflow_definitions
+  Given une base SQLite en mémoire sans aucune table, compilée sous `--features workflow`
+  When @up de cette @Migration est appelé sur un @SchemaManager de cette connexion
+  Then @up retourne `Ok(())`
+  And @has_table retourne `true` pour `miryad_workflow_definitions`
+
+Scenario: les cinq colonnes existent après up
+  Given une base SQLite en mémoire avec @up de cette migration appliqué avec succès
+  When l'état posé est inspecté avec @has_column
+  Then chacune de `id`, `name`, `steps`, `owner_id` et `created_at` existe
+
+Scenario: id auto-incrémente la clé primaire
+  Given une base SQLite en mémoire avec @up appliqué avec succès
+  When deux lignes sont insérées, complètes de `name`, `steps`, `created_at`, `owner_id` omis
+  Then les deux lignes relues portent un `id` présent, distinct et strictement croissant
+
+Scenario: name dupliqué est rejeté
+  Given une base SQLite en mémoire avec @up appliqué avec succès
+  When une première ligne est insérée avec `name` `"deploy-app"` complète, puis une seconde ligne
+    complète partageant ce même `name`
+  Then la première insertion est `Ok(())`
+  And la seconde échoue en @DbErr
+  And une seule ligne porte ce `name` après les deux tentatives
+
+Scenario: owner_id accepte NULL
+  Given une base SQLite en mémoire avec @up appliqué avec succès
+  When une ligne complète est insérée avec toutes les colonnes NOT NULL fournies mais `owner_id`
+    omise
+  Then l'insertion est `Ok(())`
+  And la ligne relue rend `owner_id` en `None`
+
+Scenario: steps accepte un JSON arbitraire, sans validation de forme au niveau colonne
+  Given une base SQLite en mémoire avec @up appliqué avec succès
+  When une ligne est insérée avec `steps` portant `{"not": "a step list"}` (forme qui échouerait à
+    `workflow::definition::validate_dag`, ../workflow/definition.sdd)
+  Then l'insertion réussit — cette migration ne pose qu'une colonne JSON, la validation structurelle
+    du DAG est la responsabilité de `WorkflowDefinition::before_create`, jamais du schéma
+
+Scenario: up est rejouable sur une base déjà conforme
+  Given une base SQLite en mémoire où un premier @up a réussi
+  When @up est appelé une seconde fois
+  Then le second @up retourne `Ok(())` et les cinq colonnes restent présentes
+
+Scenario: down défait la table
+  Given une base SQLite en mémoire après un @up réussi et une ligne valide insérée
+  When @down est appelé
+  Then @down retourne `Ok(())`
+  And @has_table retourne `false` pour `miryad_workflow_definitions`

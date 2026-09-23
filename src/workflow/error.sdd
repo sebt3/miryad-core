@@ -1,0 +1,196 @@
+Spec: error — taxonomie @WorkflowError, échecs de communication avec Restate et de validation de DAG
+
+Purpose:
+  Porter la seule monnaie d'erreur crate-interne du module workflow : les échecs de communication
+    HTTP entre miryad-core et un cluster Restate self-hosté (admin API et ingress) — ./client.rs y émet
+    ses deux opérations, @client::register_deployment et @client::trigger_run — et, depuis
+    l'amendement du 2026-09-23 (rédaction de ./definition.sdd), les échecs de validation structurelle
+    d'un DAG stocké (id dupliqué, dépendance pointant vers un step absent, cycle, DAG vide), rendus par
+    `definition::validate_dag`. Le fichier ne construit rien lui-même — il déclare le type, sa @Display
+    à code `MRD-WORKFLOW-NNN`, sa classification d'un @reqwest::Error brut (trois premières variantes)
+    et la forme de la quatrième (`InvalidDag`), construite exclusivement par ./definition.rs.
+    Un seul type @WorkflowError pour tout le module, quelle que soit la source de l'échec (réseau
+    Restate ou donnée invalide) — pas de second type d'erreur parallèle. `definition::validate_dag`
+    rend directement un @WorkflowError ; ./definition.rs traduit ensuite cette valeur en @HookError
+    (sans code, ./definition.sdd `Must`) uniquement au point d'entrée `before_create` — le
+    @WorkflowError lui-même reste crate-interne et testable indépendamment de ce point d'entrée.
+  Fichier neuf (aucun code existant, pas de spec-reverse) : la rigueur de signature et de code
+    d'erreur est la même que le reste de la crate, mais l'exhaustivité de comportement observé est
+    celle d'une conception, pas d'une archéologie — les `[?]` de `Tasks` marquent ce qui reste un choix
+    de conception à valider par Sébastien plutôt qu'un flou de compréhension du code existant.
+
+Owns:
+  ./error.rs
+
+References:
+  ./client.sdd — émetteur des trois premières variantes : @client::register_deployment et
+    @client::trigger_run rendent @Result<_, WorkflowError>, classification détaillée dans ce fichier
+  ./definition.sdd — seul émetteur de @WorkflowError::InvalidDag, depuis `definition::validate_dag` —
+    ce fichier ne construit jamais cette variante lui-même, il la déclare seulement
+  /miryad-core.sdd — contrat hérité : un code `MRD-*` par erreur interne de la crate
+  /.specdd/bootstrap.project.md — contrat transverse : logging @tracing uniquement, aucune
+    exposition de secret dans un message d'erreur
+  /src/rest/error.sdd — modèle de forme suivi ici (table variante → code → @Display), sans reprendre
+    son rendu HTTP : @WorkflowError n'est jamais renvoyé sur le fil REST tel quel, il est consommé par
+    ./client.rs et par les appelants de haut niveau qui le traduisent en @RestError::Database ou
+    équivalent — cette traduction est hors du périmètre de ce fichier
+
+Must:
+  Table de rendu exhaustive, sans bras joker :
+    @WorkflowError::RestateUnreachable(@reqwest::Error) → `MRD-WORKFLOW-001` → @Display
+      `MRD-WORKFLOW-001: restate unreachable: {0}` (`{0}` = @Display du @reqwest::Error embarqué)
+    @WorkflowError::RestateRejected { status: @u16, body: @String } → `MRD-WORKFLOW-002` → @Display
+      `MRD-WORKFLOW-002: restate rejected request (status {status}): {body}`
+    @WorkflowError::Serialization(@reqwest::Error) → `MRD-WORKFLOW-003` → @Display
+      `MRD-WORKFLOW-003: could not decode restate response: {0}`
+    @WorkflowError::InvalidDag(@String) → `MRD-WORKFLOW-004` → @Display `MRD-WORKFLOW-004: {0}` — le
+      message couvre les quatre cas de ./definition.sdd (id dupliqué, dépendance vers un step absent,
+      cycle, DAG vide) en texte libre, une seule variante plutôt que quatre : la distinction entre ces
+      cas sert un message d'erreur utile à l'admin qui définit le workflow, pas une branche de code
+      différente pour l'appelant (aucun des quatre cas n'est traité différemment en aval, cohérent avec
+      le refus de sur-coder les erreurs de la crate posé pour @StepError, ./step.sdd).
+  Classifier un @reqwest::Error brut (reqwest `0.12.28`, verifié `src/error.rs` du crate) par
+    @client::classify_transport_error(@reqwest::Error) -> WorkflowError, seule fonction du fichier en
+    dehors du type : `@reqwest::Error::is_decode() || @reqwest::Error::is_body()` devient
+    @WorkflowError::Serialization ; tout le reste (`is_connect`, `is_timeout`, `is_request`,
+    `is_builder`, `is_redirect`, `is_upgrade`, ou aucun prédicat vrai) devient
+    @WorkflowError::RestateUnreachable — deux catégories seulement, pas de troisième bras qui
+    inspecterait `is_status` : ./client.rs n'appelle jamais @reqwest::Response::error_for_status, donc
+    ce prédicat ne s'observe jamais ici.
+  Construire @WorkflowError::RestateRejected exclusivement à la main dans ./client.rs, jamais par
+    @From<@reqwest::Error> : c'est la seule variante qui n'existe pas dans l'espace des erreurs
+    @reqwest — elle naît d'une réponse HTTP reçue avec succès (`Ok(Response)`) dont le statut n'est
+    pas `2xx`, `body` portant le corps texte brut de la réponse (tronqué non — verbatim, comme
+    `RestError::Database` de /src/rest/error.sdd) et `status` le code numérique observé.
+  Rester silencieux : aucun @tracing, @println!, @eprintln! ou @dbg! dans ce fichier — les traces
+    d'appel HTTP, si elles existent, vivent dans ./client.rs qui construit l'erreur (contrat transverse
+    /.specdd/bootstrap.project.md).
+  Compiler uniquement sous `#[cfg(feature = "workflow")]` : ./error.rs, comme tout le module
+    ./mod.rs, n'existe pas dans la surface de la crate hors de cette feature — aucune des sept
+    combinaisons de /tooling.sdd qui ne l'active pas ne voit ce fichier.
+
+Must not:
+  Exposer le corps intégral d'une réponse Restate sans limite documentée si ce corps peut porter un
+    secret de configuration (ex. un message d'erreur d'authentification incluant un jeton) — @body de
+    @WorkflowError::RestateRejected est aujourd'hui verbatim comme @RestError::Database
+    (/src/rest/error.sdd), la question de troncature/rédaction est ouverte en `Tasks [?]` plutôt que
+    tranchée silencieusement ici.
+  Introduire un @From<@reqwest::Error> générique pour @WorkflowError : la classification passe
+    exclusivement par @client::classify_transport_error, pour que la distinction Serialization/
+    Unreachable soit un seul point de vérité testable, pas un dérivé automatique qui masquerait un
+    choix de catégorisation.
+  Porter un code `MRD-WORKFLOW-*` sur une erreur qui ne provient pas de la communication avec
+    Restate : une erreur de validation de DAG (structure du graphe) n'est pas de ce fichier — elle
+    appartient à ./definition.sdd, à trancher (hook interne vs @HookError) lors de sa rédaction.
+
+Depends on:
+  @reqwest 0.12 (lock `0.12.28`, features `rustls-tls` + `json`, déjà dépendance de la crate hors
+    feature `workflow`) — @reqwest::Error et ses prédicats @is_connect/@is_timeout/@is_request/
+    @is_builder/@is_redirect/@is_upgrade/@is_decode/@is_body (vérifiés `src/error.rs` de reqwest
+    `0.12.28`)
+  @thiserror 2 (lock `2.0.20`, déjà dépendance) — derive @Debug + @thiserror::Error
+
+Exposes:
+  @WorkflowError — enum `pub`, derive @Debug + @thiserror::Error, sans @Clone ni @PartialEq (un
+    @reqwest::Error embarqué n'implémente ni l'un ni l'autre) ; trois variantes documentées en `Must`
+  @client::classify_transport_error — `pub(crate) fn classify_transport_error(err: @reqwest::Error)
+    -> WorkflowError` — unique point de classification, appelé par ./client.rs sur toute erreur
+    remontée par `.send()` ou `.json()`
+
+Accepts:
+  @classify_transport_error : un @reqwest::Error nu, quelle que soit son origine (connexion, timeout,
+    construction de requête, décodage) — aucune inspection au-delà des huit prédicats publics du
+    crate
+
+Returns:
+  @classify_transport_error : un @WorkflowError, jamais un @Result — la fonction ne peut pas échouer,
+    elle range une erreur existante dans une des deux catégories
+
+Raises:
+  `MRD-WORKFLOW-001` — @WorkflowError::RestateUnreachable : rendu par @classify_transport_error pour
+    toute erreur `.send()` de ./client.rs (échec de connexion à `admin_url` ou `ingress_url`, timeout,
+    échec de construction de la requête — @is_builder inclut l'échec de sérialisation du corps sortant
+    par @reqwest::RequestBuilder::json, verifié `src/async_impl/request.rs` de reqwest `0.12.28`,
+    inatteignable en pratique pour les types sérialisés par ./client.rs qui n'ont pas d'implémentation
+    @Serialize manuelle pouvant échouer).
+  `MRD-WORKFLOW-002` — @WorkflowError::RestateRejected : construite à la main dans
+    @client::register_deployment quand l'admin API répond hors `2xx` (URI de déploiement rejetée,
+    schéma incompatible) et dans @client::trigger_run quand l'ingress répond hors `2xx` (workflow ou
+    handler inconnu, DAG rejeté par le service au démarrage de l'invocation).
+  `MRD-WORKFLOW-003` — @WorkflowError::Serialization : rendu par @classify_transport_error quand la
+    réponse de Restate ne se décode pas dans le type attendu (`@reqwest::Response::json`) —
+    typiquement un changement de forme de réponse de l'admin API non suivi par ./client.rs.
+  `MRD-WORKFLOW-004` — @WorkflowError::InvalidDag : rendu exclusivement par `definition::validate_dag`
+    (./definition.rs) — jamais par ./client.rs ni ./error.rs — sur un id de step dupliqué,
+    une entrée de `depends_on` sans step correspondant dans le même DAG, un cycle, ou une liste de
+    steps vide. Ce chemin ne passe jamais par @classify_transport_error (aucun @reqwest::Error
+    impliqué) : c'est une construction directe de la variante.
+
+Handles:
+  Distinction Unreachable/Serialization : un serveur Restate down (connexion refusée) et un serveur
+    Restate qui répond un JSON dans une forme inattendue produisent deux codes différents (`001` vs
+    `003`) bien que les deux passent par le même point d'entrée @classify_transport_error — la
+    frontière est exactement les deux prédicats `is_decode`/`is_body`, rien d'autre.
+  Rejet applicatif de Restate lui-même (statut non-`2xx` avec corps d'erreur JSON structuré, tel
+    qu'observé au spike : `{"code":400,"message":"bad path: ..."}` sur l'ingress) : verbatim en
+    @String dans `body`, ./client.rs ne le parse ni ne le réinterprète — la structure exacte de ce
+    corps est documentée par Restate, pas contractualisée ici.
+
+Tasks:
+  [?] `body` de @WorkflowError::RestateRejected est verbatim, sans limite de taille ni rédaction —
+    voulu (diagnostic complet en environnement self-hosté de confiance) ou une réponse d'admin API
+    pourrait-elle porter une information sensible (ex. écho de configuration) à tronquer/filtrer avant
+    stockage dans un message d'erreur qui pourrait remonter jusqu'à un client REST ?
+  [?] Aucune variante ne couvre un timeout de configuration absent (`admin_url`/`ingress_url` vide ou
+    non-URL) : @reqwest::Client::request avec une URL invalide échoue-t-il en `is_builder` (donc
+    `MRD-WORKFLOW-001`) ou faut-il une validation explicite plus tôt (dans ./client.sdd, à la
+    construction de @WorkflowConfig) rendant une erreur distincte avant tout appel réseau ?
+  [ ] Convertir les scenarios de cette spec en tests distincts nommés dans `mod tests` de ./error.rs :
+    aucun test existant, fichier neuf.
+
+Done when:
+  Les `Scenario` ci-dessous ont chacun au moins un test nommé distinct et vert, sur la feature
+    `workflow` seule et en cumul avec chaque autre feature de /tooling.sdd qui compile avec elle.
+  Les deux `[?]` de `Tasks` sont arbitrés par Sébastien.
+  La spec est relue et approuvée par Sébastien avant qu'une ligne de ./error.rs soit écrite.
+
+Scenario: Unreachable sur échec de connexion
+  Given un @reqwest::Client pointé vers une adresse qui refuse la connexion (aucun serveur Restate)
+  When @client::register_deployment (ou @client::trigger_run) appelle `.send()` et obtient un
+    @reqwest::Error dont `is_connect()` vaut `true`
+  Then @classify_transport_error rend @WorkflowError::RestateUnreachable, @Display commençant par
+    `MRD-WORKFLOW-001: restate unreachable: `
+
+Scenario: Rejected sur statut non-2xx de l'admin API
+  Given un serveur HTTP de test répondant `400` avec le corps `{"message":"bad deployment uri"}` sur
+    `POST /deployments`
+  When @client::register_deployment reçoit cette réponse
+  Then le résultat est @WorkflowError::RestateRejected { status: 400, body:
+    "{\"message\":\"bad deployment uri\"}" }, jamais un @reqwest::Error classifié : la branche
+    statut est vérifiée avant toute tentative de décodage JSON
+
+Scenario: Rejected sur statut non-2xx de l'ingress
+  Given un serveur HTTP de test répondant `404` avec le corps `{"code":404,"message":"bad path:
+    /UnknownWorkflow/x/run","source":"ingress"}` (forme observée au spike Restate)
+  When @client::trigger_run reçoit cette réponse
+  Then le résultat est @WorkflowError::RestateRejected { status: 404, body: <corps verbatim> }
+
+Scenario: Serialization sur réponse au format inattendu
+  Given un serveur HTTP de test répondant `200` avec un corps qui n'est pas un JSON valide (texte brut)
+  When ./client.rs tente `@reqwest::Response::json::<T>()` sur cette réponse
+  Then @classify_transport_error rend @WorkflowError::Serialization, @Display commençant par
+    `MRD-WORKFLOW-003: could not decode restate response: `
+
+Scenario: classify_transport_error ne construit jamais Rejected
+  Given n'importe quel @reqwest::Error obtenu par les scenarios ci-dessus (connexion, timeout, décodage)
+  When @classify_transport_error est appelée sur chacun
+  Then aucun ne rend @WorkflowError::RestateRejected — cette variante n'a qu'un seul site de
+    construction dans toute la crate, ./client.rs après lecture explicite du statut
+
+Scenario: InvalidDag rend le code MRD-WORKFLOW-004 quelle que soit la cause structurelle
+  Given quatre @Vec<StepDefinition> de fixture, un par cause (id dupliqué, `depends_on` pointant vers
+    un id absent, cycle de deux steps se référençant mutuellement, liste vide)
+  When `definition::validate_dag` est appelé sur chacun
+  Then les quatre échouent avec @WorkflowError::InvalidDag, chacun avec un message distinct et lisible
+    identifiant la cause précise, et chacun avec une @Display commençant par `MRD-WORKFLOW-004: ` —
+    jamais une des trois premières variantes, jamais un panic

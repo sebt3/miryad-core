@@ -1,0 +1,244 @@
+Spec: interpreter — service Restate `DagInterpreter`, marche générique d'un DAG de workflow
+
+Purpose:
+  Porter l'unique service Restate `#[workflow]` qui exécute un DAG de bout en bout : `DagInterpreter`,
+    handler `run`, walk topologique par couches d'un `DagSteps` (./definition.sdd) reçu en entrée,
+    fan-out de chaque couche vers `StepDispatcher::execute` (./dispatcher.sdd) via
+    `ctx.request(...).call()`, collecte des résultats en `inputs` pour les steps dépendants
+    (./step.sdd). C'est le générique lui-même — celui que le spike Restate du 2026-09-22 a validé
+    (crash mi-couche, reprise sans rejeu des steps déjà journalisés, fan-in correct malgré le crash) —
+    porté à la forme réelle de la crate : DAG chargé depuis une donnée validée en amont
+    (./definition.sdd), steps dispatchés par kind via un registre (./step.sdd, ./dispatcher.sdd), pas
+    les stubs du spike (`sleep_secs` figé, `StepExecutor` à un seul kind).
+  Deux découvertes du spike portées ici comme contraintes dures, pas comme options d'implémentation :
+    (1) le fan-out d'une couche ne peut passer que par `ctx.request(...).call()` poussé dans
+    `DurableFuturesUnordered` — jamais `ctx.run()` (non combinable, source ./step.sdd/./dispatcher.sdd)
+    ni `futures::future::join_all` (compile, mais bloque chaque couche jusqu'à l'expiration d'un délai
+    serveur avant reprise — ~60s observés, invisible sans instrumentation) ; (2) chaque étage du DAG
+    doit être validé structurellement avant toute exécution — ./interpreter.rs réutilise
+    `definition::validate_dag` en tête de `run` plutôt que de réimplémenter une détection de cycle
+    partielle comme le faisait le spike.
+  Fichier neuf, conception. Le protocole `ctx.request`/`DurableFuturesUnordered`/reprise sur crash a
+    été vérifié en direct au spike (conteneur `restate-server` local, process du service tué et
+    relancé mi-exécution) ; ce fichier en hérite les garanties sans les revérifier une à une — la
+    forme du DAG et le dispatch par kind sont neufs et n'ont pas cette même preuve empirique directe.
+
+Owns:
+  ./interpreter.rs
+
+References:
+  ./definition.sdd — `DagSteps`, `StepDefinition`, `validate_dag`, @WorkflowError::InvalidDag : DAG
+    reçu en entrée de `run`, validé avant tout walk
+  ./dispatcher.sdd — service Restate `StepDispatcher`, handler `execute`, `StepInvocation` (`kind`,
+    `config`, `inputs`) : seul destinataire des appels `ctx.request` de ce fichier
+  ./step.sdd — forme d'`inputs` (`HashMap<String, serde_json::Value>`, une entrée par `depends_on`) :
+    ./interpreter.rs est le seul endroit de la crate qui l'assemble, depuis les résultats collectés
+  ./client.sdd — seul déclencheur d'une invocation de `DagInterpreter::run`, via
+    `POST {ingress_url}/DagInterpreter/{run_key}/run/send` ; les noms `"DagInterpreter"` et `"run"`
+    consommés en dur par @client::trigger_run sont ceux exposés ici
+  Spike Restate 2026-09-22/23 (session courante) — preuve empirique du protocole de fan-out et de
+    reprise sur crash, non répétée en détail dans ce fichier (`Purpose`)
+
+Must:
+  `DagInterpreter` — struct `pub`, unitaire, `#[workflow]` (nom d'enregistrement par défaut du
+    struct, `"DagInterpreter"`, aucun attribut `name = ...` — cohérent avec ./client.sdd qui code ce
+    nom en dur). Un seul handler, `run` — pas de second handler `SharedWorkflowContext` type
+    `interact_with_workflow` : aucun besoin d'interaction externe identifié pour cette itération
+    (signal, requête de progression) — le statut d'un run reste un proxy direct de Restate
+    (./client.sdd `Purpose`), pas un canal porté par ce fichier.
+  `run(&self, ctx: WorkflowContext<'_>, dag: Json<DagSteps>) -> Result<Json<HashMap<String,
+    serde_json::Value>>, HandlerError>`, corps exact :
+    1. `definition::validate_dag(&dag.0)` — @Err(WorkflowError::InvalidDag) converti en
+      `TerminalError::new_with_code(400, err.to_string())` (le `to_string()` porte déjà le préfixe
+      `MRD-WORKFLOW-004:`, réutilisé tel quel, jamais reconstruit) ; aucun step exécuté si cette
+      validation échoue.
+    2. Boucle jusqu'à ce que `completed.len() == dag.0.len()` (`completed: HashSet<String>`,
+      `results: HashMap<String, serde_json::Value>`, les deux initialisées vides) :
+      a. `ready_steps(&dag.0, &completed)` (fonction pure, `Must` ci-dessous) — la liste des steps
+        dont toutes les dépendances sont dans `completed` et qui n'y sont pas déjà ; ne peut être
+        vide tant que l'étape 1 a réussi (`validate_dag` garantit l'absence de cycle et de dépendance
+        pendante sur l'ensemble du DAG, `Handles`).
+      b. Pour chaque step de `ready`, assembler `inputs: HashMap<String, serde_json::Value>` — une
+        entrée par id de `depends_on`, valeur = `results.get(id)` (toujours @Some à ce point, chaque
+        dépendance étant dans `completed`, donc déjà dans `results`) ; construire `StepInvocation {
+        kind: step.kind.clone(), config: step.config.clone(), inputs }` et pousser
+        `ctx.request::<Json<StepInvocation>, Json<serde_json::Value>>(RequestTarget::Service { name:
+        "StepDispatcher".into(), handler: "execute".into() }, Json(invocation)).call()` dans un
+        `DurableFuturesUnordered` construit pour cette couche — jamais `futures::future::join_all`,
+        jamais un deuxième `DurableFuturesUnordered` partagé entre deux couches (`Must not`).
+      c. `while let Some((idx, result)) = futures.next().await?` — `idx` est l'index de poussée
+        (`push`) dans cette couche, pas un id ; retrouver l'id correspondant par
+        `ready_ids.get(idx)` (`ready_ids: Vec<String>` construit dans le même ordre que les
+        `push`, jamais par indexation directe `[]`) ; un @None ici est un bug interne, rendu
+        `TerminalError::new("internal index out of bounds")`, chemin non exercé en pratique
+        (`ready_ids` et les poussées de `futures` sont construits dans la même boucle, même longueur).
+      d. Premier `result` en @Err (@TerminalError, propagée par le `?` de l'étape c pour un échec du
+        step lui-même — pas celui de `futures.next().await?`, qui concerne le mécanisme
+        `DurableFuturesUnordered` lui-même) : propagée immédiatement hors de `run`, sans attendre les
+        autres steps de la même couche déjà en vol — un step frère déjà dispatché continue de
+        s'exécuter côté `StepDispatcher` (aucun mécanisme d'annulation posé ici) mais son résultat
+        n'est plus attendu.
+      e. Chaque `result` en @Ok : `results.insert(id, valeur)`, `completed.insert(id)`.
+    3. `Ok(Json(results))` une fois `completed.len() == dag.0.len()`.
+  `ready_steps<'a>(dag: &'a [StepDefinition], completed: &HashSet<String>) -> Vec<&'a StepDefinition>`,
+    `pub(crate)`, fonction pure sans effet de bord, sans `ctx` : steps dont l'`id` n'est pas dans
+    `completed` et dont chaque entrée de `depends_on` y est — ordre de sortie = ordre de `dag`, pour
+    un `ready_ids` déterministe entre deux exécutions du même DAG (propriété exploitée par les tests,
+    pas garantie contractuelle vis-à-vis de Restate qui ne fan-oute pas dans un ordre observable de
+    toute façon).
+  Compiler uniquement sous `#[cfg(feature = "workflow")]`.
+
+Must not:
+  Utiliser `futures::future::join_all` ou tout combinateur hors `DurableFuturesUnordered`/`select!`
+    pour attendre plusieurs `ctx.request(...).call()` de la même couche : cause vérifiée d'un blocage
+    de plusieurs dizaines de secondes par couche (`Purpose`, spike 2026-09-22).
+  Appeler `ctx.run()` dans ./interpreter.rs, sous quelque forme que ce soit : toute durabilité de step
+    individuel est la responsabilité de ./dispatcher.rs (un `ctx.run()` par step, déjà là) — un
+    `ctx.run()` ici dupliquerait la mémoïsation ou la casserait selon son placement.
+  Réimplémenter une détection de cycle ou de dépendance pendante dans ./interpreter.rs : la seule
+    validation structurelle de toute la crate est `definition::validate_dag`, appelée une fois en tête
+    de `run` (`Must`) — pas de garde redondante dans la boucle, l'absence de couche vide après une
+    validation réussie est une propriété prouvée par `validate_dag`, pas re-vérifiée ici.
+  Charger un `WorkflowDefinition` depuis la base à l'intérieur de `run` : le DAG reçu en paramètre
+    est la seule source de vérité pour toute la durée de l'invocation — une requête base à
+    l'intérieur d'un handler `#[workflow]` romprait le déterminisme exigé par Restate à la reprise
+    (une même invocation rejouée doit reconstruire le même état, une ligne modifiée entre deux
+    tentatives romprait cette garantie). `client::trigger_run` (./client.sdd) transmet déjà le DAG
+    complet précisément pour cette raison.
+  Indexer `ready_ids` ou tout `Vec` de ce fichier par `[]` : `.get()` partout, cohérent avec le
+    harnais strict (`indexing_slicing` en `deny`, /tooling.sdd).
+
+Forbids:
+  `reqwest::*` dans ./interpreter.rs — aucun appel HTTP nu, uniquement le protocole `restate-sdk`
+
+Depends on:
+  `restate-sdk` 0.12 (lock `0.12.1`) — `#[workflow]`, `#[handler]`, `WorkflowContext`, `Json`,
+    `DurableFuturesUnordered`, `ctx.request`, `RequestTarget::Service`, `HandlerError`,
+    `TerminalError`
+  ./definition.rs — `DagSteps`, `StepDefinition`, `validate_dag`
+  ./dispatcher.rs — `StepInvocation` (nom des champs `kind`/`config`/`inputs`), noms de service/handler
+    `"StepDispatcher"`/`"execute"`
+  @std::collections::{HashMap, HashSet} — aucune dépendance externe
+
+Exposes:
+  `DagInterpreter` — struct `pub`, unitaire
+  `ready_steps` — `pub(crate) fn ready_steps<'a>(dag: &'a [StepDefinition], completed:
+    &HashSet<String>) -> Vec<&'a StepDefinition>`
+  Le service Restate `DagInterpreter` (handler `run`) — consommé uniquement via le protocole
+    `restate-sdk`, par ./client.sdd (déclenchement) et par Restate lui-même (reprise)
+
+Accepts:
+  `run` : un `Json<DagSteps>` désérialisé par `restate-sdk` depuis le corps envoyé par
+    `client::trigger_run` — peut avoir été validé au moment de sa création/mise à jour
+    (./definition.sdd `before_create`/`before_update`) ou pas (un appelant qui construirait un
+    `DagSteps` directement sans passer par l'entité stockée) : `run` ne fait aucune hypothèse, il
+    revalide systématiquement (`Must`, étape 1).
+
+Returns:
+  `run` : `Ok(Json(results))`, `results` portant la sortie de `run` de chaque step exécuté, clé = id
+    du step, valeur = @serde_json::Value tel que retourné par ./dispatcher.rs — jamais de valeur pour
+    un step non atteint (échec amont, propagation immédiate d'un @Err de couche). `Err(HandlerError)`
+    — toujours une @TerminalError sous-jacente (via `?` d'un `ctx.request(...).call()` en échec ou
+    via l'étape 1) : ./interpreter.rs ne construit jamais de @HandlerError retryable lui-même, seul
+    ./dispatcher.rs décide de la retryabilité d'un échec de step.
+
+Raises:
+  Aucun code `MRD-WORKFLOW-*` construit directement par ce fichier : le seul chemin de code `400` est
+    la réutilisation verbatim du message de @WorkflowError::InvalidDag (`MRD-WORKFLOW-004`, produit
+    par ./definition.rs) ; tout le reste est une @TerminalError propagée depuis ./dispatcher.rs sans
+    reconstruction.
+
+Handles:
+  DAG structurellement invalide reçu (bypass de la validation à l'écriture, ou `DagSteps` construit
+    hors du chemin `WorkflowDefinition`) : rejeté en entrée de `run`, aucun step exécuté, aucun appel
+    à ./dispatcher.rs — le coût d'un DAG cassé est payé une fois, immédiatement, jamais après un
+    fan-out partiel.
+  Fan-in sous crash : si le processus du service `StepDispatcher` (ou du service hébergeant
+    `DagInterpreter` lui-même) meurt pendant qu'une couche est en vol, Restate rejoue l'invocation à
+    la reconnexion — les steps déjà journalisés (complétés avant le crash) ne sont pas réexécutés, les
+    steps interrompus le sont depuis leur début ; `run` reconstruit `completed`/`results` par rejeu du
+    journal jusqu'au point d'interruption, propriété du modèle `restate-sdk` lui-même, vérifiée au
+    spike sur le prototype, pas re-testée ici scenario par scenario (`Tasks`).
+  DAG à une seule couche (tous les steps sans dépendance) : une seule itération de la boucle, un seul
+    fan-out couvrant tout le DAG.
+  DAG entièrement séquentiel (chaque step dépend du précédent) : autant d'itérations que de steps,
+    chaque couche à un seul élément — aucun chemin spécial, `ready_steps` rend une liste à un élément
+    à chaque tour.
+  Step en échec dans une couche à plusieurs éléments : les autres steps de la couche, déjà dispatchés,
+    continuent de s'exécuter côté `StepDispatcher` (pas d'annulation) mais leur résultat n'atteint
+    jamais `results` — `run` s'est déjà arrêté sur le premier échec observé par
+    `futures.next().await?` (ordre de complétion, pas ordre de poussée : le "premier" échec observé
+    dépend de quel step répond le plus vite, pas de sa position dans le DAG).
+
+Tasks:
+  [x] Premier échec de couche interrompt immédiatement, sans attendre les frères ni les annuler :
+    Sébastien (2026-09-23) — convient tel quel pour l'instant ; si un cas d'usage réel s'avère
+    problématique (effets de bord coûteux sur des frères abandonnés), la spec évoluera alors, pas
+    anticipé ici.
+  [ ] Valider par un test d'intégration (pas `mod tests` unitaire) le protocole de fan-out et de
+    reprise sur crash avec l'implémentation réelle (`StepDispatcher`/`StepRegistry`, pas les stubs du
+    spike) — même méthode que le spike (kill du process mi-couche, vérification qu'aucun step déjà
+    journalisé n'est rejoué), à documenter dans `tests/` ou en note d'exploitation
+    (`docs/architecture.md`) plutôt qu'en `Scenario` de cette spec : ce fichier ne peut pas prouver
+    unitairement une garantie qui appartient au runtime `restate-sdk`/`restate-server`, seulement
+    l'utiliser correctement (`Must`).
+  [ ] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./interpreter.rs :
+    `ready_steps` et l'assemblage d'`inputs` se testent sans Restate (fonctions pures) ; le corps
+    complet de `run` nécessite un harnais de test `restate-sdk` (`restate-sdk-testcontainers`,
+    ./client.sdd `Tasks` en a déjà noté l'absence des dépendances actuelles) — à choisir à
+    l'implémentation, hors périmètre de cette spec.
+
+Done when:
+  Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
+  ./definition.sdd, ./dispatcher.sdd et ./step.sdd sont approuvées avant ou avec cette spec
+    (dépendances directes : `validate_dag`, `StepInvocation`, forme d'`inputs`).
+  La spec est relue et approuvée par Sébastien avant qu'une ligne de ./interpreter.rs soit écrite.
+
+Scenario: ready_steps rend les steps sans dépendance en premier
+  Given un DAG de quatre `StepDefinition` : `"A"` sans dépendance, `"B"` et `"C"` dépendant de `"A"`,
+    `"D"` dépendant de `"B"` et `"C"`, `completed` vide
+  When `ready_steps` est appelé
+  Then le résultat est exactement `["A"]`
+
+Scenario: ready_steps rend plusieurs steps d'une même couche
+  Given le même DAG, `completed = {"A"}`
+  When `ready_steps` est appelé
+  Then le résultat est exactement `["B", "C"]`, dans l'ordre du DAG d'origine
+
+Scenario: ready_steps ne rend rien tant qu'une dépendance manque
+  Given le même DAG, `completed = {"A", "B"}` (`"C"` pas encore terminé)
+  When `ready_steps` est appelé
+  Then le résultat est vide — `"D"` dépend de `"B"` et `"C"`, `"C"` manque encore
+
+Scenario: ready_steps ignore un step déjà complété
+  Given le même DAG, `completed = {"A", "B", "C", "D"}`
+  When `ready_steps` est appelé
+  Then le résultat est vide — plus aucun step à lancer
+
+Scenario: run rejette un DAG structurellement invalide avant tout step
+  Given un `DagSteps` avec une dépendance pendante (jamais passé par `before_create`/`before_update`)
+  When `run` est invoqué
+  Then le résultat est une @TerminalError de code `400` dont le message commence par
+    `MRD-WORKFLOW-004:` — aucun `ctx.request` vers `StepDispatcher` n'a été émis
+
+Scenario: inputs assemblé depuis les résultats des dépendances, jamais au-delà
+  Given un DAG à trois steps, `"A"` sans dépendance, `"B"` dépendant de `"A"`, `"C"` sans dépendance ;
+    `"A"` a déjà produit `json!(1)`, `"C"` a déjà produit `json!(2)` (tous deux dans `completed` et
+    `results`)
+  When la couche contenant `"B"` est préparée
+  Then l'`inputs` construit pour `"B"` contient exactement une entrée, `"A"` → `json!(1)` — jamais
+    `"C"`, dont `"B"` ne dépend pas, même si son résultat est disponible dans `results`
+
+Scenario: premier échec de couche interrompt sans attendre les steps frères
+  Given une couche à deux steps indépendants, l'un dont l'appel à `StepDispatcher::execute` échoue en
+    @TerminalError, l'autre dont l'appel réussit mais plus lentement
+  When `run` traite cette couche
+  Then `run` retourne l'@Err dès que le premier résultat (l'échec) est observé par
+    `futures.next().await?` — le résultat du second step, encore en vol, n'est jamais attendu ni
+    inséré dans `results`
+
+Scenario: DAG à une seule couche complète en un seul fan-out
+  Given un DAG de trois `StepDefinition` sans dépendance entre elles
+  When `run` s'exécute jusqu'au bout
+  Then une seule itération de la boucle principale a eu lieu (un seul `DurableFuturesUnordered`
+    construit), `results` porte les trois sorties, `Ok(Json(results))` rendu

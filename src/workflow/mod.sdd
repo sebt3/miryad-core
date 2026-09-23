@@ -1,0 +1,163 @@
+Spec: mod — agrégation du module `workflow`, gating, ré-exports, graphe de dépendances Cargo
+
+Purpose:
+  Contrat d'agrégation de `src/workflow/` (convention `.specdd/bootstrap.project.md` : un `mod.rs` a
+    sa propre spec, n'owne que lui-même, chaque enfant garde la sienne) : déclare les sept
+    sous-modules (`error`, `client`, `step`, `dispatcher`, `definition`, `interpreter`, `rhai_step`),
+    ré-exporte à plat les types que l'app consommatrice doit toucher pour intégrer le moteur de
+    workflow, et documente le graphe complet des dépendances Cargo que la feature `workflow`
+    introduit — consolidé ici parce que chaque spec enfant n'a proposé qu'un fragment du diff
+    `/Cargo.toml` (@client::WorkflowConfig a besoin d'`uuid`, ./step.sdd d'`async-trait`,
+    ./dispatcher.sdd de `restate-sdk`, ./rhai_step.sdd de `tokio` optionnel et de `vynil-core/rhai`) et
+    qu'aucune n'a autorité sur `/Cargo.toml` lui-même (`Can modify` de /miryad-core.sdd).
+  Contrairement aux trois autres surfaces de la crate (REST, GraphQL, MCP), `workflow` ne monte
+    aucune route sur le `axum::Router` de l'app — ses deux services (`DagInterpreter`,
+    `StepDispatcher`) parlent le protocole `restate-sdk`, servis par un `HttpServer`/`Endpoint` que
+    l'app construit et lie elle-même dans son propre `main()`, hors de toute fonction exposée par ce
+    fichier (`/src/lib.sdd`, amendement 2026-09-23, `Must`).
+
+Owns:
+  ./mod.rs
+
+References:
+  ./error.sdd, ./client.sdd, ./step.sdd, ./dispatcher.sdd, ./definition.sdd, ./interpreter.sdd,
+    ./rhai_step.sdd — les sept enfants, chacun `Owns` son propre `.rs`, ce fichier ne les décrit pas
+  /src/lib.sdd — amendée le 2026-09-23 : `#[cfg(feature = "workflow")] pub mod workflow;`, douzième
+    `pub mod` de la racine
+  /miryad-core.sdd — `Owns: ./Cargo.toml` ; ce fichier documente le diff attendu sans le posséder
+  /tooling.sdd — amendée le 2026-09-23 : `workflow` ajoutée à la batterie de combinaisons de features
+    (huit désormais)
+  /docs/roadmap.md — feature 7/9, moteur de workflow ; ce module en est l'implémentation
+
+Must:
+  `mod.rs` déclare les sept sous-modules, tous `pub` (chaque enfant expose des types que l'app doit
+    atteindre, directement ou via les ré-exports ci-dessous) : `pub mod client;`, `pub mod
+    definition;`, `pub mod dispatcher;`, `pub mod error;`, `pub mod interpreter;`, `pub mod step;`,
+    `pub mod rhai_step;` — un seul bloc, aucun sous-module gated par une feature plus fine que
+    `workflow` elle-même (./rhai_step.sdd : le kind `"rhai"` compile dès que `workflow` est active,
+    pas derrière une feature séparée — décision actée lors de la rédaction de ce fichier, cohérente
+    avec `mcp` qui active `vynil-core` sans sous-feature dédiée).
+  Ré-exporter à plat, `pub use`, exactement : `client::{WorkflowConfig, RunHandle,
+    register_deployment, trigger_run}` ; `definition::{Entity as WorkflowDefinition, Column as
+    WorkflowDefinitionColumn, Model as WorkflowDefinitionModel, ActiveModel as
+    WorkflowDefinitionActiveModel, StepDefinition, DagSteps, WorkflowPolicy, configure_policy}` ;
+    `dispatcher::{StepDispatcher, recommended_options}` ; `error::WorkflowError` ;
+    `interpreter::DagInterpreter` ; `rhai_step::RhaiStep` ; `step::{MiryadWorkflowStep, StepError,
+    StepRegistry}`. Chemins consommés : `miryad_core::workflow::WorkflowConfig`,
+    `miryad_core::workflow::DagInterpreter`, etc. — jamais `miryad_core::workflow::client::WorkflowConfig`
+    (à la différence de `resource.rs`/`Must not` qui refuse tout ré-export racine : ce module a
+    plusieurs fichiers internes et une app doit en toucher la plupart pour intégrer le moteur, contexte
+    différent d'un seul trait central).
+  `definition::validate_dag` reste `pub(crate)` (./definition.sdd) : non ré-exporté, jamais atteint
+    depuis l'extérieur de la crate — seul `WorkflowDefinition::before_create`/`before_update`
+    l'utilise en interne.
+  Documenter dans le bloc `//!` de `mod.rs` : la promesse du module (DAG persisté en base, admin
+    l'édite via le CRUD générique de `WorkflowDefinition` comme toute autre entité, exécuté par un
+    cluster Restate self-hosté — un par cluster Kubernetes, jamais géré par cette crate,
+    ./client.sdd `Purpose`), le rappel qu'aucune route axum n'est montée, et le renvoi vers
+    `docs/architecture.md` pour le schéma de déploiement (StatefulSet Restate, vynil box).
+  Compiler tout le module sous `#[cfg(feature = "workflow")]` — posé dans `/src/lib.rs`
+    (`#[cfg(feature = "workflow")] pub mod workflow;`, amendement `/src/lib.sdd`), pas dans `mod.rs`
+    lui-même (`mod.rs` n'a pas à se re-gater, la racine le fait une fois pour tous ses enfants — même
+    convention que `./mcp/mod.rs`, `./graphql/mod.rs`).
+  Documenter dans `/Cargo.toml` (hors `Owns` de ce fichier, mais le diff qu'il impose) exactement :
+    `workflow = ["dep:restate-sdk", "dep:uuid", "dep:async-trait", "dep:vynil-core", "vynil-core?/rhai",
+    "dep:tokio"]` ; nouvelles entrées `[dependencies]` : `restate-sdk = { version = "0.12", features =
+    ["http_server"], optional = true }` (./dispatcher.sdd), `uuid = { version = "1", features = ["v4"],
+    optional = true }` (./client.sdd), `async-trait = { version = "0.1", optional = true }`
+    (./step.sdd), `tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional =
+    true }` — dépendance **optionnelle** de `[dependencies]`, activée par `workflow` seule via
+    `dep:tokio` (décision Sébastien 2026-09-23 : une promotion non optionnelle ferait peser tokio
+    sur les sept combinaisons sans `workflow`, et Cargo refuse `dep:` sur une dépendance
+    non optionnelle) ; l'entrée `[dev-dependencies]` existante reste telle quelle, inchangée —
+    Cargo la fusionne avec l'entrée optionnelle sur le profil test quand `workflow` est active ;
+    `vynil-core` (déjà présent sous `mcp`, `optional = true`) gagne une seconde ligne d'activation
+    (`vynil-core?/rhai`) portée par `workflow`, Cargo unifie les features activées quand `mcp` et
+    `workflow` sont actifs ensemble (`hbs` + `crypto` + `rhai`).
+
+Must not:
+  Ré-exporter `definition::validate_dag`, ou toute fonction/type marqué `pub(crate)` par un enfant :
+    ce fichier respecte la visibilité choisie par chaque spec, il ne l'élargit jamais.
+  Monter quoi que ce soit sur un `axum::Router`, importer `axum` ou `tower`, enregistrer un handler
+    HTTP autre que via `restate-sdk` : la frontière avec les trois autres surfaces (REST, GraphQL,
+    MCP) est stricte — `workflow` ne partage ni routeur ni middleware avec elles.
+  Fournir une fonction d'assemblage (`fn build_endpoint(...) -> Endpoint`) qui construirait
+    l'`Endpoint` `restate-sdk` à la place de l'app : `.bind(DagInterpreter)`,
+    `.bind(StepDispatcher::new(registry).into_service_definition().options(...))` et
+    `.bind(RhaiStep)` (implicite, via l'enregistrement dans `StepRegistry`) restent la responsabilité
+    du `main()` de l'app — une fonction d'assemblage figerait un choix (quelles `ServiceOptions`,
+    quel ordre de `.bind()`) qui appartient à l'app, pas à la crate.
+
+Forbids:
+  `axum::*`, `tower::*` dans ./mod.rs
+
+Depends on:
+  Les sept fichiers listés en `References` — aucune dépendance externe propre à `mod.rs` au-delà de
+    ce qu'ils réexportent
+
+Exposes:
+  Voir `Must` — vingt chemins plats sous `miryad_core::workflow::` (4 `client`, 8 `definition`,
+    2 `dispatcher`, 1 `error`, 1 `interpreter`, 1 `rhai_step`, 3 `step`)
+
+Accepts:
+  Rien — fichier de déclaration et de ré-export pur, aucune fonction, aucun état
+
+Returns:
+  Rien — voir `Exposes`
+
+Raises:
+  Aucun code `MRD-WORKFLOW-*` construit ici : `mod.rs` ne construit aucune valeur
+
+Handles:
+  Compilation sous `workflow` seule et en cumul avec chaque autre feature de la matrice de
+    /tooling.sdd (`swagger-ui`, `graphql`, `graphiql`, `mcp` — `mcp` et `workflow` activés ensemble
+    exercent l'unification de features `vynil-core` décrite en `Must`) ; `--all-features` exerce les
+    deux activations de `vynil-core` simultanément.
+  Absence de la feature `workflow` : le module entier disparaît de la surface publique, comme tout
+    autre module gated de la crate (`/src/lib.sdd`, `Handles`) — aucun squelette d'API résiduel.
+
+Tasks:
+  [x] Mécanique Cargo de `tokio` : Sébastien (2026-09-23, relecture du lot) — `tokio` entre dans
+    `[dependencies]` en `optional = true`, activé par `workflow` seule via `dep:tokio` ;
+    l'entrée `[dev-dependencies]` existante est conservée inchangée (les tests existants restent
+    servis sans `workflow`). Une promotion en dépendance normale non optionnelle est écartée :
+    elle ferait peser tokio sur les sept combinaisons sans `workflow`, et `dep:tokio` serait de
+    toute façon refusé par Cargo sur une dépendance non optionnelle. Décision reflétée dans `Must`.
+  [ ] Rédiger `docs/architecture.md`, section "Moteur de workflow" (à la clôture de la feature,
+    convention `.specdd/bootstrap.project.md`) : le récit du spike Restate (2026-09-22/23), le choix
+    Restate vs les options écartées (roadmap 7, déjà écrit), le schéma de déploiement (une instance
+    Restate par cluster, StatefulSet trivial, vynil box hors dépôt), les risques opérationnels déjà
+    identifiés par ./client.sdd (rollout avec `force: true`, `Service` Kubernetes stable) et
+    ./dispatcher.sdd (isolation des panics, `RunRetryPolicy`), l'asymétrie GraphQL de
+    `before_update`/`before_delete` (/src/resource.sdd, amendement 2026-09-23).
+  [ ] Mettre à jour `docs/roadmap.md`, feature 9 : passer de "reprise du moteur de workflow, si une
+    solution saine se présente" à un état reflétant les sept specs de ce module approuvées (ou en
+    cours d'implémentation), une fois cette relecture faite.
+  [ ] Mettre à jour `miryad-core.sdd`, Tasks : la ligne 153-154 ("Décider si le moteur de workflow
+    entre dans une spec... ne pas spéculer un module sans moteur choisi") est résolue par ce module —
+    à remplacer par les lignes `[ ] Spec src/workflow/*.sdd produite puis revue par Sébastien` (une
+    par fichier, même convention que les modules existants), et par une ligne équivalente pour
+    l'amendement de `/src/resource.sdd`/`/src/rest/core.sdd`.
+  [ ] Convertir le `Scenario` en test nommé dans `mod tests` de ./mod.rs (compilation seule, pas de
+    comportement à tester au-delà de la résolution des chemins).
+
+Done when:
+  Les sept specs enfants (`error`, `client`, `step`, `dispatcher`, `definition`, `interpreter`,
+    `rhai_step`) sont approuvées.
+  `/src/lib.sdd`, `/tooling.sdd` et `AGENTS.md` (commandes de la batterie) reflètent la huitième
+    combinaison de features (`workflow`).
+  `/Cargo.toml` porte exactement le diff décrit en `Must`, vérifié par `cargo tree --features
+    workflow` (aucune version dupliquée inattendue au-delà de `multiple_crate_versions`, déjà
+    `allow` par /tooling.sdd).
+  La spec est relue et approuvée par Sébastien avant qu'une ligne de ./mod.rs soit écrite — dernière
+    spec du module à être implémentée, puisqu'elle dépend de toutes les autres.
+
+Scenario: chemins plats résolvent sans connaître la structure interne du module
+  Given la crate compilée avec `--no-default-features --features workflow`
+  When un test de consommateur référence `miryad_core::workflow::WorkflowConfig`,
+    `miryad_core::workflow::DagInterpreter`, `miryad_core::workflow::StepDispatcher`,
+    `miryad_core::workflow::MiryadWorkflowStep`, `miryad_core::workflow::StepRegistry`,
+    `miryad_core::workflow::RhaiStep`, `miryad_core::workflow::WorkflowError`,
+    `miryad_core::workflow::WorkflowDefinition` et `miryad_core::workflow::configure_policy`
+  Then les neuf chemins compilent sans qu'aucun n'ait eu besoin de nommer `client`, `dispatcher`,
+    `interpreter`, `step`, `rhai_step`, `error` ou `definition` explicitement

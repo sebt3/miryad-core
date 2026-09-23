@@ -1,0 +1,245 @@
+Spec: step — trait d'extension @MiryadWorkflowStep, registre des kinds de step
+
+Purpose:
+  Porter le point d'extension par lequel une application consommatrice ajoute un type de step de
+    workflow (« kind ») sans toucher à la crate : @MiryadWorkflowStep, même rôle que
+    @MiryadResource pour les entités — une @impl par kind, aucun code par kind dans miryad-core. Ce
+    fichier ne parle jamais Restate : ni @restate_sdk::Context, ni durabilité, ni retry Restate — ce
+    sont des préoccupations de ./dispatcher.sdd (à rédiger), le seul fichier qui enveloppe un
+    @MiryadWorkflowStep dans un service Restate. Séparation délibérée : un kind de step s'écrit et se
+    teste comme une fonction async ordinaire, sans dépendance à `restate-sdk` — l'app consommatrice
+    qui ajoute un kind n'a pas besoin de comprendre le protocole d'invocation Restate pour le faire.
+  Porte aussi @StepRegistry, la collection de kinds connus au démarrage d'une application donnée :
+    construite explicitement par l'app (aucune découverte automatique, aucun registre global statique
+    — même refus d'état global que le reste de la crate), consommée en lecture seule par
+    ./dispatcher.rs.
+  Fichier neuf, conception. Rédigé après ./error.sdd et ./client.sdd : le design de
+    @MiryadWorkflowStep suit directement la contrainte découverte au spike Restate (2026-09-22) que le
+    fan-out d'un DAG ne peut passer que par un appel inter-service (`ctx.request().call()`), jamais par
+    plusieurs `ctx.run()` concurrents dans un même handler — d'où un service Restate générique unique
+    (./dispatcher.sdd) qui déclenche un seul `ctx.run()` par step et délègue le choix du comportement à
+    ce registre en Rust pur, plutôt qu'un service Restate par kind (impossible de toute façon : les
+    services `restate-sdk` sont liés à la compilation via `Endpoint::builder().bind(...)`, pas
+    ouverts à un enregistrement dynamique par trait object à l'exécution).
+
+Owns:
+  ./step.rs
+
+References:
+  ./dispatcher.sdd (à rédiger) — service Restate `StepDispatcher`, seul consommateur de
+    @StepRegistry::dispatch ; traduit @StepError::retryable en @HandlerError (retry Restate) ou
+    @TerminalError (arrêt), chaque appel enveloppé dans exactement un `ctx.run()`
+  ./interpreter.sdd (à rédiger) — @DagInterpreter connaît `kind` et `config` par step (via
+    ./definition.sdd) mais jamais un @MiryadWorkflowStep directement : il appelle `StepDispatcher` par
+    nom, ce fichier n'est jamais importé par ./interpreter.rs
+  ./rhai_step.sdd (à rédiger) — premier (et seul, à la rédaction) `impl MiryadWorkflowStep` fourni par
+    la crate elle-même, kind `"rhai"`, sous la feature `workflow` combinée à `vynil-core/rhai`
+  /src/resource.sdd — modèle de forme suivi : un trait à implémenter par kind/entité, aucune
+    configuration globale, hook synchrone à la donnée fournie
+
+Must:
+  @MiryadWorkflowStep — trait `pub`, `#[async_trait::async_trait]` (nécessaire pour
+    `Box<dyn MiryadWorkflowStep>` dans @StepRegistry — une `async fn` de trait native n'est pas
+    dyn-compatible sans boxing manuel de son futur, vérifié langage édition 2024/Rust `1.97.1` de
+    /Cargo.toml) :
+    `fn kind(&self) -> &'static str` — clé stable du kind, utilisée comme clé de @StepRegistry et
+      comme valeur du champ `kind` d'un @StepDefinition (./definition.sdd) ; deux kinds ne partagent
+      jamais la même valeur (garanti par @StepRegistry::register, `Must` ci-dessous)
+    `async fn run(&self, config: @serde_json::Value, inputs: @HashMap<@String, @serde_json::Value>)
+      -> Result<@serde_json::Value, StepError>` — exécute le step ; `config` est le contenu opaque du
+      champ `config` du @StepDefinition correspondant (./definition.sdd, non interprété par ce
+      fichier) ; `inputs` porte la sortie de chacune des dépendances déclarées de ce step
+      (`depends_on` du @StepDefinition, ./definition.sdd), une entrée par id de step amont, clé =
+      l'id du step amont tel qu'écrit dans `depends_on`, valeur = ce que le `run` de ce step amont a
+      retourné. Décision de Sébastien (2026-09-23) : la sortie d'un step amont doit pouvoir alimenter
+      un step aval, exactement quand la dépendance est documentée dans le DAG — pas de canal caché,
+      pas de step qui verrait la sortie d'un step dont il ne dépend pas. Un step sans dépendance
+      (`depends_on` vide) reçoit un `inputs` vide, jamais absent (`HashMap::new()`, pas un `Option`).
+      Le retour est la valeur que @DagInterpreter (./interpreter.sdd) collecte et republie en `inputs`
+      de chacun des steps qui déclarent celui-ci en dépendance — ./step.rs ne construit ni ne consomme
+      lui-même `inputs`, il ne fait que le transporter jusqu'à l'`impl` du kind.
+  @StepError — struct `pub`, deux champs `pub` : `message: @String`, `retryable: @bool`. `#[derive(Debug,
+    thiserror::Error)]` avec `#[error("{message}")]`. `retryable = true` signale un échec transitoire
+    (réseau, ressource momentanément indisponible) que ./dispatcher.rs doit laisser au retry Restate ;
+    `retryable = false` signale un échec permanent (config invalide, logique métier qui ne réussira
+    jamais en rejouant) que ./dispatcher.rs doit arrêter immédiatement — cette distinction est le seul
+    signal qu'un kind de step a pour influencer la stratégie de retry, il ne voit et ne configure
+    jamais la @RunRetryPolicy Restate elle-même (./dispatcher.sdd la fixe une fois pour tous les kinds).
+    Décision de Sébastien (2026-09-23) : pas de champ `code` structuré — imposer une codification des
+    erreurs applicatives de workflow irait trop loin, à la différence de la taxonomie `MRD-*` interne
+    à la crate. `message` reste un @String libre, définitivement, pas une lacune temporaire à combler.
+  @StepRegistry — struct `pub`, opaque (aucun champ `pub`) :
+    `fn new() -> Self` — registre vide
+    `fn register(&mut self, step: impl MiryadWorkflowStep + 'static) -> &mut Self` — ajoute un kind ;
+      `panic!` si `step.kind()` collide avec un kind déjà enregistré (erreur de configuration au
+      démarrage de l'app, jamais une entrée utilisateur — cohérent avec le reste de la crate qui
+      distingue erreurs de configuration au boot, qui peuvent paniquer, et erreurs de requête, qui ne
+      le peuvent jamais ; seul site `panic!` autorisé de ./step.rs, `Tasks` le documente comme
+      exemption au harnais strict de /tooling.sdd)
+    `pub(crate) fn dispatch(&self, kind: &str, config: @serde_json::Value, inputs:
+      @HashMap<@String, @serde_json::Value>) -> Result<impl Future<Output =
+      Result<@serde_json::Value, StepError>>, StepError>` — retourne le futur de `run` du kind trouvé
+      (jamais exécuté par ce fichier), ou @Err(StepError { message: format!("kind inconnu: {kind}"),
+      retryable: false }) si `kind` n'est enregistré par aucun `impl` — seul point d'entrée que
+      ./dispatcher.rs appelle, `pub(crate)` : jamais exposé hors de la crate, l'app consommatrice
+      construit un @StepRegistry mais ne le consulte jamais directement. `inputs` transite tel quel
+      vers `run` du kind trouvé, sans que @StepRegistry ne l'inspecte ni ne le construise — c'est
+      ./interpreter.rs qui l'assemble (sortie des steps de `depends_on` déjà terminés) avant d'appeler
+      ./dispatcher.rs, qui le relaie ici sans modification.
+  Kind inconnu jamais retryable : un `kind` absent du registre est une erreur de configuration du DAG
+    (un @StepDefinition référence un kind que l'app n'a pas enregistré), pas une panne transitoire —
+    la réessayer ne la résout jamais, `retryable: false` systématique sur cette branche.
+  Rester silencieux : aucun @tracing, @println!, @eprintln!, @dbg! dans ./step.rs — un kind qui trace
+    son exécution le fait dans sa propre implémentation (./rhai_step.rs ou celle de l'app), pas ici.
+  Compiler uniquement sous `#[cfg(feature = "workflow")]`.
+
+Must not:
+  Dépendre de `restate-sdk` : ni le trait, ni @StepError, ni @StepRegistry n'importent quoi que ce
+    soit du crate `restate-sdk` — un kind de step s'écrit et se teste sans jamais instancier un
+    `restate-server`. La traduction vers les types Restate (@HandlerError, @TerminalError) est
+    entièrement de ./dispatcher.rs.
+  Interpréter le contenu de `config`, de `inputs` ou de la valeur de retour de `run` : ce fichier les
+    traite comme des @serde_json::Value opaques de bout en bout — la forme exacte est un contrat entre
+    ./definition.rs (qui stocke `config`), ./interpreter.rs (qui assemble `inputs` depuis les sorties
+    des dépendances) et l'`impl` du kind (qui consomme les deux), jamais de ./step.rs.
+  Résoudre ou valider les entrées de `depends_on` : ./step.rs reçoit `inputs` déjà assemblé, il ne
+    sait pas lire un @StepDefinition ni un graphe de dépendances — si un id apparaît dans `depends_on`
+    mais pas dans `inputs` au moment de l'appel, c'est un bug de ./interpreter.rs, pas quelque chose
+    que @StepRegistry::dispatch détecte ou corrige.
+  Autoriser deux `impl` enregistrées sous le même `kind()` sans échec bruyant : @StepRegistry::register
+    ne permet jamais une collision silencieuse — un kind écraserait l'autre sans avertissement serait
+    un bug de configuration masqué (`Tasks`, exemption `panic_in_result_fn`/`panic` du harnais assumée
+    pour ce seul site).
+  Fournir un `impl MiryadWorkflowStep` par défaut ou un kind intégré dans ce fichier : le seul kind
+    fourni par la crate (`"rhai"`) vit dans ./rhai_step.rs, une spec séparée — ./step.rs ne possède que
+    le trait et le registre, jamais un kind concret.
+
+Forbids:
+  `restate_sdk::*`, `reqwest::*` dans ./step.rs
+
+Depends on:
+  @async-trait 0.1 (lock `0.1.92`, transitive existante — à promouvoir en dépendance directe de
+    /Cargo.toml sous la feature `workflow`) — macro `#[async_trait::async_trait]`, seule façon de
+    rendre `Box<dyn MiryadWorkflowStep>` construisible tout en gardant `run` déclarée `async fn` dans
+    la syntaxe du trait
+  @serde_json (déjà dépendance transitive de @serde) — @serde_json::Value, type opaque de `config`,
+    `inputs` et de retour
+  @thiserror 2 (lock `2.0.20`) — derive de @StepError
+  @std::collections::HashMap — porteur de `inputs`, aucune dépendance externe
+
+Exposes:
+  @MiryadWorkflowStep — trait `pub`, deux méthodes (`kind`, `run`), `Send + Sync` implicite par
+    `#[async_trait::async_trait]` (nécessaire pour vivre dans `Box<dyn ... + Send + Sync>` au sein
+    d'un handler Restate `async`, contrainte imposée par ./dispatcher.sdd)
+  @StepError — struct `pub`, deux champs `pub`, derive @Debug + @thiserror::Error
+  @StepRegistry — struct `pub`, `new`/`register` publics, `dispatch` `pub(crate)`
+
+Accepts:
+  @StepRegistry::register : toute valeur `impl MiryadWorkflowStep + 'static`, possédée (déplacée dans
+    une @Box interne) — l'app consommatrice construit typiquement son registre une fois au démarrage,
+    avant @client::register_deployment (./client.sdd), et le prête à ./dispatcher.rs
+  @MiryadWorkflowStep::run : un @serde_json::Value déjà désérialisé par ./interpreter.rs depuis le
+    @StepDefinition stocké pour `config` ; un @HashMap déjà assemblé par ./interpreter.rs pour `inputs`
+    (une entrée par dépendance déclarée, jamais plus, jamais moins — ./interpreter.rs garantit
+    l'ensemble des clés avant l'appel, ./step.rs ne le vérifie pas). Aucune validation de forme avant
+    l'appel sur l'un ou l'autre — un kind qui reçoit une `config` ou un `inputs` dans une forme qu'il
+    n'attend pas doit lui-même rendre @StepError { retryable: false }, pas paniquer (contrat transverse
+    harnais : jamais de `panic!`/`unwrap` en dehors du seul site documenté de @StepRegistry::register)
+
+Returns:
+  @StepRegistry::dispatch : le futur de `run` du kind trouvé, non exécuté — c'est ./dispatcher.rs qui
+    l'`.await`, à l'intérieur de son unique `ctx.run()` par step
+
+Raises:
+  Ce fichier ne porte aucun code `MRD-WORKFLOW-*` : @StepError n'est pas une erreur interne de la
+    crate au sens du contrat transverse (elle vient du kind, potentiellement fourni par l'app
+    consommatrice), sa traduction en @HandlerError/@TerminalError par ./dispatcher.rs n'invente pas
+    non plus de code — cohérent avec @HookError qui n'en porte jamais.
+
+Handles:
+  Kind absent du registre : @StepRegistry::dispatch rend @StepError { retryable: false, message:
+    "kind inconnu: {kind}" } — jamais un @panic, jamais un @Option silencieusement vide converti en
+    succès.
+  Deux kinds différents (`run` levant chacun un @StepError distinct, l'un `retryable: true` l'autre
+    `retryable: false`) : @StepRegistry::dispatch retourne fidèlement le futur du bon kind par
+    `kind()`, sans réinterpréter son résultat éventuel — la distinction retryable/non n'est lue que
+    par ./dispatcher.rs, jamais évaluée ici.
+  Collision d'enregistrement : `register` d'un second kind portant le même `kind()` qu'un premier
+    interrompt le démarrage de l'app par `panic!` avant que quoi que ce soit d'autre ne s'exécute — un
+    choix délibéré de fail-fast plutôt qu'un @Result que l'app pourrait ignorer (erreur de
+    configuration, pas d'exécution).
+  Step sans dépendance : `inputs` vaut un @HashMap vide, jamais un @Option ni une absence — un kind
+    qui ne dépend d'aucun autre step ne distingue pas « pas encore branché » de « branché sur rien »,
+    les deux cas n'existent pas séparément.
+  Step avec plusieurs dépendances : `inputs` porte une entrée par id de `depends_on`, chacune la
+    sortie exacte (non transformée) du `run` du step amont correspondant — ./step.rs ne fusionne, ne
+    renomme ni n'aplatit rien, la structure de chaque valeur reste celle que le step amont a retournée.
+
+Tasks:
+  [x] Codification de @StepError : Sébastien (2026-09-23) — pas de champ `code`, imposer une
+    codification des erreurs applicatives de workflow irait trop loin. Décision reflétée dans `Must`,
+    définitive.
+  [x] Passage de donnée entre steps : Sébastien (2026-09-23) — la sortie d'un step amont doit pouvoir
+    alimenter un step aval quand la dépendance est documentée dans le DAG. Décision reflétée dans
+    `Must` (paramètre `inputs` de `run`) — ./interpreter.sdd hérite de la responsabilité d'assembler
+    `inputs` à partir des sorties collectées des dépendances avant chaque appel à `StepDispatcher`.
+  [ ] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./step.rs, avec au moins
+    deux kinds de fixture (un `retryable: true`, un `retryable: false`, un kind qui panique
+    délibérément pour vérifier que `run` lui-même peut paniquer sans que @StepRegistry::dispatch en
+    soit responsable — seule @StepRegistry::register a la garantie fail-fast).
+
+Done when:
+  Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
+  La spec est relue et approuvée par Sébastien avant qu'une ligne de ./step.rs soit écrite.
+
+Scenario: dispatch vers le bon kind parmi plusieurs enregistrés
+  Given un @StepRegistry avec trois kinds de fixture enregistrés (`"a"`, `"b"`, `"c"`), chacun
+    identifiable par sa valeur de retour propre
+  When @StepRegistry::dispatch est appelé avec `"b"`, une `config` quelconque et un `inputs` vide
+  Then le futur retourné, une fois exécuté, rend la valeur de retour du kind `"b"` — jamais celle de
+    `"a"` ou `"c"`
+
+Scenario: inputs transite intact du dépendant vers le kind
+  Given un kind de fixture `"echo_inputs"` dont `run` retourne `inputs` inchangé (converti en
+    @serde_json::Value), et un @HashMap `inputs` de fixture à deux entrées : `"A"` → `json!(1)`,
+    `"B"` → `json!({"x": true})`
+  When @StepRegistry::dispatch("echo_inputs", json!(null), inputs) est exécuté
+  Then la valeur retournée contient exactement les deux entrées `"A"` et `"B"` avec leurs valeurs
+    d'origine, structurellement identiques — ./step.rs ne les a ni fusionnées avec `config`, ni
+    renommées, ni réordonnées de façon observable
+
+Scenario: step sans dépendance reçoit un inputs vide, jamais absent
+  Given un kind de fixture `"no_deps"` dont `run` retourne le nombre d'entrées de `inputs`
+    (`inputs.len()` converti en @serde_json::Value)
+  When @StepRegistry::dispatch("no_deps", json!(null), @HashMap::new()) est exécuté
+  Then la valeur retournée est `0` — un @HashMap vide, jamais un cas à part distinct d'un `inputs`
+    non vide
+
+Scenario: kind inconnu ne panique jamais
+  Given un @StepRegistry avec un seul kind enregistré (`"a"`)
+  When @StepRegistry::dispatch est appelé avec `"inexistant"`
+  Then le résultat est @Err(StepError { retryable: false, message: "kind inconnu: inexistant" }) sans
+    panic
+
+Scenario: collision d'enregistrement panique au démarrage
+  Given un @StepRegistry vide et deux `impl MiryadWorkflowStep` de fixture dont `kind()` rend tous
+    deux `"dupliqué"`
+  When @StepRegistry::register est appelé pour le premier puis pour le second
+  Then le second appel panique avant tout enregistrement d'un troisième kind ultérieur — le panic
+    interrompt le démarrage, pas seulement cet appel
+
+Scenario: StepError retryable distingue deux stratégies pour l'appelant
+  Given un kind de fixture dont `run` rend systématiquement @StepError { retryable: true, message:
+    "indisponible" }, un second dont `run` rend systématiquement @StepError { retryable: false,
+    message: "config invalide" }
+  When chacun est déclenché via @StepRegistry::dispatch puis exécuté
+  Then les deux erreurs sont fidèlement rendues avec leur `retryable` d'origine — ./step.rs ne modifie
+    jamais ce champ, la décision de retry effective appartient à ./dispatcher.rs (hors périmètre de ce
+    fichier, non testée ici)
+
+Scenario: run reçoit la config telle quelle, sans validation préalable
+  Given un kind de fixture dont `run` retourne `config` inchangée (echo)
+  When @StepRegistry::dispatch("echo", @serde_json::json!({"a": 1, "b": [true, null]}), @HashMap::new())
+    est exécuté
+  Then la valeur retournée est structurellement identique à la valeur d'entrée — aucune normalisation,
+    aucun champ ajouté ou retiré par le chemin @StepRegistry
