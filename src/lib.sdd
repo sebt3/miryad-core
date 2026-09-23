@@ -91,10 +91,11 @@ Must not:
     neutraliserait le harnais de `/tooling.sdd` sur le code de production.
   Déclarer hors de son `#[cfg]` protecteur un module dont la dépendance est optionnelle :
     `tower-http` via `./frontend.rs`, `seaography` et `async-graphql` via `./graphql/mod.rs`,
-    `vynil-core` via `./mcp/mod.rs` ; `restate-sdk`, `uuid`, `async-trait`, `tokio` (entrée
-    `[dependencies]` `optional = true`, activée par `workflow` seule) et `vynil-core` (activé une
+    `vynil-core` via `./mcp/mod.rs` ; `restate-sdk`, `uuid`, `tokio` (entrées `[dependencies]`
+    `optional = true`, activées par `workflow` seule) et `vynil-core` (activé une
     seconde fois, feature `rhai` en plus de `hbs`/`crypto`) via `./workflow/mod.rs` (amendement
-    2026-09-23).
+    2026-09-23) ; `async-trait` est hors de cette liste — dépendance directe non optionnelle
+    préexistante, partagée avec ./auth et ./migration, non gatée par construction.
 
 Depends on:
   ./auth/mod.rs
@@ -113,8 +114,9 @@ Depends on:
   ./users/mod.rs
   ./workflow/mod.rs
     Compilé seulement sous `workflow` ; apporte `restate-sdk`, une seconde activation de
-    `vynil-core` (feature `rhai`), `uuid`, `async-trait`, `tokio` en dépendance optionnelle
-    activée par `workflow` seule (amendement 2026-09-23).
+    `vynil-core` (feature `rhai`), `uuid`, `tokio` en dépendance optionnelle
+    activée par `workflow` seule ; `async-trait`, direct non optionnel préexistant, n'est pas
+    apporté par lui (amendement 2026-09-23, corrigé à l'implémentation).
 
 Exposes:
   @auth — OIDC, cookies de session, tokens API, extracteurs axum ; toujours compilé.

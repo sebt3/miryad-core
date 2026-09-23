@@ -7,8 +7,10 @@ Purpose:
     ré-exporte à plat les types que l'app consommatrice doit toucher pour intégrer le moteur de
     workflow, et documente le graphe complet des dépendances Cargo que la feature `workflow`
     introduit — consolidé ici parce que chaque spec enfant n'a proposé qu'un fragment du diff
-    `/Cargo.toml` (@client::WorkflowConfig a besoin d'`uuid`, ./step.sdd d'`async-trait`,
-    ./dispatcher.sdd de `restate-sdk`, ./rhai_step.sdd de `tokio` optionnel et de `vynil-core/rhai`) et
+    `/Cargo.toml` (@client::WorkflowConfig a besoin d'`uuid`, ./dispatcher.sdd de `restate-sdk`,
+    ./rhai_step.sdd de `tokio` optionnel et de `vynil-core/rhai` ; ./step.sdd n'en introduit
+    aucune — `async-trait` est déjà une dépendance directe non optionnelle de /Cargo.toml,
+    utilisée hors feature par ./../auth/oidc.rs et ./../migration/*) et
     qu'aucune n'a autorité sur `/Cargo.toml` lui-même (`Can modify` de /miryad-core.sdd).
   Contrairement aux trois autres surfaces de la crate (REST, GraphQL, MCP), `workflow` ne monte
     aucune route sur le `axum::Router` de l'app — ses deux services (`DagInterpreter`,
@@ -61,11 +63,11 @@ Must:
     lui-même (`mod.rs` n'a pas à se re-gater, la racine le fait une fois pour tous ses enfants — même
     convention que `./mcp/mod.rs`, `./graphql/mod.rs`).
   Documenter dans `/Cargo.toml` (hors `Owns` de ce fichier, mais le diff qu'il impose) exactement :
-    `workflow = ["dep:restate-sdk", "dep:uuid", "dep:async-trait", "dep:vynil-core", "vynil-core?/rhai",
+    `workflow = ["dep:restate-sdk", "dep:uuid", "dep:vynil-core", "vynil-core?/rhai",
     "dep:tokio"]` ; nouvelles entrées `[dependencies]` : `restate-sdk = { version = "0.12", features =
     ["http_server"], optional = true }` (./dispatcher.sdd), `uuid = { version = "1", features = ["v4"],
-    optional = true }` (./client.sdd), `async-trait = { version = "0.1", optional = true }`
-    (./step.sdd), `tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional =
+    optional = true }` (./client.sdd), `tokio = { version = "1", features = ["rt-multi-thread",
+    "macros"], optional =
     true }` — dépendance **optionnelle** de `[dependencies]`, activée par `workflow` seule via
     `dep:tokio` (décision Sébastien 2026-09-23 : une promotion non optionnelle ferait peser tokio
     sur les sept combinaisons sans `workflow`, et Cargo refuse `dep:` sur une dépendance
@@ -73,7 +75,15 @@ Must:
     Cargo la fusionne avec l'entrée optionnelle sur le profil test quand `workflow` est active ;
     `vynil-core` (déjà présent sous `mcp`, `optional = true`) gagne une seconde ligne d'activation
     (`vynil-core?/rhai`) portée par `workflow`, Cargo unifie les features activées quand `mcp` et
-    `workflow` sont actifs ensemble (`hbs` + `crypto` + `rhai`).
+    `workflow` sont actifs ensemble (`hbs` + `crypto` + `rhai`) — le lock est remonté à `0.7.7`,
+    correction semver-compatible du crate `vynil-core` elle-même imposée par sa feature `rhai`
+    (`SmartString`/`serde`, bug amont de `0.7.4`, arbitré à l'implémentation 2026-09-23, le graphe
+    `mcp` reste vert sur ses 95 tests) ; `async-trait` n'entre dans aucun de ces tableaux —
+    c'est déjà une dépendance directe **non optionnelle** de `/Cargo.toml` (ligne `async-trait =
+    "0.1"`, utilisée hors gating par ./../auth/oidc.rs et ./../migration/*) : la rendre
+    optionnelle casserait les six combinaisons sans `workflow`, ./step.rs lutilise telle quelle
+    sous le gating de `workflow` (correction d'un premise faux des specs initiales — « transitive
+    à promouvoir » — arbitrée à l'implémentation 2026-09-23 sur preuve `cargo check`).
 
 Must not:
   Ré-exporter `definition::validate_dag`, ou toute fonction/type marqué `pub(crate)` par un enfant :

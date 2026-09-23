@@ -118,10 +118,13 @@ Forbids:
   `restate_sdk::*`, `reqwest::*` dans ./step.rs
 
 Depends on:
-  @async-trait 0.1 (lock `0.1.92`, transitive existante — à promouvoir en dépendance directe de
-    /Cargo.toml sous la feature `workflow`) — macro `#[async_trait::async_trait]`, seule façon de
-    rendre `Box<dyn MiryadWorkflowStep>` construisible tout en gardant `run` déclarée `async fn` dans
-    la syntaxe du trait
+  @async-trait 0.1 (lock `0.1.92`) — macro `#[async_trait::async_trait]`, seule façon de
+    rendre `Box<dyn MiryadWorkflowStep>` construisible tout en gardant `run` déclarée `async fn`
+    dans la syntaxe du trait. Déjà dépendance directe **non optionnelle** de /Cargo.toml
+    (utilisée hors gating par ./../auth/oidc.rs et ./../migration/*) : ./step.rs l'utilise sous
+    le gating de `workflow` sans rien ajouter au graphe Cargo — le premise initial
+    (« transitive à promouvoir sous la feature ») était faux, corrigé à l'implémentation
+    2026-09-23 (`workflow/mod.sdd` `Must`).
   @serde_json (déjà dépendance transitive de @serde) — @serde_json::Value, type opaque de `config`,
     `inputs` et de retour
   @thiserror 2 (lock `2.0.20`) — derive de @StepError
