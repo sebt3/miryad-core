@@ -70,6 +70,9 @@ async-graphql = { version = "7", optional = true }
 async-graphql-axum = { version = "7", optional = true }
 vynil-core = { version = "0.7.4", default-features = false, features = ["hbs", "crypto"], optional = true }
 tower-http = { version = "0.6", default-features = false, features = ["fs"], optional = true }
+restate-sdk = { version = "0.12", features = ["http_server"], optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
 
 [features]
 default = ["static-frontend"]
@@ -78,6 +81,10 @@ swagger-ui = ["dep:utoipa-swagger-ui"]
 graphql = ["dep:seaography", "dep:async-graphql", "dep:async-graphql-axum", "sea-orm/seaography"]
 graphiql = ["graphql", "async-graphql/graphiql"]
 mcp = ["dep:vynil-core"]
+# async-trait n'est pas dans ce tableau : déjà dépendance directe non optionnelle utilisée hors
+# gating (src/auth/oidc.rs, src/migration/*) ; la rendre optionnelle casserait tout build sans
+# workflow — contrat tranché dans src/workflow/mod.sdd `Must` (implémentation 2026-09-23).
+workflow = ["dep:restate-sdk", "dep:uuid", "dep:vynil-core", "vynil-core?/rhai", "dep:tokio"]
 
 [dev-dependencies]
 sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "mock"] }
