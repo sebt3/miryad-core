@@ -127,12 +127,20 @@ pub(crate) async fn update<E: RestEntity>(
     }
 
     let mut active = mark_all_set::<E>(body.into_active_model());
-    // Force la PK depuis le chemin — ignore toute divergence dans le corps de la requête.
+    // Le hook métier de la mise à jour s'exécute après `can_write` (déjà statué sur `existing`) et
+    // avant les deux invariants ci-dessous, à la position symétrique de `before_create` dans
+    // create() : ces deux invariants restent les derniers mots — un hook buggé ou hostile ne peut
+    // ni déplacer la cible ni transférer la propriété (amendement `rest/core.sdd` 2026-09-23).
+    // `existing` n'est prêté qu'en lecture seule, `Err` traverse en Application sans code `MRD-*`.
+    active = E::before_update(active, &existing, principal).map_err(RestError::Application)?;
+    // Force la PK depuis le chemin — ignore toute divergence dans le corps de la requête, y compris
+    // celle que poserait le hook.
     active.set(primary_key_column::<E>(), sea_orm::Value::from(id));
-    // Même invariant qu'à la création (cf. create()) : owner_column() n'est jamais éditable par
-    // le client, même en le demandant explicitement dans le corps — sinon un owner_id divergent
-    // change silencieusement le propriétaire (incohérent avec la protection de create()), ou un
-    // owner_id invalide fait échouer la requête sur une contrainte FK brute plutôt qu'un 4xx propre.
+    // Même invariant qu'à la création (cf. create()) : owner_column() n'est jamais éditable ni
+    // par le client, même en le demandant explicitement dans le corps, ni par le hook — sinon un
+    // owner_id divergent change silencieusement le propriétaire (incohérent avec la protection de
+    // create()), ou un owner_id invalide fait échouer la requête sur une contrainte FK brute plutôt
+    // qu'un 4xx propre.
     if E::write_policy() == AccessPolicy::OwnerOnly
         && let Some(owner_col) = E::owner_column()
     {
@@ -153,6 +161,12 @@ pub(crate) async fn delete<E: RestEntity>(
     if !can_write::<E>(db, &user, &existing).await? {
         return Err(RestError::Forbidden);
     }
+
+    // Le hook métier de la suppression s'exécute après `can_write` (statué sur `existing`) et avant
+    // toute émission de `DELETE` : un `Err` interrompt là, `delete_by_id` n'est jamais atteint
+    // (amendement `rest/core.sdd` 2026-09-23). Aucun ActiveModel n'existe ici, `existing` est prêté
+    // en lecture seule ; `Err` traverse en Application sans code `MRD-*`.
+    E::before_delete(&existing, principal).map_err(RestError::Application)?;
 
     E::delete_by_id(id).exec(db).await?;
     Ok(())

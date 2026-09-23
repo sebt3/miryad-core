@@ -140,6 +140,7 @@ mod tests {
     use crate::users::resolve_user as auth_resolve_user;
     use axum::body::Body;
     use axum::http::Request;
+    use sea_orm::ActiveValue::Set;
     use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Schema};
     use sea_orm_migration::MigratorTrait;
     use tower::ServiceExt;
@@ -271,6 +272,135 @@ mod tests {
         }
     }
 
+    // Fixture des hooks `before_update` et `before_delete` (amendement 2026-09-23 de
+    // `../rest/core.sdd` et `../resource.sdd`) : écriture `OwnerOnly`, lecture `Public`. Le hook
+    // de mise à jour rejette un label vide (code `WIDGET-002`) sinon le passe en majuscules —
+    // miroir côté update de ce que fait `widget` à la création ; le hook de suppression ne rejette
+    // que les lignes au `status` `"locked"` (code `WIDGET-LOCKED`), pour prouver que le rejet est
+    // conditionnel et la suppression possible.
+    mod doodad {
+        use crate::resource::{AccessPolicy, HookError, MiryadResource};
+        use sea_orm::ActiveValue::Set;
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "doodads")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub owner_id: i32,
+            pub label: String,
+            pub status: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "doodads"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn owner_column() -> Option<Column> {
+                Some(Column::OwnerId)
+            }
+
+            fn before_update(
+                active: ActiveModel,
+                _existing: &Self::Model,
+                _principal: &crate::auth::AuthPrincipal,
+            ) -> Result<ActiveModel, HookError> {
+                let label = match &active.label {
+                    sea_orm::ActiveValue::Set(v) | sea_orm::ActiveValue::Unchanged(v) => v.clone(),
+                    sea_orm::ActiveValue::NotSet => String::new(),
+                };
+                if label.is_empty() {
+                    return Err(HookError::with_code(
+                        "WIDGET-002",
+                        "label must not be updated to empty",
+                    ));
+                }
+                let mut active = active;
+                active.label = Set(label.to_uppercase());
+                Ok(active)
+            }
+
+            fn before_delete(
+                existing: &Self::Model,
+                _principal: &crate::auth::AuthPrincipal,
+            ) -> Result<(), HookError> {
+                if existing.status == "locked" {
+                    return Err(HookError::with_code(
+                        "WIDGET-LOCKED",
+                        "locked widgets must not be deleted",
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    // Fixture hostile côté update (le pendant update de la fixture `hostile` que la spec
+    // `../rest/core.sdd` prévoit pour la création) : le hook re-forge la PK (à 4242, ligne
+    // expressément seedingée par le test) et l'owner (utilisateur inconnu 999_999) ; les deux
+    // invariants postérieurs de `core::update` doivent annuler la forgedure, et sa mutation de
+    // `label` atteste que le hook a bien tourné.
+    mod hostile {
+        use crate::resource::{AccessPolicy, HookError, MiryadResource};
+        use sea_orm::ActiveValue::Set;
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "hostiles")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub owner_id: i32,
+            pub label: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "hostiles"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn owner_column() -> Option<Column> {
+                Some(Column::OwnerId)
+            }
+
+            fn before_update(
+                active: ActiveModel,
+                _existing: &Self::Model,
+                _principal: &crate::auth::AuthPrincipal,
+            ) -> Result<ActiveModel, HookError> {
+                let mut active = active;
+                active.id = Set(4242);
+                active.owner_id = Set(999_999);
+                active.label = Set("FORGED".to_string());
+                Ok(active)
+            }
+        }
+    }
+
     async fn test_db() -> DatabaseConnection {
         let db = Database::connect("sqlite::memory:")
             .await
@@ -290,6 +420,12 @@ mod tests {
         db.execute(&schema.create_table_from_entity(widget::Entity))
             .await
             .expect("widgets table creates");
+        db.execute(&schema.create_table_from_entity(doodad::Entity))
+            .await
+            .expect("doodads table creates");
+        db.execute(&schema.create_table_from_entity(hostile::Entity))
+            .await
+            .expect("hostiles table creates");
         db
     }
 
@@ -308,6 +444,8 @@ mod tests {
             .merge(resource_router::<recipe::Entity, MiryadAuthState>())
             .merge(resource_router::<ingredient::Entity, MiryadAuthState>())
             .merge(resource_router::<widget::Entity, MiryadAuthState>())
+            .merge(resource_router::<doodad::Entity, MiryadAuthState>())
+            .merge(resource_router::<hostile::Entity, MiryadAuthState>())
             .with_state(state)
     }
 
@@ -690,6 +828,285 @@ mod tests {
         let error = json_body(resp).await;
         assert_eq!(error["code"], "WIDGET-001");
         assert_eq!(error["message"], "label must not be empty");
+    }
+
+    // Scenario « update : la mutation du hook before_update est écrite, mais les invariants
+    // restent après lui » (amendement 2026-09-23, `../rest/core.sdd`) — la ligne écrite porte
+    // l'id du chemin, l'owner d'`existing` et la mutation du hook ; PK divergente et owner
+    // étranger du corps sont ignorés.
+    #[tokio::test]
+    async fn before_update_hook_mutation_is_applied_at_update() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let alice = auth_resolve_user(&db, "alice", None).await.expect("resolve");
+        let bob = auth_resolve_user(&db, "bob", None).await.expect("resolve");
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        let create_body = serde_json::json!({
+            "id": 0, "owner_id": 0, "label": "gadget", "status": "open",
+        });
+        let created = app_ref
+            .clone()
+            .oneshot(json_request("POST", "/api/v1/doodads", &token, Some(create_body)))
+            .await
+            .expect("create succeeds");
+        assert_eq!(created.status(), StatusCode::OK);
+        let created = json_body(created).await;
+        let id = created["id"].as_i64().expect("id present");
+
+        // PK divergente de l'id du chemin et owner étranger — les deux invariants postérieurs au
+        // hook doivent les annuler, la mutation du hook doit survivre.
+        let update_body = serde_json::json!({
+            "id": id + 1000, "owner_id": bob.id, "label": "mutant", "status": "open",
+        });
+        let resp = app_ref
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/v1/doodads/{id}"),
+                &token,
+                Some(update_body),
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let updated = json_body(resp).await;
+        assert_eq!(
+            updated["id"], id,
+            "la cible est la ligne du chemin, jamais celle du corps"
+        );
+        assert_eq!(
+            updated["owner_id"], alice.id,
+            "le propriétaire reste celui d'existing"
+        );
+        assert_eq!(
+            updated["label"], "MUTANT",
+            "la mutation du hook est écrite sur la ligne"
+        );
+    }
+
+    // Scenario « update réjecté par before_update : RestError::Application sans code MRD-* »
+    // (amendement 2026-09-23) — le HookError `WIDGET-002` traverse intact et interrompt avant
+    // `ActiveModelTrait::update` : la ligne en base reste inchangée.
+    #[tokio::test]
+    async fn before_update_hook_error_blocks_update_without_mrd_code() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        let create_body = serde_json::json!({
+            "id": 0, "owner_id": 0, "label": "draft", "status": "open",
+        });
+        let created = app_ref
+            .clone()
+            .oneshot(json_request("POST", "/api/v1/doodads", &token, Some(create_body)))
+            .await
+            .expect("create succeeds");
+        let created = json_body(created).await;
+        let id = created["id"].as_i64().expect("id present");
+
+        let update_body = serde_json::json!({
+            "id": id, "owner_id": 0, "label": "", "status": "open",
+        });
+        let resp = app_ref
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/v1/doodads/{id}"),
+                &token,
+                Some(update_body),
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let error = json_body(resp).await;
+        assert_eq!(error["code"], "WIDGET-002");
+        assert_eq!(error["message"], "label must not be updated to empty");
+        let rendered = error.to_string();
+        assert!(
+            !rendered.contains("MRD-"),
+            "le HookError ne porte jamais de code de la crate : {rendered}"
+        );
+
+        // Aucune écriture : `ActiveModelTrait::update` n'a pas reçu l'ActiveModel rejeté.
+        let after = app_ref
+            .oneshot(json_request(
+                "GET",
+                &format!("/api/v1/doodads/{id}"),
+                &token,
+                None,
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(after.status(), StatusCode::OK);
+        let after = json_body(after).await;
+        assert_eq!(
+            after["label"], "draft",
+            "l'update rejetée laisse la ligne inchangée"
+        );
+        assert_eq!(after["status"], "open");
+    }
+
+    // Scenario « update hook hostile : PK et owner qu'il re-forge sont annulés par les
+    // invariants » (amendement 2026-09-23, miroir côté update du hook de création hostile) —
+    // la fixture `hostile` re-pose la PK à 4242 (ligne seedingée pour l'occasion) et l'owner sur
+    // un utilisateur inconnu : la cible reste la ligne du chemin, le propriétaire reste celui
+    // d'`existing`, et la troisième ligne n'a rien subi.
+    #[tokio::test]
+    async fn update_hook_hostile_ne_contourne_les_invariants() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let alice = auth_resolve_user(&db, "alice", None).await.expect("resolve");
+        let bob = auth_resolve_user(&db, "bob", None).await.expect("resolve");
+
+        // Troisième ligne portant la PK que le hook hostile re-forge (4242) : la mise à jour ne
+        // doit jamais atterrir dessus.
+        hostile::Entity::insert(hostile::ActiveModel {
+            id: Set(4242),
+            owner_id: Set(bob.id),
+            label: Set("target".to_string()),
+        })
+        .exec(&db)
+        .await
+        .expect("third row seeds");
+        let probe = db.clone();
+
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        let create_body = serde_json::json!({"id": 0, "owner_id": 0, "label": "alpha"});
+        let created = app_ref
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/hostiles",
+                &token,
+                Some(create_body),
+            ))
+            .await
+            .expect("create succeeds");
+        let created = json_body(created).await;
+        let id = created["id"].as_i64().expect("id present");
+
+        let update_body = serde_json::json!({"id": id, "owner_id": alice.id, "label": "alpha2"});
+        let resp = app_ref
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/v1/hostiles/{id}"),
+                &token,
+                Some(update_body),
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let updated = json_body(resp).await;
+        assert_eq!(
+            updated["id"], id,
+            "la PK forcée par le chemin l'emporte sur le hook"
+        );
+        assert_eq!(
+            updated["owner_id"], alice.id,
+            "l'owner reconduit depuis existing l'emporte sur le hook"
+        );
+        assert_eq!(
+            updated["label"], "FORGED",
+            "la mutation licite du hook passe malgré tout"
+        );
+
+        let other = hostile::Entity::find_by_id(4242)
+            .one(&probe)
+            .await
+            .expect("third row still readable")
+            .expect("aucune mise à jour n'a atterri sur la PK forgée par le hook");
+        assert_eq!(other.owner_id, bob.id);
+        assert_eq!(other.label, "target", "la ligne tierce est restée intacte");
+    }
+
+    // Scenario « delete réjecté par before_delete : RestError::Application, aucun DELETE émis »
+    // (amendement 2026-09-23) — le HookError `WIDGET-LOCKED` traverse intact, `delete_by_id`
+    // n'est jamais atteint et la ligne `"locked"` survit ; un second appel sur une ligne libre
+    // supprime normalement, prouvant que le rejet est conditionnel au hook.
+    #[tokio::test]
+    async fn before_delete_hook_error_blocks_delete_without_mrd_code() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        let mut ids = Vec::new();
+        for (label, status) in [("garde", "locked"), ("libre", "open")] {
+            let body = serde_json::json!({
+                "id": 0, "owner_id": 0, "label": label, "status": status,
+            });
+            let created = app_ref
+                .clone()
+                .oneshot(json_request("POST", "/api/v1/doodads", &token, Some(body)))
+                .await
+                .expect("create succeeds");
+            assert_eq!(created.status(), StatusCode::OK);
+            let created = json_body(created).await;
+            ids.push(created["id"].as_i64().expect("id present"));
+        }
+        let locked = ids.first().copied().expect(" deux lignes créées");
+        let other = ids.get(1).copied().expect("deux lignes créées");
+
+        let resp = app_ref
+            .clone()
+            .oneshot(json_request(
+                "DELETE",
+                &format!("/api/v1/doodads/{locked}"),
+                &token,
+                None,
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let error = json_body(resp).await;
+        assert_eq!(error["code"], "WIDGET-LOCKED");
+        assert_eq!(error["message"], "locked widgets must not be deleted");
+        let rendered = error.to_string();
+        assert!(
+            !rendered.contains("MRD-"),
+            "le HookError ne porte jamais de code de la crate : {rendered}"
+        );
+
+        // `delete_by_id` n'a jamais été atteint : la ligne verrouillée est toujours en base.
+        let still_there = app_ref
+            .clone()
+            .oneshot(json_request(
+                "GET",
+                &format!("/api/v1/doodads/{locked}"),
+                &token,
+                None,
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(still_there.status(), StatusCode::OK);
+
+        // Une ligne non verrouillée se supprime normalement — le rejet est conditionnel au hook,
+        // pas systématique.
+        let deleted = app_ref
+            .clone()
+            .oneshot(json_request(
+                "DELETE",
+                &format!("/api/v1/doodads/{other}"),
+                &token,
+                None,
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+        let gone = app_ref
+            .oneshot(json_request(
+                "GET",
+                &format!("/api/v1/doodads/{other}"),
+                &token,
+                None,
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(gone.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
