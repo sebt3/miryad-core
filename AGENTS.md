@@ -76,6 +76,7 @@ cargo test --no-default-features --features swagger-ui
 cargo test --no-default-features --features graphql
 cargo test --no-default-features --features graphiql
 cargo test --no-default-features --features mcp
+cargo test --no-default-features --features workflow
 cargo test --all-features
 cargo clippy --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
@@ -83,6 +84,7 @@ cargo clippy --no-default-features --features swagger-ui --all-targets -- -D war
 cargo clippy --no-default-features --features graphql --all-targets -- -D warnings
 cargo clippy --no-default-features --features graphiql --all-targets -- -D warnings
 cargo clippy --no-default-features --features mcp --all-targets -- -D warnings
+cargo clippy --no-default-features --features workflow --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo fmt --check
 ```
