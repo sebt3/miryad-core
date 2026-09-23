@@ -166,3 +166,10 @@ pub mod rest;
 
 /// Gestion utilisateurs/groupes (résolution, synchronisation OIDC, comptes de service).
 pub mod users;
+
+/// Moteur de workflow à DAG (feature `workflow`) : définitions persistées en base, exécutées par
+/// un cluster Restate self-hosté. Ne monte **aucune** route sur le `axum::Router` de l'app — les
+/// services `restate-sdk` sont liés par l'app consommatrice elle-même ; voir
+/// `docs/architecture.md`.
+#[cfg(feature = "workflow")]
+pub mod workflow;
