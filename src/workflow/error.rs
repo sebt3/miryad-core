@@ -41,7 +41,6 @@ pub enum WorkflowError {
 /// Range un `reqwest::Error` nu dans l'une des deux catégories transport : `is_decode()` ou
 /// `is_body()` devient `Serialization`, tout le reste devient `RestateUnreachable`. Ne construit
 /// jamais `RestateRejected` et ne retourne jamais de `Result` — la fonction ne peut pas échouer.
-#[allow(dead_code)] // appelant unique : ./client.rs (./client.sdd, `register_deployment`/`trigger_run`), implémenté au batch suivant
 pub(crate) fn classify_transport_error(err: reqwest::Error) -> WorkflowError {
     if err.is_decode() || err.is_body() {
         WorkflowError::Serialization(err)

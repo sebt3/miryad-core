@@ -7,4 +7,5 @@
 //! elle-même dans son propre `main()`. Schéma de déploiement (StatefulSet Restate, vynil box)
 //! dans `docs/architecture.md`.
 
+pub mod client;
 pub mod error;
