@@ -8,7 +8,8 @@ use serde::Serialize;
 
 use crate::auth::AuthPrincipal;
 
-/// Erreur métier retournée par un hook applicatif (`MiryadResource::before_create`) — jamais une
+/// Erreur métier retournée par un hook applicatif (`before_create`, `before_update`,
+/// `before_delete`) — jamais une
 /// erreur *de* miryad-core, donc jamais de code `MRD-XXX-NNN` (cette convention identifie un
 /// problème dans le framework, pas une règle métier qui rejette une requête). Le code est libre,
 /// à la charge de l'app ; `None` si elle n'en a pas.
@@ -96,5 +97,49 @@ pub trait MiryadResource: EntityTrait {
     ) -> Result<Self::ActiveModel, HookError> {
         let _ = principal;
         Ok(active)
+    }
+
+    /// Hook métier de la mise à jour — position symétrique de [`before_create`](Self::before_create)
+    /// sur la création : après RBAC (`can_write`, évalué sur la ligne relue) et après
+    /// `rest::core::mark_all_set`, avant les deux invariants de `rest::core::update` (forçage de la
+    /// clé primaire à l'id du chemin, reconduction de `owner_column` depuis `existing`) — un hook
+    /// hostile est défait par le même ordre que sur la création. `existing` (le `Model` relu avant
+    /// mise à jour, la même ligne qu'a évaluée `can_write`) est prêté en lecture seule : comparer
+    /// avant/après (ex. valider une transition d'état) ne demande pas de relire la base soi-même.
+    /// Déclenché sur REST et MCP seulement, **jamais sur GraphQL** — Seaography `2.0.0-rc.9` ne
+    /// pilote son hook équivalent (`before_active_model_save`) qu'à l'insertion ; asymétrie actée
+    /// par l'amendement `resource.sdd` du 2026-09-23 à la règle de parité. Défaut : identité —
+    /// `Ok(active)`, `existing` et `principal` ignorés.
+    ///
+    /// # Errors
+    ///
+    /// Un `Err(HookError)` remonté par l'override de l'application consommatrice (code applicatif
+    /// libre, jamais un code `MRD-*` de la crate). Le défaut ne rejette jamais.
+    fn before_update(
+        active: Self::ActiveModel,
+        existing: &Self::Model,
+        principal: &AuthPrincipal,
+    ) -> Result<Self::ActiveModel, HookError> {
+        let _ = existing;
+        let _ = principal;
+        Ok(active)
+    }
+
+    /// Hook métier de la suppression : exécuté après RBAC (`can_write`, évalué sur la ligne
+    /// relue), avant l'exécution du `DELETE` — un `Err` interrompt avant toute requête. Aucun
+    /// `ActiveModel` n'existe pour une suppression, seul `existing` (le `Model` relu) est prêté,
+    /// en lecture seule. Déclenché sur REST et MCP seulement, **jamais sur GraphQL** (même
+    /// asymétrie actée que [`before_update`](Self::before_update), amendement `resource.sdd` du
+    /// 2026-09-23). Défaut : `Ok(())`, `existing` et `principal` ignorés.
+    ///
+    /// # Errors
+    ///
+    /// Un `Err(HookError)` remonté par l'override de l'application consommatrice (code applicatif
+    /// libre, jamais un code `MRD-*` de la crate) — il interrompt avant toute requête `DELETE`.
+    /// Le défaut ne rejette jamais.
+    fn before_delete(existing: &Self::Model, principal: &AuthPrincipal) -> Result<(), HookError> {
+        let _ = existing;
+        let _ = principal;
+        Ok(())
     }
 }
