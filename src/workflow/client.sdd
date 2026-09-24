@@ -199,16 +199,17 @@ Tasks:
   [x] Déduplication de double déclenchement : Sébastien (2026-09-23) — hors périmètre de cette crate,
     décision reflétée dans `Must`. Reste ouvert : documenter ce choix de périmètre dans
     docs/architecture.md.
-  [ ] À l'implémentation de ce fichier : retirer le `#[allow(dead_code)]` posé sur
+  [x] À l'implémentation de ce fichier : retirer le `#[allow(dead_code)]` posé sur
     @classify_transport_error dans ./error.rs (batch du 2026-09-23, motif : ./client.rs est son
     unique appelant, pas encore écrit) — la levée est une condition de ce batch, pas une dette à
-    garder en tête.
-  [ ] Convertir les `Scenario` de cette spec en tests distincts nommés dans `mod tests` de
+    garder en tête. Vérifié en revue 2026-09-24 : plus aucun `#[allow(dead_code)]` dans `src/workflow/`.
+  [x] Convertir les `Scenario` de cette spec en tests distincts nommés dans `mod tests` de
     ./client.rs, contre un serveur HTTP de test (`wiremock` ou équivalent — absent des dépendances
     actuelles, à ajouter en `dev-dependencies` sous la feature `workflow`, choix d'implémentation
     laissé à la rédaction du test) plutôt que contre un vrai `restate-server` — le spike a vérifié la
     forme réelle du protocole, les tests de cette spec vérifient que ./client.rs la respecte, pas que
-    Restate se comporte comme documenté.
+    Restate se comporte comme documenté. Vérifié en revue 2026-09-24 : sept `Scenario`, huit tests
+    nommés verts dans `mod tests` de ./client.rs contre un serveur HTTP de test local.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
