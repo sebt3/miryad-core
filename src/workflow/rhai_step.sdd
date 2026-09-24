@@ -8,7 +8,8 @@ Purpose:
     traduit tout échec Rhai en @StepError non-retryable — un script qui échoue une fois échouera de
     la même façon à la prochaine tentative, rien à gagner à rejouer.
   Fichier neuf, conception, API de `vynil-core` `0.7.4` vérifiée dans son source local (crate déjà en
-    cache, pas seulement sa documentation) : `Script::new_bare(resolver_path: Vec<String>) -> Script`
+    cache, pas seulement sa documentation ; la lock est passée à `0.7.7` depuis — ratifié à l'implémentation
+    2026-09-23, `Must` inchangée, l'API `engine` à revérifier en source sur cette version au batch) : `Script::new_bare(resolver_path: Vec<String>) -> Script`
     construit un moteur Rhai déjà enrichi de tous les helpers de `vynil-core` (hash, chrono, semver,
     yaml, glob, et sous feature les helpers `crypto`/`password`/`oci`/`shell`) ainsi que des fonctions
     `import_run`/`import_template` de convention kuberest (résolution de modules par
@@ -18,6 +19,11 @@ Purpose:
 
 Owns:
   ./rhai_step.rs
+  ./fixtures_rhai/lib.rhai — fixture de données du `Scenario` des imports (non compilée par cargo,
+    jamais `include_str!`, résolue par @CARGO_MANIFEST_DIR ; un `.rhai` de fixture n'est pas une
+    unité de compilation au sens de la règle une-spec-par-fichier — attachement régularisé
+    2026-09-23 sur remarque `validator`, l'exclusion du paquet crates.io est traitée par
+    `[package].exclude` dans /Cargo.toml, horsOwns de cette spec : @miryad-core.sdd)
 
 References:
   ./step.sdd — @MiryadWorkflowStep, @StepError ; ce fichier est le premier (et seul, à la rédaction)
@@ -94,14 +100,15 @@ Forbids:
   `restate_sdk::*`, `reqwest::*` dans ./rhai_step.rs
 
 Depends on:
-  `vynil-core` `0.7.4` (dépendance déjà présente, feature `rhai` actuellement seulement activée sous
-    `mcp` — à activer aussi sous `workflow`, Cargo.toml : `workflow = [...,
-    "vynil-core?/rhai"]` unifié par Cargo si `mcp` et `workflow` sont actifs ensemble, sans conflit)
+  `vynil-core` (lock actuelle `0.7.7`, bump ratifié 2026-09-23 ; la feature `rhai` est activée sous
+    `workflow` depuis le batch Cargo du 2026-09-23 : `workflow = [..., "vynil-core?/rhai"]`, unifiée
+    par Cargo si `mcp` et `workflow` sont actifs ensemble, sans conflit)
     — `vynil_core::engine::Script`, `vynil_core::Error`
   ./step.rs — @MiryadWorkflowStep, @StepError
-  @tokio (actuellement dépendance de développement seulement de /Cargo.toml — à promouvoir en
-    dépendance normale sous la feature `workflow`, `spawn_blocking` exige un runtime tokio réel, pas
-    seulement pour les tests) — `tokio::task::spawn_blocking`
+  @tokio (feature `rt-multi-thread` ; dépendance normale optionnelle de /Cargo.toml, activée par
+    `workflow` via `dep:tokio` — décision ratifiée 2026-09-23, la formulation d'origine
+    « actuellement dépendance de développement seulement, à promouvoir » est caduque depuis ce
+    batch) — `tokio::task::spawn_blocking`
   @serde_json — désérialisation de `RhaiConfig`, construction de la valeur `inputs`
 
 Exposes:
@@ -147,9 +154,13 @@ Tasks:
     d'un second champ (ex. `timeout_ms` pour borner un script qui boucle, au-delà du filet de
     `RunRetryPolicy`/`ServiceOptions` déjà posé par ./dispatcher.sdd au niveau de l'invocation
     entière, pas du script individuellement) ?
-  [ ] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./rhai_step.rs — aucun
+  [x] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./rhai_step.rs — aucun
     serveur Restate requis (le kind s'exécute et se teste sans `restate-sdk`, ./step.sdd), une base
-    sqlite non plus (aucune dépendance DB dans ce fichier).
+    sqlite non plus (aucune dépendance DB dans ce fichier). Réalisé 2026-09-23 : sept tests nommés
+    distincts verts sous @workflow et @--all-features (fixture @lib.rhai pour le septième, test de
+    mutation prouvant que le sixième verrouille l'absence d'état partagé), validator PASS ; la branche
+    @JoinError reste couverte-par-lecture (@Handles défensif « jamais observée », aucun chemin de test
+    sans dévier du contrat — tokio 1.53.1 capture tout panic de fermeture, vérifié source).
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la combinaison de features
@@ -201,8 +212,10 @@ Scenario: deux appels successifs n'interfèrent jamais
 Scenario: RhaiStep::default() n'ouvre aucun import, RhaiStep::new(...) le permet
   Given un `RhaiStep::default()` et, séparément, un `RhaiStep::new(vec!["<répertoire de fixture avec
     un module 'lib.rhai'>".into()])`
-  When un script `"#{ x: import(\"lib\")::value() }"` (ou équivalent utilisant `import_run`) est
-    évalué par chacune des deux instances
+  When un script `"import \"lib\" as m; #{ x: m::value() }"` (règle d'instruction @Rhai, corrigée à
+    l'implémentation 2026-09-23 — la forme parenthésée d'origine `import(\"lib\")::value()` n'est pas
+    du @Rhai valide, @import est une instruction ; @fn de module publique par défaut en @rhai 1.26.1,
+    vérifié source) est évalué par chacune des deux instances
   Then l'instance `default()` échoue (module introuvable, capturé par la convention
     `import_run`/`ErrorModuleNotFound` de `Script::add_common` plutôt qu'une erreur brute non
     catégorisée) et l'instance `new(...)` réussit et rend la valeur du module importé — miryad-core
