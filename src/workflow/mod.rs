@@ -8,5 +8,6 @@
 //! dans `docs/architecture.md`.
 
 pub mod client;
+pub mod definition;
 pub mod error;
 pub mod step;

@@ -37,6 +37,13 @@ Purpose:
 Owns:
   ./definition.rs
 
+Can modify:
+  ../tests/workflow_policy.rs — binaire d'intégration isolant le `Scenario` « configure_policy
+    change la politique effective » (processus dédié, seule cellule `OnceLock` du binaire ; méca-
+    nisme d'isolation imposé par `Tasks`, attaché après coup sur remarque `validator` 2026-09-23)
+  ../tests/workflow_policy_twice.rs — binaire isolant le `Scenario` « un second appel à
+    configure_policy panique », autonome (pose sa première politique puis panique au second)
+
 References:
   ./error.sdd — @WorkflowError::InvalidDag (`MRD-WORKFLOW-004`), amendée par cette spec ; seul site de
     construction de cette variante
@@ -215,21 +222,41 @@ Handles:
     dans ./definition.rs — le comportement vient entièrement de la déclaration `owner_column`.
 
 Tasks:
-  [ ] `before_update`/`before_delete` sur @MiryadResource : spec de `/src/resource.sdd` et
-    `/src/rest/core.sdd` amendée le 2026-09-23 (signatures et position d'appel décrites en `Must`),
-    implémentation encore à faire — ./definition.rs ne peut pas être implémenté avant ces deux
-    fichiers (même dépendance que pour `before_create` et le reste de la crate).
-  [ ] Écrire `/src/migration/m20260923_000001_create_workflow_definitions.rs` — sa spec `.sdd` est
-    produite dans le lot du 2026-09-23, seul le code reste à faire ; suit le format des trois
-    migrations existantes (`/src/migration/m20260822_*`), table `miryad_workflow_definitions`,
-    colonnes de `Must` ci-dessus, `owner_id` nullable sans contrainte `FOREIGN KEY`.
-  [ ] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./definition.rs : aucun
+  [x] `before_update`/`before_delete` sur @MiryadResource : specs de `/src/resource.sdd` et
+    `/src/rest/core.sdd` amendées le 2026-09-23, implémentation livrée le même jour (commits
+    145b17e hooks + appels, 1d68b79 câblage `rest::core::update`/`delete`, validator PASS).
+    ./definition.rs n'est plus bloqué sur cette dépendance.
+  [x] Écrire `/src/migration/m20260923_000001_create_workflow_definitions.rs` — livré le 2026-09-23
+    (commit 620bb2e, huit tests verts sous feature workflow, validator PASS) : table
+    `miryad_workflow_definitions`, cinq colonnes de `Must`, `owner_id` nullable sans contrainte
+    `FOREIGN KEY`, enregistré en quatrième position sous `cfg(feature = "workflow")`.
+  [x] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./definition.rs : aucun
     test existant, fichier neuf. `validate_dag` se teste sans base (fonction pure) ; `before_create`,
     `configure_policy`/`WorkflowPolicy` et la conformité @MiryadResource (RBAC, `filter_column`,
     `label_column`) se testent avec une base sqlite mémoire, même fixture que ./../rest/mod.rs —
     `configure_policy` ne peut être appelée qu'une fois par processus de test (`OnceLock`), les tests
     qui la couvrent l'isolent dans un processus dédié ou acceptent l'ordre d'exécution (`Tasks [?]`
-    d'implémentation, pas de conception).
+    d'implémentation, pas de conception). Réalisé 2026-09-23 : quatorze tests nommés distincts,
+    validator PASS. Sobriété consignée : les douze tests inline ne reqièrent aucun `Then` sur la base
+    (hooks sans écriture DB à leur position contractuelle, `ActiveModel` construit à la main dans la
+    forme `mark_all_set`) ; le mécanisme « processus dédié » est retenu pour les deux tests
+    `configure_policy` (`Can modify` ci-dessus).
+  [?] Branche `ActiveValue::NotSet` de `steps` dans la porte des hooks : rendue `Ok` no-op
+    (commentaire dans le code, aucun test ne la réclame) — tranché « non-contrat, code défensif »
+    par le `validator` 2026-09-23, en attendant que cette spec dise (ou non) un mot sur un `steps`
+    non posé. Sébastien à confirmer.
+  [?] Repli catch-all de traduction d'erreur dans les hooks (`autre variante de WorkflowError →
+    HookError(Display)`) : branche jamais construite par `validate_dag`, aucun test ne l'exerce,
+    toléré comme défensif (un `unreachable!` en production serait pire sous le harnais et le seul
+    site d'exemption du fichier est pris par l'`expect_used` que le `Must` alloue). Consigné : si
+    `validate_dag` étendait un jour son espace d'erreur, ce repli transporterait un préfixe `MRD-*`
+    dans le message du @HookError (le `code: None` tient, le contrat transverse aussi) — à
+    ré-arbitrer à ce moment-là, pas en silence. Sébastien à confirmer.
+  [?] Lecture de `steps` depuis une vraie ligne : @FromJsonQueryResult côté requête (relire un
+    @Model depuis la colonne `json`) n'est exercé par aucun test du lot — requis par aucun
+    `Scenario`, la colonne est prouvée par la migration 004 et la sérialisation aller par
+    ./client.rs. Décider au batch de clôture (ou au batch d'intégration) si un test round-trip
+    ad hoc entre dans le contrat. Sébastien à trancher.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.

@@ -4,6 +4,7 @@
 //! autre partie de la crate ne parle HTTP sortant à Restate : les fichiers service parlent
 //! exclusivement le protocole `restate-sdk`. Compile seulement sous la feature `workflow`.
 
+use crate::workflow::definition::DagSteps;
 use crate::workflow::error::WorkflowError;
 use crate::workflow::error::classify_transport_error;
 use serde::Deserialize;
@@ -91,10 +92,10 @@ pub async fn register_deployment(
 /// enveloppe ni champ ajouté. Un `202` (tout `2xx` en pratique) rend un `RunHandle` dont
 /// `invocation_id` est lu dans le **corps** de réponse, pas dans un en-tête.
 ///
-/// La cible contractuelle est `&DagSteps` (./definition.rs, à venir) ; `./client.rs ne possède
-/// pas ce type, seulement son utilisation en paramètre générique-lié par serde::Serialize`
-/// (./client.sdd, `References`) — le générique sera rivé en `&DagSteps` quand ./definition.rs
-/// arrivera.
+/// La cible contractuelle est `&DagSteps` (./definition.rs, ./client.sdd `Exposes`) — rive
+/// effectuée le 2026-09-23 au batch de ./definition.rs : le paramètre est le type réel de la
+/// colonne `steps`, plus un générique lié par `serde::Serialize`. ./client.rs ne valide pas le
+/// DAG, il le sérialise tel quel (sa validation relève de ./definition.rs).
 ///
 /// # Errors
 ///
@@ -103,14 +104,11 @@ pub async fn register_deployment(
 ///   ex. service `DagInterpreter` non enregistré, `404`) — `body` verbatim.
 /// - `MRD-WORKFLOW-003` (`WorkflowError::Serialization`) : corps `2xx` qui ne se décode pas en
 ///   la forme attendue (`invocationId` manquant par ex.).
-pub async fn trigger_run<T>(
+pub async fn trigger_run(
     config: &WorkflowConfig,
     http: &reqwest::Client,
-    dag: &T,
-) -> Result<RunHandle, WorkflowError>
-where
-    T: Serialize,
-{
+    dag: &DagSteps,
+) -> Result<RunHandle, WorkflowError> {
     let run_key = Uuid::new_v4().to_string();
     let response = http
         .post(format!(
@@ -142,6 +140,8 @@ mod tests {
     use super::WorkflowConfig;
     use super::register_deployment;
     use super::trigger_run;
+    use crate::workflow::definition::DagSteps;
+    use crate::workflow::definition::StepDefinition;
     use crate::workflow::error::WorkflowError;
     use std::io::Read as _;
     use std::io::Write as _;
@@ -161,30 +161,22 @@ mod tests {
     const SEND_ACCEPTED_BODY: &str = "{\"invocationId\":\"inv_test123\",\"status\":\"Accepted\"}";
 
     // ---------------------------------------------------------------------------
-    // Forme de fixture équivalente à @DagSteps (./definition.rs, batch ultérieur) :
-    // newtype sur un Vec de steps à quatre champs, sérialisé en tableau JSON nu.
+    // Fixture : un vrai @DagSteps (./definition.rs). Le `Scenario` « le corps envoyé à
+    // `trigger_run` est le `DagSteps` tel quel, sans enveloppe » l'exige dans son type réel —
+    // la rive de la signature (./client.sdd `Tasks`) a retiré le générique. ./client.rs ne
+    // valide pas le DAG, il le sérialise seulement ; la fixture reste structurellement valide
+    // (aucune arête pendante, aucun cycle) pour refléter l'`Accepts` contractuel.
     // ---------------------------------------------------------------------------
 
-    #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
-    struct StepFixture {
-        id: String,
-        depends_on: Vec<String>,
-        kind: String,
-        config: serde_json::Value,
-    }
-
-    #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
-    struct DagFixture(Vec<StepFixture>);
-
-    fn dag_fixture() -> DagFixture {
-        DagFixture(vec![
-            StepFixture {
+    fn dag_fixture() -> DagSteps {
+        DagSteps(vec![
+            StepDefinition {
                 id: "deploy".to_string(),
                 depends_on: vec![],
                 kind: "rhai".to_string(),
                 config: serde_json::json!({ "script": "1 + 1" }),
             },
-            StepFixture {
+            StepDefinition {
                 id: "notify".to_string(),
                 depends_on: vec!["deploy".to_string()],
                 kind: "rhai".to_string(),
@@ -592,7 +584,7 @@ mod tests {
             request.body, expected_bytes,
             "le corps doit être la fixture sérialisée telle quelle, sans enveloppe ajoutée"
         );
-        let round_trip: DagFixture =
+        let round_trip: DagSteps =
             serde_json::from_slice(&request.body).expect("le corps doit se re-désérialiser en la fixture");
         assert_eq!(round_trip, dag, "aucun champ retiré");
 
