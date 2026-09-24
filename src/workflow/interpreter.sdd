@@ -58,9 +58,9 @@ Must:
         dont toutes les dépendances sont dans `completed` et qui n'y sont pas déjà ; ne peut être
         vide tant que l'étape 1 a réussi (`validate_dag` garantit l'absence de cycle et de dépendance
         pendante sur l'ensemble du DAG, `Handles`).
-      b. Pour chaque step de `ready`, assembler `inputs: HashMap<String, serde_json::Value>` — une
-        entrée par id de `depends_on`, valeur = `results.get(id)` (toujours @Some à ce point, chaque
-        dépendance étant dans `completed`, donc déjà dans `results`) ; construire `StepInvocation {
+      b. Pour chaque step de `ready`, assembler les `inputs` par @build_inputs (fonction pure, `Must`
+        ci-dessous) — une entrée par id de `depends_on`, valeur = `results.get(id)` (toujours @Some à
+        ce point, chaque dépendance étant dans `completed`, donc déjà dans `results`) ; construire `StepInvocation {
         kind: step.kind.clone(), config: step.config.clone(), inputs }` et pousser
         `ctx.request::<Json<StepInvocation>, Json<serde_json::Value>>(RequestTarget::Service { name:
         "StepDispatcher".into(), handler: "execute".into() }, Json(invocation)).call()` dans un
@@ -86,6 +86,15 @@ Must:
     un `ready_ids` déterministe entre deux exécutions du même DAG (propriété exploitée par les tests,
     pas garantie contractuelle vis-à-vis de Restate qui ne fan-oute pas dans un ordre observable de
     toute façon).
+  `build_inputs(step: &StepDefinition, results: &HashMap<@String, @serde_json::Value>) ->
+    @HashMap<@String, @serde_json::Value>`, `pub(crate)`, fonction pure sans effet de bord, sans
+    `ctx` (même rationale de séparaison que @run_invocation de ./dispatcher.sdd, tranchage Sébastien
+    2026-09-23 : le « harnais » complet de @run exige un WorkflowContext que @restate-sdk `0.12.1`
+    ne virtualise pas ; l'assemblage des `inputs` est la seule partie de la couche décidable sans
+    lui) : une entrée par id de `step.depends_on`, valeur = `results.get(id)` — Jamais une entrée de
+    plus (un résultat disponible dans `results` mais absent de `depends_on` ne traverse pas), Jamais
+    une de moins. `build_inputs` n'est appelé que depuis l'étape 2.b de @run ; c'est la jointure
+    testable de la boucle, pas une surface exposée aux appelants autres que ./interpreter.rs.
   Compiler uniquement sous `#[cfg(feature = "workflow")]`.
 
 Must not:
@@ -124,6 +133,8 @@ Exposes:
   `DagInterpreter` — struct `pub`, unitaire
   `ready_steps` — `pub(crate) fn ready_steps<'a>(dag: &'a [StepDefinition], completed:
     &HashSet<String>) -> Vec<&'a StepDefinition>`
+  `build_inputs` — `pub(crate) fn build_inputs(step: &StepDefinition, results: &HashMap<String,
+    serde_json::Value>) -> HashMap<String, serde_json::Value>`
   Le service Restate `DagInterpreter` (handler `run`) — consommé uniquement via le protocole
     `restate-sdk`, par ./client.sdd (déclenchement) et par Restate lui-même (reprise)
 
@@ -182,14 +193,21 @@ Tasks:
     (`docs/architecture.md`) plutôt qu'en `Scenario` de cette spec : ce fichier ne peut pas prouver
     unitairement une garantie qui appartient au runtime `restate-sdk`/`restate-server`, seulement
     l'utiliser correctement (`Must`).
-  [ ] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./interpreter.rs :
-    `ready_steps` et l'assemblage d'`inputs` se testent sans Restate (fonctions pures) ; le corps
-    complet de `run` nécessite un harnais de test `restate-sdk` (`restate-sdk-testcontainers`,
-    ./client.sdd `Tasks` en a déjà noté l'absence des dépendances actuelles) — à choisir à
-    l'implémentation, hors périmètre de cette spec.
+  [ ] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./interpreter.rs, avec
+    le périmètre fixé par le tranchage de Sébastien (2026-09-23, même rationalité que @run_invocation
+    de ./dispatcher.sdd) : les cinq `Scenario` decidables sans @WorkflowContext se testent en
+    unitaires purs — les quatre de @ready_steps et celui de @build_inputs (« inputs assemblé depuis
+    les résultats des dépendances, jamais au-delà », la couche « préparée » étant @build_inputs
+    appelé directement) ; les trois du corps de @run (DAG invalide `400`, premier échec de couche,
+    couche unique) sont couverts par le spike du 2026-09-22 et la tâche d'intégration ci-dessus —
+    @restate-sdk `0.12.1` ne virtualise aucun @Context et un harnais @testcontainers casserait la
+    batterie des huit combinaisons hors CI.
 
 Done when:
-  Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
+  Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow` — périmètre
+    borné par le tranchage de Sébastien (2026-09-23, `Tasks`) : les cinq décidables sans
+    @WorkflowContext en unitaires purs, les trois du corps de @run couverts par le spike et la
+    tâche d'intégration.
   ./definition.sdd, ./dispatcher.sdd et ./step.sdd sont approuvées avant ou avec cette spec
     (dépendances directes : `validate_dag`, `StepInvocation`, forme d'`inputs`).
   La spec est relue et approuvée par Sébastien avant qu'une ligne de ./interpreter.rs soit écrite.
