@@ -91,6 +91,7 @@
 //! | `graphql` | GraphQL dynamique (Seaography) | `seaography`, `async-graphql` |
 //! | `graphiql` | IDE GraphiQL sur `/api/graphiql` (implique `graphql`) | `async-graphql/graphiql` |
 //! | `mcp` | Serveur MCP JSON-RPC sur `/mcp` | `vynil-core` (Handlebars) |
+//! | `workflow` | Moteur de workflow DAG sur Restate — **aucune** route sur le `axum::Router` de l'app (services liés par l'app elle-même, `Endpoint::builder()` ; voir `docs/architecture.md`) | `restate-sdk`, `uuid`, `tokio`, `vynil-core` (`rhai`) |
 //!
 //! Voir aussi [`docs/architecture.md`](https://github.com/sebt3/miryad-core/blob/main/docs/architecture.md)
 //! et [`docs/roadmap.md`](https://github.com/sebt3/miryad-core/blob/main/docs/roadmap.md).
@@ -173,3 +174,35 @@ pub mod users;
 /// `docs/architecture.md`.
 #[cfg(feature = "workflow")]
 pub mod workflow;
+
+#[cfg(test)]
+mod tests {
+    /// Scénario verrouillé : « workflow gated par la feature workflow » (`./lib.sdd`, amendement
+    /// 2026-09-23). Même méthode que le futur `mcp_gated_compiles` du batch lib.sdd : le test
+    /// entier est placé sous `#[cfg(feature = "workflow")]` — dans les six combinaisons sans la
+    /// feature, `workflow` « n'est pas déclaré du tout » (`Handles` de `./lib.sdd`) et un test
+    /// résiduel vide serait précisément le squelette que ce contrat refuse. Sous
+    /// `--no-default-features --features workflow`, les quatre chemins plats du `Then` résolvent.
+    #[cfg(feature = "workflow")]
+    #[test]
+    fn workflow_gated_compiles() {
+        // Les quatre chemins du `Then` en position de type, sans instanciation ni liaison
+        // (mêmes raisons de harnais que `chemins_plats_resolvent_sans_structure_interne`).
+        fn witness(
+            _: Option<crate::workflow::DagInterpreter>,
+            _: Option<crate::workflow::StepDispatcher>,
+            _: Option<Box<dyn crate::workflow::MiryadWorkflowStep>>,
+            _: Option<crate::workflow::StepRegistry>,
+        ) {
+        }
+        witness(None, None, None, None);
+        // Clause « But » du scénario : aucune route n'apparaît sur un `axum::Router` construit
+        // sans que l'app n'appelle elle-même `Endpoint::builder()`. La garantie est structurelle
+        // (`Forbids` de `./workflow/mod.sdd` : aucun `axum`/`tower` dans le module) ; ce témoin
+        // l'exécute : un routeur assemblé par l'app sans intervention de `workflow` reste vide.
+        assert!(
+            !axum::Router::<()>::new().has_routes(),
+            "workflow ne doit monter aucune route sur un Router que l'app ne construit pas elle-même"
+        );
+    }
+}

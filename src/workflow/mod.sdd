@@ -148,8 +148,11 @@ Tasks:
     à remplacer par les lignes `[ ] Spec src/workflow/*.sdd produite puis revue par Sébastien` (une
     par fichier, même convention que les modules existants), et par une ligne équivalente pour
     l'amendement de `/src/resource.sdd`/`/src/rest/core.sdd`.
-  [ ] Convertir le `Scenario` en test nommé dans `mod tests` de ./mod.rs (compilation seule, pas de
-    comportement à tester au-delà de la résolution des chemins).
+  [x] Convertir le `Scenario` en test nommé dans `mod tests` de ./mod.rs (compilation seule, pas de
+    comportement à tester au-delà de la résolution des chemins). Réalisé 2026-09-23 :
+    @chemins_plats_resolvent_sans_structure_interne sous forme @crate:: (résolution @miryad_core::
+    impossible en cible unitaire lib, @E0433 vérifié), les neuf chemins du `Scenario` référencés sans
+    nommer les sous-modules, validator PASS.
 
 Done when:
   Les sept specs enfants (`error`, `client`, `step`, `dispatcher`, `definition`, `interpreter`,
