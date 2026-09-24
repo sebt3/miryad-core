@@ -43,7 +43,14 @@ Must:
     `StepDispatcher::new`, puis lie l'instance à l'`Endpoint` `restate-sdk` (`Endpoint::builder()
     .bind(StepDispatcher::new(registry))...`, hors périmètre de ce fichier — c'est le code de boot de
     l'app, pas une fonction exposée par miryad-core).
-  `#[service(name = "StepDispatcher")]` sur `StepDispatcher`, un seul handler :
+  `#[service(name = "StepDispatcher", client_visibility = "pub(crate)")]` sur `StepDispatcher` —
+    `client_visibility` posé à l'implémentation (ratifié `validator` 2026-09-23, à confirmer
+    Sébastien) : la macro rend les clients générés (`StepDispatcherClient`, ingress) `pub` par défaut
+    (vérifié source `restate-sdk-macros` `0.12.1`, `struct_ast.rs:404` `parse_quote!(pub)`) ; sans
+    cette borne ils violeraient l'`Exposes` (« aucune fonction `pub` de logique métier en dehors de
+    la forme service ») et la liste fermée de ré-exports de ./mod.sdd, et un `#[allow(missing_docs)]`
+    n'aurait qu'éteint le diagnostic en laissant la fuite. Nom du service et handler inchangés —
+    le fil du protocole est `StepDispatcher`/`execute` en toutes circonstances. Un seul handler :
     `async fn execute(&self, ctx: Context<'_>, req: Json<StepInvocation>) -> Result<Json<@serde_json::Value>,
     HandlerError>`. Corps exact :
     1. Décompose `req` en `kind`, `config`, `inputs`.
@@ -140,7 +147,9 @@ Exposes:
     lui-même, il n'a pas la main sur l'`Endpoint`.
   Le service Restate `StepDispatcher` (nom d'enregistrement) avec son handler `execute` — surface
     consommée uniquement via le protocole `restate-sdk` par ./interpreter.rs, jamais par un import Rust
-    direct (aucune fonction `pub` de logique métier en dehors de la forme service)
+    direct (aucune fonction `pub` de logique métier en dehors de la forme service). Les clients
+    macro-générés (@StepDispatcherClient, ingress) sont `pub(crate)` du fait de `client_visibility` et
+    ne sortent jamais de la crate.
 
 Accepts:
   `execute` : un `Json<StepInvocation>` déjà désérialisé par `restate-sdk` depuis le corps envoyé par
@@ -149,8 +158,12 @@ Accepts:
 
 Returns:
   `execute` : `Ok(Json(value))` où `value` est le @serde_json::Value retourné par `run` du kind trouvé,
-    tel quel (aucune enveloppe, aucune métadonnée ajoutée) ; `Err(HandlerError)` selon la traduction de
-    `Must` sur tout échec (kind inconnu ou @StepError du kind)
+    tel quel (aucune enveloppe, aucune métadonnée ajoutée) ; l'enveloppage @Json se pose côté retour du
+    `run` (`.map(Json)`, ratifié `validator` 2026-09-23) — @Json n'est qu'un @newtype déléguant sa
+    sérialisation à son contenu (@serde_json::to_vec(&self.0), vérifié source @restate-sdk `0.12.1`
+    `serde.rs:442`), les octets du fil et du journal @ctx.run sont ceux du @Value nu, jamais un
+    double-encodage ; `Err(HandlerError)` selon la traduction de `Must` sur tout échec (kind inconnu
+    ou @StepError du kind)
 
 Raises:
   Aucun code `MRD-WORKFLOW-*` : ce fichier ne construit aucun @WorkflowError (./error.sdd reste borné à
@@ -188,10 +201,12 @@ Handles:
     affectée.
 
 Tasks:
-  [ ] À l'implémentation de ce fichier : retirer le `#[allow(dead_code)]` posé sur
+  [x] À l'implémentation de ce fichier : retirer le `#[allow(dead_code)]` posé sur
     @StepRegistry::dispatch dans ./step.rs (batch du 2026-09-23, motif : ./dispatcher.rs est son
     unique appelant, pas encore écrit) — condition de ce batch, même traitement que le retrait
-    côté ./client.rs de l'allow de @classify_transport_error.
+    côté ./client.rs de l'allow de @classify_transport_error. Fait 2026-09-23 : allow et son
+    commentaire retirés, unique appelant de production ./dispatcher.rs vérifié (@grep), zéro
+    diagnostic sur ./step.rs sur les huit graphes, six tests @step.sdd restent verts.
   [x] Isolation des panics : vérifié par spike (2026-09-23, détail en `Must` et `Must not`) — un panic
     dans `run()` n'affecte que l'invocation en cours, le processus `StepDispatcher` reste debout, et le
     même mécanisme `ServiceOptions` (`retry_policy_max_attempts` + `retry_policy_pause_on_max_attempts`)

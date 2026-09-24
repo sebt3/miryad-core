@@ -102,9 +102,6 @@ impl StepRegistry {
     /// c'est le dispatcher interne qui l'`.await` — ou un [`StepError`] `retryable: false`
     /// (`kind inconnu: {kind}`) quand aucun `impl` n'enregistre ce kind : référence absente du
     /// registre = erreur de configuration du DAG, jamais transitoire, donc jamais retryable.
-    // Consommateur vivant = ./dispatcher.rs, à rédiger (step.sdd `References`/`Must`) : le
-    // premier appelant de dispatch arrive avec ce batch, `dead_code` retiré alors.
-    #[allow(dead_code)]
     pub(crate) fn dispatch(
         &self,
         kind: &str,

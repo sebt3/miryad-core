@@ -9,5 +9,6 @@
 
 pub mod client;
 pub mod definition;
+pub mod dispatcher;
 pub mod error;
 pub mod step;
