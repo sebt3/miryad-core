@@ -40,9 +40,13 @@ References:
     reprise sur crash, non répétée en détail dans ce fichier (`Purpose`)
 
 Must:
-  `DagInterpreter` — struct `pub`, unitaire, `#[workflow]` (nom d'enregistrement par défaut du
-    struct, `"DagInterpreter"`, aucun attribut `name = ...` — cohérent avec ./client.sdd qui code ce
-    nom en dur). Un seul handler, `run` — pas de second handler `SharedWorkflowContext` type
+  `DagInterpreter` — struct `pub`, unitaire, `#[workflow(client_visibility = "pub(crate)")]` (nom
+    d'enregistrement par défaut du struct, `"DagInterpreter"`, aucun attribut `name = ...` — cohérent
+    avec ./client.sdd qui code ce nom en dur ; `client_visibility` posé à l'implémentation
+    2026-09-23, calque du ratifié ./dispatcher.sdd : l'option est partagée `#[service]`/`#[workflow]`
+    dans @restate-sdk-macros `0.12.1` (`struct_ast.rs`, vérifié source), elle ne borne que la
+    visibilité des clients générés — sans elle ils seraient `pub`, fuite contraire à l'`Exposes` ;
+    à confirmer Sébastien). Un seul handler, `run` — pas de second handler `SharedWorkflowContext` type
     `interact_with_workflow` : aucun besoin d'interaction externe identifié pour cette itération
     (signal, requête de progression) — le statut d'un run reste un proxy direct de Restate
     (./client.sdd `Purpose`), pas un canal porté par ce fichier.
@@ -186,6 +190,12 @@ Tasks:
     Sébastien (2026-09-23) — convient tel quel pour l'instant ; si un cas d'usage réel s'avère
     problématique (effets de bord coûteux sur des frères abandonnés), la spec évoluera alors, pas
     anticipé ici.
+  [?] `Scenario` « ready_steps ne rend pas un step dont une dépendance manque » : son `Then`
+    d'origine (« le résultat est vide ») était une erreur d'arithmétique du losange (prouvé à
+    l'implémentation 2026-09-23 — `"C"` est prêt dès que `"A"` est terminé ; une couche vide
+    contredit l'étape 2.a du `Must`), reformulé ci-dessus en l'observable que le scenario justifiait
+    (couche exactement `["C"]`, `"D"` jamais avant). À confirmer par Sébastien — une spec de test
+    fausse ne se corrige pas en silence.
   [ ] Valider par un test d'intégration (pas `mod tests` unitaire) le protocole de fan-out et de
     reprise sur crash avec l'implémentation réelle (`StepDispatcher`/`StepRegistry`, pas les stubs du
     spike) — même méthode que le spike (kill du process mi-couche, vérification qu'aucun step déjà
@@ -193,7 +203,7 @@ Tasks:
     (`docs/architecture.md`) plutôt qu'en `Scenario` de cette spec : ce fichier ne peut pas prouver
     unitairement une garantie qui appartient au runtime `restate-sdk`/`restate-server`, seulement
     l'utiliser correctement (`Must`).
-  [ ] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./interpreter.rs, avec
+  [x] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./interpreter.rs, avec
     le périmètre fixé par le tranchage de Sébastien (2026-09-23, même rationalité que @run_invocation
     de ./dispatcher.sdd) : les cinq `Scenario` decidables sans @WorkflowContext se testent en
     unitaires purs — les quatre de @ready_steps et celui de @build_inputs (« inputs assemblé depuis
@@ -201,7 +211,10 @@ Tasks:
     appelé directement) ; les trois du corps de @run (DAG invalide `400`, premier échec de couche,
     couche unique) sont couverts par le spike du 2026-09-22 et la tâche d'intégration ci-dessus —
     @restate-sdk `0.12.1` ne virtualise aucun @Context et un harnais @testcontainers casserait la
-    batterie des huit combinaisons hors CI.
+    batterie des huit combinaisons hors CI. Réalisé 2026-09-23 : cinq tests nommés distincts verts
+    sous @workflow (quatre @ready_steps dont le `Scenario` 3 reformulé, un @build_inputs avec
+    l'égalité exacte d'ensemble prouvant « jamais au-delà » par mutation), validator PASS — les
+    trois du corps de @run restent couverts spike + tâche d'intégration ci-dessus.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow` — périmètre
@@ -223,10 +236,16 @@ Scenario: ready_steps rend plusieurs steps d'une même couche
   When `ready_steps` est appelé
   Then le résultat est exactement `["B", "C"]`, dans l'ordre du DAG d'origine
 
-Scenario: ready_steps ne rend rien tant qu'une dépendance manque
+Scenario: ready_steps ne rend pas un step dont une dépendance manque
   Given le même DAG, `completed = {"A", "B"}` (`"C"` pas encore terminé)
   When `ready_steps` est appelé
-  Then le résultat est vide — `"D"` dépend de `"B"` et `"C"`, `"C"` manque encore
+  Then le résultat est exactement `["C"]` — la couche en attente `["D"]` n'y paraît jamais, sa
+    dépendance `"C"` manque ; `"B"` déjà terminé n'y paraît plus non plus. Corrigé à l'implémentation
+    2026-09-23 : le `Then` verbatim d'origine (« le résultat est vide ») était une erreur
+    d'arithmétique du losange — `"C"`, dont la seule dépendance `"A"` est satisfaite, est prêt ; et
+    une couche vide contredirait l'étape 2.a du `Must` (« @ready_steps ne peut être vide tant que
+    l'étape 1 a réussi »). L'observable que le `Scenario` justifiait — `"D"` attendu derrière `"C"` —
+    est celui qui est verrouillé. `[?]` relecture Sébastien (Tasks)
 
 Scenario: ready_steps ignore un step déjà complété
   Given le même DAG, `completed = {"A", "B", "C", "D"}`

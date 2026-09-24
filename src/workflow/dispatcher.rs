@@ -18,11 +18,13 @@ use super::step::{StepError, StepRegistry};
 
 /// Corps de requête de [`StepDispatcher::execute`] — forme sérialisée échangée avec
 /// ./interpreter.rs via le protocole `restate-sdk`.
+// Champs `pub(crate)` : construit par littéral depuis ./interpreter.rs (`Must` étape 2.b de
+// ./interpreter.sdd), comme l'impliquent déjà `Exposes`/`Accepts` de ./dispatcher.sdd.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct StepInvocation {
-    kind: String,
-    config: Value,
-    inputs: HashMap<String, Value>,
+    pub(crate) kind: String,
+    pub(crate) config: Value,
+    pub(crate) inputs: HashMap<String, Value>,
 }
 
 /// L'unique service Restate du module : résout un kind dans le registre de l'app et enveloppe

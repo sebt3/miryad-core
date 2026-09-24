@@ -32,7 +32,9 @@ References:
     comme mécanisme de fan-out est référencé ici pour mémoire, pas comme dépendance de code
 
 Must:
-  `StepInvocation` — struct `pub(crate)`, `#[derive(Serialize, Deserialize)]`, trois champs :
+  `StepInvocation` — struct `pub(crate)`, `#[derive(Serialize, Deserialize)]`, trois champs
+    `pub(crate)` (élargissement ratifié au batch ./interpreter.rs 2026-09-23 : le `Must` étape 2.b de
+    ./interpreter.sdd le construit par littéral, et les `Scenario` de cette spec en font autant) :
     `kind: @String`, `config: @serde_json::Value`, `inputs: @HashMap<@String, @serde_json::Value>`.
     Forme du corps de requête de `StepDispatcher::execute`, consommée via `Json<StepInvocation>`
     (wrapper `restate_sdk::prelude::Json`, requis pour tout type non primitif traversant le protocole
