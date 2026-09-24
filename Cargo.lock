@@ -4002,6 +4002,8 @@ dependencies = [
  "glob",
  "indoc",
  "regex",
+ "sea-schema",
+ "sqlx",
  "tracing",
  "tracing-subscriber",
  "url",

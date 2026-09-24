@@ -145,7 +145,11 @@ Tasks:
   [ ] Convertir les douze `Scenario` en au moins douze tests nommés distincts dans le
     `#[cfg(test)] mod tests` de ./m20260822_000001_create_api_tokens.rs, sur `sqlite::memory:`
     (pattern de ./mod.rs), assertions par @SchemaManager::has_table et @has_column (sonde de
-    @sea-schema disponible dans le graphe de features résolu du dépôt, vérifiée au cargo tree), un
+    @sea-schema rendue activable par la feature `sqlx-sqlite` de @sea-orm-migration en
+    `[dev-dependencies]` de /Cargo.toml, ajoutée le 2026-09-23 pour la spec
+    /src/migration/m20260923_000001_create_workflow_definitions.sdd — pattern exercé et vert dans les
+    tests de ce fichier ; au premier lock la dispatch SQLite compilait sous `cli` seul et la sonde
+    échouait en @BackendNotSupported à l'exécution), un
     test par scénario et par nom : `up_lays_miryad_api_tokens` ; `up_lays_the_seven_columns` ;
     `id_auto_increment_primary_key` ; `token_hash_rejects_duplicate` ;
     `optional_timestamps_accept_null` ; `created_at_has_no_server_default` ; `up_rerunnable` ;

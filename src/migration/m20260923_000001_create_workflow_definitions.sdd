@@ -99,6 +99,12 @@ Depends on:
   @DeriveMigrationName de sea-orm-macros `2.0.2` ré-exporté par @sea_orm
   @async_trait — implémentation des méthodes de @MigrationTrait
   ./mod.rs — enregistrement en quatrième position, sous `#[cfg(feature = "workflow")]`
+  @sea-orm-migration feature `sqlx-sqlite` en `[dev-dependencies]` de /Cargo.toml — condition
+    d'activabilité des sondes @SchemaManager::has_table/@has_column sur `sqlite::memory:` sous
+    @Backend::Sqlite (sans elle : @BackendNotSupported à l'exécution) ; graphe de test uniquement,
+    graphe public intact (résolveur v3, vérifié au cargo tree `-e features,no-dev` et au
+    @cargo `check --all-features`) ; ratifié par le validator 2026-09-23, trace ici faute d'édition
+    de /Cargo.toml sous l'Owns de @miryad-core.sdd
 
 Exposes:
   @Migration — unique `pub struct` du fichier, jamais atteignable hors de la crate (module privé)
@@ -135,10 +141,13 @@ Handles:
     `/api/v1/tokens`.
 
 Tasks:
-  [ ] Convertir les `Scenario` en tests nommés distincts dans le `#[cfg(test)] mod tests` de
+  [x] Convertir les `Scenario` en tests nommés distincts dans le `#[cfg(test)] mod tests` de
     ./m20260923_000001_create_workflow_definitions.rs, sur `sqlite::memory:`, sous
     `--features workflow` uniquement (fichier absent des autres combinaisons) : pattern identique à
-    ./m20260822_000001_create_api_tokens.rs (`SchemaManager::has_table`/`has_column`).
+    ./m20260822_000001_create_api_tokens.rs (`SchemaManager::has_table`/`has_column`). Réalisé
+    2026-09-23 : huit tests verts nommés d'après les huit `Scenario` (sondes réelles, sous la feature
+    `sqlx-sqlite` de `[dev-dependencies]` ratifiée ci-dessus en `Depends on`), validator PASS —
+    zéro diagnostic clippy sur ./m20260923_000001_create_workflow_definitions.rs.
   [?] `owner_id` ne porte aucun index, alors qu'un futur filtre de liste par propriétaire
     (`AccessPolicy::OwnerOnly` configuré via `workflow::definition::configure_policy`,
     ../workflow/definition.sdd) le lirait à chaque `list` filtrée. Contrat assumé (table

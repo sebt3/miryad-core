@@ -229,8 +229,11 @@ Tasks:
   [ ] Convertir les vingt `Scenario` en au moins vingt tests nommés distincts dans le @mod tests
     `#[cfg(test)]` de ./m20260822_000002_create_users_groups.rs (le fichier n'en porte aucun
     aujourd'hui), sur `sqlite::memory:` (pattern des tests de ./mod.rs), assertions par
-    @SchemaManager::has_table et @has_column (sonde sea-schema 0.18.1 présente dans le graphe de
-    features, vérifiée au cargo tree — même canal que les tests de /src/migration/m20260822_000001_create_api_tokens.sdd),
+    @SchemaManager::has_table et @has_column (sonde sea-schema 0.18.1 rendue activable par la feature
+    `sqlx-sqlite` de @sea-orm-migration en `[dev-dependencies]` de /Cargo.toml, ajoutée le 2026-09-23
+    pour /src/migration/m20260923_000001_create_workflow_definitions.sdd — même canal que cette spec,
+    pattern exercé et vert dans ses tests ; au premier lock la dispatch SQLite compilait sous `cli`
+    seul et la sonde échouait en @BackendNotSupported à l'exécution),
     un test par scénario : `up_lays_the_three_tables`, `users_has_the_five_columns`,
     `groups_and_memberships_have_their_columns`, `subject_unique_rejects_duplicate`,
     `group_name_unique_rejects_duplicate`, `membership_pair_unique_rejects_duplicate`,

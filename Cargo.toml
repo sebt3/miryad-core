@@ -88,6 +88,13 @@ workflow = ["dep:restate-sdk", "dep:uuid", "dep:vynil-core", "vynil-core?/rhai",
 
 [dev-dependencies]
 sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "mock"] }
+# Sonde `has_table`/`has_column` contractuelle des tests de migration — la dispatch de
+# `SchemaManager` est compilée sous la feature `sqlx-sqlite` de sea-orm-migration (défaut `cli` seul
+# sinon → `BackendNotSupported` à l'exécution). Graphe de test uniquement, graphe public intact.
+# Ordonné par src/migration/m20260923_000001_create_workflow_definitions.sdd `Tasks` (pattern
+# `SchemaManager::has_table`/`has_column`, acquis partagé avec m20260822_000001_create_api_tokens.sdd
+# et m20260822_000002_create_users_groups.sdd).
+sea-orm-migration = { version = "2", features = ["sqlx-sqlite"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tower = { version = "0.5", features = ["util"] }
 
