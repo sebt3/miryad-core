@@ -49,6 +49,10 @@ Must:
       cas sert un message d'erreur utile à l'admin qui définit le workflow, pas une branche de code
       différente pour l'appelant (aucun des quatre cas n'est traité différemment en aval, cohérent avec
       le refus de sur-coder les erreurs de la crate posé pour @StepError, ./step.sdd).
+    @WorkflowError::PolicyAlreadySet → `MRD-WORKFLOW-005` → @Display `MRD-WORKFLOW-005: workflow
+      policy already configured` (revue 2026-09-24) — second appel à `definition::configure_policy`.
+    @WorkflowError::DuplicateStepKind(@String) → `MRD-WORKFLOW-006` → @Display `MRD-WORKFLOW-006:
+      step kind already registered: {0}` (revue 2026-09-24) — collision dans `StepRegistry::register`.
   Classifier un @reqwest::Error brut (reqwest `0.12.28`, verifié `src/error.rs` du crate) par
     @client::classify_transport_error(@reqwest::Error) -> WorkflowError, seule fonction du fichier en
     dehors du type : `@reqwest::Error::is_decode() || @reqwest::Error::is_body()` devient
@@ -125,6 +129,12 @@ Raises:
     une entrée de `depends_on` sans step correspondant dans le même DAG, un cycle, ou une liste de
     steps vide. Ce chemin ne passe jamais par @classify_transport_error (aucun @reqwest::Error
     impliqué) : c'est une construction directe de la variante.
+  `MRD-WORKFLOW-005` — @WorkflowError::PolicyAlreadySet : rendu exclusivement par
+    `definition::configure_policy` (./definition.rs) sur un second appel — erreur de configuration de
+    l'app au démarrage, jamais une erreur de requête ; construction directe, sans @reqwest::Error.
+  `MRD-WORKFLOW-006` — @WorkflowError::DuplicateStepKind : rendu exclusivement par
+    `StepRegistry::register` (./step.rs) quand `kind()` collide avec un kind déjà enregistré —
+    même nature (configuration au démarrage), le kind fautif en `{0}`.
 
 Handles:
   Distinction Unreachable/Serialization : un serveur Restate down (connexion refusée) et un serveur
@@ -145,8 +155,9 @@ Tasks:
     non-URL) : @reqwest::Client::request avec une URL invalide échoue-t-il en `is_builder` (donc
     `MRD-WORKFLOW-001`) ou faut-il une validation explicite plus tôt (dans ./client.sdd, à la
     construction de @WorkflowConfig) rendant une erreur distincte avant tout appel réseau ?
-  [ ] Convertir les scenarios de cette spec en tests distincts nommés dans `mod tests` de ./error.rs :
-    aucun test existant, fichier neuf.
+  [x] Convertir les scenarios de cette spec en tests distincts nommés dans `mod tests` de ./error.rs :
+    fichier neuf à l'origine ; vérifié en revue 2026-09-24 : un test nommé par `Scenario` (sept, dont
+    les variantes de configuration ajoutées le même jour), verts.
 
 Done when:
   Les `Scenario` ci-dessous ont chacun au moins un test nommé distinct et vert, sur la feature
@@ -194,3 +205,9 @@ Scenario: InvalidDag rend le code MRD-WORKFLOW-004 quelle que soit la cause stru
   Then les quatre échouent avec @WorkflowError::InvalidDag, chacun avec un message distinct et lisible
     identifiant la cause précise, et chacun avec une @Display commençant par `MRD-WORKFLOW-004: ` —
     jamais une des trois premières variantes, jamais un panic
+
+Scenario: PolicyAlreadySet et DuplicateStepKind rendent leurs codes
+  Given @WorkflowError::PolicyAlreadySet et @WorkflowError::DuplicateStepKind("rhai")
+  When leur @Display est rendue
+  Then elles valent respectivement `MRD-WORKFLOW-005: workflow policy already configured` et
+    `MRD-WORKFLOW-006: step kind already registered: rhai`

@@ -1,5 +1,5 @@
 //! Taxonomie d'erreur du moteur de workflow : échecs de communication avec le cluster Restate
-//! (admin API et ingress) et de validation de DAG, sous codes `MRD-WORKFLOW-NNN`. Compile
+//! (admin API et ingress), de validation de DAG et de configuration au démarrage, sous codes `MRD-WORKFLOW-NNN`. Compile
 //! seulement sous la feature `workflow`.
 
 use thiserror::Error;
@@ -36,6 +36,14 @@ pub enum WorkflowError {
     /// `definition::validate_dag` (./definition.sdd) en texte libre identifiant la cause.
     #[error("MRD-WORKFLOW-004: {0}")]
     InvalidDag(String),
+    /// `MRD-WORKFLOW-005` — `PolicyAlreadySet` : second appel à `definition::configure_policy`
+    /// (erreur de configuration de l'app au démarrage) ; la première politique reste effective.
+    #[error("MRD-WORKFLOW-005: workflow policy already configured")]
+    PolicyAlreadySet,
+    /// `MRD-WORKFLOW-006` — `DuplicateStepKind` : `StepRegistry::register` d'un `kind()` déjà
+    /// enregistré ; le premier kind reste celui du registre.
+    #[error("MRD-WORKFLOW-006: step kind already registered: {0}")]
+    DuplicateStepKind(String),
 }
 
 /// Range un `reqwest::Error` nu dans l'une des deux catégories transport : `is_decode()` ou
@@ -244,6 +252,20 @@ mod tests {
                 "classify_transport_error a construit la variante Rejected : {classified}"
             );
         }
+    }
+
+    /// Scenario « `PolicyAlreadySet` et `DuplicateStepKind` rendent leurs codes » : construction
+    /// directe des deux variantes de configuration au démarrage, `Display` verbatim.
+    #[test]
+    fn variantes_de_configuration_rendent_leurs_codes() {
+        assert_eq!(
+            WorkflowError::PolicyAlreadySet.to_string(),
+            "MRD-WORKFLOW-005: workflow policy already configured"
+        );
+        assert_eq!(
+            WorkflowError::DuplicateStepKind("rhai".to_string()).to_string(),
+            "MRD-WORKFLOW-006: step kind already registered: rhai"
+        );
     }
 
     /// Scenario « `InvalidDag` rend le code MRD-WORKFLOW-004 quelle que soit la cause

@@ -9,6 +9,8 @@
 
 use std::collections::HashMap;
 
+use super::error::WorkflowError;
+
 /// Un type de step de workflow (« kind ») : la façon pour une application consommatrice d'ajouter
 /// un comportement de step sans toucher à la crate — un `impl` par kind, aucun code par kind dans
 /// miryad-core. [`StepRegistry::register`] en fixe le kind au démarrage ; le dispatcher interne
@@ -78,24 +80,19 @@ impl StepRegistry {
     /// Ajoute un kind au registre et rend le registre pour chaînage. Possède le `step` (boîté en
     /// interne) : le registre vit typiquement du démarrage de l'app jusqu'à son arrêt.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panique si `step.kind()` collide avec un kind déjà enregistré. Erreur de configuration du
-    /// démarrage de l'app, jamais une entrée utilisateur : le fail-fast est délibéré (un écrasement
-    /// silencieux serait un bug de configuration masqué) — seul site `panic!` de ce fichier,
-    /// exemption documentée par `step.sdd`.
-    // Seul site `panic!` autorisé par ./step.sdd (`Must`, `Tasks`) : erreur de configuration au
-    // démarrage de l'app, jamais une entrée utilisateur.
-    pub fn register(&mut self, step: impl MiryadWorkflowStep + 'static) -> &mut Self {
+    /// [`WorkflowError::DuplicateStepKind`] (`MRD-WORKFLOW-006`) si `step.kind()` collide avec un
+    /// kind déjà enregistré : erreur de configuration du démarrage de l'app, jamais une entrée
+    /// utilisateur. Rien n'est inséré, le premier kind reste celui du registre — un écrasement
+    /// silencieux serait un bug de configuration masqué.
+    pub fn register(&mut self, step: impl MiryadWorkflowStep + 'static) -> Result<&mut Self, WorkflowError> {
         let kind = step.kind();
-        // `assert!` plutôt que `if` + `panic!` : même panic fail-fast, même message, sans
-        // déclencher `manual_assert` du harnais.
-        assert!(
-            !self.steps.contains_key(kind),
-            "kind de step déjà enregistré : {kind}"
-        );
+        if self.steps.contains_key(kind) {
+            return Err(WorkflowError::DuplicateStepKind(kind.to_string()));
+        }
         self.steps.insert(kind, Box::new(step));
-        self
+        Ok(self)
     }
 
     /// Retourne le futur de [`MiryadWorkflowStep::run`] du kind trouvé — jamais exécuté ici,
@@ -202,7 +199,7 @@ mod tests {
     fixture_kind!(
         DupFirst,
         "dupliqué",
-        |_config: Value, _inputs: HashMap<String, Value>| { Ok(json!(null)) }
+        |_config: Value, _inputs: HashMap<String, Value>| { Ok(json!("premier")) }
     );
     fixture_kind!(
         DupSecond,
@@ -243,7 +240,11 @@ mod tests {
     #[tokio::test]
     async fn dispatch_rend_le_bon_kind_parmi_trois() {
         let mut registry = StepRegistry::new();
-        registry.register(KindA).register(KindB).register(KindC);
+        registry
+            .register(KindA)
+            .and_then(|r| r.register(KindB))
+            .and_then(|r| r.register(KindC))
+            .expect("kinds distincts");
         let rendu = execute(&registry, "b", json!(null), no_inputs())
             .await
             .expect("le kind « b » est enregistré, dispatch devait rendre un futur");
@@ -258,7 +259,7 @@ mod tests {
     #[tokio::test]
     async fn inputs_transite_intact_vers_le_kind() {
         let mut registry = StepRegistry::new();
-        registry.register(EchoInputs);
+        registry.register(EchoInputs).expect("kind distinct");
         let mut inputs: HashMap<String, Value> = HashMap::new();
         inputs.insert("A".to_string(), json!(1));
         inputs.insert("B".to_string(), json!({ "x": true }));
@@ -273,7 +274,7 @@ mod tests {
     #[tokio::test]
     async fn step_sans_dependance_reçoit_inputs_vide() {
         let mut registry = StepRegistry::new();
-        registry.register(NoDeps);
+        registry.register(NoDeps).expect("kind distinct");
         let rendu = execute(&registry, "no_deps", json!(null), no_inputs())
             .await
             .expect("le kind « no_deps » est enregistré");
@@ -286,7 +287,7 @@ mod tests {
     #[test]
     fn kind_inconnu_rend_steperror_non_retryable_sans_panic() {
         let mut registry = StepRegistry::new();
-        registry.register(KindA);
+        registry.register(KindA).expect("kind distinct");
         match registry.dispatch("inexistant", json!(null), no_inputs()) {
             Err(error) => {
                 assert_eq!(error.message, "kind inconnu: inexistant");
@@ -297,14 +298,28 @@ mod tests {
         }
     }
 
-    /// Scenario « collision d'enregistrement panique au démarrage » : un second kind portant un
-    /// `kind()` déjà présent interrompt le démarrage par `panic!` — fail-fast de configuration.
-    #[test]
-    #[should_panic(expected = "dupliqué")]
-    fn collision_d_enregistrement_panique() {
+    /// Scenario « collision d'enregistrement rend une erreur au démarrage » : un second kind
+    /// portant un `kind()` déjà présent rend `DuplicateStepKind` sans écraser le premier.
+    #[tokio::test]
+    async fn collision_d_enregistrement_rend_une_erreur() {
         let mut registry = StepRegistry::new();
-        registry.register(DupFirst);
-        registry.register(DupSecond);
+        registry.register(DupFirst).expect("premier enregistrement");
+        let Err(erreur) = registry.register(DupSecond) else {
+            panic!("un kind dupliqué devait rendre un Err");
+        };
+        assert!(
+            matches!(&erreur, crate::workflow::error::WorkflowError::DuplicateStepKind(k) if k == "dupliqué"),
+            "variante attendue DuplicateStepKind(\"dupliqué\") : {erreur:?}"
+        );
+        assert_eq!(
+            erreur.to_string(),
+            "MRD-WORKFLOW-006: step kind already registered: dupliqué"
+        );
+        // Le premier kind reste celui enregistré.
+        let Ok(futur) = registry.dispatch("dupliqué", json!(null), no_inputs()) else {
+            panic!("le kind dupliqué devait rester enregistré");
+        };
+        assert_eq!(futur.await.ok(), Some(json!("premier")));
     }
 
     /// Scenario « `StepError` retryable distingue deux stratégies pour l'appelant » : deux kinds
@@ -313,7 +328,10 @@ mod tests {
     #[tokio::test]
     async fn steperror_retryable_transite_fidelement() {
         let mut registry = StepRegistry::new();
-        registry.register(AlwaysTransient).register(AlwaysPermanent);
+        registry
+            .register(AlwaysTransient)
+            .and_then(|r| r.register(AlwaysPermanent))
+            .expect("kinds distincts");
         let Err(transitoire) = execute(&registry, "toujours-transitoire", json!(null), no_inputs()).await
         else {
             panic!("le kind transitoire rend toujours une erreur");
@@ -335,7 +353,7 @@ mod tests {
     #[tokio::test]
     async fn config_transite_intacte_sans_validation() {
         let mut registry = StepRegistry::new();
-        registry.register(EchoConfig);
+        registry.register(EchoConfig).expect("kind distinct");
         let config = json!({ "a": 1, "b": [true, null] });
         let rendu = execute(&registry, "echo", config.clone(), no_inputs())
             .await
@@ -354,7 +372,7 @@ mod tests {
     #[should_panic(expected = "panic délibéré du kind panique-dans-run")]
     async fn le_panic_de_run_traverse_dispatch_sans_etre_converti() {
         let mut registry = StepRegistry::new();
-        registry.register(PanicsInRun);
+        registry.register(PanicsInRun).expect("kind distinct");
         // Étape 1 — `dispatch` lui-même ne panique pas : le kind est trouvé, le futur est rendu,
         // non exécuté. Si le registre convertissait le panic en `StepError` dès ce point,
         // `.expect` échouerait — ce serait une faute distincte, également rouge ici.

@@ -73,14 +73,14 @@ Must:
     à la crate. `message` reste un @String libre, définitivement, pas une lacune temporaire à combler.
   @StepRegistry — struct `pub`, opaque (aucun champ `pub`) :
     `fn new() -> Self` — registre vide
-    `fn register(&mut self, step: impl MiryadWorkflowStep + 'static) -> &mut Self` — ajoute un kind ;
-      interrompt par `assert!` fail-fast (message verbatim `kind de step déjà enregistré : {kind}`,
-      section `# Panics` documentée — `panic!` nu serait refusé par `clippy::manual_assert` du
-      harnais) si `step.kind()` collide avec un kind déjà enregistré (erreur de configuration au
-      démarrage de l'app, jamais une entrée utilisateur — cohérent avec le reste de la crate qui
-      distingue erreurs de configuration au boot, qui peuvent paniquer, et erreurs de requête, qui ne
-      le peuvent jamais ; seul site `panic!` autorisé de ./step.rs, `Tasks` le documente comme
-      exemption au harnais strict de /tooling.sdd)
+    `fn register(&mut self, step: impl MiryadWorkflowStep + 'static) -> Result<&mut Self,
+      WorkflowError>` — ajoute un kind ; rend @WorkflowError::DuplicateStepKind(kind)
+      (`MRD-WORKFLOW-006`, ./error.sdd) sans rien insérer si `step.kind()` collide avec un kind déjà
+      enregistré (erreur de configuration au démarrage de l'app, jamais une entrée utilisateur ;
+      revue 2026-09-24 : le `panic!` fail-fast d'origine est remplacé par un @Result — `Result` est
+      `#[must_use]`, l'ignorer est un avertissement, et une bibliothèque publiée ne panique pas sur
+      ses entrées de configuration ; l'app garde le fail-fast en un `?`/`expect` de son `main`). Plus
+      aucun site `panic!` dans ./step.rs.
     `pub(crate) fn dispatch(&self, kind: &str, config: @serde_json::Value, inputs:
       @HashMap<@String, @serde_json::Value>) -> Result<impl Future<Output =
       Result<@serde_json::Value, StepError>>, StepError>` — retourne le futur de `run` du kind trouvé
@@ -113,8 +113,7 @@ Must not:
     que @StepRegistry::dispatch détecte ou corrige.
   Autoriser deux `impl` enregistrées sous le même `kind()` sans échec bruyant : @StepRegistry::register
     ne permet jamais une collision silencieuse — un kind écraserait l'autre sans avertissement serait
-    un bug de configuration masqué (`Tasks`, exemption `panic_in_result_fn`/`panic` du harnais assumée
-    pour ce seul site).
+    un bug de configuration masqué ; l'échec est un @Err, jamais un `panic!`.
   Fournir un `impl MiryadWorkflowStep` par défaut ou un kind intégré dans ce fichier : le seul kind
     fourni par la crate (`"rhai"`) vit dans ./rhai_step.rs, une spec séparée — ./step.rs ne possède que
     le trait et le registre, jamais un kind concret.
@@ -123,6 +122,7 @@ Forbids:
   `restate_sdk::*`, `reqwest::*` dans ./step.rs
 
 Depends on:
+  ./error.rs — @WorkflowError, `DuplicateStepKind` (`MRD-WORKFLOW-006`)
   @async-trait 0.1 (lock `0.1.92`) — macro `#[async_trait::async_trait]`, seule façon de
     rendre `Box<dyn MiryadWorkflowStep>` construisible tout en gardant `run` déclarée `async fn`
     dans la syntaxe du trait. Déjà dépendance directe **non optionnelle** de /Cargo.toml
@@ -156,7 +156,7 @@ Accepts:
     l'ensemble des clés avant l'appel, ./step.rs ne le vérifie pas). Aucune validation de forme avant
     l'appel sur l'un ou l'autre — un kind qui reçoit une `config` ou un `inputs` dans une forme qu'il
     n'attend pas doit lui-même rendre @StepError { retryable: false }, pas paniquer (contrat transverse
-    harnais : jamais de `panic!`/`unwrap` en dehors du seul site documenté de @StepRegistry::register)
+    harnais : jamais de `panic!`/`unwrap`, plus aucune exemption depuis la revue 2026-09-24)
 
 Returns:
   @StepRegistry::dispatch : le futur de `run` du kind trouvé, non exécuté — c'est ./dispatcher.rs qui
@@ -177,9 +177,8 @@ Handles:
     `kind()`, sans réinterpréter son résultat éventuel — la distinction retryable/non n'est lue que
     par ./dispatcher.rs, jamais évaluée ici.
   Collision d'enregistrement : `register` d'un second kind portant le même `kind()` qu'un premier
-    interrompt le démarrage de l'app par `panic!` avant que quoi que ce soit d'autre ne s'exécute — un
-    choix délibéré de fail-fast plutôt qu'un @Result que l'app pourrait ignorer (erreur de
-    configuration, pas d'exécution).
+    rend @Err(WorkflowError::DuplicateStepKind) sans écraser le premier (revue 2026-09-24, en
+    remplacement du `panic!` fail-fast d'origine) — erreur de configuration, pas d'exécution.
   Step sans dépendance : `inputs` vaut un @HashMap vide, jamais un @Option ni une absence — un kind
     qui ne dépend d'aucun autre step ne distingue pas « pas encore branché » de « branché sur rien »,
     les deux cas n'existent pas séparément.
@@ -236,12 +235,12 @@ Scenario: kind inconnu ne panique jamais
   Then le résultat est @Err(StepError { retryable: false, message: "kind inconnu: inexistant" }) sans
     panic
 
-Scenario: collision d'enregistrement panique au démarrage
+Scenario: collision d'enregistrement rend une erreur au démarrage
   Given un @StepRegistry vide et deux `impl MiryadWorkflowStep` de fixture dont `kind()` rend tous
     deux `"dupliqué"`
   When @StepRegistry::register est appelé pour le premier puis pour le second
-  Then le second appel panique avant tout enregistrement d'un troisième kind ultérieur — le panic
-    interrompt le démarrage, pas seulement cet appel
+  Then le second appel rend @Err(WorkflowError::DuplicateStepKind("dupliqué")) et le premier kind
+    reste celui enregistré (`dispatch("dupliqué", ..)` exécute encore le premier)
 
 Scenario: StepError retryable distingue deux stratégies pour l'appelant
   Given un kind de fixture dont `run` rend systématiquement @StepError { retryable: true, message:

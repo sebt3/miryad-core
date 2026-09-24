@@ -205,7 +205,7 @@ mod tests {
     #[tokio::test]
     async fn step_retryable_devient_handlererror_retryable() {
         let mut registry = StepRegistry::new();
-        registry.register(Transient);
+        registry.register(Transient).expect("kind distinct");
         let erreur = step_error_of(&registry, "transitoire").await;
         assert!(erreur.retryable, "la fixture doit rendre un retryable: true");
         let traduit = step_error_to_handler_error(erreur);
@@ -227,7 +227,7 @@ mod tests {
     #[tokio::test]
     async fn step_non_retryable_devient_handlererror_terminal() {
         let mut registry = StepRegistry::new();
-        registry.register(Permanent);
+        registry.register(Permanent).expect("kind distinct");
         let erreur = step_error_of(&registry, "permanent").await;
         assert!(!erreur.retryable, "la fixture doit rendre un retryable: false");
         let traduit = step_error_to_handler_error(erreur);
@@ -278,7 +278,7 @@ mod tests {
     #[tokio::test]
     async fn resultat_du_kind_trouve_transite_intact() {
         let mut registry = StepRegistry::new();
-        registry.register(EchoConfig);
+        registry.register(EchoConfig).expect("kind distinct");
         let rendu = run_invocation(&registry, "echo".to_string(), json!({"a": 1}), HashMap::new())
             .await
             .expect("le kind de fixture `echo` est enregistré");
@@ -301,7 +301,9 @@ mod tests {
     async fn un_seul_appel_a_run_par_invocation() {
         let compteur = Arc::new(AtomicUsize::new(0));
         let mut registry = StepRegistry::new();
-        registry.register(Compteur(Arc::clone(&compteur)));
+        registry
+            .register(Compteur(Arc::clone(&compteur)))
+            .expect("kind distinct");
         let _ = run_invocation(&registry, "compteur".to_string(), Value::Null, HashMap::new())
             .await
             .expect("le kind `compteur` est enregistré");

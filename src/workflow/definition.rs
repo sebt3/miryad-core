@@ -212,19 +212,15 @@ static POLICY: OnceLock<WorkflowPolicy> = OnceLock::new();
 /// des requêtes (même idiome de configuration au démarrage que
 /// [`crate::workflow::client::register_deployment`]).
 ///
-/// # Panics
+/// # Errors
 ///
-/// Si une politique a déjà été posée : un second appel est une erreur de configuration du
-/// démarrage de l'application (deux composants qui tentent de fixer la politique), jamais un
-/// remplacement silencieux. Fail-fast délibéré posé par ./definition.sdd `Must`, même traitement
-/// que la collision d'enregistrement de `StepRegistry::register`.
-pub fn configure_policy(policy: WorkflowPolicy) {
-    // Seul site d'exemption du harnais de ./definition.rs : `expect_used` autorisé par
-    // ./definition.sdd `Must`, même traitement que ./step.sdd pour `StepRegistry::register`.
-    #[allow(clippy::expect_used)]
-    POLICY
-        .set(policy)
-        .expect("configure_policy() déjà appelée : une seule pose, avant de servir des requêtes");
+/// [`WorkflowError::PolicyAlreadySet`] (`MRD-WORKFLOW-005`) si une politique a déjà été posée : un
+/// second appel est une erreur de configuration du démarrage de l'application (deux composants
+/// qui tentent de fixer la politique), jamais un remplacement silencieux — la première politique
+/// reste effective. Même traitement que la collision d'enregistrement de
+/// `StepRegistry::register`.
+pub fn configure_policy(policy: WorkflowPolicy) -> Result<(), WorkflowError> {
+    POLICY.set(policy).map_err(|_| WorkflowError::PolicyAlreadySet)
 }
 
 /// Porte commune des hooks `before_create` et `before_update` : lit `steps` à la position

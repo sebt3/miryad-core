@@ -21,7 +21,8 @@ fn configure_policy_change_la_politique_effective() {
     configure_policy(WorkflowPolicy {
         read: AccessPolicy::Public,
         write: AccessPolicy::OwnerOnly,
-    });
+    })
+    .expect("première pose du processus : ne peut pas échouer");
     assert_eq!(Entity::read_policy(), AccessPolicy::Public);
     assert_eq!(Entity::write_policy(), AccessPolicy::OwnerOnly);
     assert!(

@@ -20,9 +20,8 @@ Purpose:
     `/src/rest/core.sdd` ont été amendées le même jour pour introduire
     `MiryadResource::before_update` et `MiryadResource::before_delete` (hors périmètre de ce fichier :
     amendement possédé par ces deux specs, pas par ./definition.rs). `WorkflowDefinition::before_update`
-    appelle `validate_dag` exactement comme `before_create` (`Must`) — reste `Tasks [ ]`
-    implémentation, bloqué sur l'implémentation (pas la spec, déjà écrite) de ces deux fichiers
-    amendés. Comme `before_create`, ces deux hooks ne se déclenchent pas sur le chemin GraphQL
+    appelle `validate_dag` exactement comme `before_create` (`Must`) — implémenté (les deux
+    fichiers amendés le sont, `Tasks [x]` ci-dessous). Comme `before_create`, ces deux hooks ne se déclenchent pas sur le chemin GraphQL
     (Seaography ne pilote ses hooks `before_active_model_save` qu'à l'insertion, `/src/graphql/hooks.sdd`
     en attente) — asymétrie documentée au niveau transverse (`/src/resource.sdd`,
     `docs/architecture.md`), pas
@@ -42,7 +41,7 @@ Can modify:
     change la politique effective » (processus dédié, seule cellule `OnceLock` du binaire ; méca-
     nisme d'isolation imposé par `Tasks`, attaché après coup sur remarque `validator` 2026-09-23)
   ../tests/workflow_policy_twice.rs — binaire isolant le `Scenario` « un second appel à
-    configure_policy panique », autonome (pose sa première politique puis panique au second)
+    configure_policy échoue », autonome (pose sa première politique puis échoue au second)
 
 References:
   ./error.sdd — @WorkflowError::InvalidDag (`MRD-WORKFLOW-004`), amendée par cette spec ; seul site de
@@ -101,14 +100,14 @@ Must:
   `WorkflowPolicy` — struct `pub`, `#[derive(Debug, Clone, Copy)]`, deux champs `pub` : `read:
     AccessPolicy`, `write: AccessPolicy`. `impl Default` rend `WorkflowPolicy { read:
     AccessPolicy::AdminOnly, write: AccessPolicy::AdminOnly }` — le défaut documenté en `Purpose`.
-  `configure_policy(policy: WorkflowPolicy)`, `pub fn`, seule façon de changer le défaut : pose
+  `configure_policy(policy: WorkflowPolicy) -> Result<(), WorkflowError>`, `pub fn`, seule façon de changer le défaut : pose
     `policy` dans une cellule `static POLICY: @std::sync::OnceLock<WorkflowPolicy>` module-privée.
     Appelée au plus une fois, avant que le serveur applicatif ne commence à servir des requêtes (même
     idiome de configuration au démarrage que ./client::register_deployment et
-    @users::ensure_service_account, roadmap 2c) — un second appel panique
-    (`#[allow(clippy::expect_used)]` avec commentaire d'une ligne citant cette spec, seul site
-    d'exemption de ce fichier, même traitement que la collision de @StepRegistry::register,
-    ./step.sdd). Ne jamais appeler `configure_policy` n'est un usage valide : la cellule non posée
+    @users::ensure_service_account, roadmap 2c) — un second appel rend
+    @WorkflowError::PolicyAlreadySet (`MRD-WORKFLOW-005`, ./error.sdd) et laisse la première politique
+    intacte (revue 2026-09-24 : le `panic!` d'origine et son `#[allow(clippy::expect_used)]` sont
+    supprimés, même traitement que @StepRegistry::register, ./step.sdd). Ne jamais appeler `configure_policy` n'est un usage valide : la cellule non posée
     retombe sur `WorkflowPolicy::default()`.
   `impl MiryadResource for Entity` : `resource_name() -> "workflows"` ; `read_policy() ->
     POLICY.get().copied().unwrap_or_default().read` ; `write_policy() ->
@@ -173,7 +172,7 @@ Exposes:
   `DagSteps` — struct `pub`, un champ `pub` (tuple)
   `validate_dag` — `pub(crate) fn validate_dag(steps: &[StepDefinition]) -> Result<(), WorkflowError>`
   `WorkflowPolicy` — struct `pub`, deux champs `pub`, `Default`
-  `configure_policy` — `pub fn configure_policy(policy: WorkflowPolicy)`
+  `configure_policy` — `pub fn configure_policy(policy: WorkflowPolicy) -> Result<(), WorkflowError>`
   `Entity`, `Model`, `ActiveModel`, `Column` — générés par `DeriveEntityModel`, `pub` (convention
     `DeriveEntityModel`)
   `impl MiryadResource for Entity`
@@ -358,8 +357,8 @@ Scenario: configure_policy change la politique effective
   Then ils rendent respectivement `AccessPolicy::Public` et `AccessPolicy::OwnerOnly` — plus jamais
     `AdminOnly`, `owner_column` reste `Some(Column::OwnerId)` inchangé
 
-Scenario: un second appel à configure_policy panique
+Scenario: un second appel à configure_policy rend une erreur
   Given `configure_policy` déjà appelée une fois dans ce processus
   When `configure_policy` est appelée une seconde fois, avec n'importe quelle valeur
-  Then l'appel panique — la première politique posée reste celle lue par tout appel de `read_policy`/
-    `write_policy` antérieur à la panique
+  Then l'appel rend @Err(WorkflowError::PolicyAlreadySet) — la première politique posée reste celle
+    lue par tout appel de `read_policy`/`write_policy`, avant comme après le second appel
