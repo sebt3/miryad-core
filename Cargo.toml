@@ -12,7 +12,7 @@ keywords = ["axum", "sea-orm", "rbac", "oidc", "crud"]
 categories = ["web-programming", "authentication"]
 # Les specs `.sdd` vivent à côté de leur source et ne sont pas embarquées dans le paquet publié ;
 # le bootstrap SpecDD et les définitions d'agents ne regardent pas les consommateurs.
-exclude = [".specdd/*", ".opencode/*", "**/*.sdd"]
+exclude = [".specdd/*", ".opencode/*", "**/*.sdd", "src/workflow/fixtures_rhai/*"]
 
 [[bin]]
 name = "miryad"
@@ -68,7 +68,7 @@ utoipa-swagger-ui = { version = "9", optional = true, features = ["axum"] }
 seaography = { version = "2.0.0-rc.9", optional = true }
 async-graphql = { version = "7", optional = true }
 async-graphql-axum = { version = "7", optional = true }
-vynil-core = { version = "0.7.4", default-features = false, features = ["hbs", "crypto"], optional = true }
+vynil-core = { version = "0.7.7", default-features = false, features = ["hbs", "crypto"], optional = true }
 tower-http = { version = "0.6", default-features = false, features = ["fs"], optional = true }
 restate-sdk = { version = "0.12", features = ["http_server"], optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
@@ -100,5 +100,5 @@ tower = { version = "0.5", features = ["util"] }
 
 [package.metadata.docs.rs]
 all-features = false
-features = ["static-frontend", "swagger-ui", "graphql", "graphiql", "mcp"]
+features = ["static-frontend", "swagger-ui", "graphql", "graphiql", "mcp", "workflow"]
 rustdoc-args = ["--cfg", "docsrs"]

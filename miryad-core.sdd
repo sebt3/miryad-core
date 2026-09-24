@@ -106,7 +106,7 @@ Depends on:
   openidconnect 4 (@openidconnect)
   Seaography 2.0.0-rc.9 et async-graphql 7, derrière les features `graphql` et `graphiql`
   utoipa 5 (@utoipa), @utoipa-swagger-ui derrière `swagger-ui`
-  vynil-core 0.7.4 (`hbs`, `crypto`), derrière la feature `mcp`
+  vynil-core 0.7.7 (`hbs`, `crypto`), derrière les features `mcp` et `workflow`
   ./tooling.sdd
 
 Tasks:
