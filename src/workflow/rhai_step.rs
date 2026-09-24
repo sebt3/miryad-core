@@ -24,6 +24,11 @@ use vynil_core::engine::Script;
 
 use super::step::{MiryadWorkflowStep, StepError};
 
+/// Plafond d'opérations Rhai par exécution : `spawn_blocking` isole le thread de travail mais ne
+/// peut pas interrompre une tâche bloquante — sans ce plafond, un `loop {}` occuperait un thread
+/// du pool bloquant indéfiniment (`./rhai_step.sdd` `Must`, étape 2).
+const MAX_OPERATIONS: u64 = 10_000_000;
+
 /// Le `config` du kind `"rhai"`, désérialisé depuis le JSON opaque livré à
 /// [`MiryadWorkflowStep::run`] — un seul champ attendu, les autres clés restent accessibles au
 /// script via la variable `config` (le JSON complet lui est exposé, `script` compris).
@@ -86,6 +91,7 @@ impl MiryadWorkflowStep for RhaiStep {
         // peut boucler) ; un panic éventuel y est confiné et capturé en `JoinError` à l'étape 4.
         tokio::task::spawn_blocking(move || {
             let mut script = Script::new_bare(resolver_path);
+            script.engine.set_max_operations(MAX_OPERATIONS);
             // Conversion infaillible HashMap→Map (pas de `serde_json::to_value` : aucun Result
             // ici). `config` est exposé en entier, `script` compris.
             script.set_dynamic("inputs", &Value::Object(inputs.into_iter().collect()));
@@ -222,6 +228,34 @@ mod tests {
             .await
             .expect("le script se réduit à une Map, run devait rendre un Ok");
         assert_eq!(rendu, json!({ "x": 7 }));
+    }
+
+    /// Scenario « script qui boucle indéfiniment est interrompu par le plafond d'opérations » :
+    /// `loop {}` rend une erreur Rhai non retryable en temps borné au lieu d'occuper un thread
+    /// bloquant indéfiniment.
+    #[tokio::test]
+    async fn script_qui_boucle_est_interrompu_par_le_plafond() {
+        let step = RhaiStep::default();
+        let rendu = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            step.run(json!({ "script": "loop {}; #{}" }), no_inputs()),
+        )
+        .await
+        .expect("le plafond d'opérations devait interrompre la boucle avant 30 s");
+        match rendu {
+            Ok(valeur) => panic!("une boucle infinie ne devait jamais rendre un Ok : {valeur}"),
+            Err(erreur) => {
+                assert!(
+                    !erreur.retryable,
+                    "un script qui boucle est déterministe : jamais retryable"
+                );
+                assert!(
+                    erreur.message.to_lowercase().contains("operations"),
+                    "erreur de dépassement d'opérations attendue : {:#?}",
+                    erreur.message
+                );
+            }
+        }
     }
 
     /// Scenario « deux appels successifs n'interfèrent jamais » : même instance de [`RhaiStep`],

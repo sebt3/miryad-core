@@ -63,7 +63,9 @@ Must:
     2. `self.resolver_path.clone()` capturé par la fermeture `move` avant `tokio::task::spawn_blocking`
       (`Must not` en explique la raison de `spawn_blocking`) : à l'intérieur,
       `Script::new_bare(resolver_path)` (le clone capturé — `vec![]` uniquement si `RhaiStep` a été
-      construit par `Default`) ; `set_dynamic("inputs", &Value::Object(inputs.into_iter().collect()))`
+      construit par `Default`) ; `script.engine.set_max_operations(MAX_OPERATIONS)` (constante privée
+      `MAX_OPERATIONS = 10_000_000`, plafond du moteur Rhai : un script qui la dépasse est interrompu
+      par Rhai lui-même, `ErrorTooManyOperations`, rendu par l'étape 3) ; `set_dynamic("inputs", &Value::Object(inputs.into_iter().collect()))`
       (conversion infaillible : @HashMap<@String, @Value> vers @serde_json::Map<@String, @Value> ne
       peut pas échouer, aucun @Result à cette étape, contrairement à une conversion par
       `serde_json::to_value`) ; `set_dynamic("config", &config)` (le `config` complet, `script`
@@ -95,6 +97,11 @@ Must not:
   Exposer aux scripts autre chose que `inputs` et `config` : pas de fonction Rhai supplémentaire
     enregistrée par ce fichier au-delà de ce que `Script::new_bare` fournit déjà — un besoin
     additionnel (accès DB, appel HTTP) est un nouveau kind, pas une extension de celui-ci.
+
+  Laisser tourner un script sans plafond d'opérations : `spawn_blocking` isole le thread de travail
+    mais ne l'interrompt jamais (une tâche bloquante ne s'annule pas) — un `loop {}` occuperait un
+    thread du pool bloquant indéfiniment, hors de portée de Restate. Le plafond vit dans le moteur,
+    pas dans un timeout externe.
 
 Forbids:
   `restate_sdk::*`, `reqwest::*` dans ./rhai_step.rs
@@ -150,10 +157,12 @@ Tasks:
     `RhaiStep::new(resolver_path)`/`RhaiStep::default()` (`Must`) — la portée de fichiers exposée à
     un script (risque de lecture arbitraire sur le pod si le chemin est mal choisi) reste le choix et
     la responsabilité de l'app qui fournit `resolver_path`, jamais un défaut de la crate.
-  [?] Le champ unique de `RhaiConfig` (`script`) suffit-il, ou un kind `"rhai"` réel a-t-il besoin
-    d'un second champ (ex. `timeout_ms` pour borner un script qui boucle, au-delà du filet de
-    `RunRetryPolicy`/`ServiceOptions` déjà posé par ./dispatcher.sdd au niveau de l'invocation
-    entière, pas du script individuellement) ?
+  [x] Le champ unique de `RhaiConfig` (`script`) suffit — arbitré en revue (2026-09-24) : pas de
+    `timeout_ms`, un timeout externe n'interrompt pas un thread bloquant. Un script qui boucle est
+    borné par `MAX_OPERATIONS` sur le moteur (`Must`, étape 2) ; le rendre configurable par l'app
+    reste un ajout futur, pas un besoin actuel.
+  [x] Plafond d'opérations Rhai (revue 2026-09-24) : `set_max_operations(MAX_OPERATIONS)` posé sur
+    chaque moteur neuf ; scenario « script qui boucle est interrompu » ci-dessous.
   [x] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./rhai_step.rs — aucun
     serveur Restate requis (le kind s'exécute et se teste sans `restate-sdk`, ./step.sdd), une base
     sqlite non plus (aucune dépendance DB dans ce fichier). Réalisé 2026-09-23 : sept tests nommés
@@ -165,7 +174,6 @@ Tasks:
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la combinaison de features
     `workflow` + `vynil-core/rhai`.
-  Le `[?]` restant (second champ de `RhaiConfig`) est arbitré par Sébastien.
   ./step.sdd est approuvée avant ou avec cette spec.
   La spec est relue et approuvée par Sébastien avant qu'une ligne de ./rhai_step.rs soit écrite.
 
@@ -220,3 +228,9 @@ Scenario: RhaiStep::default() n'ouvre aucun import, RhaiStep::new(...) le permet
     `import_run`/`ErrorModuleNotFound` de `Script::add_common` plutôt qu'une erreur brute non
     catégorisée) et l'instance `new(...)` réussit et rend la valeur du module importé — miryad-core
     ne fournit aucun chemin par défaut, l'app en fournissant un obtient la capacité
+
+Scenario: script qui boucle indéfiniment est interrompu par le plafond d'opérations
+  Given `config = json!({"script": "loop {}; #{}"})`
+  When `RhaiStep::run` est appelé
+  Then le résultat est @Err(StepError { retryable: false, .. }) rendu en un temps borné (pas de
+    blocage), le message portant l'erreur Rhai de dépassement d'opérations
