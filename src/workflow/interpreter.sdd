@@ -26,6 +26,10 @@ Purpose:
 Owns:
   ./interpreter.rs
 
+Can modify:
+  ../../tests/workflow_restate.rs — test d'intégration contre un vrai `restate-server` (conteneur
+    `podman`), `#[ignore]` par défaut, ajouté à la revue du 2026-09-24
+
 References:
   ./definition.sdd — `DagSteps`, `StepDefinition`, `validate_dag`, @WorkflowError::InvalidDag : DAG
     reçu en entrée de `run`, validé avant tout walk
@@ -194,15 +198,19 @@ Tasks:
     d'origine (« le résultat est vide ») était une erreur d'arithmétique du losange (prouvé à
     l'implémentation 2026-09-23 — `"C"` est prêt dès que `"A"` est terminé ; une couche vide
     contredit l'étape 2.a du `Must`), reformulé ci-dessus en l'observable que le scenario justifiait
-    (couche exactement `["C"]`, `"D"` jamais avant). À confirmer par Sébastien — une spec de test
-    fausse ne se corrige pas en silence.
-  [ ] Valider par un test d'intégration (pas `mod tests` unitaire) le protocole de fan-out et de
-    reprise sur crash avec l'implémentation réelle (`StepDispatcher`/`StepRegistry`, pas les stubs du
-    spike) — même méthode que le spike (kill du process mi-couche, vérification qu'aucun step déjà
-    journalisé n'est rejoué), à documenter dans `tests/` ou en note d'exploitation
-    (`docs/architecture.md`) plutôt qu'en `Scenario` de cette spec : ce fichier ne peut pas prouver
-    unitairement une garantie qui appartient au runtime `restate-sdk`/`restate-server`, seulement
-    l'utiliser correctement (`Must`).
+    (couche exactement `["C"]`, `"D"` jamais avant). Arithmétique revérifiée en revue 2026-09-24 (losange A→B,C→D,
+    `completed = {A, B}` : C prêt, D non) — la correction est juste ; la confirmation formelle reste à
+    Sébastien, une spec de test fausse ne se corrige pas en silence.
+  [x] Test d'intégration réalisé à la revue du 2026-09-24 : ../../tests/workflow_restate.rs, quatre
+    tests `#[ignore]` (exigent `podman` + l'image `restate`, lancement explicite `--ignored`) contre
+    un vrai `restate-server` servant le vrai `DagInterpreter` + `StepDispatcher` — fan-out/fan-in
+    d'un losange (B et C partent ensemble, D reçoit exactement B et C, chaque step une fois), premier
+    échec de couche sans attente du frère (échec rendu en ~2,5 s, frère à 20 s), DAG invalide `400`
+    `MRD-WORKFLOW-004` sans step exécuté, step transitoire rejoué (3 appels) sans rejeu du step
+    terminé. Les trois `Scenario` du corps de @run sont ainsi prouvés. Reste hors test, non
+    automatisable dans le processus de test : la reprise sur **crash du processus service**
+    (couverte par le spike du 2026-09-22 ; méthode : kill du process mi-couche, vérification qu'aucun
+    step journalisé n'est rejoué — à documenter en note d'exploitation dans `docs/architecture.md`).
   [x] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./interpreter.rs, avec
     le périmètre fixé par le tranchage de Sébastien (2026-09-23, même rationalité que @run_invocation
     de ./dispatcher.sdd) : les cinq `Scenario` decidables sans @WorkflowContext se testent en

@@ -21,6 +21,10 @@ Purpose:
 Owns:
   ./mod.rs
 
+Can modify:
+  ../../tests/workflow_flat_paths.rs — crate d'intégration exerçant le `Scenario` de chemins plats
+    depuis l'extérieur de la crate (`miryad_core::workflow::…`), ajoutée à la revue du 2026-09-24
+
 References:
   ./error.sdd, ./client.sdd, ./step.sdd, ./dispatcher.sdd, ./definition.sdd, ./interpreter.sdd,
     ./rhai_step.sdd — les sept enfants, chacun `Owns` son propre `.rs`, ce fichier ne les décrit pas
@@ -153,6 +157,10 @@ Tasks:
     @chemins_plats_resolvent_sans_structure_interne sous forme @crate:: (résolution @miryad_core::
     impossible en cible unitaire lib, @E0433 vérifié), les neuf chemins du `Scenario` référencés sans
     nommer les sous-modules, validator PASS.
+
+  [x] Preuve « depuis l'extérieur » du `Scenario` (revue 2026-09-24) : le test unitaire de ./mod.rs
+    ne prouvait que `crate::` ; `tests/workflow_flat_paths.rs` exerce les neuf mêmes chemins en
+    `miryad_core::workflow::…`.
 
 Done when:
   Les sept specs enfants (`error`, `client`, `step`, `dispatcher`, `definition`, `interpreter`,
