@@ -64,7 +64,10 @@ Must:
     `retryable = false` signale un échec permanent (config invalide, logique métier qui ne réussira
     jamais en rejouant) que ./dispatcher.rs doit arrêter immédiatement — cette distinction est le seul
     signal qu'un kind de step a pour influencer la stratégie de retry, il ne voit et ne configure
-    jamais la @RunRetryPolicy Restate elle-même (./dispatcher.sdd la fixe une fois pour tous les kinds).
+    jamais la politique de retry Restate elle-même : ./dispatcher.sdd ne fixe aucune politique (la
+    @ServiceOptions se pose au `bind()` par l'app, ./dispatcher.sdd `Must` ratifiée 2026-09-23 —
+    correction du 2026-09-23, l'affirmation inverse « @RunRetryPolicy fixée par ./dispatcher.sdd »
+    datait d'avant le tranchage ServiceOptions).
     Décision de Sébastien (2026-09-23) : pas de champ `code` structuré — imposer une codification des
     erreurs applicatives de workflow irait trop loin, à la différence de la taxonomie `MRD-*` interne
     à la crate. `message` reste un @String libre, définitivement, pas une lacune temporaire à combler.

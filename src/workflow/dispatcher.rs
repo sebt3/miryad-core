@@ -54,25 +54,37 @@ impl StepDispatcher {
     ) -> Result<Json<Value>, HandlerError> {
         let Json(StepInvocation { kind, config, inputs }) = req;
         // Un seul `ctx.run()` par invocation : l'exécution du kind est journalisée d'un bloc,
-        // jamais rejouée après reprise sur crash. Jamais de `.retry_policy()` ici — la
+        // jamais rejouée après reprise sur crash. La fermeture se borne à déléguer à
+        // `run_invocation` (rien d'autre ne s'y ajoute). Jamais de `.retry_policy()` ici — la
         // politique est celle posée au `bind()` du service par l'app (`recommended_options`).
         let output = ctx
-            .run(move || async move {
-                // Err de `dispatch` = kind absent du registre : erreur de configuration du DAG
-                // (4xx), jamais une panne du service (5xx). Code 404 posé explicitement, et
-                // jamais par `step_error_to_handler_error`, réservée aux StepError d'un run.
-                let found = self.registry.dispatch(&kind, config, inputs).map_err(|_| {
-                    HandlerError::from(TerminalError::new_with_code(404, format!("kind inconnu: {kind}")))
-                })?;
-                // Enveloppe `Json` posée ici (wrapper requis pour tout type non primitif
-                // traversant le protocole `restate-sdk`) : la `Must` fixe le `run` en
-                // `Result<Json<Value>, TerminalError>`, la sortie du run et la forme sur le
-                // fil restent le @serde_json::Value nu du kind.
-                found.await.map(Json).map_err(step_error_to_handler_error)
-            })
+            .run(move || run_invocation(&self.registry, kind, config, inputs))
             .await?;
         Ok(output)
     }
+}
+
+/// Seul corps de la fermeture de `ctx.run` du handler : dispatch du kind, puis attente de son
+/// futur. Séparaison tranchée par Sébastien (2026-09-23) : `restate-sdk` ne virtualise aucun
+/// `Context`, cette fonction rend les trois branches (404 kind inconnu, transit intact du
+/// résultat, exécution exactement une fois) testables sans serveur. L'invariant « un seul
+/// `ctx.run()` par invocation » vit dans le handler, la logique ici.
+async fn run_invocation(
+    registry: &StepRegistry,
+    kind: String,
+    config: Value,
+    inputs: HashMap<String, Value>,
+) -> Result<Json<Value>, HandlerError> {
+    // Err de `dispatch` = kind absent du registre : erreur de configuration du DAG (4xx),
+    // jamais une panne du service (5xx). Code 404 posé explicitement, et jamais par
+    // `step_error_to_handler_error`, réservée aux StepError d'un run.
+    let found = registry.dispatch(&kind, config, inputs).map_err(|_| {
+        HandlerError::from(TerminalError::new_with_code(404, format!("kind inconnu: {kind}")))
+    })?;
+    // Enveloppe `Json` posée ici (wrapper requis pour tout type non primitif traversant le
+    // protocole `restate-sdk`) : la `Must` fixe le `run` en `Result<Json<Value>, TerminalError>`,
+    // la sortie du run et la forme sur le fil restent le `Value` nu du kind.
+    found.await.map(Json).map_err(step_error_to_handler_error)
 }
 
 /// Unique traduction `StepError` → erreurs `restate-sdk` de toute la crate.
@@ -103,12 +115,15 @@ pub fn recommended_options() -> ServiceOptions {
 
 #[cfg(test)]
 mod tests {
-    use super::{recommended_options, step_error_to_handler_error};
+    use super::{recommended_options, run_invocation, step_error_to_handler_error};
     use crate::workflow::step::{MiryadWorkflowStep, StepError, StepRegistry};
+    use restate_sdk::prelude::Json;
     use serde_json::Value;
     use serde_json::json;
     use std::collections::HashMap;
     use std::error::Error as StdError;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // ── Fixtures : kinds de registre, chaque Scenario pur monte son `StepRegistry` dédié ──
 
@@ -118,6 +133,12 @@ mod tests {
     /// Kind dont le `run` rend systématiquement un `StepError` `retryable: false` (scenario
     /// « step non-retryable devient `HandlerError` terminal »).
     struct Permanent;
+    /// Kind dont le `run` retourne sa `config` inchangée (scenario « résultat du kind trouvé
+    /// transite intact »).
+    struct EchoConfig;
+    /// Kind dont le `run` incrémente un compteur externe `Arc<AtomicUsize>` à chaque exécution
+    /// (scenario « un seul `ctx.run()` par invocation de `execute` »).
+    struct Compteur(Arc<AtomicUsize>);
 
     #[async_trait::async_trait]
     impl MiryadWorkflowStep for Transient {
@@ -142,6 +163,27 @@ mod tests {
                 message: "config invalide".to_string(),
                 retryable: false,
             })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MiryadWorkflowStep for EchoConfig {
+        fn kind(&self) -> &'static str {
+            "echo"
+        }
+        async fn run(&self, config: Value, _inputs: HashMap<String, Value>) -> Result<Value, StepError> {
+            Ok(config)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MiryadWorkflowStep for Compteur {
+        fn kind(&self) -> &'static str {
+            "compteur"
+        }
+        async fn run(&self, _config: Value, _inputs: HashMap<String, Value>) -> Result<Value, StepError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(json!(null))
         }
     }
 
@@ -199,6 +241,73 @@ mod tests {
         assert!(
             !affiche.contains("Retryable error: "),
             "un terminal ne porte jamais le préfixe Retryable, affiché : {affiche}"
+        );
+    }
+
+    /// Scenario « kind inconnu produit une erreur 404, distincte d'un `StepError` applicatif » :
+    /// la `Must` « Kind inconnu » pose `404` explicitement (jamais le `500` du scénario
+    /// précédent, jamais `step_error_to_handler_error`). Forme adaptée au seam `run_invocation`
+    /// (tranchage Sébastien 2026-09-23, `Tasks` de ./dispatcher.sdd : « les tests appellent
+    /// `run_invocation` directement » — un `execute` réel suppose un serveur Restate).
+    #[tokio::test]
+    async fn kind_inconnu_produit_une_erreur_404() {
+        let registry = StepRegistry::new();
+        let Err(erreur) = run_invocation(&registry, "absent".to_string(), Value::Null, HashMap::new()).await
+        else {
+            panic!("un kind absent du registre doit rendre une erreur, jamais Ok");
+        };
+        // `HandlerError` ne porte pas de `Display` propre : son observable public est
+        // `AsRef<dyn StdError>` → `HandlerErrorInner`, seul à afficher le préfixe distinctif.
+        let affiche = AsRef::<dyn StdError>::as_ref(&erreur).to_string();
+        assert_eq!(
+            affiche, "Terminal error [404]: kind inconnu: absent",
+            "le code 404 explicite et le message verbatim « kind inconnu: absent » sont attendus"
+        );
+        assert!(
+            !affiche.contains("Retryable error:"),
+            "un kind absent du registre ne doit JAMAIS être Retryable (chemin 4xx, pas un StepError \
+             retryable), affiche : {affiche}"
+        );
+    }
+
+    /// Scenario « résultat du kind trouvé transite intact » : `run_invocation` avec kind `"echo"`
+    /// dont le `run` retourne sa `config` inchangée, transite `Ok(Json(config))` structurellement
+    /// identique — la jointure `dispatch` → await → `.map(Json)` ne modifie pas le `Value`.
+    #[tokio::test]
+    async fn resultat_du_kind_trouve_transite_intact() {
+        let mut registry = StepRegistry::new();
+        registry.register(EchoConfig);
+        let rendu = run_invocation(&registry, "echo".to_string(), json!({"a": 1}), HashMap::new())
+            .await
+            .expect("le kind de fixture `echo` est enregistré");
+        // `Json` (`restate_sdk::prelude::Json`) est un `newtype` `pub(crate)`-field sur le `Value`.
+        let Json(valeur_transmise) = rendu;
+        assert_eq!(
+            valeur_transmise,
+            json!({"a": 1}),
+            "la config doit transiter sans enveloppe ni métadonnée ajoutée"
+        );
+    }
+
+    /// Scenario « un seul `ctx.run()` par invocation de `execute` » : la forme testable du seam
+    /// `run_invocation` (la logique du handler, extraite), un kind compteur externe
+    /// `Arc<AtomicUsize>`. L'invariant « un seul `ctx.run()` par invocation » vit dans le handler
+    /// (`Must` — le `ctx.run` du dispatcher est inobservable hors serveur) ; la démonstration du
+    /// seam : exactement une fois `MiryadWorkflowStep::run` appelé par `run_invocation` — un
+    /// second poll du futur (ou un `dispatch` double) serait une violation visible.
+    #[tokio::test]
+    async fn un_seul_appel_a_run_par_invocation() {
+        let compteur = Arc::new(AtomicUsize::new(0));
+        let mut registry = StepRegistry::new();
+        registry.register(Compteur(Arc::clone(&compteur)));
+        let _ = run_invocation(&registry, "compteur".to_string(), Value::Null, HashMap::new())
+            .await
+            .expect("le kind `compteur` est enregistré");
+        let n = compteur.load(Ordering::SeqCst);
+        assert_eq!(
+            n, 1,
+            "un appel à run_invocation doit exécuter le `run` du kind exactement une fois, \
+             compteur : {n}"
         );
     }
 

@@ -54,18 +54,27 @@ Must:
     `async fn execute(&self, ctx: Context<'_>, req: Json<StepInvocation>) -> Result<Json<@serde_json::Value>,
     HandlerError>`. Corps exact :
     1. Décompose `req` en `kind`, `config`, `inputs`.
-    2. `ctx.run(move || async move { ... }).await` — un seul `ctx.run()` par invocation de `execute`,
-      jamais plus : à l'intérieur, `self.registry.dispatch(&kind, config, inputs)` (./step.sdd) puis,
-      si @Ok, `.await` du futur retourné. Un @Err de `dispatch` (kind inconnu — seule erreur que
-      cette fonction rend avant le `.await`, ./step.sdd) est traduit en `404` par la `Must` « Kind
-      inconnu » ci-dessous, jamais par `step_error_to_handler_error` ; le @StepError rendu par le
-      futur attendu (le `run` du kind) est traduit par cette dernière fonction, avant que la
-      fermeture ne retourne.
+    2. `ctx.run(move || run_invocation(&self.registry, kind, config, inputs)).await` — un seul
+      `ctx.run()` par invocation de `execute`, jamais plus, la fermeture se bornant à déléguer à
+      @run_invocation (rien d'autre ne s'y ajoute).
     3. Le `?` sur le résultat de `ctx.run(...).await` (type @Result<Json<Value>, TerminalError>,
       signature vérifiée au spike : `ctx.run` retourne toujours un échec en @TerminalError, jamais en
       @HandlerError, quel que soit ce que la fermeture a retourné) convertit vers le type de retour du
       handler via `From<TerminalError> for HandlerError` (vérifié `src/errors.rs` de `restate-sdk`
       `0.12.1`).
+  `run_invocation(registry: &StepRegistry, kind: @String, config: @serde_json::Value, inputs:
+    @HashMap<@String, @serde_json::Value>) -> Result<Json<@serde_json::Value>, HandlerError>` —
+    `async fn` privée, seul corps de la fermeture de @ctx.run : `registry.dispatch(&kind, config,
+    inputs)` (./step.sdd) ; un @Err de `dispatch` (kind inconnu — seule erreur que cette fonction
+    rend avant l'await du futur, ./step.sdd) est traduit en `404` par la `Must` « Kind inconnu »
+    ci-dessous, jamais par `step_error_to_handler_error` ; sur @Ok, await du futur retourné et le
+    @StepError éventuel est traduit par cette dernière fonction, avant retour. Séparaison tranchée
+    par Sébastien (2026-09-23) : @restate-sdk `0.12.1` ne virtualise aucun @Context (aucun
+    `test_util`, vérifié source), la fonction rend les trois branches (404 kind inconnu, transit
+    intact du résultat, exécution exactement une fois) testables sans serveur. L'invariant « un seul
+    @ctx.run() par invocation » vit dans le handler (`Must` ci-dessus), la logique dans cette
+    fonction ; les tests appellent @run_invocation directement — c'est la jointure testable entre
+    ./step.sdd et le protocole, pas une surface exposée.
   `step_error_to_handler_error(e: StepError) -> HandlerError`, fonction privée, seul site de
     traduction de toute la crate :
     `e.retryable == true` → `HandlerError::from(e)` (le blanket `impl<E: Into<Box<dyn StdError + Send
@@ -221,14 +230,20 @@ Tasks:
     fournit un défaut raisonnable optionnel. Reste ouvert, hors périmètre de ce fichier : documenter
     dans docs/architecture.md que l'absence de `ServiceOptions` au `bind()` reproduit le retry indéfini
     du serveur.
-  [ ] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./dispatcher.rs, contre un
+  [x] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./dispatcher.rs, contre un
     @StepRegistry de fixtures — sans serveur Restate réel : la forme du protocole (`ctx.run`,
     @HandlerError/@TerminalError) est vérifiée par les tests de l'écosystème `restate-sdk`
     lui-même, les tests de cette spec vérifient que ./dispatcher.rs construit les bonnes valeurs, pas
-    que `restate-sdk` se comporte comme documenté (même principe que ./client.sdd).
+    que `restate-sdk` se comporte comme documenté (même principe que ./client.sdd). Périmètre fixé
+    par le tranchage de Sébastien (2026-09-23, @run_invocation) : les six `Scenario` testables
+    s'écrivent contre @run_invocation et les fonctions pures ; le `Scenario` d'isolation des panics
+    reste couvert par le spike (`Tasks` `[x]` ci-dessus, invoquer @execute deux fois suppose un
+    serveur).
 
 Done when:
-  Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
+  Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow` — périmètre
+    borné par le tranchage de Sébastien (2026-09-23, `Tasks`) : les six `Scenario` testables en
+    unitaire, le `Scenario` d'isolation des panics étant couvert par le spike (`Tasks` `[x]`).
   ./step.sdd est approuvée avant ou avec cette spec (dépendance directe, @StepRegistry/@StepError
     stabilisés).
   La spec est relue et approuvée par Sébastien avant qu'une ligne de ./dispatcher.rs soit écrite.
@@ -250,7 +265,7 @@ Scenario: step non-retryable devient HandlerError terminal
 
 Scenario: kind inconnu produit une erreur 404, distincte d'un StepError applicatif
   Given un @StepRegistry sans le kind `"absent"` enregistré
-  When `StepDispatcher::execute` est invoqué avec `StepInvocation { kind: "absent".into(), config:
+  When le seam @run_invocation atteint par `StepDispatcher::execute` est invoqué avec `StepInvocation { kind: "absent".into(), config:
     json!(null), inputs: HashMap::new() }`
   Then le résultat est une erreur terminale de code `404` et de message `"kind inconnu: absent"` —
     jamais construite par `step_error_to_handler_error`, jamais le code `500` du scenario précédent
@@ -278,15 +293,16 @@ Scenario: un panic dans run() n'affecte qu'une seule invocation
 
 Scenario: résultat du kind trouvé transite intact
   Given un @StepRegistry avec un kind de fixture `"echo"` dont `run` retourne `config` inchangée
-  When `StepDispatcher::execute` est invoqué avec `StepInvocation { kind: "echo".into(), config:
+  When le seam @run_invocation atteint par `StepDispatcher::execute` est invoqué avec `StepInvocation { kind: "echo".into(), config:
     json!({"a": 1}), inputs: HashMap::new() }`
   Then le résultat est `Ok(Json(json!({"a": 1})))`, structurellement identique à la `config` d'entrée
 
 Scenario: un seul ctx.run() par invocation de execute
   Given un kind de fixture qui incrémente un compteur externe (`Arc<AtomicUsize>`, capturé par la
     fixture) à chaque exécution de son `run`
-  When `StepDispatcher::execute` est invoqué une fois pour ce kind, en dehors de tout contexte de
-    reprise sur crash (un seul passage, pas de rejouissance de journal)
+  When le seam @run_invocation atteint par `StepDispatcher::execute` est invoqué une fois pour ce
+    kind, en dehors de tout contexte de reprise sur crash (un seul passage, pas de rejouissance de
+    journal)
   Then le compteur vaut exactement `1` après l'invocation — un seul appel à `run`, confirmant qu'aucun
     chemin de ./dispatcher.rs n'appelle `StepRegistry::dispatch` ou le futur qu'il retourne plus d'une
     fois par invocation réussie
