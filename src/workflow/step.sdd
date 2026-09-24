@@ -71,7 +71,9 @@ Must:
   @StepRegistry — struct `pub`, opaque (aucun champ `pub`) :
     `fn new() -> Self` — registre vide
     `fn register(&mut self, step: impl MiryadWorkflowStep + 'static) -> &mut Self` — ajoute un kind ;
-      `panic!` si `step.kind()` collide avec un kind déjà enregistré (erreur de configuration au
+      interrompt par `assert!` fail-fast (message verbatim `kind de step déjà enregistré : {kind}`,
+      section `# Panics` documentée — `panic!` nu serait refusé par `clippy::manual_assert` du
+      harnais) si `step.kind()` collide avec un kind déjà enregistré (erreur de configuration au
       démarrage de l'app, jamais une entrée utilisateur — cohérent avec le reste de la crate qui
       distingue erreurs de configuration au boot, qui peuvent paniquer, et erreurs de requête, qui ne
       le peuvent jamais ; seul site `panic!` autorisé de ./step.rs, `Tasks` le documente comme
@@ -131,11 +133,15 @@ Depends on:
   @std::collections::HashMap — porteur de `inputs`, aucune dépendance externe
 
 Exposes:
-  @MiryadWorkflowStep — trait `pub`, deux méthodes (`kind`, `run`), `Send + Sync` implicite par
-    `#[async_trait::async_trait]` (nécessaire pour vivre dans `Box<dyn ... + Send + Sync>` au sein
-    d'un handler Restate `async`, contrainte imposée par ./dispatcher.sdd)
+  @MiryadWorkflowStep — trait `pub`, deux méthodes (`kind`, `run`), super-trait explicite
+    `Send + Sync` (nécessaire pour vivre dans `Box<dyn MiryadWorkflowStep>`, `Box<dyn ... +
+    Send + Sync>` n'étant pas déductible de `#[async_trait::async_trait]` seul qui ne borne que
+    le futur de `run` — correction à l'implémentation 2026-09-23), au sein d'un handler Restate
+    `async`, contrainte imposée par ./dispatcher.sdd)
   @StepError — struct `pub`, deux champs `pub`, derive @Debug + @thiserror::Error
-  @StepRegistry — struct `pub`, `new`/`register` publics, `dispatch` `pub(crate)`
+  @StepRegistry — struct `pub`, `new`/`register` publics (`new` porte `#[must_use]`, registre
+    porte `#[derive(Default)]` — imposés par `pedantic` en deny de /tooling.sdd, `Default` équivaut
+    à `new`), `dispatch` `pub(crate)`
 
 Accepts:
   @StepRegistry::register : toute valeur `impl MiryadWorkflowStep + 'static`, possédée (déplacée dans
@@ -186,10 +192,13 @@ Tasks:
     alimenter un step aval quand la dépendance est documentée dans le DAG. Décision reflétée dans
     `Must` (paramètre `inputs` de `run`) — ./interpreter.sdd hérite de la responsabilité d'assembler
     `inputs` à partir des sorties collectées des dépendances avant chaque appel à `StepDispatcher`.
-  [ ] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./step.rs, avec au moins
+  [x] Convertir les `Scenario` en tests distincts nommés dans `mod tests` de ./step.rs, avec au moins
     deux kinds de fixture (un `retryable: true`, un `retryable: false`, un kind qui panique
     délibérément pour vérifier que `run` lui-même peut paniquer sans que @StepRegistry::dispatch en
-    soit responsable — seule @StepRegistry::register a la garantie fail-fast).
+    soit responsable — seule @StepRegistry::register a la garantie fail-fast). Réalisé 2026-09-23 :
+    huit tests (sept `Scenario` + verrou @le_panic_de_run_traverse_dispatch_sans_etre_converti),
+    fixtures @toujours-transitoire (@retryable: true), @toujours-permanent (@retryable: false) et
+    @panique-dans-run, validator PASS — dette inchangée, zéro diagnostic clippy sur ./step.rs.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.

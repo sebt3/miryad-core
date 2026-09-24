@@ -188,6 +188,10 @@ Handles:
     affectée.
 
 Tasks:
+  [ ] À l'implémentation de ce fichier : retirer le `#[allow(dead_code)]` posé sur
+    @StepRegistry::dispatch dans ./step.rs (batch du 2026-09-23, motif : ./dispatcher.rs est son
+    unique appelant, pas encore écrit) — condition de ce batch, même traitement que le retrait
+    côté ./client.rs de l'allow de @classify_transport_error.
   [x] Isolation des panics : vérifié par spike (2026-09-23, détail en `Must` et `Must not`) — un panic
     dans `run()` n'affecte que l'invocation en cours, le processus `StepDispatcher` reste debout, et le
     même mécanisme `ServiceOptions` (`retry_policy_max_attempts` + `retry_policy_pause_on_max_attempts`)
