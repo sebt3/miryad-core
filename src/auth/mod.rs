@@ -63,9 +63,18 @@ struct CallbackParams {
 }
 
 async fn handler_login(State(auth): State<MiryadAuthState>) -> Result<impl IntoResponse, AuthError> {
-    let (url, csrf_token, nonce) = auth.oidc_client.authorization_url();
+    // Adaptation mécanique (PKCE S256, `oidc.sdd` arbitré 2026-09-27) : `authorization_url`
+    // rend désormais un quadruplet. Le refactor complet du cookie pending appartient au
+    // prochain batch (`mod.sdd` `Tasks`) ; a minima, le verifier est stocké en troisième
+    // segment de la valeur `csrf:nonce:verifier` (le verifier est du base64url, sans `:`).
+    let (url, csrf_token, nonce, pkce_verifier) = auth.oidc_client.authorization_url();
 
-    let pending_value = format!("{}:{}", csrf_token.secret(), nonce.secret());
+    let pending_value = format!(
+        "{}:{}:{}",
+        csrf_token.secret(),
+        nonce.secret(),
+        pkce_verifier.secret()
+    );
     let mut jar = CookieJar::new();
     let mut private_jar = jar.private_mut(&auth.cookie_key);
     private_jar.add(Cookie::new(PENDING_COOKIE_NAME, pending_value));
@@ -117,21 +126,28 @@ async fn handler_callback(
         .ok_or_else(|| AuthError::Oidc("MRD-AUTH-012: invalid oidc_pending cookie".to_string()))?;
 
     let value = decrypted.value();
-    let parts: Vec<&str> = value.splitn(2, ':').collect();
-    if parts.len() != 2 {
+    // Contrat symétrique de `handler_login` (adaptation mécanique PKCE, cf. ci-dessus) :
+    // `csrf:nonce:pkce_verifier`, trois segments, sinon pending malformé (`012`).
+    let mut pieces = value.splitn(3, ':');
+    let (Some(expected_csrf), Some(nonce_part), Some(verifier_part)) =
+        (pieces.next(), pieces.next(), pieces.next())
+    else {
         return Err(AuthError::Oidc(
             "MRD-AUTH-012: malformed oidc_pending value".to_string(),
         ));
-    }
-    let expected_csrf = parts[0];
-    let nonce = openidconnect::Nonce::new(parts[1].to_string());
+    };
+    let nonce = openidconnect::Nonce::new(nonce_part.to_string());
+    let pkce_verifier = openidconnect::PkceCodeVerifier::new(verifier_part.to_string());
 
     if params.state != expected_csrf {
         tracing::warn!("MRD-AUTH-013: CSRF state mismatch");
         return Err(AuthError::Oidc("MRD-AUTH-013: invalid CSRF state".to_string()));
     }
 
-    let login_result = auth.oidc_client.exchange_code(&params.code, &nonce).await?;
+    let login_result = auth
+        .oidc_client
+        .exchange_code(&params.code, &nonce, &pkce_verifier)
+        .await?;
     let identity = login_result.identity;
 
     let user = crate::users::resolve_user(&auth.db, &identity.subject, identity.email.as_deref()).await?;
@@ -170,7 +186,7 @@ mod tests {
 
     fn test_state() -> MiryadAuthState {
         MiryadAuthState {
-            oidc_client: std::sync::Arc::new(MockOidcClient),
+            oidc_client: std::sync::Arc::new(MockOidcClient::default()),
             cookie_key: ::cookie::Key::from(&[0u8; 64]),
             post_login_redirect: "/".to_string(),
             post_logout_redirect: "/".to_string(),

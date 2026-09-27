@@ -52,6 +52,9 @@ clap = { version = "4", features = ["derive"] }
 axum = "0.8"
 openidconnect = "4.0"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# Validation du contenu `ca_cert` (au moins un bloc PEM `CERTIFICATE` décodable) par l'itérateur
+# PEM vendu, arbitrage `oidc.sdd` 2026-09-27 — unifiée avec le 1.15.1 déjà dans le graphe rustls.
+rustls-pki-types = "1"
 cookie = { version = "0.18", features = ["private"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -98,6 +101,9 @@ sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "m
 sea-orm-migration = { version = "2", features = ["sqlx-sqlite"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tower = { version = "0.5", features = ["util"] }
+# Capture des `tracing::error` des chemins d'échec d'échange dans les tests de `auth/oidc.rs`
+# (stratégie fixture arbitrée `[x]` 2026-09-27, `Depends on` de `oidc.sdd`).
+tracing-subscriber = { version = "0.3", features = ["registry"] }
 
 [package.metadata.docs.rs]
 all-features = false

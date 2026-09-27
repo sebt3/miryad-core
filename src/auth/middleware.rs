@@ -61,7 +61,7 @@ mod tests {
 
     fn test_state() -> MiryadAuthState {
         MiryadAuthState {
-            oidc_client: std::sync::Arc::new(MockOidcClient),
+            oidc_client: std::sync::Arc::new(MockOidcClient::default()),
             cookie_key: Key::from(&[0u8; 64]),
             post_login_redirect: "/".to_string(),
             post_logout_redirect: "/".to_string(),
@@ -120,7 +120,7 @@ mod tests {
         let app = Router::new()
             .route("/protected", get(protected_handler))
             .with_state(MiryadAuthState {
-                oidc_client: std::sync::Arc::new(MockOidcClient),
+                oidc_client: std::sync::Arc::new(MockOidcClient::default()),
                 cookie_key: key,
                 post_login_redirect: "/".to_string(),
                 post_logout_redirect: "/".to_string(),

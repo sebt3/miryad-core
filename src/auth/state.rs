@@ -41,7 +41,7 @@ mod tests {
     /// `MockDatabase` `SQLite` sauf là où le `Scenario` exige une vraie base en mémoire.
     fn fixture(post_login: &str, secure_cookies: bool, token_pepper: &str) -> MiryadAuthState {
         MiryadAuthState {
-            oidc_client: Arc::new(MockOidcClient),
+            oidc_client: Arc::new(MockOidcClient::default()),
             cookie_key: Key::from(&[0u8; 64]),
             post_login_redirect: post_login.to_string(),
             post_logout_redirect: "/logout-done".to_string(),
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn unvalidated_provider_accepted() {
         let state = fixture("/", false, "");
-        let (url, _csrf, _nonce) = state.oidc_client.authorization_url();
+        let (url, _csrf, _nonce, _verifier) = state.oidc_client.authorization_url();
         assert_eq!(url.as_str(), "https://issuer.example.com/authorize");
     }
 
@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn secure_cookies_and_token_pepper_present_in_every_literal_construction() {
         let state = MiryadAuthState {
-            oidc_client: Arc::new(MockOidcClient),
+            oidc_client: Arc::new(MockOidcClient::default()),
             cookie_key: Key::from(&[0u8; 64]),
             post_login_redirect: "/a".to_string(),
             post_logout_redirect: "/b".to_string(),
@@ -238,7 +238,7 @@ mod tests {
         db: DatabaseConnection,
     ) -> MiryadAuthState {
         MiryadAuthState {
-            oidc_client: Arc::new(MockOidcClient),
+            oidc_client: Arc::new(MockOidcClient::default()),
             cookie_key: Key::from(&[0u8; 64]),
             post_login_redirect: post_login.to_string(),
             post_logout_redirect: "/logout-done".to_string(),
