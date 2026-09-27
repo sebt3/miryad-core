@@ -110,7 +110,7 @@ mod tests {
             email: Some("test@example.com".to_string()),
             preferred_username: None,
         };
-        let set_cookie = build_set_cookie(&identity, &key);
+        let set_cookie = build_set_cookie(&identity, &key, false);
         let cookie_value = set_cookie
             .split(';')
             .next()

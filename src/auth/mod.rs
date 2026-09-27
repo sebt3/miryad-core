@@ -137,7 +137,8 @@ async fn handler_callback(
     let user = crate::users::resolve_user(&auth.db, &identity.subject, identity.email.as_deref()).await?;
     crate::users::sync_group_memberships(&auth.db, user.id, &login_result.groups).await?;
 
-    let set_cookie_main = crate::auth::cookie::build_set_cookie(&identity, &auth.cookie_key);
+    let set_cookie_main =
+        crate::auth::cookie::build_set_cookie(&identity, &auth.cookie_key, auth.secure_cookies);
     let set_cookie_clear_pending =
         format!("{PENDING_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
 
@@ -156,7 +157,7 @@ async fn handler_logout(State(auth): State<MiryadAuthState>) -> Result<impl Into
     Response::builder()
         .status(StatusCode::FOUND)
         .header("Location", auth.post_logout_redirect.as_str())
-        .header(SET_COOKIE, crate::auth::cookie::clear_cookie())
+        .header(SET_COOKIE, crate::auth::cookie::clear_cookie(auth.secure_cookies))
         .body(axum::body::Body::empty())
         .map_err(|e| AuthError::Oidc(e.to_string()))
 }

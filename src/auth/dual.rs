@@ -112,7 +112,7 @@ mod tests {
             email: Some("session@example.com".to_string()),
             preferred_username: Some("session-name".to_string()),
         };
-        build_set_cookie(&identity, &state.cookie_key)
+        build_set_cookie(&identity, &state.cookie_key, state.secure_cookies)
             .split(';')
             .next()
             .expect("cookie pair present")
