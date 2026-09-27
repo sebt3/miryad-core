@@ -44,7 +44,8 @@ pub enum AccessPolicy {
     /// Tout utilisateur authentifié (JWT ou token API valide)
     Public,
     /// Uniquement l'utilisateur référencé par `owner_column` (+ les membres
-    /// du groupe admin)
+    /// du groupe admin). Sans `owner_column` déclarée, c'est une déclaration
+    /// invalide — voir [`MiryadResource::owner_column`].
     OwnerOnly,
     /// Membres du groupe nommé (+ admin)
     Group(&'static str),
@@ -66,13 +67,18 @@ pub trait MiryadResource: EntityTrait {
     /// Colonne portant l'identifiant du propriétaire. `None` si l'entité
     /// n'a pas de notion de propriétaire (ex: référentiel partagé comme la
     /// liste des ingrédients dans l'exemple recette).
-    /// Doit être `Some` si `read_policy()` ou `write_policy()` retourne
-    /// `AccessPolicy::OwnerOnly` — comportement non défini sinon (vérifié
-    /// par test, pas par le compilateur à ce stade).
+    /// Être `None` alors que `read_policy()` ou `write_policy()` retourne `AccessPolicy::OwnerOnly`
+    /// est une **déclaration invalide** (arbitré 2026-09-27), jamais un choix runtime à arbitrer
+    /// par requête : `rest::mod` refuse de monter le routeur d'une telle entité (panic au montage,
+    /// même mécanisme que la collision de `resource_name`) et `rbac::can_create` refuse par
+    /// cohérence défensive avec `can_read`/`can_write`. Ce fichier ne vérifie rien lui-même à la
+    /// compilation — l'invalidité se prouve en aval, le comportement est documenté ici.
     fn owner_column() -> Option<<Self as EntityTrait>::Column>;
 
-    /// Colonne texte sur laquelle la liste REST/GraphQL/MCP peut être filtrée
-    /// (`?filter=valeur`, égalité exacte) — feature 4. `None` par défaut : pas
+    /// Colonne texte sur laquelle la liste peut être filtrée côté REST et MCP seulement
+    /// (`?filter=valeur`, égalité exacte) — feature 4. GraphQL ne lit jamais cette colonne :
+    /// le pont GraphQL ne construit que la clause propriétaire, le filtrage y passe par les
+    /// inputs natifs `seaography` (arbitré 2026-09-27). `None` par défaut : pas
     /// de filtre pour cette entité. Une entité qui veut un filtre de liste
     /// (ex. "recettes par catégorie") le déclare explicitement.
     fn filter_column() -> Option<<Self as EntityTrait>::Column> {
