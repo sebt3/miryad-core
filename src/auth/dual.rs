@@ -41,6 +41,7 @@ where
         Ok(AuthPrincipal {
             subject: identity.subject,
             email: identity.email,
+            preferred_username: identity.preferred_username,
             source: PrincipalSource::Session {
                 id_token: identity.id_token,
             },
@@ -100,16 +101,36 @@ mod tests {
             use base64::Engine;
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#))
         });
+        // Email et preferred_username portés par le payload (contrat « Cookie de session
+        // valide seul » de dual.sdd et propagation AJOUT REQUIS 2026-09-27) : la session
+        // doit les relivrer intacts jusqu'à AuthPrincipal.
         let identity = OidcIdentity {
             id_token: jwt,
             subject: "session-user".to_string(),
-            email: None,
+            email: Some("session@example.com".to_string()),
+            preferred_username: Some("session-name".to_string()),
         };
         build_set_cookie(&identity, &state.cookie_key)
             .split(';')
             .next()
             .expect("cookie pair present")
             .to_string()
+    }
+
+    /// Rendu champ à champ du principal — utilisé pour verrouiller la propagation des
+    /// champs optionnels sur le chemin cookie (le handler `protected_handler` ne rend
+    /// que `subject` et la variante de `source`).
+    async fn dump_handler(principal: AuthPrincipal) -> String {
+        format!(
+            "{}|{}|{}|{}",
+            principal.subject,
+            principal.email.unwrap_or_default(),
+            principal.preferred_username.unwrap_or_default(),
+            match principal.source {
+                PrincipalSource::Session { .. } => "session",
+                PrincipalSource::ApiToken { .. } => "token",
+            }
+        )
     }
 
     #[tokio::test]
@@ -142,10 +163,10 @@ mod tests {
 
         let app = Router::new()
             .route("/protected", get(protected_handler))
-            .with_state(state);
+            .with_state(state.clone());
         let req = Request::builder()
             .uri("/protected")
-            .header("Cookie", cookie)
+            .header("Cookie", cookie.clone())
             .body(Body::empty())
             .expect("valid request");
         let resp = app.oneshot(req).await.expect("router does not fail");
@@ -154,6 +175,26 @@ mod tests {
             .await
             .expect("readable body");
         assert_eq!(&body[..], b"session-user:session");
+
+        // Verrou de propagation (AJOUT REQUIS 2026-09-27, dual.sdd `Must`/`Returns`) :
+        // email et preferred_username du payload chiffré traversent extract_session
+        // jusqu'au AuthPrincipal rendu, byte pour byte.
+        let app = Router::new().route("/dump", get(dump_handler)).with_state(state);
+        let req = Request::builder()
+            .uri("/dump")
+            .header("Cookie", cookie)
+            .body(Body::empty())
+            .expect("valid request");
+        let resp = app.oneshot(req).await.expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("readable body");
+        assert_eq!(
+            &body[..],
+            b"session-user|session@example.com|session-name|session",
+            "le principal de session doit porter le quadruplé du cookie"
+        );
     }
 
     #[tokio::test]

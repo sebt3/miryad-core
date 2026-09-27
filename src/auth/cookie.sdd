@@ -1,8 +1,9 @@
 Spec: cookie — cookie de session `miryad_session` : pose chiffrée AES-256-GCM, lecture vérifiée avec ré-lecture d'expiration, retrait par `Max-Age=0`
 
 Purpose:
-  Porter le cookie de session navigateur `miryad_session` : payload JSON @id_token/@subject/@email de
-    l’@OidcIdentity scellé par @cookie::PrivateJar, sans store de session côté serveur — le
+  Porter le cookie de session navigateur `miryad_session` : payload JSON
+    @id_token/@subject/@email/@preferred_username de l’@OidcIdentity scellé par
+    @cookie::PrivateJar, sans store de session côté serveur — le
     déchiffrement à la clé maîtresse plus la ré-lecture horodatée de la claim `exp` sont tout
     l’acte d’authentification. Le fichier expose la pose (@build_set_cookie), la lecture
     (@extract_session) et le retrait (@clear_cookie), et rien d’autre.
@@ -21,7 +22,10 @@ References:
     `MRD-AUTH-001`, @AuthError::InvalidSession = `MRD-AUTH-002`, tous deux rendus `401` en texte
   ./error.sdd — contrat frère : confirme que @extract_session est le seul émetteur des variantes
     @AuthError::NotAuthenticated et @AuthError::InvalidSession de toute la crate
-  ./oidc.rs — définit l’@OidcIdentity triplé persisté ici ; vérifie signature et nonce de
+  ./oidc.rs — définit l’@OidcIdentity quadruplé persisté ici (@preferred_username — AJOUT REQUIS,
+    Sébastien 2026-09-27, cf. `./oidc.sdd` `Tasks` : claim standard `preferred_username`, garanti
+    unique par le fournisseur, qu'une app consommatrice dérive en identifiant de ressource stable) ;
+    vérifie signature et nonce de
     l’@id_token en amont (@OidcClientTrait::exchange_code, `MRD-AUTH-011`) ; ne pose pas de défi
     PKCE — @extract_exp_claim imite sa technique de découpage JWT (@extract_groups_claim) mais sans
     parse JSON complet (asymétrie, `Tasks` `[?]`)
@@ -54,8 +58,10 @@ Must:
     contractuelle : un @id_token expiré, sans claim `exp`, non compact ou indéchiffrable en base64
     produit un cookie à `Max-Age=0` que le navigateur jette aussitôt, et un cookie vivant meurt
     exactement à l’`exp` du fournisseur
-  Payload scellé : JSON @serde à exactement trois clés `id_token`, `subject`, `email` — email absent
-    sérialisé en `null` (aucun attribut `skip_serializing_if` sur @SessionPayloadRef) — puis scellé
+  Payload scellé : JSON @serde à exactement quatre clés `id_token`, `subject`, `email`,
+    `preferred_username` (`preferred_username` — AJOUT REQUIS, Sébastien 2026-09-27, cf. `Tasks`) —
+    email et preferred_username absents sérialisés
+    en `null` (aucun attribut `skip_serializing_if` sur @SessionPayloadRef) — puis scellé
     par @cookie::PrivateJar : `AES-256-GCM`, nonce `12` octets tiré de @thread_rng et tag détaché
     `16` octets, enveloppe @base64::prelude::BASE64_STANDARD de `nonce|chiffré|tag`, et le nom du
     cookie comme données associées AEAD — la valeur est donc indémontable et non transplantable vers
@@ -69,10 +75,16 @@ Must:
     `MRD-AUTH-002` ; un client qui poste le cookie au-delà de son `Max-Age` ne passe jamais sans
     cette revalidation, et `exp == now` exactement est déjà un rejet (borne `≤` partagée avec le
     `saturating_sub` de la pose, qui rend alors `0` — pas de fenêtre de divorce pose/lecture)
-  @extract_session restitue l’@OidcIdentity triplé à l’identique : @id_token retourné au byte près
-    tel que déchiffré, sans re-vérification de signature ni de nonce — la confiance vient de la
+  @extract_session restitue l’@OidcIdentity quadruplé à l’identique : @id_token retourné au byte
+    près tel que déchiffré, sans re-vérification de signature ni de nonce — la confiance vient de la
     vérification amont (./oidc.rs, `MRD-AUTH-011`) et de l’origine serveur prouvée par le
     déchiffrement GCM à la clé
+  Rétro-compatibilité des cookies de session vivants sans migration : @SessionPayload n’a pas de
+    `deny_unknown_fields` et un champ @Option absent du JSON se désérialise en @None (@serde) — un
+    cookie posé avant le déploiement du quatrième champ (payload à trois clés) se relit donc
+    @Ok avec @preferred_username @None, sans invalidation de session ni re-login forcé ; le claim
+    regagne le payload au re-login suivant — choix acté par Sébastien (2026-09-27), pas une
+    tolérance implicite
   Lecture brute et figée de l’en-tête `Cookie` : découpe par `;`, trim de chaque segment, segments
     vides filtrés, @str::split_once au premier `=` seulement (la valeur garde les `=` de bourrage
     @base64::prelude::BASE64_STANDARD de fin, qui lui appartiennent), comparaison de nom exacte et
@@ -99,8 +111,8 @@ Must not:
     `miryad_session` et
     jamais le pending — asymétrie de nettoyage constatée, documentée, non transposable ici
   Vérifier la signature, le nonce, `aud` ou `iss` d’un @id_token dans @build_set_cookie ou
-    @extract_session — seul `exp` est relu, pour l’horloge seulement ; @subject/@email sont
-    relivés sans recontrôle
+    @extract_session — seul `exp` est relu, pour l’horloge seulement ; @subject/@email/
+    @preferred_username sont relivés sans recontrôle
   Poser `Secure`, `Domain` ou `Expires` sur les deux chaînes `Set-Cookie` produites — la table
     actuelle est `HttpOnly` + `SameSite=Lax` + `Path=/` + `Max-Age`, toute bascule est l’arbitrage
     des `Tasks` `[?]`, pas une modification libre de ce fichier
@@ -121,9 +133,11 @@ Depends on:
     moteur rejette strictement tout `=` de bourrage (@base64::DecodeError::InvalidPadding, vérifié
     dans le source base64-0.22.1) ; un payload JWT bourré est donc un `exp` illisible, pas une
     tolérance silencieuse
-  @serde + @serde_json `1` — @SessionPayloadRef (dérivé @serde::Serialize, trois champs empruntés)
+  @serde + @serde_json `1` — @SessionPayloadRef (dérivé @serde::Serialize, quatre champs empruntés)
     et @SessionPayload (dérivé @serde::Deserialize, sans `deny_unknown_fields` : une clé
-    supplémentaire dans un payload hérité passe, un champ manquant échoue)
+    supplémentaire dans un payload hérité passe ; un champ manquant échoue si le type n’est pas
+    @Option, et rend @None sinon — @serde traite @Option comme absent-possible, ce qui fonde la
+    rétro-compatibilité du quatrième champ posée en `Must`)
   @SystemTime + @UNIX_EPOCH — l’horloge système, seule source de `now` des deux côtés (pose et
     lecture), sans injection possible (`Tasks` `[?]`)
   @AuthError (./error.rs) et @OidcIdentity (./oidc.rs) du crate
@@ -149,7 +163,8 @@ Exposes:
     publics sans commentaire de doc — dette `missing_docs` portée par /tooling.sdd
 
 Accepts:
-  @build_set_cookie : un @OidcIdentity emprunté — @id_token/@subject/@email recopiés dans le JSON
+  @build_set_cookie : un @OidcIdentity emprunté — @id_token/@subject/@email/@preferred_username
+    recopiés dans le JSON
     sans trim, sans normalisation de casse — et un @cookie::Key emprunté, déjà valide (`≥ 64`
     octets sinon @Key::from amont panique)
   @extract_session : le texte brut d’un en-tête `Cookie` sous @Option<@str> (les appelants
@@ -164,7 +179,8 @@ Returns:
     `miryad_session=<scellé>; HttpOnly; SameSite=Lax; Path=/; Max-Age=<n>`, où `<scellé>` est
     l’enveloppe base64 standard `nonce|chiffré|tag` (bourrage `=` éventuel en fin de valeur) et
     `<n>` les secondes @u64 de @u64::saturating_sub selon la règle de `Must`, sans `;` finale
-  @extract_session @Ok : @OidcIdentity triplé @id_token/@subject/@email à l’identique des valeurs
+  @extract_session @Ok : @OidcIdentity quadruplé @id_token/@subject/@email/@preferred_username à
+    l’identique des valeurs
     posées
   @clear_cookie : @String exactement `miryad_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0` —
     valeur vide, mêmes attributs que la pose (nom, `Path=/`, hôte-only) pour que le client retire
@@ -213,6 +229,13 @@ Handles:
     leurs conversions en @Option::None suivies de `?` sont des branches vivantes de la lecture
 
 Tasks:
+  [x] AJOUT REQUIS (Sébastien, 2026-09-27, voir ./oidc.sdd et ./principal.sdd) : porter
+    @preferred_username dans le cycle session — quatrième clé de @SessionPayloadRef et
+    @SessionPayload (`preferred_username`, absente sérialisée `null`), recopiée verbatim de
+    l’@OidcIdentity à la pose et restituée à la relecture ; payload hérité à trois clés relu
+    @preferred_username @None sans invalidation (cf. `Must` rétro-compatibilité). Sans ce champ,
+    le claim serait @Some au login puis @None à chaque requête suivante — le maillon qui fait ou
+    défait la chaîne oidc → dual → @AuthPrincipal.
   [?] Aucun des deux `Set-Cookie` produits ne porte `Secure` (cf. `Must`) : en HTTP clair le cookie,
     pourtant chiffré, circule en texte et le navigateur l’accepte ; l’ajouter (inconditionnel, ou
     piloté par une config/type d’hôte) casse les environnements de dev en HTTP — arbitre Sébastien :
@@ -241,7 +264,7 @@ Tasks:
     lecture) — rester sans test, ou exiger une injection de `now` pour les rendre atteignables ? ce
     fichier serait alors le premier du module auth à recevoir cette injection, à décider avant
     d’écrire les tests des Scenarios concernés
-  [ ] Convertir les 19 `Scenario` en au moins 19 tests nommés distincts, dans le `mod tests`
+  [ ] Convertir les 20 `Scenario` en au moins 20 tests nommés distincts, dans le `mod tests`
     `#[cfg(test)]` inline de ./cookie.rs (le contrat ne déborde pas du fichier : @build_set_cookie,
     @cookie::CookieJar et @base64 suffisent à construire chaque entrée, y compris la valeur pending
     transplantée et le JSON non valide chiffré) ; les 4 tests inline actuels
@@ -251,7 +274,7 @@ Tasks:
     en assertions de chaîne complète avant comptage
 
 Done when:
-  19 tests nommés distincts verts, un par `Scenario`, sur features par défaut comme sur
+  20 tests nommés distincts verts, un par `Scenario`, sur features par défaut comme sur
     `--no-default-features` (fichier sans gate de feature)
   Les deux chaînes `Set-Cookie` (pose et retrait) sont affirmées chaîne entière — nom, ordre des
     attributs, absence de `Secure`/`Domain`/`Expires`, pas de `;` finale — sans `contains` sur un
@@ -262,22 +285,25 @@ Done when:
     le code ; la dette harnais suivie par ./tooling.sdd (tranches de @extract_exp_claim,
     `missing_docs`) n’a pas grossi
 
-Scenario: Pose — contrat session complet avec email
+Scenario: Pose — contrat session complet avec email et preferred_username
   Given un @OidcIdentity dont l’@id_token est un JWT tri-segment dont la claim d’expiration vaut
-    `now+3600`, @subject `user-123`, email `user-123@example.com`, et un @cookie::Key de `64` octets
+    `now+3600`, @subject `user-123`, email `user-123@example.com`, @preferred_username `alice`,
+    et un @cookie::Key de `64` octets
   When @build_set_cookie est appelée
   Then la chaîne rendue vaut `miryad_session=<scellé>; HttpOnly; SameSite=Lax; Path=/; Max-Age=<n>`
     avec `<n>` égal à `exp − now` à la seconde près, les attributs dans cet ordre, `HttpOnly` posé
     et `;` finale absente
   And la chaîne ne porte ni `Secure`, ni `Domain`, ni `Expires`
   And `<scellé>` déchiffré par @cookie::PrivateJar::decrypt avec la même clé est un JSON à
-    exactement trois clés : `id_token`, `subject`, `email`
+    exactement quatre clés : `id_token`, `subject`, `email`, `preferred_username`
 
-Scenario: Pose — email absent sérialisé null
-  Given un @OidcIdentity d’email @None et d’@id_token avec claim d’expiration future
+Scenario: Pose — email et preferred_username absents sérialisés null
+  Given un @OidcIdentity d’email @None et de @preferred_username @None, et d’@id_token avec claim
+    d’expiration future
   When @build_set_cookie est appelée avec un @cookie::Key valide
-  Then le `<scellé>` déchiffré porte la clé `email` à valeur `null` — @None est une information
-    absente, pas une clé disparue du payload
+  Then le `<scellé>` déchiffré porte les clés `email` et `preferred_username` à valeur `null` —
+    @None est une information absente, pas une clé disparue du payload, pour les deux champs
+    optionnels
 
 Scenario: Pose — id_token expiré donne Max-Age nul
   Given un @OidcIdentity dont l’@id_token porte une expiration à `1000000` (passée)
@@ -308,12 +334,24 @@ Scenario: Retrait — chaîne exacte valeur vide Max-Age nul
     — valeur vide, `HttpOnly` posé, même nom, même `Path=/` et même hôte-only que la pose pour que
     le client retire bien le cookie posé
 
-Scenario: Lecture — aller-retour restitue l’identité triplée
-  Given un @OidcIdentity triplé (expiration future, @subject `user-123`, email présente), la ligne
-    `nom=valeur` extraite de @build_set_cookie et replacée seule dans un en-tête `Cookie`
+Scenario: Lecture — aller-retour restitue l’identité quadruplée
+  Given un @OidcIdentity quadruplé (expiration future, @subject `user-123`, email présente,
+    @preferred_username `alice`), la ligne `nom=valeur` extraite de @build_set_cookie et replacée
+    seule dans un en-tête `Cookie`
   When @extract_session est appelée avec le même @cookie::Key
   Then le résultat est @Ok
-  And @id_token, @subject et @email sont égaux byte pour byte aux originaux
+  And @id_token, @subject, @email et @preferred_username sont égaux byte pour byte aux originaux
+
+Scenario: Lecture — payload hérité à trois clés rend preferred_username None
+  Given une valeur scellée sous le nom `miryad_session` par @cookie::CookieJar avec la même clé,
+    dont le clair est un JSON @SessionPayload d’avant le quatrième champ — exactement trois clés
+    `id_token` (expiration future), `subject` et `email`, aucune clé `preferred_username`
+    (construite à la main dans le test, sans @build_set_cookie)
+  When @extract_session reçoit cette ligne
+  Then le résultat est @Ok — la session vivante posée avant le déploiement du quatrième champ
+    n’est pas invalidée (Sébastien, 2026-09-27)
+  And @id_token, @subject et @email sont rendus à l’identique
+  But @preferred_username est @None — le claim regagnera le payload au re-login suivant
 
 Scenario: Lecture — ligne de session sélectionnée parmi plusieurs cookies
   Given un en-tête `Cookie` `x=1; miryad_session=<scellé valide>; csrftoken=two`

@@ -2,8 +2,11 @@ Spec: principal — types de données @AuthPrincipal et @PrincipalSource : ident
 
 Purpose:
   Porter le seul type d'identité que les surfaces REST, GraphQL et MCP consomment pour une
-    requête authentifiée, quelle que soit la source d'authentification : @AuthPrincipal (trois
-    champs publics @subject, @email, @source) et @PrincipalSource (deux variantes, session et
+    requête authentifiée, quelle que soit la source d'authentification : @AuthPrincipal (QUATRE
+    champs publics @subject, @email, @preferred_username, @source — @preferred_username AJOUT
+    REQUIS, Sébastien 2026-09-27, cf. `Tasks` : claim OIDC standard, garanti unique par le
+    fournisseur contrairement à @email, qu'une app consommatrice utilise pour dériver un
+    identifiant de ressource stable) et @PrincipalSource (deux variantes, session et
     token API), derives @Debug et @Clone uniquement. Le fichier ne contient que ces deux types :
     aucun constructeur, aucune validation, aucune conversion, aucun effet de bord, aucune logique
     d'extraction — celle-ci vit dans ./dual.rs (@impl @FromRequestParts). Le type efface
@@ -17,8 +20,8 @@ Owns:
 References:
   /miryad-core.sdd — contrat hérité : codes `MRD-<DOMAINE>-NNN` (aucun ici), parité REST/GraphQL/MCP lue à l'identique
   ./mod.rs — déclare `pub mod principal` sans gating et ré-exporte à plat @crate::auth::AuthPrincipal et @crate::auth::PrincipalSource ; la documentation de ./lib.rs présente @auth::AuthPrincipal comme le type du dual-auth
-  ./dual.rs — l'@impl @FromRequestParts for @AuthPrincipal vit là, pas ici : seul producteur de @PrincipalSource::Session en production, champs issus de @OidcIdentity retourné par @extract_session
-  ./token.rs — @validate_token, seul producteur de @PrincipalSource::ApiToken en production : @email @None codé en dur, @token_id égal à la clé primaire @i32 de @miryad_api_tokens
+  ./dual.rs — l'@impl @FromRequestParts for @AuthPrincipal vit là, pas ici : seul producteur de @PrincipalSource::Session en production, champs issus de @OidcIdentity retourné par @extract_session (dont @preferred_username, à propager — AJOUT REQUIS, cf. `Tasks`)
+  ./token.rs — @validate_token, seul producteur de @PrincipalSource::ApiToken en production : @email @None codé en dur, @preferred_username @None codé en dur de même (AJOUT REQUIS, cf. `Tasks` — aucune session OIDC vivante sur ce chemin), @token_id égal à la clé primaire @i32 de @miryad_api_tokens
   ./middleware.rs — @AuthUser, type adjacent propre au flow navigateur : la confusion @AuthUser contre @AuthPrincipal est la frontière de ce fichier, le commentaire d'en-tête de ./principal.rs la nomme
   /src/resource.sdd — @MiryadResource::before_create reçoit @crate::auth::AuthPrincipal en lecture seule, seul paramètre principal du hook : le contrat par lequel l'app consommatrice consomme le type
   /src/rbac.sdd — effacement acté en amont : la distinction session/token s'efface dans @crate::auth::AuthPrincipal avant @rbac, qui ne connaît que @users::user::Model et relit @users::group::is_admin et @users::group::is_member en base
@@ -35,10 +38,12 @@ Must:
     aucune ligne @use (le fichier est purement @std), @crate::auth déclaré non gaté dans
     /src/lib.rs — la batterie de /tooling.sdd exerce ce fichier sur `--no-default-features` comme
     sur `--all-features`.
-  Exposer trois champs publics sans accesseur ni setter : @subject (@String), @email
-    (@Option<@String>), @source (@PrincipalSource) — lisibles et modifiables en direct par tout
-    appelant ; les seules lectures utilisées en production sont @subject (clé d'identité,
-    @resolve_user et self-service de /src/rest/tokens.rs), @email via @as_deref, et @source par
+  Exposer quatre champs publics sans accesseur ni setter : @subject (@String), @email
+    (@Option<@String>), @preferred_username (@Option<@String> — AJOUT REQUIS, Sébastien
+    2026-09-27), @source (@PrincipalSource) — lisibles et modifiables en direct par tout
+    appelant ; les lectures utilisées en production sont @subject (clé d'identité,
+    @resolve_user et self-service de /src/rest/tokens.rs), @email via @as_deref,
+    @preferred_username (identifiant nommé stable pour les apps consommatrices), et @source par
     appariement de variante.
   Tenir les deux sources d'authentification avec des charges utiles exactes figées :
     @PrincipalSource::Session porte @id_token (un @String : l'@id_token OIDC brut stocké dans le
@@ -48,9 +53,10 @@ Must:
   Effacer volontairement rôles et groupes : aucun champ booléen admin, aucun @HashSet de groupes,
     aucun identifiant @users::user::Model dans @AuthPrincipal ; l'appartenance est relue en base par
     @crate::rbac et snapshotée par requête par @graphql::load_principal.
-  Rester @Send plus @Sync plus `'static` par composition de champs : @String, @Option<@String>,
-    @i32 seulement — ce qui permet le déplacement du principal dans les données de requête
-    @async_graphql (/src/graphql/handler.rs) et son rôle de type d'extracteur axum.
+  Rester @Send plus @Sync plus `'static` par composition de champs : @String, @Option<@String>
+    (deux occurrences depuis l'ajout de @preferred_username), @i32 seulement — ce qui permet le
+    déplacement du principal dans les données de requête @async_graphql
+    (/src/graphql/handler.rs) et son rôle de type d'extracteur axum.
   Garantir la parité des surfaces par le type lui-même : @AuthPrincipal est le même type, produit
     de la même façon, pour REST, GraphQL et MCP ; le producteur en production est exclusivement
     l'extracteur de ./dual.rs (qui délègue à @validate_token pour la branche token) ; aucune
@@ -58,8 +64,8 @@ Must:
     divergence visible entre appelants est la valeur de @source.
   Maintenir @Clone profond et @Debug dérivé comme seules capacités externes du type : @Clone
     réalloue les champs @String (aucune mutualisation @Rc/@Arc dans la structure), @Debug liste les
-    noms de champs (@subject, @email, @source) et de variantes (`Session`, `ApiToken`) avec leurs
-    charges utiles verbatim.
+    noms de champs (@subject, @email, @preferred_username, @source) et de variantes (`Session`,
+    `ApiToken`) avec leurs charges utiles verbatim.
 
 Must not:
   Porter un champ d'appartenance (@is_admin, @groups, identifiant utilisateur) : la fraîcheur de
@@ -95,16 +101,17 @@ Accepts:
     @PrincipalSource.
   Toute combinaison de valeurs est légale à la construction, aucune validation à aucune frontière :
     @subject vide `""` ou non unique, @email @Some d'une chaîne non conforme au format email ou
-    @None, @id_token libre (JWT bien formé comme chaîne vide), @token_id @i32 quelconque — les
-    fixtures de /src/mcp/registry.rs et /src/graphql/registry.rs construisent `0`.
+    @None, @preferred_username @Some ou @None sans validation de forme, @id_token libre (JWT bien
+    formé comme chaîne vide), @token_id @i32 quelconque — les fixtures de /src/mcp/registry.rs et
+    /src/graphql/registry.rs construisent `0`.
   Deux producteurs en production : la branche cookie de ./dual.rs (champs de @OidcIdentity rendu
-    par @extract_session) et @validate_token de ./token.rs (@subject de la ligne lue, @email @None,
-    @token_id de la clé primaire).
+    par @extract_session, dont @preferred_username) et @validate_token de ./token.rs (@subject de
+    la ligne lue, @email @None, @preferred_username @None, @token_id de la clé primaire).
 
 Returns:
   Aucune valeur produite : le fichier ne définit aucun comportement ; la lecture se fait champ à
-    champ (@subject, @email, @source) et l'appariement sur @source lie soit @id_token (@String)
-    soit @token_id (@i32).
+    champ (@subject, @email, @preferred_username, @source) et l'appariement sur @source lie soit
+    @id_token (@String) soit @token_id (@i32).
   @Debug dérivé : représentation textuelle nommant champs et variante avec les charges utiles
     verbatim, seule sortie formatée disponible sur le type.
 
@@ -118,16 +125,28 @@ Handles:
     sans colonne email).
   @email absent ou présent : @Some quand le claim email de l'@id_token OIDC existait au login
     (./oidc.rs vers le cookie), @None sinon et pour tout token API.
+  @preferred_username absent ou présent (AJOUT REQUIS, Sébastien 2026-09-27) : même posture que
+    @email — @Some quand le claim standard `preferred_username` existait au login, @None sinon et
+    pour tout token API (aucune session OIDC vivante sur ce chemin).
   @subject libre : valeur choisie par l'app à l'émission (@issue_token accepte n'importe quelle
     chaîne, comptes de service type `system:kuberest` dans /src/users/service_account.rs), jamais
     normalisée.
   Formats d'introspection : @Debug des deux types, @Clone pour dupliquer un principal.
 
 Example:
-  forme session : @subject `alice`, @email @Some de `alice@example.org`, @PrincipalSource::Session avec @id_token égal au contenu brut du cookie
-  forme token : @subject `user-123`, @email @None, @PrincipalSource::ApiToken avec @token_id `7`
+  forme session : @subject `alice`, @email @Some de `alice@example.org`, @preferred_username @Some de `alice`, @PrincipalSource::Session avec @id_token égal au contenu brut du cookie
+  forme token : @subject `user-123`, @email @None, @preferred_username @None, @PrincipalSource::ApiToken avec @token_id `7`
 
 Tasks:
+  [x] AJOUT REQUIS (Sébastien, 2026-09-27) : ajouter @preferred_username (@Option<@String>) à
+    @AuthPrincipal, quatrième champ public, même traitement que @email dans toute la matrice
+    (Must, Accepts, Returns, Handles, Example, Scenarios) — propagé depuis @OidcIdentity
+    (./oidc.rs, ./dual.rs) côté session, `None` codé en dur côté token API (./token.rs). Motivé
+    par un consommateur en aval (vanyline, `app/src/api/owners.rs`) qui a besoin d'un identifiant
+    nommé garanti unique par le fournisseur OIDC pour dériver un nom de ressource stable — `email`
+    ne le garantit pas (peut varier, peut être absent). Convertir chaque Scenario existant qui
+    construit un @AuthPrincipal par littéral pour inclure ce champ ; ajouter les Scenario
+    manquants (@preferred_username absent, @as_deref si consommé de la même façon que @email).
   [?] @email vaut @None codé en dur sur le chemin token (@validate_token — @miryad_api_tokens n'a
     pas de colonne email) et @Some seulement si le claim email de l'@id_token existait au login ;
     @resolve_user le reçoit verbatim au get-or-create de l'utilisateur, sans validation de format
@@ -156,31 +175,36 @@ Tasks:
     fichier, aucune crate d'intégration séparée n'est requise.
 
 Done when:
-  Les sept `Scenario` ont chacun au moins un test distinct et vert dans le `mod tests` de
-    ./principal.rs (sept minimum contre zéro aujourd'hui), et le fichier ne contient toujours
+  Les huit `Scenario` ont chacun au moins un test distinct et vert dans le `mod tests` de
+    ./principal.rs (huit minimum contre zéro aujourd'hui), et le fichier ne contient toujours
     aucune @use, aucun `#[cfg(feature = ...)]`, aucun @tracing, aucun code `MRD-*`.
   Les cinq lignes `[?]` de `Tasks` sont arbitrées par Sébastien et leurs suites reflétées dans le
     contrat ou le code.
   La batterie de /tooling.sdd passe verte sur chaque combinaison de features, le fichier étant non
     gaté — le contrat est exercé sur `--no-default-features` comme sur `--all-features`.
 
-Scenario: Construction session : trois champs publics lisibles à leurs valeurs exactes
+Scenario: Construction session : quatre champs publics lisibles à leurs valeurs exactes
   Given un @AuthPrincipal construit par littéral avec @subject `alice`, @email @Some de
-    `alice@example.org` et @source @PrincipalSource::Session portant @id_token `jwt-brut`
-  When les trois champs sont lus directement, sans aucun passage par un accesseur
-  Then @subject vaut `alice`, @email est @Some de `alice@example.org`, @source est la variante
+    `alice@example.org`, @preferred_username @Some de `alice` et @source
+    @PrincipalSource::Session portant @id_token `jwt-brut`
+  When les quatre champs sont lus directement, sans aucun passage par un accesseur
+  Then @subject vaut `alice`, @email est @Some de `alice@example.org`, @preferred_username est
+    @Some de `alice`, @source est la variante
     @PrincipalSource::Session — les champs publics sont le contrat de lecture, dans les deux sens
 
-Scenario: Construction token API : @email @None et @token_id conservé
-  Given un @AuthPrincipal construit avec @subject `user-123`, @email @None et @source
+Scenario: Construction token API : @email et @preferred_username @None et @token_id conservé
+  Given un @AuthPrincipal construit avec @subject `user-123`, @email @None,
+    @preferred_username @None et @source
     @PrincipalSource::ApiToken portant @token_id `7` — la forme exacte de @validate_token
   When les champs sont lus
-  Then @subject vaut `user-123`, @email est @None, et l'appariement sur @source lie @token_id `7`
+  Then @subject vaut `user-123`, @email est @None, @preferred_username est @None, et
+    l'appariement sur @source lie @token_id `7`
   But aucune information propre au token n'existe hors de @source — @email @None n'affirme pas
-    l'absence de login, il est la valeur posée par le producteur
+    l'absence de login, il est la valeur posée par le producteur, @preferred_username @None de même
 
 Scenario: Discrimination de @source : chaque variante lie sa charge utile exacte
-  Given deux principaux construits en mémoire, l'un @PrincipalSource::Session portant @id_token
+  Given deux principaux construits en mémoire, les deux à @email et @preferred_username @None,
+    l'un @PrincipalSource::Session portant @id_token
     `jwt-brut`, l'autre @PrincipalSource::ApiToken portant @token_id `42`
   When un `match` sur @source apparie les deux variantes — @PrincipalSource::Session lie @id_token
     en @String, @PrincipalSource::ApiToken lie @token_id en @i32, comme les @matches! de ./token.rs
@@ -188,36 +212,55 @@ Scenario: Discrimination de @source : chaque variante lie sa charge utile exacte
   But aucune variante cachée ni troisième état n'est possible entre les deux
 
 Scenario: @Clone : copie profonde aux champs indépendants
-  Given un @AuthPrincipal session @subject `alice`, @email @Some de `a@b`, @id_token `jwt-brut`,
+  Given un @AuthPrincipal session @subject `alice`, @email @Some de `a@b`, @preferred_username
+    @Some de `alice`, @id_token `jwt-brut`,
     et une copie obtenue par @Clone()
   When le test compare les deux champ à champ — @PartialEq n'existe pas — puis ajoute un suffixe
     au @subject et au @id_token de la copie seulement
-  Then avant mutation, les trois champs de la copie portent les mêmes valeurs
+  Then avant mutation, les quatre champs de la copie portent les mêmes valeurs
   But après mutation, @subject et @id_token de l'original sont inchangés — @Clone réalloue les
     @String, aucune mutualisation implicite
 
 Scenario: @Debug : identité, source et charge utile verbatim
-  Given un @AuthPrincipal @subject `svc`, @email @None, @PrincipalSource::ApiToken @token_id `42`
+  Given un @AuthPrincipal @subject `svc`, @email @None, @preferred_username @None,
+    @PrincipalSource::ApiToken @token_id `42`
     et un second principal @PrincipalSource::Session @id_token `jwt-brut`
   When le test formate les deux principaux via leur derive @Debug
-  Then le premier contient `AuthPrincipal`, `svc`, `ApiToken` et `42`
+  Then le premier contient `AuthPrincipal`, `svc`, `ApiToken`, `42`, et le nom du champ
+    `preferred_username`
   And le second contient `Session` et la charge utile `jwt-brut` telle quelle
   But l'exposition du JWT de session dans une valeur formatée est la surface arbitrée en `Tasks` `[?]`
 
-Scenario: @as_deref sur @email : la forme de lecture des surfaces
-  Given deux principaux session, @email @Some de `a@b` pour l'un, @None pour l'autre
-  When @principal.email.as_deref() est évalué — la forme exacte des appelants /src/rest/core.rs,
-    /src/rest/me.rs et /src/graphql/principal.rs vers @resolve_user
-  Then @Some de l'emprunt `a@b` pour le premier
-  But @None pour le second, sans valeur de défaut inventée par le type
+Scenario: @as_deref sur @email et @preferred_username : la forme de lecture des surfaces
+  Given deux principaux session, @email @Some de `a@b` et @preferred_username @Some de `alice`
+    pour l'un, @email @None et @preferred_username @None pour l'autre
+  When @principal.email.as_deref() et @principal.preferred_username.as_deref() sont évalués — la
+    forme exacte des appelants /src/rest/core.rs,
+    /src/rest/me.rs et /src/graphql/principal.rs vers @resolve_user pour @email, et la forme
+    attendue des apps consommatrices pour @preferred_username
+  Then @Some de l'emprunt `a@b` et @Some de l'emprunt `alice` pour le premier
+  But @None et @None pour le second, sans valeur de défaut inventée par le type
+
+Scenario: @preferred_username absent : @None relivré sans normalisation
+  Given un @AuthPrincipal construit @preferred_username @None — la forme du chemin token comme
+    celle d'un login dont l’@id_token ne portait aucun claim `preferred_username` — et un second
+    construit @preferred_username @Some de la chaîne libre `Any Name/x`
+  When les deux champs sont lus, puis @as_deref() évalué
+  Then le premier rend @None — l'absence est une information, pas une valeur de repli — et le
+    second rend l'emprunt verbatim `Any Name/x`, sans trim ni normalisation de casse ou de forme
+  But aucun contrôle d'unicité ni de conformité n'est exercé par le type : la garantie d'unicité
+    est celle du fournisseur OIDC sur le claim `preferred_username`, en amont de ce fichier
 
 Scenario: Validation absente : valeurs vides ou malformées passent telles quelles
   Given un @AuthPrincipal construit @subject vide `""`, @email @Some de `pas-un-email`,
+    @preferred_username @Some de `  mal formé  `,
     @PrincipalSource::Session à @id_token vide `""`, et un second construit comme les fixtures de
-    /src/mcp/registry.rs et /src/graphql/registry.rs : @email @None, @PrincipalSource::ApiToken à
+    /src/mcp/registry.rs et /src/graphql/registry.rs : @email @None, @preferred_username @None,
+    @PrincipalSource::ApiToken à
     @token_id `0`
   When les champs sont relus et @source appariée
-  Then toutes les valeurs sortent inchangées — `""`, `pas-un-email`, `0` — le type ne valide, ne
+  Then toutes les valeurs sortent inchangées — `""`, `pas-un-email`, `  mal formé  `, `0` — le type
+    ne valide, ne
     normalise et ne refuse rien
   But ce comportement est celui constaté aujourd'hui, son appropriation comme contrat est la
     ligne `[?]` de `Tasks`

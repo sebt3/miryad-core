@@ -59,10 +59,11 @@ Must:
     est restituée telle quelle comme @Rejection, sans seconde tentative via @extract_session
   Principal rendu par @validate_token sur le chemin token : @subject pris de la colonne `subject`
     de la ligne `miryad_api_tokens`, @source valu @PrincipalSource::ApiToken avec @token_id égal à
-    la clé primaire `id` de cette ligne, @email toujours @None — le chemin token ne porte jamais
-    d'email, même si l'app en connaît un pour ce `subject` (l'enrichissement est downstream, chez
-    @resolve_user de /src/users)
-  Principal rendu sur le chemin session : @subject, @email (peut être @None) et @id_token issus du
+    la clé primaire `id` de cette ligne, @email et @preferred_username toujours @None — le chemin
+    token ne porte jamais d'email ni de preferred_username, même si l'app en connaît un pour ce
+    `subject` (l'enrichissement est downstream, chez @resolve_user de /src/users)
+  Principal rendu sur le chemin session : @subject, @email (peut être @None),
+    @preferred_username (peut être @None — AJOUT REQUIS, Sébastien 2026-09-27) et @id_token issus du
     payload JSON déchiffré du cookie ; le JWT n'est pas revérifié ici, seul sa claim `exp` a été
     contrôlée par @extract_session
   Effet de bord unique du chemin token : chaque requête Bearer écrit exactement une ligne de
@@ -139,10 +140,12 @@ Accepts:
     ce soit
 
 Returns:
-  Ok(@AuthPrincipal) dont @source est @PrincipalSource::Session : @subject et @email du payload
-    déchiffré (@email peut être @None), @id_token identique octet pour octet à celui du payload
+  Ok(@AuthPrincipal) dont @source est @PrincipalSource::Session : @subject, @email et
+    @preferred_username du payload déchiffré (@email et @preferred_username peuvent être @None),
+    @id_token identique octet pour octet à celui du payload
   Ok(@AuthPrincipal) dont @source est @PrincipalSource::ApiToken : @subject de la ligne
-    `miryad_api_tokens`, @token_id égal à sa clé primaire, @email égal à @None
+    `miryad_api_tokens`, @token_id égal à sa clé primaire, @email égal à @None,
+    @preferred_username égal à @None
   Nulle autre forme de succès : un principal Bearer portant un email, ou un @source incohérent avec
     le chemin résolu, violerait ce contrat
 
@@ -181,6 +184,9 @@ Handles:
     à @validate_token, sans trim ni sanitisation
 
 Tasks:
+  [x] AJOUT REQUIS (Sébastien, 2026-09-27, voir ./principal.sdd et ./oidc.sdd) : propager
+    @preferred_username depuis @OidcIdentity (résultat de @extract_session) vers @AuthPrincipal
+    sur le chemin cookie de session — même traitement que @email, nouveau quatrième champ.
   [?] Casse du schème : @strip_prefix sur `Bearer ` est sensible à la casse, donc
     `authorization: bearer <token valide>` sans cookie tombe en « absence de credential »
     (`MRD-AUTH-001`) et le token valide n'est jamais essayé — contrat assumé en casse sensible, ou

@@ -106,6 +106,7 @@ mod tests {
             id_token: jwt,
             subject: "user-123".to_string(),
             email: Some("test@example.com".to_string()),
+            preferred_username: None,
         };
         let set_cookie = build_set_cookie(&identity, &key);
         let cookie_value = set_cookie

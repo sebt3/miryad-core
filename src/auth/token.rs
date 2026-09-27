@@ -99,6 +99,7 @@ pub async fn validate_token(db: &DatabaseConnection, token: &str) -> Result<Auth
     Ok(AuthPrincipal {
         subject,
         email: None,
+        preferred_username: None,
         source: PrincipalSource::ApiToken { token_id: id },
     })
 }

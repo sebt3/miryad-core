@@ -8,7 +8,8 @@ Purpose:
     @Nonce::new_random à chaque appel, state et nonce non persistés ici), échanger le code renvoyé
     par le fournisseur contre un `id_token` vérifié (signature, `aud`, `iss`, `exp`, `nonce` —
     vérifications déléguées à @openidconnect `4.0.1` sur oauth2 `5.0.0`, source amont vérifiée),
-    et remettre @OidcLoginResult : jeton brut verbatim, `sub`, `email` optionnel et claim
+    et remettre @OidcLoginResult : jeton brut verbatim, `sub`, `email` optionnel, `preferred_username`
+    optionnel (claim standard, AJOUT REQUIS Sébastien 2026-09-27 — cf. `Tasks`) et claim
     `groups`. Le fichier ne connait aucun endpoint HTTP : les handlers `login`, `callback`,
     `logout` vivent dans ./mod.rs, qui seul persiste state/nonce (cookie pending chiffré) et
     pose les cookies ; cette spec ne couvre que ce que ./oidc.rs garantit à cet appelant. Aucune
@@ -109,6 +110,11 @@ Must:
     remonte exactement `MRD-AUTH-011: token verification failed: {e}`, quel que soit le motif
   Extraction de succès, sans trace et sans effet de bord : @id_token_string = @ToString du token
     (verbatim, tel que reçu) ; @subject = claim `sub` ; @email = claim `email` mappé en optionnel ;
+    @preferred_username = claim STANDARD `preferred_username` mappé en optionnel (même patron que
+    `email` : `id_token_claims.preferred_username().map(|u| u.to_string())` — AJOUT REQUIS,
+    Sébastien 2026-09-27, cf. `Tasks` : consommateurs en aval qui dérivent un nom stable
+    d'utilisateur (ex. namespacing K8s côté vanyline) ont besoin d'un identifiant garanti unique
+    par le fournisseur, contrairement à `email`, qui peut varier ou être absent) ;
     @groups extrait du payload par @extract_groups_claim APRÈS vérification (le JWT n'est
     redécodé qu'après la réussite de @claims) ; l'échange ne mute aucun état du @OidcClient, et le
     mono-usage du code est une garantie du fournisseur, pas de ce fichier
@@ -172,9 +178,11 @@ Depends on:
   ./config.rs (@OidcConfig) et ./error.rs (@AuthError::Oidc) — types du module, sans plus
 
 Exposes:
-  @OidcIdentity — struct `pub` à trois champs publics : @id_token (@String, JWT brut), @subject
-    (@String, claim `sub`), @email (@Option<@String>) ; aucun @impl dans ce fichier — ./cookie.rs
-    en construit aussi un lors de la relecture du cookie de session
+  @OidcIdentity — struct `pub` : @id_token (@String, JWT brut), @subject (@String, claim `sub`),
+    @email (@Option<@String>), @preferred_username (@Option<@String>, claim standard
+    `preferred_username` — AJOUT REQUIS, Sébastien 2026-09-27, cf. `Tasks`) ; aucun @impl dans ce
+    fichier — ./cookie.rs en construit aussi un lors de la relecture du cookie de session (doit
+    aussi porter/relire ce nouveau champ pour qu'il survive au cycle session)
   @OidcLoginResult — struct `pub` : @identity et @groups (@Vec<@String> du claim Authentik) ;
     aucun trait de sérialisation, naît uniquement de @exchange_code
   @OidcClientTrait — trait `pub` async (@Send + @Sync) : @authorization_url(&self) →
@@ -286,6 +294,14 @@ Handles:
     après une attente indéfinie (`Tasks` `[?]`)
 
 Tasks:
+  [x] AJOUT REQUIS (Sébastien, 2026-09-27) : exposer le claim standard `preferred_username`
+    sur @OidcIdentity (@Option<@String>, même patron que @email —
+    `id_token_claims.preferred_username().map(|u| u.to_string())` dans @exchange_code) et le
+    propager jusqu'à @AuthPrincipal (`./principal.rs`, `./dual.rs`) : un consommateur en aval
+    (vanyline) a besoin d'un identifiant nommé garanti unique par le fournisseur pour dériver un
+    nom de ressource stable (namespace K8s), ce que `email` ne garantit pas (peut varier, peut
+    être absent). `./token.rs` (voie ApiToken) posera `preferred_username: None` — même
+    traitement que `email` sur ce chemin (aucune session OIDC vivante).
   [?] `MRD-AUTH-009` ne vit qu'en deux traces @tracing::error et dans le message de panic de
     l'@expect, alors que ./error.sdd (sa `Raises`) le présente comme code porté par la charge
     utile des échecs d'échange : faut-il préfixer `MRD-AUTH-009:` dans la charge utile des deux
@@ -402,11 +418,17 @@ Scenario: State et nonce frais à chaque demande d'URL
   And chaque URL retourne contient exactement son propre `state` et son propre `nonce` — l'appelant doit conserver chaque couple pour son propre callback
 
 Scenario: Échange de code réussi rend le jeton brut, les claims et les groups
-  Given un IdP fake complet pour alg `HS256` (JWKS vide autorisé), dont `/token` rend `200` `application/json` avec un `id_token` signé HS256 avec le `client_secret` configuré, claims `aud` = [client_id], `iss` = issuer de la metadata, `nonce` = nonce attendu, `exp` très futur, `sub` = `user-1`, `email` = `user-1@example.com`, `groups` = `["admin", "editors"]`
+  Given un IdP fake complet pour alg `HS256` (JWKS vide autorisé), dont `/token` rend `200` `application/json` avec un `id_token` signé HS256 avec le `client_secret` configuré, claims `aud` = [client_id], `iss` = issuer de la metadata, `nonce` = nonce attendu, `exp` très futur, `sub` = `user-1`, `email` = `user-1@example.com`, `preferred_username` = `alice`, `groups` = `["admin", "editors"]`
   When @exchange_code est appelé avec un code non vide et le @Nonce exact
-  Then la réponse est @Ok : @identity.id_token égal à la chaîne brute du JWT servi, @subject = `user-1`, @email = @Some de `user-1@example.com`, @groups = exactement `["admin", "editors"]`
+  Then la réponse est @Ok : @identity.id_token égal à la chaîne brute du JWT servi, @subject = `user-1`, @email = @Some de `user-1@example.com`, @preferred_username = @Some(`"alice"`), @groups = exactement `["admin", "editors"]`
   And le serveur fake a reçu un `POST /token` avec en-tête `Authorization: Basic`, et un corps portant `grant_type=authorization_code`, `code`, `redirect_uri` du configuré — le secret du client ne voyage que sur cet appel
   But le corps ne contient pas de `code_verifier`, et l'échange réussi n'a posé aucune trace @tracing
+
+Scenario: Fournisseur sans claim preferred_username rend None
+  Given le même IdP fake mais dont l'`id_token` omet le claim `preferred_username`
+  When @exchange_code est appelé avec un code non vide et le @Nonce exact
+  Then la réponse est @Ok avec @identity.preferred_username = @None — même posture que
+    l'absence de `email` (Sébastien, 2026-09-27)
 
 Scenario: Réponse de tokens sans id_token, rejet 010
   Given un IdP fake dont `/token` rend `200` avec seulement `access_token` et `token_type` (aucun champ `id_token`)

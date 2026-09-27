@@ -122,6 +122,7 @@ mod tests {
         AuthPrincipal {
             subject: "alice".to_string(),
             email: None,
+            preferred_username: None,
             source: PrincipalSource::ApiToken { token_id: 0 },
         }
     }

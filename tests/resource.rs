@@ -209,6 +209,7 @@ fn session_principal() -> AuthPrincipal {
     AuthPrincipal {
         subject: "user-1".to_string(),
         email: Some("user-1@example.test".to_string()),
+        preferred_username: Some("user-1".to_string()),
         source: PrincipalSource::Session {
             id_token: "id-token".to_string(),
         },
@@ -219,6 +220,7 @@ fn api_principal() -> AuthPrincipal {
     AuthPrincipal {
         subject: "svc-1".to_string(),
         email: None,
+        preferred_username: None,
         source: PrincipalSource::ApiToken { token_id: 42 },
     }
 }

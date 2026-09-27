@@ -354,6 +354,7 @@ mod tests {
         AuthPrincipal {
             subject: "sujet-de-test".to_string(),
             email: None,
+            preferred_username: None,
             source: PrincipalSource::ApiToken { token_id: 1 },
         }
     }

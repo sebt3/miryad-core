@@ -202,6 +202,10 @@ Handles:
     la fonction @revoke_token est sans filtre
 
 Tasks:
+  [x] AJOUT REQUIS (Sébastien, 2026-09-27, voir ./principal.sdd et ./oidc.sdd) : @validate_token
+    doit poser `preferred_username: None` dans l'@AuthPrincipal rendu (nouveau quatrième champ,
+    même traitement que `email : @None` déjà en place sur ce chemin — aucune session OIDC vivante
+    associée à un token API).
   [ ] Convertir chaque `Scenario` en un test nommé distinct dans le `#[cfg(test)] mod tests` de
     ./token.rs (pattern `test_db()` sur `sqlite::memory:` déjà en place, sans base externe) —
     `17` `Scenario`, `17` tests : six tests inline existants exercent déjà un scénario, les

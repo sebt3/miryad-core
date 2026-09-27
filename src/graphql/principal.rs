@@ -80,6 +80,7 @@ mod tests {
         let principal = AuthPrincipal {
             subject: "alice".to_string(),
             email: None,
+            preferred_username: None,
             source: PrincipalSource::Session {
                 id_token: String::new(),
             },
@@ -97,6 +98,7 @@ mod tests {
         let principal = AuthPrincipal {
             subject: "stranger".to_string(),
             email: None,
+            preferred_username: None,
             source: PrincipalSource::Session {
                 id_token: String::new(),
             },

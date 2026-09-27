@@ -78,14 +78,16 @@ where S: Clone + Send + Sync + 'static, MiryadAuthState: FromRef<S>;
 ```
 
 `OidcClientTrait::exchange_code` retourne `OidcLoginResult { identity: OidcIdentity, groups:
-Vec<String> }` : `identity` (`id_token`/`subject`/`email`) est ce qui finit dans le cookie de
+Vec<String> }` : `identity` (`id_token`/`subject`/`email`/`preferred_username`) est ce qui finit
+dans le cookie de
 session ; `groups` (claim `groups`, spécifique à Authentik — pas standard OIDC, extrait à la main
 du payload JWT déjà vérifié plutôt que de reconfigurer `CoreClient` avec des `AdditionalClaims`
 génériques pour un seul champ) est éphémère, consommé une seule fois par la synchronisation de
 groupes (cf. section RBAC), jamais persisté dans le cookie.
 
 Le cookie de session (`miryad_session`) porte un payload JSON chiffré (`id_token`/`subject`/
-`email`) — pas de délimiteur `|` façon vanyline, pour ne dépendre d'aucun caractère absent des
+`email`/`preferred_username`) — pas de délimiteur `|` façon vanyline, pour ne dépendre d'aucun
+caractère absent des
 claims. Le cookie transitoire CSRF/nonce (`miryad_oidc_pending`) suit le même principe (secret
 chiffré, `Max-Age=300`).
 
@@ -136,9 +138,17 @@ jusqu'à révocation explicite (`revoke_token`).
 produit soit par le cookie de session soit par un token API :
 
 ```rust
-pub struct AuthPrincipal { pub subject: String, pub email: Option<String>, pub source: PrincipalSource }
+pub struct AuthPrincipal { pub subject: String, pub email: Option<String>, pub preferred_username: Option<String>, pub source: PrincipalSource }
 pub enum PrincipalSource { Session { id_token: String }, ApiToken { token_id: i32 } }
 ```
+
+**Décision (Sébastien, 2026-09-27) — `preferred_username`.** Le claim OIDC standard
+`preferred_username` est propagé de l'`id_token` jusqu'à `AuthPrincipal` (session) car `email`
+ne garantit ni unicité ni présence ; une application consommatrice (vanyline) dérive de ce
+champ un nom de ressource stable (namespace K8s). Chemin token API : `None` codé en dur
+(aucune session OIDC vivante), comme `email`. Rétro-compatibilité actée : les cookies de session
+posés avant le déploiement (payload à trois clés) se relisent `preferred_username: None` sans
+invalidation de session — pas de migration de cookie, le claim regagne le payload au re-login.
 
 L'extracteur dual-auth (`src/auth/dual.rs`) résout dans cet ordre : `Authorization: Bearer
 <token>` d'abord, cookie de session en repli. Un header `Bearer` présent mais invalide ne retombe
