@@ -141,7 +141,13 @@ impl OidcClient {
         let client = CoreClient::from_provider_metadata(
             provider_metadata,
             ClientId::new(config.client_id.clone()),
-            Some(ClientSecret::new(config.client_secret.clone())),
+            // `Some(secret)` → authentification `Basic` à l'échange comme avant ; `None` = client
+            // public, l'authentification `Basic` est omise et la possession du code repose sur
+            // PKCE `S256` seul (arbitré 2026-09-27, config.sdd `Must`).
+            config
+                .client_secret
+                .as_ref()
+                .map(|secret| ClientSecret::new(secret.clone())),
         )
         .set_redirect_uri(redirect_url);
 
@@ -439,12 +445,12 @@ mod tests {
             OidcConfig {
                 issuer_url: self.issuer.clone(),
                 client_id: client_id.to_string(),
-                client_secret: client_secret.to_string(),
+                client_secret: Some(client_secret.to_string()),
                 redirect_url: "http://app.local/callback".to_string(),
                 scopes: vec!["email".to_string()],
                 ca_cert: None,
-                post_login_redirect: "/".to_string(),
-                post_logout_redirect: "/".to_string(),
+                connect_timeout: std::time::Duration::from_secs(5),
+                timeout: std::time::Duration::from_secs(15),
             }
         }
     }
