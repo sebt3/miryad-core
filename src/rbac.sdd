@@ -23,10 +23,10 @@ References:
   /miryad-core.sdd — contrat hérité : codes `MRD-<DOMAINE>-NNN` portés par les modules, parité de
     lecture REST/GraphQL/MCP sur la seule métadonnée @resource::MiryadResource
   ./lib.sdd — déclare @rbac sans gating de feature, sans ré-export à la racine
-  ./resource.sdd — contrat amont dont ce fichier consomme les déclarations ; sa ligne `[?]`
-    documente déjà l'incohérence @AccessPolicy::OwnerOnly sans
-    @resource::MiryadResource::owner_column comme « comportement non défini » au niveau du trait ;
-    les décisions réelles de refus sont ici
+  ./resource.sdd — contrat amont dont ce fichier consomme les déclarations ; documente désormais
+    l'incohérence @AccessPolicy::OwnerOnly sans @resource::MiryadResource::owner_column comme une
+    déclaration invalide (arbitré 2026-09-27) plutôt qu'un « comportement non défini » ; les
+    décisions réelles de refus, y compris pour @rbac::can_create, sont ici
   /tooling.sdd — dette stricte `unreachable` (×2) tracée globalement, dont les deux seules
     occurrences de production sont dans ./rbac.rs, et matrice de batteries de vérification
   /docs/architecture.md — récit : admin est une convention de groupe sans rien de spécial au
@@ -57,6 +57,17 @@ Must:
     @MiryadResource::owner_column est `None` (fail-closed écrit), sinon la comparaison d'égalité, à
     @sea_orm::Value niveau, de la valeur lue par @sea_orm::ModelTrait::get sur l'enregistrement
     passé avec la valeur construite par @sea_orm::Value::from sur @users::user::Model::id.
+  Décomposer @rbac::evaluate en une étape statique factorisée, exposée séparément (arbitré par
+    Sébastien le 2026-09-27 pour fermer l'oracle d'existence de ./rest/core.sdd) : `fn
+    static_verdict(db, policy: AccessPolicy, user: &user::Model) -> Result<Option<bool>, DbErr>`,
+    `pub(crate)`, calcule tout ce qui ne dépend pas d'un enregistrement — @AccessPolicy::Public →
+    @Some(`true`) avant requête ; admin → @Some(`true`) ; @AccessPolicy::AdminOnly hors admin →
+    @Some(`false`) ; @AccessPolicy::Group → @Some du résultat de @users::group::is_member ;
+    @AccessPolicy::OwnerOnly → `None` (indécidable sans enregistrement, y compris colonne `None` :
+    la branche fail-closed reste dans @rbac::evaluate, qui a l'enregistrement). @rbac::evaluate
+    devient un appel à @rbac::static_verdict suivi, sur `None`, de la seule comparaison de colonne
+    propriétaire — aucun changement de comportement observable pour @rbac::can_read/@rbac::can_write,
+    seule la factorisation est nouvelle.
   Tenir la comparaison de l'alinéa précédent vérifiée dans la source amont, non dans la doc :
     @sea_orm `2.0.2` dépend de @sea-query `1.0.2` avec la feature `hashable-value` activée sans
     condition, dont une implémentation manuelle de @std::cmp::PartialEq (@sea-query 1.0.2,
@@ -64,11 +75,16 @@ Must:
     @sea_orm::Value::BigInt ni aucune valeur texte ne peut égaler un @sea_orm::Value::Int, @None ne
     peut égaler une valeur @Some d'@sea_orm::Value::Int, et le seul cas où un enregistrement
     @AccessPolicy::OwnerOnly est accordé hors admin est un i32 strictement égal.
-  Décider @rbac::can_create sur @MiryadResource::write_policy seule, sans jamais consulter
-    @MiryadResource::read_policy ni @MiryadResource::owner_column : @AccessPolicy::Public et
-    @AccessPolicy::OwnerOnly répondent @Ok `true` sans aucune requête ; @AccessPolicy::AdminOnly
-    répond le @Result de @users::group::is_admin ; @AccessPolicy::Group répond `true` si
-    @users::group::is_admin, sinon le @Result de @users::group::is_member.
+  Décider @rbac::can_create sur @MiryadResource::write_policy, en consultant
+    @MiryadResource::owner_column pour la seule branche `OwnerOnly` : @AccessPolicy::Public répond
+    @Ok `true` sans aucune requête ; @AccessPolicy::OwnerOnly répond @Ok `true` sans requête si
+    @MiryadResource::owner_column est @Some ou si l'appelant est admin (raccourci admin, même
+    requête @users::group::is_admin que les autres branches), @Ok `false` sans requête
+    supplémentaire si `None` et non-admin — fail-closed arbitré par Sébastien le 2026-09-27,
+    cohérent avec le refus de @rbac::evaluate sur la même combinaison, raccourci admin compris
+    (`Must` ci-dessous) ; @AccessPolicy::AdminOnly répond le @Result de @users::group::is_admin ;
+    @AccessPolicy::Group répond `true` si @users::group::is_admin, sinon le @Result de
+    @users::group::is_member.
   Décider @rbac::list_access sur @MiryadResource::read_policy seule : @AccessPolicy::Public répond
     @rbac::ListAccess::Unrestricted avant toute requête ; sinon admin répond
     @rbac::ListAccess::Unrestricted ; @AccessPolicy::AdminOnly répond @rbac::ListAccess::Forbidden ;
@@ -151,6 +167,11 @@ Exposes:
   @rbac::evaluate — fonction privée sans @pub, alimentée par @MiryadResource + politique + colonne
     explicites, partagée par @rbac::can_read et @rbac::can_write et directement exercée par
     @mod tests uniquement
+  @rbac::static_verdict — `pub(crate) async fn static_verdict<E>(db, policy: AccessPolicy, user:
+    &user::Model) -> Result<Option<bool>, DbErr>` (arbitré 2026-09-27) : verdict décidable sans
+    enregistrement, `None` pour `OwnerOnly` qui doit toujours en charger un ; consommée par
+    @rbac::evaluate en interne et par ./rest/core.sdd pour refuser `AdminOnly`/`Group` avant toute
+    lecture de la ligne (fermeture de l'oracle d'existence, ./rest/core.sdd `Must`)
 
 Accepts:
   Un principal sous forme @users::user::Model — donc après @resolve_user en amont, jamais un
@@ -187,8 +208,8 @@ Raises:
     jamais atteint par une exécution normale, mais comptabilisé dette stricte `unreachable` par
     /tooling.sdd.
   Aucune erreur inventée par @rbac::can_create : @AccessPolicy::OwnerOnly sans colonne déclarée ne
-    pose aucune exception, aucun avertissement, aucune panic — simplement une autorisation `true`
-    qui crée un owner inexistant, asymétrie signalée en `Tasks` ci-dessous.
+    pose aucune exception, aucun avertissement, aucune panic — simplement un refus `false`,
+    fail-closed cohérent avec @rbac::evaluate (arbitré 2026-09-27, `Must`).
 
 Handles:
   Toute politique pour toute combinaison : @AccessPolicy::Public accord avant requête ; admin
@@ -223,7 +244,9 @@ Example:
   read/write × hors admin × `OwnerOnly` avec col Some et valeur égale à l'id → `true`
   read/write × hors admin × `OwnerOnly` avec col Some et valeur différente, NULL ou d'un autre type → `false`
   read/write × hors admin × `OwnerOnly` avec col None → `false` (fail-closed écrit)
-  create × `Public` → `true` sans requête ; create × `OwnerOnly` → `true` sans requête, col jamais consultée
+  create × `Public` → `true` sans requête ; create × `OwnerOnly` × col `Some` → `true` sans requête ;
+    create × `OwnerOnly` × col `None` × non-admin → `false` (fail-closed, arbitré 2026-09-27) ;
+    create × `OwnerOnly` × col `None` × admin → `true` (raccourci admin, une requête `is_admin`)
   create × `AdminOnly` × admin → `true` ; create × `AdminOnly` × non-admin → `false`
   create × `Group` × admin ou membre → `true` ; non-membre → `false`
   list × `Public` ou admin × tout → @rbac::ListAccess::Unrestricted (Public : avant toute requête)
@@ -258,7 +281,7 @@ Tasks:
     `can_create_public_or_owner_only_never_queries_db` ;
     `can_create_admin_only_grants_admin_denies_others` ;
     `can_create_group_grants_admin_and_member_only` ;
-    `can_create_owner_only_without_column_still_allows` ;
+    `can_create_owner_only_without_column_is_fail_closed` ;
     `public_reads_create_list_never_touch_missing_tables` ;
     `non_public_paths_propagate_dberr_when_tables_missing` ;
     `owner_only_null_owner_value_denies_non_admin` ;
@@ -268,18 +291,23 @@ Tasks:
     column Option<i32>) restent à ajouter au mod tests. Chaque test utilise une connexion SQLite
     mémoire migrée par @crate::migration, sauf les scénarios de propagation qui veulent une base
     non migrée.
-  [?] @rbac::can_create ne consulte jamais @MiryadResource::owner_column : un @AccessPolicy::OwnerOnly
-    déclaré sur une entité sans colonne voit la création accordée (`true`) alors que la lecture
-    enregistrement, la liste et ./graphql/hooks.rs (qui bloque avec un motif `MRD-GQL-001`) refusent
-    le même enregistrement/la même opération, et alors que le commentaire d'en-tête de ./rbac.rs
-    promet un fail-closed pour OwnerOnly sans owner_column. Faut-il écrire un `false` explicite
-    pour que la création suive le fail-closed des autres chemins, ou considérer qu'un owner absent
-    est un détail d'appelant et documenter l'asymétrie comme contrat ?
+  [ ] Extraire @rbac::static_verdict de @rbac::evaluate (arbitré 2026-09-27, `Must`, `Exposes`) :
+    factorisation pure, aucun changement de comportement observable de @rbac::can_read/can_write
+    attendu — les deux nouveaux scenarios de `static_verdict` et les huit existants sur
+    @rbac::evaluate doivent rester verts sans modification de leurs `Then`.
+  [ ] @rbac::can_create ne consulte pas encore @MiryadResource::owner_column, créant un
+    @AccessPolicy::OwnerOnly sans colonne accordé (`true`) alors que la lecture enregistrement et la
+    liste refusent le même enregistrement. Arbitré par Sébastien le 2026-09-27 : `false` explicite
+    quand `OwnerOnly` et `owner_column` est `None`, fail-closed cohérent avec @rbac::evaluate
+    (`Must` mis à jour). Défense en profondeur : la combinaison est en outre rejetée au montage
+    côté REST (panic, ./rest/mod.sdd), donc en principe inatteignable pour une entité montée — ce
+    fichier ne suppose pas ce garde-fou amont et refuse quand même. Scenario « Création `OwnerOnly`
+    sans colonne » à réécrire (le `Then` passe de `true` à `false`) et à renommer en conséquence.
   [?] Le pont GraphQL ./graphql/hooks.rs, sur un enregistrement `OwnerOnly` sans colonne, retourne
     un @GuardAction::Allow + @entity_filter `None` en Read : la liste voit toutes les lignes de
-    toutes les entités, contrairement à ./rbac.rs qui retourne `false`. Fausse asymétrie à tracer
-    comme bug à corriger côté ./graphql/hooks.rs (fail-closed attendu), ou contrat GraphQL distinct
-    à assumer et documenter ?
+    toutes les entités, contrairement à ./rbac.rs qui retourne `false`. Différé (2026-09-27) : le
+    pont GraphQL reste un prototype sans consommateur (exception `Must` de /miryad-core.sdd), cette
+    asymétrie n'est pas arbitrée dans cette version mineure.
   [?] Un enregistrement dont la colonne propriétaire déclarée `Some` porte la valeur `None` ne
     matche jamais l'id d'un i32 hors admin : un propriétaire sans valeur est un trou de propriété
     éternellement refusé. Est-ce le contrat attendu (et faut-il le documenter dans
@@ -299,12 +327,16 @@ Tasks:
     combinaisons de features.
 
 Done when:
-  Les vingt-quatre scénarios ont chacun au moins un test distinct nommé (huit existants + seize
-    créés), la batterie /tooling.sdd est verte sur chaque combinaison de features, et ./rbac.rs ne
-    porte plus de dette stricte `unreachable` si l'arbitrage de la dernière ligne `[?]` le demande.
-  La spec est relue et approuvée par Sébastien après réponse explicite aux cinq `[?]` de `Tasks` —
-    aucune des asymétries (création OwnerOnly sans colonne, fail-open GraphQL, valeurs None et
-    types non-i32) ne reste un comportement accidentel passé sous silence.
+  Les vingt-huit scénarios (vingt-quatre originaux, deux du fail-closed de @rbac::can_create et
+    deux de @rbac::static_verdict, tous arbitrés le 2026-09-27) ont chacun au moins un test
+    distinct nommé, la batterie /tooling.sdd est verte sur chaque combinaison de features, et
+    ./rbac.rs ne porte plus de dette stricte `unreachable` si l'arbitrage de la dernière ligne
+    `[?]` le demande.
+  Deux des cinq `[?]`/`[!]` originaux de `Tasks` sont arbitrés (fail-closed de @rbac::can_create ;
+    fail-open GraphQL différé, prototype sans consommateur). Restent ouverts et à soumettre à
+    Sébastien : valeur `None` sur une colonne propriétaire déclarée, colonne propriétaire non-i32,
+    et la purge `unreachable` (calendrier /tooling.sdd) — aucun ne reste un comportement accidentel
+    passé sous silence pour autant, chacun est documenté en `Handles`/`Raises`.
 
 Scenario: Lecture `Public` : tout principal authentifié passe
   Given la fixture recipe avec `read_policy` @AccessPolicy::Public, un utilisateur `anyone` sans
@@ -447,13 +479,32 @@ Scenario: Création `Group` : membre passe, admin passe, autres refusés
   Then `true` pour `maintainer` (règle du groupe nommé) et `admin-user` (raccourci admin avant
     @users::group::is_member), `false` pour `stranger`
 
-Scenario: Création `OwnerOnly` sans colonne : encore autorisée aujourd'hui
+Scenario: Création `OwnerOnly` sans colonne : fail-closed comme les autres chemins
   Given la fixture `memos` (@AccessPolicy::OwnerOnly en écriture, @MiryadResource::owner_column
     `None`) et un utilisateur `stranger` sur une base migrée
   When @rbac::can_create est appelé sur la fixture `memos`
-  Then @Ok `true` — @rbac::can_create ne consulte jamais la colonne : comportement actuel observé,
-    contradictoire avec le fail-closed de lecture/listing et avec le blocage `MRD-GQL-001` de
-    GraphQL, arbitrage demandé sous `Tasks`
+  Then @Ok `false` — arbitré par Sébastien le 2026-09-27, cohérent avec le fail-closed de
+    @rbac::evaluate en lecture/listing sur la même combinaison
+
+Scenario: `static_verdict` décide `AdminOnly`/`Group` sans charger d'enregistrement
+  Given une fixture ingredient (@AccessPolicy::AdminOnly) et une fixture `drafts` (@AccessPolicy::Group
+    `"editors"`), un utilisateur `stranger` sans appartenance, sur une connexion `sqlite::memory:`
+    dont la table de l'entité n'existe pas (seules les tables @crate::migration sont migrées)
+  When @rbac::static_verdict est appelé avec chaque politique et `stranger`
+  Then chaque appel rend @Ok(@Some(`false`)) sans jamais interroger la table absente de l'entité —
+    la preuve que le refus est disponible avant toute relecture d'enregistrement
+
+Scenario: `static_verdict` diffère sur `OwnerOnly`
+  Given une fixture note (@AccessPolicy::OwnerOnly, colonne déclarée) et un utilisateur `stranger`
+  When @rbac::static_verdict est appelé avec cette politique
+  Then @Ok(`None`) — la décision requiert un enregistrement, `static_verdict` ne la prend jamais à
+    sa place
+
+Scenario: raccourci admin passe la création `OwnerOnly` sans colonne
+  Given la fixture `memos` et un utilisateur `admin-user` membre de `"admin"` sur une base migrée
+  When @rbac::can_create est appelé sur la fixture `memos`
+  Then @Ok `true` — le raccourci admin s'applique à @rbac::can_create comme à @rbac::evaluate,
+    cohérence arbitrée le 2026-09-27
 
 Scenario: raccourci `Public` n'émet aucune requête
   Given une connexion `sqlite::memory:` sans passer par @crate::migration, un utilisateur et des

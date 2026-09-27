@@ -1,6 +1,12 @@
 Spec: mod — contrat d'agrégation du module auth
 
 Purpose:
+  Statut au 2026-09-27 (Sébastien) : les quatre `[?]` de cette spec sont arbitrés (`Tasks`) —
+    extension de @MockOidcClient (./oidc.sdd, cross-file) pour rendre testable le parcours de
+    succès du callback ; pending non purgé sur erreur gelé comme accepté (TTL `300`s déjà borné) ;
+    parsing du cookie pending à factoriser dans ./cookie.rs plutôt que dupliqué ici ; absence des
+    trois routes d'OpenAPI/IR confirmée comme exclusion délibérée (routes de redirection
+    navigateur, pas la surface CRUD générique).
   Fichier d'agrégation et de routage du module `auth` : il déclare les neuf sous-modules
     publics sans aucun gating de feature, met à plat quinze items publics de ces enfants (+ un
     ré-export sous `#[cfg(test)]`), et porte ici même le parcours navigateur public du crate —
@@ -54,8 +60,17 @@ Must:
     sous ce nom exactement.
   Dans @handler_callback : vérifier la correspondance du paramètre `state` avec le CSRF extrait
     du pending déchiffré, avant tout appel à @OidcClientTrait::exchange_code — un `state`
-    divergent retourne @AuthError::Oidc avec `MRD-AUTH-013` et @tracing::warn, sans toucher le
-    fournisseur ni la base, et le nonce restitué au fournisseur est celui rechargé du pending.
+    divergent retourne @AuthError::CsrfMismatch (`MRD-AUTH-013`, `400` — variante propre depuis le
+    2026-09-27, ./error.sdd `Tasks` ; ce n'est plus un @AuthError::Oidc à `502`) et @tracing::warn,
+    sans toucher le fournisseur ni la base, et le nonce restitué au fournisseur est celui rechargé
+    du pending. Le pending non déchiffrable ou absent (§ Raises) retourne de même
+    @AuthError::InvalidCallback (`MRD-AUTH-012`, `400`), plus @AuthError::Oidc.
+  Parser le cookie pending via le même helper que le cookie de session (arbitré 2026-09-27,
+    `Tasks`, cross-file avec ./cookie.sdd) : ./cookie.rs expose désormais un point d'entrée
+    partagé « trouver et déchiffrer un cookie nommé dans un en-tête `Cookie` », paramétré par le
+    nom du cookie et sa clé — @extract_session (nom `miryad_session`) et @handler_callback (nom
+    `miryad_oidc_pending`) l'appellent tous deux ; ./mod.rs ne réimplémente plus son propre
+    découpage `;`/`=` à la main.
   Sur le succès du callback seulement, et dans cet ordre : @resolve_user sur `subject` et
     `email` de l'identité, puis @sync_group_memberships avec les groupes du résultat
     d'échange, puis trace @tracing de niveau `info` avec le champ `subject`, puis la redirection `302` vers
@@ -215,19 +230,22 @@ Returns:
     chemins n'émet de @SET_COOKIE.
 
 Raises:
-  @AuthError::Oidc avec charge utile `MRD-AUTH-012: missing oidc_pending cookie` — en-tête
+  @AuthError::InvalidCallback (`MRD-AUTH-012`, `400` — variante propre depuis le 2026-09-27, plus
+    un @AuthError::Oidc à `502`) avec charge utile `missing oidc_pending cookie` — en-tête
     `Cookie` absent, illisible en @str, ou paire `miryad_oidc_pending=<valeur>` absente du
     découpage.
-  @AuthError::Oidc avec charge utile `MRD-AUTH-012: invalid oidc_pending cookie` — @decrypt
+  @AuthError::InvalidCallback avec charge utile `invalid oidc_pending cookie` — @decrypt
     @None : base64 invalide, valeur chiffrée sous une autre clé, altérée, ou scellée sous un
     autre nom de cookie — le nom du cookie sert de donné associé au chiffrement (AEAD).
-  @AuthError::Oidc avec charge utile `MRD-AUTH-012: malformed oidc_pending value` — valeur
+  @AuthError::InvalidCallback avec charge utile `malformed oidc_pending value` — valeur
     déchiffrée sans séparateur `:` (moins de deux segments après `splitn`).
-  @AuthError::Oidc avec charge utile `MRD-AUTH-013: invalid CSRF state`, précédé du
-    @tracing::warn `MRD-AUTH-013: CSRF state mismatch` — `state` du query différent du CSRF du
-    pending ; c'est le seul point de trace d'erreur du fichier.
+  @AuthError::CsrfMismatch (`MRD-AUTH-013`, `400` — variante propre depuis le 2026-09-27, plus un
+    @AuthError::Oidc à `502`) avec charge utile `invalid CSRF state`, précédé du @tracing::warn
+    `MRD-AUTH-013: CSRF state mismatch` — `state` du query différent du CSRF du pending ; c'est le
+    seul point de trace d'erreur du fichier.
   @AuthError::Oidc avec charge utile = message @http::Error brut, sans code — @Response::builder
-    échouant sur l'une des trois constructions de réponse.
+    échouant sur l'une des trois constructions de réponse (chemin resté `502`, panne de
+    construction de réponse, pas un échec piloté par le client).
   @AuthError propagés, non construits ici : @exchange_code remonte les @AuthError::Oidc de
     ./oidc.rs (sous-codes `MRD-AUTH-009` à `MRD-AUTH-011`), @resolve_user et
     @sync_group_memberships remontent leurs @DbErr en @AuthError::Database (`MRD-AUTH-016`)
@@ -238,9 +256,12 @@ Raises:
 Handles:
   Trois branches distinctes de pending (absent, indéchiffrable, malformé) sous un seul code
     `MRD-AUTH-012` ; le client ne peut pas les distinguer au code, seulement au message.
-  Chemins d'erreur sans ménage : `400`, `502` et `500` du callback n'émettent pas de purge —
-    le pending reste posé jusqu'à son expiration `300` s ou jusqu'au prochain login qui le
-    réémet (question ouverte en `Tasks`).
+  Chemins d'erreur sans ménage : `400` (`MRD-AUTH-012`/`013`, révisé 2026-09-27), `502` (échecs
+    @Response::builder ou du fournisseur) et `500` du callback n'émettent pas de purge — le
+    pending reste posé jusqu'à son expiration `300` s ou jusqu'au prochain login qui le réémet.
+    Confirmé comme comportement voulu le 2026-09-27 (`Tasks`) : le TTL de 5 minutes borne déjà
+    l'exposition, purger sur chaque chemin d'erreur ajouterait de la complexité pour un gain
+    marginal.
   `GET /auth` nu et tout chemin non monté sous `/auth` : le @Router::nest d'un @Router
     n'enregistre que les trois routes préfixées `/auth/login`, `/auth/callback` et
     `/auth/logout` — le préfixe nu et la queue
@@ -251,27 +272,29 @@ Handles:
   @handler_logout sans session ni cookie : même succès `302` + purge — la déconnexion est
     idempotente et ne demande jamais d'authentification.
   En-têtes `Cookie` multiples : seul le premier est parcouru ; le pending peut être manqué par
-    un client qui le place dans un en-tête ultérieur (fait, voir `Tasks`).
+    un client qui le place dans un en-tête ultérieur — même principe que le « premier gagne » déjà
+    gelé pour ./dual.sdd (aucun gain de sécurité à une lecture plus stricte), hérité tel quel du
+    futur helper partagé de ./cookie.rs.
   La trace de rejet détaillée de l'extraction @State n'existe pas — @FromRef ne peut échouer ;
     toute trace du module se limite aux deux @tracing citées en `Must`.
 
 Tasks:
-  [?] Le parcours de succès du callback est-il testable sans toucher à un enfant ? @handler_callback
-    appelle @exchange_code avant la base, or @MockOidcClient::exchange_code est
-    @unimplemented! (./oidc.rs, `#[cfg(test)]`) : sans un mock qui retourne un vrai
-    @OidcLoginResult plus un @sea_orm::MockDatabase préparé pour @resolve_user et
-    @sync_group_memberships, le `Scenario` « callback succès » reste inexécutable. Faut-il
-    élargir le contrat du mock enfant, couvrir le succès par un autre fake, ou accepter que ce
-    chemin ne soit prouvé qu'en test d'intégration avec fournisseur factice ?
-  [?] Les chemins d'erreur du callback laissent le pending en place (aucune purge sur `400`,
-    `502`, `500`) — repos sur l'expiration `Max-Age=300` au prochain login : voulu ou faut-il
-    purger aussi à l'échec ?
-  [?] @handler_callback re-parse l'en-tête `Cookie` à la main (split `;` + premier `=`), duplicata
-    du mécanisme de @cookie::extract_session avec un autre nom de cookie : factoriser dans
-    ./cookie.rs ou duplication assumée (durée de vie et nom différents) ?
-  [?] Parité de surface : les trois routes de @auth_router n'apparaissent ni dans le document
-    OpenAPI (/src/rest/openapi.rs construit depuis @MiryadResource seulement) ni dans l'IR —
-    exclusion délibérée du parcours navigateur des deux artefacts, ou trou à traiter ?
+  [ ] Élargir @MockOidcClient pour rendre le callback réussi testable (arbitré par Sébastien le
+    2026-09-27, cross-file avec ./oidc.sdd) : ajouter un mode configurable où @exchange_code rend
+    un @OidcLoginResult fourni au lieu de paniquer — le mode panique reste le défaut (aucun test
+    existant qui s'appuie sur l'`@unimplemented!` comme assertion d'absence ne doit changer de
+    comportement). Le `Scenario` « callback succès » de cette spec devient exécutable avec ce mode
+    plus un @sea_orm::MockDatabase préparé pour @resolve_user et @sync_group_memberships.
+  [x] Pending non purgé sur les chemins d'erreur : gelé comme comportement voulu (2026-09-27,
+    `Handles`) — le TTL `300`s borne déjà l'exposition, purger sur chaque chemin d'erreur ajoute
+    de la complexité pour un gain marginal.
+  [ ] Factoriser le parsing du cookie pending dans ./cookie.rs (arbitré 2026-09-27, `Must`,
+    cross-file avec ./cookie.sdd) : un point d'entrée partagé « trouver et déchiffrer un cookie
+    nommé », paramétré par nom et clé, appelé par @extract_session (`miryad_session`) et
+    @handler_callback (`miryad_oidc_pending`) — plus de découpage `;`/`=` dupliqué dans ./mod.rs.
+  [x] Absence des trois routes d'OpenAPI et de l'IR : confirmée comme exclusion délibérée
+    (2026-09-27) — ce sont des routes de redirection navigateur, pas la surface CRUD générique que
+    ces deux artefacts documentent ; aucun changement.
   [ ] Convertir les quinze `Scenario` en au moins quinze tests nommés et distincts : douze dans
     le `mod tests` `#[cfg(test)]` de ./mod.rs (les quatre tests existants —
     logout_clears_cookie_and_redirects, callback_without_pending_cookie_is_rejected,
@@ -283,12 +306,12 @@ Tasks:
     déborde pas du fichier, l'exercice de features est hors fichier.
 
 Done when:
-  Quinze `Scenario` ont chacun au moins un test nommé distinct et vert, ou une place explicite
-    dans `Done when` pour celui bloqué par `[?]` ; le compilé-resolu (quinze chemins plats, six
-    chemins par sous-module, mounting sur état composé @FromRef, `--no-default-features`) passe
-    sur la matrice de /tooling.sdd avec `-D warnings` sans nouvelle dette hors celle tracée ;
-    aucun `#[cfg(feature = ...)]` n'est apparu dans ./mod.rs ; les quatre lignes `[?]` sont
-    arbitrées par Sébastien ; la spec est approuvée par lui.
+  Quinze `Scenario` ont chacun au moins un test nommé distinct et vert (les statuts `400` de
+    `MRD-AUTH-012`/`013` révisés le 2026-09-27, `Raises`) ; le compilé-resolu (quinze chemins
+    plats, six chemins par sous-module, mounting sur état composé @FromRef,
+    `--no-default-features`) passe sur la matrice de /tooling.sdd avec `-D warnings` sans nouvelle
+    dette hors celle tracée ; aucun `#[cfg(feature = ...)]` n'est apparu dans ./mod.rs ; les quatre
+    lignes `[?]` sont toutes arbitrées par Sébastien le 2026-09-27 ; la spec est approuvée par lui.
 
 Scenario: login redirige vers le fournisseur et pose le pending chiffré
   Given un routeur @auth_router monté avec `S` = @MiryadAuthState, saturé par @with_state avec
@@ -304,7 +327,7 @@ Scenario: callback sans en-tête Cookie est rejeté avant la base
   Given `GET /auth/callback?code=x&state=y` sans en-tête `Cookie`, sur un état dont le champ
     `db` est un @sea_orm::MockDatabase non préparé
   When @handler_callback
-  Then le statut est `502` (rendu @AuthError::Oidc de ./error.rs)
+  Then le statut est `400` (rendu @AuthError::InvalidCallback de ./error.rs, arbitré 2026-09-27)
   And le corps texte contient `MRD-AUTH-012`
   And aucune en-tête @SET_COOKIE n'est émise — le pending n'a pas été purgeable, et la base
     n'a pas été touchée
@@ -313,7 +336,7 @@ Scenario: pending absent d'un en-tête Cookie d'autres noms
   Given l'en-tête `Cookie` posé sur la requête callback vaut `miryad_session=zzz; autre=valeur`
     et les params `code` et `state` présents
   When @handler_callback
-  Then le statut est `502`
+  Then le statut est `400`
   And le corps texte contient `MRD-AUTH-012` — la recherche est exacte sur le nom
     `miryad_oidc_pending`
 
@@ -321,7 +344,7 @@ Scenario: pending chiffré sous une autre clé est indéchiffrable
   Given une valeur de `miryad_oidc_pending` chiffrée par @cookie::PrivateJar avec une clé
     différente de @MiryadAuthState::cookie_key et posée dans l'en-tête `Cookie`
   When @handler_callback avec des params plausibles
-  Then le statut est `502`
+  Then le statut est `400`
   And le corps texte contient `MRD-AUTH-012` — @decrypt a rendu @None, la cause exacte n'est
     pas distinguable par le client
 
@@ -329,14 +352,14 @@ Scenario: valeur déchiffrée sans séparateur est malformée
   Given un pending dont la valeur claire injectée est `csrfSansSeparateur`, chiffrée avec la
     bonne clé
   When @handler_callback
-  Then le statut est `502`
+  Then le statut est `400`
   And le corps texte contient `MRD-AUTH-012` — le `splitn(2, ':')` n'a trouvé qu'un segment
 
 Scenario: CSRF divergent rejette sans toucher le fournisseur ni purger le pending
   Given un pending réellement posé par un `GET /auth/login` préalable, et
     `GET /auth/callback?code=irrelevant&state=pas-le-bon` reprenant la valeur du @SET_COOKIE
   When @handler_callback
-  Then le statut est `502`
+  Then le statut est `400` (rendu @AuthError::CsrfMismatch, arbitré 2026-09-27)
   And le corps texte contient `MRD-AUTH-013`
   And aucune en-tête @SET_COOKIE ne sort de la réponse
   But @exchange_code n'est pas appelé — @MockOidcClient::exchange_code étant @unimplemented!,
@@ -354,7 +377,7 @@ Scenario: paramètre vide et inconnu traversent la désérialisation
   Given `GET /auth/callback?code=&state=&from=spam`, sans pending cookie
   When la requête atteint le routeur
   Then la désérialisation @Query réussit — chaîne vide acceptée, param `from` ignoré
-  Then le flux entre dans @handler_callback et le statut est `502`
+  Then le flux entre dans @handler_callback et le statut est `400`
   And le corps texte contient `MRD-AUTH-012`
 
 Scenario: logout sans session redirige et purge toujours
@@ -387,7 +410,8 @@ Scenario: callback succès pose la session puis purge le pending
   And deux en-têtes @SET_COOKIE sortent dans l'ordre : d'abord nom `miryad_session`, ensuite
     nom `miryad_oidc_pending` avec `Max-Age=0`
   And la trace `info` du succès porte le champ `subject`
-  # Inexécutable en l'état avec @MockOidcClient — voir la première ligne `[?]` de `Tasks`.
+  # Devient exécutable avec le mode configurable de @MockOidcClient arbitré le 2026-09-27
+  # (`Tasks`, cross-file ./oidc.sdd) — plus besoin d'un fournisseur factice réseau.
 
 Scenario: toute la surface publique du module résout sans raccourci racine
   Given un test consommateur qui référence @auth::OidcConfig, @auth::AuthError, @auth::AuthUser,

@@ -60,6 +60,20 @@ Must:
     documentée dans ./src/resource.sdd et n'est pas tenue pour un décalage à vérifier côté
     GraphQL. La règle de parité reste la règle par défaut pour tout le reste de ce que le trait
     déclare.
+  Exception nommée supplémentaire (actée par Sébastien, 2026-09-27) : le pont GraphQL
+    (@graphql::hooks, @graphql::registry) reste un prototype sans consommateur en production.
+    Le bug de désalignement de clé (@MiryadResource::resource_name contre l'identifiant
+    `CamelCase(table)` que Seaography passe réellement à ses hooks, fail-open documenté par le
+    `[!]` #19 de ./src/resource.sdd) n'est pas corrigé dans cette version mineure : la parité
+    REST/GraphQL/MCP ne s'applique pas à cette surface tant qu'un consommateur réel n'existe pas.
+    Une partie du fossé (owner passthrough à l'update/delete GraphQL) tient à une limite
+    constatée de Seaography `2.0.0-rc.9` elle-même (@LifecycleHooksInterface::before_active_model_save
+    n'est jamais invoqué hors création) et demanderait une évolution amont, pas seulement un choix
+    interne. ./src/graphql/hooks.sdd et ./src/graphql/registry.sdd continuent de documenter l'état
+    actuel du code (fail-open compris) sans être poussées vers `[x]` tant que ce chantier n'est pas
+    rouvert. Le chantier prioritaire de cette version mineure est le durcissement de la surface
+    REST (./src/rest/core.sdd, ./src/rbac.sdd, ./src/query.sdd, ./src/rest/mod.sdd), indépendant de
+    ce pont.
   Porter un code d'erreur unique `MRD-<DOMAINE>-NNN` sur toute erreur interne de la crate.
   Exiger la relation une-spec-par-fichier et la bijectivité décrite dans
     `.specdd/bootstrap.project.md` : chaque fichier de `src/` possède sa spec adjacente du même

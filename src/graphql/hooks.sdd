@@ -1,6 +1,11 @@
 Spec: hooks — @MiryadHooks : garde d'accès Seaography branchée sur @PolicyRegistry
 
 Purpose:
+  Statut au 2026-09-27 (exception `Must` de /miryad-core.sdd) : le pont GraphQL reste un prototype
+    sans consommateur en production ; le fix `[!]` #19 (/src/resource.sdd) est différé, cette spec
+    documente l'état actuel du code (fail-open compris) sans être poussée vers `[x]` dans cette
+    version mineure. Le chantier prioritaire est REST (/src/rest/core.sdd, /src/rbac.sdd,
+    /src/query.sdd, /src/rest/mod.sdd).
   Monte la garde d'accès GraphQL de la crate : @MiryadHooks implémente
     @seaography::@LifecycleHooksInterface et relit, à chaque appel de hook synchrone, la politique
     consignée par @PolicyRegistry sous l'identifiant d'entité que @seaography passe à ses hooks,

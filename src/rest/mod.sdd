@@ -127,9 +127,12 @@ Must:
     n'appelle ni @rbac, ni @query, ni @users, ni @MiryadResource::before_create ; c'est cette
     indivisibilité de la délégation qui fait que REST et MCP lisent une entité à l'identique.
   Rendre @list_handler `200` avec @Json<@PagedResult<@E::Model>> (les cinq clés wire de
-    ../query.sdd), @get_handler/@create_handler/@update_handler `200` avec @Json<@E::Model>, et
-    @delete_handler `204` @StatusCode::NO_CONTENT sans corps en @Ok, le discard du @Ok(()) de
-    @rest::core::delete étant le seul traitement de sortie de ce handler.
+    ../query.sdd), @get_handler/@update_handler `200` avec @Json<@E::Model>, @create_handler `201`
+    @StatusCode::CREATED avec @Json<@E::Model> (arbitré par Sébastien le 2026-09-27 — l'API est
+    instable avant `1.0`, c'est le moment de corriger ce statut ; ./core.rs ne change pas, il
+    retourne déjà l'objet créé, seul ./mod.rs enveloppe la réponse), et @delete_handler `204`
+    @StatusCode::NO_CONTENT sans corps en @Ok, le discard du @Ok(()) de @rest::core::delete étant
+    le seul traitement de sortie de ce handler.
   Propager toute @Err de ./core.rs vers la réponse par `?` sans la retransformer : la variante
     @error::RestError reçue est rendue telle que par son @IntoResponse (propriété de
     ./error.rs) — ./mod.rs ne construit, ne nome et n'écrit aucun code `MRD-REST-*` en
@@ -148,6 +151,15 @@ Must:
     bien `GET/POST /api/v1/{resource}` et `GET/PUT/DELETE /api/v1/{resource}/{id}` avec « RBAC
     et pagination automatiques » — comprendre « via ./core.rs », la doc ne doit promettre une
     page sans pagination ni un accès anonyme.
+  Refuser au montage, par @panic, deux déclarations invalides détectables sans requête (arbitré
+    par Sébastien le 2026-09-27, même mécanisme que la collision de @resource_name — `Handles`) :
+    une entité dont @AccessPolicy::OwnerOnly (lecture ou écriture) est déclarée avec
+    @MiryadResource::owner_column à `None` (incohérence documentée par ../resource.sdd, défendue
+    en aval par @rbac::can_create — ../rbac.sdd) ; une entité dont @MiryadResource::filter_column
+    est déclarée sur une colonne non textuelle (../rest/core.sdd réserve `filter` aux colonnes
+    texte). Les deux vérifications s'exécutent avant tout montage de route, dans
+    @rest::resource_router lui-même — une entité mal déclarée ne monte jamais, elle ne répond
+    jamais `403`/`500` à la première requête.
 
 Must not:
   Composer lui-même @admin::users_router, @me::me_router, @tokens::tokens_router ou les
@@ -242,8 +254,7 @@ Accepts:
 Returns:
   Sur la route collection — `200` avec @Json<@PagedResult<@E::Model>> en @Ok de
     @rest::core::list (clés `items`, `page`, `per_page`, `total_items`, `total_pages`) ;
-    `200` avec @Json<@E::Model> du créé pour `POST` (statut `200`, jamais `201` — arbitrage
-    ouvert en `Tasks`)
+    `201` avec @Json<@E::Model> du créé pour `POST` (arbitré 2026-09-27, `Must`)
   Sur la route item — `200` @Json<@E::Model> pour @get/@update ; `204` @NO_CONTENT corps vide
     pour @delete
   Sur @Router — un @Router<@S> sans état, @fallback ni @layer ; chemins inconnus → `404` du
@@ -283,6 +294,11 @@ Handles:
     jamais à la requête ; verbes disjoints d'un hôte (ex. @patch maison sur le chemin de la
     collection) se fusionnent dans le @MethodRouter sans conflit, les routes du moteur
     restant intactes
+  Déclaration invalide détectée au montage (arbitré 2026-09-27) : @AccessPolicy::OwnerOnly sans
+    @MiryadResource::owner_column, ou @MiryadResource::filter_column sur une colonne non textuelle
+    → @rest::resource_router @panic avant de construire le moindre chemin, message explicite
+    citant l'entité et la règle violée — jamais un `403`/`500` à la première requête sur une
+    entité mal déclarée
   Authentification + requête invalide : l'ordre des extracteurs (gauche à droite) fait qu'une
     requête sans credentials valides répond `401` même avec corps JSON invalide ou query
     mal typée — le `401` précède tout `400`/`422` possible
@@ -331,7 +347,10 @@ Tasks:
     doctest échoue à la compilation → test réussit) ; « Surface disponible sans aucune
     feature » → test ordinaire `rest_surface_available_without_default_features`, prouvé par
     le run `--no-default-features` de la batterie de /tooling.sdd, précédent de
-    ../resource.sdd.
+    ../resource.sdd ; « Entité `OwnerOnly` sans colonne propriétaire panique au montage » →
+    `owner_only_without_column_panics_at_mount` ; « Entité à colonne de filtre non textuelle
+    panique au montage » → `filter_column_on_non_text_column_panics_at_mount` (arbitrage
+    2026-09-27, dix-neuf `Scenario` désormais).
   [ ] Cartographier sans les dupliquer les seize tests inline existants — ils sont la preuve
     vivante que ./mod.rs délègue fidèlement : `create_ignores_client_supplied_owner`,
     `list_filters_by_owner_for_non_admin_but_not_for_admin`, `list_pagination_returns_requested_page`,
@@ -349,9 +368,10 @@ Tasks:
     delete) tandis que la surface réellement montée répond aussi `400` (rejets @Query/@Path/@Json),
     `401` (@AuthError), `415` (@Content-Type) et `500` (`MRD-REST-003`) ; `list` n'y déclare que
     `200` alors que le test inline `list_ingredients_forbidden_without_group_membership` prouve
-    le `403` ; `POST` répond `200` (jamais `201 Created`) et le fragment l'écrit `200` « Créé ».
-    Complète-t-on @openapi::resource_openapi (spec de ./openapi.rs une fois écrite), assume-t-on
-    un document volontairement minimal, et le `200` de création devient-il contrat explicite ?
+    le `403`. Tranché en partie le 2026-09-27 : `POST` répond désormais `201 Created` (`Must`), le
+    fragment OpenAPI est à mettre à jour en conséquence — ./openapi.sdd (à produire) en héritera.
+    Reste ouvert : complète-t-on @openapi::resource_openapi avec tous les statuts réels (`400`,
+    `401`, `415`, `500`, `403` sur `list`), ou assume-t-on un document volontairement minimal ?
   [?] Le statut `422` est commun au @JsonDataError d'@axum (corps texte) et au
     @RestError::@Application du @HookError (corps JSON `{code, message}`) : un client ne
     distingue les deux que par le corps. Arbitre-t-on une distinction de statut, un format de
@@ -371,14 +391,17 @@ Tasks:
 
 Done when:
   Chaque `Scenario` de la présente spec dispose d'au moins un test nommé distinct vérifiant son
-    `Then` (17 tests — dont un doctest `compile_fail`), les seize tests inline existants restent
+    `Then` (19 tests — dont un doctest `compile_fail`), les seize tests inline existants restent
     verts et cartographiés sans duplication de contrat, et la batterie de /tooling.sdd passe
     verte sur toutes les combinaisons de features avec `-- -D warnings`.
   ../resource.sdd continue de reconnaître ses deux scenarios de hook couverts par les tests
     inline d'./mod.rs, et la présente spec n'en redécrive pas le contenu.
-  Les lignes `[?]` ci-dessus ont reçu une décision de Sébastien reflétée dans la spec, et la
-    spec est relue et approuvée par lui — aucune tolérance (@deny_unknown_fields, `200` en
-    création, silence des traces, écart OpenAPI) ne reste un comportement accidentel tacite.
+  Le statut de création (`200` → `201`) et le montage refusé des déclarations invalides
+    (`OwnerOnly` sans colonne, `filter_column` non textuelle) sont arbitrés par Sébastien le
+    2026-09-27 et reflétés dans la spec. Restent ouvertes et à soumettre à lui : complétude du
+    document OpenAPI au-delà de `201`, distinction du `422` partagé, silence des traces,
+    tolérance `@deny_unknown_fields` — aucune ne reste un comportement accidentel tacite pour
+    autant, chacune documentée en `Tasks`.
 
 Scenario: La route collection expose GET et POST
   Given une app construite en mergeant @rest::resource_router de l'entité `recipe` des tests
@@ -387,7 +410,8 @@ Scenario: La route collection expose GET et POST
   Then la réponse est `200` avec un corps @PagedResult aux cinq clés wire, @items vide sur base
     vierge (`[]`)
   When un `POST /api/v1/recipes` authentifié avec un corps du @Model valide est envoyé
-  Then la réponse est `200` avec le @Model créé, et le `GET` suivant le contient
+  Then la réponse est `201` avec le @Model créé (arbitré 2026-09-27), et le `GET` suivant le
+    contient
 
 Scenario: Verbe hors liste répond 405 avec Allow
   Given le même app
@@ -491,6 +515,20 @@ Scenario: Le routeur hôte qui ajoute un verbe complémentaire coexiste avec les
   Then le handler hôte répond, @list_handler n'est pas concerné
   And un `GET /api/v1/recipes` continue d'être servi par @list_handler — la fusion n'a rien
     écrasé
+
+Scenario: Entité `OwnerOnly` sans colonne propriétaire panique au montage
+  Given une entité de test déclarant @AccessPolicy::OwnerOnly en écriture et
+    @MiryadResource::owner_column à `None`
+  When @rest::resource_router::<@CetteEntité, @MiryadAuthState>() est appelé
+  Then l'appel @panic avant de construire un chemin quelconque, message citant l'entité et la
+    règle violée (arbitré 2026-09-27) — aucune requête ne peut jamais atteindre cette entité mal
+    déclarée
+
+Scenario: Entité à colonne de filtre non textuelle panique au montage
+  Given une entité de test déclarant @MiryadResource::filter_column sur une colonne @i32
+  When @rest::resource_router::<@CetteEntité, @MiryadAuthState>() est appelé
+  Then l'appel @panic avant de construire un chemin quelconque — `filter` reste réservé aux
+    colonnes texte (arbitré 2026-09-27, contrat partagé avec ../rest/core.sdd)
 
 Scenario: Deux routers en chevauchement sur un même verbe paniquent au montage, pas à la requête
   Given un routeur hôte qui enregistre lui-même `GET /api/v1/recipes` vers son handler

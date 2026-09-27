@@ -1,6 +1,9 @@
 Spec: registry — @PolicyRegistry : politique @MiryadResource par entité pour le pont Seaography
 
 Purpose:
+  Statut au 2026-09-27 (exception `Must` de /miryad-core.sdd) : le pont GraphQL reste un prototype
+    sans consommateur en production ; le fix `[!]` #19 (./resource.sdd) est différé, cette spec
+    documente l'état actuel du code sans être poussée vers `[x]` dans cette version mineure.
   Accumulateur côté GraphQL du pont entre Seaography à l'exécution et @MiryadResource à la
     compilation : @PolicyRegistry consigne par entité montée ce qu'un hook synchrone doit lire
     pour décider — politique de lecture et d'écriture, nom brut de @owner_column et hook de

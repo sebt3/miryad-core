@@ -7,12 +7,16 @@ Purpose:
     REQUIS, Sébastien 2026-09-27, cf. `Tasks` : claim OIDC standard, garanti unique par le
     fournisseur contrairement à @email, qu'une app consommatrice utilise pour dériver un
     identifiant de ressource stable) et @PrincipalSource (deux variantes, session et
-    token API), derives @Debug et @Clone uniquement. Le fichier ne contient que ces deux types :
+    token API), derive @Clone et `impl` manuel de @Debug (rédigé sur @id_token, arbitré 2026-09-27)
+    uniquement. Le fichier ne contient que ces deux types :
     aucun constructeur, aucune validation, aucune conversion, aucun effet de bord, aucune logique
     d'extraction — celle-ci vit dans ./dual.rs (@impl @FromRequestParts). Le type efface
     volontairement rôles et groupes : @crate::rbac et @graphql::load_principal les relisent en
     base. Aucun `#[cfg(feature = ...)]` : le fichier compile sur chaque combinaison de la batterie
     de /tooling.sdd. Aucun code `MRD-*` n'y est produit.
+  @Debug manuel rédigeant @id_token (arbitré par Sébastien le 2026-09-27, `Tasks`) : cohérent avec
+    la rédaction de `client_secret` sur @OidcConfig (./config.sdd) — un `{:?}` accidentel sur le
+    principal entier (log, trace, panic message) ne doit jamais reproduire le JWT de session brut.
 
 Owns:
   ./principal.rs
@@ -44,12 +48,22 @@ Must:
     appelant ; les lectures utilisées en production sont @subject (clé d'identité,
     @resolve_user et self-service de /src/rest/tokens.rs), @email via @as_deref,
     @preferred_username (identifiant nommé stable pour les apps consommatrices), et @source par
-    appariement de variante.
+    appariement de variante. @subject est un type passoire, documenté comme tel (arbitré
+    2026-09-27, `Tasks`) : chaîne vide, casse, espaces ou unicité ne sont contrôlés nulle part
+    dans ce fichier ni chez ses deux producteurs (cookie chiffré déchiffré par ./cookie.rs, ligne
+    posée par @issue_token dans ./token.rs) — ces deux producteurs sont la seule frontière de
+    confiance, et la documentation de @MiryadResource::before_create doit le rappeler aux apps
+    consommatrices qui reçoivent ce champ sans garantie de forme.
   Tenir les deux sources d'authentification avec des charges utiles exactes figées :
     @PrincipalSource::Session porte @id_token (un @String : l'@id_token OIDC brut stocké dans le
     cookie de session, motif `header.payload.signature`), @PrincipalSource::ApiToken porte
     @token_id (un @i32 — type de la clé primaire de @miryad_api_tokens dans ./token.rs) ; tout
-    élargissement de @token_id romprait l'égalité de type avec @Model::id en amont.
+    élargissement de @token_id romprait l'égalité de type avec @Model::id en amont. Ni l'un ni
+    l'autre n'est lu par un consommateur interne de la crate à ce jour — les deux champs sont
+    portés pour les apps consommatrices, dont les propres implémentations de
+    @MiryadResource::before_create peuvent en avoir l'usage (audit par `token_id`, claims
+    supplémentaires tirés d'`id_token`) ; confirmé comme contrat voulu, pas une accumulation à
+    purger (arbitré 2026-09-27, `Tasks`).
   Effacer volontairement rôles et groupes : aucun champ booléen admin, aucun @HashSet de groupes,
     aucun identifiant @users::user::Model dans @AuthPrincipal ; l'appartenance est relue en base par
     @crate::rbac et snapshotée par requête par @graphql::load_principal.
@@ -62,10 +76,16 @@ Must:
     l'extracteur de ./dual.rs (qui délègue à @validate_token pour la branche token) ; aucune
     variante, aucun champ, aucun constructeur spécifique d'une surface n'existe — la seule
     divergence visible entre appelants est la valeur de @source.
-  Maintenir @Clone profond et @Debug dérivé comme seules capacités externes du type : @Clone
-    réalloue les champs @String (aucune mutualisation @Rc/@Arc dans la structure), @Debug liste les
-    noms de champs (@subject, @email, @preferred_username, @source) et de variantes (`Session`,
-    `ApiToken`) avec leurs charges utiles verbatim.
+  Maintenir @Clone profond comme seule capacité externe automatique du type : @Clone réalloue les
+    champs @String (aucune mutualisation @Rc/@Arc dans la structure). @Debug est désormais un
+    `impl` manuel, pas un dérivé (arbitré 2026-09-27, `Purpose`, `Tasks`) : il liste les noms de
+    champs (@subject, @email, @preferred_username, @source) et de variantes (`Session`, `ApiToken`)
+    comme le dérivé l'aurait fait, avec toutes les charges utiles verbatim SAUF @id_token de la
+    variante @PrincipalSource::Session, rendu littéralement `"[REDACTED]"` — @token_id de la
+    variante @PrincipalSource::ApiToken n'est pas un secret et reste verbatim.
+  Documenter @PrincipalSource et ses deux variantes au `///` (arbitré 2026-09-27, `Tasks`) : purge
+    immédiate de la dette `missing_docs` sur ce petit fichier plutôt qu'une purge différée au
+    calendrier module par module de /tooling.sdd.
 
 Must not:
   Porter un champ d'appartenance (@is_admin, @groups, identifiant utilisateur) : la fraîcheur de
@@ -112,8 +132,9 @@ Returns:
   Aucune valeur produite : le fichier ne définit aucun comportement ; la lecture se fait champ à
     champ (@subject, @email, @preferred_username, @source) et l'appariement sur @source lie soit
     @id_token (@String) soit @token_id (@i32).
-  @Debug dérivé : représentation textuelle nommant champs et variante avec les charges utiles
-    verbatim, seule sortie formatée disponible sur le type.
+  @Debug (manuel depuis le 2026-09-27) : représentation textuelle nommant champs et variante,
+    charges utiles verbatim sauf @id_token rendu `"[REDACTED]"` — seule sortie formatée disponible
+    sur le type.
 
 Raises:
   Aucun chemin d'erreur, aucun code `MRD-*` : le type ne peut pas échouer à se construire faute de
@@ -131,7 +152,8 @@ Handles:
   @subject libre : valeur choisie par l'app à l'émission (@issue_token accepte n'importe quelle
     chaîne, comptes de service type `system:kuberest` dans /src/users/service_account.rs), jamais
     normalisée.
-  Formats d'introspection : @Debug des deux types, @Clone pour dupliquer un principal.
+  Formats d'introspection : @Debug (manuel, rédige @id_token) des deux types, @Clone pour
+    dupliquer un principal.
 
 Example:
   forme session : @subject `alice`, @email @Some de `alice@example.org`, @preferred_username @Some de `alice`, @PrincipalSource::Session avec @id_token égal au contenu brut du cookie
@@ -147,39 +169,40 @@ Tasks:
     ne le garantit pas (peut varier, peut être absent). Convertir chaque Scenario existant qui
     construit un @AuthPrincipal par littéral pour inclure ce champ ; ajouter les Scenario
     manquants (@preferred_username absent, @as_deref si consommé de la même façon que @email).
-  [?] @email vaut @None codé en dur sur le chemin token (@validate_token — @miryad_api_tokens n'a
-    pas de colonne email) et @Some seulement si le claim email de l'@id_token existait au login ;
-    @resolve_user le reçoit verbatim au get-or-create de l'utilisateur, sans validation de format
-    ni normalisation. Ce trou est-il le contrat assumé (email métadonnée de la ligne @users, pas
-    une credential) ou un durcissement à trancher avant que @MiryadResource::before_create
-    n'expose le type aux apps consommatrices ?
-  [?] @subject n'est pas non plus validé : chaîne vide, casse, espaces, unicité non contrôlée — la
-    seule frontière de confiance est le producteur (cookie chiffré, ligne en base posée par
-    @issue_token). Faut-il inscrire « producteurs de confiance, type passoire » comme contrat
-    explicite — notamment dans la documentation de @MiryadResource::before_create, où l'app
-    consommatrice reçoit ce @subject sans garantie — ou refuser le @subject vide ?
-  [?] @id_token et @token_id ne sont lus par aucun consommateur de production de la crate à ce
-    jour (affirmés seulement dans des @matches! de tests). Sont-ils portés pour documenter
-    @MiryadResource::before_create des apps consommatrices, ou une accumulation que l'extracteur
-    pourrait abandonner ?
-  [?] @Debug dérivé rend @id_token verbatim : tout @tracing ou log sur le @principal entier
-    fuiterait le JWT de session brut. Aucune trace ne formate aujourd'hui le principal entier
-    (`subject = %...` seulement, dans ./mod.rs et ./middleware.rs). Surface assumée ou @Debug
-    custom masquant @id_token ?
-  [?] @PrincipalSource et ses deux variantes avec payload n'ont aucun commentaire de documentation
-    — avertissement `missing_docs` compté dans la dette 136 de /tooling.sdd. Purge immédiate sur
-    ce petit fichier ou purge programmée module par module ?
-  [ ] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé (sept
+  [x] @email @None codé en dur sur le chemin token : confirmé comme contrat assumé (2026-09-27) —
+    email est une métadonnée de la ligne @users, pas une credential ; un token n'en a jamais connu
+    (non demandé, non stocké à l'émission, cf. ./token.sdd). Aucun durcissement à faire avant
+    d'exposer le type à @MiryadResource::before_create.
+  [x] @subject non validé : confirmé comme « producteurs de confiance, type passoire » (2026-09-27)
+    — pas de refus du `subject` vide ici, les deux producteurs (cookie chiffré, ligne posée par
+    @issue_token) sont déjà la frontière de confiance. Documentation à porter dans ce fichier
+    (`Must`, fait) et à rappeler dans la doc de @MiryadResource::before_create côté /src/resource.sdd
+    quand ce fichier sera retouché.
+  [x] @id_token et @token_id jamais lus en interne : confirmé comme contrat voulu (2026-09-27,
+    `Must`) — portés pour l'usage des apps consommatrices dans leurs propres implémentations de
+    @MiryadResource::before_create, pas une accumulation à purger.
+  [ ] @Debug manuel rédigeant @id_token (arbitré 2026-09-27, `Purpose`, `Must`, `Returns`,
+    `Handles`) : remplacer le `#[derive(Debug)]` par un `impl` manuel — même sortie que le dérivé
+    pour tous les champs sauf @id_token de la variante @PrincipalSource::Session, rendu
+    `"[REDACTED]"`. @token_id reste verbatim (pas un secret).
+  [ ] Documenter @PrincipalSource et ses deux variantes au `///` (arbitré 2026-09-27, `Must`) :
+    purge immédiate de la dette `missing_docs` sur ce fichier — ne pas attendre le calendrier de
+    purge module par module de /tooling.sdd, le fichier est petit et déjà touché par les autres
+    tâches de ce batch.
+  [ ] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé (neuf
     minimum, le fichier compte zéro test inline aujourd'hui) dans le `#[cfg(test)] mod tests` de
     ./principal.rs : tests synchrones, sans @tokio ni base @sea_orm. Le contrat ne déborde pas du
     fichier, aucune crate d'intégration séparée n'est requise.
 
 Done when:
-  Les huit `Scenario` ont chacun au moins un test distinct et vert dans le `mod tests` de
-    ./principal.rs (huit minimum contre zéro aujourd'hui), et le fichier ne contient toujours
-    aucune @use, aucun `#[cfg(feature = ...)]`, aucun @tracing, aucun code `MRD-*`.
-  Les cinq lignes `[?]` de `Tasks` sont arbitrées par Sébastien et leurs suites reflétées dans le
-    contrat ou le code.
+  Les neuf `Scenario` (huit originaux, un nouveau sur la rédaction `Debug`) ont chacun au moins un
+    test distinct et vert dans le `mod tests` de ./principal.rs (neuf minimum contre zéro
+    aujourd'hui), et le fichier ne contient toujours aucune @use, aucun `#[cfg(feature = ...)]`,
+    aucun @tracing, aucun code `MRD-*`.
+  Les cinq lignes `[?]` de `Tasks` sont toutes arbitrées par Sébastien le 2026-09-27 : une change
+    le code (`Debug` manuel), une est une tâche de documentation pure (`missing_docs`), les trois
+    autres confirment le contrat actuel par de la documentation supplémentaire sans changer le
+    comportement.
   La batterie de /tooling.sdd passe verte sur chaque combinaison de features, le fichier étant non
     gaté — le contrat est exercé sur `--no-default-features` comme sur `--all-features`.
 
@@ -221,15 +244,19 @@ Scenario: @Clone : copie profonde aux champs indépendants
   But après mutation, @subject et @id_token de l'original sont inchangés — @Clone réalloue les
     @String, aucune mutualisation implicite
 
-Scenario: @Debug : identité, source et charge utile verbatim
+Scenario: @Debug : identité et source verbatim, token_id verbatim
   Given un @AuthPrincipal @subject `svc`, @email @None, @preferred_username @None,
     @PrincipalSource::ApiToken @token_id `42`
-    et un second principal @PrincipalSource::Session @id_token `jwt-brut`
-  When le test formate les deux principaux via leur derive @Debug
-  Then le premier contient `AuthPrincipal`, `svc`, `ApiToken`, `42`, et le nom du champ
-    `preferred_username`
-  And le second contient `Session` et la charge utile `jwt-brut` telle quelle
-  But l'exposition du JWT de session dans une valeur formatée est la surface arbitrée en `Tasks` `[?]`
+  When le test formate ce principal via l'`impl` manuel de @Debug
+  Then la sortie contient `AuthPrincipal`, `svc`, `ApiToken`, `42`, et le nom du champ
+    `preferred_username` — @token_id n'est pas un secret, verbatim (arbitré 2026-09-27)
+
+Scenario: @Debug rédige id_token sur la variante Session
+  Given un second principal @PrincipalSource::Session @id_token `jwt-brut`
+  When il est formaté via l'`impl` manuel de @Debug
+  Then la sortie contient `Session` mais jamais la sous-chaîne `jwt-brut`
+  And elle contient à la place le littéral `"[REDACTED]"` à l'emplacement d'@id_token (arbitré
+    2026-09-27 — cohérent avec la rédaction de `client_secret` sur @OidcConfig, ./config.sdd)
 
 Scenario: @as_deref sur @email et @preferred_username : la forme de lecture des surfaces
   Given deux principaux session, @email @Some de `a@b` et @preferred_username @Some de `alice`

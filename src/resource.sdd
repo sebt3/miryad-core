@@ -108,6 +108,17 @@ Must:
     aucune implémentation de @std::fmt::Display ni de @std::error::Error nulle part dans la crate
     (vérifié dans toutes les sources de `src/`) ; les surfaces lisent les champs @code et @message
     en direct, aucune ne manipule @HookError comme une erreur std.
+  Documenter @AccessPolicy::OwnerOnly sans @MiryadResource::owner_column comme une déclaration
+    invalide, jamais un choix runtime à arbitrer par requête (arbitré par Sébastien le
+    2026-09-27) : ./rest/mod.sdd refuse de monter le routeur d'une telle entité (panic au montage,
+    même mécanisme que la collision de @resource_name) et @rbac::can_create refuse par cohérence
+    défensive avec @rbac::can_read/@rbac::can_write (./rbac.sdd) — ce fichier continue de ne rien
+    vérifier lui-même à la compilation, seul le comportement documenté du reste de la crate change.
+  Documenter @MiryadResource::filter_column comme un filtre consommé par REST et MCP seulement
+    (arbitré par Sébastien le 2026-09-27) : GraphQL ne le lit jamais (./graphql/hooks.rs ne
+    construit que la clause propriétaire, le filtrage y passe par les inputs natifs @seaography) —
+    la doc du trait ne promet plus « REST/GraphQL/MCP » pour cette méthode tant que le pont
+    GraphQL n'y est pas raccordé (cf. exception `Must` de /miryad-core.sdd).
 
 Must not:
   Évaluer, décider ou exécuter une autorisation ici : l'évaluation par enregistrement
@@ -223,7 +234,10 @@ Handles:
     hooks suivent le même patron indépendamment l'un de l'autre : une entité peut surdéclarer
     @before_create seul, @before_update seul, les deux, ou aucun.
   Incohérence déclarative `OwnerOnly` sans @owner_column : compilable, sans enforcement de ce
-    fichier ; le fail-closed effectif est un choix aval documenté dans @rbac (voir `Tasks`).
+    fichier — arbitré le 2026-09-27 (Sébastien) comme une déclaration invalide, refusée au montage
+    du routeur REST (panic, ./rest/mod.sdd) plutôt que tolérée comme un cas runtime ;
+    @rbac::can_create refuse aussi par cohérence défensive (./rbac.sdd). Ce fichier ne vérifie
+    toujours rien lui-même — l'invalidité se prouve en aval.
   Surface GraphQL sur une entité dont @before_update ou @before_delete est surdéclaré : la mutation
     Seaography s'exécute sans jamais appeler le hook — une mise à jour ou suppression qu'un hook REST
     aurait rejetée réussit silencieusement côté GraphQL. Comportement assumé (`Purpose`), pas un bug
@@ -278,11 +292,6 @@ Tasks:
     existants `before_create_hook_mutation_is_applied_at_insert` et
     `before_create_hook_error_blocks_insert_without_mrd_code` de ./rest/mod.rs — le contrat déborde
     du fichier, c'est là que ces tests vivent (surface déléguée, non owned ici).
-  [?] ./resource.rs présente l'incohérence @OwnerOnly sans @owner_column comme un « comportement
-    non défini … vérifié par test, pas par le compilateur à ce stade » ; or ./rbac.rs a choisi un
-    fail-closed écrit (@rbac::evaluate et @rbac::list_access refusent) et ./graphql/hooks.rs bloque
-    la création avec un motif `MRD-GQL-001`. Le commentaire reste-t-il en l'état, ou documente-t-on
-    le fail-closed dans le contrat de la méthode ?
   [!] #19 La doc de @MiryadResource::resource_name affirme que le nom fait « le type GraphQL ». Vérifié
     dans la source `seaography-2.0.0-rc.9` (@EntityObjectBuilder::type_name) : le nom d'objet
     GraphQL et l'identifiant passé aux hooks viennent du nom de table SQL en CamelCase, jamais de
@@ -291,16 +300,11 @@ Tasks:
     aucune politique ne correspond — fail-open. Si le template n'aligne pas tables et noms déclarés
     (cas testé dans ./ir.rs : table `tags` pour le nom `recipe-tags`), les politiques déclarées ne
     s'appliquent pas sur cette surface. Tranché par Sébastien : c'est un BUG, pas un contrat de
-    nommage — traité par le flux de correction de /.specdd/bootstrap.project.md sur une branche
-    `fix/graphql-policy-key-mismatch`, instruit par les specs ./graphql/hooks.sdd et
-    ./graphql/registry.sdd dès leur production (wave graphql) ; fail-closed attendu au lieu du
-    @GuardAction::Allow sur clé inconnue.
-  [?] La doc de @MiryadResource::filter_column annonce une filtration « REST/GraphQL/MCP » par
-    `?filter=valeur` en égalité exacte. Vérifié : REST l'applique (condition d'égalité dans
-    @rest::core::list) et MCP la réutilise (délégation à @rest::core::list) ; GraphQL ne consomme
-    jamais cette colonne (./graphql/hooks.rs ne construit que la condition propriétaire, le
-    filtrage y passe par les inputs natifs @seaography sur toutes les colonnes). La promesse de la
-    méthode est-elle maintenue telle quelle ou corrigée côté doc (GraphQL sur-promis) ?
+    nommage. Statut au 2026-09-27 : le pont GraphQL n'a aucun consommateur en production et reste
+    prototype (exception `Must` de /miryad-core.sdd) ; le fix (`fix/graphql-policy-key-mismatch`)
+    est différé — ni le choix de clé de ./graphql/registry.sdd, ni le fail-closed de
+    ./graphql/hooks.sdd ne sont arbitrés dans cette version mineure. Le fail-open actuel reste
+    documenté tel quel dans ces deux fichiers, qui ne passent pas en `[x]`.
   [?] @MiryadResource::label_column promet que « le générateur retombe sur la clé primaire » quand
     la valeur est `None`. Le générateur TypeScript vit dans le template `miryad` (hors dépôt) :
     rien dans ce dépôt ne vérifie ce fallback. Garde-t-on la promesse comme contrat de la méthode
@@ -316,8 +320,12 @@ Done when:
   Les tests passent sur chaque combinaison de la matrice de /tooling.sdd, y compris
     `--no-default-features` pour la preuve de non-gating et `--features graphql` pour le seuil
     GraphQL (scenario d'absence des deux nouveaux hooks compris).
-  Les quatre lignes `[?]` originales ci-dessus ont été arbitrées par Sébastien et la spec relue par
-    lui, sans assertion déléguée ni comportement accidentel devenu contrat silencieux.
+  Trois des quatre lignes `[?]`/`[!]` originales ont été arbitrées par Sébastien le 2026-09-27
+    (incohérence `OwnerOnly` sans colonne → montage REST refusé, `Must`/`Handles` ; sur-promesse de
+    @filter_column → doc corrigée REST/MCP, `Must` ; bug `[!]` #19 → différé, pont GraphQL prototype
+    sans consommateur, exception `Must` de /miryad-core.sdd). Reste ouverte : la promesse de
+    fallback de @MiryadResource::label_column sur la clé primaire, invérifiable dans ce dépôt
+    (générateur hors dépôt).
   L'amendement @before_update/@before_delete est cohérent avec son miroir dans /src/rest/core.sdd
     (position d'appel dans @rest::core::update/@rest::core::delete) — les deux specs sont relues et
     approuvées ensemble, pas l'une sans l'autre.
@@ -387,8 +395,10 @@ Scenario: incohérence @OwnerOnly sans colonne propriétaire acceptée à la com
   When cette implémentation compile et que le contrat est relu
   Then la compilation réussit — aucune contrainte entre politique et colonne n'est appliquée par le
     compilateur dans ce fichier
-  And les valeurs relues sont exactement celles déclarées ; le refus effectif en aval est un choix
-    de @rbac, documenté par la ligne `[?]` de `Tasks` associée
+  And les valeurs relues sont exactement celles déclarées ; le refus effectif en aval est
+    désormais un montage refusé côté REST (panic, ./rest/mod.sdd) et un `false` défensif de
+    @rbac::can_create (./rbac.sdd), arbitré par Sébastien le 2026-09-27 — ce fichier reste un
+    contrat de compilation, pas d'exécution
 
 Scenario: @filter_column par défaut sans surdéclaration
   Given l'entité `recipe` de ../tests/resource.rs, qui ne surdéclare pas @MiryadResource::filter_column
@@ -453,7 +463,8 @@ Scenario: métadonnées identiques au seuil GraphQL
     @MiryadResource::read_policy et @MiryadResource::write_policy, et son champ owner_column est la
     chaîne exacte `owner_id` — même déclaration lue à l'identique, sans retraduction de politique
   But l'alignement entre la clé @MiryadResource::resource_name et l'identifiant que @seaography
-    passe réellement à ses hooks n'est pas prouvé ici : question ouverte dans `Tasks`
+    passe réellement à ses hooks n'est pas prouvé ici : bug connu `[!]` #19, différé tant que le
+    pont GraphQL reste un prototype sans consommateur (exception `Must` de /miryad-core.sdd)
 
 Scenario: position du hook dans la création
   Given une entité avec override de @MiryadResource::before_create montée sur la surface REST, et

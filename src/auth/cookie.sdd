@@ -27,8 +27,9 @@ References:
     unique par le fournisseur, qu'une app consommatrice dérive en identifiant de ressource stable) ;
     vérifie signature et nonce de
     l’@id_token en amont (@OidcClientTrait::exchange_code, `MRD-AUTH-011`) ; ne pose pas de défi
-    PKCE — @extract_exp_claim imite sa technique de découpage JWT (@extract_groups_claim) mais sans
-    parse JSON complet (asymétrie, `Tasks` `[?]`)
+    PKCE — @extract_exp_claim partage désormais la même technique que @extract_groups_claim (décodage
+    base64 puis @serde_json, arbitré 2026-09-27, `Must`), l’asymétrie de robustesse antérieure a
+    disparu
   ./mod.rs — seul appelant de ces trois fonctions côté flux : @handler_callback pose le cookie de session
     via @build_set_cookie, @handler_logout émet @clear_cookie ; le pending cookie
     `miryad_oidc_pending` (attributs identiques, `Max-Age=300` fixe) y est construit à la main
@@ -41,17 +42,24 @@ References:
   /docs/architecture.md — récit : payload chiffré sans séparateur `|`, pending cookie `Max-Age=300`,
     et asymétrie OpenAPI assumée (schéma `bearer_auth` seul, cookie `HttpOnly` non actionnable dans
     Swagger UI)
-  /tooling.sdd — dette imputée à ce fichier : 1 `indexing_slicing` de production dans
-    @extract_exp_claim et `missing_docs` sur les quatre items publics ; règle une-spec-par-fichier
-    (les tests inline comptent dans cette spec)
+  /tooling.sdd — dette imputée à ce fichier : `missing_docs` sur les quatre items publics ; le
+    `indexing_slicing` de @extract_exp_claim disparaît avec le passage à @serde_json (arbitré
+    2026-09-27, `Must`) ; règle une-spec-par-fichier (les tests inline comptent dans cette spec)
 
 Must:
   Contrat de pose littéral, octet pour octet, dans cet ordre : nom `miryad_session`, puis `=`, puis
-    la valeur scellée, puis `; HttpOnly`, `; SameSite=Lax`, `; Path=/`, `; Max-Age=<n>` — `HttpOnly`
-    est posé, et aucune `;` finale ne termine la chaîne
-  La table d’attributs posée est exhaustive : `Secure`, `Domain` et `Expires` ne sont jamais posés
-    (cookie hôte-only, durée portée par `Max-Age` seul) — c’est le contrat actuel, dont l’arbitrage
-    est tracé en `Tasks` `[?]`, pas une décision que ce fichier prend tout seul
+    la valeur scellée, puis `; HttpOnly`, puis `; Secure` si et seulement si demandé (nouveau
+    paramètre `secure: bool` de @build_set_cookie et @clear_cookie, arbitré par Sébastien le
+    2026-09-27 — sourcé par l'appelant depuis `MiryadAuthState::secure_cookies`, défaut `true`, cf.
+    ./state.sdd), puis `; SameSite=Strict` (changé de `Lax` à `Strict` le 2026-09-27 : rien
+    n'oblige le cookie de *session* à partager la contrainte `Lax` du cookie *pending*, qui reste
+    seul concerné par la redirection cross-site du callback OIDC — cf. `References`, ./mod.sdd),
+    puis `; Path=/`, puis `; Max-Age=<n>` — `HttpOnly` est posé, et aucune `;` finale ne termine la
+    chaîne
+  La table d’attributs posée : `Secure` conditionnel (ci-dessus), `Domain` et `Expires` ne sont
+    jamais posés (cookie hôte-only, durée portée par `Max-Age` seul — choix voulu, arbitré
+    2026-09-27, pas une omission : le multi-sous-domaines est un besoin hypothétique, pas un
+    contrat à anticiper)
   `Max-Age=<n>` avec `n` = @u64 `max_age` rendu par @u64::saturating_sub(`exp` − `now`) : `exp` = claim
     lisible de l’@id_token via @extract_exp_claim, sinon `0` (@Option::unwrap_or(`0`)) ; `now` =
     secondes @SystemTime::now/@UNIX_EPOCH, `0` si l’horloge est antérieure à l’epoch — conséquence
@@ -90,6 +98,13 @@ Must:
     @base64::prelude::BASE64_STANDARD de fin, qui lui appartiennent), comparaison de nom exacte et
     sensible à la casse contre `miryad_session`, première occurrence retenue par @Iterator::find_map,
     segments sans `=` ignorés — aucune parse par le crate @cookie, aucun percent-decode
+  Lire la claim `exp` du payload JWT déchiffré par @serde_json plutôt que par sous-chaîne (arbitré
+    2026-09-27, unifié sur la technique de ./oidc.rs::@extract_groups_claim) : décodage du segment
+    payload en @base64::engine::general_purpose::URL_SAFE_NO_PAD (inchangé), puis
+    @serde_json::from_slice vers une structure minimale portant `exp: Option<u64>`, la valeur du
+    champ prise telle quelle. Élimine du même geste la dette `indexing_slicing` de
+    production de l'ancienne implémentation par tranches — plus aucune indexation manuelle de
+    chaîne dans ce fichier.
   Compilation inconditionnelle : aucun `#[cfg(feature = ...)]` dans le fichier, @cookie (feature
     `private`), @base64, @serde et @serde_json non optionnels dans /Cargo.toml, `pub mod cookie` non
     gateé dans ./mod.rs et `pub mod auth` non gateé dans /src/lib.rs — la batterie de /tooling.sdd,
@@ -113,15 +128,18 @@ Must not:
   Vérifier la signature, le nonce, `aud` ou `iss` d’un @id_token dans @build_set_cookie ou
     @extract_session — seul `exp` est relu, pour l’horloge seulement ; @subject/@email/
     @preferred_username sont relivés sans recontrôle
-  Poser `Secure`, `Domain` ou `Expires` sur les deux chaînes `Set-Cookie` produites — la table
-    actuelle est `HttpOnly` + `SameSite=Lax` + `Path=/` + `Max-Age`, toute bascule est l’arbitrage
-    des `Tasks` `[?]`, pas une modification libre de ce fichier
+  Poser `Domain` ou `Expires` sur les deux chaînes `Set-Cookie` produites, ou poser `Secure`
+    autrement que via le paramètre `secure: bool` (arbitré 2026-09-27) — la table est `HttpOnly` +
+    `Secure` conditionnel + `SameSite=Strict` + `Path=/` + `Max-Age`, aucune autre bascule n’est une
+    modification libre de ce fichier
+  Utiliser `SameSite=Lax` sur `miryad_session` (contrat révisé le 2026-09-27) : cette valeur reste
+    celle du cookie pending `miryad_oidc_pending`, propriété de ./mod.rs, jamais de ce fichier
   Émettre la moindre trace depuis ce fichier, sous quelque niveau que ce soit
   Introduire un second chemin de lecture de `miryad_session` contournant @extract_session — la
     parité REST/GraphQL/MCP tient à l’unicité de cette fonction
-  Faire grossir la dette suivie par /tooling.sdd : les tranches de chaîne de @extract_exp_claim
-    portent déjà un `indexing_slicing` de production et les quatre items publics n’ont aucun
-    commentaire de documentation (`missing_docs`)
+  Faire grossir la dette suivie par /tooling.sdd : les quatre items publics n’ont aucun commentaire
+    de documentation (`missing_docs`) — le `indexing_slicing` de @extract_exp_claim a disparu avec
+    le passage à @serde_json (arbitré 2026-09-27)
 
 Depends on:
   @cookie `0.18` verrouillé `0.18.2` en feature `private` — @cookie::CookieJar, @cookie::PrivateJar,
@@ -147,17 +165,19 @@ Depends on:
 Exposes:
   @SESSION_COOKIE_NAME — `pub const` de type `&'static str`, valeur textuelle exacte
     `miryad_session` ; c’est le nom contractuel posé et cherché, affirmé par les tests de ./mod.rs
-  @build_set_cookie — `pub fn` @build_set_cookie(@OidcIdentity, @cookie::Key) -> @String, les deux
-    arguments empruntés : produit l’unique en-tête `Set-Cookie` de session ; infaillible, ne retourne
-    pas de @Result
+  @build_set_cookie — `pub fn` @build_set_cookie(@OidcIdentity, @cookie::Key, secure: @bool) ->
+    @String (signature changée le 2026-09-27, `Must`), les deux premiers arguments empruntés :
+    produit l’unique en-tête `Set-Cookie` de session ; infaillible, ne retourne pas de @Result
   @extract_session — `pub fn` @extract_session(@Option<@str>, @cookie::Key) ->
     @Result<@OidcIdentity, @AuthError> : unique chemin de lecture du cookie, émetteur exclusif des
-    deux erreurs documentées en `Raises`
-  @clear_cookie — `pub fn` @clear_cookie() -> @String : chaîne littérale de retrait, sans argument,
-    sans erreur possible
+    deux erreurs documentées en `Raises` ; signature inchangée — `Secure` n’affecte pas la lecture
+  @clear_cookie — `pub fn` @clear_cookie(secure: @bool) -> @String (signature changée le
+    2026-09-27, `Must`) : chaîne littérale de retrait, sans erreur possible ; `secure` doit valoir
+    la même valeur que celle utilisée à la pose, sans quoi les attributs du `Set-Cookie` de retrait
+    ne correspondent plus à ceux du cookie posé et le navigateur ne le retire pas
   Privés au fichier, documentés ici pour le contrat : @SessionPayloadRef (écriture seule, champs
     empruntés pour ne rien cloner), @SessionPayload (lecture seule, champs possédés),
-    @extract_exp_claim (lecture fragile par sous-chaîne de la claim `exp` — voir `Tasks` `[?]`)
+    @extract_exp_claim (lecture de la claim `exp` par @serde_json, arbitré 2026-09-27, `Must`)
   Surface atteignable seulement par le chemin @crate::auth::cookie : ./mod.rs ne ré-exporte à plat
     que @AuthError, @AuthUser, @OidcClient & co, jamais les items de ce fichier ; quatre items
     publics sans commentaire de doc — dette `missing_docs` portée par /tooling.sdd
@@ -165,26 +185,31 @@ Exposes:
 Accepts:
   @build_set_cookie : un @OidcIdentity emprunté — @id_token/@subject/@email/@preferred_username
     recopiés dans le JSON
-    sans trim, sans normalisation de casse — et un @cookie::Key emprunté, déjà valide (`≥ 64`
-    octets sinon @Key::from amont panique)
+    sans trim, sans normalisation de casse — un @cookie::Key emprunté, déjà valide (`≥ 64`
+    octets sinon @Key::from amont panique) — et `secure: @bool`, sourcé par l’appelant depuis
+    `MiryadAuthState::secure_cookies` (arbitré 2026-09-27, cf. ./state.sdd)
   @extract_session : le texte brut d’un en-tête `Cookie` sous @Option<@str> (les appelants
     ./middleware.rs et ./dual.rs le réduisent en @str::to_str avant d’appeler), plus le même
     @cookie::Key que la pose ; aucune structure, aucune parse du crate @cookie en entrée, aucune
     hypothèse d’encodage percent-encoding
-  @clear_cookie : rien
+  @clear_cookie : `secure: @bool`, devant valoir la même valeur qu’à la pose (arbitré 2026-09-27)
   Aucun paramètre générique, aucune feature, aucun état global ou thread-local
 
 Returns:
   @build_set_cookie : @String suivant exactement la forme
-    `miryad_session=<scellé>; HttpOnly; SameSite=Lax; Path=/; Max-Age=<n>`, où `<scellé>` est
-    l’enveloppe base64 standard `nonce|chiffré|tag` (bourrage `=` éventuel en fin de valeur) et
-    `<n>` les secondes @u64 de @u64::saturating_sub selon la règle de `Must`, sans `;` finale
+    `miryad_session=<scellé>; HttpOnly; SameSite=Strict; Path=/; Max-Age=<n>` quand `secure` est
+    `false`, ou `miryad_session=<scellé>; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=<n>`
+    quand `secure` est `true` (ordre et présence de `; Secure` arbitrés le 2026-09-27, `Must`), où
+    `<scellé>` est l’enveloppe base64 standard `nonce|chiffré|tag` (bourrage `=` éventuel en fin de
+    valeur) et `<n>` les secondes @u64 de @u64::saturating_sub selon la règle de `Must`, sans `;`
+    finale
   @extract_session @Ok : @OidcIdentity quadruplé @id_token/@subject/@email/@preferred_username à
     l’identique des valeurs
     posées
-  @clear_cookie : @String exactement `miryad_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0` —
-    valeur vide, mêmes attributs que la pose (nom, `Path=/`, hôte-only) pour que le client retire
-    bien le cookie posé
+  @clear_cookie : @String exactement `miryad_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`
+    quand `secure` est `false`, ou `miryad_session=; HttpOnly; Secure; SameSite=Strict; Path=/;
+    Max-Age=0` quand `secure` est `true` — valeur vide, mêmes attributs que la pose correspondante
+    (nom, `Path=/`, hôte-only, `Secure`) pour que le client retire bien le cookie posé
 
 Raises:
   @AuthError::NotAuthenticated (`MRD-AUTH-001`) — chemin @Option::ok_or de @extract_session
@@ -236,66 +261,81 @@ Tasks:
     @preferred_username @None sans invalidation (cf. `Must` rétro-compatibilité). Sans ce champ,
     le claim serait @Some au login puis @None à chaque requête suivante — le maillon qui fait ou
     défait la chaîne oidc → dual → @AuthPrincipal.
-  [?] Aucun des deux `Set-Cookie` produits ne porte `Secure` (cf. `Must`) : en HTTP clair le cookie,
-    pourtant chiffré, circule en texte et le navigateur l’accepte ; l’ajouter (inconditionnel, ou
-    piloté par une config/type d’hôte) casse les environnements de dev en HTTP — arbitre Sébastien :
-    on pose `Secure`, on le rend configurable, ou `HttpOnly` + `SameSite=Lax` restent le choix assumé ?
-  [?] `SameSite=Lax` (et non `Strict`) : `Strict` interdirait au moins le renvoi du pending cookie
-    sur la navigation top-level cross-site du callback de ./mod.rs ; est-ce un choix figé « Lax,
-    parce que le flux OIDC l’exige », à écrire au contrat avec sa justification, ou un défaut à
-    revisiter (par ex. `Strict` sur le seul cookie de session) ?
-  [?] `Domain` jamais posé : cookie hôte-only, non envoyé aux sous-domaines — choix voulu
-    (déploiement mono-origine) ou omission qui condamne les installations multi-sous-domaines du
-    template miryad ?
-  [?] Pose silencieuse d’un `Max-Age=0` : @build_set_cookie ne peut échouer et pose un cookie déjà
-    mort (payload exp introuvable : claim absente, JWT non compact ou bourré, ou déjà expiré), sans
-    @tracing et sans erreur remontée à @handler_callback — le client ne saura pas pourquoi il reste
-    déconnecté. Silence acceptable, ou warn @tracing sur cette branche (le mutisme du fichier
-    serait alors à ré-arbitrer) ?
-  [?] @extract_exp_claim est manuel (sous-chaîne `"exp":` : première occurrence, aucun espace après
-    les deux-points toléré, @base64::engine::general_purpose::URL_SAFE_NO_PAD strict) alors que
-    ./oidc.rs::@extract_groups_claim décode le même payload avec @serde_json — asymétrie de
-    robustesse constatée : un JWT émis avec un espace après un deux-points ou une claim imbriquée
-    homonyme équivaut ici à une session morte sans diagnostic. On unifie la technique, ou la limite
-    « JWT compacts des fournisseurs standards uniquement » est le contrat assumé ?
-  [?] Branches inatteignables et horloge non injectable : @Result::unwrap_or_default de
-    @serde_json::to_string et @Option::map_or(`""`) du @cookie::CookieJar::get post-@cookie::PrivateJar::add
-    (mortes, sources cookie/base64 vérifiées), et les deux branches d’horloge pré-epoch (pose comme
-    lecture) — rester sans test, ou exiger une injection de `now` pour les rendre atteignables ? ce
-    fichier serait alors le premier du module auth à recevoir cette injection, à décider avant
-    d’écrire les tests des Scenarios concernés
-  [ ] Convertir les 20 `Scenario` en au moins 20 tests nommés distincts, dans le `mod tests`
-    `#[cfg(test)]` inline de ./cookie.rs (le contrat ne déborde pas du fichier : @build_set_cookie,
-    @cookie::CookieJar et @base64 suffisent à construire chaque entrée, y compris la valeur pending
-    transplantée et le JSON non valide chiffré) ; les 4 tests inline actuels
+  [ ] `Secure` conditionnel (arbitré 2026-09-27) : ajouter `secure: @bool` à @build_set_cookie et
+    @clear_cookie, sourcé depuis `MiryadAuthState::secure_cookies` (champ ajouté le 2026-09-27,
+    ./state.sdd `Must` — décision finalisée), appelants à mettre à jour dans ./mod.rs. Choisi
+    plutôt qu’un `Secure` inconditionnel pour ne pas casser le dev HTTP local, et plutôt qu’un
+    silence total pour rester sûr par défaut en production.
+  [ ] `SameSite=Strict` sur `miryad_session`, `Lax` réservé au pending (arbitré 2026-09-27) : rien
+    n’oblige le cookie de session à partager la contrainte du pending, seul concerné par la
+    redirection cross-site du callback — coût accepté, un lien externe vers l’app depuis un autre
+    site n’authentifie pas la toute première requête (navigation suivante dans le site : authentifié).
+  [x] `Domain` jamais posé : confirmé comme choix voulu (host-only, déploiement mono-origine) — le
+    multi-sous-domaines est un besoin hypothétique, pas un contrat à anticiper ; aucun changement.
+  [x] Pose silencieuse d’un `Max-Age=0` sans trace : confirmé comme comportement voulu — le mutisme
+    total du fichier reste un principe architectural, une claim `exp` illisible est une anomalie
+    d’intégration IdP qui se voit à la configuration initiale, pas un cas d’usage normal ; aucun
+    changement.
+  [x] @extract_exp_claim unifié sur @serde_json (arbitré 2026-09-27, `Must`, `References`) —
+    élimine l’asymétrie de robustesse avec @extract_groups_claim et la dette `indexing_slicing` du
+    même geste.
+  [x] Branches inatteignables et horloge non injectable : confirmé comme accepté — les branches
+    sont prouvées mortes par lecture du code source amont (`cookie`/`base64`), une injection
+    d’horloge pour ce seul fichier serait une complexité architecturale sans bénéfice réel ; aucun
+    changement, restent non testées et documentées comme telles en `Handles`.
+  [ ] Convertir les 22 `Scenario` en au moins 22 tests nommés distincts (20 originaux, dont un
+    reformulé pour `secure: true`, plus les deux nés de l’arbitrage du 2026-09-27 sur `secure`),
+    dans le `mod tests` `#[cfg(test)]` inline de ./cookie.rs (le contrat ne déborde pas du fichier :
+    @build_set_cookie, @cookie::CookieJar et @base64 suffisent à construire chaque entrée, y compris
+    la valeur pending transplantée et le JSON non valide chiffré) ; les 4 tests inline actuels
     (`build_and_extract_valid_session`, `expired_session_returns_invalid`,
     `missing_cookie_returns_not_authenticated`, `clear_cookie_has_max_age_zero`) recoupent
     grossièrement 4 Scenarios mais n’affirment les attributs posés que par `contains` — resserrer
-    en assertions de chaîne complète avant comptage
+    en assertions de chaîne complète avant comptage, et les adapter à la nouvelle signature
+    (`secure: bool`) des deux fonctions
 
 Done when:
-  20 tests nommés distincts verts, un par `Scenario`, sur features par défaut comme sur
+  22 tests nommés distincts verts, un par `Scenario`, sur features par défaut comme sur
     `--no-default-features` (fichier sans gate de feature)
-  Les deux chaînes `Set-Cookie` (pose et retrait) sont affirmées chaîne entière — nom, ordre des
-    attributs, absence de `Secure`/`Domain`/`Expires`, pas de `;` finale — sans `contains` sur un
-    fragment d’attribut
+  Les quatre chaînes `Set-Cookie` (pose et retrait, `secure: true` et `secure: false`) sont
+    affirmées chaîne entière — nom, ordre des attributs, présence/absence de `Secure`, absence de
+    `Domain`/`Expires`, `SameSite=Strict`, pas de `;` finale — sans `contains` sur un fragment
+    d’attribut
   `MRD-AUTH-001` et `MRD-AUTH-002` sont distingués par appariement de variante (`matches!`), pas
     par chaîne — notamment absent contre vidé
-  Les six lignes `[?]` sont arbitrées par Sébastien et leurs décisions reflétées dans ce contrat ou
-    le code ; la dette harnais suivie par ./tooling.sdd (tranches de @extract_exp_claim,
-    `missing_docs`) n’a pas grossi
+  Les six lignes `[?]` d’origine sont toutes arbitrées par Sébastien le 2026-09-27 et reflétées dans
+    ce contrat : deux changent le comportement (`Secure` conditionnel, `SameSite=Strict`) et
+    attendent leur implémentation, une élimine une dette (`extract_exp_claim` unifié sur
+    @serde_json), trois confirment l’état actuel sans y toucher (`Domain` absent, silence sur
+    `Max-Age=0`, branches mortes non injectées) ; la dette harnais suivie par ./tooling.sdd
+    (`missing_docs`) n’a pas grossi
 
-Scenario: Pose — contrat session complet avec email et preferred_username
+Scenario: Pose — contrat session complet avec email et preferred_username, `secure: true`
   Given un @OidcIdentity dont l’@id_token est un JWT tri-segment dont la claim d’expiration vaut
     `now+3600`, @subject `user-123`, email `user-123@example.com`, @preferred_username `alice`,
     et un @cookie::Key de `64` octets
-  When @build_set_cookie est appelée
-  Then la chaîne rendue vaut `miryad_session=<scellé>; HttpOnly; SameSite=Lax; Path=/; Max-Age=<n>`
-    avec `<n>` égal à `exp − now` à la seconde près, les attributs dans cet ordre, `HttpOnly` posé
-    et `;` finale absente
-  And la chaîne ne porte ni `Secure`, ni `Domain`, ni `Expires`
+  When @build_set_cookie est appelée avec `secure: true`
+  Then la chaîne rendue vaut
+    `miryad_session=<scellé>; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=<n>` avec `<n>`
+    égal à `exp − now` à la seconde près, les attributs dans cet ordre, et `;` finale absente
+  And la chaîne ne porte ni `Domain`, ni `Expires`
   And `<scellé>` déchiffré par @cookie::PrivateJar::decrypt avec la même clé est un JSON à
     exactement quatre clés : `id_token`, `subject`, `email`, `preferred_username`
+
+Scenario: Pose — `secure: false` omet l’attribut `Secure`
+  Given le même @OidcIdentity et la même clé que le scenario précédent
+  When @build_set_cookie est appelée avec `secure: false`
+  Then la chaîne rendue vaut
+    `miryad_session=<scellé>; HttpOnly; SameSite=Strict; Path=/; Max-Age=<n>` — aucun segment
+    `Secure`, tout le reste identique (arbitré 2026-09-27, pour ne pas casser le dev HTTP local)
+
+Scenario: Retrait — les attributs de @clear_cookie suivent la même valeur de `secure` qu’à la pose
+  Given un @OidcIdentity et une clé valides
+  When @build_set_cookie et @clear_cookie sont tous deux appelées avec `secure: true`, puis toutes
+    deux avec `secure: false`
+  Then dans chaque paire, la présence ou l’absence du segment `Secure` est identique entre la pose
+    et le retrait — un retrait dont les attributs divergent de la pose ne retirerait pas le cookie
+    posé côté navigateur
 
 Scenario: Pose — email et preferred_username absents sérialisés null
   Given un @OidcIdentity d’email @None et de @preferred_username @None, et d’@id_token avec claim
@@ -327,10 +367,11 @@ Scenario: Pose — deux poses consécutives divergent et se relisent
     reproductibilité attendue
   But les deux déchiffrent au même payload JSON sous la même clé
 
-Scenario: Retrait — chaîne exacte valeur vide Max-Age nul
-  Given aucun état — @clear_cookie ne reçoit rien
+Scenario: Retrait — chaîne exacte valeur vide Max-Age nul, `secure: true`
+  Given aucun état — @clear_cookie ne reçoit que `secure: true`
   When @clear_cookie est appelée
-  Then la chaîne rendue est exactement `miryad_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`
+  Then la chaîne rendue est exactement
+    `miryad_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`
     — valeur vide, `HttpOnly` posé, même nom, même `Path=/` et même hôte-only que la pose pour que
     le client retire bien le cookie posé
 

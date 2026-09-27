@@ -38,10 +38,10 @@ References:
     fichier, jamais consommés par lui.
 
 Must:
-  @Pagination::from_raw normalise @page à un minimum de `1` : @Option::None devient `1`,
-    @Option::Some(0) devient `1`, toute valeur @Option::Some d'au moins `1` passe telle quelle ;
-    @page reste la valeur `1`-indexée de la surface API, la conversion à zéro se faisant chez
-    l'appelant.
+  @Pagination::from_raw normalise @page à un minimum de `1` et un maximum de @MAX_PAGE :
+    @Option::None devient `1`, @Option::Some(0) devient `1`, toute valeur @Option::Some entre `1`
+    et @MAX_PAGE passe telle quelle, toute valeur au-dessus de @MAX_PAGE devient @MAX_PAGE ; @page
+    reste la valeur `1`-indexée de la surface API, la conversion à zéro se faisant chez l'appelant.
   @Pagination::from_raw normalise @per_page dans la fenêtre `1` à @MAX_PER_PAGE : @Option::None
     devient @DEFAULT_PER_PAGE (`100`), @Option::Some(0) devient `1`, toute valeur au-dessus de
     @MAX_PER_PAGE (`1000`) devient @MAX_PER_PAGE, toute valeur intérieure passe telle quelle.
@@ -50,7 +50,9 @@ Must:
   L'arithmétique du fichier est protégée sans aucun opérateur brut : seules @Option::unwrap_or,
     @u64::max et @u64::clamp calculent, si bien que le `deny` `arithmetic_side_effects` de
     /tooling.sdd n'a jamais de prise sur `./query.rs` ; le cas de panic amont de @u64::clamp
-    (`min > max`) est mort avec les deux bornes constantes ordonnées `1` et `1000`.
+    (`min > max`) est mort avec les deux bornes constantes ordonnées `1` et `1000` pour @per_page,
+    et `1` et @MAX_PAGE pour @page (@MAX_PAGE recalculé une fois pour toutes comme constante,
+    strictement supérieur à `1`).
   L'invariant rendu `per_page >= 1` est ce qui protège l'assertion amont
     `assert!(page_size != 0, ...)` de @sea_orm::PaginatorTrait::paginate (vérifiée en
     `sea-orm 2.0.2`) : les appelants @rest::core::list, @rest::admin et @rest::tokens ne peuvent
@@ -62,10 +64,14 @@ Must:
     appelants depuis @sea_orm::Paginator::num_items_and_pages, et le comptage amont (division
     majorante, `0` ligne → `0` page) est un fait vérifié chez @sea_orm, pas une promesse que
     @query recalculerait.
-  @Pagination::from_raw ne pose aucune borne haute à @page : @Option::Some(@u64::MAX) passe
-    telle quelle ; une page hors limite est traitée en amont (@sea_orm::Paginator::fetch_page
-    rend un @Vec vide, les totaux réels sont conservés), nulle part dans le fichier — la question
-    de borner ce cas est ouverte en `Tasks` `[?]`.
+  @Pagination::from_raw pose une borne haute de sûreté à @page, arbitrée par Sébastien le
+    2026-09-27 : @MAX_PAGE (`pub const` @u64, `u64::MAX / @MAX_PER_PAGE`) est le plafond, toute
+    valeur au-dessus est ramenée à @MAX_PAGE. Ce n'est pas un recalage sur un total réel (le
+    fichier ne connaît toujours aucun total, `Must not` ci-dessous reste vrai) : c'est une garantie
+    arithmétique — pour tout @per_page valide (`1..=@MAX_PER_PAGE`), `per_page * page` ne déborde
+    jamais un `u64` chez l'appelant (@sea_orm::Paginator::fetch_page), quel que soit le @per_page
+    réellement choisi par ailleurs. Une page hors limite réelle mais sous @MAX_PAGE continue de se
+    résoudre en amont comme avant (@Vec vide, totaux réels conservés).
   Les clés wire `items`, `page`, `per_page`, `total_items` et `total_pages` sont un contrat
     inter-surfaces : le JSON REST (`Json<@PagedResult<_>>` de @rest), la sortie MCP (@serde_json
     de la page rendue par @rest::core::list dans @mcp::registry, gabarit Handlebars par défaut
@@ -114,6 +120,9 @@ Exposes:
     `///` aujourd'hui (dette `missing_docs` portée en `Tasks`).
   @MAX_PER_PAGE — `pub const` @u64, valeur `1000`, plafond absolu de @per_page. Même dette
     `missing_docs`.
+  @MAX_PAGE — `pub const` @u64, valeur `u64::MAX / @MAX_PER_PAGE`, plafond de sûreté de @page
+    (arbitré 2026-09-27) : garantit que `per_page * page` ne déborde jamais un `u64` chez
+    l'appelant, quel que soit le @per_page valide réellement choisi. Dette `missing_docs`.
   @Pagination — `pub struct` avec derives @Debug, @Clone, @Copy, @PartialEq et @Eq ; champs
     @page et @per_page tous deux `pub` @u64. L'absence de @Deserialize est un fait d'exposition :
     l'entrée des surfaces se fait par leurs structs `ListParams` locales, jamais par un
@@ -170,9 +179,9 @@ Handles:
   Paramètres nuls : `0` sur @page ou @per_page devient `1`.
   @per_page trop grand : écrêté à @MAX_PER_PAGE (`1000`) — but assumé du module, empêcher des
     milliers de lignes d'un coup.
-  @page extrême sans plafond : transmise telle quelle (jusqu'à @u64::MAX) ; le hors-limites se
-    résout en amont, offset au-delà de la dernière ligne donnant un @Vec vide avec totaux
-    réels — borne à spécifier ou overflow à assumer : `Tasks` `[?]`.
+  @page extrême : ramenée à @MAX_PAGE au-dessus de ce plafond (arbitré 2026-09-27) ; sous ce
+    plafond mais toujours hors de la dernière page réelle, le hors-limites continue de se résoudre
+    en amont, offset au-delà de la dernière ligne donnant un @Vec vide avec totaux réels.
   Table vide : @Pagination::from_raw n'intervient pas ; @total_items `0`, @total_pages `0`
     (division majorante @sea_orm vérifiée) et @items vide sérialisé `[]`.
   Toute combinaison de features : absence ou présence de `static-frontend`, `swagger-ui`,
@@ -190,12 +199,11 @@ Tasks:
     ./lib.sdd défend de présenter @graphql ou @mcp comme consommant déjà @query ; @graphql en effet
     ne le consomme pas encore. Quelle phrase devient le contrat, et ./lib.sdd est-il à corriger sur
     ce point ?
-  [?] Faut-il borner @page ? @Pagination::from_raw laisse passer @u64::MAX et
-    @sea_orm::Paginator::fetch_page (`sea-orm 2.0.2` vérifié) calcule `page_size * page` sans
-    garde : en profil debug/dev le overflow arithmétique panic (test ou handler HTTP), en release
-    l'offset wrap ; une requête `?page=18446744073709551615` franchit donc les bornes du fichier et
-    casse en amont. Une limite haute (clamp sur @total_pages, plafond fixe ou plafond @u64
-    raisonnable) ou la décision d'assumer tel quel ?
+  [ ] @page est désormais bornée par @MAX_PAGE (arbitré par Sébastien le 2026-09-27, `Must`,
+    `Exposes`, `Handles`) : ajouter la constante @MAX_PAGE = `u64::MAX / @MAX_PER_PAGE`, étendre
+    @Pagination::from_raw pour clamper @page au-dessus de ce plafond avec @u64::min (même patron
+    que @per_page), et convertir le scenario « `page` sans plafond » en scenario de plafond
+    (`Then` : @page ramenée à @MAX_PAGE, plus @u64::MAX).
   [?] L'asymétrie zéro contre négatif est-elle retenue sur les surfaces ? Côté REST, `?page=0`
     répond `200` avec normalisation à `1`, alors que `?page=-1` répond `400` (rejet @serde sur
     @u64) sans jamais atteindre @Pagination::from_raw ; en JSON MCP `{"page":0}` se force à `1` et
@@ -235,8 +243,9 @@ Done when:
   La batterie complète /tooling.sdd est verte, `--no-default-features` comprise (le module est
     tenu de compiler sans aucune feature), et `./query.rs` ne porte plus d'avertissement clippy
     nouveau lorsque la tâche de purge `missing_docs` le touche.
-  Les quatre lignes `[?]` de `Tasks` ont une décision de Sébastien reflétée dans la spec
-    (en-tête `//!`, borne de @page, zéro contre négatif, champs `pub`).
+  Une des quatre lignes `[?]` de `Tasks` a une décision de Sébastien reflétée dans la spec — borne
+    de @page par @MAX_PAGE (2026-09-27, `Must`/`Exposes`/`Handles`). Restent ouvertes : en-tête
+    `//!`, asymétrie zéro contre négatif, champs `pub` de @Pagination.
   La spec est relue et approuvée par Sébastien, seule l'implementer convertissant ensuite les
     `Scenario` en tests.
 
@@ -277,12 +286,13 @@ Scenario: paramètres valides transmis tels quels
   Then @page vaut `3`
   And @per_page vaut `25` — aucune valeur de l'intérieur de la fenêtre n'est déplacée
 
-Scenario: `page` sans plafond — la valeur extrême passe
+Scenario: `page` extrême ramenée au plafond de sûreté
   Given @page @Option::Some(@u64::MAX) et @per_page @Option::None
   When @Pagination::from_raw s'exécute
-  Then @page est rendu égal à @u64::MAX — @query ne borne jamais @page par le haut
-  But l'existence de cette page ne relève pas du fichier : le cas se règle en amont, et sa
-    limite est la tâche `[?]` de `Tasks`
+  Then @page est ramenée à @MAX_PAGE (`u64::MAX / @MAX_PER_PAGE`), pas @u64::MAX — arbitré le
+    2026-09-27 pour garantir que `per_page * page` ne déborde jamais chez l'appelant
+  But l'existence réelle de cette page ne relève toujours pas du fichier : une page sous @MAX_PAGE
+    mais au-delà de la dernière ligne réelle se règle toujours en amont (@Vec vide, totaux réels)
 
 Scenario: forme JSON stable de @PagedResult
   Given un @PagedResult de @u8 avec @items `vec![7, 8]`, @page `2`, @per_page `25`,

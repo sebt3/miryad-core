@@ -29,10 +29,12 @@ References:
   ./mod.rs — ré-exporte @AuthUser à plat sous @crate::auth (ligne 18) sans gating ; ses routes
     @auth_router (`/auth/login`, `/auth/callback`, `/auth/logout`) n'utilisent pas l'extracteur
   ./dual.rs — extracteur parallèle @AuthPrincipal qui lit `Authorization: Bearer` avant le cookie,
-    repli interdit ; ./middleware.rs ne lit jamais `Authorization` (asymétrie arbitrée en `Tasks`)
+    repli interdit ; ./middleware.rs ne lit jamais `Authorization` — confirmé comme la raison d'être
+    de cet extracteur, pas une asymétrie accidentelle (2026-09-27, `Tasks`)
   /src/rest/mod.rs, /src/rest/me.rs, /src/rest/admin.rs, /src/rest/tokens.rs,
     /src/graphql/handler.rs, /src/mcp/handler.rs — surfaces vérifiées : toutes extraient
-    @AuthPrincipal, aucune n'extrait @AuthUser (voir le `Must` de parité et `Tasks` `[?]`)
+    @AuthPrincipal, aucune n'extrait @AuthUser — confirmé comme contrat voulu, pas une surface
+    résiduelle (2026-09-27, `Tasks`)
   /docs/architecture.md — récit non contractuel : dual-auth cookie/token et extractor navigateur
 
 Must:
@@ -116,11 +118,13 @@ Depends on:
     atteignable la branche « en-tête `Cookie` présent mais illisible »
 
 Exposes:
-  @AuthUser — `pub struct` à trois champs publics @subject (@String), @email (@Option<@String>),
-    @id_token (@String) ; aucun derive (@Clone, @Debug, @PartialEq absents), aucun accesseur, aucun
-    @impl propre hors @FromRequestParts — le handler le reçoit par valeur et ne peut que déplacer
-    ou lire ses champs ; documenté dans /src/lib.rs (doc de crate ligne 131) comme le type
-    adjacent du flow navigateur, ré-exporté à plat par ./mod.rs
+  @AuthUser — `pub struct` à trois champs publics documentés au `///` (arbitré 2026-09-27, `Tasks` —
+    purge de la dette `missing_docs`) : @subject (@String), @email (@Option<@String>), @id_token
+    (@String) ; derive @Debug ajouté (2026-09-27 — aucun secret à rédiger, les trois champs sont
+    déjà lisibles par le porteur authentifié lui-même), @Clone et @PartialEq toujours absents ;
+    aucun accesseur, aucun @impl propre hors @FromRequestParts — le handler le reçoit par valeur et
+    ne peut que déplacer ou lire ses champs ; documenté dans /src/lib.rs (doc de crate ligne 131)
+    comme le type adjacent du flow navigateur, ré-exporté à plat par ./mod.rs
   @impl @FromRequestParts<@S> for @AuthUser, générique en @S (`S: @Send + @Sync` et
     @MiryadAuthState: @FromRef<@S>), avec `type` @Rejection = @AuthError — une seule méthode
     @from_request_parts (`async fn`, (&mut @Parts, &@S) -> @Result<@AuthUser, @AuthError>) :
@@ -175,19 +179,19 @@ Handles:
     nommé `subject` — même convention qu'à ./mod.rs) — @email/@id_token hors des traces
 
 Tasks:
-  [?] @AuthUser n'est extrait par aucune route de la crate : @graphql_handler, @mcp_handler et les
-    handlers axum de /src/rest/mod.rs (cinq), /src/rest/me.rs, /src/rest/admin.rs et
-    /src/rest/tokens.rs (trois) extraient tous @AuthPrincipal. @AuthUser reste-t-il une surface
-    publique maintenue pour le flow navigateur des apps consommatrices (feature 2a), ou une
-    surface résiduelle à déprécier ? Sa forme API n'aide pas à décider : pas de @Clone, pas de
-    @Debug, champs publics non documentés (dette @missing_docs de /tooling.sdd) — dépréciation ou
-    stabilisation avec derives à ajouter ?
-  [?] @AuthUser ignore totalement l'en-tête `Authorization` : la même requête avec un bearer
-    invalide et un cookie valide passe en session ici (`200`), alors qu'elle est rejetée `401` par
-    @AuthPrincipal (./dual.rs, « pas de repli silencieux »). Cette divergence entre les deux
-    extracteurs du même crate est-elle le contrat assumé du flow navigateur (l'en-tête
-    appartient à qui l'a posé) ou un écart à refermer — et dans ce cas par quel comportement ?
-  [ ] Convertir les 10 `Scenario` ci-dessous en au moins 10 tests Rust distincts nommés dans le
+  [ ] @AuthUser stabilisé, pas déprécié (arbitré par Sébastien le 2026-09-27) : ce n'est pas du
+    code mort par accident — c'est un extracteur volontairement plus étroit que @AuthPrincipal, que
+    les apps consommatrices choisissent pour des routes qui doivent explicitement refuser les
+    tokens API (le flow navigateur pur, feature 2a). Ajouter `#[derive(Debug)]` sur @AuthUser (les
+    trois champs sont des données publiques une fois authentifiées, aucun secret à rédiger —
+    @id_token est déjà lisible par le porteur lui-même) et documenter les trois champs publics au
+    `///` pour purger la dette `missing_docs`. Pas de @Clone : rien dans le contrat n'en a besoin, à
+    ajouter seulement si un vrai appelant le demande.
+  [x] @AuthUser ignore totalement `Authorization` : confirmé comme contrat voulu, pas un écart
+    (2026-09-27) — c'est la raison d'être de cet extracteur face à @AuthPrincipal, pas une
+    divergence accidentelle à refermer. Si @AuthUser consultait aussi `Authorization`, il
+    deviendrait un doublon de @AuthPrincipal et perdrait sa raison d'être.
+  [ ] Convertir les 11 `Scenario` ci-dessous en au moins 11 tests Rust distincts nommés dans le
     `#[cfg(test)] mod tests` inline de ./middleware.rs — deux tests inline existent :
     @protected_without_cookie_returns_401 n'affirme que le statut `401` sans le corps ni le code
     `MRD-AUTH-001`, @protected_with_valid_session_passes_and_exposes_subject n'affirme @subject
@@ -197,11 +201,12 @@ Tasks:
     crate d'intégration séparée requise.
 
 Done when:
-  Les 10 `Scenario` ont chacun au moins un test nommé distinct et vert dans ./middleware.rs (au
-    moins 10 tests contre 2 aujourd'hui), chaque @Then affirmé par chaîne exacte (statut, corps
-    `text/plain`, trois champs reçus) sans `contains` sur un code.
-  Les deux lignes `[?]` de `Tasks` sont arbitrées par Sébastien et leurs suites reflétées dans le
-    contrat ou le code.
+  Les 11 `Scenario` (10 originaux, 1 nouveau sur `Debug`) ont chacun au moins un test nommé
+    distinct et vert dans ./middleware.rs (au moins 11 tests contre 2 aujourd'hui), chaque @Then
+    affirmé par chaîne exacte (statut, corps `text/plain`, trois champs reçus) sans `contains` sur
+    un code.
+  Les deux lignes `[?]` de `Tasks` sont arbitrées par Sébastien le 2026-09-27 : la première ajoute
+    `Debug` et de la documentation sans changer le comportement, la seconde confirme l'état actuel.
   ./middleware.rs reste dépourvu de `#[cfg(feature = ...)]` et d'aucun @use hors @axum,
     ./cookie.rs, ./error.rs, ./state.rs et @tracing, et la batterie de /tooling.sdd passe verte
     sur chaque combinaison de features, `cargo fmt --check` compris.
@@ -283,3 +288,9 @@ Scenario: état composé de l'app consommatrice via FromRef explicite
   Then le statut est `200` et le handler lit @subject validé
   And l'état réflexif nu (@S = @MiryadAuthState) marche par l'impl blanket d'axum-core 0.5.6 —
     les deux formes d'état sont le contrat générique
+
+Scenario: Debug affiche les trois champs sans panic
+  Given un @AuthUser construit par littéral (@subject `user-123`, @email @Some, @id_token un JWT)
+  When il est formaté par `{:?}`
+  Then la sortie contient les trois valeurs, sans panic (arbitré 2026-09-27 — aucun secret à
+    rédiger, ces champs sont déjà connus du porteur authentifié)

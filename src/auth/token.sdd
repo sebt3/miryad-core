@@ -1,14 +1,24 @@
-Spec: token — moteur des tokens API de miryad-core : secret `mrd_`, hash SHA-256 hex, émission, validation, révocation, garantie idempotente
+Spec: token — moteur des tokens API de miryad-core : secret `mrd_`, hash HMAC-SHA256 poivré hex, émission, validation, révocation, garantie idempotente
 
 Purpose:
   Émettre, authentifier et révoquer les tokens API portés par l'en-tête `Authorization` avec le
     schéma `Bearer`, indépendamment de toute session OIDC : le secret est aléatoire fort
     (@generate_token) ou apporté par l'app (@ensure_token), la base ne porte jamais le secret —
-    seulement son empreinte SHA-256 hex minuscule —, la validation est une égalité indexée sur
+    seulement son empreinte HMAC-SHA256 hex minuscule, clé par un poivre fourni par l'appelant
+    (arbitré par Sébastien le 2026-09-27, cf. `Tasks`) —, la validation est une égalité indexée sur
     cette empreinte, chaque usage réussi horodate `last_used_at`, et la révocation est une
     suppression physique. Possède l'entité SeaORM de `miryad_api_tokens` et les quatre opérations
     @issue_token, @validate_token, @revoke_token, @ensure_token qui alimentent les surfaces REST
     self-service, l'extracteur dual-auth et le provisionnement des comptes de service.
+  Poivre (« pepper », distinct d'un sel classique) : secret partagé, tenu hors base par l'app —
+    protège les empreintes contre une attaque hors ligne par dictionnaire en cas de fuite de la
+    table `miryad_api_tokens`, y compris pour les secrets à entropie faible d'@ensure_token.
+    Obligatoire, sans défaut en dur dans la crate (arbitré 2026-09-27, cohérent avec le refus au
+    montage déjà choisi ailleurs pour les configurations dangereuses plutôt qu'une dégradation
+    silencieuse) : une app qui ne le fournit pas ne peut pas émettre ni valider de token. Son
+    stockage est le champ `MiryadAuthState::token_pepper` (ajouté le 2026-09-27, ./state.sdd
+    `Must` — décision finalisée), sourcé d'une variable d'environnement côté app ; sa construction
+    reste hors du périmètre de ce fichier.
 
 Owns:
   ./token.rs
@@ -38,10 +48,12 @@ Must:
     encodé par @URL_SAFE_NO_PAD (base64 0.22.1, alphabet RFC 4648 §5 `A-Za-z0-9-_`, sans
     bourrage) : `43` caractères après le préfixe, `47` au total.
   @hash_token réduit le secret complet — préfixe `mrd_` inclus — à l'empreinte
-    @hex::encode(@Sha256::digest) : SHA-256 (FIPS 180-4) des octets UTF-8 de la chaîne, rendue en
-    hexadécimal minuscule (hex 0.4.3 : @encode vs @encode_upper vérifiés au source), `64`
-    caractères. Empreinte brute : aucun sel, aucun key-stretching, aucun HMAC (vérifié au source —
-    voir Tasks `[?]`).
+    @hex::encode(@Hmac::<@Sha256>::finalize) : HMAC-SHA256 (RFC 2104, FIPS 198-1) des octets UTF-8
+    de la chaîne, clé par le poivre reçu en paramètre, rendue en hexadécimal minuscule (hex 0.4.3 :
+    @encode vs @encode_upper vérifiés au source), `64` caractères (arbitré par Sébastien le
+    2026-09-27, remplace le SHA-256 nu — cf. `Purpose`, `Tasks`). @hash_token, @issue_token,
+    @validate_token et @ensure_token reçoivent désormais tous un `pepper: &str` supplémentaire ;
+    @revoke_token est inchangée (aucun hachage, suppression par PK seule).
   Le secret clair ne quitte jamais @IssuedToken.token : il n'est écrit dans aucune colonne, et
     aucune lecture de la table ne peut le reconstituer (la seule colonne issue du secret est
     @token_hash).
@@ -59,8 +71,11 @@ Must:
     (l'égalité expire) ; aucun octet n'est alors écrit.
   Aucune comparaison temporellement constante n'existe dans le fichier, et aucune n'est nécessaire
     à la conception actuelle : le secret fourni n'est jamais comparé octet à octet en Rust — il est
-    d'abord haché, et seule l'empreinte est comparée par la base via l'index UNIQUE (vérifié ; le débat
-    sel/KDF sur les secrets @ensure_token à faible entropie reste ouvert, Tasks `[?]`).
+    d'abord haché, et seule l'empreinte est comparée par la base via l'index UNIQUE (vérifié). Le
+    poivre HMAC (arbitré 2026-09-27, `Must` ci-dessus) couvre le risque d'attaque hors ligne par
+    dictionnaire sur les secrets @ensure_token à faible entropie ; aucun key-stretching
+    supplémentaire (Argon2/scrypt) n'est ajouté — jugé disproportionné pour un secret protégé par
+    un poivre tenu hors base.
   Sur validation réussie, @validate_token écrit une `UPDATE` portant la seule colonne modifiée
     `last_used_at` = @Some(@Utc::now) (le reste de l'@ActiveModel est @Unchanged — vérifié au
     source sea-orm) puis rend @AuthPrincipal { subject : le `subject` de la ligne, email : @None,
@@ -111,8 +126,10 @@ Depends on:
   @rand 0.8.7 — @thread_rng : @ReseedingRng de @ChaCha12Core seedé par @OsRng (rand-0.8.7 source :
     `rngs/std.rs`, `rngs/thread.rs`) ; @thread_rng n'existe plus en rand `0.9` — une montée de
     version est un changement de contrat, pas un bump silencieux
-  @sha2 0.10.9 — @Sha256::digest ; @base64 0.22.1 — @URL_SAFE_NO_PAD (RFC 4648 §5, sans bourrage) ;
-    @hex 0.4.3 — @encode minuscule
+  @sha2 0.10.9 — @Sha256 comme paramètre de type de @Hmac ; @hmac (nouvelle dépendance, arbitrée
+    2026-09-27 — écosystème RustCrypto, même famille que @sha2 déjà en usage) —
+    @Hmac::<@Sha256>::new_from_slice(pepper) puis @Mac::update(secret)/@Mac::finalize ; @base64
+    0.22.1 — @URL_SAFE_NO_PAD (RFC 4648 §5, sans bourrage) ; @hex 0.4.3 — @encode minuscule
   @chrono — @Utc::now et @DateTimeUtc : les bornes d'expiration se comparent en Rust, jamais en SQL
   ./error.rs — @AuthError et son @From<@sea_orm::DbErr> vers @AuthError::Database ; codes figés
     par ./error.sdd
@@ -129,15 +146,19 @@ Exposes:
   @IssuedToken { id : @i32, token : @String } — @token porte le secret clair, seul porteur du
     secret hors mémoire de l'émission
   @issue_token(db : &@DatabaseConnection, subject : &@str, name : &@str,
-    expires_at : @Option<@DateTimeUtc>) -> @Result<@IssuedToken, @AuthError>
-  @validate_token(db : &@DatabaseConnection, token : &@str)
-    -> @Result<@AuthPrincipal, @AuthError>
-  @revoke_token(db : &@DatabaseConnection, id : @i32) -> @Result<(), @AuthError>
+    expires_at : @Option<@DateTimeUtc>, pepper : &@str) -> @Result<@IssuedToken, @AuthError>
+    (`pepper` ajouté le 2026-09-27)
+  @validate_token(db : &@DatabaseConnection, token : &@str, pepper : &@str)
+    -> @Result<@AuthPrincipal, @AuthError> (`pepper` ajouté le 2026-09-27)
+  @revoke_token(db : &@DatabaseConnection, id : @i32) -> @Result<(), @AuthError> (signature
+    inchangée — aucun hachage impliqué)
   @ensure_token(db : &@DatabaseConnection, subject : &@str, name : &@str, token : &@str,
-    expires_at : @Option<@DateTimeUtc>) -> @Result<(), @AuthError>
+    expires_at : @Option<@DateTimeUtc>, pepper : &@str) -> @Result<(), @AuthError> (`pepper` ajouté
+    le 2026-09-27)
   @generate_token et @hash_token sont privés : leur contrat (format et empreinte) est vérifié par
     les `Scenario` via la surface publique, et @hash_token aussi par les tests qui recalculent
-    l'empreinte
+    l'empreinte ; @hash_token(secret : &@str, pepper : &@str) -> @String (signature changée le
+    2026-09-27)
   ./mod.rs ré-exporte les quatre fonctions et les deux types sur @crate::auth ; le fichier n'est
     pas @MiryadResource : hors des surfaces génériques REST/GraphQL/MCP par entité, il n'est lu
     que par @tokens_router (self-service), par l'extracteur @AuthPrincipal de ./dual.rs (schéma
@@ -154,6 +175,12 @@ Accepts:
   @token fourni par @validate_token et @ensure_token : tout @str, longueur et alphabet contraints
     par rien — un espace, un accent ou une chaîne vide sont des entrées contractuelles
   @id de @revoke_token : tout @i32, négatif ou absent inclus → `0` ligne supprimée, @Ok silencieux
+  @pepper (@issue_token, @validate_token, @ensure_token) : tout @str non vide en principe, mais ce
+    fichier ne valide ni sa longueur ni sa force (arbitré 2026-09-27) — un @pepper vide ou faible
+    compile et s'exécute, la responsabilité de sa qualité et de sa provenance (variable
+    d'environnement de l'app, cf. `Purpose`) reste hors de ce fichier ; deux appels avec des
+    `pepper` différents sur le même secret ne produisent jamais la même empreinte — une rotation de
+    poivre invalide tous les tokens existants (pas de ré-émission automatique)
 
 Returns:
   @issue_token — @Ok(@IssuedToken { id, token }) ; @token = `mrd_` + `43` caractères
@@ -161,22 +188,35 @@ Returns:
   @validate_token — @Ok(@AuthPrincipal { subject, email : @None, source :
     @PrincipalSource::ApiToken { token_id } }) ; @subject vient de la ligne, pas de l'appelant ;
     @token_id = PK de la ligne
-  @ensure_token — @Ok @unitaire, tant à la création qu'au rejeu idempotent
+  @ensure_token — @Ok @unitaire, tant à la création qu'au rejeu idempotent sous le même `subject` ;
+    depuis le 2026-09-27, @Err si l'empreinte existe déjà sous un `subject` différent (`Raises`)
   @revoke_token — @Ok @unitaire, y compris quand `0` ligne a été supprimée
 
 Raises:
   @AuthError::Database (`MRD-AUTH-016`, via @From<@sea_orm::DbErr> — codes possédés par
-    ./error.sdd) : toute panne de base des quatre fonctions — @insert de @issue_token et
-    @ensure_token (collision UNIQUE `token_hash` comprise), lecture @Select::one de
-    @validate_token et prélecture sur `token_hash` de @ensure_token, `UPDATE` de `last_used_at`
-    dans @validate_token, `DELETE` de @revoke_token
+    ./error.sdd) : toute panne de base sur la lecture ou l'écriture qui décident du résultat —
+    @insert de @issue_token et @ensure_token (collision UNIQUE `token_hash` comprise), lecture
+    @Select::one de @validate_token et prélecture sur `token_hash` de @ensure_token, `DELETE` de
+    @revoke_token. L'`UPDATE` de `last_used_at` dans @validate_token n'est plus de ce chemin depuis
+    le 2026-09-27 (deux lignes ci-dessous)
   @AuthError::InvalidToken (`MRD-AUTH-014`) : @validate_token quand l'empreinte de la valeur
     fournie ne trouve aucune ligne — token jamais émis, token révoqué (la révocation étant
     physique, inexistant et révoqué sont indiscernables et rendent le même code), chaîne vide ou
-    hors format
+    hors format ; ou, depuis le 2026-09-27, quand l'`UPDATE` de `last_used_at` échoue par
+    @sea_orm::DbErr::RecordNotUpdated ou sa relecture par @sea_orm::DbErr::RecordNotFound — la
+    ligne a été révoquée par @revoke_token entre la lecture et l'écriture : un rejet légitime,
+    traitement identique au TOCTOU de ./../rest/core.sdd, pas une panne de base
+  Aucune erreur, secret accepté malgré l'échec (arbitré 2026-09-27) : toute autre @DbErr sur
+    l'`UPDATE` de `last_used_at` (panne de connexion, timeout — la ligne existe toujours, ce n'est
+    pas une course avec @revoke_token) est absorbée sans remonter d'`Err` — le secret était valide,
+    l'horodatage devient best-effort ; @validate_token rend @Ok de l'@AuthPrincipal malgré tout
   @AuthError::TokenExpired (`MRD-AUTH-015`) : @validate_token quand la ligne trouvée porte un
     `expires_at` @Some antérieur ou égal à l'instant de validation (condition `<=` à borne
     inclusive, évaluée en Rust)
+  Nouveau code réservé le 2026-09-27, exact nom de variante et format à finaliser avec le cluster
+    erreurs/observabilité de ./error.sdd (`MRD-AUTH-017` provisoire) — @ensure_token quand
+    l'empreinte de la valeur fournie existe déjà en base sous un `subject` différent de celui
+    demandé : rejet explicite au lieu du no-op silencieux d'avant le 2026-09-27 (`Handles`, `Tasks`)
   Aucune autre variante ne naît ici : @NotAuthenticated, @InvalidSession et @Oidc appartiennent
     aux autres flux de ./error.sdd
 
@@ -184,8 +224,13 @@ Handles:
   Course entre @validate_token et @revoke_token, entre la @Select::one et l'`UPDATE` de
     `last_used_at` : vérifié au source sea-orm 2.0.2 (@executor/update.rs), l'UPDATE qui ne touche
     plus la ligne rend @DbErr::RecordNotUpdated, ou @DbErr::RecordNotFound si la relecture après
-    écriture ne trouve plus rien → @AuthError::Database (`MRD-AUTH-016`) : un token révoqué en
-    pleine requête sort en erreur de base plutôt qu'en `MRD-AUTH-014` propre (Tasks `[?]`)
+    écriture ne trouve plus rien — depuis le 2026-09-27, ces deux variantes précises deviennent
+    @AuthError::InvalidToken (`MRD-AUTH-014`) : un token révoqué en pleine requête est un rejet
+    légitime, pas une panne de base (arbitré, même traitement que le TOCTOU de ./../rest/core.sdd)
+  Échec de l'horodatage `last_used_at` sans course (toute autre @DbErr : connexion, timeout — la
+    ligne existe toujours) : absorbé sans remonter d'erreur, `Ok` rendu malgré tout (arbitré
+    2026-09-27) — la décision de sécurité (le secret est valide) est déjà prise, une panne de
+    bookkeeping ne doit pas invalider une authentification par ailleurs correcte
   Course @ensure_token : deux appels concurrents de la même valeur, l'un gagne l'insertion,
     l'autre bute sur la contrainte UNIQUE (`MRD-AUTH-016`) — @ensure_service_account la remonte en
     @DbErr hors de sa conversion ; l'unicité de la table n'est jamais transgressée
@@ -194,12 +239,18 @@ Handles:
   Chaîne vide ou hors format en entrée : chemin haché → index UNIQUE non touché → `MRD-AUTH-014`
   @validate_token sur un token dont le `subject` ne correspond à aucune ligne de `miryad_users` :
     @Ok — les tables de comptes ne sont jamais jointes (zéro FK, contrat 001)
+  @ensure_token sur une empreinte déjà détenue par un autre `subject` : rejet explicite depuis le
+    2026-09-27 (arbitré, cf. `Tasks`) — plus un no-op silencieux qui laisserait le premier titulaire
+    propriétaire d'une collision sans que le second en soit informé
   Parité des surfaces — consigné, non tranché : l'émission et la révocation ne vivent qu'en REST
     self-service `/api/v1/tokens` (`../rest/tokens.rs`, avec la garde d'appartenance `subject` au
     handler) et en Rust (@ensure_service_account) ; ni GraphQL ni MCP n'exposent d'opération de
     gestion de token ; l'@AuthPrincipal issu d'un token rend @email @None alors que le principal de
-    session en porte un (Tasks `[?]`) ; la garde d'appartenance `subject` n'existe qu'au handler,
-    la fonction @revoke_token est sans filtre
+    session en porte un — asymétrie architecturale gelée le 2026-09-27 : un token n'a jamais connu
+    d'email (non demandé, non stocké à l'émission), et le chemin session ne l'obtient pas non plus
+    d'une jointure `users` (il vient du cookie, posé au login OIDC) ; une vraie parité demanderait
+    une colonne `email` optionnelle à l'émission, une feature à part ; la garde d'appartenance
+    `subject` n'existe qu'au handler, la fonction @revoke_token est sans filtre
 
 Tasks:
   [x] AJOUT REQUIS (Sébastien, 2026-09-27, voir ./principal.sdd et ./oidc.sdd) : @validate_token
@@ -208,53 +259,59 @@ Tasks:
     associée à un token API).
   [ ] Convertir chaque `Scenario` en un test nommé distinct dans le `#[cfg(test)] mod tests` de
     ./token.rs (pattern `test_db()` sur `sqlite::memory:` déjà en place, sans base externe) —
-    `17` `Scenario`, `17` tests : six tests inline existants exercent déjà un scénario, les
-    étendre sans les renommer — @issued_token_validates_and_updates_last_used (assert @email
-    @None et colonnes voisines inchangées), @unknown_token_is_rejected, @revoked_token_is_rejected
-    (assert @find_by_id sur @None pour matérialiser l'effacement physique),
-    @expired_token_is_rejected,
+    `20` `Scenario`, `20` tests (17 originaux, 3 nés de l'arbitrage du 2026-09-27) : six tests
+    inline existants exercent déjà un scénario, les étendre sans les renommer et les adapter à la
+    nouvelle signature (`pepper: &str` supplémentaire sur @issue_token/@validate_token/@ensure_token)
+    — @issued_token_validates_and_updates_last_used (assert @email @None et colonnes voisines
+    inchangées), @unknown_token_is_rejected, @revoked_token_is_rejected (assert @find_by_id sur
+    @None pour matérialiser l'effacement physique), @expired_token_is_rejected,
     @ensure_token_creates_then_authenticates (assert @name et @expires_at stockés),
-    @ensure_token_is_idempotent (assert @created_at inchangé au rejeu) — et onze tests à créer, un
-    par scénario restant : @issued_secret_is_mrd_prefixed_base64url_of_43_chars ;
-    @consecutive_issuances_never_share_a_secret ; @stored_token_hash_is_lowercase_sha256_of_secret ;
+    @ensure_token_is_idempotent (assert @created_at inchangé au rejeu) — et quatorze tests à créer,
+    un par scénario restant : @issued_secret_is_mrd_prefixed_base64url_of_43_chars ;
+    @consecutive_issuances_never_share_a_secret ;
+    @stored_token_hash_is_lowercase_hmac_sha256_of_secret_and_pepper ;
     @issued_row_carries_subject_name_and_timestamps ; @expired_validation_does_not_stamp_last_used ;
     @empty_string_is_rejected_as_unknown ; @past_expiry_accepted_at_issue_then_denied_at_validate ;
     @revoking_unknown_id_is_silent_noop ; @revoking_twice_succeeds ;
-    @ensure_token_on_existing_hash_under_another_subject_is_noop (ce contrat est conditionné au
-    tranché `[?]` ci-dessous) ; @ensure_token_accepts_out_of_format_secret
-  [?] @ensure_token : le doc-comment dit « si un token avec ce hash existe déjà pour ce `subject`
-    », le code ne filtre que sur le hash, globalement. Gel-t-on le comportement (collision de
-    hash entre titulaires = no-op silencieux, le secret reste la propriété du premier `subject`
-    qui l'a posé) ou le commentaire est-il la vérité à imposer (alors erreur explicite à ajouter,
-    ou chemin par `subject`) ?
-  [?] Empreinte SHA-256 brute sans sel : acceptable pour les secrets @generate_token (`256` bits,
-    préimage impossible), mais un secret @ensure_token à faible entropie (token d'environnement
-    type @ensure_service_account) est dict-attaquable hors ligne depuis un dump de
-    `miryad_api_tokens`. Trace-t-on SHA-256 brut comme contrat (avec consigne d'entropie dehors),
-    ou prépare-t-on HMAC/stretching en feature suivante ?
-  [?] Course validation/révocation : l'UPDATE `last_used_at` qui ne trouve plus la ligne sort en
-    `MRD-AUTH-016` (HTTP 500) au lieu d'un `MRD-AUTH-014` propre. Traite-t-on @DbErr::RecordNotUpdated
-    comme un token invalidé à la validation, ou le tir de requête concurrente rare reste-t-il un
-    500 assumé ?
-  [?] Couplage d'écriture : @validate_token échoue (`MRD-AUTH-016`) si la pose de `last_used_at`
-    échoue alors que le secret est bon. Le contrat est-il bien « usage réussi = écriture réussie »
-    ou la validation doit-elle tolérer la panne d'horodatage (et `last_used_at` devient
-    best-effort) ?
-  [?] Aucune purge nulle part dans la crate : les lignes expirées s'accumulent avec leur
-    empreinte (slot UNIQUE occupé à vie) et la suppression physique des révoqués rend leur sort
-    définitif. Gel-t-on l'indiscernabilité révoqué/inconnu (zéro traçabilité après révocation) et
-    l'absence de purge des expirés, ou une feature purge/audit est-elle à arbitrer dans la
-    roadmap ?
-  [?] @email rendu par @validate_token est toujours @None sur la voie token alors que le
-    principal de session en porte un : asymétrie de principal gelée, ou jointure vers l'email
-    connu des comptes à planifier ?
+    @ensure_token_on_existing_hash_under_another_subject_is_rejected ;
+    @ensure_token_accepts_out_of_format_secret ; @different_pepper_never_matches_same_secret ;
+    @revocation_during_validation_race_yields_invalid_token_not_database ;
+    @last_used_at_write_failure_is_absorbed_and_validation_still_succeeds
+  [ ] Poivre HMAC obligatoire (arbitré 2026-09-27, `Purpose`, `Must`) : ajouter `pepper: &str` à
+    @issue_token, @validate_token, @ensure_token et @hash_token ; remplacer @Sha256::digest par
+    @Hmac::<@Sha256>::new_from_slice(pepper).chain_update(secret).finalize() ; ajouter la dépendance
+    `hmac` à /Cargo.toml. Pas de valeur par défaut en dur — sa provenance est
+    `MiryadAuthState::token_pepper` (champ ajouté le 2026-09-27, ./state.sdd `Must` — décision
+    finalisée), sourcée d'une variable d'environnement côté app. Conséquence acceptée : les tokens
+    émis avant ce changement deviennent invalides (API pré-`1.0`, pas de double-schéma de
+    migration).
+  [ ] `ensure_token` rejette une empreinte détenue par un autre `subject` (arbitré 2026-09-27,
+    `Handles`, `Raises`) : code d'erreur réservé `MRD-AUTH-017` (provisoire), nom de variante et
+    format à finaliser avec le cluster erreurs/observabilité de ./error.sdd.
+  [ ] Course validation/révocation → `InvalidToken` au lieu de `Database` (arbitré 2026-09-27,
+    `Raises`, `Handles`) : ne matcher que @DbErr::RecordNotUpdated et @DbErr::RecordNotFound sur
+    l'`UPDATE` de `last_used_at`, toute autre @DbErr sur ce même appel devenant best-effort
+    (tâche suivante).
+  [ ] `last_used_at` best-effort (arbitré 2026-09-27, `Raises`, `Handles`) : toute @DbErr autre que
+    @DbErr::RecordNotUpdated/@DbErr::RecordNotFound sur l'`UPDATE` de `last_used_at` est absorbée,
+    @validate_token rend @Ok malgré tout.
+  [x] SHA-256 brut sans sel : remplacé par le poivre HMAC obligatoire ci-dessus (arbitré
+    2026-09-27) — plus de contrat « SHA-256 nu » à documenter séparément, aucun key-stretching
+    supplémentaire (Argon2/scrypt) ajouté, jugé disproportionné vu la protection du poivre.
+  [x] Absence de purge : confirmée comme état actuel gelé pour cette version mineure — aucune
+    purge des expirés ni traçabilité après révocation. Une feature purge/audit reste un sujet de
+    roadmap séparé, hors de cette spec.
+  [x] Asymétrie d'email token/session : confirmée comme fait architectural, pas un bug — un token
+    n'a jamais connu d'email (non demandé, non stocké à l'émission) ; le chemin session ne joint
+    pas non plus `users`, il lit le cookie posé au login OIDC. Une vraie parité demanderait une
+    colonne `email` optionnelle à l'émission, hors de cette spec.
 
 Done when:
-  Les `17` `Scenario` sont chacun vérifiés par un test nommé distinct de la liste `Tasks`, joués
+  Les `20` `Scenario` sont chacun vérifiés par un test nommé distinct de la liste `Tasks`, joués
     verts par la batterie /tooling.sdd sur toutes les combinaisons de features (le fichier n'a
-    aucun gating, chaque combinaison doit le compiler), la surface publique
-    (signatures, types, absence de @cfg) inchangée depuis l'approbation, chaque `[?]` de `Tasks`
-    tranché par Sébastien, et la spec approuvée par lui.
+    aucun gating, chaque combinaison doit le compiler), la surface publique (signatures avec
+    `pepper`, types, absence de @cfg) conforme à l'arbitrage du 2026-09-27, chaque décision de
+    `Tasks` reflétée dans le contrat, et la spec approuvée par Sébastien.
 
 Scenario: secret émis par @issue_token
   Given une base `miryad_api_tokens` vide
@@ -270,12 +327,20 @@ Scenario: deux émissions ne partagent jamais le même secret
   Then les deux secrets rendus sont distincts
   And deux lignes distinctes existent avec deux @token_hash distincts
 
-Scenario: seule l'empreinte SHA-256 hex minuscule est persistée
-  Given un @issue_token réussi sur une base vide
+Scenario: seule l'empreinte HMAC-SHA256 poivrée hex minuscule est persistée
+  Given un @issue_token réussi sur une base vide avec un poivre `pepper-1`
   When la ligne est relue par son PK
   Then @token_hash vaut exactement `64` caractères hex minuscules
-  And il est égal à @hex::encode(@sha2::Sha256::digest) du secret clair préfixe inclus
-  But aucune colonne de la ligne ne contient le secret clair
+  And il est égal à @hex::encode(@Hmac::<@Sha256>::new_from_slice(`pepper-1`).chain_update(secret
+    clair préfixe inclus).finalize())
+  But aucune colonne de la ligne ne contient le secret clair ni le poivre
+
+Scenario: un poivre différent ne retrouve jamais le même secret
+  Given un @issue_token réussi avec le poivre `pepper-1`
+  When @validate_token est appelé sur le secret clair rendu, avec le poivre `pepper-2`
+  Then @AuthError::InvalidToken est rendu — l'empreinte calculée sous `pepper-2` ne correspond à
+    aucune ligne, un changement de poivre invalide silencieusement tous les tokens existants
+    (arbitré 2026-09-27)
 
 Scenario: la ligne émise porte son intitulé
   Given une base vide
@@ -357,16 +422,36 @@ Scenario: @ensure_token est idempotent sur sa propre empreinte
   And exactement une ligne porte cette empreinte
   And @created_at de cette ligne est inchangé
 
-Scenario: @ensure_token sur une empreinte déjà détenue par un autre titulaire
+Scenario: @ensure_token sur une empreinte déjà détenue par un autre titulaire est rejeté
   Given un @ensure_token réussi posant la valeur X pour @subject `svc-a`
-  When @ensure_token est appelé pour @subject `svc-b` avec la même valeur X
-  Then @Ok est rendu
-  But aucune ligne `svc-b` n'existe et la seule ligne de l'empreinte X porte @subject `svc-a`
-  And @validate_token(X) rend le principal `svc-a` — contrat gelé seulement après tranché `[?]`
+  When @ensure_token est appelé pour @subject `svc-b` avec la même valeur X (même poivre)
+  Then une erreur explicite est rendue (`MRD-AUTH-017` provisoire, arbitré 2026-09-27) — plus le
+    no-op silencieux d'avant cette date
+  And aucune ligne `svc-b` n'existe et la seule ligne de l'empreinte X porte toujours @subject
+    `svc-a`, inchangée
+  And @validate_token(X) rend toujours le principal `svc-a`
 
 Scenario: @ensure_token accepte une valeur hors format
   Given une base vide
   When @ensure_token est appelé avec @subject `svc`, @name `label` et la valeur
     `secret humain avec espaces et accents`, sans préfixe `mrd_`
   Then @Ok est rendu
-  And @validate_token sur cette même valeur exacte rend @Ok avec @subject `svc`
+  And @validate_token sur cette même valeur exacte, avec le même poivre, rend @Ok avec @subject
+    `svc`
+
+Scenario: révocation en pleine validation rend InvalidToken, pas Database
+  Given un token émis valide, révoqué entre la lecture par @validate_token et l'`UPDATE` de
+    `last_used_at` (ligne supprimée par un second appel de @revoke_token piloté dans le test, ou
+    fixture qui force @DbErr::RecordNotUpdated)
+  When @validate_token termine son `UPDATE`
+  Then @AuthError::InvalidToken (`MRD-AUTH-014`) est rendu, plus jamais @AuthError::Database
+    (`MRD-AUTH-016`) — arbitré 2026-09-27, la ligne a été révoquée légitimement pendant la requête
+
+Scenario: l'échec de l'horodatage `last_used_at` n'invalide pas une authentification par ailleurs correcte
+  Given un token émis valide et une panne simulée de l'`UPDATE` de `last_used_at` qui n'est ni
+    `RecordNotUpdated` ni `RecordNotFound` (ex. une erreur de connexion transitoire, ligne toujours
+    présente)
+  When @validate_token est appelé sur le secret clair
+  Then @Ok est rendu avec l'@AuthPrincipal attendu — le secret était valide, la panne de
+    bookkeeping n'invalide pas la décision de sécurité déjà prise (arbitré 2026-09-27)
+  But `last_used_at` de la ligne n'est pas mis à jour
