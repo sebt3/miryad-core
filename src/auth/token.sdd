@@ -213,8 +213,8 @@ Raises:
   @AuthError::TokenExpired (`MRD-AUTH-015`) : @validate_token quand la ligne trouvée porte un
     `expires_at` @Some antérieur ou égal à l'instant de validation (condition `<=` à borne
     inclusive, évaluée en Rust)
-  Nouveau code réservé le 2026-09-27, exact nom de variante et format à finaliser avec le cluster
-    erreurs/observabilité de ./error.sdd (`MRD-AUTH-017` provisoire) — @ensure_token quand
+  @AuthError::TokenHashConflict (`MRD-AUTH-017`, `409` — variante nommée et littéral @Display
+    finalisés avec Sébastien le 2026-09-27, cf. ./error.sdd) — @ensure_token quand
     l'empreinte de la valeur fournie existe déjà en base sous un `subject` différent de celui
     demandé : rejet explicite au lieu du no-op silencieux d'avant le 2026-09-27 (`Handles`, `Tasks`)
   Aucune autre variante ne naît ici : @NotAuthenticated, @InvalidSession et @Oidc appartiennent
@@ -286,8 +286,8 @@ Tasks:
     émis avant ce changement deviennent invalides (API pré-`1.0`, pas de double-schéma de
     migration).
   [ ] `ensure_token` rejette une empreinte détenue par un autre `subject` (arbitré 2026-09-27,
-    `Handles`, `Raises`) : code d'erreur réservé `MRD-AUTH-017` (provisoire), nom de variante et
-    format à finaliser avec le cluster erreurs/observabilité de ./error.sdd.
+    `Handles`, `Raises`) : variante @AuthError::TokenHashConflict (`MRD-AUTH-017`, `409`, finalisée
+    en session avec Sébastien le 2026-09-27, cf. ./error.sdd `Tasks`).
   [ ] Course validation/révocation → `InvalidToken` au lieu de `Database` (arbitré 2026-09-27,
     `Raises`, `Handles`) : ne matcher que @DbErr::RecordNotUpdated et @DbErr::RecordNotFound sur
     l'`UPDATE` de `last_used_at`, toute autre @DbErr sur ce même appel devenant best-effort

@@ -2,7 +2,7 @@ Spec: error — type @AuthError du module auth : codes `MRD-AUTH-NNN`, mapping v
 
 Purpose:
   Centraliser les échecs du module auth — flow OIDC, cookie de session, tokens API, extracteurs
-    axum — dans un seul type public @AuthError à huit variantes (révisé le 2026-09-27, deux
+    axum — dans un seul type public @AuthError à neuf variantes (révisé le 2026-09-27, trois
     variantes ajoutées, `Tasks`), chacune portant un code unique `MRD-AUTH-NNN` dans sa @Display,
     et définir leur rendu HTTP via @IntoResponse : statut exact, corps texte égal à la @Display,
     aucune trace. Le fichier ne construit lui-même aucune erreur : il reçoit celles de ./cookie.rs,
@@ -46,7 +46,7 @@ References:
 
 Must:
   Table de rendu invariante et exhaustive, sans `match` à joker, révisée le 2026-09-27 — ce match
-    de @into_response liste les huit variantes nommément, donc l'ajout d'une variante interrompt la
+    de @into_response liste les neuf variantes nommément, donc l'ajout d'une variante interrompt la
     compilation jusqu'à son arbitrage de statut :
     @AuthError::NotAuthenticated → `401` (@StatusCode::UNAUTHORIZED)
     @AuthError::InvalidSession → `401` (@StatusCode::UNAUTHORIZED)
@@ -57,6 +57,9 @@ Must:
       (`MRD-AUTH-004` à `011`), plus `012`/`013` qui ont leur variante propre ci-dessus
     @AuthError::InvalidToken → `401` (@StatusCode::UNAUTHORIZED)
     @AuthError::TokenExpired → `401` (@StatusCode::UNAUTHORIZED)
+    @AuthError::TokenHashConflict → `409` (@StatusCode::CONFLICT, nouvelle variante 2026-09-27,
+      arbitrée en session avec Sébastien : l'empreinte est une ressource déjà allouée à un autre
+      `subject`)
     @AuthError::Database, quel que soit son @sea_orm::DbErr → `500` (@StatusCode::INTERNAL_SERVER_ERROR)
   Corps de réponse = octets exacts de la @Display de la variante, sans enveloppe ni caractère
     ajouté ; en-tête `Content-Type` = `text/plain; charset=utf-8`, vérifié dans le source
@@ -78,6 +81,8 @@ Must:
       (`004` à `011`), arbitré et clarifié le 2026-09-27 (`Tasks`)
     @AuthError::InvalidToken : `MRD-AUTH-014: invalid or unknown API token`
     @AuthError::TokenExpired : `MRD-AUTH-015: expired API token`
+    @AuthError::TokenHashConflict : `MRD-AUTH-017: token hash already provisioned for another
+      subject` (littéral exact arbitré en session avec Sébastien le 2026-09-27)
     @AuthError::Database : préfixe `MRD-AUTH-016: database error: ` suivi de la @Display de
       @sea_orm::DbErr embarqué — un @sea_orm::DbErr::Custom de texte `boom` rend exactement
       `MRD-AUTH-016: database error: Custom Error: boom`, préfixe `Custom Error: ` vérifié dans le
@@ -91,7 +96,7 @@ Must:
     charge utile
   @Error::source ne vaut @Some que pour @AuthError::Database, et retourne alors le
     @sea_orm::DbErr embarqué — sémantique vérifiée dans le source de thiserror-impl 2.0.20
-    (`prop.rs::source_field` compte un champ `#[from]` comme source) ; les sept autres variantes
+    (`prop.rs::source_field` compte un champ `#[from]` comme source) ; les huit autres variantes
     valent @None, y compris @AuthError::Oidc dont la charge utile @String n'est pas une source
   Rendu sans défaillance : @into_response consomme `self` par valeur et retourne un
     @axum::response::Response — aucun chemin d'échec, aucun repli ; statut et corps proviennent
@@ -138,7 +143,7 @@ Depends on:
     dans sea-orm 2.0.2)
 
 Exposes:
-  @AuthError — enum `pub` à huit variantes (révisé 2026-09-27), derives @Debug et
+  @AuthError — enum `pub` à neuf variantes (révisé 2026-09-27), derives @Debug et
     @thiserror::Error uniquement ; ni @Clone ni @PartialEq : les consommateurs matchent sur la
     valeur ou la référence
     @AuthError — il n'existe aucun autre `impl` de ce type dans la crate, @IntoResponse est le seul
@@ -153,12 +158,15 @@ Exposes:
     en sont sortis le 2026-09-27, `Must`)
   @AuthError::InvalidToken — variante unitaire, code `MRD-AUTH-014`
   @AuthError::TokenExpired — variante unitaire, code `MRD-AUTH-015`
+  @AuthError::TokenHashConflict — variante unitaire (nouvelle, 2026-09-27), code `MRD-AUTH-017`,
+    `409` ; construite par ./token.rs (@ensure_token) quand l'empreinte fournie existe déjà en base
+    sous un `subject` différent (remplace le no-op silencieux, cf. ./token.sdd `Tasks`)
   @AuthError::Database — variante tuple d'un @sea_orm::DbErr sous `#[from]`, code `MRD-AUTH-016`
   @IntoResponse pour @AuthError — la conversion HTTP définie ici, seule implémentation manuelle du
     fichier
   @From<@sea_orm::DbErr> pour @AuthError — conversion générée par `#[from]`, empruntée par
     l'opérateur `?` de tout appel SeaORM du module et de @graphql_handler
-  @Display publique dérivée — les huit messages portant code listés dans `Must`
+  @Display publique dérivée — les neuf messages portant code listés dans `Must`
 
 Accepts:
   @IntoResponse::into_response : `self` par valeur — l'erreur est mue, plus aucune inspection
@@ -200,11 +208,15 @@ Raises:
     ligne ne correspond au hash reçu — token inconnu comme token révoqué
   `MRD-AUTH-015` via @AuthError::TokenExpired : émis par @validate_token quand l'enregistrement a
     un `expires_at` antérieur ou égal à @Utc::now
+  `MRD-AUTH-017` via @AuthError::TokenHashConflict (variante propre depuis le 2026-09-27, `409`) :
+    émis par @ensure_token (./token.rs) quand l'empreinte de la valeur fournie existe déjà en base
+    sous un `subject` différent de celui demandé — rejet explicite au lieu du no-op silencieux
+    (arbitré en session avec Sébastien le 2026-09-27)
   `MRD-AUTH-016` via @AuthError::Database : produit par l'opérateur `?` sur l'insertion de
     @issue_token, les requêtes de @validate_token, la suppression de @revoke_token, les deux
     chemins de @ensure_token (./token.rs), et sur le @sea_orm::DbErr de @load_principal remonté par
     @graphql_handler (/src/graphql/handler.rs)
-  Ce fichier lui-même ne construit aucune variante : les huit codes naissent tous chez les
+  Ce fichier lui-même ne construit aucune variante : les neuf codes naissent tous chez les
     appelants cités en `References`
 
 Handles:
@@ -229,6 +241,12 @@ Handles:
     /src/graphql/handler.sdd (gelé) et /src/mcp/handler.sdd (actif, à traiter séparément)
 
 Tasks:
+  [ ] Troisième variante ajoutée sur arbitrage en session avec Sébastien (2026-09-27) :
+    @AuthError::TokenHashConflict (`MRD-AUTH-017`, `409` @StatusCode::CONFLICT, variante unitaire,
+    littéral `MRD-AUTH-017: token hash already provisioned for another subject`) — émise par
+    @ensure_token (./token.sdd `Tasks`, rejet de l'empreinte détenue par un autre `subject`),
+    @Error::source @None. Consommateur aval : @to_rest_error de /src/rest/tokens.rs doit mapper
+    cette variante.
   [ ] Deux nouvelles variantes @AuthError::InvalidCallback (`MRD-AUTH-012`, `400`) et
     @AuthError::CsrfMismatch (`MRD-AUTH-013`, `400`) — arbitré 2026-09-27, `Must`, `Exposes`,
     `Raises`. Cross-file avec ./mod.sdd : les deux points de construction actuels
@@ -248,7 +266,8 @@ Tasks:
   [x] Asymétrie d'enveloppe GraphQL/MCP : confirmée hors du périmètre de ce fichier (2026-09-27,
     `Must`, `Handles`) — fix éventuel dans /src/graphql/handler.sdd (gelé, prototype) et
     /src/mcp/handler.sdd (surface active, à traiter dans un futur batch MCP).
-  [ ] Convertir les 18 `Scenario` (14 originaux, 4 nés des deux nouvelles variantes) en au moins 18
+  [ ] Convertir les 20 `Scenario` (14 originaux, 4 nés des deux variantes `400`, 2 nés de
+    @AuthError::TokenHashConflict) en au moins 20
     tests distincts nommés dans le `mod tests` `#[cfg(test)]` inline de ./error.rs : le fichier
     compte zéro test inline à ce jour ; écarts à couvrir intégralement, les 5 tests siblings qui
     affirment déjà un statut (./middleware.rs un `401`, ./dual.rs deux `401`, ./mod.rs deux `502`
@@ -259,7 +278,7 @@ Tasks:
     ./mod.rs) — le contrat ne déborde pas du fichier, aucun test d'intégration séparé requis
 
 Done when:
-  Les 18 `Scenario` ont chacun au moins un test nommé distinct et vert dans le `mod tests` de
+  Les 20 `Scenario` ont chacun au moins un test nommé distinct et vert dans le `mod tests` de
     ./error.rs, sur features par défaut comme sur `--no-default-features` (fichier inconditionnel)
   La table variante → code → statut → corps → `Content-Type` et la distinction de @Error::source
     sont affirmées par les tests sans réinterprétation : assertion par chaîne exacte, pas de
@@ -268,7 +287,9 @@ Done when:
     @tracing, @println, @dbg)
   Les cinq lignes `[?]` de `Tasks` sont toutes arbitrées par Sébastien le 2026-09-27 : une change
     la structure de l'enum et reste à câbler avec ./mod.sdd (deux nouvelles variantes, `400`), les
-    quatre autres clarifient ou confirment le contrat sans changer le code de ce fichier
+    quatre autres clarifient ou confirment le contrat sans changer le code de ce fichier ;
+    s'ajoute la troisième variante @AuthError::TokenHashConflict (`MRD-AUTH-017`, `409`) arbitrée
+    en session avec Sébastien le 2026-09-27 pour porter le rejet de @ensure_token (./token.sdd)
 
 Scenario: Display 001 cookie de session absent
   Given l'erreur @AuthError::NotAuthenticated construite directement
@@ -375,10 +396,22 @@ Scenario: erreur SeaORM convertie par l'opérateur de propagation
   And sa @Display vaut exactement `MRD-AUTH-016: database error: Custom Error: connection lost`
 
 Scenario: source présente sur 016 seulement
-  Given une valeur de chacune des huit variantes de @AuthError (révisé 2026-09-27),
+  Given une valeur de chacune des neuf variantes de @AuthError (révisé 2026-09-27),
     @AuthError::Database encapsulant @sea_orm::DbErr::Custom de texte `boom`
   When @Error::source est appelée sur chacune
   Then la réponse est @Some, égal au @sea_orm::DbErr embarqué, pour @AuthError::Database seulement
     (`#[from]` vaut `#[source]`, vérifié dans le source de thiserror-impl 2.0.20)
-  But la réponse est @None pour les sept autres variantes, @AuthError::Oidc,
-    @AuthError::InvalidCallback et @AuthError::CsrfMismatch compris
+  But la réponse est @None pour les huit autres variantes, @AuthError::Oidc,
+    @AuthError::InvalidCallback, @AuthError::CsrfMismatch et @AuthError::TokenHashConflict compris
+
+Scenario: Display 017 empreinte détenue par un autre sujet
+  Given l'erreur @AuthError::TokenHashConflict construite directement
+  When la @Display est évaluée par `to_string`
+  Then la chaîne renvoyée est exactement `MRD-AUTH-017: token hash already provisioned for another subject`
+
+Scenario: rendu HTTP 409 pour 017
+  Given l'erreur @AuthError::TokenHashConflict
+  When @IntoResponse::into_response est appelée
+  Then le statut est `409` (arbitré en session avec Sébastien le 2026-09-27)
+  And le corps lu par @axum::body::to_bytes est exactement `MRD-AUTH-017: token hash already provisioned for another subject`
+  And l'en-tête @CONTENT_TYPE vaut `text/plain; charset=utf-8`
