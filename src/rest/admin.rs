@@ -146,7 +146,7 @@ mod tests {
             post_logout_redirect: "/".to_string(),
             db,
             secure_cookies: false,
-            token_pepper: String::new(),
+            token_pepper: "test-pepper".to_string(),
         }
     }
 
@@ -192,7 +192,7 @@ mod tests {
             .await
             .expect("resolve succeeds");
 
-        let token = issue_token(&db, "admin-sub", "test", None)
+        let token = issue_token(&db, "admin-sub", "test", None, "test-pepper")
             .await
             .expect("issuing succeeds")
             .token;
@@ -236,7 +236,7 @@ mod tests {
         resolve_user(&db, "alice-sub", None)
             .await
             .expect("resolve succeeds");
-        let token = issue_token(&db, "alice-sub", "test", None)
+        let token = issue_token(&db, "alice-sub", "test", None, "test-pepper")
             .await
             .expect("issuing succeeds")
             .token;
@@ -265,7 +265,7 @@ mod tests {
         }
         // 4 utilisateurs au total (admin + 3) — page 2 à per_page=3 ne renvoie que le dernier.
 
-        let token = issue_token(&db, "admin-sub", "test", None)
+        let token = issue_token(&db, "admin-sub", "test", None, "test-pepper")
             .await
             .expect("issuing succeeds")
             .token;

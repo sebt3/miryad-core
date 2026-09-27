@@ -78,7 +78,7 @@ mod tests {
             post_logout_redirect: "/".to_string(),
             db,
             secure_cookies: false,
-            token_pepper: String::new(),
+            token_pepper: "test-pepper".to_string(),
         }
     }
 
@@ -113,7 +113,7 @@ mod tests {
         sync_group_memberships(&db, alice.id, &["admin".to_string()])
             .await
             .expect("sync succeeds");
-        let token = issue_token(&db, "alice-sub", "test", None)
+        let token = issue_token(&db, "alice-sub", "test", None, "test-pepper")
             .await
             .expect("issuing succeeds")
             .token;
@@ -142,7 +142,7 @@ mod tests {
         sync_group_memberships(&db, bob.id, &["admin".to_string()])
             .await
             .expect("sync succeeds");
-        let token = issue_token(&db, "admin-sub", "test", None)
+        let token = issue_token(&db, "admin-sub", "test", None, "test-pepper")
             .await
             .expect("issuing succeeds")
             .token;

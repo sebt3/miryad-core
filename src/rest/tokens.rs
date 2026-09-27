@@ -115,9 +115,15 @@ async fn create_token_handler(
     principal: AuthPrincipal,
     Json(body): Json<CreateTokenBody>,
 ) -> Result<Json<CreatedToken>, RestError> {
-    let issued = issue_token(&auth.db, &principal.subject, &body.name, body.expires_at)
-        .await
-        .map_err(to_rest_error)?;
+    let issued = issue_token(
+        &auth.db,
+        &principal.subject,
+        &body.name,
+        body.expires_at,
+        &auth.token_pepper,
+    )
+    .await
+    .map_err(to_rest_error)?;
     Ok(Json(CreatedToken {
         id: issued.id,
         token: issued.token,
@@ -167,7 +173,7 @@ mod tests {
             post_logout_redirect: "/".to_string(),
             db,
             secure_cookies: false,
-            token_pepper: String::new(),
+            token_pepper: "test-pepper".to_string(),
         }
     }
 
@@ -201,7 +207,7 @@ mod tests {
     #[tokio::test]
     async fn create_then_list_returns_the_token_without_the_cleartext_value() {
         let db = test_db().await;
-        let bootstrap = issue_token(&db, "alice", "bootstrap", None)
+        let bootstrap = issue_token(&db, "alice", "bootstrap", None, "test-pepper")
             .await
             .expect("issuing succeeds")
             .token;
@@ -240,11 +246,11 @@ mod tests {
     #[tokio::test]
     async fn list_only_returns_the_caller_own_tokens() {
         let db = test_db().await;
-        let alice_token = issue_token(&db, "alice", "alice's token", None)
+        let alice_token = issue_token(&db, "alice", "alice's token", None, "test-pepper")
             .await
             .expect("issuing succeeds")
             .token;
-        issue_token(&db, "bob", "bob's token", None)
+        issue_token(&db, "bob", "bob's token", None, "test-pepper")
             .await
             .expect("issuing succeeds");
         let app = app(test_state(db));
@@ -261,11 +267,11 @@ mod tests {
     #[tokio::test]
     async fn owner_can_revoke_their_own_token() {
         let db = test_db().await;
-        let alice_token = issue_token(&db, "alice", "alice's token", None)
+        let alice_token = issue_token(&db, "alice", "alice's token", None, "test-pepper")
             .await
             .expect("issuing succeeds")
             .token;
-        let to_revoke = issue_token(&db, "alice", "to revoke", None)
+        let to_revoke = issue_token(&db, "alice", "to revoke", None, "test-pepper")
             .await
             .expect("issuing succeeds");
         let app = app(test_state(db));
@@ -293,11 +299,11 @@ mod tests {
     #[tokio::test]
     async fn cannot_revoke_someone_else_token() {
         let db = test_db().await;
-        let alice_token = issue_token(&db, "alice", "alice's token", None)
+        let alice_token = issue_token(&db, "alice", "alice's token", None, "test-pepper")
             .await
             .expect("issuing succeeds")
             .token;
-        let bobs_token = issue_token(&db, "bob", "bob's token", None)
+        let bobs_token = issue_token(&db, "bob", "bob's token", None, "test-pepper")
             .await
             .expect("issuing succeeds");
         let db_check = db.clone();
@@ -315,7 +321,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
         // toujours vivant, jamais révoqué par l'appelante non-propriétaire.
-        let principal = crate::auth::validate_token(&db_check, &bobs_token.token)
+        let principal = crate::auth::validate_token(&db_check, &bobs_token.token, "test-pepper")
             .await
             .expect("bob's token remains valid");
         assert_eq!(principal.subject, "bob");
@@ -324,7 +330,7 @@ mod tests {
     #[tokio::test]
     async fn deleting_an_unknown_token_returns_not_found() {
         let db = test_db().await;
-        let alice_token = issue_token(&db, "alice", "alice's token", None)
+        let alice_token = issue_token(&db, "alice", "alice's token", None, "test-pepper")
             .await
             .expect("issuing succeeds")
             .token;

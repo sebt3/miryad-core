@@ -27,7 +27,7 @@ where
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
         {
-            return validate_token(&auth_state.db, token).await;
+            return validate_token(&auth_state.db, token, &auth_state.token_pepper).await;
         }
 
         let cookie_header = parts
@@ -138,7 +138,7 @@ mod tests {
     #[tokio::test]
     async fn bearer_token_authenticates() {
         let state = test_state().await;
-        let issued = issue_token(&state.db, "token-user", "test", None)
+        let issued = issue_token(&state.db, "token-user", "test", None, &state.token_pepper)
             .await
             .expect("issuing succeeds");
 
@@ -216,7 +216,7 @@ mod tests {
     #[tokio::test]
     async fn bearer_header_wins_over_cookie_when_both_present() {
         let state = test_state().await;
-        let issued = issue_token(&state.db, "token-user", "test", None)
+        let issued = issue_token(&state.db, "token-user", "test", None, &state.token_pepper)
             .await
             .expect("issuing succeeds");
         let cookie = valid_session_cookie(&state);

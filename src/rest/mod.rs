@@ -437,7 +437,7 @@ mod tests {
             post_logout_redirect: "/".to_string(),
             db,
             secure_cookies: false,
-            token_pepper: String::new(),
+            token_pepper: "test-pepper".to_string(),
         }
     }
 
@@ -452,7 +452,7 @@ mod tests {
     }
 
     async fn bearer_for(db: &DatabaseConnection, subject: &str) -> String {
-        issue_token(db, subject, "test", None)
+        issue_token(db, subject, "test", None, "test-pepper")
             .await
             .expect("issuing succeeds")
             .token

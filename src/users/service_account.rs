@@ -11,6 +11,9 @@ use crate::users::user::resolve_user;
 /// typiquement lue d'une variable d'environnement, pour que l'automatisation de déploiement
 /// connaisse le secret à l'avance sans devoir le récupérer après coup.
 ///
+/// `pepper` : poivre HMAC des empreintes (cf. `auth::token`) — en pratique
+/// `MiryadAuthState::token_pepper`, transmis à `ensure_token` (arbitrage 2026-09-27).
+///
 /// Pensée pour être appelée par l'app cible à son démarrage, après ses migrations, uniquement si
 /// elle le décide. Idempotent : rejouable à chaque démarrage sans dupliquer ni le compte, ni ses
 /// appartenances de groupe, ni le token.
@@ -21,10 +24,11 @@ pub async fn ensure_service_account(
     token_name: &str,
     groups: &[String],
     expires_at: Option<DateTimeUtc>,
+    pepper: &str,
 ) -> Result<(), DbErr> {
     let user = resolve_user(db, subject, None).await?;
     sync_group_memberships(db, user.id, groups).await?;
-    ensure_token(db, subject, token_name, token, expires_at)
+    ensure_token(db, subject, token_name, token, expires_at, pepper)
         .await
         .map_err(|e| match e {
             crate::auth::AuthError::Database(db_err) => db_err,
@@ -59,11 +63,12 @@ mod tests {
             "bootstrap",
             &["admin".to_string()],
             None,
+            "test-pepper",
         )
         .await
         .expect("provisioning succeeds");
 
-        let principal = validate_token(&db, "mrd_bootstrap-secret")
+        let principal = validate_token(&db, "mrd_bootstrap-secret", "test-pepper")
             .await
             .expect("token authenticates");
         assert_eq!(principal.subject, "system:kuberest");
@@ -85,6 +90,7 @@ mod tests {
                 "bootstrap",
                 &["admin".to_string()],
                 None,
+                "test-pepper",
             )
             .await
             .expect("provisioning succeeds");
@@ -104,9 +110,17 @@ mod tests {
     #[tokio::test]
     async fn rotating_the_secret_adds_a_new_token_without_removing_the_old_one() {
         let db = test_db().await;
-        ensure_service_account(&db, "system:kuberest", "mrd_first-secret", "bootstrap", &[], None)
-            .await
-            .expect("first provisioning succeeds");
+        ensure_service_account(
+            &db,
+            "system:kuberest",
+            "mrd_first-secret",
+            "bootstrap",
+            &[],
+            None,
+            "test-pepper",
+        )
+        .await
+        .expect("first provisioning succeeds");
         ensure_service_account(
             &db,
             "system:kuberest",
@@ -114,11 +128,20 @@ mod tests {
             "bootstrap",
             &[],
             None,
+            "test-pepper",
         )
         .await
         .expect("second provisioning succeeds");
 
-        assert!(validate_token(&db, "mrd_first-secret").await.is_ok());
-        assert!(validate_token(&db, "mrd_second-secret").await.is_ok());
+        assert!(
+            validate_token(&db, "mrd_first-secret", "test-pepper")
+                .await
+                .is_ok()
+        );
+        assert!(
+            validate_token(&db, "mrd_second-secret", "test-pepper")
+                .await
+                .is_ok()
+        );
     }
 }
