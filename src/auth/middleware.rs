@@ -66,6 +66,8 @@ mod tests {
             post_login_redirect: "/".to_string(),
             post_logout_redirect: "/".to_string(),
             db: mock_db(),
+            secure_cookies: false,
+            token_pepper: String::new(),
         }
     }
 
@@ -123,6 +125,8 @@ mod tests {
                 post_login_redirect: "/".to_string(),
                 post_logout_redirect: "/".to_string(),
                 db: mock_db(),
+                secure_cookies: false,
+                token_pepper: String::new(),
             });
         let req = Request::builder()
             .uri("/protected")

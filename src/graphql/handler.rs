@@ -92,6 +92,8 @@ mod tests {
             post_login_redirect: "/".to_string(),
             post_logout_redirect: "/".to_string(),
             db,
+            secure_cookies: false,
+            token_pepper: String::new(),
         }
     }
 

@@ -175,6 +175,8 @@ mod tests {
             post_logout_redirect: "/".to_string(),
             // Ces tests n'exercent que le flow cookie/OIDC — aucune requête n'atteint la base.
             db: sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Sqlite).into_connection(),
+            secure_cookies: false,
+            token_pepper: String::new(),
         }
     }
 
