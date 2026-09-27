@@ -38,15 +38,24 @@ where
 }
 
 /// Autorisation de créer un nouvel enregistrement (feature 4) — il n'y en a pas encore à
-/// comparer, donc pas de vérification par propriétaire : `OwnerOnly` autorise toujours la
-/// création (le créateur devient le propriétaire), seules `Group`/`AdminOnly` filtrent selon
-/// l'appartenance.
+/// comparer, donc pas de vérification par propriétaire : `OwnerOnly` avec `owner_column` déclarée
+/// autorise la création (le créateur devient le propriétaire). Sans colonne déclarée, la création
+/// est refusée (`false`) hors admin — fail-closed arbitré le 2026-09-27, cohérent avec
+/// `evaluate` et [`list_access`] sur la même combinaison ; le raccourci admin reste valable sur
+/// ce chemin (une seule requête [`is_admin`]). `Group`/`AdminOnly` filtrent selon l'appartenance.
 pub async fn can_create<E>(db: &DatabaseConnection, user: &user::Model) -> Result<bool, DbErr>
 where
     E: MiryadResource,
 {
     match E::write_policy() {
-        AccessPolicy::Public | AccessPolicy::OwnerOnly => Ok(true),
+        AccessPolicy::Public => Ok(true),
+        AccessPolicy::OwnerOnly => {
+            if E::owner_column().is_some() {
+                return Ok(true);
+            }
+            // Colonne absente : fail-closed pour un non-admin, le raccourci admin passe.
+            is_admin(db, user.id).await
+        }
         AccessPolicy::AdminOnly => is_admin(db, user.id).await,
         AccessPolicy::Group(name) => {
             if is_admin(db, user.id).await? {
@@ -54,6 +63,49 @@ where
             }
             is_member(db, user.id, name).await
         }
+    }
+}
+
+/// Verdict décidable **sans enregistrement** (arbitré 2026-09-27, factorisation extraite de
+/// [`evaluate`]) : `Public` → `Some(true)` avant toute requête ; admin → `Some(true)` ;
+/// `AdminOnly` hors admin → `Some(false)` ; `Group` → `Some` du résultat de [`is_member`] ;
+/// `OwnerOnly` → `None` — la décision requiert un enregistrement, y compris quand
+/// [`MiryadResource::owner_column`] est `None` (la branche fail-closed reste dans [`evaluate`],
+/// qui a l'enregistrement). Consommée par [`evaluate`] et, avant toute lecture de ligne, par
+/// `rest::core` (fermeture de l'oracle d'existence, `./rest/core.sdd`).
+///
+/// # Errors
+///
+/// Propage toute [`DbErr`] de [`is_admin`] ou [`is_member`] : une panne d'infrastructure n'est
+/// jamais dégradée en refus silencieux.
+// `E` n'est utilisé qu'à l'appel (turbofish) pour épingler l'entité évaluée : signature imposée
+// par `rbac.sdd` `Exposes` (arbitré 2026-09-27).
+#[allow(clippy::extra_unused_type_parameters)]
+pub(crate) async fn static_verdict<E>(
+    db: &DatabaseConnection,
+    policy: AccessPolicy,
+    user: &user::Model,
+) -> Result<Option<bool>, DbErr>
+where
+    E: MiryadResource,
+{
+    if policy == AccessPolicy::Public {
+        return Ok(Some(true));
+    }
+    // L'admin l'emporte toujours sur les autres politiques (cf. feature 1, doc du trait
+    // MiryadResource : "+ les membres du groupe admin" sur OwnerOnly et Group(name)).
+    if is_admin(db, user.id).await? {
+        return Ok(Some(true));
+    }
+    match policy {
+        // Déjà rendu par le retour anticipé au-dessus, avant toute requête — le répéter évite
+        // d'ajouter un troisième `unreachable!` à la dette stricte tracée par `tooling.sdd`.
+        AccessPolicy::Public => Ok(Some(true)),
+        AccessPolicy::AdminOnly => Ok(Some(false)),
+        AccessPolicy::Group(name) => Ok(Some(is_member(db, user.id, name).await?)),
+        // Indécidable sans enregistrement : comparaison (et fail-closed sans colonne) restent
+        // dans `evaluate`.
+        AccessPolicy::OwnerOnly => Ok(None),
     }
 }
 
@@ -65,22 +117,16 @@ async fn evaluate<E>(
     record: &E::Model,
 ) -> Result<bool, DbErr>
 where
-    E: EntityTrait,
+    E: MiryadResource,
     E::Model: ModelTrait<Entity = E>,
 {
-    if policy == AccessPolicy::Public {
-        return Ok(true);
-    }
-    // L'admin l'emporte toujours sur les autres politiques (cf. feature 1, doc du trait
-    // MiryadResource : "+ les membres du groupe admin" sur OwnerOnly et Group(name)).
-    if is_admin(db, user.id).await? {
-        return Ok(true);
+    // Partie statique (Public, raccourci admin, AdminOnly, Group) partagée avec `rest::core`
+    // via `static_verdict` ; seul `OwnerOnly` rend `None` et tombe dans le match ci-dessous.
+    if let Some(verdict) = static_verdict::<E>(db, policy, user).await? {
+        return Ok(verdict);
     }
 
     match policy {
-        AccessPolicy::Public => unreachable!("handled above"),
-        AccessPolicy::AdminOnly => Ok(false),
-        AccessPolicy::Group(name) => is_member(db, user.id, name).await,
         AccessPolicy::OwnerOnly => {
             // Contrat feature 1 : `owner_column() == None` avec `OwnerOnly` est un comportement
             // non défini au niveau du trait — on choisit de refuser plutôt que de risquer un
@@ -91,6 +137,7 @@ where
             let owner_value = record.get(col);
             Ok(owner_value == sea_orm::Value::from(user.id))
         }
+        _ => unreachable!("handled above"),
     }
 }
 
@@ -246,6 +293,42 @@ mod tests {
             }
             fn owner_column() -> Option<Column> {
                 Some(Column::OwnerId)
+            }
+        }
+    }
+
+    /// `OwnerOnly` en lecture *et* écriture avec `owner_column() -> None` — la déclaration
+    /// incohérente arbitrée fail-closed le 2026-09-27, fixture du refus de `can_create` sur
+    /// cette combinaison (`memos` de `./rbac.sdd`).
+    mod memos {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+
+        #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+        #[sea_orm(table_name = "memos")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub body: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "memos"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn owner_column() -> Option<Column> {
+                None
             }
         }
     }
@@ -411,5 +494,78 @@ mod tests {
             list_access::<ingredient::Entity>(&db, &member).await.unwrap(),
             ListAccess::Unrestricted
         ));
+    }
+
+    #[tokio::test]
+    async fn can_create_owner_only_without_column_is_fail_closed() {
+        // Scénario « Création `OwnerOnly` sans colonne : fail-closed » — arbitré 2026-09-27,
+        // cohérent avec le fail-closed de `evaluate`/`list_access` sur la même combinaison.
+        let db = test_db().await;
+        let stranger = resolve_user(&db, "stranger", None).await.expect("resolve");
+        assert!(
+            !can_create::<memos::Entity>(&db, &stranger).await.unwrap(),
+            "OwnerOnly sans owner_column doit être refusé à la création (fail-closed)"
+        );
+    }
+
+    #[tokio::test]
+    async fn can_create_owner_only_without_column_allows_admin() {
+        // Scénario « raccourci admin passe la création `OwnerOnly` sans colonne » — le raccourci
+        // admin s'applique à `can_create` comme à `evaluate` (arbitré 2026-09-27).
+        let db = test_db().await;
+        let admin = resolve_user(&db, "admin-user", None).await.expect("resolve");
+        sync_group_memberships(&db, admin.id, &["admin".to_string()])
+            .await
+            .expect("sync");
+        assert!(
+            can_create::<memos::Entity>(&db, &admin).await.unwrap(),
+            "le raccourci admin doit passer la création OwnerOnly sans colonne"
+        );
+    }
+
+    #[tokio::test]
+    async fn static_verdict_denies_admin_only_and_group_without_record() {
+        // Scénario « `static_verdict` décide `AdminOnly`/`Group` sans charger d'enregistrement » —
+        // `test_db` ne migre que `crate::migration` : les tables `ingredients`/`drafts` n'existent
+        // pas, un `Ok(Some(false))` prouve que le refus se décide sans relecture d'enregistrement.
+        let db = test_db().await;
+        let stranger = resolve_user(&db, "stranger", None).await.expect("resolve");
+        assert_eq!(
+            static_verdict::<ingredient::Entity>(&db, AccessPolicy::AdminOnly, &stranger)
+                .await
+                .unwrap(),
+            Some(false),
+            "AdminOnly hors admin doit se décider sans enregistrement"
+        );
+        assert_eq!(
+            static_verdict::<ingredient::Entity>(&db, AccessPolicy::Group("editors"), &stranger)
+                .await
+                .unwrap(),
+            Some(false),
+            "Group sans appartenance doit se décider sans enregistrement"
+        );
+    }
+
+    #[tokio::test]
+    async fn static_verdict_defers_on_owner_only() {
+        // Scénario « `static_verdict` diffère sur `OwnerOnly` » — colonne déclarée (`note`) comme
+        // absente (`ingredient`) : la décision requiert un enregistrement, `static_verdict` rend
+        // `None` dans les deux cas, la branche fail-closed restant dans `evaluate`.
+        let db = test_db().await;
+        let stranger = resolve_user(&db, "stranger", None).await.expect("resolve");
+        assert_eq!(
+            static_verdict::<note::Entity>(&db, AccessPolicy::OwnerOnly, &stranger)
+                .await
+                .unwrap(),
+            None,
+            "OwnerOnly avec colonne déclarée doit différer (None)"
+        );
+        assert_eq!(
+            static_verdict::<ingredient::Entity>(&db, AccessPolicy::OwnerOnly, &stranger)
+                .await
+                .unwrap(),
+            None,
+            "OwnerOnly sans colonne doit aussi différer (None) — le fail-closed est dans evaluate"
+        );
     }
 }
