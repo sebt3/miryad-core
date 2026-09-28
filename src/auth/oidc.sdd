@@ -21,7 +21,7 @@ Owns:
 
 References:
   ./mod.rs — unique consommateur de production : @handler_login appelle @OidcClientTrait::authorization_url
-    et persiste `csrf:nonce` dans le cookie chiffré `miryad_oidc_pending` (@Max-Age=300) ;
+    et persiste `csrf:nonce:pkce_verifier` dans le cookie chiffré `miryad_oidc_pending` (@Max-Age=300 ;
     @handler_callback contrôle le cookie (`MRD-AUTH-012`), compare `state` au CSRF attendu
     (`MRD-AUTH-013`, @tracing::warn posé là et nulle part ici), passe le nonce lu dans le cookie à
     @OidcClientTrait::exchange_code, puis consomme @OidcLoginResult (résolution user, sync des
