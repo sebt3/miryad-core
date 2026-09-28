@@ -7,9 +7,21 @@ use crate::auth::state::MiryadAuthState;
 
 /// Identité de la requête courante, extraite du cookie de session — pas d'évaluation RBAC ici,
 /// juste "qui fait la requête" (cf. feature 3 pour le "a le droit de quoi").
+///
+/// `Debug` est dérivé (arbitré 2026-09-27) : les trois champs sont des données publiques une
+/// fois authentifiées, aucun secret à rédiger — `id_token` est déjà lisible par son porteur.
+/// `Clone` et `PartialEq` volontairement absents ; type adjacent du flow navigateur, la
+/// confusion avec `AuthPrincipal` (dual-auth) est la frontière actée avec `dual.rs`.
+#[derive(Debug)]
 pub struct AuthUser {
+    /// Claim `sub` de l'`id_token` validé, recopié verbatim de l'`OidcIdentity` rendu par
+    /// `extract_session` — aucune validation de format ici.
     pub subject: String,
+    /// Claim `email` du login, `Some` verbatim ou `None` si le fournisseur ne l'a pas
+    /// transmise — métadonnée, jamais une credential.
     pub email: Option<String>,
+    /// `id_token` OIDC brut du payload déchiffré, jamais re-sérialisé ni revérifié (la seule
+    /// borne de fraîcheur est le contrôle d'`exp` de `cookie.rs`).
     pub id_token: String,
 }
 
@@ -139,5 +151,25 @@ mod tests {
             .await
             .expect("readable body");
         assert_eq!(&body[..], b"user-123");
+    }
+
+    /// `Scenario` : « Debug affiche les trois champs sans panic » (arbitré 2026-09-27) —
+    /// aucun secret à rédiger : les trois champs sont déjà lisibles par le porteur
+    /// authentifié lui-même.
+    #[test]
+    fn debug_displays_three_fields_without_panic() {
+        let user = AuthUser {
+            subject: "user-123".to_string(),
+            email: Some("test@example.com".to_string()),
+            id_token: "header.payload.sig".to_string(),
+        };
+
+        let rendered = format!("{user:?}");
+        for attendu in ["AuthUser", "user-123", "test@example.com", "header.payload.sig"] {
+            assert!(
+                rendered.contains(attendu),
+                "le `Debug` doit contenir {attendu:?} : {rendered}"
+            );
+        }
     }
 }
