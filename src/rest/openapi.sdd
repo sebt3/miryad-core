@@ -19,7 +19,8 @@ Can read:
   ./mod.rs — le préfixe `/api/v1` réellement monté par @rest::@resource_router et les @ListParams
     `page`/`per_page`/`filter` que consomme @list_handler — le document doit décrire ces routes-là
   ./core.rs — sémantique effective de `filter` (appliqué seulement si @MiryadResource::filter_column est
-    @Some) et statut `200` de la création (jamais `201`)
+    @Some) et statut `201` de la création (le handler de ./mod.rs répond `201 Created` depuis
+    l'arbitrage 2026-09-27 de ./mod.sdd `Must`)
   ./error.rs — les codes réellement émis sur ces routes (`MRD-REST-001` en `404`, `MRD-REST-002` en
     `403`, `422` JSON {code, message} pour @HookError, `MRD-REST-003`/`MRD-REST-004` en `500`) — corps
     que le document ne restitue pas
@@ -74,7 +75,7 @@ Must:
     sont déclarés sur ces schémas.
   Déclarer par opération les statuts et corps suivants, descriptions en français literalles : liste
     `200` « Liste paginée » en `application/json` (référence vers @Paged{Model}) ; création corps
-    requis @Model en `application/json`, réponses `200` « Créé » (@Model, `application/json`) et `403`
+    requis @Model en `application/json`, réponses `201` « Créé » (@Model, `application/json`) et `403`
     « Refusé » ; lecture `200` « Trouvé », `403`, `404` « Non trouvé » ; mise à jour corps @Model,
     `200` « Mis à jour », `403`, `404` ; suppression `204` « Supprimé » sans contenu, `403`, `404`. Les
     réponses d'erreur sont déclarées sans schéma de corps.
@@ -147,9 +148,6 @@ Must not:
   Réécrire les schémas avec la macro @utoipa::@path ou @utoipa_axum : ils exigent une fonction concrète
     par route, incompatible avec les handlers génériques par entité — choix acté et documenté dans
     /docs/architecture.md ; de même ne pas exiger un @ToSchema écrit à la main sur @PagedResult.
-  Déclarer la création en `201` : le handler de ./mod.rs répond `200` avec le modèle créé (test inline
-    `openapi_router_serves_the_spec_as_json` de ./mod.rs côté surface) ; le document doit décrire le
-    `200` réellement émis.
   Poser @swagger_ui_router ou son test hors de leur `#[cfg(feature = "swagger-ui")]` : @utoipa_swagger_ui
     est optionnelle, un `#[cfg]` manquant casse la compilation `--no-default-features`.
 
@@ -364,7 +362,7 @@ Scenario: chaque opération déclare son jeu de statuts et ses corps
   When les réponses et corps de ses cinq opérations sont inspectés
   Then `GET` collection répond `200` « Liste paginée » en `application/json` avec référence vers
     `PagedRecipe`, et rien d'autre
-  And `POST` collection a un corps requis `application/json` référençant `Recipe`, et répond `200` « Créé »
+  And `POST` collection a un corps requis `application/json` référençant `Recipe`, et répond `201` « Créé »
     (`Recipe`) et `403` « Refusé »
   And `GET` item répond `200` « Trouvé » (`Recipe`), `403` « Refusé » et `404` « Non trouvé »
   And `PUT` item a un corps requis référençant `Recipe` et répond `200` « Mis à jour », `403`, `404`
