@@ -789,10 +789,36 @@ mod tests {
         assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
 
         let delete_resp = app_ref
+            .clone()
             .oneshot(json_request("DELETE", "/api/v1/recipes/999999", &token, None))
             .await
             .expect("router does not fail");
         assert_eq!(delete_resp.status(), StatusCode::NOT_FOUND);
+
+        // Élargissement rattaché à `../rest/core.sdd` (oracle d'existence, arbitrage 2026-09-27) :
+        // la recette (`OwnerOnly`) est le résidu assumé qui répond `404` ; sous `Group` (lecture)
+        // et `AdminOnly` (écriture), un id inconnu répond `403` — `static_verdict` refuse avant
+        // toute relecture de la table, l'existence de la ligne n'est jamais trahie.
+        let ingredient_get = app_ref
+            .clone()
+            .oneshot(json_request("GET", "/api/v1/ingredients/999999", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(
+            ingredient_get.status(),
+            StatusCode::FORBIDDEN,
+            "l'oracle d'existence est fermé pour la lecture `Group`"
+        );
+
+        let ingredient_delete = app_ref
+            .oneshot(json_request("DELETE", "/api/v1/ingredients/999999", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(
+            ingredient_delete.status(),
+            StatusCode::FORBIDDEN,
+            "l'oracle d'existence est fermé pour l'écriture `AdminOnly`"
+        );
     }
 
     #[tokio::test]
