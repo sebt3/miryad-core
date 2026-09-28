@@ -677,6 +677,13 @@ mod tests {
         /// Bind loopback synchrone (l'`issuer` est connu avant tout spawn), puis service asynchrone
         /// `tokio::net`. L'`id_token` servi est un slot rempli via [`MockIdP::set_id_token`].
         fn start(plan: IdPPlan) -> Self {
+            Self::start_with(|_issuer| plan)
+        }
+
+        /// Même service que [`MockIdP::start`], avec le plan bâti APRÈS la réservation du port —
+        /// pour les `Scenario` dont le document de discovery doit déclarer l'issuer loopback
+        /// complet (préfixe inclus).
+        fn start_with(build: impl FnOnce(&str) -> IdPPlan) -> Self {
             let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback listener binds");
             let port = std_listener
                 .local_addr()
@@ -688,6 +695,7 @@ mod tests {
             let listener =
                 tokio::net::TcpListener::from_std(std_listener).expect("tokio listener adopts std listener");
             let issuer = format!("http://127.0.0.1:{port}");
+            let plan = build(&issuer);
             let doc_issuer = plan.doc_issuer.clone().unwrap_or_else(|| issuer.clone());
             let jwks_uri = plan.jwks_uri.clone().unwrap_or_else(|| {
                 format!(
@@ -1163,39 +1171,44 @@ mod tests {
         );
     }
 
-    /// `Scenario` 6 — ⚠ SCENARIO PROUVÉ FAUX PAR LA SOURCE AMONT, EN ATTENTE D'ARBITRAGE
-    /// (question écrite dans le rapport d'implémentation 2026-09-27). La spec attend une
-    /// jointure d'URL relative (`GET /.well-known/openid-configuration`, dernier segment du
-    /// chemin effacé, « vérifiée dans la source amont »). La source vendue `openidconnect-4.0.1`
-    /// dit le contraire : `types/mod.rs` (`IssuerUrl::join`) concatène `issuer + "/" + suffix`
-    /// quand l'issuer ne finit pas par `/`. La jointure est dans la librairie, hors de portée de
-    /// ce fichier (qui délègue toute la discovery). Ce test verrouille la RÉALITÉ observable
-    /// (GET sur `/reverse/.well-known/…`, puis refus `005` car le document servi déclare l'issuer
-    /// sans `/reverse`) ; il sera réaligné sur l'arbitrage de la spec, à l'unisson du mot de
-    /// Sébastien — la spec ou le test bougera, jamais un faux contrat.
+    /// `Scenario` 6 : « Issuer avec chemin sans slash final : la concaténation conserve le
+    /// préfixe » (contrat réécrit et arbitré par Sébastien le 2026-09-28 — RFC 8414 §3.1).
+    /// L'URL de discovery est une CONCATÉNATION `issuer + "/.well-known/openid-configuration"`
+    /// (source vendue `openidconnect-4.0.1`, `types/mod.rs` `IssuerUrl::join`) : le préfixe
+    /// `/reverse` est conservé tel quel, aucun segment n'est effacé ; le `jwks_uri` du document
+    /// désigne le JWKS servi sous `/reverse/keys`. Le document servi déclare
+    /// exactement l'issuer configuré (plan `doc_issuer`), la validation passe, `new` rend `Ok`.
     #[tokio::test]
-    async fn issuer_path_without_trailing_slash_currently_joins_by_concatenation_005() {
-        let plan = IdPPlan {
+    async fn issuer_path_without_trailing_slash_serves_discovery_under_prefix_ok() {
+        let idp = MockIdP::start_with(|issuer| IdPPlan {
             doc_paths: vec!["/reverse/.well-known/openid-configuration".to_string()],
             jwks_paths: vec!["/reverse/keys".to_string()],
+            // Le document déclare EXACTEMENT l'issuer avec préfixe configuré en dessous.
+            doc_issuer: Some(format!("{issuer}/reverse")),
             ..IdPPlan::default()
-        };
-        let idp = MockIdP::start(plan);
+        });
         let issuer_with_path = format!("{}/reverse", idp.issuer);
 
-        let err = OidcClient::new(&MockIdP::config_at(&issuer_with_path, "cid", "secret"))
-            .await
-            .contract_err("the served document declares the slashless issuer: validation must refuse it");
+        assert!(
+            OidcClient::new(&MockIdP::config_at(&issuer_with_path, "cid", "secret"))
+                .await
+                .is_ok(),
+            "concaténation amont : le préfixe conservé rencontre le document qui déclare cet issuer"
+        );
         let requests = idp.requests();
         assert_eq!(
             requests,
-            vec!["/reverse/.well-known/openid-configuration".to_string()],
-            "réalité amont : `IssuerUrl::join` concatène — la spec, elle, attend un GET sur la racine"
+            vec![
+                "/reverse/.well-known/openid-configuration".to_string(),
+                "/reverse/keys".to_string(),
+            ],
+            "document puis JWKS, tous deux servis sous le préfixe"
         );
-        let payload = oidc_payload(&err);
         assert!(
-            payload.starts_with("MRD-AUTH-005: OIDC discovery failed: "),
-            "{payload}"
+            !requests
+                .iter()
+                .any(|path| path == "/.well-known/openid-configuration" || path == "/jwks"),
+            "JAMAIS de GET à la racine : {requests:?}"
         );
     }
 

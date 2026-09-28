@@ -65,9 +65,12 @@ Must:
   Discovery par @CoreProviderMetadata::discover_async sur le client interne : `GET` de
     `{issuer}/.well-known/openid-configuration` puis `GET` du `jwks_uri` du document — le fetch
     du JWKS est partie intégrante du succès de @new, un JWKS inaccessible fait échouer la
-    construction en `MRD-AUTH-005`. La jointure est une jointure d'URL, pas une concaténation :
-    `/.well-known/openid-configuration` remplace le dernier segment d'un chemin sans slash final
-    (jointure relative, vérifiée dans la source amont d'@openidconnect). L'`issuer` du document
+    construction en `MRD-AUTH-005`. L'URL de discovery est une CONCATÉNATION, pas une jointure
+    d'URL relative : `issuer.as_str() + "/.well-known/openid-configuration"` (source vendue
+    `openidconnect 4.0.1` `types/mod.rs`, vérifiée et arbitrée par Sébastien le 2026-09-28 —
+    conforme à RFC 8414 §3.1). Un `issuer_url` avec chemin doit donc être saisi avec le sens de
+    slash final attendu par l'IdP ; un chemin sans slash final est conservé tel quel par la
+    concaténation, il n'efface aucun préfixe. L'`issuer` du document
     doit être égal (`==`) à l'issuer configuré (@DiscoveryError::Validation, absorbé en
     `MRD-AUTH-005`). Les clés vérifiant les algos à clé publique sont le snapshot de ce fetch —
     le fichier ne recharge jamais le JWKS ensuite. Conséquence rotation de clés, arbitrée par
@@ -448,11 +451,11 @@ Scenario: Document de discovery d'un issuer différent refusé 005
   Then la réponse est @Err dont la charge utile commence par `MRD-AUTH-005: OIDC discovery failed: `
   And jamais @Ok : la comparaison d'issuer de la librairie (@DiscoveryError::Validation absorbé) est la seule barrière, aucune trace n'est posée ici (lecture statique)
 
-Scenario: Issuer avec chemin sans slash final : la discovery tape la racine, pas le préfixe
+Scenario: Issuer avec chemin sans slash final : la concaténation conserve le préfixe
   Given un IdP fake loopback servant son document UNIQUEMENT sous `/reverse/.well-known/openid-configuration` (et son JWKS sous `/reverse/keys`), déclarant l'issuer `http://127.0.0.1:PORT/reverse`
   When @OidcClient::new est appelé avec `issuer_url` = `http://127.0.0.1:PORT/reverse`
-  Then l'IdP fake enregistre un `GET /.well-known/openid-configuration` (chemin racine) et aucun `GET /reverse/.well-known/openid-configuration` : la jointure d'URL remplace le dernier segment (vérifiée dans la source amont)
-  And la réponse est @Err `MRD-AUTH-005: OIDC discovery failed: ` (le document racine sert un issuer étranger ou un 404), preuve observable que le chemin configuré a été effacé par la jointure
+  Then l'IdP fake enregistre un `GET /reverse/.well-known/openid-configuration` (préfixe conservé) et JAMAIS de `GET /.well-known/openid-configuration` à la racine : la concaténation amont (RFC 8414 §3.1, arbitrée par Sébastien le 2026-09-28) ne remplace aucun segment
+  And la réponse est @Ok : le document servi déclare exactement l'issuer configuré, la validation d'issuer passe sur le préfixe conservé
 
 Scenario: Callback invalide : surface après discovery, signalé 006
   Given un IdP fake complet fonctionnel (document + JWKS) et un @OidcConfig valide sauf `redirect_url` = `pas une url`
