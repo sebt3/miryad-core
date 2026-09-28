@@ -14,13 +14,16 @@ use axum::extract::{FromRef, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use sea_orm::{ActiveModelTrait, EntityTrait, IntoActiveModel, PrimaryKeyToColumn, PrimaryKeyTrait};
+use sea_orm::sea_query::ColumnType;
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, PrimaryKeyToColumn, PrimaryKeyTrait,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::auth::{AuthPrincipal, MiryadAuthState};
 use crate::query::PagedResult;
-use crate::resource::MiryadResource;
+use crate::resource::{AccessPolicy, MiryadResource};
 use error::RestError;
 
 /// Entités éligibles au routeur CRUD générique — en plus de `MiryadResource`, il faut pouvoir
@@ -59,12 +62,47 @@ struct ListParams {
 /// Réutilise `MiryadAuthState` (feature 2b) — même état que l'auth, rien de nouveau à composer
 /// côté app. Préfixe `/api/v1` figé dans le crate (feature 6) — élimine par construction la
 /// collision avec une route SPA du frontend dont le nom correspondrait à un `resource_name`.
+///
+/// # Panics
+///
+/// Refuse au montage deux déclarations invalides détectables sans requête (arbitré
+/// 2026-09-27) : `AccessPolicy::OwnerOnly` (lecture ou écriture) avec `owner_column` à `None`,
+/// ou `filter_column` désignant une colonne non textuelle. Le message cite l'entité et la règle
+/// violée ; une entité mal déclarée ne monte jamais et ne répond jamais à une requête.
 pub fn resource_router<E, S>() -> Router<S>
 where
     E: RestEntity,
     S: Clone + Send + Sync + 'static,
     MiryadAuthState: FromRef<S>,
 {
+    // Les deux gardes s'exécutent avant toute construction de chemin (mod.sdd `Must` « Refuser
+    // au montage, par panic », arbitrage 2026-09-27) — même mécanique que la collision de
+    // `resource_name` remontée en panic par `Router::merge`.
+
+    #[allow(clippy::panic)]
+    // mod.sdd « Refuser au montage, par panic » — arbitrage 2026-09-27 (OwnerOnly sans owner_column)
+    if (matches!(E::read_policy(), AccessPolicy::OwnerOnly)
+        || matches!(E::write_policy(), AccessPolicy::OwnerOnly))
+        && E::owner_column().is_none()
+    {
+        panic!(
+            "`{}` declares `AccessPolicy::OwnerOnly` with `owner_column` None — invalid MiryadResource declaration, refusing to mount its router",
+            E::resource_name()
+        );
+    }
+
+    if let Some(filter_column) = E::filter_column() {
+        let def = filter_column.def();
+        // Colonne textuelle au sens sea-query : `String` ou `Text` — `filter` y reste réservé
+        // (./core.sdd). `assert!` : même panic explicite que le garde ci-dessus, sans le macro
+        // `panic!` (mod.sdd « Refuser au montage, par panic » — arbitrage 2026-09-27).
+        assert!(
+            matches!(def.get_column_type(), ColumnType::String(_) | ColumnType::Text),
+            "`{}` declares `filter_column` on a non-textual column — `filter` is reserved for text columns, refusing to mount its router",
+            E::resource_name()
+        );
+    }
+
     let collection_path = format!("/{}", E::resource_name());
     let item_path = format!("/{}/{{id}}", E::resource_name());
 
@@ -109,8 +147,11 @@ async fn create_handler<E: RestEntity>(
     State(auth): State<MiryadAuthState>,
     principal: AuthPrincipal,
     Json(body): Json<E::Model>,
-) -> Result<Json<E::Model>, RestError> {
-    Ok(Json(core::create::<E>(&auth.db, &principal, body).await?))
+) -> Result<(StatusCode, Json<E::Model>), RestError> {
+    Ok((
+        StatusCode::CREATED,
+        Json(core::create::<E>(&auth.db, &principal, body).await?),
+    ))
 }
 
 async fn update_handler<E: RestEntity>(
@@ -401,6 +442,84 @@ mod tests {
         }
     }
 
+    // Fixture de l'arbitrage 2026-09-27 (`Must` « Refuser au montage, par panic ») : entité
+    // `OwnerOnly` en écriture déclarant `owner_column` à `None`.
+    mod ownerless {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "ownerless")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub label: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        // Déclaration invalide (../resource.sdd) : `OwnerOnly` en écriture sans colonne
+        // propriétaire. Jamais montée ni requêtée — `resource_router` doit refuser le montage.
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "ownerless"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+        }
+    }
+
+    // Fixture de l'arbitrage 2026-09-27 (`Must` « Refuser au montage, par panic ») : entité dont
+    // `filter_column` désigne une colonne `i32` — `filter` reste réservé aux colonnes texte
+    // (./core.sdd), le montage doit refuser avant toute route construite.
+    mod numberfilter {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "numberfilters")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub count: i32,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "numberfilters"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+            fn filter_column() -> Option<Column> {
+                Some(Column::Count)
+            }
+        }
+    }
+
     async fn test_db() -> DatabaseConnection {
         let db = Database::connect("sqlite::memory:")
             .await
@@ -497,7 +616,7 @@ mod tests {
             .oneshot(json_request("POST", "/api/v1/recipes", &token, Some(body)))
             .await
             .expect("router does not fail");
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::CREATED);
         let created = json_body(resp).await;
         assert_eq!(created["owner_id"], alice.id);
     }
@@ -524,7 +643,7 @@ mod tests {
                 .oneshot(json_request("POST", "/api/v1/recipes", owner_token, Some(body)))
                 .await
                 .expect("create succeeds");
-            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(resp.status(), StatusCode::CREATED);
         }
 
         let alice_list = app_ref
@@ -834,7 +953,7 @@ mod tests {
             .await
             .expect("router does not fail");
 
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::CREATED);
         let created = json_body(resp).await;
         assert_eq!(created["label"], "GADGET");
     }
@@ -879,7 +998,7 @@ mod tests {
             .oneshot(json_request("POST", "/api/v1/doodads", &token, Some(create_body)))
             .await
             .expect("create succeeds");
-        assert_eq!(created.status(), StatusCode::OK);
+        assert_eq!(created.status(), StatusCode::CREATED);
         let created = json_body(created).await;
         let id = created["id"].as_i64().expect("id present");
 
@@ -1072,7 +1191,7 @@ mod tests {
                 .oneshot(json_request("POST", "/api/v1/doodads", &token, Some(body)))
                 .await
                 .expect("create succeeds");
-            assert_eq!(created.status(), StatusCode::OK);
+            assert_eq!(created.status(), StatusCode::CREATED);
             let created = json_body(created).await;
             ids.push(created["id"].as_i64().expect("id present"));
         }
@@ -1152,8 +1271,28 @@ mod tests {
             .await
             .expect("router does not fail");
 
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::CREATED);
         let created = json_body(resp).await;
         assert_eq!(created["title"], "Tarte");
+    }
+
+    // Scenario « Entité `OwnerOnly` sans colonne propriétaire panique au montage » (arbitrage
+    // 2026-09-27, `Must` « Refuser au montage, par panic ») : `resource_router` panic avant de
+    // construire le moindre chemin — l'entité mal déclarée ne répondra jamais `403`/`500` à la
+    // première requête. Le message cite l'entité (`ownerless`) et la règle violée.
+    #[test]
+    #[should_panic(expected = "`ownerless` declares `AccessPolicy::OwnerOnly`")]
+    fn owner_only_without_column_panics_at_mount() {
+        let _router = resource_router::<ownerless::Entity, MiryadAuthState>();
+    }
+
+    // Scenario « Entité à colonne de filtre non textuelle panique au montage » (arbitrage
+    // 2026-09-27, même mécanique) : `filter` reste réservé aux colonnes texte, une
+    // `filter_column` sur colonne `i32` refuse le montage, message citant l'entité
+    // (`numberfilters`) et la règle violée.
+    #[test]
+    #[should_panic(expected = "`numberfilters` declares `filter_column` on a non-textual column")]
+    fn filter_column_on_non_text_column_panics_at_mount() {
+        let _router = resource_router::<numberfilter::Entity, MiryadAuthState>();
     }
 }

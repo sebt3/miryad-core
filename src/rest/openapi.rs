@@ -118,7 +118,7 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
                 .build(),
         ))
         .response(
-            "200",
+            "201",
             ResponseBuilder::new()
                 .description("Créé")
                 .content("application/json", json_content(model_ref.clone()))
