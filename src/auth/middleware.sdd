@@ -179,7 +179,7 @@ Handles:
     nommé `subject` — même convention qu'à ./mod.rs) — @email/@id_token hors des traces
 
 Tasks:
-  [ ] @AuthUser stabilisé, pas déprécié (arbitré par Sébastien le 2026-09-27) : ce n'est pas du
+  [x] @AuthUser stabilisé, pas déprécié (arbitré par Sébastien le 2026-09-27) : ce n'est pas du
     code mort par accident — c'est un extracteur volontairement plus étroit que @AuthPrincipal, que
     les apps consommatrices choisissent pour des routes qui doivent explicitement refuser les
     tokens API (le flow navigateur pur, feature 2a). Ajouter `#[derive(Debug)]` sur @AuthUser (les

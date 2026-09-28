@@ -360,29 +360,29 @@ Tasks:
     nom de ressource stable (namespace K8s), ce que `email` ne garantit pas (peut varier, peut
     être absent). `./token.rs` (voie ApiToken) posera `preferred_username: None` — même
     traitement que `email` sur ce chemin (aucune session OIDC vivante).
-  [ ] `MRD-AUTH-009` en tête de la charge utile des deux `@map_err` de @exchange_code, en plus des
+  [x] `MRD-AUTH-009` en tête de la charge utile des deux `@map_err` de @exchange_code, en plus des
     traces @tracing::error existantes (arbitré 2026-09-27, `Must`, `Raises`) — aligne ce fichier sur
     ce que ./error.sdd attendait déjà, aucun changement requis côté ./error.sdd.
   [x] Découpage du handshake entre specs : confirmé (2026-09-27) — cette spec reste scopée au
     client SDK (@authorization_url/@exchange_code) ; ./mod.sdd consolide le flux complet des
     endpoints (`012`/`013` devenus @AuthError::InvalidCallback/@CsrfMismatch, cookie pending,
     redirections) en la référençant.
-  [ ] @MockOidcClient gagne un mode configurable pour le succès d'échange (arbitré 2026-09-27,
+  [x] @MockOidcClient gagne un mode configurable pour le succès d'échange (arbitré 2026-09-27,
     `Must`, cross-file avec ./mod.sdd) : @exchange_code rend un @OidcLoginResult fourni à la
     construction au lieu de paniquer, quand ce mode est configuré ; le mode panique reste le
     défaut. Rend exécutable le scenario « callback succès » de ./mod.sdd sans fournisseur factice
     réseau.
-  [ ] Timeouts réseau configurables (arbitré 2026-09-27, `Must`, `Accepts`) : deux nouveaux champs
+  [x] Timeouts réseau configurables (arbitré 2026-09-27, `Must`, `Accepts`) : deux nouveaux champs
     `@Duration` sur @OidcConfig (`connect_timeout`, `timeout`), défauts `5s`/`15s` si absents,
     posés sur le @ClientBuilder dans @build_http_client — wiring exact (`Default`, builder) à
     finaliser avec ./config.sdd.
-  [ ] Signal de rotation JWKS pour readiness Kubernetes (arbitré 2026-09-27, `Must`, `Raises`,
+  [x] Signal de rotation JWKS pour readiness Kubernetes (arbitré 2026-09-27, `Must`, `Raises`,
     `Exposes`) : pas de re-fetch automatique — détecter la cause précise « clé/`kid` introuvable »
     du @ClaimsVerificationError amont (identifier le variant exact dans la source `openidconnect
     4.0.1`, pas par correspondance de texte), armer un @std::sync::atomic::AtomicBool interne à
     @OidcClient, l'exposer par une méthode publique. Charge à l'app de le câbler dans son readiness
     HTTP — hors du périmètre de ce fichier, qui ne fait qu'exposer le signal.
-  [ ] PKCE `S256` activé inconditionnellement (arbitré 2026-09-27, `Must`, `Exposes`, `Accepts`,
+  [x] PKCE `S256` activé inconditionnellement (arbitré 2026-09-27, `Must`, `Exposes`, `Accepts`,
     `Returns`) : @PkceCodeChallenge::new_random_sha256 au même appel que @CsrfToken/@Nonce,
     @set_pkce_challenge sur l'URL, @set_pkce_verifier sur l'échange — @OidcClientTrait,
     @authorization_url et @exchange_code changent de signature (quadruplet en sortie, verifier en
@@ -392,7 +392,7 @@ Tasks:
     dépendances normales de la crate depuis le poivre de ./token.sdd, pas de nouveau crate de dev
     pour ça) ; capture des traces @tracing par `tracing-subscriber` en dev-dependency, plus fiable
     qu'une lecture statique.
-  [ ] Convertir les 31 `Scenario` (24 originaux, 7 nés de l'arbitrage du 2026-09-27 : PKCE
+  [x] Convertir les 31 `Scenario` (24 originaux, 7 nés de l'arbitrage du 2026-09-27 : PKCE
     divergent, deux timeouts, défauts de timeout, signal de rotation, mock configurable) en au
     moins 31 tests nommés distincts du `mod tests` `#[cfg(test)]` de ./oidc.rs : les 3 tests inline
     existants couvrent les `Scenario` 21 et 22 et le seul cas `not-a-jwt` du `Scenario` 23 ; restent

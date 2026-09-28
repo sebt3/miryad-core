@@ -261,12 +261,12 @@ Tasks:
     @preferred_username @None sans invalidation (cf. `Must` rétro-compatibilité). Sans ce champ,
     le claim serait @Some au login puis @None à chaque requête suivante — le maillon qui fait ou
     défait la chaîne oidc → dual → @AuthPrincipal.
-  [ ] `Secure` conditionnel (arbitré 2026-09-27) : ajouter `secure: @bool` à @build_set_cookie et
+  [x] `Secure` conditionnel (arbitré 2026-09-27) : ajouter `secure: @bool` à @build_set_cookie et
     @clear_cookie, sourcé depuis `MiryadAuthState::secure_cookies` (champ ajouté le 2026-09-27,
     ./state.sdd `Must` — décision finalisée), appelants à mettre à jour dans ./mod.rs. Choisi
     plutôt qu’un `Secure` inconditionnel pour ne pas casser le dev HTTP local, et plutôt qu’un
     silence total pour rester sûr par défaut en production.
-  [ ] `SameSite=Strict` sur `miryad_session`, `Lax` réservé au pending (arbitré 2026-09-27) : rien
+  [x] `SameSite=Strict` sur `miryad_session`, `Lax` réservé au pending (arbitré 2026-09-27) : rien
     n’oblige le cookie de session à partager la contrainte du pending, seul concerné par la
     redirection cross-site du callback — coût accepté, un lien externe vers l’app depuis un autre
     site n’authentifie pas la toute première requête (navigation suivante dans le site : authentifié).
@@ -283,7 +283,7 @@ Tasks:
     sont prouvées mortes par lecture du code source amont (`cookie`/`base64`), une injection
     d’horloge pour ce seul fichier serait une complexité architecturale sans bénéfice réel ; aucun
     changement, restent non testées et documentées comme telles en `Handles`.
-  [ ] Convertir les 22 `Scenario` en au moins 22 tests nommés distincts (20 originaux, dont un
+  [x] Convertir les 22 `Scenario` en au moins 22 tests nommés distincts (20 originaux, dont un
     reformulé pour `secure: true`, plus les deux nés de l’arbitrage du 2026-09-27 sur `secure`),
     dans le `mod tests` `#[cfg(test)]` inline de ./cookie.rs (le contrat ne déborde pas du fichier :
     @build_set_cookie, @cookie::CookieJar et @base64 suffisent à construire chaque entrée, y compris

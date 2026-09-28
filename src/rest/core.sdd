@@ -464,32 +464,32 @@ Tasks:
     `update_hook_hostile_ne_contourne_les_invariants` ; « rejet before_delete, aucun DELETE » →
     `before_delete_hook_error_blocks_delete_without_mrd_code`. Dépend de l’implémentation de
     ./../resource.sdd (mêmes quatre nouveaux hooks) — les deux amendements s’implémentent ensemble.
-  [ ] Oracle d’existence (des huit `[?]` originaux, tous arbitrés par Sébastien le 2026-09-27) :
+  [x] Oracle d’existence (des huit `[?]` originaux, tous arbitrés par Sébastien le 2026-09-27) :
     fermé pour `AdminOnly`/`Group` par @rbac::static_verdict avant relecture
     (`Must`, ./../rbac.sdd). Résidu assumé sur `OwnerOnly`, indécidable sans enregistrement — pas un
     refus uniforme `403` généralisé, qui aurait coûté une relecture systématique sans gain réel pour
     cette politique. Implémentation : appeler @rbac::static_verdict avant
     @sea_orm::EntityTrait::find_by_id dans @get/@update/@delete.
-  [ ] Provisionnement : contrat voulu, documenté comme tel (`Handles`) — aucun changement de code,
+  [x] Provisionnement : contrat voulu, documenté comme tel (`Handles`) — aucun changement de code,
     seule la spec change (le `[?]` devient une affirmation).
-  [ ] `OwnerOnly` sans colonne à la création : fail-closed transféré à @rbac::can_create
+  [x] `OwnerOnly` sans colonne à la création : fail-closed transféré à @rbac::can_create
     (./../rbac.sdd, `[?]` résolu là) et défense supplémentaire au montage REST (panic,
     ./../rest/mod.sdd) — aucun changement dans ./core.rs, @rbac::can_create refusant déjà avant que
     @rest::core::create n’insère quoi que ce soit.
-  [ ] Injection de colonne étendue à toute entité à `owner_column` déclarée, indépendamment de
+  [x] Injection de colonne étendue à toute entité à `owner_column` déclarée, indépendamment de
     `write_policy` (`Must`, `Handles`) — nouveau chemin de code dans @rest::core::create et
     @rest::core::update, plus plus seulement conditionné à `write_policy == OwnerOnly`.
-  [ ] TOCTOU : fenêtre tolérée (pas de verrou), mais @sea_orm::DbErr::RecordNotUpdated →
+  [x] TOCTOU : fenêtre tolérée (pas de verrou), mais @sea_orm::DbErr::RecordNotUpdated →
     @RestError::NotFound (au lieu de `Database`) dans @update, et lecture de
     @sea_orm::DeleteResult::rows_affected → @RestError::NotFound si `0` dans @delete (`Must`,
     `Raises`).
-  [ ] `filter` non typé : fermé par le montage refusé de ./../rest/mod.sdd sur colonne non
+  [x] `filter` non typé : fermé par le montage refusé de ./../rest/mod.sdd sur colonne non
     textuelle (`Must not`) — aucun changement de code dans ./core.rs, la garantie est amont.
-  [ ] Page extrême : fermée par @query::MAX_PAGE (./../query.sdd) — aucun changement de code dans
+  [x] Page extrême : fermée par @query::MAX_PAGE (./../query.sdd) — aucun changement de code dans
     ./core.rs, la garantie est amont.
-  [ ] Statut de @create : `201` désormais (./../rest/mod.sdd `Must`) — aucun changement de code
+  [x] Statut de @create : `201` désormais (./../rest/mod.sdd `Must`) — aucun changement de code
     dans ./core.rs, qui ne choisit toujours aucun statut HTTP.
-  [ ] Convertir les trente-cinq `Scenario` de cette spec (vingt-sept originaux, quatre de
+  [x] Convertir les trente-cinq `Scenario` de cette spec (vingt-sept originaux, quatre de
     l’amendement before_update/before_delete, quatre nés de l’arbitrage du 2026-09-27) en au moins
     trente-cinq tests Rust distincts nommés, un scenario minimum par test ; ./core.rs ne porte aucun
     test inline à la rédaction (0 tests), les preuves actuelles sont les seize tests de ./mod.rs

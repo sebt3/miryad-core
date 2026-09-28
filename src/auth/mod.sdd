@@ -284,7 +284,7 @@ Handles:
     toute trace du module se limite aux deux @tracing citées en `Must`.
 
 Tasks:
-  [ ] Élargir @MockOidcClient pour rendre le callback réussi testable (arbitré par Sébastien le
+  [x] Élargir @MockOidcClient pour rendre le callback réussi testable (arbitré par Sébastien le
     2026-09-27, cross-file avec ./oidc.sdd) : ajouter un mode configurable où @exchange_code rend
     un @OidcLoginResult fourni au lieu de paniquer — le mode panique reste le défaut (aucun test
     existant qui s'appuie sur l'`@unimplemented!` comme assertion d'absence ne doit changer de
@@ -293,14 +293,14 @@ Tasks:
   [x] Pending non purgé sur les chemins d'erreur : gelé comme comportement voulu (2026-09-27,
     `Handles`) — le TTL `300`s borne déjà l'exposition, purger sur chaque chemin d'erreur ajoute
     de la complexité pour un gain marginal.
-  [ ] Factoriser le parsing du cookie pending dans ./cookie.rs (arbitré 2026-09-27, `Must`,
+  [x] Factoriser le parsing du cookie pending dans ./cookie.rs (arbitré 2026-09-27, `Must`,
     cross-file avec ./cookie.sdd) : un point d'entrée partagé « trouver et déchiffrer un cookie
     nommé », paramétré par nom et clé, appelé par @extract_session (`miryad_session`) et
     @handler_callback (`miryad_oidc_pending`) — plus de découpage `;`/`=` dupliqué dans ./mod.rs.
   [x] Absence des trois routes d'OpenAPI et de l'IR : confirmée comme exclusion délibérée
     (2026-09-27) — ce sont des routes de redirection navigateur, pas la surface CRUD générique que
     ces deux artefacts documentent ; aucun changement.
-  [ ] Convertir les quinze `Scenario` en au moins quinze tests nommés et distincts : douze dans
+  [x] Convertir les quinze `Scenario` en au moins quinze tests nommés et distincts : douze dans
     le `mod tests` `#[cfg(test)]` de ./mod.rs (les quatre tests existants —
     logout_clears_cookie_and_redirects, callback_without_pending_cookie_is_rejected,
     login_redirects_and_sets_pending_cookie, callback_with_csrf_mismatch_is_rejected — sont
@@ -397,7 +397,10 @@ Scenario: verbe non monté sous /auth renvoie 405 avec Allow
   Given le routeur monté tel que `auth_router` le produit
   When `POST /auth/login`
   Then le statut est `405` (mécanisme @MethodRouter vérifié dans le source axum 0.8.9)
-  And l'en-tête `Allow` vaut `GET`
+  And l'en-tête `Allow` vaut `GET,HEAD` — axum 0.8.9 enregistre @MethodFilter::get avec @Any
+    (source, routing/method.rs) et ajoute systématiquement @HEAD aux routes @GET ; contrat aligné
+    sur la réalité amont vérifiée, arbitré par Sébastien le 2026-09-28 (même posture que la
+    découverte OIDC)
   And `POST /auth/callback` et `POST /auth/logout` sont rejetés de la même façon
 
 Scenario: le préfixe nu n'est pas une route

@@ -181,15 +181,15 @@ Tasks:
   [x] @id_token et @token_id jamais lus en interne : confirmé comme contrat voulu (2026-09-27,
     `Must`) — portés pour l'usage des apps consommatrices dans leurs propres implémentations de
     @MiryadResource::before_create, pas une accumulation à purger.
-  [ ] @Debug manuel rédigeant @id_token (arbitré 2026-09-27, `Purpose`, `Must`, `Returns`,
+  [x] @Debug manuel rédigeant @id_token (arbitré 2026-09-27, `Purpose`, `Must`, `Returns`,
     `Handles`) : remplacer le `#[derive(Debug)]` par un `impl` manuel — même sortie que le dérivé
     pour tous les champs sauf @id_token de la variante @PrincipalSource::Session, rendu
     `"[REDACTED]"`. @token_id reste verbatim (pas un secret).
-  [ ] Documenter @PrincipalSource et ses deux variantes au `///` (arbitré 2026-09-27, `Must`) :
+  [x] Documenter @PrincipalSource et ses deux variantes au `///` (arbitré 2026-09-27, `Must`) :
     purge immédiate de la dette `missing_docs` sur ce fichier — ne pas attendre le calendrier de
     purge module par module de /tooling.sdd, le fichier est petit et déjà touché par les autres
     tâches de ce batch.
-  [ ] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé (neuf
+  [x] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé (neuf
     minimum, le fichier compte zéro test inline aujourd'hui) dans le `#[cfg(test)] mod tests` de
     ./principal.rs : tests synchrones, sans @tokio ni base @sea_orm. Le contrat ne déborde pas du
     fichier, aucune crate d'intégration séparée n'est requise.

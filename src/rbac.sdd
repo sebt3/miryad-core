@@ -291,11 +291,11 @@ Tasks:
     column Option<i32>) restent à ajouter au mod tests. Chaque test utilise une connexion SQLite
     mémoire migrée par @crate::migration, sauf les scénarios de propagation qui veulent une base
     non migrée.
-  [ ] Extraire @rbac::static_verdict de @rbac::evaluate (arbitré 2026-09-27, `Must`, `Exposes`) :
+  [x] Extraire @rbac::static_verdict de @rbac::evaluate (arbitré 2026-09-27, `Must`, `Exposes`) :
     factorisation pure, aucun changement de comportement observable de @rbac::can_read/can_write
     attendu — les deux nouveaux scenarios de `static_verdict` et les huit existants sur
     @rbac::evaluate doivent rester verts sans modification de leurs `Then`.
-  [ ] @rbac::can_create ne consulte pas encore @MiryadResource::owner_column, créant un
+  [x] @rbac::can_create ne consulte pas encore @MiryadResource::owner_column, créant un
     @AccessPolicy::OwnerOnly sans colonne accordé (`true`) alors que la lecture enregistrement et la
     liste refusent le même enregistrement. Arbitré par Sébastien le 2026-09-27 : `false` explicite
     quand `OwnerOnly` et `owner_column` est `None`, fail-closed cohérent avec @rbac::evaluate

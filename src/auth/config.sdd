@@ -206,21 +206,21 @@ Handles:
     `ca_cert` fait exception depuis le 2026-09-27 (refus immédiat, ci-dessus)
 
 Tasks:
-  [ ] Valider `ca_cert` dans ./oidc.rs (arbitré 2026-09-27, `Must`, `Raises`) : compter les blocs
+  [x] Valider `ca_cert` dans ./oidc.rs (arbitré 2026-09-27, `Must`, `Raises`) : compter les blocs
     PEM décodés par l'itérateur de rustls-pki-types, `MRD-AUTH-007` si `Some` et zéro bloc — code
     réutilisé, plus jamais injoignable.
   [x] `MRD-AUTH-007` : tranché — réutilisé pour la validation `ca_cert` ci-dessus, pas fusionné ni
     laissé en jachère.
-  [ ] `Clone` + `Debug` manuel rédigé sur @OidcConfig (arbitré 2026-09-27, `Must`, `Exposes`,
+  [x] `Clone` + `Debug` manuel rédigé sur @OidcConfig (arbitré 2026-09-27, `Must`, `Exposes`,
     `Returns`) : `Debug` affiche tous les champs sauf `client_secret`, rendu `Some("[REDACTED]")`
     ou `None`.
   [x] `post_login_redirect`/`post_logout_redirect` : tranché — retirés d'@OidcConfig (`Must`,
     `Purpose`), @MiryadAuthState reste seule source de vérité pour ces deux champs ; aucun
     convertisseur à écrire, la question de duplication disparaît avec les champs.
-  [ ] Client public (arbitré 2026-09-27, `Must`, `Exposes`, `Returns`, `Handles`) : `client_secret`
+  [x] Client public (arbitré 2026-09-27, `Must`, `Exposes`, `Returns`, `Handles`) : `client_secret`
     devient `Option<String>` ; `None` omet `AuthType::BasicAuth` à l'échange dans ./oidc.rs — la
     sécurité du client public repose sur PKCE `S256` (déjà inconditionnel, ./oidc.sdd).
-  [ ] Timeouts configurables (arbitré 2026-09-27, `Must`, `Exposes`) : deux champs `Duration`
+  [x] Timeouts configurables (arbitré 2026-09-27, `Must`, `Exposes`) : deux champs `Duration`
     (`connect_timeout`, `timeout`) — cross-file avec ./oidc.sdd qui les consomme dans
     @build_http_client, défauts `5s`/`15s` à documenter au champ ou via une fonction `Default`
     séparée (pas de `#[derive(Default)]` sur la struct entière, les cinq champs obligatoires

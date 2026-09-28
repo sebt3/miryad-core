@@ -247,7 +247,7 @@ Tasks:
     @ensure_token (./token.sdd `Tasks`, rejet de l'empreinte détenue par un autre `subject`),
     @Error::source @None. Consommateur aval : @to_rest_error de /src/rest/tokens.rs doit mapper
     cette variante.
-  [ ] Deux nouvelles variantes @AuthError::InvalidCallback (`MRD-AUTH-012`, `400`) et
+  [x] Deux nouvelles variantes @AuthError::InvalidCallback (`MRD-AUTH-012`, `400`) et
     @AuthError::CsrfMismatch (`MRD-AUTH-013`, `400`) — arbitré 2026-09-27, `Must`, `Exposes`,
     `Raises`. Cross-file avec ./mod.sdd : les deux points de construction actuels
     (`AuthError::Oidc(...)` avec `012`/`013` en charge utile) doivent être remplacés par ces
@@ -266,7 +266,7 @@ Tasks:
   [x] Asymétrie d'enveloppe GraphQL/MCP : confirmée hors du périmètre de ce fichier (2026-09-27,
     `Must`, `Handles`) — fix éventuel dans /src/graphql/handler.sdd (gelé, prototype) et
     /src/mcp/handler.sdd (surface active, à traiter dans un futur batch MCP).
-  [ ] Convertir les 20 `Scenario` (14 originaux, 4 nés des deux variantes `400`, 2 nés de
+  [x] Convertir les 20 `Scenario` (14 originaux, 4 nés des deux variantes `400`, 2 nés de
     @AuthError::TokenHashConflict) en au moins 20
     tests distincts nommés dans le `mod tests` `#[cfg(test)]` inline de ./error.rs : le fichier
     compte zéro test inline à ce jour ; écarts à couvrir intégralement, les 5 tests siblings qui

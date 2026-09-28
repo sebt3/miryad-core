@@ -199,7 +199,7 @@ Tasks:
     ./lib.sdd défend de présenter @graphql ou @mcp comme consommant déjà @query ; @graphql en effet
     ne le consomme pas encore. Quelle phrase devient le contrat, et ./lib.sdd est-il à corriger sur
     ce point ?
-  [ ] @page est désormais bornée par @MAX_PAGE (arbitré par Sébastien le 2026-09-27, `Must`,
+  [x] @page est désormais bornée par @MAX_PAGE (arbitré par Sébastien le 2026-09-27, `Must`,
     `Exposes`, `Handles`) : ajouter la constante @MAX_PAGE = `u64::MAX / @MAX_PER_PAGE`, étendre
     @Pagination::from_raw pour clamper @page au-dessus de ce plafond avec @u64::min (même patron
     que @per_page), et convertir le scenario « `page` sans plafond » en scenario de plafond
@@ -219,7 +219,7 @@ Tasks:
     publics qui lèvent `missing_docs` — @DEFAULT_PER_PAGE, @MAX_PER_PAGE, le champ @per_page de
     @Pagination et les champs @items, @page, @per_page, @total_items et @total_pages de
     @PagedResult.
-  [ ] Convertir les dix `Scenario` en au moins dix tests nommés distincts du `#[cfg(test)] mod
+  [x] Convertir les dix `Scenario` en au moins dix tests nommés distincts du `#[cfg(test)] mod
     tests` de `./query.rs`, un par scenario (quatre existants conservés, six à créer) :
     « paramètres absents — valeurs par défaut » → `defaults_when_absent` (existant) ;
     « `page` à zéro ramenée à la première page » → `page_clamped_to_min` (existant, à étendre : il

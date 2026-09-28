@@ -257,7 +257,7 @@ Tasks:
     doit poser `preferred_username: None` dans l'@AuthPrincipal rendu (nouveau quatrième champ,
     même traitement que `email : @None` déjà en place sur ce chemin — aucune session OIDC vivante
     associée à un token API).
-  [ ] Convertir chaque `Scenario` en un test nommé distinct dans le `#[cfg(test)] mod tests` de
+  [x] Convertir chaque `Scenario` en un test nommé distinct dans le `#[cfg(test)] mod tests` de
     ./token.rs (pattern `test_db()` sur `sqlite::memory:` déjà en place, sans base externe) —
     `20` `Scenario`, `20` tests (17 originaux, 3 nés de l'arbitrage du 2026-09-27) : six tests
     inline existants exercent déjà un scénario, les étendre sans les renommer et les adapter à la
@@ -277,7 +277,7 @@ Tasks:
     @ensure_token_accepts_out_of_format_secret ; @different_pepper_never_matches_same_secret ;
     @revocation_during_validation_race_yields_invalid_token_not_database ;
     @last_used_at_write_failure_is_absorbed_and_validation_still_succeeds
-  [ ] Poivre HMAC obligatoire (arbitré 2026-09-27, `Purpose`, `Must`) : ajouter `pepper: &str` à
+  [x] Poivre HMAC obligatoire (arbitré 2026-09-27, `Purpose`, `Must`) : ajouter `pepper: &str` à
     @issue_token, @validate_token, @ensure_token et @hash_token ; remplacer @Sha256::digest par
     @Hmac::<@Sha256>::new_from_slice(pepper).chain_update(secret).finalize() ; ajouter la dépendance
     `hmac` à /Cargo.toml. Pas de valeur par défaut en dur — sa provenance est
@@ -285,14 +285,14 @@ Tasks:
     finalisée), sourcée d'une variable d'environnement côté app. Conséquence acceptée : les tokens
     émis avant ce changement deviennent invalides (API pré-`1.0`, pas de double-schéma de
     migration).
-  [ ] `ensure_token` rejette une empreinte détenue par un autre `subject` (arbitré 2026-09-27,
+  [x] `ensure_token` rejette une empreinte détenue par un autre `subject` (arbitré 2026-09-27,
     `Handles`, `Raises`) : variante @AuthError::TokenHashConflict (`MRD-AUTH-017`, `409`, finalisée
     en session avec Sébastien le 2026-09-27, cf. ./error.sdd `Tasks`).
-  [ ] Course validation/révocation → `InvalidToken` au lieu de `Database` (arbitré 2026-09-27,
+  [x] Course validation/révocation → `InvalidToken` au lieu de `Database` (arbitré 2026-09-27,
     `Raises`, `Handles`) : ne matcher que @DbErr::RecordNotUpdated et @DbErr::RecordNotFound sur
     l'`UPDATE` de `last_used_at`, toute autre @DbErr sur ce même appel devenant best-effort
     (tâche suivante).
-  [ ] `last_used_at` best-effort (arbitré 2026-09-27, `Raises`, `Handles`) : toute @DbErr autre que
+  [x] `last_used_at` best-effort (arbitré 2026-09-27, `Raises`, `Handles`) : toute @DbErr autre que
     @DbErr::RecordNotUpdated/@DbErr::RecordNotFound sur l'`UPDATE` de `last_used_at` est absorbée,
     @validate_token rend @Ok malgré tout.
   [x] SHA-256 brut sans sel : remplacé par le poivre HMAC obligatoire ci-dessus (arbitré

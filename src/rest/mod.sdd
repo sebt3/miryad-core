@@ -368,8 +368,9 @@ Tasks:
     delete) tandis que la surface réellement montée répond aussi `400` (rejets @Query/@Path/@Json),
     `401` (@AuthError), `415` (@Content-Type) et `500` (`MRD-REST-003`) ; `list` n'y déclare que
     `200` alors que le test inline `list_ingredients_forbidden_without_group_membership` prouve
-    le `403`. Tranché en partie le 2026-09-27 : `POST` répond désormais `201 Created` (`Must`), le
-    fragment OpenAPI est à mettre à jour en conséquence — ./openapi.sdd (à produire) en héritera.
+    le `403`. Tranché le 2026-09-27 et clos le 2026-09-28 pour le `201` : `POST` répond
+    `201 Created` (`Must`), le fragment OpenAPI de ./openapi.rs et ./openapi.sdd sont alignés en
+    `201` (arbitrage de Sébastien du 2026-09-28).
     Reste ouvert : complète-t-on @openapi::resource_openapi avec tous les statuts réels (`400`,
     `401`, `415`, `500`, `403` sur `list`), ou assume-t-on un document volontairement minimal ?
   [?] Le statut `422` est commun au @JsonDataError d'@axum (corps texte) et au
