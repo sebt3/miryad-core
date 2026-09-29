@@ -55,7 +55,9 @@ Must:
     lequel reposent @crate::rbac et @users::sync_group_memberships en amont.
   Rester sans effet de bord hors écriture SQL : l'implémentation vide de @ActiveModelBehavior
     laisse @before_save et @after_save identiques à l'identité (vérifié dans le source de
-    @sea_orm 2.0.2) ; le fichier n'émet aucune trace `tracing`.
+    @sea_orm 2.0.2) ; la seule trace `tracing` du fichier est le @debug du rebond d'@INSERT dans
+    @resolve_user (arbitré 2026-09-29, `Must` « trace `debug` au rebond » — qui prime sur la
+    rédaction d'avant l'arbitrage).
   Compiler sous toutes les combinaisons de features du `Cargo.toml` (`static-frontend`,
     `swagger-ui`, `graphql`, `graphiql`, `mcp`) : le module @crate::users n'est porté par aucun
     #[cfg(feature = ...)], @sea_orm et @chrono sont des dépendances non optionnelles ; la batterie
@@ -162,7 +164,8 @@ Handles:
     avec l'@email du gagnant, pas celui que l'appelant perdant a demandé.
   Toute erreur d'insertion, et pas seulement la violation d'unicité — le `Err(_)` ne filtre pas la
     nature de l'@sea_orm::DbErr — tombe dans la même branche de rebond ; si le rebond ne trouve
-    aucune ligne, l'erreur d'origine est perdue, remplacée par @DbErr::RecordNotFound.
+    aucune ligne, le @sea_orm::DbErr de l'insertion d'origine est propagé verbatim, sans trace
+    @warn (arbitré 2026-09-29, `Must`).
   @email @None → colonne NULL à la création ; @subject vide → une ligne avec `subject = ''` est
     posée sans protestation (aucune garde locale, cf. [arbitré 2026-09-29]).
   Sujets de service (`system:`…) créés par @users::ensure_service_account → même get-or-create,
@@ -178,7 +181,7 @@ Tasks:
     délégation de @crate::rest::core) restent dans les specs des surfaces qui les exercent.
   [x] @email : snapshot verrouillé, pas d'upsert (arbitré par Sébastien le 2026-09-29, `Must`) —
     aucun changement de code.
-  [ ] Rebond d'`INSERT` (arbitré par Sébastien le 2026-09-29, `Must`) : trace @tracing `debug` au
+  [x] Rebond d'`INSERT` (arbitré par Sébastien le 2026-09-29, `Must`) : trace @tracing `debug` au
     rebond, et propagation de l'@sea_orm::DbErr d'origine quand la relecture est vide — supprime
     le @DbErr::RecordNotFound « vanished » ; réécrire le Scenario « insertion en échec sans ligne
     trouvée » et son test en conséquence.

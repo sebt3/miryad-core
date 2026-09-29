@@ -23,6 +23,16 @@ pub type GroupMembership = Entity;
 /// groupes absents sont retirés, les nouveaux sont ajoutés (créés à la volée si inconnus). Seul
 /// chemin d'écriture de cette table — pas d'API d'assignation manuelle (Authentik est la source
 /// de vérité, cf. `docs/architecture.md`).
+///
+/// # Errors
+///
+/// Aucune erreur à code `MRD-*` ici — toutes les pannes remontent en `DbErr` brut propagé par
+/// `?` : via `ensure_group` une erreur de requête sur `miryad_groups` (ou `DbErr::RecordNotFound`
+/// de message `group {name} vanished` si la ligne disparaît entre l'insertion ratée et la
+/// relecture), et pour les find/insert/delete une erreur de connexion, de contrainte non ciblée
+/// ou d'auto-incrément inaccessible — les conflits ciblés sur (`user_id`, `group_id`) ne
+/// remontent pas (`ON CONFLICT DO NOTHING`). Violation de FK à l'insertion quand `user_id`
+/// n'existe pas dans `miryad_users`.
 pub async fn sync_group_memberships<C: ConnectionTrait>(
     db: &C,
     user_id: i32,

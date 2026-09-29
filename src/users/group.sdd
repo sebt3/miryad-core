@@ -12,7 +12,8 @@ Purpose:
     ../rbac.sdd). @ensure_group n'est appelé en production que par @sync_group_memberships
     (./membership.rs) et par le `up` de la migration de seed 000003 ; les lectures ne créent
     jamais rien. Aucun `#[cfg(feature = ...)]` : le fichier compile sur chaque combinaison de la
-    batterie de /tooling.sdd. Aucune trace @tracing, aucun code `MRD-*` ici : le type d'erreur est
+    batterie de /tooling.sdd. La seule trace @tracing du fichier est le @debug du rebond d'@INSERT
+    dans @ensure_group (arbitré 2026-09-29, `Must`) ; aucun code `MRD-*` ici : le type d'erreur est
     @sea_orm::DbErr verbatim, les codes sont posés par les surfaces en aval.
 
 Owns:
@@ -142,8 +143,9 @@ Must not:
   Cacher ou mémoriser une appartenance entre deux appels : chaque appel de @is_member est une
     lecture fraîche des deux tables ; le snapshot GraphQL de /src/graphql/principal.rs est la seule
     dérogation et elle appartient à son fichier (arbitrage [arbitré 2026-09-29]).
-  Émettre une trace @tracing, un @println!/@eprintln!/@dbg!, ou tout effet observable hors des
-    SELECT et de l'INSERT de @ensure_group.
+  Émettre une trace @tracing autre que le @debug du rebond d'@INSERT (arbitré 2026-09-29), un
+    @println!/@eprintln!/@dbg!, ou tout effet observable hors des SELECT et de l'INSERT de
+    @ensure_group.
   Produire un code `MRD-*` ou un type d'erreur propre ici : @ensure_group, @is_admin, @is_member
     renvoient @sea_orm::DbErr brut.
   Exposer une écriture de groupe à l'appelant final : aucune fonction posée ici n'attache un
@@ -287,7 +289,7 @@ Tasks:
     `group_helpers_propagate_dberr_when_tables_missing` (base `sqlite::memory:` non migrée, sans
     @Migrator::up). Toutes les fixtures suivent le harnais existant : SQLite mémoire +
     @crate::migration::Migrator::up, `l'exemption cfg(test)` de /tooling.sdd pour les @expect.
-  [ ] Rebond d'`INSERT` de @ensure_group (arbitré par Sébastien le 2026-09-29, `Must`) : propager
+  [x] Rebond d'`INSERT` de @ensure_group (arbitré par Sébastien le 2026-09-29, `Must`) : propager
     l'@sea_orm::DbErr d'origine quand la relance ne trouve rien, trace @tracing `debug` au rebond ;
     supprime le @DbErr::RecordNotFound « vanished » ; miroir de ./user.sdd.
   [x] Casse : égalité exacte sensible à la casse, sans normalisation (arbitré par Sébastien le

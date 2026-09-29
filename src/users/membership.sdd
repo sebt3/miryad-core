@@ -132,8 +132,9 @@ Returns:
 Raises:
   Aucune erreur à code `MRD-*` dans ce fichier ; toutes les pannes remontent en @DbErr brut propagé par
     `?` :
-  @ensure_group : erreur de requête sur `miryad_groups`, ou @DbErr::RecordNotFound (message
-    `group {name} vanished`) si la ligne disparaît entre l'insertion ratée et la relecture
+  @ensure_group : erreur de requête sur `miryad_groups`, ou @DbErr de l'@INSERT d'origine propagé
+    verbatim quand la relecture est vide (arbitré 2026-09-29 — plus de @DbErr::RecordNotFound
+    « vanished » fabriqué, voir ./group.sdd)
   find/insert/delete : erreur de connexion, de contrainte non ciblée, ou d'auto-incrément inaccessible —
     les conflits ciblés sur (`user_id`, `group_id`) ne remontent pas (voir Must sur le ON CONFLICT)
   Violation de FK à l'insertion quand `user_id` n'existe pas dans `miryad_users` : enforcement SQLite par
