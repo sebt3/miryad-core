@@ -46,7 +46,7 @@ fn call_before_create<E: MiryadResource>(
 }
 
 /// Politiques des entités montées, indexées par `resource_name` — carte privée, sans
-/// acceesseur de présence ni suppression : la seule lecture est
+/// accesseur de présence ni suppression : la seule lecture est
 /// [`get`](Self::get).
 #[derive(Debug, Default)]
 pub struct PolicyRegistry(HashMap<&'static str, EntityPolicy>);
