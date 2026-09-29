@@ -60,6 +60,19 @@ Must:
     `swagger-ui`, `graphql`, `graphiql`, `mcp`) : le module @crate::users n'est porté par aucun
     #[cfg(feature = ...)], @sea_orm et @chrono sont des dépendances non optionnelles ; la batterie
     de /tooling.sdd doit passer pour ce fichier sur chaque combinaison.
+  Sur échec de l'`INSERT`, relire par `subject` (rebond de course) ; si la relecture est vide,
+    propager l'@sea_orm::DbErr d'origine de l'`INSERT` (arbitré par Sébastien le 2026-09-29). Le rebond émet une trace
+    @tracing `debug` (course normale, jamais `warn`) ; aucun filtre sur la nature de l'erreur.
+  @email est un snapshot de la première vue, jamais rafraîchi (get-or-create, pas upsert) (arbitré par Sébastien le 2026-09-29) :
+    métadonnée, jamais une clé d'identité ni une credential ; on rouvre quand une feature
+    consommera l'e-mail (notifications).
+  @subject est une frontière de confiance (arbitré par Sébastien le 2026-09-29) : verbatim, sans validation, sensible à la casse
+    (`sub` ≠ `SUB` sont deux comptes, conforme à OIDC) ; la non-vacuité relève de @crate::auth,
+    en cohérence avec ./../auth/principal.sdd.
+  @display_name est une colonne réservée, en attente de feature : créée à `NULL`, jamais écrite
+    par la crate (arbitré par Sébastien le 2026-09-29) ; une migration committée ne se réécrit pas.
+  @users::user::Relation reste vide, durablement (arbitré par Sébastien le 2026-09-29) : aucune exposition relationnelle à
+    verrouiller ailleurs, le `Must not` ci-dessous en est le verrou.
 
 Must not:
   Modifier @users::user::Relation pour naviguer vers @users::membership::Entity sans arbitrage de
@@ -112,7 +125,7 @@ Accepts:
     appelants actuels (callback @crate::auth, handlers de /src/rest,
     @crate::graphql::load_principal, @users::ensure_service_account)
   subject — chaîne du claim `sub` reçue verbatim : aucune validation de format, aucune garde
-    contre la chaîne vide dans ./user.rs (la non-vacuité du `sub` relève de @crate::auth, cf. [?]
+    contre la chaîne vide dans ./user.rs (la non-vacuité du `sub` relève de @crate::auth, cf. [arbitré 2026-09-29]
     en Tasks)
   email — @Option<&@str> sans contrôle de format : un @Some est inséré tel quel, un @None devient
     SQL `NULL` ; l'argument n'est consommé qu'à la création, jamais à la re-vue
@@ -136,11 +149,9 @@ Raises:
     brut par `?`. La décoration en code `MRD-*` est un contrat des appelants — @AuthError::Database
     (`MRD-AUTH-016`, /src/auth/mod.sdd) côté callback, @RestError::Database (`MRD-REST-003`,
     ../rest/error.rs) côté REST, mapping propre au module GraphQL.
-  @sea_orm::DbErr synthétisé @DbErr::RecordNotFound avec le message interpolé
-    `user with subject {subject} vanished` quand l'insertion échoue et que la relecture de rebond
-    ne trouve toujours aucune ligne. Erreur interne sans code — voir le [?] en Tasks.
-  L'erreur d'insertion d'origine ne remonte jamais : absorbée par le bras de course (voir
-    `Handles` et le [?] correspondant).
+  Quand l'insertion échoue et que la relecture de rebond ne trouve toujours aucune ligne,
+    l'@sea_orm::DbErr de l'`INSERT` d'origine est propagée telle quelle, sans code `MRD-*` — plus
+    aucun @DbErr::RecordNotFound synthétisé « vanished » (arbitré 2026-09-29, `Must`).
 
 Handles:
   Subject inconnu → insertion : @subject et l'argument @email écrits, @display_name posé à NULL,
@@ -153,7 +164,7 @@ Handles:
     nature de l'@sea_orm::DbErr — tombe dans la même branche de rebond ; si le rebond ne trouve
     aucune ligne, l'erreur d'origine est perdue, remplacée par @DbErr::RecordNotFound.
   @email @None → colonne NULL à la création ; @subject vide → une ligne avec `subject = ''` est
-    posée sans protestation (aucune garde locale, cf. [?]).
+    posée sans protestation (aucune garde locale, cf. [arbitré 2026-09-29]).
   Sujets de service (`system:`…) créés par @users::ensure_service_account → même get-or-create,
     @email NULL.
 
@@ -165,29 +176,26 @@ Tasks:
     tests ; un seul test inline vit aujourd'hui (@resolve_user_creates_then_reuses_same_row, qui
     couvre le scenario « re-login »). Les tests d'usage des surfaces (REST, GraphQL, MCP via la
     délégation de @crate::rest::core) restent dans les specs des surfaces qui les exercent.
-  [?] @email n'est jamais rafraîchi après la création (get-or-create, pas upsert) : un re-login
-    avec un nouvel e-mail à l'IdP laisse la ligne, @crate::rest::me et @crate::rest::admin sur
-    l'e-mail de première vue. Verrouille-t-on ce snapshot ou passe-t-on à l'upsert ?
-  [?] Le `Err(_)` fourre-tout de l'insertion : toute erreur d'`INSERT` (pas seulement la violation
-    UNIQUE) tombe dans la relecture de rebond, la cause d'origine est perdue et aucun événement
-    `tracing` n'est émis sur ce chemin. Filtre-t-on la nature de l'erreur et trace-t-on un `warn`
-    avant rebond ?
-  [?] @DbErr::RecordNotFound(`… vanished`) est une erreur interne construite sans code `MRD-*`,
-    alors que la spec racine en exige un sur toute erreur interne de la crate. Crée-t-on un
-    `MRD-USER-001`, ou la décoration amont (`MRD-AUTH-016`, `MRD-REST-003`) suffit-elle ?
-  [?] @subject est utilisé verbatim sans validation : la chaîne vide se pose sans garde et `sub`
-    ≠ `SUB` crée deux comptes. La garantie de non-vacuité relève-t-elle déjà de @crate::auth, ou
-    faut-il une précondition dans @resolve_user ?
-  [?] @display_name est créé à NULL et rien dans la crate ne l'écrit. Colonne en attente de
-    feature, ou colonne morte à documenter comme telle ?
-  [?] @users::user::Relation vide volontairement et pour durable (clé étrangère entrante jamais
-    naviguée, aucune exposition relationnelle à verrouiller ailleurs) ? Si oui, le `Must not` de
-    cette spec devient le verrou explicite.
+  [x] @email : snapshot verrouillé, pas d'upsert (arbitré par Sébastien le 2026-09-29, `Must`) —
+    aucun changement de code.
+  [ ] Rebond d'`INSERT` (arbitré par Sébastien le 2026-09-29, `Must`) : trace @tracing `debug` au
+    rebond, et propagation de l'@sea_orm::DbErr d'origine quand la relecture est vide — supprime
+    le @DbErr::RecordNotFound « vanished » ; réécrire le Scenario « insertion en échec sans ligne
+    trouvée » et son test en conséquence.
+  [x] Pas de code `MRD-USER-001` (arbitré par Sébastien le 2026-09-29) : le `DbErr` de passage
+    reste nu, la surface qui le traduit le code (`MRD-AUTH-016`, `MRD-REST-003`) — règle
+    transverse ajoutée à `.specdd/bootstrap.project.md`.
+  [x] @subject : frontière de confiance, documenté, aucune garde locale (arbitré par Sébastien le
+    2026-09-29, `Must`) — aucun changement de code.
+  [ ] @display_name : colonne réservée documentée (arbitré par Sébastien le 2026-09-29, `Must`) —
+    doc-comment sur le champ de `./user.rs`, aucun changement de comportement.
+  [x] @users::user::Relation vide durablement (arbitré par Sébastien le 2026-09-29) : le `Must
+    not` est le verrou explicite.
 
 Done when:
   Chacun des 8 `Scenario` dispose d'au moins un test distinct nommé exerçant son `Then`, le nombre
     de tests est supérieur ou égal au nombre de `Scenario`, la batterie de /tooling.sdd passe
-    verte sur toutes les combinaisons de features sans warning sur ./user.rs, et chaque `[?]` de
+    verte sur toutes les combinaisons de features sans warning sur ./user.rs, et chaque [arbitré 2026-09-29] de
     cette spec a été tranché par Sébastien.
 
 Scenario: première vue avec email crée la ligne complète
@@ -216,13 +224,12 @@ Scenario: deux premières vues concurrentes du même subject ne laissent qu'une 
   Then les deux rendent @Ok avec le même @id
   And la table ne porte qu'une ligne pour `sub-race`
 
-Scenario: insertion en échec sans ligne trouvée devient RecordNotFound
+Scenario: insertion en échec sans ligne trouvée propage l'erreur d'insertion d'origine
   Given un @sea_orm::MockDatabase où la première lecture ne rend aucune ligne, l'`INSERT` échoue
-    d'une erreur arbitraire et la relecture de rebond ne rend aucune ligne non plus
+    d'une erreur arbitraire `E` et la relecture de rebond ne rend aucune ligne non plus
   When @resolve_user est appelée pour `sub-ghost`
-  Then le résultat est un @sea_orm::DbErr::RecordNotFound dont le message contient
-    `user with subject sub-ghost vanished`
-  But l'erreur d'insertion d'origine n'apparaît nulle part dans le résultat
+  Then le résultat est l'@sea_orm::DbErr `E` de l'`INSERT`, verbatim
+  But aucun @sea_orm::DbErr::RecordNotFound « vanished » n'est fabriqué (arbitré 2026-09-29)
 
 Scenario: deux subjects qui ne diffèrent que par la casse sont deux utilisateurs
   Given une base migrée vide

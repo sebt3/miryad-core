@@ -45,14 +45,14 @@ References:
     seed `admin` via exactement ce helper sur @SchemaManager::get_connection (preuve d'usage que le
     générique @ConnectionTrait doit accepter une connexion de migration) ; son `down` supprime par
     DELETE SQL brut avec le littéral `'admin'` sans passer par la constante — dérive signalée en
-    `Tasks` `[?]`
+    `Tasks` [arbitré 2026-09-29]
   /src/rest/admin.rs — garde d'accès de `GET /api/v1/users` : appelle @is_admin sur le caller
     résolu, puis lit @group::Entity/@group::Column::Id.is_in pour nommer les groupes (deux
     requêtes, jamais un N+1) ; /src/rest/me.rs consomme la même @rest::admin::groups_by_user
   /src/graphql/principal.rs — surface qui ne consomme PAS les helpers : @graphql::load_principal
     recalcule un @graphql::GraphQlPrincipal précalculé par requête avec des @Entity::find directs
     sur les mêmes tables ; seule la constante @ADMIN_GROUP_NAME est partagée (via
-    @HashSet::contains) ; asymétrie de chemin de lecture signalée en `Tasks` `[?]`
+    @HashSet::contains) ; asymétrie de chemin de lecture signalée en `Tasks` [arbitré 2026-09-29]
   /src/mcp/registry.rs — la surface MCP délègue aux fonctions de @rest::core sans réévaluer la
     politique : elle hérite donc des décisions @rbac, donc de ces helpers, mot pour mot
   /src/resource.sdd — aucune de ces entités n'y est déclarée pour les groupes : @group::Entity
@@ -73,7 +73,7 @@ Must:
   Garder @users::group::ADMIN_GROUP_NAME (valeur verbatim `admin`) comme seul lien de la convention
     admin, jamais comparé à un littéral inline dans ./group.rs : @is_admin la lit, le `up` du seed
     000003 la lit, @graphql::load_principal la lit — toute la crate ne connaît le nom que par la
-    constante (le littéral brut du `down` de 000003 est l'exception signalée en `Tasks` `[?]`).
+    constante (le littéral brut du `down` de 000003 est l'exception signalée en `Tasks` [arbitré 2026-09-29]).
   Définir @is_admin comme le strict appel à @is_member avec @ADMIN_GROUP_NAME, sans aucune logique
     propre, sans cache, sans seconde définition de l'admin : c'est la garantie qu'il n'existe
     qu'un seul chemin de décision admin dans la crate.
@@ -90,8 +90,9 @@ Must:
     @id sans aucun insert ; sinon insert d'un @ActiveModel avec @name verbatim,
     @created_at posé par @chrono::Utc::now(), @id laissé à l'auto-incrément ; sur @Err de cet
     insert, SELECT de nouveau par nom et @Ok de l'@id s'il est apparu ; si la relance ne trouve
-    toujours rien, @Err d'un @sea_orm::DbErr::RecordNotFound portant le message
-    `group {name} vanished`.
+    toujours rien, @Err de l'@sea_orm::DbErr de l'insert d'origine, verbatim (arbitré
+    2026-09-29 : plus de @DbErr::RecordNotFound « vanished » fabriquée) ; une trace @tracing `debug`
+    est émise au rebond.
   Rester générique `<C: @sea_orm::ConnectionTrait>` sur les trois fonctions, vérifié par les deux
     espèces d'appelants réels dans la source des appelants : @sea_orm::DatabaseConnection
     (@crate::rbac, @rest::admin, tests inline) et @sea_orm_migration::SchemaConnection du
@@ -113,6 +114,18 @@ Must:
     HTTP que comme pièce de @rest::admin::UserSummary et de /src/rest/me.rs (noms, lecture seule,
     derrière garde admin ou self), et la parité REST/MCP tient par la délégation de
     /src/mcp/registry.rs à @rest::core.
+  Comparer @name par égalité SQL exacte, sensible à la casse, sans normalisation (arbitré par Sébastien le 2026-09-29) : c'est le
+    comportement par défaut de SQLite et de Postgres (collation déterministe) ; un backend à
+    collation insensible à la casse (MySQL) est à la charge de l'application, la crate ne le
+    supporte pas de série.
+  Ne pas filtrer les noms vides ou blancs dans @ensure_group, primitive de get-or-create (arbitré par Sébastien le 2026-09-29) : le
+    filtrage vit à la frontière du claim OIDC, dans @sync_group_memberships (./membership.sdd).
+  Le `down` de la migration `000003` écrit le littéral `'admin'` : contrainte documentaire (arbitré par Sébastien le 2026-09-29), la
+    constante @ADMIN_GROUP_NAME et le littéral doivent bouger ensemble (au besoin par une
+    migration suivante, jamais par réécriture de la migration committée).
+  @graphql::load_principal lit un snapshot par requête par @Entity::find direct, quand REST relit
+    à la demande via @is_admin/@is_member : différence de fraîcheur assumée (arbitré par Sébastien le 2026-09-29), à dire dans la
+    spec GraphQL ; le pont est gelé, on ne l'unifie pas maintenant.
 
 Must not:
   Créer ou modifier quoi que ce soit sur le chemin de @is_admin et @is_member : les deux sont du
@@ -128,7 +141,7 @@ Must not:
     le schéma, pas de contournement de @is_member — la convention est le nom seul.
   Cacher ou mémoriser une appartenance entre deux appels : chaque appel de @is_member est une
     lecture fraîche des deux tables ; le snapshot GraphQL de /src/graphql/principal.rs est la seule
-    dérogation et elle appartient à son fichier (arbitrage `[?]`).
+    dérogation et elle appartient à son fichier (arbitrage [arbitré 2026-09-29]).
   Émettre une trace @tracing, un @println!/@eprintln!/@dbg!, ou tout effet observable hors des
     SELECT et de l'INSERT de @ensure_group.
   Produire un code `MRD-*` ou un type d'erreur propre ici : @ensure_group, @is_admin, @is_member
@@ -179,7 +192,7 @@ Accepts:
   Toute connexion @C : @sea_orm::ConnectionTrait — @sea_orm::DatabaseConnection (rbac, REST,
     tests), une transaction, ou la connexion de @sea_orm_migration::SchemaManager du seed 000003 ;
     aucune spécialisation backend : SQLite mémoire des tests et Postgres de production suivent le
-    même code (seule la sensibilité à la casse de la comparaison SQL diverge, `[?]` en `Tasks`).
+    même code (seule la sensibilité à la casse de la comparaison SQL diverge, [arbitré 2026-09-29] en `Tasks`).
   Un @name verbatim dans @ensure_group : aucune normalisation, aucun trim, aucune vérification —
     `""`, espaces, casse inhabituelle sont créés tels quels si un claim les porte ; la contrainte
     unique du schéma est le seul contrôle.
@@ -208,13 +221,10 @@ Raises:
     de @ensure_group : table absente (base non migrée), connexion invalide, erreur serveur — jamais
     convertie en @Ok(@false), jamais wrappée en type propre, aucun code `MRD-*` posé ici
     (translation par les surfaces : `MRD-REST-003` en REST via /src/rest/error.sdd).
-  @sea_orm::DbErr::RecordNotFound fabriquée par @ensure_group, message `group {name} vanished`,
-    dans le seul cas : l'insert a échoué ET la SELECT de relance ne trouve aucune ligne — erreur
-    propre produite par ./group.rs (aucun chemin de ce fichier ne passe par @require_one, le
-    pendant faillible de @one vérifié en source @sea_orm).
-  Masquage inhérent au pattern @Err(_) de @ensure_group : l'erreur d'insertion d'origine est
-    jetée quelle qu'en soit la cause, y compris une panne sans rapport avec la contrainte unique ;
-    ce que l'appelant voit est alors soit l'@id du gagnant, soit la `vanished` — signalé `[?]`.
+  Erreur d'insertion de @ensure_group : quand l'insert échoue et que la relance ne trouve
+    aucune ligne, l'@sea_orm::DbErr d'origine de l'insert remonte verbatim — une panne sans
+    rapport avec la contrainte unique n'est plus déguisée en disparition de groupe (arbitré
+    2026-09-29) ; quand la relance trouve la ligne, l'appelant voit l'@id du gagnant.
   Aucune panic : aucun @unwrap/@expect/@panic/@todo/@unimplemented sur le chemin de production
     (harnais de /tooling.sdd) ; les @expect des tests inline vivent sous @cfg(test), exempts.
 
@@ -238,14 +248,14 @@ Handles:
   Comparaison de nom : égalité SQL `=` sur la colonne unique, sans COLLATE déclaré dans 000002 —
     binaire et sensible à la casse sur SQLite (backend des tests : `Admin` est un groupe distinct
     de `admin`, @is_admin @Ok(@false) pour un membre de `Admin`) ; en Postgres l'égalité dépend de
-    la collation de la colonne — dérive potentielle posée en `[?]`.
+    la collation de la colonne — dérive potentielle posée en [arbitré 2026-09-29].
   Suppression d'un groupe hors flux (SQL brut) : la FK cascade de 000002 emporte les lignes de
     `miryad_group_memberships` qui pointaient vers lui ; @is_member répond alors @Ok(@false) pour
     les anciens membres, par le même chemin « groupe absent » qu'un groupe inconnu, sans erreur.
   Gating et surfaces : fichier non gaté — disponible avec ou sans `graphql`/`mcp` ; REST et rbac
     consultent ces helpers à la demande (à chaque décision), MCP hérite à l'identique par
     délégation @rest::core ; GraphQL (/src/graphql/principal.rs) recalcule un snapshot par requête
-    en contournant les helpers (asymétrie de chemin de lecture, `[?]` en `Tasks`).
+    en contournant les helpers (asymétrie de chemin de lecture, [arbitré 2026-09-29] en `Tasks`).
 
 Example:
   # is_member — deux SELECT, zéro écriture
@@ -277,46 +287,24 @@ Tasks:
     `group_helpers_propagate_dberr_when_tables_missing` (base `sqlite::memory:` non migrée, sans
     @Migrator::up). Toutes les fixtures suivent le harnais existant : SQLite mémoire +
     @crate::migration::Migrator::up, `l'exemption cfg(test)` de /tooling.sdd pour les @expect.
-  [?] Masquage d'erreur dans @ensure_group : l'@Err de l'insert est jeté quel qu'en soit la cause
-    (@Err(_) non nommé) et, si la SELECT de relance est vide, remplacé par
-    @DbErr::RecordNotFound(`group {name} vanished`) — une panne d'insertion sans rapport avec la
-    contrainte unique (capacité, type serveur) serait présentée comme une disparition de groupe,
-    et la cause d'origine perdue. ./user.rs (@resolve_user) documente explicitement le même
-    raccourci, @ensure_group ne le documente pas. Ce raccourci get-or-create est-il le contrat
-    assumé (et faut-il le commentaire de./user.rs en miroir) ou faut-il propager l'erreur
-    d'insertion d'origine quand la relance ne trouve rien ?
-  [?] Sens de la casse dépendant du backend : la comparaison de @name est un `=` SQL sans COLLATE
-    déclaré dans 000002 ; vérifié dans la source de la migration. Sur SQLite (tests) c'est
-    binaire — `Admin` et `admin` sont deux groupes distincts et un membre de `Admin` n'est pas
-    admin ; en Postgres l'égalité suit la collation de la colonne et une collation non binaire
-    pourrait les rendre égaux. La convention admin (`ADMIN_GROUP_NAME` exact) mérite-t-elle un
-    contrat de comparaison déterministe (COLLATE "C"/NOCASE porté par une migration suivante, ou
-    normalisation de casse dans @ensure_group/@is_member), ou l'on assume « dépendances de
-    collation à la charge de l'app » ?
-  [?] @ensure_group accepte un nom vide `""` ou whitespace-only et @sync_group_memberships
-    propage verbatim les chaînes du claim OIDC : un claim contenant une chaîne vide crée un groupe
-    nommé vide, distinct de tout, jamais nommable en clair, que @is_member sait pourtant comparer.
-    Filtre-t-on les noms vides/whitespace à l'entrée (@sync_group_memberships) ou par garde dans
-    @ensure_group, ou assume-t-on « Authentik ne renvoie jamais de nom vide » comme frontière de
-    confiance ?
-  [?] Le `down` de m20260822_000003 supprime le groupe par DELETE SQL brut avec le littéral
-    `'admin'`, sans lire @ADMIN_GROUP_NAME (le `up`, lui, passe par la constante et @ensure_group)
-    : un renommage de la constante rendrait le `down` silencieux (0 ligne supprimée, aucun
-    contrôle). Puisqu'une migration committée ne se réécrit pas : tracer la contrainte documentaire
-    (la constante et le littéral doivent bouger ensemble, corrigés au besoin par une migration
-    suivante) ou arbitrer autrement ?
-  [?] Bypass GraphQL : @graphql::load_principal recalcule @GraphQlPrincipal.{@is_admin,@groups}
-    par des @Entity::find directs sur `miryad_groups`/`miryad_group_memberships` (snapshot par
-    requête, hooks synchrones) au lieu d'appeler @is_admin/@is_member ; REST (rbac à chaque
-    décision, garde de /src/rest/admin.rs) relit à la demande. Mêmes tables, mêmes constantes,
-    deux chemins de lecture et une fraîcheur différente en cours de requête longue. Le snapshot
-    est-il le contrat GraphQL assumé (et le dire dans sa spec) ou toute surface doit-elle passer
-    par ./group.rs ?
+  [ ] Rebond d'`INSERT` de @ensure_group (arbitré par Sébastien le 2026-09-29, `Must`) : propager
+    l'@sea_orm::DbErr d'origine quand la relance ne trouve rien, trace @tracing `debug` au rebond ;
+    supprime le @DbErr::RecordNotFound « vanished » ; miroir de ./user.sdd.
+  [x] Casse : égalité exacte sensible à la casse, sans normalisation (arbitré par Sébastien le
+    2026-09-29, `Must`) — SQLite et Postgres par défaut, collation insensible à la charge de
+    l'app. Aucun changement de code.
+  [x] Noms vides ou blancs : pas de garde dans @ensure_group ; le filtre vit dans
+    @sync_group_memberships (arbitré par Sébastien le 2026-09-29, `Must` ; voir
+    ./membership.sdd).
+  [x] `down` de 000003 : contrainte documentaire, pas de réécriture (arbitré par Sébastien le
+    2026-09-29, `Must`) — miroir dans ./../migration/m20260822_000003_seed_admin_group.sdd.
+  [x] Bypass GraphQL : snapshot par requête assumé, à écrire dans la spec GraphQL (arbitré par
+    Sébastien le 2026-09-29, `Must`) ; pont gelé, pas d'unification maintenant.
 
 Done when:
   Chaque `Scenario` a au moins un test Rust distinct nommé vérifiant son @Then (onze minimum dans
     le @mod tests de ./group.rs, contre trois aujourd'hui), la batterie de /tooling.sdd passe verte
-    sur chaque combinaison de features (fichier non gaté), les lignes `[?]` de `Tasks` sont
+    sur chaque combinaison de features (fichier non gaté), les lignes [arbitré 2026-09-29] de `Tasks` sont
     arbitrées par Sébastien et reflétées dans le contrat ou le code, ./group.rs ne porte ni dette
     harnais nouvelle, ni trace @tracing, ni code `MRD-*`, ni seconde définition de l'admin, et sa
     spec est relue et approuvée par Sébastien.
@@ -400,7 +388,7 @@ Scenario: Nom exact et casse : `Admin` n'est pas `admin`
   Then deux lignes distinctes coexistent (`admin` seedé et `Admin` créé), @is_member(db, user.id,
     `"admin"`) répond @Ok(@false) et @is_admin @Ok(@false)
   But ce sens de la casse binaire est vérifié sur SQLite et n'est pas garanti identique sous
-    Postgres sans collation explicite : c'est la ligne `[?]` de `Tasks`
+    Postgres sans collation explicite : c'est la ligne [arbitré 2026-09-29] de `Tasks`
 
 Scenario: Base non migrée : @Err propagé sur les trois helpers, jamais @Ok(@false)
   Given une connexion `sqlite::memory:` sans @Migrator::up (aucune table @miryad_*)
