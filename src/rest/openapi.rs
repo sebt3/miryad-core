@@ -1,3 +1,13 @@
+//! Contrat public `OpenAPI` de la crate — un fragment `utoipa::openapi::OpenApi` par
+//! entité montée (`resource_openapi` : les 5 routes CRUD de `resource_router`, le
+//! schéma du `Model`, l'enveloppe de pagination `Paged{Model}`, l'exigence de sécurité
+//! `bearer_auth`), fusionnable par `OpenApi::merge`. `openapi_router` (toujours compilé)
+//! sert `GET /api/openapi.json` ; `swagger_ui_router` (seule feature `swagger-ui`) sert
+//! l'UI sur `/api/swagger-ui`. artefact externe de la séparation voulue par la racine :
+//! l'IR frontend est l'artefact interne, aucune extension `x-miryad-*` n'entre ici. Le
+//! fichier ne décide aucune autorisation et n'accède à aucune base — il décrit des routes
+//! montées ailleurs et sert un document JSON déjà construit.
+
 use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterBuilder, ParameterIn};
 use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::response::ResponseBuilder;

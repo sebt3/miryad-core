@@ -13,10 +13,19 @@ use crate::rest::admin::groups_by_user;
 use crate::rest::error::RestError;
 use crate::users::resolve_user;
 
+/// Corps JSON de succès de `GET /api/v1/me` — trois clés et trois seulement, émises
+/// en ordre de déclaration (`subject`, `email`, `groups`) ; jamais de champ `id`, la
+/// clé interne reste hors du frontend.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MeResponse {
+    /// `subject` de la ligne `miryad_users` résolue depuis le principal authentifié —
+    /// jamais une cible passée par le client.
     pub subject: String,
+    /// Colonne `email` de cette même ligne — snapshot de première vue posé par
+    /// `resolve_user`, jamais rafraîchi depuis la session ; sérialisé `null` quand absent.
     pub email: Option<String>,
+    /// Noms des groupes de l'appelante, lus par `groups_by_user` — tableau vide sans
+    /// appartenance, ordre non contractuel.
     pub groups: Vec<String>,
 }
 

@@ -6,10 +6,21 @@
 /// `MRD-AUTH-004` à `MRD-AUTH-008`.
 #[derive(Clone)]
 pub struct OidcConfig {
+    /// Identifiant de l'émetteur — transmis à `IssuerUrl::new` puis interrogé par la discovery.
+    /// Seule contrainte : `url::Url::parse` (aucun schéma `https` imposé par le type).
     pub issuer_url: String,
+    /// Identifiant client — transmis sans validation à `ClientId::new`.
     pub client_id: String,
+    /// Secret client — `Some` est empaqueté `Some(ClientSecret)` et authentifie en `Basic` à
+    /// l'échange ; `None` exprime un client public, possession du code prouvée par `PKCE` `S256`
+    /// seul (`Basic` omis).
     pub client_secret: Option<String>,
+    /// Callback `OIDC` de l'application (monté par `auth_router` sous `/auth/callback`) — pris
+    /// par `RedirectUrl::new` ; sa parse ne se révèle qu'après une discovery réussie.
     pub redirect_url: String,
+    /// Scopes demandées — le `Vec` vide est permis ; copié en snapshot à la construction du
+    /// client, sans validation ni déduplication (`openid` est imposée par `openidconnect` et
+    /// filtrée de l'URL d'autorisation pour éviter le doublon).
     pub scopes: Vec<String>,
     /// Certificat CA additionnel, contenu PEM (pas un chemin de fichier).
     pub ca_cert: Option<String>,

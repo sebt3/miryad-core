@@ -24,6 +24,8 @@ type BuiltCoreClient = CoreClient<
 /// fois par `sync_group_memberships` au login (cf. `OidcLoginResult`), jamais persistés ici.
 #[derive(Clone, Debug)]
 pub struct OidcIdentity {
+    /// `id_token` `JWT` brut — signature et nonce vérifiés en amont par `exchange_code` ; c'est
+    /// lui que le cookie de session scelle et relit tel quel.
     pub id_token: String,
     /// Claim `sub` — identifiant stable, ce que `users::resolve_user` utilise pour lier/créer un
     /// `User`.
@@ -42,16 +44,35 @@ pub struct OidcIdentity {
 /// qui rend verbatim une copie du résultat fourni à la construction.
 #[derive(Clone, Debug)]
 pub struct OidcLoginResult {
+    /// L'identité quadruple extraite de l'`id_token` vérifié — ce qui survivra dans le cookie
+    /// de session.
     pub identity: OidcIdentity,
+    /// Valeurs du claim `groups` (claim spécifique à Authentik, hors standard `OIDC`) —
+    /// consommé une seule fois par `users::sync_group_memberships` au login, jamais persisté tel
+    /// quel.
     pub groups: Vec<String>,
 }
 
+/// Abstraction `async` (`Send` + `Sync`) du client du handshake `OIDC` — ce que détiennent
+/// `MiryadAuthState` (sous `Arc<dyn OidcClientTrait>`) et les handlers du routeur `auth` ;
+/// implémentée en production par `OidcClient`, et par `MockOidcClient` sous `cfg(test)`.
 #[async_trait::async_trait]
 pub trait OidcClientTrait: Send + Sync {
     /// URL d'autorisation à flux code fraîche : `state`, `nonce` et `PkceCodeVerifier` sont
     /// générés au même appel (`PkceCodeChallenge::new_random_sha256`, arbitré 2026-09-27),
     /// non persistés ici — l'appelant doit conserver le quatuor pour son propre callback.
     fn authorization_url(&self) -> (openidconnect::url::Url, CsrfToken, Nonce, PkceCodeVerifier);
+    /// Échange le `code` d'autorisation contre l'identité : `pkce_verifier` doit être celui
+    /// rendu par le même appel à `authorization_url` (`PKCE` `S256` inconditionnel), et
+    /// `expected_nonce` le nonce rechargé du pending — la vérification des claims est déléguée
+    /// à `openidconnect`.
+    ///
+    /// # Errors
+    ///
+    /// `AuthError::Oidc` (`MRD-AUTH-003`) portant en charge utile `MRD-AUTH-009` (requête
+    /// d'échange impossible à construire ou endpoint en échec/`3xx`), `MRD-AUTH-010` (réponse
+    /// sans `id_token`) ou `MRD-AUTH-011` (tout motif de rejet des claims confondu — seule la
+    /// cause « clé/JWKS manquante » arme en outre le signal `jwks_rotation_needed`).
     async fn exchange_code(
         &self,
         code: &str,
@@ -60,6 +81,11 @@ pub trait OidcClientTrait: Send + Sync {
     ) -> Result<OidcLoginResult, AuthError>;
 }
 
+/// Client `OIDC` de production, bâti sur `CoreClient` d'`openidconnect` après discovery —
+/// implémente `OidcClientTrait`. Seul constructeur : `OidcClient::new(&OidcConfig)`, faillible
+/// sous les codes internes `MRD-AUTH-004` à `MRD-AUTH-008` (ordre figé : parse de l'issuer,
+/// PEM de `ca_cert`, client `HTTP`, discovery, parse du redirect). Porte aussi le signal de
+/// rotation `JWKS` lu par `jwks_rotation_needed` (pas de re-fetch automatique).
 pub struct OidcClient {
     inner: BuiltCoreClient,
     http_client: reqwest::Client,

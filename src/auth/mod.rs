@@ -3,14 +3,41 @@
 //! Point d'entrée : [`MiryadAuthState`](crate::auth::MiryadAuthState) et [`auth_router`](crate::auth::auth_router).
 //! Dual-auth (cookie ou `Authorization: Bearer`) via [`AuthPrincipal`](crate::auth::AuthPrincipal).
 
+/// Configuration `OIDC` fournie par l'application consommatrice — struct `OidcConfig` de huit
+/// champs sans constructeur, validée seulement à la construction du client dans le module `oidc`.
 pub mod config;
+
+/// Cookie de session `miryad_session` : pose chiffrée `AES-256-GCM`, lecture vérifiée avec
+/// ré-lecture de l'expiration, retrait par `Max-Age=0`. Le cookie pending `miryad_oidc_pending`
+/// est posé et lu par ce fichier, pas par celui-là.
 pub mod cookie;
+
+/// Extracteur dual-auth de `AuthPrincipal` : `Bearer` token API résolu d'abord, cookie de
+/// session en repli, aucun repli silencieux sur un `Bearer` reconnu.
 pub mod dual;
+
+/// `AuthError` : codes uniques `MRD-AUTH-NNN`, mapping variante → statut `HTTP` et rendu de
+/// corps `axum` (`text/plain`).
 pub mod error;
+
+/// Extracteur `axum` `AuthUser` : identité extraite du seul cookie de session, rejet `401` porté
+/// `MRD-AUTH-001`/`MRD-AUTH-002`, sans `RBAC` ni token API.
 pub mod middleware;
+
+/// Client du handshake `OIDC` : construction par discovery, génération de l'URL d'autorisation
+/// (`CSRF`/nonce/`PKCE`), échange de code avec vérification des claims de l'`id_token`.
 pub mod oidc;
+
+/// Types de données `AuthPrincipal` et `PrincipalSource` : identité unifiée d'une requête
+/// authentifiée, session ou token API.
 pub mod principal;
+
+/// `MiryadAuthState`, état minimal d'auth composé dans l'état `axum` de l'application
+/// consommatrice (pattern `FromRef`, aucune structure d'état concrète imposée).
 pub mod state;
+
+/// Moteur des tokens API : secret `mrd_`, empreinte `HMAC-SHA256` poivrée hex, émission,
+/// validation, révocation, garantie idempotente.
 pub mod token;
 
 pub use config::OidcConfig;

@@ -16,11 +16,20 @@ use crate::query::{PagedResult, Pagination};
 use crate::rest::error::RestError;
 use crate::users::{group, is_admin, membership, resolve_user, user};
 
+/// Ligne de la liste paginée `GET /api/v1/users` — exactement les clés `id`,
+/// `subject`, `email`, `groups` ; jamais `display_name`, `created_at` ni une colonne
+/// d'une autre table interne (tokens compris).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct UserSummary {
+    /// Clé primaire interne de la ligne `miryad_users`.
     pub id: i32,
+    /// Sujet OIDC persisté sur la ligne locale.
     pub subject: String,
+    /// Colonne `email` de la ligne, pas le credential de la requête (le bearer API
+    /// porte un email `None`) ; sérialisé `null` quand absent.
     pub email: Option<String>,
+    /// Noms des groupes de l'utilisateur, lus par `groups_by_user` — tableau vide
+    /// sans appartenance, ordre non contractuel.
     pub groups: Vec<String>,
 }
 

@@ -30,10 +30,16 @@ fn to_rest_error(err: AuthError) -> RestError {
 /// porte.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TokenSummary {
+    /// Clé primaire de la ligne `miryad_api_tokens`.
     pub id: i32,
+    /// Nom donné au token à l'émission, stocké verbatim par le moteur.
     pub name: String,
+    /// Date de création, sérialisée en RFC 3339 (suffixe `Z`).
     pub created_at: DateTimeUtc,
+    /// Date d'expiration — sérialisée `null` quand le token n'a pas d'expiration.
     pub expires_at: Option<DateTimeUtc>,
+    /// Date de dernière authentification par ce token — sérialisée `null` quand le
+    /// token n'a jamais servi.
     pub last_used_at: Option<DateTimeUtc>,
 }
 

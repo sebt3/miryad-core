@@ -8,21 +8,33 @@ use crate::users::membership;
 /// schéma — juste la convention lue par l'évaluateur RBAC (`rbac::is_admin`).
 pub const ADMIN_GROUP_NAME: &str = "admin";
 
+/// Ligne `DeriveEntityModel` de la table `miryad_groups` (posée par la migration
+/// `m20260822_000002`, groupe `admin` seedé par `m20260822_000003`) — trois colonnes.
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "miryad_groups")]
 pub struct Model {
+    /// Clé primaire `i32` auto-incrémentée — identifiant interne référencé par
+    /// `miryad_group_memberships.group_id`.
     #[sea_orm(primary_key)]
     pub id: i32,
+    /// Nom du groupe, contrainte `UNIQUE` — lu par correspondance exacte (`ensure_group`,
+    /// `is_member`), sans registre de noms autorisés.
     #[sea_orm(unique)]
     pub name: String,
+    /// Horodatage de création : posé par l'appelant à l'`insert` (aucun défaut côté serveur).
     pub created_at: DateTimeUtc,
 }
 
+/// `DeriveRelation` déclaré avec un enum vide : aucune relation `SeaORM` malgré les `FK` du
+/// schéma — les jointures se font par filtres explicites, donc `DeriveRelatedEntity` (et
+/// `Seaography`) ne verra jamais de relation depuis ce modèle.
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}
 
 impl ActiveModelBehavior for ActiveModel {}
 
+/// Alias lisible de l'`Entity` généré par `DeriveEntityModel` — même type ; mis à plat sous
+/// `crate::users::Group`.
 pub type Group = Entity;
 
 /// Get-or-create par nom — un groupe cité dans un claim `groups` mais jamais vu est créé à la

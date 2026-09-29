@@ -1,3 +1,12 @@
+//! Snapshot d'autorisation précalculé par requête GraphQL — `load_principal` résout
+//! une seule fois, avant l'exécution du schéma, l'identité interne du principal
+//! authentifié (`resolve_user` get-or-create, puis relecture des appartenances et des
+//! groupes), et `GraphQlPrincipal` est ce que les hooks `seaography`, synchrones et sans
+//! accès base, lisent comme donnée de requête. Un même `subject` produit le même
+//! snapshot depuis une session ou un token API : la source d'authentification s'efface.
+//! Le fichier ne décide aucune permission et ne porte aucun code `MRD-*` ; toute erreur
+//! de base est un `DbErr` propagé verbatim. Ne compile que sous la feature `graphql`.
+
 use std::collections::HashSet;
 
 use sea_orm::DatabaseConnection;
@@ -13,11 +22,19 @@ use crate::users::{group, membership, resolve_user};
 /// requête.
 #[derive(Debug, Clone)]
 pub struct GraphQlPrincipal {
+    /// Identifiant interne de la ligne `miryad_users` résolue depuis le `subject` du
+    /// principal.
     pub user_id: i32,
+    /// Appartenance au groupe admin, calculée depuis les appartenances lues en base.
     pub is_admin: bool,
+    /// Noms des groupes de l'utilisateur — source de vérité en lecture des hooks.
     pub groups: HashSet<String>,
 }
 
+/// Calcule le snapshot d'autorisation d'un principal authentifié : résolution de
+/// l'utilisateur (get-or-create sur `miryad_users`), relecture de ses appartenances et
+/// des groupes pointés, calcul du drapeau admin. Échec possible uniquement sur un
+/// `DbErr` de `sea-orm`, propagé verbatim par l'opérateur `?`.
 pub async fn load_principal(
     db: &DatabaseConnection,
     principal: &AuthPrincipal,

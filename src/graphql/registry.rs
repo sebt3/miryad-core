@@ -1,3 +1,10 @@
+//! Registre des politiques GraphQL — `PolicyRegistry` indexe par `resource_name` une
+//! `EntityPolicy` miroir de la déclaration `MiryadResource` : politiques de lecture et
+//! d'écriture, nom de la colonne propriétaire, pointeur de hook `before_create`
+//! monomorphisé sur l'entité. Seule porte d'entrée de la politique GraphQL dans la
+//! crate : `register`, à appeler en parallèle de l'enregistrement de l'entité dans le
+//! constructeur de schéma `seaography`. Ne compile que sous la feature `graphql`.
+
 use std::any::Any;
 use std::collections::HashMap;
 
@@ -11,7 +18,11 @@ use crate::resource::{AccessPolicy, HookError, MiryadResource};
 /// `MiryadResource`/`rbac.rs` sont génériques sur le type à la compilation.
 #[derive(Debug, Clone)]
 pub struct EntityPolicy {
+    /// Politique déclarée pour les lectures — `MiryadResource::read_policy` à
+    /// l'enregistrement.
     pub read: AccessPolicy,
+    /// Politique déclarée pour les mutations — `MiryadResource::write_policy` à
+    /// l'enregistrement.
     pub write: AccessPolicy,
     /// Nom de colonne (pas la valeur `Column` typée) — `entity_filter` construit sa condition par
     /// nom brut, sans connaître `E::Column` au runtime.
@@ -34,10 +45,14 @@ fn call_before_create<E: MiryadResource>(
     Ok(())
 }
 
+/// Politiques des entités montées, indexées par `resource_name` — carte privée, sans
+/// acceesseur de présence ni suppression : la seule lecture est
+/// [`get`](Self::get).
 #[derive(Debug, Default)]
 pub struct PolicyRegistry(HashMap<&'static str, EntityPolicy>);
 
 impl PolicyRegistry {
+    /// Registre vide, équivalent de `Default`.
     pub fn new() -> Self {
         Self::default()
     }
@@ -57,6 +72,10 @@ impl PolicyRegistry {
         self
     }
 
+    /// Recherche exacte de la politique sous la clé `resource_name`, `None` quand
+    /// l'entité n'est pas enregistrée. État actuel : ce `None` est transformé en
+    /// `GuardAction::Allow` par la garde d'accès — fail-open documenté par
+    /// `hooks.sdd` (correction `[!]` #19).
     pub fn get(&self, entity: &str) -> Option<&EntityPolicy> {
         self.0.get(entity)
     }

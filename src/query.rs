@@ -16,6 +16,8 @@ pub const MAX_PAGE: u64 = u64::MAX / MAX_PER_PAGE;
 pub struct Pagination {
     /// 1-indexée côté API.
     pub page: u64,
+    /// Nombre d'éléments par page — défaut `DEFAULT_PER_PAGE` quand le paramètre est absent,
+    /// écrêté à `[1, MAX_PER_PAGE]` indépendamment de `page`.
     pub per_page: u64,
 }
 
@@ -34,10 +36,18 @@ impl Pagination {
 /// Page de résultats, avec assez de métadonnées pour qu'un client sache s'il en reste d'autres.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PagedResult<M> {
+    /// Éléments de la page demandée — un `Vec` vide se sérialise `[]`, jamais `null` ; page
+    /// hors bornes : vide, sans recalcul.
     pub items: Vec<M>,
+    /// Page rendue, 1-indexée — simple écho de la demande : une page au-delà de la dernière
+    /// n'est jamais ramenée à `total_pages`.
     pub page: u64,
+    /// Taille de page effectivement utilisée, écho de la normalisation `Pagination`.
     pub per_page: u64,
+    /// Total d'éléments de la collection — rempli chez l'appelant depuis `SeaORM`
+    /// (`num_items_and_pages`), jamais recalculé ni revérifié ici.
     pub total_items: u64,
+    /// Total de pages (division majorante amont) — `0` ligne donne `0` page, pas `1`.
     pub total_pages: u64,
 }
 

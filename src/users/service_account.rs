@@ -21,9 +21,9 @@ use crate::users::user::resolve_user;
 /// # Errors
 ///
 /// Aucun code `MRD-*` inventé ici — le fichier ne fait que propager et aplatir :
-/// - `sea_orm::DbErr` nu de `resolve_user` : panne de connexion, table absente, ou
-///   `DbErr::RecordNotFound` (`user with subject ... vanished`) quand la ligne s'évapore entre
-///   l'insert ratée et la relecture de rattrapage ;
+/// - `sea_orm::DbErr` nu de `resolve_user` : panne de connexion, table absente, ou le `DbErr`
+///   d'origine de l'`INSERT` propagé verbatim quand la relecture est vide (arbitré 2026-09-29 —
+///   plus de `DbErr::RecordNotFound` « vanished » fabriqué, cf. `user.sdd`) ;
 /// - `sea_orm::DbErr` de `sync_group_memberships` : toute panne de lecture/insertion/suppression
 ///   des appartenances ou de `group::ensure_group` ;
 /// - `sea_orm::DbErr` d'`ensure_token` via `AuthError::Database` (déballé nu) : panne des

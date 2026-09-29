@@ -9,9 +9,13 @@ use sha2::Sha256;
 use crate::auth::error::AuthError;
 use crate::auth::principal::{AuthPrincipal, PrincipalSource};
 
+/// Ligne `DeriveEntityModel` de la table `miryad_api_tokens` (préfixe interne `miryad_*`,
+/// posée par la migration `m20260822_000001`) — sept colonnes, dont l'empreinte seule, jamais
+/// le secret en clair.
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "miryad_api_tokens")]
 pub struct Model {
+    /// Clé primaire `i32` auto-incrémentée — identifiant public du token pour `revoke_token`.
     #[sea_orm(primary_key)]
     pub id: i32,
     /// Identifiant du titulaire (le `sub` OIDC ou tout identifiant choisi par l'app) — pas de
@@ -22,11 +26,19 @@ pub struct Model {
     /// HMAC-SHA256 hex minuscule du token, clé par le poivre de l'app — jamais le token en
     /// clair, et jamais l'empreinte sans le poivre (cf. `src/auth/token.sdd`, 2026-09-27).
     pub token_hash: String,
+    /// Instant d'émission : `Utc::now` de la machine émettrice (pas l'horloge serveur), posé à
+    /// l'`insert`, inchangé ensuite.
     pub created_at: DateTimeUtc,
+    /// Expiration telle que fournie à l'émission, jamais redressée : `None` = sans expiration ;
+    /// un `Some` déjà passé est admis à l'insertion et rejeté à chaque validation (`<=`).
     pub expires_at: Option<DateTimeUtc>,
+    /// Dernière utilisation validée : `NULL` à l'émission, horodatée `Utc::now` par chaque
+    /// `validate_token` qui aboutit (écriture `best-effort`, jamais un motif de rejet).
     pub last_used_at: Option<DateTimeUtc>,
 }
 
+/// `DeriveRelation` déclaré avec un enum vide : aucune relation `SeaORM` malgré le lien avec le
+/// titulaire — celui-ci se lit seulement par la colonne `subject`.
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}
 
@@ -38,7 +50,10 @@ pub type ApiToken = Entity;
 /// Un token API émis — le champ `token` porte le secret en clair, retourné une seule fois à
 /// l'émission. Il n'est jamais récupérable ensuite (seul son hash est persisté).
 pub struct IssuedToken {
+    /// `id` de la ligne posée dans `miryad_api_tokens` — pour lister ou révoquer ensuite.
     pub id: i32,
+    /// Secret en clair (préfixe `mrd_`) : seul porteur du secret hors de la mémoire de
+    /// l'émission, retourné une seule fois et jamais récupérable ensuite.
     pub token: String,
 }
 

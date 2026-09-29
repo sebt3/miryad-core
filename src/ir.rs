@@ -21,14 +21,24 @@ use serde::Serialize;
 
 use crate::resource::{AccessPolicy, MiryadResource};
 
+/// Représentation intermédiaire d'une colonne — le vocabulaire de typage d'`OpenAPI` (`type` +
+/// `format`) appliqué aux colonnes `SeaORM`, dérivé des métadonnées déjà obligatoires pour
+/// `MiryadResource`, sans annotation supplémentaire de l'app.
 #[derive(Debug, Clone, Serialize)]
 pub struct FieldIr {
+    /// Nom SQL de la colonne (`Iden::to_string`) — aussi la clé de comparaison avec la clé
+    /// primaire et les colonnes déclarées par `MiryadResource`.
     pub name: String,
     /// Type primitif `OpenAPI` ("string" | "integer" | "number" | "boolean" | "object" | "array") —
     /// vocabulaire repris d'`OpenAPI`, pas un enum maison, déjà compris par l'outillage JS/TS.
     pub r#type: &'static str,
+    /// Format affinateur d'`OpenAPI` (`int32`, `date-time`, …) apparié à `type` par la table de
+    /// traduction interne — `None` quand la colonne n'en porte pas.
     pub format: Option<&'static str>,
+    /// `true` si la colonne accepte `NULL` (`ColumnType::is_null` de `SeaORM`).
     pub nullable: bool,
+    /// `true` si la colonne appartient à la clé primaire — comparaison par nom, la colonne
+    /// `SeaORM` dérivée n'implémentant pas `PartialEq`.
     pub is_primary_key: bool,
     /// `resource_name` de l'entité référencée par une relation `belongs_to` sur cette colonne
     /// (`E::Relation`) — `None` si la colonne n'est pas une FK scalaire simple (pas de relation
@@ -37,14 +47,29 @@ pub struct FieldIr {
     pub references: Option<String>,
 }
 
+/// Représentation intermédiaire d'une entité — le contrat `MiryadResource` traduit pour le
+/// générateur `TypeScript` du frontend : l'artefact interne, séparé d'`openapi.json` (deux
+/// publics, deux artefacts).
 #[derive(Debug, Clone, Serialize)]
 pub struct EntityIr {
+    /// Nom exposé côté API — `resource_name` déclaré par `MiryadResource`, clé d'identification
+    /// de l'entité dans l'`IR`.
     pub resource_name: String,
+    /// `IR` de chaque colonne, dans l'ordre d'itération de l'enum `Column` dérivé.
     pub fields: Vec<FieldIr>,
+    /// `read_policy` déclarée par `MiryadResource` — relue telle quelle, sérialisée par `serde`
+    /// en représentation externe.
     pub read_policy: AccessPolicy,
+    /// `write_policy` déclarée par `MiryadResource`, même translation que `read_policy`.
     pub write_policy: AccessPolicy,
+    /// Nom SQL de la colonne propriétaire déclarée, `None` si l'entité n'a pas de notion de
+    /// propriétaire.
     pub owner_column: Option<String>,
+    /// Nom SQL de la colonne filtrable déclarée (surfée par REST et MCP), `None` si déclarée
+    /// absente.
     pub filter_column: Option<String>,
+    /// Nom SQL de la colonne de libellé déclarée, `None` par défaut : le générateur retombe
+    /// alors sur la clé primaire.
     pub label_column: Option<String>,
 }
 
@@ -162,11 +187,16 @@ pub struct IrRegistry {
 }
 
 impl IrRegistry {
+    /// Registre vide — comportement identique à `Default::default`.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Empile l'`IR` de l'entité `E` (via `resource_ir::<E>`) et sa paire `(table SQL,
+    /// resource_name)` ; rend `&mut Self` pour l'accumulation en chaîne. À ce stade les
+    /// `FieldIr::references` portent encore le nom de table brut : la résolution en
+    /// `resource_name` n'a lieu qu'à l'écriture, une fois toutes les entités enregistrées.
     pub fn register<E: MiryadResource>(&mut self) -> &mut Self {
         self.table_names.push((
             E::default().table_name().to_string(),

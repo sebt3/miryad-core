@@ -10,9 +10,19 @@ use crate::auth::oidc::OidcClientTrait;
 /// d'axum) — miryad-core n'impose aucune structure d'état concrète.
 #[derive(Clone)]
 pub struct MiryadAuthState {
+    /// Provider `OIDC` partagé : les clones de l'état partagent la même instance par `Arc` ;
+    /// jamais validé à la construction (aucune discovery implicite ici).
     pub oidc_client: Arc<dyn OidcClientTrait>,
+    /// Clé maîtresse des scellés `AES-256-GCM` des cookies `miryad_session` (et du pending
+    /// `miryad_oidc_pending` géré par `auth_router`) — rotatable en place par le porteur via le
+    /// champ public, aucun setter ici.
     pub cookie_key: Key,
+    /// `Location` de la `302` de succès de `GET /auth/callback` — seule source de vérité de
+    /// cette redirection depuis le retrait de `OidcConfig` (2026-09-27) ; traverse l'état sans
+    /// validation.
     pub post_login_redirect: String,
+    /// `Location` de la `302` de `GET /auth/logout`, posée même sans session — seule source de
+    /// vérité de cette redirection, même posture que `post_login_redirect`.
     pub post_logout_redirect: String,
     /// Utilisé par tout le flow auth : validation des tokens API, `resolve_user` et
     /// `sync_group_memberships` au callback — y compris sur le flow cookie seul.

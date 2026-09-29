@@ -5,6 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::auth::error::AuthError;
 use crate::auth::oidc::OidcIdentity;
 
+/// Nom contractuel du cookie de session, posé et cherché : littéral `miryad_session`. Affirmé
+/// par les tests de [`auth_router`](super::auth_router) ; le pending `miryad_oidc_pending` est un
+/// autre cookie, hors du périmètre de ce fichier.
 pub const SESSION_COOKIE_NAME: &str = "miryad_session";
 
 #[derive(Serialize)]
@@ -23,6 +26,13 @@ struct SessionPayload {
     preferred_username: Option<String>,
 }
 
+/// Pose le cookie de session : scelle le payload `JSON` à quatre clés de l'`OidcIdentity`
+/// (`AES-256-GCM` par `PrivateJar`, nom du cookie comme données associées) puis rend l'unique
+/// en-tête `Set-Cookie`, littéral et ordonné : `miryad_session=<valeur scellée>; HttpOnly`, puis
+/// `; Secure` si et seulement si `secure` (posé depuis `MiryadAuthState::secure_cookies`), puis
+/// `; SameSite=Strict; Path=/; Max-Age=<n>` avec `n = exp - now` en `saturating_sub` — un
+/// `id_token` sans claim `exp` ou déjà expiré produit `Max-Age=0` que le navigateur jette
+/// aussitôt. Infaillible : ne retourne pas de `Result`.
 pub fn build_set_cookie(identity: &OidcIdentity, key: &Key, secure: bool) -> String {
     let payload = SessionPayloadRef {
         id_token: &identity.id_token,

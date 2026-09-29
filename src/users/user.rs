@@ -2,24 +2,39 @@ use chrono::Utc;
 use sea_orm::entity::prelude::*;
 use sea_orm::{ConnectionTrait, Set};
 
+/// Ligne `DeriveEntityModel` de la table `miryad_users` (posée par la migration
+/// `m20260822_000002`) — cinq colonnes, un utilisateur `OIDC` ou de service vu par la crate.
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "miryad_users")]
 pub struct Model {
+    /// Clé primaire `i32` auto-incrémentée — identifiant interne stable des appartenances et
+    /// du `RBAC`, dérivé du `subject`.
     #[sea_orm(primary_key)]
     pub id: i32,
     /// Claim `sub` OIDC — lien avec `AuthPrincipal.subject` (feature 2b).
     #[sea_orm(unique)]
     pub subject: String,
+    /// Nullable, sans contrainte de format — snapshot de la première vue, jamais rafraîchi
+    /// depuis (get-or-create, pas `upsert`).
     pub email: Option<String>,
+    /// Nullable, colonne réservée en attente de feature : créée à `NULL`, jamais écrite par la
+    /// crate.
     pub display_name: Option<String>,
+    /// Horodatage de création : `Utc::now` de l'application à l'`insert` (aucun défaut côté
+    /// serveur), figé ensuite.
     pub created_at: DateTimeUtc,
 }
 
+/// `DeriveRelation` déclaré avec un enum vide : l'appartenance aux groupes ne se lit que par
+/// requête explicite (`membership`), le graphe d'entités `SeaORM` (et donc `Seaography`) n'en
+/// voit aucune.
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}
 
 impl ActiveModelBehavior for ActiveModel {}
 
+/// Alias lisible de l'`Entity` généré par `DeriveEntityModel` — même type, pas une entité
+/// distincte ; mis à plat sous `crate::users::User`.
 pub type User = Entity;
 
 /// Get-or-create par `subject`. Pas de vraie contrainte `ON CONFLICT` portable entre `SQLite`/

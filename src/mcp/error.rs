@@ -1,18 +1,32 @@
 use crate::resource::HookError;
 use crate::rest::error::RestError;
 
+/// Erreur de la surface MCP — chaque variante porte, outre sa `Display` préfixée d'un
+/// code unique `MRD-MCP-NNN`, le code numérique JSON-RPC 2.0 rendu par `rpc_code` et,
+/// pour le seul rejet de hook, le code libre du `HookError` dans le champ `data`. Le
+/// fichier ne construit lui-même aucune erreur : les variantes naissent dans le
+/// registre MCP, le rendu de sortie, ou la conversion `From<RestError>`.
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
+    /// `MRD-MCP-001` — refus RBAC, miroir du `403` REST, code JSON-RPC `-32001`.
     #[error("MRD-MCP-001: forbidden")]
     Forbidden,
+    /// `MRD-MCP-002` — ressource absente, miroir du `404` REST, code JSON-RPC `-32002`.
     #[error("MRD-MCP-002: resource not found")]
     NotFound,
+    /// `MRD-MCP-003` — `DbErr` de `sea-orm` propagé (`#[from]`, seul `From` dérivé),
+    /// code JSON-RPC `-32603`.
     #[error("MRD-MCP-003: database error: {0}")]
     Database(#[from] sea_orm::DbErr),
+    /// `MRD-MCP-004` — échec de mise en forme de la sortie (rendu `Handlebars` ou
+    /// sérialisation `serde_json`), propre à MCP, code JSON-RPC `-32603`.
     #[error("MRD-MCP-004: template render error: {0}")]
     Render(String),
+    /// `MRD-MCP-005` — désérialisation ratée des arguments d'un tool (message `serde`
+    /// verbatim), code JSON-RPC `-32602`.
     #[error("MRD-MCP-005: invalid params: {0}")]
     InvalidParams(String),
+    /// `MRD-MCP-006` — nom d'outil inconnu du dispatch, code JSON-RPC `-32601`.
     #[error("MRD-MCP-006: unknown tool: {0}")]
     UnknownTool(String),
     /// Miroir de `RestError::Internal` — cf. le commentaire de ce variant pour le contexte

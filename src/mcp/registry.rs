@@ -119,6 +119,9 @@ pub struct McpToolRegistry {
 }
 
 impl McpToolRegistry {
+    /// Construit un registre vide (aucune entité montée) avec le format de sortie
+    /// choisi une fois pour toute l'app ; les entités s'ajoutent ensuite par
+    /// [`register`](Self::register).
     #[must_use]
     pub fn new(format: OutputFormat) -> Self {
         Self {

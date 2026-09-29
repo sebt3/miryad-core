@@ -8,8 +8,14 @@ use crate::mcp::error::McpError;
 /// template de l'app à la place du défaut — pas un quatrième chemin de code séparé.
 #[derive(Debug, Clone)]
 pub enum OutputFormat {
+    /// Sortie JSON via le template `Handlebars` intégré (rendu `json_to_str`
+    /// préformaté), identique pour un enregistrement comme pour une page.
     Json,
+    /// Sortie YAML via le template `Handlebars` intégré, identique pour un
+    /// enregistrement comme pour une page.
     Yaml,
+    /// Sortie Markdown via les templates `Handlebars` intégrés — liste de champs pour
+    /// un enregistrement seul, page de résultats avec compteurs pour une liste.
     Markdown,
     /// Template Handlebars fourni par l'app, appliqué à tous les tools (list/get/create/update/
     /// delete) quelle que soit la forme des données — à l'app de gérer les deux formes si besoin

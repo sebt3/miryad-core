@@ -15,11 +15,16 @@ use crate::auth::AuthPrincipal;
 /// à la charge de l'app ; `None` si elle n'en a pas.
 #[derive(Debug, Clone)]
 pub struct HookError {
+    /// Code applicatif libre, à la charge de l'app — jamais un code `MRD-*` de la crate ;
+    /// `None` quand l'app n'a pas de code.
     pub code: Option<String>,
+    /// Message décrivant la règle métier qui rejette l'opération.
     pub message: String,
 }
 
 impl HookError {
+    /// Construit une erreur sans code (`code` à `None`) — le message accepte indifféremment
+    /// `&str` et `String`.
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             code: None,
@@ -27,6 +32,9 @@ impl HookError {
         }
     }
 
+    /// Construit une erreur avec un code applicatif (`code` à `Some`) — code libre, jamais un
+    /// code `MRD-*` de la crate ; les deux paramètres acceptent indifféremment `&str` et
+    /// `String`.
     pub fn with_code(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             code: Some(code.into()),
@@ -61,7 +69,12 @@ pub trait MiryadResource: EntityTrait {
     /// le type GraphQL, et le nom des tools MCP.
     fn resource_name() -> &'static str;
 
+    /// Politique de lecture déclarée — déclaration indépendante de `write_policy` (aucune
+    /// fusion implicite : une entité peut être `Public` en lecture et `OwnerOnly` en écriture),
+    /// fonction statique sans récepteur ni contexte.
     fn read_policy() -> AccessPolicy;
+    /// Politique d'écriture déclarée — deuxième déclaration indépendante du couple, évaluée
+    /// séparément de `read_policy` par le `RBAC` sur chaque opération.
     fn write_policy() -> AccessPolicy;
 
     /// Colonne portant l'identifiant du propriétaire. `None` si l'entité

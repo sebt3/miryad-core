@@ -1,10 +1,19 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
+/// Erreurs d'authentification du module `auth` : neuf variantes portant chacune un code unique
+/// `MRD-AUTH-NNN` dans son `Display`, rendues en `text/plain` par l'implémentation
+/// `IntoResponse` de ce fichier selon la table variante → statut (invariante, sans joker).
+/// Dérives `Debug` et `thiserror::Error` uniquement — ni `Clone` ni `PartialEq`.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
+    /// Variante unitaire, code `MRD-AUTH-001`, rendue `401` — aucun cookie de session
+    /// `miryad_session` présent ; émise par `cookie::extract_session`.
     #[error("MRD-AUTH-001: not authenticated (no session cookie)")]
     NotAuthenticated,
+    /// Variante unitaire, code `MRD-AUTH-002`, rendue `401` — cookie de session présent mais
+    /// indéchiffrable, malformé ou périmé (claim `exp` atteinte, `exp == now` compris) ; émise
+    /// par `cookie::extract_session`.
     #[error("MRD-AUTH-002: invalid or expired session")]
     InvalidSession,
     /// `MRD-AUTH-012` — échec piloté par le client sur la requête de callback elle-même
@@ -17,10 +26,18 @@ pub enum AuthError {
     /// `502`.
     #[error("MRD-AUTH-013: CSRF state mismatch")]
     CsrfMismatch,
+    /// Variante tuple d'un `String`, code `MRD-AUTH-003`, rendue `502` — l'espace libre où les
+    /// appelants logent les codes internes `MRD-AUTH-004` à `MRD-AUTH-011` (les codes `012`/`013`
+    /// en sont sortis le 2026-09-27, vers leurs variantes propres ci-dessus).
     #[error("MRD-AUTH-003: OIDC error: {0}")]
     Oidc(String),
+    /// Variante unitaire, code `MRD-AUTH-014`, rendue `401` — l'empreinte poivrée du token
+    /// présenté ne correspond à aucune ligne de `miryad_api_tokens` (inconnu ou déjà révoqué),
+    /// ou la ligne s'est fait supprimer par `revoke_token` entre la lecture et l'horodatage.
     #[error("MRD-AUTH-014: invalid or unknown API token")]
     InvalidToken,
+    /// Variante unitaire, code `MRD-AUTH-015`, rendue `401` — la ligne du token existe mais son
+    /// `expires_at` est atteint ou dépassé (comparaison `<=` à l'instant de validation).
     #[error("MRD-AUTH-015: expired API token")]
     TokenExpired,
     /// `MRD-AUTH-017` — l'empreinte fournie est déjà provisionnée en base sous un autre
@@ -28,6 +45,10 @@ pub enum AuthError {
     /// 2026-09-27, rendue `409` : la ressource est déjà allouée.
     #[error("MRD-AUTH-017: token hash already provisioned for another subject")]
     TokenHashConflict,
+    /// Variante tuple d'un `sea_orm::DbErr` sous `#[from]`, code `MRD-AUTH-016`, rendue `500` —
+    /// la voie de passage des `DbErr` nus du module (et de l'opérateur `?` de tout appel
+    /// `SeaORM`) : un `DbErr` de traversée n'est pas une erreur miryad, il traverse nu jusqu'à
+    /// cette décoration.
     #[error("MRD-AUTH-016: database error: {0}")]
     Database(#[from] sea_orm::DbErr),
 }

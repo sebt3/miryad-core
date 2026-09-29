@@ -77,8 +77,8 @@
 //!
 //! * REST: `GET/POST /api/v1/recipes`, `GET/PUT/DELETE /api/v1/recipes/{id}`
 //!   — paginé (`?page=&per_page=&filter=`), RBAC automatique.
-//! * [GraphQL](graphql) (feature `graphql`): `POST /api/graphql` + `GraphiQL`.
-//! * [MCP](mcp) (feature `mcp`): `POST /mcp` — 5 tools par entité.
+//! * `GraphQL` (feature `graphql`, module `graphql`) : `POST /api/graphql` + `GraphiQL`.
+//! * `MCP` (feature `mcp`, module `mcp`) : `POST /mcp` — 5 tools par entité.
 //! * `OpenAPI` toujours disponible via [`rest::openapi`], Swagger UI derrière `swagger-ui`.
 //! * IR frontend pour le générateur TypeScript : [`ir::resource_ir`] / [`ir::IrRegistry`].
 //!

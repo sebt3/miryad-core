@@ -1,3 +1,16 @@
+//! Garde d'accès GraphQL de la crate — `MiryadHooks` implémente le pont
+//! `seaography::LifecycleHooksInterface` : à chaque appel de hook synchrone, relit dans
+//! le `PolicyRegistry` la politique consignée sous l'identifiant d'entité, sur le
+//! snapshot `GraphQlPrincipal` précalculé par le routeur, et peut dispatcher
+//! `before_create`. Seul porteur crate des motifs `MRD-GQL-001` et `MRD-GQL-002`.
+//!
+//! L'état actuel, décrit par `hooks.sdd` sans être poussé vers `[x]` : une entité non
+//! retrouvée au registre est laissée passer (`GuardAction::Allow` — fail-open, asymétrie
+//! du fail-closed `MRD-GQL-001`), l'identifiant que `seaography` passe à ses hooks
+//! (nom de table SQL) ne correspondant pas à la clé `resource_name` du registre —
+//! bug tranché, correction portée par `[!]` #19. Ne compile que sous la feature
+//! `graphql`.
+
 use std::any::Any;
 
 use async_graphql::dynamic::ResolverContext;
@@ -18,6 +31,9 @@ pub struct MiryadHooks {
 }
 
 impl MiryadHooks {
+    /// Construit la garde sur le registre de politiques passé par valeur : le hook en
+    /// devient l'unique propriétaire — un exemplaire par schéma monté, pas de registre
+    /// global.
     pub fn new(registry: PolicyRegistry) -> Self {
         Self { registry }
     }

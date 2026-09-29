@@ -3,20 +3,32 @@ use sea_orm::{ConnectionTrait, Set};
 
 use crate::users::group::ensure_group;
 
+/// Ligne `DeriveEntityModel` de la table d'association `miryad_group_memberships` (posée par la
+/// migration `m20260822_000002`) — trois colonnes, une ligne par appartenance.
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "miryad_group_memberships")]
 pub struct Model {
+    /// Clé primaire `i32` auto-incrémentée — seule identité de la ligne, ciblée par la
+    /// suppression de réconciliation.
     #[sea_orm(primary_key)]
     pub id: i32,
+    /// `miryad_users.id` du membre — `FK` `ON DELETE CASCADE`, la paire (`user_id`, `group_id`)
+    /// est `UNIQUE`.
     pub user_id: i32,
+    /// `miryad_groups.id` du groupe — `FK` `ON DELETE CASCADE`, la paire (`user_id`, `group_id`)
+    /// est `UNIQUE`.
     pub group_id: i32,
 }
 
+/// `DeriveRelation` déclaré avec un enum vide : entité sans relation `SeaORM`, invisible au
+/// graphe d'entités malgré ses `FK` — les liens se lisent par filtres explicites.
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}
 
 impl ActiveModelBehavior for ActiveModel {}
 
+/// Alias lisible de l'`Entity` généré par `DeriveEntityModel` — même type ; mis à plat sous
+/// `crate::users::GroupMembership`.
 pub type GroupMembership = Entity;
 
 /// Réconciliation complète des appartenances de `user_id` depuis un claim `groups` OIDC : les
@@ -27,12 +39,12 @@ pub type GroupMembership = Entity;
 /// # Errors
 ///
 /// Aucune erreur à code `MRD-*` ici — toutes les pannes remontent en `DbErr` brut propagé par
-/// `?` : via `ensure_group` une erreur de requête sur `miryad_groups` (ou `DbErr::RecordNotFound`
-/// de message `group {name} vanished` si la ligne disparaît entre l'insertion ratée et la
-/// relecture), et pour les find/insert/delete une erreur de connexion, de contrainte non ciblée
-/// ou d'auto-incrément inaccessible — les conflits ciblés sur (`user_id`, `group_id`) ne
-/// remontent pas (`ON CONFLICT DO NOTHING`). Violation de FK à l'insertion quand `user_id`
-/// n'existe pas dans `miryad_users`.
+/// `?` : via `ensure_group` une erreur de requête sur `miryad_groups`, ou le `DbErr` d'origine
+/// de l'`INSERT` propagé verbatim quand la relance est vide (arbitré 2026-09-29 — plus de
+/// `DbErr::RecordNotFound` « vanished » fabriqué, cf. `group.sdd`) ; et pour les find/insert/
+/// delete une erreur de connexion, de contrainte non ciblée ou d'auto-incrément inaccessible —
+/// les conflits ciblés sur (`user_id`, `group_id`) ne remontent pas (`ON CONFLICT DO NOTHING`).
+/// Violation de FK à l'insertion quand `user_id` n'existe pas dans `miryad_users`.
 pub async fn sync_group_memberships<C: ConnectionTrait>(
     db: &C,
     user_id: i32,
