@@ -149,9 +149,65 @@ mod tests {
         }
     }
 
+    /// Garde d'intérêt globale contre le flakiness de la capture (fix tâche F) — le
+    /// `Interest` d'un callsite est un atomique GLOBAL dans `tracing-core`, recalculé à
+    /// chaque enregistrement de `Dispatch`, avec un raccourci `has_just_one` : quand un
+    /// seul dispatcher est vivant, le premier déclenchement d'un callsite évalue son
+    /// intérêt avec le défaut du thread émetteur — sans notre `set_default`, le
+    /// `NoSubscriber` global répond `Interest::never()`, cet `never` est mémorisé sur le
+    /// callsite et le macro `debug!` court-circuite avant même de consulter notre
+    /// souscripteur thread-local : la capture reste vide (`[]`). L'émetteur empoisonneur
+    /// est n'importe quel test déclenchant le rebond SANS capture (le jumeau
+    /// `*_insert_failure_*` de ce fichier, les courses de `membership`). Deux `Dispatch`
+    /// fuités à vie (deux pour que `has_just_one` retombe définitivement à `false` après
+    /// le `retain` des entrées mortes) sur un souscripteur qui répond toujours
+    /// `sometimes` garantissent que tout recalcul croise au moins un dispatcher vivant
+    /// non-`never` ; la création du gardien reconstruit aussi l'intérêt des callsites
+    /// déjà empoisonnés. Jamais posé comme défaut, il ne reçoit aucun événement et ne
+    /// change le contrat d'aucun autre test.
+    #[derive(Debug)]
+    struct InterestGuard;
+
+    impl tracing::Subscriber for InterestGuard {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            false
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, _event: &tracing::Event<'_>) {}
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+
+        fn register_callsite(&self, _metadata: &tracing::Metadata<'_>) -> tracing::subscriber::Interest {
+            tracing::subscriber::Interest::sometimes()
+        }
+    }
+
+    /// Pose le gardien d'intérêt (idempotent, une seule création par processus) ;
+    /// statique jamais droppée, sans effet hors le cache d'intérêt global.
+    fn install_interest_guard() {
+        static GUARD: std::sync::OnceLock<[tracing::dispatcher::Dispatch; 2]> = std::sync::OnceLock::new();
+        GUARD.get_or_init(|| {
+            [
+                tracing::dispatcher::Dispatch::new(InterestGuard),
+                tracing::dispatcher::Dispatch::new(InterestGuard),
+            ]
+        });
+    }
+
     fn capture_traces() -> (tracing::subscriber::DefaultGuard, CapturedTraces) {
         use tracing_subscriber::layer::SubscriberExt as _;
 
+        install_interest_guard();
         let captured = CapturedTraces::default();
         let subscriber =
             tracing_subscriber::registry::Registry::default().with(CaptureLayer(Arc::clone(&captured.0)));
