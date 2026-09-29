@@ -254,6 +254,14 @@ Handles:
     leurs conversions en @Option::None suivies de `?` sont des branches vivantes de la lecture
 
 Tasks:
+  [ ] Dette assumée (revue 2026-09-29, Sébastien) : la vérification en navigateur réel de
+    `SameSite=Strict` sur `miryad_session` (Chrome/Firefox + Authentik : la toute première
+    requête d'atterrissage après le callback part-elle avec le cookie ?) n'est pas planifiée. Si le
+    login s'avère cassé, repasser en `Lax` (amender `Must` et les tests de pose/retrait) ; sinon
+    inscrire en `Must` que `post_login_redirect` ne doit pas être une page authentifiée côté serveur.
+  [ ] À confirmer (revue 2026-09-29) : @extract_exp_claim rejette un `exp` flottant (`1.7e9`) que
+    certains IdP émettent — session invalidée sans message. Décider : tolérer (désérialisation
+    `f64` + cast contrôlé) ou geler le comportement actuel en `Must`.
   [x] AJOUT REQUIS (Sébastien, 2026-09-27, voir ./oidc.sdd et ./principal.sdd) : porter
     @preferred_username dans le cycle session — quatrième clé de @SessionPayloadRef et
     @SessionPayload (`preferred_username`, absente sérialisée `null`), recopiée verbatim de

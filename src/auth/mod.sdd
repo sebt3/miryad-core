@@ -284,6 +284,12 @@ Handles:
     toute trace du module se limite aux deux @tracing citées en `Must`.
 
 Tasks:
+  [ ] `Secure` sur le cookie pending (revue 2026-09-29) : appliquer `MiryadAuthState::secure_cookies`
+    à la pose et au retrait de `miryad_oidc_pending` (mêmes règles que la session, `SameSite=Lax`
+    conservé — retour cross-site de l'IdP). Amender les attributs littéraux de `Must`/`Returns`
+    et les Scenario `login`/`callback succès`, un test par valeur de `secure`.
+  [ ] Garde de montage OwnerOnly-sans-colonne : voir ./../rest/mod.sdd (`assert!` plutôt que
+    `#[allow(clippy::panic)]`) — pas de changement ici.
   [x] Élargir @MockOidcClient pour rendre le callback réussi testable (arbitré par Sébastien le
     2026-09-27, cross-file avec ./oidc.sdd) : ajouter un mode configurable où @exchange_code rend
     un @OidcLoginResult fourni au lieu de paniquer — le mode panique reste le défaut (aucun test

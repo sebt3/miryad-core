@@ -253,6 +253,13 @@ Handles:
     `subject` n'existe qu'au handler, la fonction @revoke_token est sans filtre
 
 Tasks:
+  [ ] Revue 2026-09-29 : @hash_token rend `Result<String, AuthError>` au lieu d'un `expect` sous
+    `#[allow(clippy::expect_used)]` (HMAC accepte toute longueur de clé, mais `tooling.sdd` exige
+    « pas un `#[allow]` ») ; propager le `?` dans @issue_token, @validate_token, @ensure_token —
+    variante et statut d'erreur à arbitrer (`Database` inadapté : à décider avant de coder).
+  [ ] Note de release avant `1.0` : le passage SHA-256 → HMAC avec poivre invalide tous les tokens
+    API déjà émis (les service accounts `ensure_token` se régénèrent seuls) — à consigner dans le
+    changelog, aucun code.
   [x] AJOUT REQUIS (Sébastien, 2026-09-27, voir ./principal.sdd et ./oidc.sdd) : @validate_token
     doit poser `preferred_username: None` dans l'@AuthPrincipal rendu (nouveau quatrième champ,
     même traitement que `email : @None` déjà en place sur ce chemin — aucune session OIDC vivante
