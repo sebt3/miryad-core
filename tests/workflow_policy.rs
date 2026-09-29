@@ -4,6 +4,28 @@
 //! spec : « les tests qui la couvrent l'isolent dans un processus dédié »). Ce binaire est ce
 //! processus : un seul `#[test]`, seul appelant de `configure_policy` de ce processus.
 
+// Famille panic/unwrap/indexation tolérée dans cette crate de test : en-tête d'exemption
+// équivalent à celui de `src/lib.rs`, posé d'après le `Must` de `tooling.sdd` — une crate
+// d'intégration n'hérite pas des attributs de la librairie. Groupes `pedantic` et `cargo`
+// restent `deny` sous `cfg(test)`.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::dbg_macro,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::print_stdout,
+        clippy::print_stderr,
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
 #![cfg(feature = "workflow")]
 
 use miryad_core::resource::AccessPolicy;

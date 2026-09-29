@@ -23,10 +23,11 @@ Must:
     `dbg_macro`, `todo`, `unimplemented`, `print_stdout`, `print_stderr`,
     `arithmetic_side_effects`, `indexing_slicing`, `unwrap_in_result`, `panic_in_result_fn`.
   Contenir dans `[lints.rust]` `unsafe_code = "forbid"`.
-  Contenir `missing_docs = "warn"` dans `[lints.rust]`, et non `deny` : c'est un lint rustc, un
-    `deny` rendrait `cargo build` et `cargo test` impossibles à lancer et bloquerait donc la
-    purge de la dette qu'il est censé piloter. L'escalade en erreur bloquante est assurée par le
-    `-D warnings` de la CI (`./.github/workflows/workflows.sdd`).
+  Contenir `missing_docs = "deny"` dans `[lints.rust]` depuis la fin de la purge (2026-09-29,
+    tâche de bascule exécutée — crate à zéro avertissement). Le harnais est né en `warn` : un
+    `deny` prématuré rendait `cargo build`/`cargo test` impossibles à lancer et bloquait la purge
+    qu'il pilotait ; l'escalade en `deny` est la fin naturelle de cette purge, et le `-D warnings`
+    de la CI (`./.github/workflows/workflows.sdd`) reste l'escalade hors harnais.
   Tolérer la famille panic/unwrap/indexation uniquement sous `cfg(test)` : exemption globale
     portée par la racine de crate dans ./src/lib.rs pour la librairie, et par un en-tête
     équivalent dans chaque crate de ./tests/ — une crate d'intégration n'hérite pas des
@@ -114,5 +115,7 @@ Tasks:
 
 Done when:
   `cargo clippy --all-targets -- -D warnings`, la même commande sur chacune des combinaisons de
-    features listées plus haut, et `cargo fmt --check` sortent sans un seul avertissement, et
-    `./miryad-core.sdd` ne porte plus de tâche ouverte de dette harnais.
+    features listées plus haut, et `cargo fmt --check` sortent sans un seul avertissement, carve-out
+    acté (2026-09-29) : les combinaisons incluant `graphql` peuvent échouer sur les seuls sites
+    gelés de `src/graphql/**` (exception du pont sans consommateur, /miryad-core.sdd 2026-09-27),
+    et `./miryad-core.sdd` ne porte plus de tâche ouverte de dette harnais.

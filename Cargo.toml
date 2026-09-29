@@ -21,9 +21,12 @@ path = "src/bin/miryad.rs"
 # Harnais de qualité des agents — source de vérité contractualisée par tooling.sdd.
 [lints.rust]
 unsafe_code = "forbid"
-# warn et non deny : lint rustc, un deny empêcherait cargo build/test de tourner, donc
-# empêcherait la purge de la dette qu'il pilote. Le -D warnings de la CI fait le blocage.
-missing_docs = "warn"
+# deny depuis que la crate est à zéro avertissement (tâche `tooling.sdd` « Basculer
+# missing_docs en deny », 2026-09-29). La bascule ne casse pas `cargo build`/`cargo test` :
+# l'exemption `cfg(test)` de `src/lib.rs` et les crates de `tests/` ne documentent que des
+# items privés, le lint ne vise que les items pub atteignables. Le -D warnings de la CI
+# reste la seconde barrière hors harnais.
+missing_docs = "deny"
 
 [lints.clippy]
 pedantic = { level = "deny", priority = -1 }
