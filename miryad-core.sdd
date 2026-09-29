@@ -174,7 +174,10 @@ Tasks:
   [ ] Spec `src/migration/m20260822_000003_seed_admin_group.sdd` produite puis revue.
   [ ] Spec `src/bin/miryad.sdd` produite (spec-reverse) puis revue par Sébastien — Trancher le
     format du modèle de données, question ouverte du CLI.
-  [ ] Purger la dette du harnais module par module, selon le calendrier de `./tooling.sdd`.
+  [x] Purger la dette du harnais module par module, selon le calendrier de `./tooling.sdd`.
+    Solde 2026-09-29 (série A1–A4 + fix F, synthèse validator GO) : harnais vert sur les huit
+    combinaisons hors carve-out graphql acté (7 sites sous `graphql`, 8 avec `graphiql`, tous
+    dans `src/graphql/**`).
   [ ] Décider si le moteur de workflow (roadmap 7/9) entre dans une spec, son option
     d'implémentation étant en standby — ne pas speculer un module sans moteur choisi.
 

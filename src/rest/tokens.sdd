@@ -248,9 +248,10 @@ Tasks:
     post_without_json_content_type_is_unsupported_media_type ; future_expiry_is_stored_then_listed ;
     malformed_expiry_string_is_unprocessable ; past_expiry_is_unprocessable (arbitré 2026-09-29) ; non_numeric_or_overflowing_path_id_is_bad_request ;
     other_methods_are_method_not_allowed_and_unprefixed_paths_are_not_found
-  [ ] À la purge du harnais (/tooling.sdd) : commentaires `///` sur les cinq champs `pub` de
+  [x] À la purge du harnais (/tooling.sdd) : commentaires `///` sur les cinq champs `pub` de
     @TokenSummary (@id, @name, @created_at, @expires_at, @last_used_at) — dette `missing_docs` du
-    fichier, le `///` du structurat ne les couvre pas.
+    fichier, le `///` du structurat ne les couvre pas. Posés à la purge A3 (2026-09-29, validator
+    GO), sous `missing_docs = @deny`.
   [ ] `DELETE` en `404` unique (arbitré par Sébastien le 2026-09-29, `Handles`) : requête
     @find_by_id filtrée sur @subject, suppression de la branche `403` ; adapter le test
     `cannot_revoke_someone_else_token`.
