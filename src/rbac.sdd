@@ -220,11 +220,14 @@ Handles:
   Cas @AccessPolicy::Group où le groupe cité n'existe jamais en base : @users::group::is_member
     répond @Ok(`false`) sans lever d'erreur, l'accès est refusé comme pour un non-membre.
   Cas @AccessPolicy::OwnerOnly avec colonne @Some mais valeur @None sur la ligne : comparée à
-    @sea_orm::Value::from(i32) elle ne matche jamais, donc `false` éternel hors admin — documenté
-    en `[?]`.
+    @sea_orm::Value::from(i32) elle ne matche jamais, donc `false` éternel hors admin — contrat
+    assumé (arbitré 2026-09-29) : une ligne sans propriétaire n'appartient à personne, seul
+    l'admin y accède ; pas d'erreur de cohérence remontée, la donnée est réparable par l'admin.
   Cas d'une colonne propriétaire typée autre qu'i32 (i64/u32/String…) : jamais égal (variante
-    différente), refus éternel hors admin, aucun avertissement compilateur — remonte en `[?]`
-    ci-dessous.
+    différente), refus éternel hors admin — déclaration invalide depuis l'arbitrage du 2026-09-29 :
+    `owner_column` doit être de type `i32` (contrat de ../resource.sdd), et ./rest/mod.sdd refuse
+    de monter l'entité dont la colonne propriétaire a un autre type ; ce fichier ne vérifie rien
+    lui-même et garde son refus fail-closed.
   Chemins Public avant toute query, @rbac::can_create sans colonne OwnerOnly et @rbac::list_access
     Public — trois cas où ./rbac.rs ne lit aucune table, vérifiables sur une connexion aux tables
     absentes (scénarios dédiés).
@@ -308,20 +311,20 @@ Tasks:
     toutes les entités, contrairement à ./rbac.rs qui retourne `false`. Différé (2026-09-27) : le
     pont GraphQL reste un prototype sans consommateur (exception `Must` de /miryad-core.sdd), cette
     asymétrie n'est pas arbitrée dans cette version mineure.
-  [?] Un enregistrement dont la colonne propriétaire déclarée `Some` porte la valeur `None` ne
-    matche jamais l'id d'un i32 hors admin : un propriétaire sans valeur est un trou de propriété
-    éternellement refusé. Est-ce le contrat attendu (et faut-il le documenter dans
-    @MiryadResource::owner_column) ou une donnée cassée qui devrait plutôt faire remonter une
-    erreur de cohérence ?
-  [?] Pour une entité déclarant sa colonne propriétaire dans un type d'identifiant autre qu'i32,
-    @sea_orm::Value ne matche jamais @sea_orm::Value::from(@users::user::Model::id) : le refus est
-    absolu et silencieux hors admin. Faut-il imposer un type de colonne (contrat
-    @MiryadResource::owner_column), logger l'incohérence, ou normaliser la comparaison
-    (@sea_orm::Value → type cible avant égalité) ?
-  [?] @rbac::evaluate et @rbac::list_access contiennent chacun un @std::unreachable!("handled
-    above") sur une branche @AccessPolicy::Public déjà court-circuitée, comptés dans la dette
-    stricte `unreachable` de /tooling.sdd. Purger maintenant en reformulant (ex. un seul `match`
-    complet éliminant la duplication), ou attendre la purge programmée dans /tooling.sdd ?
+  [x] Colonne propriétaire `Some` portant la valeur `None` : c'est le contrat (arbitré par
+    Sébastien le 2026-09-29, `Handles`) — un propriétaire absent n'est le propriétaire de
+    personne, refusé hors admin, fail-closed ; pas d'erreur de cohérence (un `500` sur une donnée
+    que l'admin peut réparer serait pire). À documenter dans @MiryadResource::owner_column
+    (../resource.sdd, tâche `[ ]`). Le Scenario existant « valeur `None` : refusé hors admin » le
+    verrouille déjà, aucun changement de code.
+  [x] Colonne propriétaire non `i32` : `owner_column` doit être de type `i32` (arbitré par
+    Sébastien le 2026-09-29) — contrat écrit dans ../resource.sdd, garde de montage
+    `assert!` dans @rest::resource_router (../rest/mod.sdd, tâche `[ ]`). ./rbac.rs ne change pas :
+    son refus fail-closed reste la défense en profondeur.
+  [x] Les deux `unreachable!("handled above")` de @rbac::evaluate et @rbac::list_access : purge
+    reportée à la tâche de purge du harnais `/tooling.sdd`, module par module avec Sébastien
+    (arbitré le 2026-09-29) — la dette est stable à deux, elle ne grossit pas ; la refonte des
+    `match` est un travail à part entière, pas un effet de bord d'arbitrage.
   [ ] Rejouer la batterie complète de /tooling.sdd après conversion des seize tests et après chaque
     arbitrage `[?]`, pour que le ratio tests/scenario et le harnais restent verts sur toutes les
     combinaisons de features.
@@ -330,13 +333,12 @@ Done when:
   Les vingt-huit scénarios (vingt-quatre originaux, deux du fail-closed de @rbac::can_create et
     deux de @rbac::static_verdict, tous arbitrés le 2026-09-27) ont chacun au moins un test
     distinct nommé, la batterie /tooling.sdd est verte sur chaque combinaison de features, et
-    ./rbac.rs ne porte plus de dette stricte `unreachable` si l'arbitrage de la dernière ligne
-    `[?]` le demande.
-  Deux des cinq `[?]`/`[!]` originaux de `Tasks` sont arbitrés (fail-closed de @rbac::can_create ;
-    fail-open GraphQL différé, prototype sans consommateur). Restent ouverts et à soumettre à
-    Sébastien : valeur `None` sur une colonne propriétaire déclarée, colonne propriétaire non-i32,
-    et la purge `unreachable` (calendrier /tooling.sdd) — aucun ne reste un comportement accidentel
-    passé sous silence pour autant, chacun est documenté en `Handles`/`Raises`.
+    ./rbac.rs ne porte plus de dette stricte `unreachable` lors de la purge programmée de
+    /tooling.sdd (arbitrage du 2026-09-29 : purge reportée, non requise ici).
+  Cinq des six `[?]`/`[!]` de `Tasks` sont arbitrés (fail-closed de @rbac::can_create, 2026-09-27 ;
+    valeur `None` sur une colonne propriétaire = contrat, colonne non-i32 = déclaration invalide
+    refusée au montage REST, purge `unreachable` reportée à /tooling.sdd, 2026-09-29) ; le sixième,
+    le fail-open du pont GraphQL, reste `[?]` différé (prototype sans consommateur).
 
 Scenario: Lecture `Public` : tout principal authentifié passe
   Given la fixture recipe avec `read_policy` @AccessPolicy::Public, un utilisateur `anyone` sans

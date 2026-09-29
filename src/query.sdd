@@ -10,7 +10,8 @@ Purpose:
     la rédaction : REST consomme le module directement, MCP consomme @PagedResult indirectement
     via @rest::core::list, @graphql ne le consomme pas (pagination par curseur propre à
     @seaography) — l'écart entre ce constat, le commentaire `//!` du fichier et la règle de
-    ./lib.sdd est ouvert en `Tasks` `[?]`.
+    ./lib.sdd est tranché le 2026-09-29 (`Tasks`, `Must`) : REST et MCP sont présentés comme
+    consommateurs, @graphql comme hors contrat.
 
 Owns:
   ./query.rs
@@ -20,8 +21,8 @@ Owns:
 References:
   ./lib.sdd — impose de documenter @query comme la pagination utilisée aujourd'hui par REST
     sans présenter @graphql ni @mcp comme la consommant déjà ; le commentaire `//!` de
-    `./query.rs` est une source de cette présentation et sa formulation exacte est disputée
-    (tâche `[?]`).
+    `./query.rs` est une source de cette présentation et formulation arbitrée le 2026-09-29 et
+    ./lib.sdd corrigé en conséquence (`Tasks`).
   ./rest/openapi.rs — surface REST : query parameters `page` et `per_page` non requis
     (`Type::Integer`) et schéma `Paged{Model}` dont les cinq propriétés requises `items`,
     `page`, `per_page`, `total_items` et `total_pages` reproduisent le DTO champ pour champ —
@@ -72,6 +73,20 @@ Must:
     jamais un `u64` chez l'appelant (@sea_orm::Paginator::fetch_page), quel que soit le @per_page
     réellement choisi par ailleurs. Une page hors limite réelle mais sous @MAX_PAGE continue de se
     résoudre en amont comme avant (@Vec vide, totaux réels conservés).
+  Le commentaire `//!` de `./query.rs` énonce, arbitré par Sébastien le 2026-09-29 : pagination
+    partagée par REST et MCP (MCP via @rest::core::list), volontairement hors de `./rest/` ;
+    @graphql utilise ses propres curseurs @seaography et n'est pas partie au contrat. Le
+    commentaire de @query dans `./lib.rs` porte la même formulation (présent, jamais « plus
+    tard »).
+  L'asymétrie zéro contre négatif est une convention assumée (arbitré 2026-09-29) : une valeur
+    `u64` valide mais hors fenêtre — `0` — est bornée par @Pagination::from_raw (`200` en REST,
+    normalisation à `1`) ; une valeur non représentable en `u64` (`-1`, `abc`) est rejetée par
+    @serde avant tout appel (`400` en REST, @mcp::error::McpError::InvalidParams en MCP). Ce
+    partage entre bornage et rejet vient du typage et ne se « corrige » pas.
+  @Pagination::from_raw est le seul constructeur autorisé de @Pagination (arbitré 2026-09-29) :
+    la construction littérale par les champs `pub` est interdite par contrat, aucune valeur
+    `page` à `0` ne devant exister. La privatisation des champs (getters) est une évolution
+    d'API renvoyée à la préparation de `1.0`, hors de cette version.
   Les clés wire `items`, `page`, `per_page`, `total_items` et `total_pages` sont un contrat
     inter-surfaces : le JSON REST (`Json<@PagedResult<_>>` de @rest), la sortie MCP (@serde_json
     de la page rendue par @rest::core::list dans @mcp::registry, gabarit Handlebars par défaut
@@ -134,7 +149,8 @@ Exposes:
     derives imposent @M : @Debug pour @Debug et @M : @Clone pour @Clone ; la sérialisation
     n'exige @M : @serde::Serialize qu'au moment du `to_value`.
   En-tête de module `//!` — positionne le fichier hors de `./rest/` et énonce son intention
-    REST d'aujourd'hui et GraphQL/MCP futures ; sa formulation exacte est disputée, tâche `[?]`.
+    REST et MCP (MCP par @rest::core::list) comme consommateurs, @graphql comme hors contrat
+    (curseurs @seaography) ; formulation arbitrée le 2026-09-29, `Must` ci-dessous.
   Compilation non gatée — le module figure à toutes les combinaisons de features, comme le
     reprend ./lib.sdd (@query toujours compilé).
 
@@ -151,8 +167,8 @@ Accepts:
     négative (`page=-1`, ou `-1` en JSON MCP) ou supérieure à la portée @u64
     (`page=18446744073709551616`) — @serde les rejette avant tout appel (@axum `400` en REST,
     @mcp::error::McpError::InvalidParams en MCP). Le typage @u64 rend @page et @per_page
-    négatifs inreprésentables côté @query ; l'asymétrie d'expérience avec `0` est ouverte en
-    `Tasks` `[?]`.
+    négatifs inreprésentables côté @query ; l'asymétrie d'expérience avec `0` est une convention
+    assumée (arbitré 2026-09-29, `Must`).
   @PagedResult accepte toute construction par ses champs `pub` : contenu quelconque du @Vec
     @items et totaux @u64 quelconques — aucune cohérence entre champs (longueur des @items vs
     @per_page, @page vs @total_pages) n'est vérifiée ici ni ailleurs dans la crate.
@@ -187,34 +203,27 @@ Handles:
   Toute combinaison de features : absence ou présence de `static-frontend`, `swagger-ui`,
     `graphql`, `graphiql` ou `mcp` ne change rien à la compilation du fichier.
   Parité des surfaces : mêmes bornes pour REST et MCP faute de second normaliseur ; @graphql
-    n'est pas partie au contrat (curseurs @seaography) — asymétrie documentaire signalée en
-    `Tasks` `[?]`.
+    n'est pas partie au contrat (curseurs @seaography) — exclusion délibérée (arbitré
+    2026-09-29).
 
 Tasks:
-  [?] Quelle formulation contractuelle pour l'en-tête `//!` de `./query.rs` ? Son texte actuel dit
-    « Pagination partagée par REST (feature 4), et plus tard GraphQL/MCP » (futur), le `///` de
-    `./lib.rs` dit « Pagination partagée REST/GraphQL/MCP » (présent), or MCP sérialise déjà
-    @PagedResult via @rest::core::list (@mcp::registry déclare `page` et `per_page` en entrées de
-    ses tools de liste, @mcp::format rend le gabarit `_page {{page}}/{{total_pages}}…`) tandis que
-    ./lib.sdd défend de présenter @graphql ou @mcp comme consommant déjà @query ; @graphql en effet
-    ne le consomme pas encore. Quelle phrase devient le contrat, et ./lib.sdd est-il à corriger sur
-    ce point ?
+  [ ] En-tête `//!` de `./query.rs` (arbitré par Sébastien le 2026-09-29, `Must`) : remplacer
+    « et plus tard GraphQL/MCP » par « REST et MCP (via `rest::core::list`) ; GraphQL utilise ses
+    propres curseurs seaography » ; aligner le `///` de @query dans `./lib.rs` et corriger
+    ./lib.sdd (`Must` et Scenario « commentaire de @query aligne la réalité »). Documentation
+    seule, aucun changement de comportement.
   [x] @page est désormais bornée par @MAX_PAGE (arbitré par Sébastien le 2026-09-27, `Must`,
     `Exposes`, `Handles`) : ajouter la constante @MAX_PAGE = `u64::MAX / @MAX_PER_PAGE`, étendre
     @Pagination::from_raw pour clamper @page au-dessus de ce plafond avec @u64::min (même patron
     que @per_page), et convertir le scenario « `page` sans plafond » en scenario de plafond
     (`Then` : @page ramenée à @MAX_PAGE, plus @u64::MAX).
-  [?] L'asymétrie zéro contre négatif est-elle retenue sur les surfaces ? Côté REST, `?page=0`
-    répond `200` avec normalisation à `1`, alors que `?page=-1` répond `400` (rejet @serde sur
-    @u64) sans jamais atteindre @Pagination::from_raw ; en JSON MCP `{"page":0}` se force à `1` et
-    `{"page":-1}` produit @mcp::error::McpError::InvalidParams. Asymétrie issue du typage, jamais
-    énoncée comme décision — contrat ou anomalie ?
-  [?] La normalisation reste-t-elle une simple convention ? Les champs `pub` @page et @per_page de
-    @Pagination permettent une construction littérale court-circuitant @Pagination::from_raw, y
-    compris @page `0` qui ferait sous-fléchir le `page - 1` des appelants — aucun appelant du dépôt
-    ne le fait aujourd'hui. Un tel contournement est-il interdit par contrat (réservant
-    @Pagination::from_raw comme seul constructeur), ou la question d'une privatisation des champs
-    est-elle à arbitrer séparément ? (Aucune évolution d'API n'est proposée ici.)
+  [x] Asymétrie zéro contre négatif : convention assumée, écrite en `Must` (arbitré par Sébastien
+    le 2026-09-29) — `?page=0` normalisé à `1` (`200`), `?page=-1` rejeté par @serde (`400`) ;
+    même partage en MCP. Aucun changement de code ni de test.
+  [x] @Pagination::from_raw seul constructeur autorisé, construction littérale interdite par
+    contrat (arbitré par Sébastien le 2026-09-29, `Must`) ; privatisation des champs renvoyée à la
+    préparation de `1.0`. Aucun appelant du dépôt ne contourne aujourd'hui : aucun changement de
+    code.
   [ ] À la purge du harnais sur le module (/tooling.sdd) : commentaires `///` sur les huit items
     publics qui lèvent `missing_docs` — @DEFAULT_PER_PAGE, @MAX_PER_PAGE, le champ @per_page de
     @Pagination et les champs @items, @page, @per_page, @total_items et @total_pages de
@@ -243,9 +252,10 @@ Done when:
   La batterie complète /tooling.sdd est verte, `--no-default-features` comprise (le module est
     tenu de compiler sans aucune feature), et `./query.rs` ne porte plus d'avertissement clippy
     nouveau lorsque la tâche de purge `missing_docs` le touche.
-  Une des quatre lignes `[?]` de `Tasks` a une décision de Sébastien reflétée dans la spec — borne
-    de @page par @MAX_PAGE (2026-09-27, `Must`/`Exposes`/`Handles`). Restent ouvertes : en-tête
-    `//!`, asymétrie zéro contre négatif, champs `pub` de @Pagination.
+  Les quatre lignes `[?]` de `Tasks` ont une décision de Sébastien reflétée dans la spec — borne
+    de @page par @MAX_PAGE (2026-09-27), puis en-tête `//!`, asymétrie zéro contre négatif et
+    constructeur unique de @Pagination (2026-09-29, `Must`). Reste à appliquer : le texte de
+    l'en-tête `//!` (tâche `[ ]`).
   La spec est relue et approuvée par Sébastien, seule l'implementer convertissant ensuite les
     `Scenario` en tests.
 

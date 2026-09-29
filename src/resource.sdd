@@ -95,6 +95,15 @@ Must:
     `OwnerOnly`, `AdminOnly` et l'objet à clé unique `{"Group":"<nom>"}` dans l'IR JSON lu par le
     générateur du template `miryad` ; tout renommage ou attribut `#[serde(...)]` est une rupture
     silencieuse soumise à arbitrage.
+  Documenter que @MiryadResource::owner_column désigne une colonne de type entier `i32`
+    (`Option<i32>` accepté), comme @users::user::Model::id (arbitré par Sébastien le 2026-09-29) :
+    ./rest/mod.sdd refuse de monter l'entité dont la colonne propriétaire a un autre type (panic
+    au montage), et une ligne dont la colonne vaut `None` n'a aucun propriétaire — refusée hors
+    admin, contrat assumé (../rbac.sdd). Ce fichier ne vérifie toujours rien lui-même.
+  Documenter que @MiryadResource::label_column est un contrat du template `miryad`, pas de
+    miryad-core (arbitré par Sébastien le 2026-09-29) : la crate ne déclare que la colonne (ou
+    `None`) ; le repli sur la clé primaire quand la valeur est `None` est une exigence adressée au
+    générateur TypeScript du template, hors de ce dépôt et invérifiable ici.
   Retourner des colonnes typées et jamais des chaînes : @MiryadResource::owner_column,
     @MiryadResource::filter_column et @MiryadResource::label_column retournent l'@Option du @Column
     de @sea_orm::EntityTrait ; la conversion en nom @Iden (snake_case) est opérée par les
@@ -305,10 +314,11 @@ Tasks:
     est différé — ni le choix de clé de ./graphql/registry.sdd, ni le fail-closed de
     ./graphql/hooks.sdd ne sont arbitrés dans cette version mineure. Le fail-open actuel reste
     documenté tel quel dans ces deux fichiers, qui ne passent pas en `[x]`.
-  [?] @MiryadResource::label_column promet que « le générateur retombe sur la clé primaire » quand
-    la valeur est `None`. Le générateur TypeScript vit dans le template `miryad` (hors dépôt) :
-    rien dans ce dépôt ne vérifie ce fallback. Garde-t-on la promesse comme contrat de la méthode
-    alors qu'elle est invérifiable ici ?
+  [ ] `label_column` : promesse conservée comme contrat du template `miryad` (arbitré par
+    Sébastien le 2026-09-29, `Must`) — reformuler le doc-comment de @MiryadResource::label_column
+    dans `./resource.rs` : « miryad-core ne déclare que la colonne ; le générateur du template
+    retombe sur la clé primaire quand elle vaut `None` ». Documentation seule, aucun test
+    (invérifiable dans ce dépôt) ; documenter aussi `owner_column` `i32` (`Must`).
 
 Done when:
   La spec porte exactement vingt-six `Scenario` (vingt originaux, six de l'amendement
@@ -321,11 +331,12 @@ Done when:
     `--no-default-features` pour la preuve de non-gating et `--features graphql` pour le seuil
     GraphQL (scenario d'absence des deux nouveaux hooks compris).
   Trois des quatre lignes `[?]`/`[!]` originales ont été arbitrées par Sébastien le 2026-09-27
+    (la quatrième, `label_column`, l'a été le 2026-09-29 — voir plus bas)
     (incohérence `OwnerOnly` sans colonne → montage REST refusé, `Must`/`Handles` ; sur-promesse de
     @filter_column → doc corrigée REST/MCP, `Must` ; bug `[!]` #19 → différé, pont GraphQL prototype
-    sans consommateur, exception `Must` de /miryad-core.sdd). Reste ouverte : la promesse de
-    fallback de @MiryadResource::label_column sur la clé primaire, invérifiable dans ce dépôt
-    (générateur hors dépôt).
+    sans consommateur, exception `Must` de /miryad-core.sdd). Le 2026-09-29, la promesse de
+    fallback de @MiryadResource::label_column sur la clé primaire devient un contrat du template
+    (générateur hors dépôt) : doc-comment à reformuler, aucun test ici.
   L'amendement @before_update/@before_delete est cohérent avec son miroir dans /src/rest/core.sdd
     (position d'appel dans @rest::core::update/@rest::core::delete) — les deux specs sont relues et
     approuvées ensemble, pas l'une sans l'autre.

@@ -48,8 +48,9 @@ Must:
     construit et lie elle-même (`Endpoint::builder().bind(...)`) — une intégration de forme
     différente des trois autres surfaces, à ne pas présenter comme une route de plus dans le même
     tableau.
-  Documenter @query comme la pagination utilisée aujourd'hui par REST, sans laisser entendre
-    que @graphql ou @mcp consomment déjà @query.
+  Documenter @query comme la pagination partagée par REST et MCP (MCP via @rest::core::list),
+    sans laisser entendre que @graphql la consomme (curseurs @seaography propres) — arbitré par
+    Sébastien le 2026-09-29, à l'unisson de ./query.sdd.
   Ne laisser aucun lien du bloc `//!` produire un avertissement `rustdoc::broken_intra_doc_links`
     selon la feature sélectionnée : les références aux modules gated doivent rester valables
     quand @frontend, @graphql, @mcp ou @workflow ne sont pas compilés.
@@ -105,7 +106,7 @@ Depends on:
     Compilé seulement sous `graphql` ; apporte `seaography` et `async-graphql`.
   ./ir.rs
   ./mcp/mod.rs
-    Compilé seulement sous `mcp` ; seul consommateur de `vynil-core` sous `hbs`/`crypto`.
+    Compilé seulement sous `mcp` ; seul consommateur de `vynil-core` sous `hbs` (sans `crypto`, arbitré 2026-09-29).
   ./migration/mod.rs
   ./query.rs
   ./rbac.rs
@@ -123,7 +124,7 @@ Exposes:
   @frontend — service SPA @frontend::static_frontend_router ; gated par `static-frontend`.
   @graphql — @graphql::graphql_router sur schéma Seaography ; gated par `graphql`.
   @ir — @ir::resource_ir et @ir::IrRegistry pour le générateur frontend ; toujours compilé.
-  @mcp — @mcp::mcp_router et @mcp::McpToolRegistry ; gated par `mcp`.
+  @mcp — @mcp::mcp_router, @mcp::McpToolRegistry, @mcp::McpError et @mcp::OutputFormat ; gated par `mcp` (arbitré par Sébastien le 2026-09-29, quatre items publics du module).
   @migration — @migration::Migrator et ses migrations `miryad_*` ; toujours compilé.
   @query — @query::Pagination et @query::PagedResult ; toujours compilé.
   @rbac — @rbac::can_read, @rbac::can_create, @rbac::can_write, @rbac::list_access,
@@ -212,7 +213,7 @@ Tasks:
     `all_features_surface` ; « l'exécutable miryad reste hors de l'exemption racine » →
     `bin_target_unaffected`. Aucune vérification ne peut rester implicite ou déléguée sans test.
   [ ] Après l'échec attendu des tests ou vérifications ci-dessus, corriger `./lib.rs` : aligner
-    le commentaire de @query sur l'usage REST actuel, fiabiliser les liens du bloc `//!` sur
+    le commentaire de @query sur l'usage REST et MCP (arbitré 2026-09-29, ./query.sdd), fiabiliser les liens du bloc `//!` sur
     chaque combinaison de features, et documenter @HookError comme exception de la taxonomie
     `MRD-*`.
   [ ] Rejouer la batterie complète de `/tooling.sdd` plus `cargo doc` sur chaque combinaison de
@@ -248,7 +249,7 @@ Scenario: graphiql implique graphql à la racine
 Scenario: mcp gated par la feature mcp
   Given un build `--no-default-features --features mcp`
   When la cible de test référence @mcp sous `#[cfg(feature = "mcp")]`
-  Then @mcp::mcp_router et @mcp::McpToolRegistry sont résolvables
+  Then @mcp::mcp_router, @mcp::McpToolRegistry, @mcp::McpError et @mcp::OutputFormat sont résolvables
 
 Scenario: workflow gated par la feature workflow
   Given un build `--no-default-features --features workflow`
@@ -284,8 +285,9 @@ Scenario: exemption alignée exactement sur la famille stricte
 Scenario: commentaire de @query aligne la réalité
   Given la documentation racine générée avec n'importe quelle combinaison de features
   When @query est présentée
-  Then elle est décrite comme la pagination utilisée aujourd'hui par REST
-  But ni @graphql ni @mcp ne sont présentés comme consommant déjà @query
+  Then elle est décrite comme la pagination partagée par REST et MCP (MCP via
+    @rest::core::list)
+  But @graphql n'est pas présenté comme consommant @query (curseurs @seaography propres)
 
 Scenario: documentation de @HookError
   Given la documentation racine générée avec n'importe quelle combinaison de features
