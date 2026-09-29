@@ -16,7 +16,7 @@ Purpose:
     @WorkflowError lui-même reste crate-interne et testable indépendamment de ce point d'entrée.
   Fichier neuf (aucun code existant, pas de spec-reverse) : la rigueur de signature et de code
     d'erreur est la même que le reste de la crate, mais l'exhaustivité de comportement observé est
-    celle d'une conception, pas d'une archéologie — les `[?]` de `Tasks` marquent ce qui reste un choix
+    celle d'une conception, pas d'une archéologie — les [arbitré 2026-09-29] de `Tasks` marquent ce qui reste un choix
     de conception à valider par Sébastien plutôt qu'un flou de compréhension du code existant.
 
 Owns:
@@ -40,7 +40,8 @@ Must:
     @WorkflowError::RestateUnreachable(@reqwest::Error) → `MRD-WORKFLOW-001` → @Display
       `MRD-WORKFLOW-001: restate unreachable: {0}` (`{0}` = @Display du @reqwest::Error embarqué)
     @WorkflowError::RestateRejected { status: @u16, body: @String } → `MRD-WORKFLOW-002` → @Display
-      `MRD-WORKFLOW-002: restate rejected request (status {status}): {body}`
+      `MRD-WORKFLOW-002: restate rejected request (status {status}): {body tronqué}` — le champ
+      `body` garde le corps complet ; seule la @Display le tronque à 1 KiB (voir `Must`)
     @WorkflowError::Serialization(@reqwest::Error) → `MRD-WORKFLOW-003` → @Display
       `MRD-WORKFLOW-003: could not decode restate response: {0}`
     @WorkflowError::InvalidDag(@String) → `MRD-WORKFLOW-004` → @Display `MRD-WORKFLOW-004: {0}` — le
@@ -53,6 +54,9 @@ Must:
       policy already configured` (revue 2026-09-24) — second appel à `definition::configure_policy`.
     @WorkflowError::DuplicateStepKind(@String) → `MRD-WORKFLOW-006` → @Display `MRD-WORKFLOW-006:
       step kind already registered: {0}` (revue 2026-09-24) — collision dans `StepRegistry::register`.
+    @WorkflowError::InvalidConfig(@String) → `MRD-WORKFLOW-007` → @Display `MRD-WORKFLOW-007:
+      invalid workflow configuration: {0}` (arbitré 2026-09-29) — `admin_url` ou `ingress_url` vide ou
+      non parsable en URL `http`/`https`, détectée avant tout appel réseau (./client.sdd).
   Classifier un @reqwest::Error brut (reqwest `0.12.28`, verifié `src/error.rs` du crate) par
     @client::classify_transport_error(@reqwest::Error) -> WorkflowError, seule fonction du fichier en
     dehors du type : `@reqwest::Error::is_decode() || @reqwest::Error::is_body()` devient
@@ -72,12 +76,21 @@ Must:
   Compiler uniquement sous `#[cfg(feature = "workflow")]` : ./error.rs, comme tout le module
     ./mod.rs, n'existe pas dans la surface de la crate hors de cette feature — aucune des sept
     combinaisons de /tooling.sdd qui ne l'active pas ne voit ce fichier.
+  Tronquer le `body` de @WorkflowError::RestateRejected à 1 KiB **dans la @Display seulement** (arbitré par Sébastien le 2026-09-29) :
+    coupe sur une frontière de caractère (jamais au milieu d'un caractère UTF-8), suffixe `…` quand
+    la coupe a eu lieu, corps de moins de 1 KiB inchangé ; le champ `body` garde le corps complet
+    pour le diagnostic. Le détail n'est jamais renvoyé tel quel à un client : quand cette erreur
+    remontera par une surface, la règle de ./../rest/error.sdd s'applique (message générique sur le
+    fil, détail en trace).
+  Valider la configuration avant tout appel réseau (arbitré par Sébastien le 2026-09-29) : @WorkflowError::InvalidConfig
+    (`MRD-WORKFLOW-007`), construit exclusivement par ./client.rs (validation de @WorkflowConfig) ;
+    jamais par @classify_transport_error, qui ne voit plus une URL invalide.
 
 Must not:
   Exposer le corps intégral d'une réponse Restate sans limite documentée si ce corps peut porter un
     secret de configuration (ex. un message d'erreur d'authentification incluant un jeton) — @body de
     @WorkflowError::RestateRejected est aujourd'hui verbatim comme @RestError::Database
-    (/src/rest/error.sdd), la question de troncature/rédaction est ouverte en `Tasks [?]` plutôt que
+    (/src/rest/error.sdd), la question de troncature/rédaction est ouverte en `Tasks [arbitré 2026-09-29]` plutôt que
     tranchée silencieusement ici.
   Introduire un @From<@reqwest::Error> générique pour @WorkflowError : la classification passe
     exclusivement par @client::classify_transport_error, pour que la distinction Serialization/
@@ -135,6 +148,10 @@ Raises:
   `MRD-WORKFLOW-006` — @WorkflowError::DuplicateStepKind : rendu exclusivement par
     `StepRegistry::register` (./step.rs) quand `kind()` collide avec un kind déjà enregistré —
     même nature (configuration au démarrage), le kind fautif en `{0}`.
+  `MRD-WORKFLOW-007` — @WorkflowError::InvalidConfig : rendu exclusivement par
+    @WorkflowConfig::validate (./client.rs), appelée en tête de @client::register_deployment et de
+    @client::trigger_run, sur `admin_url` ou `ingress_url` vide, non parsable ou de schéma hors
+    `http`/`https` ; construction directe, aucun @reqwest::Error impliqué (arbitré 2026-09-29).
 
 Handles:
   Distinction Unreachable/Serialization : un serveur Restate down (connexion refusée) et un serveur
@@ -147,14 +164,10 @@ Handles:
     corps est documentée par Restate, pas contractualisée ici.
 
 Tasks:
-  [?] `body` de @WorkflowError::RestateRejected est verbatim, sans limite de taille ni rédaction —
-    voulu (diagnostic complet en environnement self-hosté de confiance) ou une réponse d'admin API
-    pourrait-elle porter une information sensible (ex. écho de configuration) à tronquer/filtrer avant
-    stockage dans un message d'erreur qui pourrait remonter jusqu'à un client REST ?
-  [?] Aucune variante ne couvre un timeout de configuration absent (`admin_url`/`ingress_url` vide ou
-    non-URL) : @reqwest::Client::request avec une URL invalide échoue-t-il en `is_builder` (donc
-    `MRD-WORKFLOW-001`) ou faut-il une validation explicite plus tôt (dans ./client.sdd, à la
-    construction de @WorkflowConfig) rendant une erreur distincte avant tout appel réseau ?
+  [ ] Troncature de la @Display de @WorkflowError::RestateRejected à 1 KiB (arbitré par Sébastien le 2026-09-29) (`Must`) : helper
+    de coupe sur frontière de caractère dans ./error.rs, champ `body` inchangé ; deux Scenario.
+  [ ] Variante @WorkflowError::InvalidConfig (`MRD-WORKFLOW-007`) (arbitré par Sébastien le 2026-09-29) (`Must`) : ajoutée dans
+    ./error.rs ; la validation elle-même est une tâche de ./client.sdd.
   [x] Convertir les scenarios de cette spec en tests distincts nommés dans `mod tests` de ./error.rs :
     fichier neuf à l'origine ; vérifié en revue 2026-09-24 : un test nommé par `Scenario` (sept, dont
     les variantes de configuration ajoutées le même jour), verts.
@@ -162,7 +175,7 @@ Tasks:
 Done when:
   Les `Scenario` ci-dessous ont chacun au moins un test nommé distinct et vert, sur la feature
     `workflow` seule et en cumul avec chaque autre feature de /tooling.sdd qui compile avec elle.
-  Les deux `[?]` de `Tasks` sont arbitrés par Sébastien.
+  Les deux [arbitré 2026-09-29] de `Tasks` sont arbitrés par Sébastien (2026-09-29) ; leurs tâches de code (`[ ]`) restent à exécuter.
   La spec est relue et approuvée par Sébastien avant qu'une ligne de ./error.rs soit écrite.
 
 Scenario: Unreachable sur échec de connexion
@@ -211,3 +224,22 @@ Scenario: PolicyAlreadySet et DuplicateStepKind rendent leurs codes
   When leur @Display est rendue
   Then elles valent respectivement `MRD-WORKFLOW-005: workflow policy already configured` et
     `MRD-WORKFLOW-006: step kind already registered: rhai`
+
+Scenario: Rejected tronque le corps au-delà de 1 KiB dans la Display seulement
+  Given une @WorkflowError::RestateRejected de statut `500` dont `body` est de 3000 caractères ASCII
+  When la @Display est évaluée
+  Then le message commence par `MRD-WORKFLOW-002: restate rejected request (status 500): `, contient
+    exactement 1024 caractères de corps suivis de `…`
+  And le champ `body` conserve les 3000 caractères (arbitré par Sébastien le 2026-09-29)
+
+Scenario: la troncature ne coupe jamais un caractère UTF-8
+  Given une @WorkflowError::RestateRejected dont `body` est composé de caractères multi-octets, de sorte
+    que l'octet 1024 tombe au milieu de l'un d'eux
+  When la @Display est évaluée
+  Then elle se termine par `…` sans panic et sans caractère de remplacement, la coupe ayant reculé
+    jusqu'à la frontière de caractère précédente
+
+Scenario: InvalidConfig rend le code MRD-WORKFLOW-007
+  Given une @WorkflowError::InvalidConfig de message `admin_url is empty`
+  When la @Display est évaluée
+  Then la chaîne est exactement `MRD-WORKFLOW-007: invalid workflow configuration: admin_url is empty`

@@ -137,6 +137,13 @@ Must:
     à la suppression d'une définition de workflow dans cette itération — le défaut identité de
     `MiryadResource::before_delete` (`Ok(())`) s'applique tel quel.
   Compiler uniquement sous `#[cfg(feature = "workflow")]`.
+  Un `steps` non posé (`ActiveValue::NotSet`) dans la porte des hooks rend `Ok(())` (arbitré par Sébastien le 2026-09-29) : code
+    défensif, non-contrat — `mark_all_set` (../rest/core.sdd) a déjà marqué posées les colonnes du
+    corps, et un `steps` absent échoue à la désérialisation du modèle avant d'atteindre le hook.
+  Le repli `autre => autre.to_string()` de la traduction d'erreur des hooks est défensif (arbitré par Sébastien le 2026-09-29) :
+    `validate_dag` ne construit que @WorkflowError::InvalidDag. Condition de ré-arbitrage écrite :
+    si `validate_dag` étend un jour son espace d'erreur, ce repli doit être remplacé (il
+    transporterait un préfixe `MRD-*` dans le message d'un @HookError), pas conservé en silence.
 
 Must not:
   Valider `steps` dans `Deserialize` de `DagSteps` ni dans un `ActiveModelBehavior::before_save` :
@@ -234,28 +241,19 @@ Tasks:
     `configure_policy`/`WorkflowPolicy` et la conformité @MiryadResource (RBAC, `filter_column`,
     `label_column`) se testent avec une base sqlite mémoire, même fixture que ./../rest/mod.rs —
     `configure_policy` ne peut être appelée qu'une fois par processus de test (`OnceLock`), les tests
-    qui la couvrent l'isolent dans un processus dédié ou acceptent l'ordre d'exécution (`Tasks [?]`
+    qui la couvrent l'isolent dans un processus dédié ou acceptent l'ordre d'exécution (`Tasks [arbitré 2026-09-29]`
     d'implémentation, pas de conception). Réalisé 2026-09-23 : quatorze tests nommés distincts,
     validator PASS. Sobriété consignée : les douze tests inline ne reqièrent aucun `Then` sur la base
     (hooks sans écriture DB à leur position contractuelle, `ActiveModel` construit à la main dans la
     forme `mark_all_set`) ; le mécanisme « processus dédié » est retenu pour les deux tests
     `configure_policy` (`Can modify` ci-dessus).
-  [?] Branche `ActiveValue::NotSet` de `steps` dans la porte des hooks : rendue `Ok` no-op
-    (commentaire dans le code, aucun test ne la réclame) — tranché « non-contrat, code défensif »
-    par le `validator` 2026-09-23, en attendant que cette spec dise (ou non) un mot sur un `steps`
-    non posé. Sébastien à confirmer.
-  [?] Repli catch-all de traduction d'erreur dans les hooks (`autre variante de WorkflowError →
-    HookError(Display)`) : branche jamais construite par `validate_dag`, aucun test ne l'exerce,
-    toléré comme défensif (un `unreachable!` en production serait pire sous le harnais et le seul
-    site d'exemption du fichier est pris par l'`expect_used` que le `Must` alloue). Consigné : si
-    `validate_dag` étendait un jour son espace d'erreur, ce repli transporterait un préfixe `MRD-*`
-    dans le message du @HookError (le `code: None` tient, le contrat transverse aussi) — à
-    ré-arbitrer à ce moment-là, pas en silence. Sébastien à confirmer.
-  [?] Lecture de `steps` depuis une vraie ligne : @FromJsonQueryResult côté requête (relire un
-    @Model depuis la colonne `json`) n'est exercé par aucun test du lot — requis par aucun
-    `Scenario`, la colonne est prouvée par la migration 004 et la sérialisation aller par
-    ./client.rs. Décider au batch de clôture (ou au batch d'intégration) si un test round-trip
-    ad hoc entre dans le contrat. Sébastien à trancher.
+  [x] `steps` `NotSet` : no-op défensif confirmé, non-contrat (arbitré par Sébastien le 2026-09-29) (`Must`) — aucun changement de code.
+  [x] Repli `catch-all` : défensif confirmé, avec sa condition de ré-arbitrage (arbitré par Sébastien le 2026-09-29) (`Must`) —
+    aucun changement de code.
+  [ ] Test round-trip de la colonne `steps` (arbitré par Sébastien le 2026-09-29) : insérer un @DagSteps par SeaORM sur un schéma
+    migré, relire le @Model, comparer — prouve la lecture par @FromJsonQueryResult que seule
+    l'écriture prouvait. À faire au batch de clôture du moteur (levée du standby) ; nouveau
+    Scenario « aller-retour d'un DAG par la colonne `steps` ».
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
@@ -362,3 +360,10 @@ Scenario: un second appel à configure_policy rend une erreur
   When `configure_policy` est appelée une seconde fois, avec n'importe quelle valeur
   Then l'appel rend @Err(WorkflowError::PolicyAlreadySet) — la première politique posée reste celle
     lue par tout appel de `read_policy`/`write_policy`, avant comme après le second appel
+
+Scenario: aller-retour d'un DAG par la colonne `steps`
+  Given une base sqlite migrée (migration `miryad_workflow_definitions`) et un @DagSteps valide de
+    trois steps dont deux dépendances
+  When il est inséré dans `miryad_workflow_definitions` puis relu par @Entity::find_by_id
+  Then le @Model relu porte un `steps` égal au @DagSteps inséré (ids, `depends_on`, `kind`, `config`)
+    — la lecture par @FromJsonQueryResult est prouvée, pas seulement l'écriture (arbitré par Sébastien le 2026-09-29)

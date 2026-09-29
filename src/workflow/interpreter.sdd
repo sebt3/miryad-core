@@ -194,13 +194,9 @@ Tasks:
     Sébastien (2026-09-23) — convient tel quel pour l'instant ; si un cas d'usage réel s'avère
     problématique (effets de bord coûteux sur des frères abandonnés), la spec évoluera alors, pas
     anticipé ici.
-  [?] `Scenario` « ready_steps ne rend pas un step dont une dépendance manque » : son `Then`
-    d'origine (« le résultat est vide ») était une erreur d'arithmétique du losange (prouvé à
-    l'implémentation 2026-09-23 — `"C"` est prêt dès que `"A"` est terminé ; une couche vide
-    contredit l'étape 2.a du `Must`), reformulé ci-dessus en l'observable que le scenario justifiait
-    (couche exactement `["C"]`, `"D"` jamais avant). Arithmétique revérifiée en revue 2026-09-24 (losange A→B,C→D,
-    `completed = {A, B}` : C prêt, D non) — la correction est juste ; la confirmation formelle reste à
-    Sébastien, une spec de test fausse ne se corrige pas en silence.
+  [x] Correction du `Then` du Scenario « ready_steps ne rend pas un step dont une dépendance
+    manque » confirmée (arbitré par Sébastien le 2026-09-29) : dans le losange, avec `completed = {A, B}`, `C` est prêt et `D` non
+    (couche exactement `["C"]`) ; arithmétique revérifiée aux revues des 2026-09-23 et 2026-09-24.
   [x] Test d'intégration réalisé à la revue du 2026-09-24 : ../../tests/workflow_restate.rs, quatre
     tests `#[ignore]` (exigent `podman` + l'image `restate`, lancement explicite `--ignored`) contre
     un vrai `restate-server` servant le vrai `DagInterpreter` + `StepDispatcher` — fan-out/fan-in
@@ -253,7 +249,7 @@ Scenario: ready_steps ne rend pas un step dont une dépendance manque
     d'arithmétique du losange — `"C"`, dont la seule dépendance `"A"` est satisfaite, est prêt ; et
     une couche vide contredirait l'étape 2.a du `Must` (« @ready_steps ne peut être vide tant que
     l'étape 1 a réussi »). L'observable que le `Scenario` justifiait — `"D"` attendu derrière `"C"` —
-    est celui qui est verrouillé. `[?]` relecture Sébastien (Tasks)
+    est celui qui est verrouillé. [arbitré 2026-09-29] relecture Sébastien (Tasks)
 
 Scenario: ready_steps ignore un step déjà complété
   Given le même DAG, `completed = {"A", "B", "C", "D"}`
