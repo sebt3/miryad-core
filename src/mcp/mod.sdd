@@ -18,7 +18,7 @@ Purpose:
     conditionne sa compilation. Asymétrie de forme avec ./graphql/mod.rs signalée ici : les
     cinq enfants sont tous `mod` privés (un seul adresseur par item, les chemins longs
     `miryad_core::mcp::<enfant>::*` ne résolvent pas), alors que le module graphql ouvre trois
-    de ses enfants en `pub mod` — arbitrage de convention en `Tasks` `[?]`.
+    de ses enfants en `pub mod` — arbitrage de convention en `Tasks` [arbitré 2026-09-29].
 
 Structure:
   ./error.rs — sous-module `mod` (privé) : @McpError, huit variantes portant les motifs
@@ -97,7 +97,7 @@ Must:
   Rester déclaratif et muet : aucune définition (type, fonction, trait, état, macro), aucune
     ligne exécutable, vylinl-core n'est référencé nulle part dans ./mod.rs (il n'est consommé
     que par ./format.rs et ./handler.rs, vérifié au source), zéro @tracing, aucun littéral
-    `MRD-MCP-` écrit ici (les codes `MRD-MCP-001`..`MRD-MCP-007` vivent en ./error.rs) ; le
+    `MRD-MCP-` écrit ici (les codes `MRD-MCP-001`..`MRD-MCP-010` vivent en ./error.rs) ; le
     fichier ne peut pas paniquer de son propre fait.
   Rester identique sous toute combinaison contenant `mcp` : ./mod.rs ne mentionne `graphql`,
     `graphiql`, `swagger-ui` ni `static-frontend` sous aucune forme (aucun cfg croisé) ; la
@@ -123,7 +123,7 @@ Must not:
     choisis `pub(crate)` ou privés par leurs enfants et leur ouverture créerait une seconde
     surface ; la protocol JSON-RPC interne et le dispatch @McpOp ne sont pas des contrats
     publics, et l'arborescence docs.rs basculerait sans arbitrage de Sébastien (cf. `Tasks`
-    `[?]` pour la convention vs ./graphql/mod.rs).
+    [arbitré 2026-09-29] pour la convention vs ./graphql/mod.rs).
   Héberger un type, une erreur, un état, une façade ou du câblage sous prétexte que le module
     agrège cinq enfants (type façade partagé, état de registre racine, macro de montage,
     enveloppe d'erreur partagée) : le contrat d'un mod.rs de la crate est déclaratif —
@@ -181,7 +181,7 @@ Exposes:
   Les cinq déclarations de modules — ./error.rs, ./format.rs, ./handler.rs, ./protocol.rs,
     ./registry.rs, toutes `mod` privés : adressage unique par chemin court pour chaque item
     public, aucun `pub(crate)` enfant joignable de l'extérieur du module (à la différence du
-    double adressage de ./graphql/mod.rs — asymétrie signalée, `Tasks` `[?]`)
+    double adressage de ./graphql/mod.rs — asymétrie signalée, `Tasks` [arbitré 2026-09-29])
   L'en-tête `//!` et ses deux liens (@mcp::@McpToolRegistry, @mcp::@mcp_router) — deux des
     quatre items, @McpError et @OutputFormat n'y sont pas cités ; aucun `#[cfg(test)] mod tests`
     inline à la rédaction — les preuves du fichier sont à créer (`Tasks`)
@@ -276,32 +276,24 @@ Tasks:
     `#[cfg(all(feature = "mcp", feature = "graphql"))]` référençant @mcp_router et
     @crate::graphql::@graphql_router dans une même unité de compilation. Les six preuves ne
     sauraient être réduites à moins de six ; aucune ne peut rester implicite.
-  [?] `crypto` embarqué par `mcp` : /Cargo.toml et le contrat racine l'imposent. Vérifié au
-    source de vylinl-core `0.7.4` : `hbs` n'en dépend pas et @json_to_str (formats
-    `json_pretty`/`yaml`) est vendorisé sous `hbs` seule ; `crypto` n'ajoute dans `hbs` que les
-    trois helpers de template @argon_hash, @bcrypt_hash, @gen_private_key — aucun template
-    embarqué par miryad-core ne les invoque, mais un @OutputFormat::@Custom d'app le pourrait ;
-    `cargo tree --no-default-features --features mcp -i openssl` confirme @openssl `0.10.81`
-    (plus argon2/bcrypt) dans le graphe des consommateurs sous `mcp` seule. `crypto` est-il
-    voulu pour exposer ces helpers aux templates `Custom` (contrat racine à garder), ou
-    reste-t-il un reliquat des features par défaut de vylinl-core à purger (allègement du link
-    openssl natif des apps) ? Décision de /miryad-core.sdd, pas de ce fichier — ./mod.rs garde
-    la conformité au contrat en vigueur dans les deux cas.
-  [?] ../lib.sdd présente @mcp comme exposant @mcp_router et @McpToolRegistry ; ./mod.rs en
-    expose quatre (@McpError et @OutputFormat sont publics et nécessaires à l'app :
-    @OutputFormat argument de @new, @McpError type de retour des appels) et docs.rs montre la
-    page complète. Étendre la documentation de surface de ../lib.sdd aux quatre items, ou la
-    ligne actuelle est-elle un résumé assumé ? Décision Sébastien, portée sur ../lib.sdd.
-  [?] Convention d'adressage inter-modules : ./mcp/mod.rs ferme ses cinq enfants (un seul
-    adresseur par item) là où ./graphql/mod.rs ouvre trois `pub mod` (double adresseur — sa
-    propre tâche `[?]`). Homogénéise-t-on la convention des modules de surface, et dans quel
-    sens ? ./mcp/mod.rs garde les cinq `mod` privés dans l'attente ; trancher avec
-    ./graphql/mod.sdd.
+  [ ] Purger `crypto` de `vynil-core` dans /Cargo.toml (`features = ["hbs"]`) (arbitré par Sébastien le 2026-09-29) : ses helpers de
+    template (@argon_hash, @bcrypt_hash, @gen_private_key) ne sont pas voulus pour les templates
+    @OutputFormat::Custom. Vérifier que le graphe `mcp` reste vert et que `openssl`, `argon2` et
+    `bcrypt` disparaissent (`cargo tree --no-default-features --features mcp -i openssl` sans
+    résultat) ; **vérifier aussi `--features workflow` et `--all-features`** : la dépendance est
+    partagée et `vynil-core?/rhai` peut avoir besoin de `crypto` — si oui, l'activer sous
+    `workflow` seulement (`vynil-core?/crypto`). Batterie complète de /tooling.sdd ; mise à jour
+    du Scenario « `mcp` n'ajoute que vynil-core au graphe » qui cite `crypto`.
+  [x] Documentation de surface de ../lib.sdd étendue aux quatre items publics (@mcp_router,
+    @McpToolRegistry, @McpError, @OutputFormat) (arbitré par Sébastien le 2026-09-29) — ../lib.sdd mis à jour ; la doc racine de
+    ../lib.rs suit (tâche de ../lib.sdd).
+  [x] Convention de surface : enfants fermés (`mod` privés) et items ré-exportés, un seul adresseur
+    par item (arbitré par Sébastien le 2026-09-29) ; ./graphql/mod.rs s'aligne (lot GraphQL, tâche à écrire là-bas).
   [ ] Rejouer la batterie complète de /tooling.sdd (toutes les combinaisons de /AGENTS.md,
     `--no-default-features` comme preuve d'absence, `--features mcp` comme preuve de surface,
     `--all-features` comme preuve de coexistence, plus `cargo test --doc` pour le doctest
     `compile_fail` et les runs `cargo tree`/`cargo doc` de l'épreuve de graphe) après création
-    des preuves ; les trois `[?]` ci-dessus reçoivent une décision de Sébastien reportée dans
+    des preuves ; les trois [arbitré 2026-09-29] ci-dessus reçoivent une décision de Sébastien reportée dans
     la spec ou portée vers la spec concernée.
 
 Done when:
@@ -313,7 +305,7 @@ Done when:
     `--no-default-features` prouvant l'absence du module et `--all-features` la coexistence
     mcp+graphql ; le graphe de dépendances sous `mcp` est exact (vylinl-core seul ajouté, en
     `hbs` + `crypto`, rien des features `http`/`rhai`/`k8s`/`oci`/`s3` de vylinl-core) ; les
-    lignes `[?]` ont reçu une décision de Sébastien (embarquement de `crypto`, exhaustivité de
+    lignes [arbitré 2026-09-29] ont reçu une décision de Sébastien (embarquement de `crypto`, exhaustivité de
     la documentation de surface de ../lib.sdd, convention d'adressage vs ./graphql/mod.sdd) ;
     la spec est relue et approuvée par lui.
 
@@ -368,7 +360,7 @@ Scenario: mcp n'ajoute que vylinl-core au graphe de dépendances
     `cargo tree ... -i kube` sans résultat sous `mcp`)
   And sous `mcp`, @openssl, @argon2 et @bcrypt apparaissent par la seule feature `crypto` de
     vylinl-core (`cargo tree --no-default-features --features mcp -i openssl` : chaîne unique
-    vylinl-core puis miryad-core) — coût assumé par le contrat racine tant que `Tasks` `[?]`
+    vylinl-core puis miryad-core) — coût assumé par le contrat racine tant que `Tasks` [arbitré 2026-09-29]
     sur `crypto` n'est pas tranché
   But @reqwest reste au graphe des deux runs : dépendance obligatoire de la crate (auth/OIDC),
     pas une embarcation de `mcp`

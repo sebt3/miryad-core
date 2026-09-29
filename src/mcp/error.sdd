@@ -4,7 +4,7 @@ Purpose:
   Traduire la monnaie d'erreur du moteur (@RestError issu du noyau CRUD ./../rest/core.rs, @HookError de
     l'application consommatrice transitant par @RestError::Application, @Display d'@AuthError arrivant
     indirectement sous la charge utile de @RestError::Internal via @to_rest_error de ./../rest/tokens.rs) en
-    enveloppe JSON-RPC 2.0 pour la surface MCP : pour chacune des huit variantes de @McpError, un code
+    enveloppe JSON-RPC 2.0 pour la surface MCP : pour chacune des onze variantes de @McpError (huit d'origine plus @MethodNotFound, @ParseError et @InvalidRequest, arbitré 2026-09-29), un code
     numérique exact (@rpc_code, bandes `-32700`..`-32600` normalisées et `-32000`..`-32099`
     d'implémentation, cf. commentaire des lignes 28-30 du fichier), un message @Display portant le code
     `MRD-MCP-NNN` — sauf @McpError::Application qui restitue le @HookError verbatim sans aucun `MRD-*` — et
@@ -24,10 +24,10 @@ Owns:
 
 References:
   /miryad-core.sdd — héritage : code unique `MRD-<DOMAINE>-NNN` pour les erreurs internes (ici `MRD-MCP-001` à
-    `MRD-MCP-007`), exception de fond @HookError restitué sans taxonomie de la crate, parité REST/GraphQL/MCP,
+    `MRD-MCP-010`), exception de fond @HookError restitué sans taxonomie de la crate, parité REST/GraphQL/MCP,
     règle tests ≥ scenarios
   ./../rest/error.sdd — contrat amont @RestError : variantes, littéraux @Display, @From<@sea_orm::DbErr> sans
-    perte, @HookError jamais `MRD-*` (rendu `422` JSON `code`/`message`) ; ses arbitrages `[?]` corps verbatim
+    perte, @HookError jamais `MRD-*` (rendu `422` JSON `code`/`message`) ; ses arbitrages [arbitré 2026-09-29] corps verbatim
     et double code imbriqué `MRD-REST-004` + `MRD-AUTH-NNN` sont les mêmes questions ouvertes ici (`Tasks`) ;
     son
     `Tasks [ ]` renvoie déjà à cette spec pour les futurs tests de @From<@RestError> for @McpError
@@ -51,10 +51,10 @@ References:
   ./handler.rs — seul consommateur de @rpc_code/@data/@to_string (@err_with_data) ; contourne @McpError pour
     ses propres refus de dispatch (`-32601` `Method not found:` / `Unknown tool:`, `-32602` `Invalid params:`
     en @JsonRpcResponse::err nu, lignes 50, 139, 143, 146) : même code numérique, message sans préfixe
-    `MRD-*` — asymétries aux `Tasks [?]`
+    `MRD-*` — asymétries aux `Tasks [arbitré 2026-09-29]`
   ./protocol.rs — @JsonRpcResponse/@RpcError : `data` n'est sérialisé que @Some (`skip_serializing_if`) ;
     l'asymétrie de fil `data` absent MCP contre `code:null` REST naît de cette rencontre (./../rest/error.sdd,
-    `Tasks [?]` ici) ; la forme d'enveloppe sérialisée est le contrat de ./protocol.rs, cette spec s'arrête au
+    `Tasks [arbitré 2026-09-29]` ici) ; la forme d'enveloppe sérialisée est le contrat de ./protocol.rs, cette spec s'arrête au
     triple (@rpc_code, @Display, @data)
   ./mod.rs — `pub use error::McpError` : @McpError n'existe hors crate que sous @crate::mcp (feature `mcp`) ;
     ./mod.sdd à produire est le contrat d'agrégation, non owned ici
@@ -68,26 +68,27 @@ References:
   /src/rbac.sdd et /src/resource.sdd — cartographie de leurs tests affirmés : huit inline `./../rbac.rs`, zéro
     dans `./../resource.rs`, deux rattachés ../tests/resource.rs (aucune assertion MCP, vérifié au grel), deux
     ./../rest/mod.rs susnommés — aucun n'affirme @McpError (@McpError ne grep que dans ./mcp/*.rs) ; la consigne
-    de mission plaçant « ici » des tests de ces specs n'est pas confirmée, `Tasks [?]`
+    de mission plaçant « ici » des tests de ces specs n'est pas confirmée, `Tasks [arbitré 2026-09-29]`
   /tooling.sdd — batterie : ce fichier compile et s'exerce sous `mcp` et `--all-features` uniquement ; dette
     stricte du fichier : zéro (lecture : aucun @unwrap/@expect/@panic/@indexing/@print/@arithmetic) ; la dette
     `missing_docs` (136 au départ) compte l'enum @McpError sans doc et six variantes sans doc (seuls
     @McpError::Internal et @McpError::Application portent une doc)
 
 Must:
-  Table d'exactitude 8/8 variantes → code numérique @rpc_code, sans dérogation et sans bras joker :
+  Table d'exactitude 11/11 variantes → code numérique @rpc_code, sans dérogation et sans bras joker :
     @McpError::Application → `-32000`, @McpError::Forbidden → `-32001`, @McpError::NotFound → `-32002`,
-    @McpError::UnknownTool → `-32601`, @McpError::InvalidParams → `-32602`, @McpError::Database |
+    @McpError::UnknownTool | @McpError::MethodNotFound → `-32601`, @McpError::ParseError → `-32700`,
+    @McpError::InvalidRequest → `-32600`, @McpError::InvalidParams → `-32602`, @McpError::Database |
     @McpError::Render | @McpError::Internal → `-32603`. Les codes restent dans les deux bandes JSON-RPC 2.0
     citées par le commentaire du fichier : `-32700`..`-32600` réservés au protocole (les trois normalisés
     `-32601` « Method not found », `-32602` « Invalid params », `-32603` « Internal error »), `-32000`..`-32099`
     réservés aux erreurs d'implémentation (`-32000`, `-32001`, `-32002` sont le choix de miryad-core dans la
     bande d'implémentation, pas des codes JSON-RPC normalisés)
-  @rpc_code est un @match exhaustif nommant les huit variantes : l'ajout d'une neuvième interrompt la
+  @rpc_code est un @match exhaustif nommant les onze variantes : l'ajout d'une douzième interrompt la
     compilation avant qu'une enveloppe ne parte par défaut — même mécanique que la table @into_response de
     ./../rest/error.sdd ; @data en revanche porte un `_ => @None` muet (seul @Application peut porter un @code,
     toute future variante rendra donc `data` absent sans signal)
-  @Display exactement le littéral de la matrice `Example` : sept préfixes `MRD-MCP-NNN: ` suivis de la charge
+  @Display exactement le littéral de la matrice `Example` : dix préfixes `MRD-MCP-NNN: ` suivis de la charge
     utile verbatim aucune transformation (@sea_orm::DbErr rendu par sa propre @Display — préfixe `Custom Error: `
     de @sea_orm::DbErr::Custom vérifié dans sea-orm `2.0.2` `src/error.rs:59` ; @String recopié sans
     troncature), et pour @McpError::Application `#[error("{}", .0.message)]` : message du @HookError nu, sans
@@ -98,10 +99,10 @@ Must:
     `MRD-MCP-001` dans son @code le verrait sortir tel quel dans `data.code`
   @Error::source vaut @Some seulement pour @McpError::Database et remonte le @sea_orm::DbErr embarqué —
     `#[from]` vaut `#[source]`, vérifié dans thiserror-impl `2.0.20` (`prop.rs::source_field` retient le champ
-    `#[from]`, `expand.rs::impl_enum` émet une branche @source par variante, @None ailleurs) ; les sept autres
+    `#[from]`, `expand.rs::impl_enum` émet une branche @source par variante, @None ailleurs) ; les dix autres
     valent @None, @McpError::Application compris dont le @HookError n'est déclaré ni `#[from]` ni `#[source]` —
     miroir exact de ./../rest/error.rs
-  @From<@RestError> exhaustif 5/5 sans joker, charges utiles déplacées intactes (@sea_orm::DbErr, @HookError,
+  @From<@RestError> exhaustif 6/6 sans joker (@RestError::InvalidInput → @McpError::InvalidParams, arbitré 2026-09-29), charges utiles déplacées intactes (@sea_orm::DbErr, @HookError,
     @String) : seules la @Display et la monnaie changent — le code de domaine suit la surface, et les suffixes
     ne sont pas transitifs : @RestError::NotFound `MRD-REST-001` → @McpError::NotFound `MRD-MCP-002`,
     @RestError::Forbidden `MRD-REST-002` → @McpError::Forbidden `MRD-MCP-001` (contre-épreuve : aucune des
@@ -116,9 +117,32 @@ Must:
   Compiler sur `mcp` et `--all-features` et sur elles seules, par le gating de module de ./../lib.rs : le
     fichier lui-même n'a aucun `#[cfg(feature = ...)]` ; sur `--no-default-features`, @mcp — donc @McpError et
     tout `MRD-MCP-*` — disparaît de la surface sans casser ./../rest ni ./../graphql
-  Mutisme et pureté totaux : aucun @tracing, @println, @eprintln, @dbg dans @Display, @rpc_code, @data ou les
-    @From ; @rpc_code et @data sont des fonctions totales de `&self` sans @Result, sans IO ni effet de bord (la
-    surface MCP n'émet aucune trace à ce jour, comme ./../rest/core.rs — toute trace future s'arbitre en spec)
+  Pureté totale : aucun @tracing, @println, @eprintln, @dbg dans @Display, @rpc_code, @data,
+    @wire_message ou les @From ; ces fonctions sont totales sur `&self`, sans @Result, sans IO ni effet
+    de bord. Les traces (`error!` sur `-32603`, `warn!` sur `-32001`, (arbitré par Sébastien le 2026-09-29)) sont émises par
+    ./handler.rs, jamais ici.
+  Trois variantes de protocole ajoutées (arbitré par Sébastien le 2026-09-29) : @McpError::MethodNotFound (tuple @String, `MRD-MCP-008`,
+    `-32601`, @Display `MRD-MCP-008: method not found: {0}`), @McpError::ParseError (unitaire,
+    `MRD-MCP-009`, `-32700`, @Display `MRD-MCP-009: parse error`) et @McpError::InvalidRequest
+    (unitaire, `MRD-MCP-010`, `-32600`, @Display `MRD-MCP-010: invalid request`). Le dispatch de
+    ./handler.rs passe désormais tout entier par @McpError ; @McpError::UnknownTool et
+    @McpError::InvalidParams sont construits par le dispatch (`MRD-MCP-006`, `MRD-MCP-005`).
+  @wire_message (arbitré par Sébastien le 2026-09-29) : `pub(crate) fn wire_message(&self) -> @String`, pure, le message envoyé au
+    client. @McpError::Database → `MRD-MCP-003: database error`, @McpError::Render → `MRD-MCP-004:
+    output rendering error`, @McpError::Internal → `MRD-MCP-007: internal error` — génériques, sans
+    charge utile ; pour toutes les autres variantes, exactement la @Display. La @Display, elle,
+    garde le détail (elle nourrit la trace `error!` de ./handler.rs). @McpError::InvalidParams reste
+    verbatim sur le fil : c'est le retour sur l'entrée du client (message @serde), pas un interne du serveur.
+  Le message de @McpError::Render couvre ses deux sources (rendu Handlebars et
+    @serde_json::to_value) (arbitré par Sébastien le 2026-09-29) : @Display `MRD-MCP-004: output rendering error: {0}`, plus
+    « template render error ».
+  @data de @McpError::Application vaut toujours `{"code": <code>}` (arbitré par Sébastien le 2026-09-29), la clé valant `null` quand
+    le hook n'a pas de code — parité avec le `422` REST ; les dix autres variantes n'ont pas de
+    `data`. Un client distingue ainsi un rejet de hook des autres erreurs par `data` seul.
+  @McpError::Internal reste un miroir défensif (arbitré par Sébastien le 2026-09-29) : le @From<@RestError> est exhaustif, la
+    variante est obligatoire ; aucun chemin MCP vivant ne la produit aujourd'hui, son Scenario
+    l'exerce. Le code `MRD-AUTH-NNN` éventuellement imbriqué dans sa charge utile ne vit que dans la
+    trace, jamais sur le fil (même règle que ./../rest/error.sdd).
 
 Must not:
   Donner un code `MRD-MCP-*` à un @HookError, en le transformant en @McpError::Forbidden/@McpError::NotFound/
@@ -133,12 +157,13 @@ Must not:
     importer son voisinage ferait de ce fichier un second rendu REST et briserait « une enveloppe par surface »
   Étendre @data aux variantes autres que @McpError::Application : les charges utiles @sea_orm::DbErr et @String
     ne voyagent aujourd'hui que dans @Display ; les ajouter à `data` exposerait deux fois le verbatim sans
-    arbitrage (`Tasks [?]` miroir de ./../rest/error.sdd)
+    arbitrage (`Tasks [arbitré 2026-09-29]` miroir de ./../rest/error.sdd)
   Retoucher un littéral @Display, un code `MRD-MCP-NNN`, une cellule variante → code de @rpc_code ou le choix
     `-32000`/`-32001`/`-32002` sans arbitrage de Sébastien : le triple (code, message, `data`) est le contrat fil
     des clients MCP et l'affirmation des tests à créer
-  Normaliser, tronquer ou traduire une charge utile : @Display de @sea_orm::DbErr, messages @serde et @Display
-    handlebars entrent verbatim dans le message JSON-RPC, tels que produits par ./registry.rs et ./format.rs
+  Normaliser, tronquer ou traduire une charge utile dans @Display : @Display de @sea_orm::DbErr, messages
+    @serde et @Display handlebars y entrent verbatim, tels que produits par ./registry.rs et ./format.rs
+    (la @Display nourrit la trace) ; seul @wire_message généralise les `-32603` (arbitré 2026-09-29).
 
 Forbids:
   @axum, @axum::http::@StatusCode, @axum::response::@IntoResponse dans ./error.rs — la monnaie erreur→HTTP vit
@@ -157,7 +182,7 @@ Depends on:
   ./protocol.rs — @JsonRpcResponse est le débouché obligé du triple rendu (lecture seule, contrat propre)
 
 Exposes:
-  @McpError — enum `pub`, huit variantes, derives @Debug et @thiserror::Error uniquement ; surface publique
+  @McpError — enum `pub`, onze variantes, derives @Debug et @thiserror::Error uniquement ; surface publique
     hors crate atteignable seulement par @crate::mcp::McpError (`pub use` de ./mod.rs), donc sous feature `mcp` :
     @McpError::Forbidden (unitaire, `MRD-MCP-001`, `-32001`), @McpError::NotFound (unitaire, `MRD-MCP-002`,
     `-32002`), @McpError::Database (tuple @sea_orm::DbErr sous `#[from]`, `MRD-MCP-003`, `-32603`),
@@ -165,17 +190,17 @@ Exposes:
     `MRD-MCP-005`, `-32602`), @McpError::UnknownTool (tuple @String, `MRD-MCP-006`, `-32601`),
     @McpError::Internal (tuple @String, `MRD-MCP-007`, `-32603`), @McpError::Application (tuple @HookError,
     aucun `MRD-*`, `-32000`)
-  @From<@RestError> for @McpError — conversion publique exhaustive 5/5 sans perte de charge utile, empruntée
+  @From<@RestError> for @McpError — conversion publique exhaustive 6/6 sans perte de charge utile, empruntée
     par `?` dans ./registry.rs
   @From<@sea_orm::DbErr> for @McpError — dérivée du `#[from]`
-  @Display dérivée publique — les huit messages de la matrice `Example`
+  @Display dérivée publique — les onze messages de la matrice `Example`
   @Error dérivée (avec @Error::source) — @Some sur @McpError::Database seulement
   @rpc_code — `pub(crate) fn rpc_code(&self) -> @i32` : réservé au crate (seul ./handler.rs l'appelle), jamais
     API publique ; l'exactitude du code fil pour un client passe par ./handler.rs + ./protocol.rs
   @data — `pub(crate) fn data(&self) -> @Option<@serde_json::Value>` : même périmètre `pub(crate)`
 
 Accepts:
-  @rpc_code/@data : @McpError en `&self`, les huit variantes, sans condition — fonctions totales ; un @String de
+  @rpc_code/@data/@wire_message : @McpError en `&self`, les onze variantes, sans condition — fonctions totales ; un @String de
     charge utile vide est une entrée légale (message rendu par le préfixe seul)
   @From<@RestError> : un @RestError par valeur (cinq variantes, charges úteis déplacées) ; @From<@sea_orm::DbErr> :
     un @sea_orm::DbErr nu — conversion disponible pour l'application (type public) alors qu'aucun `?` du crate
@@ -191,8 +216,8 @@ Accepts:
 Returns:
   @rpc_code : @i32 exactement une des valeurs `-32000`, `-32001`, `-32002`, `-32601`, `-32602`, `-32603` selon
     la variante (table `Example`)
-  @data : @Option::None pour sept variantes et pour @McpError::Application sans @code ;
-    @Some de @serde_json::Value objet à l'unique clé `code` pour @McpError::Application avec @code
+  @data : @Option::None pour dix variantes ; @Some de @serde_json::Value objet à l'unique clé `code`
+    pour @McpError::Application, la clé valant `null` quand le hook n'a pas de code (arbitré 2026-09-29)
   @From<@RestError>/@From<@sea_orm::DbErr> : la variante @McpError correspondante, charge utile intacte et
     accessible par @Error::source pour @McpError::Database
   @Display : @String exactement celui de la matrice `Example` — le message du @HookError nu pour
@@ -206,8 +231,8 @@ Raises:
     @update/@delete) ; triple (`-32002`, `MRD-MCP-002: resource not found`, absent). Miroir du `404` REST
   `MRD-MCP-003` via @McpError::Database — @From<@RestError::Database>, toute @sea_orm::DbErr propagée par `?`
     depuis ./../rest/core.rs (panne de base jamais dégradée en refus ni succès) ; le @From<@sea_orm::DbErr>
-    direct est dérivé mais sans site d'usage observé dans le crate ; triple (`-32603`, message portant le
-    @Display verbatim du driver, absent)
+    direct est dérivé mais sans site d'usage observé dans le crate ; triple (`-32603`, message générique `MRD-MCP-003: database error` sur le fil, @Display verbatim du driver
+    en trace, absent)
   `MRD-MCP-004` via @McpError::Render — ./registry.rs sur @serde_json::to_value (`× 4` sites d'échec de
     sérialisation du modèle/page) et ./format.rs sur @render @Err (template handlebars — seule surface où un
     @OutputFormat::Custom posé par l'application peut faire échouer une requête sinon valide) ; variant
@@ -215,14 +240,14 @@ Raises:
   `MRD-MCP-005` via @McpError::InvalidParams — ./registry.rs sur @serde_json::from_value × 6 (@ListParams,
     @IdParams de @get/@delete, @E::Model de @create, double passe de @update) ; porte le @Display @serde
     verbatim — cas documenté ./../query.sdd : `{"page":-1}` rejette ici alors que REST répond `400` via @axum
-  `MRD-MCP-006` via @McpError::UnknownTool — aucune voie de construction dans le crate à ce jour : ./handler.rs
-    émet `-32601` nu (`Method not found: x`, `Unknown tool: x` et l'entité inconnue) sans passer par @McpError ;
-    le message préfixé `MRD-MCP-006: unknown tool: ` ne sort jamais sur le fil (`Tasks [?]`)
-  `MRD-MCP-007` via @McpError::Internal — @From<@RestError::Internal> seulement ; le seul producteur de
-    @RestError::Internal est @to_rest_error de ./../rest/tokens.rs, hors d'atteinte du dispatch MCP (les tools
-    ne passent jamais par ./../rest/tokens.rs) : variante miroir défensive sans chemin vivant (`Tasks [?]`) ;
-    message possible si le chemin vivait : `MRD-MCP-007: internal error: ` + @Display @AuthError imbriquée
-    (double code, `Tasks [?]`)
+  `MRD-MCP-006` via @McpError::UnknownTool — construit par le dispatch de ./handler.rs (suffixe d'outil
+    inconnu ou ressource absente du registre) (arbitré par Sébastien le 2026-09-29) ; `MRD-MCP-008` via @McpError::MethodNotFound (méthode
+    hors des trois connues), `MRD-MCP-009` via @McpError::ParseError (JSON ou UTF-8 invalide),
+    `MRD-MCP-010` via @McpError::InvalidRequest (enveloppe, batch, `id` nul) — tous par ./handler.rs.
+  `MRD-MCP-007` via @McpError::Internal — @From<@RestError::Internal> seulement ; miroir défensif sans
+    chemin MCP vivant, conservé et exercé par son Scenario (arbitré par Sébastien le 2026-09-29) ; sur le fil, @wire_message rend
+    `MRD-MCP-007: internal error` sans charge utile, le double code éventuel ne vit que dans la @Display
+    et la trace.
   @McpError::Application, aucun code `MRD-*` par contrat transverse — @From<@RestError::Application>, seul
     émetteur ./../rest/core.rs quand @MiryadResource::before_create @Err sur @rest::core::create (@McpOp::Create
     de ./registry.rs, seule opération MCP atteignable) ; triple (`-32000`, message nu du hook, `data` =
@@ -235,14 +260,14 @@ Handles:
   Assemblage ./handler.rs des deux branches d'échec de @tools/call : `Err` de @entity.call et `Err` de @render
     dans la branche de succès — toutes deux rendent le triple @rpc_code + @to_string + @data via
     @JsonRpcResponse::err_with_data ; @data @None fait disparaître la clé `data` de l'enveloppe sérialisée
-    (`skip_serializing_if`, ./protocol.rs) — asymétrie de fil avec le `code:null` du `422` REST (`Tasks [?]`)
+    (`skip_serializing_if`, ./protocol.rs) — asymétrie de fil avec le `code:null` du `422` REST (`Tasks [arbitré 2026-09-29]`)
   Parité des décisions avec REST sans seconde évaluation : même refus @rbac, même inconnu, même rejet de hook,
     même @DbErr traversent ./../rest/core.rs → ./registry.rs (opérateur `?`) → ce fichier, le code numérique
     changeant seul ;
     le scenario de parité refus/invariants est celui de ./../rest/core.sdd, ses tests lui appartiennent
-  Deux formes pour un même code `-32602` : @McpError::InvalidParams (./registry.rs, message préfixé
-    `MRD-MCP-005: invalid params: `) contre le rejet nu `Invalid params: ` de @parse_tool_name/@ToolCallParams
-    ./handler.rs (sans @McpError) — observable sur le fil selon l'étage où le JSON casse (`Tasks [?]`)
+  Une seule forme pour `-32602` (arbitré par Sébastien le 2026-09-29) : @McpError::InvalidParams, message préfixé `MRD-MCP-005: invalid
+    params: `, que le JSON casse à l'étage de @ToolCallParams (./handler.rs) ou à celui des arguments
+    d'opération (./registry.rs).
   Surfaces partagées : ce fichier garantit le triple (code, message, `data`) pour la surface MCP seulement ;
     REST rend ./../rest/error.rs (statuts), ./../graphql sa taxonomie `MRD-GQL-*` (@RestError n'y entre pas —
     asymétries constatées, portées par ./../rest/error.sdd et ./../rbac.sdd) ; aucune erreur MCP n'entre dans un
@@ -275,33 +300,26 @@ Example: matrice exhaustive erreur source → code numérique → message @Displ
     `{"code":"WIDGET-001"}`, aucun `MRD-*` introduit)
   @From<@RestError::Internal portant la @Display d'un @AuthError::Oidc de charge `discovery failed` — ce que
     produit @to_rest_error de ./../rest/tokens.rs> → @McpError::Internal (ligne `-32603`, message
-    `MRD-MCP-007: internal error: MRD-AUTH-003: OIDC error: discovery failed` — double code imbriqué, `Tasks [?]`)
+    `MRD-MCP-007: internal error: MRD-AUTH-003: OIDC error: discovery failed` — double code imbriqué, `Tasks [arbitré 2026-09-29]`)
 
 Tasks:
-  [?] @McpError::UnknownTool (`MRD-MCP-006`) n'a aucun constructeur : ./handler.rs rend déjà `-32601` mais en
-    message nu (`Unknown tool: x`, `Method not found: x`), et `-32602` nu pour le JSON d'enveloppe mal typé —
-    même code numérique, deux formes de message selon l'étage. Faut-il router tout le dispatch de ./handler.rs
-    par @McpError (vocabulaire unique, messages préfixés partout) ou supprimer @McpError::UnknownTool et
-    @McpError::InvalidParams des préoccupations de dispatch en assumant les littéraux nus de ./handler.rs ?
-  [?] @McpError::Internal (`MRD-MCP-007`) n'a aucun chemin de construction vivant : il n'arrive que de
-    @RestError::Internal, produit uniquement par @to_rest_error (./../rest/tokens.rs), jamais atteignable depuis
-    les tools MCP. Garde-t-on le miroir défensif explicitement documenté (et quel `Scenario` l'exercerait) ou
-    la variante est-elle retirée tant qu'aucune voie MCP ne peut l'atteindre ?
-  [?] Verbatim interne sur le fil : @McpError::Database/@McpError::Render/@McpError::InvalidParams/@McpError::Internal
-    mettent la @Display brute de @sea_orm::DbErr, handlebars ou @serde dans le message JSON-RPC (SQL, chaîne de
-    connexion ?) — même question ouverte que les corps `500` de ./../rest/error.sdd ; l'arbitrage (verbatim vs
-    message générique + @tracing) doit être le même sur les deux surfaces, sinon le fil MCP fuit là où REST est
-    silencieux. Lequel ?
-  [?] Double code imbriqué `MRD-MCP-007: internal error: MRD-AUTH-003: ...` si @to_rest_error était atteint via
-    MCP : même question que le `[?]` double code de ./../rest/error.sdd — lequel des codes imbriqués est celui
-    que le contrat promet au client. À arbitrer avec lui.
-  [?] Hook sans code : REST rend `{"code":null,...}` (clé présente) sur `422`, MCP fait disparaître la clé `data`
-    (@data @None + `skip_serializing_if` ./protocol.rs) — un client ne peut pas distinguer « pas de code » des
-    autres erreurs s'il ne regarde que `data`. Asymétrie assumée ou `{"code":null}` à poser côté MCP aussi ?
-  [?] La consigne de mission affirmait des tests « ici » affirmés par /src/rbac.sdd et /src/resource.sdd ; lu et
-    vérifié : leurs tests nommés vivent ./../rbac.rs, /tests/resource.rs et ./../rest/mod.rs, et aucun n'exerce
-    @McpError (cartographie en `References`). La cartographie suffit-elle, ou faut-il re-rattacher à cette spec
-    un test de parité MCP du hook (le scenario @From @RestError::Application ci-dessous en tient lieu) ?
+  [ ] Trois variantes @McpError::MethodNotFound (`MRD-MCP-008`), @McpError::ParseError (`MRD-MCP-009`),
+    @McpError::InvalidRequest (`MRD-MCP-010`), @McpError::wire_message, message de @McpError::Render
+    généralisé, @data de @McpError::Application toujours `{"code": …}`, et @From<@RestError> 6/6
+    (@RestError::InvalidInput → @McpError::InvalidParams, arbitré (arbitré par Sébastien le 2026-09-29), ./../rest/error.sdd) — tâche de
+    ./error.rs seul ; ses Scenario sont mis à jour (fin de fichier). Trois Scenario ajoutés.
+  [x] Tout le dispatch passe par @McpError (arbitré par Sébastien le 2026-09-29) (`Must`) : @UnknownTool et @InvalidParams construits par
+    ./handler.rs, @MethodNotFound, @ParseError et @InvalidRequest nouvelles ; tâche de code dans
+    ./handler.sdd.
+  [x] @McpError::Internal conservé comme miroir défensif exercé par son Scenario (arbitré par Sébastien le 2026-09-29) (`Must`).
+  [ ] Corps `-32603` génériques et détail en trace, même règle que ./../rest/error.sdd (arbitré par Sébastien le 2026-09-29) :
+    @wire_message dans ./error.rs, traces dans ./handler.rs ; @McpError::InvalidParams reste verbatim.
+  [x] Double code : le code `MRD-MCP-*` est le seul vu du client, le `MRD-AUTH-NNN` imbriqué ne vit
+    que dans la @Display et la trace (arbitré par Sébastien le 2026-09-29) (`Must`).
+  [x] @data de @McpError::Application toujours `{"code": <code|null>}`, parité REST (arbitré par Sébastien le 2026-09-29) (`Must`) ;
+    tâche de code portée par la tâche @McpError de ce fichier.
+  [x] La cartographie suffit, le Scenario @From @RestError::Application tient lieu de test de parité
+    du hook (arbitré par Sébastien le 2026-09-29).
   [ ] Convertir les dix-sept `Scenario` en au moins dix-sept tests distincts nommés dans un `#[cfg(test)]
     @mod tests` à créer dans ./error.rs (0 test inline à ce jour ; le module test ne tourne donc que sous
     `--features mcp` et `--all-features` de la batterie /tooling.sdd) : S1..S9 = triple (@rpc_code, @Display,
@@ -320,10 +338,10 @@ Done when:
     `--all-features` (seules combinaisons compilant le fichier), et `--no-default-features` compile sans @mcp ni
     @McpError
   La table `Example` est affirmée exhaustivement en test : chaque variante a sa cellule (code, message, `data`)
-    vérifiée, les conversions @From les cinq cellules, @Error::source la distinction @Some/@None sur huit valeurs
-  Le mutisme (aucun @tracing/@println/@dbg), l'absence de statut et d'@axum et l'exhaustivité @match de
+    vérifiée, les conversions @From les six cellules, @Error::source la distinction @Some/@None sur onze valeurs
+  La pureté (aucun @tracing/@println/@dbg), l'absence de statut et d'@axum et l'exhaustivité @match de
     @rpc_code sont certifiés par lecture statique du fichier
-  Les six lignes `[?]` de `Tasks` (dispatch `-32601`/`-32602` nu, @McpError::Internal défensif, verbatim des
+  Les six lignes [arbitré 2026-09-29] de `Tasks` (dispatch `-32601`/`-32602` nu, @McpError::Internal défensif, verbatim des
     charges internes, double code, `data` absent vs `code:null`, cartographie des tests des specs voisines) ont
     une décision écrite de Sébastien, reflétée dans le contrat ou le code
   La parité avec ./../rest/error.sdd est affirmée sans duplicata : mêmes décisions via @From, monnaies distinctes,
@@ -357,7 +375,7 @@ Scenario: @McpError::Render rend `-32603` avec son préfixe propre
   Given l'erreur @McpError::Render de charge utile `bad template`
   When le triple (@rpc_code, @to_string, @data) est évalué
   Then le code numérique est `-32603`
-  And le message est exactement `MRD-MCP-004: template render error: bad template` — le code `MRD-MCP-004`
+  And le message est exactement `MRD-MCP-004: output rendering error: bad template` (arbitré 2026-09-29) — le code `MRD-MCP-004`
     distingue cette panne (Handlebars/@serde de ./format.rs et ./registry.rs) de @McpError::Database malgré le
     code `-32603` partagé
   And @data est @None
@@ -373,8 +391,8 @@ Scenario: @McpError::InvalidParams rend `-32602` et accepte une charge vide
   Then le message est exactement le préfixe `MRD-MCP-005: invalid params: ` suivi de rien, sans erreur ni garde
 
 Scenario: @McpError::UnknownTool rend `-32601` quand il est construit
-  Given l'erreur @McpError::UnknownTool de nom `ghost_get` construite directement (aucun producteur dans le
-    crate à ce jour — voir `Tasks [?]`)
+  Given l'erreur @McpError::UnknownTool de nom `ghost_get` construite directement (produit par le dispatch de
+    ./handler.rs depuis le 2026-09-29)
   When le triple (@rpc_code, @to_string, @data) est évalué
   Then le code numérique est `-32601`
   And le message est exactement `MRD-MCP-006: unknown tool: ghost_get`
@@ -395,20 +413,20 @@ Scenario: hook avec code : `-32000`, message nu, @code dans `data`
   And le message est exactement `label must not be empty` — sans @code, sans préfixe, sans sous-chaîne `MRD-`
   And @data est @Some de l'objet @serde_json à l'unique clé `code` valant `WIDGET-001`
 
-Scenario: hook sans code : `-32000` et @data @None
+Scenario: hook sans code : `-32000` et @data `{"code":null}`
   Given l'erreur @McpError::Application encapsulant un @HookError créé par `new` de message `boom`
   When le triple (@rpc_code, @to_string, @data) est évalué
   Then le code numérique est `-32000`
   And le message est exactement `boom`
-  And @data est @None — ./protocol.rs supprimera donc la clé `data` de l'enveloppe (asymétrie avec le
-    `code:null` REST consignée en `Tasks [?]`)
+  And @data est @Some de `{"code":null}` — la clé `code` est présente valant `null`, parité avec le
+    `422` REST (arbitré 2026-09-29)
 
 Scenario: @Error::source ne vaut @Some que sur @McpError::Database
-  Given une valeur de chacune des huit variantes de @McpError, @McpError::Database encapsulant
+  Given une valeur de chacune des onze variantes de @McpError, @McpError::Database encapsulant
     @sea_orm::DbErr::Custom de texte `boom`
   When @Error::source est appelée sur chacune
   Then la réponse est @Some, égale au @sea_orm::DbErr embarqué, pour @McpError::Database seulement
-  But la réponse est @None pour les sept autres, @McpError::Application compris — le @HookError n'est pas
+  But la réponse est @None pour les dix autres, @McpError::Application compris — le @HookError n'est pas
     déclaré source (vérifié thiserror-impl `2.0.20`, miroir de ./../rest/error.rs)
 
 Scenario: la conversion dérivée @From<@sea_orm::DbErr> vaut la même monnaie que le chemin @RestError
@@ -450,12 +468,14 @@ Scenario: @From @RestError::Application restitue le hook sans code `MRD-*`
     restitution du @HookError sans taxonomie, miroir MCP du `422` de /src/rest/mod.rs
   But le @HookError n'est pas @Error::source de @McpError::Application
 
-Scenario: @From @RestError::Internal imbrique le double code
+Scenario: @From @RestError::Internal garde le double code dans la @Display seule
   Given l'erreur @RestError::Internal construite avec la @Display d'un @AuthError::Oidc de charge utile
     `discovery failed` — ce que produit @to_rest_error de ./../rest/tokens.rs (chemin jamais atteint par le
-    dispatch MCP, `Tasks [?]`)
+    dispatch MCP, `Tasks [arbitré 2026-09-29]`)
   When @From<@RestError> est appliquée puis le triple évalué
   Then la @Display est exactement `MRD-MCP-007: internal error: MRD-AUTH-003: OIDC error: discovery failed`
+  And @wire_message vaut exactement `MRD-MCP-007: internal error` — le code AUTH imbriqué ne sort pas
+    sur le fil (arbitré 2026-09-29)
   And le code numérique est `-32603` avec @data @None
 
 Scenario: la porte feature `mcp` gouverne toute la surface du fichier
@@ -465,3 +485,26 @@ Scenario: la porte feature `mcp` gouverne toute la surface du fichier
     `MRD-MCP-*` n'est atteignable, sans casser ./../rest ni ./../graphql
   And sous `--features mcp` et `--all-features`, le fichier compile sans le moindre `#[cfg(feature = ...)]`
     interne, attesté par le test `surface_mcp_error_presente_sous_feature_mcp` présent dans ces deux runs
+
+Scenario: @McpError::MethodNotFound, ParseError et InvalidRequest rendent leur triple
+  Given les erreurs @McpError::MethodNotFound de `ping`, @McpError::ParseError et @McpError::InvalidRequest
+  When le triple (@rpc_code, @to_string, @data) est évalué pour chacune
+  Then les codes sont `-32601`, `-32700` et `-32600`
+  And les messages sont exactement `MRD-MCP-008: method not found: ping`, `MRD-MCP-009: parse error` et
+    `MRD-MCP-010: invalid request`
+  And @data est @None pour les trois (arbitré 2026-09-29)
+
+Scenario: @wire_message généralise les `-32603` et laisse le reste verbatim
+  Given @McpError::Database de `boom`, @McpError::Render de `bad template`, @McpError::Internal de `x`,
+    @McpError::InvalidParams de `invalid type: integer -1, expected u64` et @McpError::Forbidden
+  When @wire_message est évaluée pour chacune
+  Then les trois premières valent `MRD-MCP-003: database error`, `MRD-MCP-004: output rendering error`
+    et `MRD-MCP-007: internal error`, sans la charge utile
+  And les deux dernières valent exactement leur @Display, `MRD-MCP-005: invalid params: invalid type:
+    integer -1, expected u64` et `MRD-MCP-001: forbidden` (arbitré 2026-09-29)
+
+Scenario: @From @RestError::InvalidInput devient @McpError::InvalidParams
+  Given l'erreur @RestError::InvalidInput de message `expires_at must be in the future`
+  When @From<@RestError> est appliquée puis le triple évalué
+  Then le résultat est @McpError::InvalidParams, code `-32602`, message exactement
+    `MRD-MCP-005: invalid params: expires_at must be in the future` (arbitré 2026-09-29)
