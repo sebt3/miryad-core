@@ -24,8 +24,8 @@ use crate::resource::{AccessPolicy, MiryadResource};
 #[derive(Debug, Clone, Serialize)]
 pub struct FieldIr {
     pub name: String,
-    /// Type primitif OpenAPI ("string" | "integer" | "number" | "boolean" | "object" | "array") —
-    /// vocabulaire repris d'OpenAPI, pas un enum maison, déjà compris par l'outillage JS/TS.
+    /// Type primitif `OpenAPI` ("string" | "integer" | "number" | "boolean" | "object" | "array") —
+    /// vocabulaire repris d'`OpenAPI`, pas un enum maison, déjà compris par l'outillage JS/TS.
     pub r#type: &'static str,
     pub format: Option<&'static str>,
     pub nullable: bool,
@@ -48,25 +48,17 @@ pub struct EntityIr {
     pub label_column: Option<String>,
 }
 
-/// Traduit un `ColumnType` SeaORM en couple `(type, format)` OpenAPI. Volontairement pas
+/// Traduit un `ColumnType` `SeaORM` en couple `(type, format)` `OpenAPI`. Volontairement pas
 /// exhaustif au sens "une variante = un mapping unique garanti stable dans le temps" — `Decimal`/
 /// `Money` restent en `string` pour ne pas perdre de précision en JSON, `Enum`/`Custom`/`Array`
 /// retombent sur un type générique plutôt que d'échouer.
 fn openapi_type(column_type: &ColumnType) -> (&'static str, Option<&'static str>) {
-    use ColumnType::*;
+    use ColumnType::{
+        Array, BigInteger, BigUnsigned, Binary, Blob, Boolean, Date, DateTime, Double, Float, Integer, Json,
+        JsonBinary, SmallInteger, SmallUnsigned, Time, Timestamp, TimestampWithTimeZone, TinyInteger,
+        TinyUnsigned, Unsigned, Uuid, VarBinary, Vector, Year,
+    };
     match column_type {
-        Char(_)
-        | String(_)
-        | Text
-        | Custom(_)
-        | Interval(..)
-        | Bit(_)
-        | VarBit(_)
-        | Cidr
-        | Inet
-        | MacAddr
-        | LTree
-        | Enum { .. } => ("string", None),
         Blob | Binary(_) | VarBinary(_) => ("string", Some("byte")),
         TinyInteger | SmallInteger | Integer | TinyUnsigned | SmallUnsigned | Unsigned | Year => {
             ("integer", Some("int32"))
@@ -74,7 +66,6 @@ fn openapi_type(column_type: &ColumnType) -> (&'static str, Option<&'static str>
         BigInteger | BigUnsigned => ("integer", Some("int64")),
         Float => ("number", Some("float")),
         Double => ("number", Some("double")),
-        Decimal(_) | Money(_) => ("string", None),
         DateTime | Timestamp | TimestampWithTimeZone => ("string", Some("date-time")),
         Time => ("string", Some("time")),
         Date => ("string", Some("date")),
@@ -82,8 +73,11 @@ fn openapi_type(column_type: &ColumnType) -> (&'static str, Option<&'static str>
         Json | JsonBinary => ("object", None),
         Uuid => ("string", Some("uuid")),
         Array(_) | Vector(_) => ("array", None),
-        // ColumnType est #[non_exhaustive] côté sea-query — un fallback générique plutôt que de
-        // casser la compilation à chaque variante ajoutée en amont.
+        // Repli contractuel figé (arbitré 2026-09-29, `ir.sdd` `Must`/`Example`) : les variantes
+        // `("string", None)` — `Char`/`String`/`Text`/`Custom`/`Interval`/`Bit`/`VarBit`/`Cidr`/
+        // `Inet`/`MacAddr`/`LTree`/`Enum`, et `Decimal`/`Money` pour ne pas perdre de précision en
+        // JSON — comme toute variante amont future (`ColumnType` est `#[non_exhaustive]` côté
+        // sea-query) tombent ici, plutôt que de casser la compilation à chaque variante ajoutée.
         _ => ("string", None),
     }
 }
@@ -119,6 +113,7 @@ fn resolve_reference_table(def: &RelationDef, column_name: &str) -> Option<Strin
 
 /// Produit l'IR d'une entité — fonction pure, comme `resource_openapi::<E>()`. `FieldIr::references`
 /// porte ici le nom de table SQL brut, pas encore un `resource_name` — cf. doc de module.
+#[must_use]
 pub fn resource_ir<E: MiryadResource>() -> EntityIr {
     // `Column` (dérivé par `DeriveEntityModel`) n'implémente pas `PartialEq` — comparaison par nom
     // (`Iden::to_string`), pas par `==` (cf. `docs/architecture.md`, "Point d'attention").
@@ -167,6 +162,7 @@ pub struct IrRegistry {
 }
 
 impl IrRegistry {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -203,6 +199,14 @@ impl IrRegistry {
             .collect()
     }
 
+    /// # Errors
+    ///
+    /// Propage tel quel l'`io::Error` de `std::fs::write`, sans enrobage local ni code `MRD-*` :
+    /// `NotFound` quand le dossier parent manque, `PermissionDenied`, cible en usage, etc. Sur
+    /// échec de sérialisation — branche inatteignable par la surface publique d'aujourd'hui car
+    /// tout champ d'`EntityIr` se sérialise — l'`io::Error` est bâti depuis `serde_json::Error`
+    /// par la conversion amont (catégories `Syntax`/`Data` → `InvalidData`, `Eof` →
+    /// `UnexpectedEof`).
     pub fn write_to_file(&self, path: impl AsRef<Path>) -> io::Result<()> {
         let json = serde_json::to_string_pretty(&self.resolved_entities())?;
         std::fs::write(path, json)

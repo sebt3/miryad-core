@@ -34,7 +34,11 @@ impl IntoResponse for RestError {
         match self {
             RestError::NotFound => (StatusCode::NOT_FOUND, self.to_string()).into_response(),
             RestError::Forbidden => (StatusCode::FORBIDDEN, self.to_string()).into_response(),
-            RestError::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response(),
+            // `500` partagé par bras fusionné (`match_same_arms`) : statut identique, le `to_string()`
+            // porte la `Display` propre à la variante (`MRD-REST-003` / `MRD-REST-004`).
+            RestError::Database(_) | RestError::Internal(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response()
+            }
             RestError::Application(ref err) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 Json(ApplicationErrorBody {
@@ -43,7 +47,6 @@ impl IntoResponse for RestError {
                 }),
             )
                 .into_response(),
-            RestError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response(),
         }
     }
 }

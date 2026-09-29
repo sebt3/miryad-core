@@ -50,6 +50,23 @@ pub fn build_set_cookie(identity: &OidcIdentity, key: &Key, secure: bool) -> Str
     )
 }
 
+/// Unique chemin de lecture du cookie de session `miryad_session` : découpe brute et figée de
+/// l'en-tête `Cookie` (première occurrence du nom exact retenue), déchiffrement de la valeur
+/// scellée sous `key`, désérialisation du payload, puis ré-lecture serveur de la claim `exp` du
+/// `id_token` déchiffré (`exp ≤ now` est déjà un rejet). Émetteur exclusif des deux erreurs
+/// ci-dessous, pour les trois surfaces via `AuthUser` (REST) et `AuthPrincipal` (REST/GraphQL/MCP).
+///
+/// # Errors
+///
+/// `AuthError::NotAuthenticated` (`MRD-AUTH-001`) — l'en-tête passé est `None` (aucun en-tête
+/// `Cookie`), ou aucune ligne du texte ne porte le nom exact `miryad_session` après
+/// découpe/trim/filtrage.
+///
+/// `AuthError::InvalidSession` (`MRD-AUTH-002`) — cinq familles de cause : déchiffrement
+/// `PrivateJar::decrypt` en échec (base64 invalide, longueur décodée `≤ 12` octets couvrant la
+/// valeur vide, tag GCM mauvais — clé différente, valeur altérée ou nom transplanté —, ou clair
+/// non UTF-8) ; désérialisation `serde_json` du clair en échec ; claim `exp` absente ou illisible
+/// du `id_token` déchiffré ; horloge système antérieure à `UNIX_EPOCH` ; ou `exp ≤ now`.
 pub fn extract_session(cookie_header: Option<&str>, key: &Key) -> Result<OidcIdentity, AuthError> {
     let clear = find_sealed_cookie(cookie_header, SESSION_COOKIE_NAME, key)?;
 
@@ -129,6 +146,11 @@ fn extract_exp_claim(jwt: &str) -> Option<u64> {
     serde_json::from_slice::<ExpClaim>(&payload_json).ok()?.exp
 }
 
+/// Chaîne littérale de retrait du cookie de session : valeur vide, `Max-Age=0`, mêmes attributs
+/// que la pose correspondante (nom, `Path=/`, hôte-only, `Secure` conditionnel via `secure`) pour
+/// que le client retire bien le cookie posé. `secure` doit valoir la même valeur qu'à la pose.
+/// Aucune erreur possible — la valeur retournée est l'unique produit de la fonction.
+#[must_use]
 pub fn clear_cookie(secure: bool) -> String {
     let secure_attr = if secure { "; Secure" } else { "" };
     format!("{SESSION_COOKIE_NAME}=; HttpOnly{secure_attr}; SameSite=Strict; Path=/; Max-Age=0")

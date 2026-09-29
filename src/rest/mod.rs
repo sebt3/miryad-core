@@ -75,12 +75,8 @@ where
     S: Clone + Send + Sync + 'static,
     MiryadAuthState: FromRef<S>,
 {
-    // Les deux gardes s'exécutent avant toute construction de chemin (mod.sdd `Must` « Refuser
-    // au montage, par panic », arbitrage 2026-09-27) — même mécanique que la collision de
-    // `resource_name` remontée en panic par `Router::merge`.
-
     #[allow(clippy::panic)]
-    // mod.sdd « Refuser au montage, par panic » — arbitrage 2026-09-27 (OwnerOnly sans owner_column)
+    // mod.sdd « Refuser au montage, par panic » (arbitré 2026-09-27) : garde exécutée avant toute construction de chemin, OwnerOnly sans owner_column.
     if (matches!(E::read_policy(), AccessPolicy::OwnerOnly)
         || matches!(E::write_policy(), AccessPolicy::OwnerOnly))
         && E::owner_column().is_none()

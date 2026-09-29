@@ -5,7 +5,7 @@
 //! Moteur générique derrière le template d'application **miryad**.
 //! Vous décrivez votre modèle de données via le trait [`MiryadResource`](resource::MiryadResource),
 //! `miryad-core` fournit tout le reste : auth OIDC, RBAC/ownership, API REST,
-//! GraphQL, MCP, OpenAPI, et scaffolding frontend.
+//! GraphQL, MCP, `OpenAPI`, et scaffolding frontend.
 //!
 //! > **80% de l'application vient gratuitement** — une seule implémentation de trait
 //! > par entité, lue telle quelle par REST, GraphQL et MCP (zéro duplication).
@@ -77,9 +77,9 @@
 //!
 //! * REST: `GET/POST /api/v1/recipes`, `GET/PUT/DELETE /api/v1/recipes/{id}`
 //!   — paginé (`?page=&per_page=&filter=`), RBAC automatique.
-//! * [GraphQL](graphql) (feature `graphql`): `POST /api/graphql` + GraphiQL.
+//! * [GraphQL](graphql) (feature `graphql`): `POST /api/graphql` + `GraphiQL`.
 //! * [MCP](mcp) (feature `mcp`): `POST /mcp` — 5 tools par entité.
-//! * OpenAPI toujours disponible via [`rest::openapi`], Swagger UI derrière `swagger-ui`.
+//! * `OpenAPI` toujours disponible via [`rest::openapi`], Swagger UI derrière `swagger-ui`.
 //! * IR frontend pour le générateur TypeScript : [`ir::resource_ir`] / [`ir::IrRegistry`].
 //!
 //! ## Feature flags
@@ -89,7 +89,7 @@
 //! | `static-frontend` *(default)* | [`frontend::static_frontend_router`] — service SPA | `tower-http` |
 //! | `swagger-ui` | Swagger UI sur `/api/swagger-ui` | `utoipa-swagger-ui` |
 //! | `graphql` | GraphQL dynamique (Seaography) | `seaography`, `async-graphql` |
-//! | `graphiql` | IDE GraphiQL sur `/api/graphiql` (implique `graphql`) | `async-graphql/graphiql` |
+//! | `graphiql` | IDE `GraphiQL` sur `/api/graphiql` (implique `graphql`) | `async-graphql/graphiql` |
 //! | `mcp` | Serveur MCP JSON-RPC sur `/mcp` | `vynil-core` (Handlebars) |
 //! | `workflow` | Moteur de workflow DAG sur Restate — **aucune** route sur le `axum::Router` de l'app (services liés par l'app elle-même, `Endpoint::builder()` ; voir `docs/architecture.md`) | `restate-sdk`, `uuid`, `tokio`, `vynil-core` (`rhai`) |
 //!

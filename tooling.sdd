@@ -83,10 +83,24 @@ Tasks:
     Répartition détaillée dans les trois tâches ci-dessous.
   [ ] Purger la dette stricte de production : `arithmetic_side_effects` 3, `expect_used` 2 à 3,
     `unreachable` 2 et `indexing_slicing` 4 (`src/auth/mod.rs` deux fois, `src/auth/cookie.rs`,
-    `src/auth/oidc.rs` au point de départ, mesures `--lib --all-features`).
+    `src/auth/oidc.rs` au point de départ, mesures `--lib --all-features`). Carve-out acté
+    (Sébastien, 2026-09-29) : `src/graphql/**` est exclu par l'exception du pont gelé
+    (/miryad-core.sdd, 2026-09-27) — l'unique site restant `graphql/registry.rs` (@expect_used)
+    n'est pas compté ici.
   [ ] Purger la dette `pedantic` de production : `missing_errors_doc` 18, `doc_markdown` 12,
     `must_use_candidate` 7 à 11, `match_same_arms` 3, `items_after_statements` 2,
-    `enum_glob_use` 1, `too_many_lines` 1, `map_unwrap_or` 2.
+    `enum_glob_use` 1, `too_many_lines` 1, `map_unwrap_or` 2. Carve-out acté (Sébastien,
+    2026-09-29) : `src/graphql/**` exclu par la même exception ; la doc seule des fichiers
+    graphql est reprise par la tâche `missing_docs` ci-dessous. Note du 2026-09-29 : la catégorie
+    `no_effect_underscore_binding` (9) comptée par le validateur A1 n'est pas reproductible sur
+    l'arbre — à re-mesurer seulement quand les deny purgés laissent compiler `tests/` sous clippy.
+  [ ] Poser l'en-tête d'exemption @cfg(test) de la famille stricte dans chaque crate de ./tests/
+    (`resource.rs`, `workflow_policy.rs`, `workflow_policy_twice.rs`, `workflow_restate.rs`,
+    `workflow_flat_paths.rs`) — `Must` de la présente spec jamais honoré depuis leur création
+    (2026-09-23), rendu mesurable par la purge A2 : 25 sites deny mesurés sous la combinaison
+    `workflow` (`expect_used` ×14, `indexing_slicing` ×7, `arithmetic_side_effects` ×1, `panic` ×1
+    hors `duration_suboptimal_units` ×2 à corriger dans le code du test, plus 1 `deprecated`
+    rustdoc `bind_with_options`). Le combo clippy `workflow` reste rouge jusqu'ici.
   [ ] Documenter les items publics manquants : `missing_docs` 136 en features par défaut,
     160 en `--all-features` au point de départ.
   [ ] Basculer `missing_docs` en `deny` quand la crate est à zéro avertissement, en gardant

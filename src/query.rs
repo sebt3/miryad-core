@@ -23,6 +23,7 @@ impl Pagination {
     /// Construit depuis des query params bruts, potentiellement absents ou hors bornes.
     /// `page` clampée à `[1, MAX_PAGE]`, `per_page` clampée à `[1, MAX_PER_PAGE]`,
     /// indépendamment l'une de l'autre.
+    #[must_use]
     pub fn from_raw(page: Option<u64>, per_page: Option<u64>) -> Self {
         let page = page.unwrap_or(1).clamp(1, MAX_PAGE);
         let per_page = per_page.unwrap_or(DEFAULT_PER_PAGE).clamp(1, MAX_PER_PAGE);

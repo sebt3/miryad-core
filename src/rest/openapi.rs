@@ -16,12 +16,12 @@ use crate::rest::RestEntity;
 /// depuis cette interface.
 const BEARER_SECURITY_SCHEME: &str = "bearer_auth";
 
-/// Entités éligibles à la génération OpenAPI — en plus de `RestEntity`, `Model` doit dériver
+/// Entités éligibles à la génération `OpenAPI` — en plus de `RestEntity`, `Model` doit dériver
 /// `utoipa::ToSchema` pour que sa forme JSON soit décrite dans le document généré.
 pub trait OpenApiEntity: RestEntity<Model: ToSchema> {}
 impl<E> OpenApiEntity for E where E: RestEntity<Model: ToSchema> {}
 
-/// Fragment OpenAPI pour les 5 routes CRUD d'une entité (`GET/POST /api/v1/{resource_name}`,
+/// Fragment `OpenAPI` pour les 5 routes CRUD d'une entité (`GET/POST /api/v1/{resource_name}`,
 /// `GET/PUT/DELETE /api/v1/{resource_name}/{id}`) — à fusionner avec celui des autres entités
 /// montées (`utoipa::openapi::OpenApi::merge`) avant publication. Ne fixe pas `info`
 /// (titre/version) : l'app renseigne ces champs sur le document final après fusion. Les chemins
@@ -29,6 +29,7 @@ impl<E> OpenApiEntity for E where E: RestEntity<Model: ToSchema> {}
 /// routes REST réellement montées. Déclare un `SecurityScheme` Bearer (feature 2) : le bouton
 /// "Authorize" de Swagger UI fonctionne sans configuration côté app — `OpenApi::merge` dédoublonne
 /// le schéma et l'exigence de sécurité par nom/égalité entre fragments d'entités.
+#[must_use]
 pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
     let resource = E::resource_name();
     let schema_name = E::Model::name().into_owned();
@@ -76,6 +77,23 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
         )
         .build();
 
+    let paths = crud_paths(resource, &model_ref, &paged_schema_name);
+
+    OpenApiBuilder::new()
+        .paths(paths)
+        .components(Some(components))
+        .security(Some([SecurityRequirement::new(
+            BEARER_SECURITY_SCHEME,
+            Vec::<String>::new(),
+        )]))
+        .build()
+}
+
+/// Les cinq opérations CRUD du fragment, ajoutées à `paths` — extraction privée sans changement
+/// de comportement de `resource_openapi` (harnais `too_many_lines`, `tooling.sdd`) : les chemins
+/// et statuts décrits restent le contrat de `openapi.sdd`, seule la surface publique compte à
+/// `Exposes` et elle n'a pas bougé.
+fn crud_paths(resource: &str, model_ref: &RefOr<Schema>, paged_schema_name: &str) -> Paths {
     let query_param = |name: &str, schema_type: Type| {
         ParameterBuilder::new()
             .name(name)
@@ -104,7 +122,7 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
                 .description("Liste paginée")
                 .content(
                     "application/json",
-                    json_content(RefOr::Ref(Ref::from_schema_name(paged_schema_name))),
+                    json_content(RefOr::Ref(Ref::from_schema_name(paged_schema_name.to_string()))),
                 )
                 .build(),
         )
@@ -181,14 +199,7 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
         delete_op,
     );
 
-    OpenApiBuilder::new()
-        .paths(paths)
-        .components(Some(components))
-        .security(Some([SecurityRequirement::new(
-            BEARER_SECURITY_SCHEME,
-            Vec::<String>::new(),
-        )]))
-        .build()
+    paths
 }
 
 /// Sert `GET /api/openapi.json` à partir d'un document déjà fusionné — toujours disponible, pas

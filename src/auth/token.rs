@@ -53,10 +53,7 @@ fn generate_token() -> String {
 }
 
 fn hash_token(token: &str, pepper: &str) -> String {
-    // Poivre HMAC obligatoire (src/auth/token.sdd `Must`, arbitré 2026-09-27) :
-    // `Mac::new_from_slice` est infaillible pour HMAC (clé de longueur libre, la clé
-    // plus longue que le bloc est d'abord hachée — source hmac 0.12.1), d'où l'absence
-    // de branche d'échec ; le `expect` ne peut pas se déclencher.
+    // Poivre HMAC obligatoire (`src/auth/token.sdd` `Must`, arbitré 2026-09-27) : `Mac::new_from_slice` est infaillible pour HMAC (clé de longueur libre, source hmac 0.12.1), le `expect` ne peut pas se déclencher.
     #[allow(clippy::expect_used)]
     let mut mac =
         Hmac::<Sha256>::new_from_slice(pepper.as_bytes()).expect("HMAC-SHA256 accepts any key length");
@@ -64,6 +61,14 @@ fn hash_token(token: &str, pepper: &str) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
+/// Émet un token API : secret généré, seule l'empreinte HMAC-SHA256 poivrée est persistée ;
+/// le champ `token` de l'`IssuedToken` rendu porte le clair, retourné une seule fois et jamais
+/// récupérable ensuite.
+///
+/// # Errors
+///
+/// `AuthError::Database` (`MRD-AUTH-016`) — toute panne de base sur l'`insert` de la ligne
+/// (erreur remontée nue du `DbErr` via `From<sea_orm::DbErr>`).
 pub async fn issue_token(
     db: &DatabaseConnection,
     subject: &str,
@@ -89,6 +94,23 @@ pub async fn issue_token(
     })
 }
 
+/// Valide un token API présenté en clair (schéma `Bearer`) : haché sous le poivre puis cherché
+/// en base, expiration vérifiée, `last_used_at` horodaté en best-effort. Rend l'`AuthPrincipal`
+/// du titulaire.
+///
+/// # Errors
+///
+/// `AuthError::InvalidToken` (`MRD-AUTH-014`) — aucune ligne ne correspond à l'empreinte (token
+/// jamais émis, révoqué — la révocation étant physique, inexistant et révoqué sont indiscernables
+/// —, chaîne vide ou hors format), ou `UPDATE` de `last_used_at` échouant par `RecordNotUpdated`
+/// / relecture par `RecordNotFound` : la ligne a été révoquée entre lecture et écriture.
+///
+/// `AuthError::TokenExpired` (`MRD-AUTH-015`) — la ligne trouvée porte un `expires_at` antérieur
+/// ou égal à l'instant de validation (borne `≤` inclusive).
+///
+/// `AuthError::Database` (`MRD-AUTH-016`) — panne de base sur la lecture qui décide du résultat.
+/// Toute autre `DbErr` sur l'`UPDATE` de `last_used_at` est absorbée sans erreur : le secret était
+/// valide, l'horodatage est best-effort.
 pub async fn validate_token(
     db: &DatabaseConnection,
     token: &str,
@@ -131,6 +153,12 @@ pub async fn validate_token(
     })
 }
 
+/// Révoque un token API par son `id` : suppression physique de la ligne. Un `id` inconnu ou déjà
+/// révoqué réussit en silence (`0` ligne affectée est un `Ok`).
+///
+/// # Errors
+///
+/// `AuthError::Database` (`MRD-AUTH-016`) — toute panne de base sur le `DELETE`.
 pub async fn revoke_token(db: &DatabaseConnection, id: i32) -> Result<(), AuthError> {
     Entity::delete_by_id(id).exec(db).await?;
     Ok(())
@@ -142,6 +170,14 @@ pub async fn revoke_token(db: &DatabaseConnection, id: i32) -> Result<(), AuthEr
 /// token avec ce hash existe déjà pour ce `subject`, ne fait rien (`created_at` inchangé).
 /// Depuis l'arbitrage 2026-09-27, une empreinte déjà détenue par un **autre** `subject` est
 /// un rejet explicite (`AuthError::TokenHashConflict`) — plus le no-op silencieux.
+///
+/// # Errors
+///
+/// `AuthError::TokenHashConflict` (`MRD-AUTH-017`) — l'empreinte de la valeur fournie existe déjà
+/// en base sous un `subject` différent de celui demandé (ressource déjà allouée).
+///
+/// `AuthError::Database` (`MRD-AUTH-016`) — panne de base sur la prélecture sur `token_hash` ou
+/// sur l'`insert` (collision `UNIQUE` `token_hash` comprise).
 pub async fn ensure_token(
     db: &DatabaseConnection,
     subject: &str,

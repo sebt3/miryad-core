@@ -37,10 +37,14 @@ impl IntoResponse for AuthError {
         // Table invariante et exhaustive, sans joker : l'ajout d'une variante interrompt
         // la compilation jusqu'à son arbitrage de statut (`src/auth/error.sdd` `Must`).
         let status = match self {
-            AuthError::NotAuthenticated | AuthError::InvalidSession => StatusCode::UNAUTHORIZED,
+            // 001/002 (cookie de session) et 014/015 (token API) sont confondues au niveau
+            // HTTP sous `401` — seul le code du corps distingue les variantes (`Must`).
+            AuthError::NotAuthenticated
+            | AuthError::InvalidSession
+            | AuthError::InvalidToken
+            | AuthError::TokenExpired => StatusCode::UNAUTHORIZED,
             AuthError::InvalidCallback | AuthError::CsrfMismatch => StatusCode::BAD_REQUEST,
             AuthError::Oidc(_) => StatusCode::BAD_GATEWAY,
-            AuthError::InvalidToken | AuthError::TokenExpired => StatusCode::UNAUTHORIZED,
             AuthError::TokenHashConflict => StatusCode::CONFLICT,
             AuthError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };

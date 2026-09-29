@@ -1,5 +1,5 @@
 //! Crate d'intégration rattachée à `src/workflow/definition.sdd` : le `Scenario`
-//! « configure_policy change la politique effective » pose la cellule `OnceLock` `POLICY` de
+//! « `configure_policy` change la politique effective » pose la cellule `OnceLock` `POLICY` de
 //! ./definition.rs et ne peut donc s'exercer que dans un processus de test dédié (`Tasks` de la
 //! spec : « les tests qui la couvrent l'isolent dans un processus dédié »). Ce binaire est ce
 //! processus : un seul `#[test]`, seul appelant de `configure_policy` de ce processus.
@@ -13,7 +13,7 @@ use miryad_core::workflow::definition::Entity;
 use miryad_core::workflow::definition::WorkflowPolicy;
 use miryad_core::workflow::definition::configure_policy;
 
-/// Scenario « configure_policy change la politique effective » : une pose unique de
+/// Scenario « `configure_policy` change la politique effective » : une pose unique de
 /// `Public`/`OwnerOnly` remplace le défaut `AdminOnly`/`AdminOnly` lu par `read_policy` et
 /// `write_policy` ; `owner_column` reste `Some(Column::OwnerId)`, indépendant de la politique.
 #[test]

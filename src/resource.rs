@@ -53,7 +53,7 @@ pub enum AccessPolicy {
     AdminOnly,
 }
 
-/// Contrat qu'implémente toute entité SeaORM exposée par miryad-core.
+/// Contrat qu'implémente toute entité `SeaORM` exposée par miryad-core.
 /// Une seule implémentation par entité — REST, GraphQL et MCP la lisent
 /// telle quelle, aucune n'a sa propre déclaration de politique.
 pub trait MiryadResource: EntityTrait {
@@ -81,12 +81,14 @@ pub trait MiryadResource: EntityTrait {
     /// inputs natifs `seaography` (arbitré 2026-09-27). `None` par défaut : pas
     /// de filtre pour cette entité. Une entité qui veut un filtre de liste
     /// (ex. "recettes par catégorie") le déclare explicitement.
+    #[must_use]
     fn filter_column() -> Option<<Self as EntityTrait>::Column> {
         None
     }
 
     /// Colonne à afficher comme libellé humain de l'entité (liste, select) — feature 8, IR
     /// frontend. `None` par défaut : le générateur retombe sur la clé primaire.
+    #[must_use]
     fn label_column() -> Option<<Self as EntityTrait>::Column> {
         None
     }
@@ -97,6 +99,11 @@ pub trait MiryadResource: EntityTrait {
     /// car Seaography ne déclenche ce hook que sur un insert pour l'instant — un hook qui ne se
     /// comporterait pas à l'identique sur les 3 surfaces (REST/GraphQL/MCP) n'a pas sa place ici.
     /// Défaut : no-op.
+    ///
+    /// # Errors
+    ///
+    /// Un `Err(HookError)` remonté par l'override de l'application consommatrice (code applicatif
+    /// libre, jamais un code `MRD-*` de la crate). Le défaut ne rejette jamais.
     fn before_create(
         active: Self::ActiveModel,
         principal: &AuthPrincipal,

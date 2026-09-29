@@ -119,6 +119,7 @@ pub struct McpToolRegistry {
 }
 
 impl McpToolRegistry {
+    #[must_use]
     pub fn new(format: OutputFormat) -> Self {
         Self {
             format,
