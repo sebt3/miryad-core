@@ -194,6 +194,10 @@ Must:
   Rester silencieux et sans état : aucune trace @tracing à ce jour, aucun état partageable, aucune
     variable globale ; jamais @println!, @eprintln!, @dbg! ; @tracing est seul permis pour toute
     trace future (contrat transverse /.specdd/bootstrap.project.md).
+  Toute liste est ordonnée par la clé primaire croissante (arbitré par Sébastien le 2026-09-29) : @rest::core::list applique un
+    `ORDER BY` sur la colonne de clé primaire avant @paginate — pagination déterministe, jamais de
+    ligne sautée ou dupliquée entre deux pages ; les listes de ./admin.rs et ./tokens.rs suivent la
+    même règle.
 
 Must not:
   Choisir un statut HTTP ni importer @axum : ./core.rs ne produit que @RestError ; la table
@@ -456,6 +460,12 @@ Example:
     @sea_orm::EntityTrait::delete_by_id.
 
 Tasks:
+  [ ] `ORDER BY` sur la clé primaire dans @rest::core::list (arbitré par Sébastien le 2026-09-29,
+    `Must`) ; nouveau Scenario et test de pagination déterministe (deux pages consécutives sans
+    ligne sautée ni dupliquée).
+  [ ] Revue 2026-09-29 : @update traduit aussi `DbErr::RecordNotFound` en `NotFound` (backend sans
+    `RETURNING` type MySQL, aligné sur ./../auth/token.rs) en plus de `RecordNotUpdated` ; amender
+    `Raises` de @update et ajouter un test si la simulation par @sea_orm::MockDatabase le permet.
   [x] Amendement du 2026-09-23 (@before_update, @before_delete) : convertir les quatre nouveaux
     `Scenario` en tests nommés distincts dans ./mod.rs (même style que les tests existants de hook de
     création) : « mutation before_update écrite, invariants après » →

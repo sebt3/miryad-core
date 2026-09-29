@@ -64,10 +64,23 @@ Must:
   Un utilisateur sans aucune appartenance rend `groups: []` (@Option::unwrap_or_default sur la
     lookup de la carte), et l'itérateur @ids vide court-circuite @groups_by_user avant tout SQL.
   L'ordre des @items dans une page et l'ordre des noms dans @groups ne sont pas contractuels :
-    la requête @user::Entity::find() ne porte aucun @ORDER BY (tâche `[?]`) et @groups_by_user
+    la requête @user::Entity::find() ne porte aucun @ORDER BY (tâche [arbitré 2026-09-29]) et @groups_by_user
     pousse les noms dans l'ordre de parcours des memberships.
   Le fichier compile sous toute combinaison de features de la batterie /tooling.sdd : zéro
     attribut `#[cfg(feature = ...)]`, ni dans le code ni dans son module de tests.
+  L'en-tête `//!` de ./admin.rs dit « ne modifie aucune donnée métier ; la première vue d'un sujet
+    crée sa ligne `miryad_users` » (arbitré par Sébastien le 2026-09-29) : @resolve_user s'exécute avant le garde, c'est le
+    contrat get-or-create de toute route authentifiée (./../users/user.sdd), pas un accident ; plus
+    de « lecture seule ».
+  La liste est ordonnée par @id croissant (arbitré par Sébastien le 2026-09-29) : pagination déterministe (contrat de
+    ./core.sdd « toute liste est ordonnée »).
+  Route de plateforme REST-only par nature (arbitré par Sébastien le 2026-09-29) : l'exemption de parité des surfaces est écrite dans
+    `.specdd/bootstrap.project.md` ; @User n'étant pas @MiryadResource, aucune entité
+    `miryad_users` n'entre dans @PolicyRegistry ni dans @mcp::registry.
+  Émettre une trace @tracing `warn!` avec @subject sur chaque `403` d'accès refusé à cette route
+    (arbitré par Sébastien le 2026-09-29) — jamais le token ni le cookie ; la tentative d'accès admin est la trace la plus utile.
+  @groups_by_user ignore une membership dont le groupe ne remonte pas (arbitré par Sébastien le 2026-09-29) : la FK cascade rend le
+    cas quasi impossible, comportement « ignorer » gelé et documenté.
 
 Must not:
   Exposer une écriture sur cette surface : pas de `POST`/`PUT`/`DELETE /api/v1/users` ni
@@ -160,7 +173,7 @@ Handles:
   Sujet authentifié jamais vu : @resolve_user get-or-create insère une ligne `miryad_users`
     (email du @AuthPrincipal à l'insertion uniquement) avant le garde — un non-admin appelé sur
     une toute première requête reçoit `403` alors que sa ligne vient d'être écrite (contradiction
-    avec l'en-tête « lecture seule », tâche `[?]`).
+    avec l'en-tête « lecture seule », tâche [arbitré 2026-09-29]).
   Course de première résolution concurrente du même @subject : contrainte unique puis reprise
     par @find côté @users::user — ce fichier ne voit qu'un Model rendu.
   Groupe `admin` absent des tables : @is_admin → @is_member → lookup de groupe @None → @false →
@@ -174,37 +187,25 @@ Handles:
     ignorée (@if let @Some sur la lookup des noms) — normalement injoignable grâce à la FK
     `ON DELETE CASCADE` de `miryad_group_memberships` → `miryad_groups` (migration
     /src/migration/m20260822_000002_create_users_groups.rs vérifiée en amont), branche
-    défensive jamais testée (tâche `[?]`).
+    défensive jamais testée (tâche [arbitré 2026-09-29]).
   @page au-delà de la dernière : @fetch_page rend un @Vec vide, @total_items/@total_pages
     conservés, @page renvoyé tel que demandé (aucun retour à la dernière page).
   @per_page absent / `0` / écrêté : normalisé en amont par @Pagination::from_raw, observable
     uniquement dans l'echo des champs `page`/`per_page` de la réponse `200`.
 
 Tasks:
-  [?] L'en-tête `//!` clame « lecture seule » mais @resolve_user s'exécute avant le garde : une
-    requête authentifiée d'un sujet inconnu, y compris un non-admin renvoyé `403`, écrit une
-    ligne dans `miryad_users` (et @validate_token, en amont du fichier, a déjà écrit
-    `last_used_at` sur le token). Ce comportement est-il le contrat (et l'en-tête est faux) ou
-    l'accident à corriger (trouver l'utilisateur sans créer, réserver l'insertion aux admins) ?
-  [?] @user::Entity::find() ne porte aucun @ORDER BY : l'ordre des pages repose sur l'ordre de
-    parcours du backend (rowid en pratique sur SQLite, non garanti sur Postgres) — deux requêtes
-    simultanées peuvent sauter ou dupliquer une ligne entre deux pages. Un ordre stable (par
-    ex. @id) devient-il contractuel ici, ou la question est-elle à arbitrer globalement avec
-    @rest::core::list qui présente le même manque ?
-  [?] Parité des trois surfaces : `GET /api/v1/users` n'existe qu'en REST — @User n'étant pas
-    @MiryadResource, aucune entité `miryad_users` n'est enregistrée dans le @PolicyRegistry de
-    ./graphql ni dans @mcp::registry (qui ne génère de tools que par @MiryadResource). La règle
-    transverse de /.specdd/bootstrap.project.md (« tout comportement ajouté sur une surface doit
-    être honoré sur les deux autres ») s'applique-t-elle à cette liste admin, ou le précédent
-    des surfaces REST-only (@auth::auth_router, `GET /api/v1/me`, @rest::tokens::tokens_router)
-    vaut-il exemptation pour les tables internes ?
-  [?] Un appel refusé (`403`) ou authentifié par token expiré (`401`) ne laisse aucune trace :
-    zéro appel @tracing dans tout le fichier. Faut-il une trace d'audit (warn) sur les tentatives
-    d'accès refusées à cette route, ou le silence est-il le contrat ?
-  [?] @groups_by_user ignore silencieusement une membership dont le groupe ne remonte pas de la
-    seconde requête (branche @if let @Some jamais exercée, rendue injoignable par la FK
-    cascade) : contrat « ignorer » entériné tel quel, ou erreur explicite si la FK est jamais
-    retirée ou non appliquée (selon backend) ?
+  [ ] En-tête `//!` de ./admin.rs (arbitré par Sébastien le 2026-09-29, `Must`) : remplacer
+    « lecture seule » par « ne modifie aucune donnée métier ; la première vue d'un sujet crée sa
+    ligne `miryad_users` ». Documentation seule.
+  [ ] `ORDER BY id` ascendant sur la liste admin (arbitré par Sébastien le 2026-09-29, `Must`) ;
+    même décision pour @rest::core::list (../rest/core.sdd) et pour ./tokens.sdd ; nouveau test de
+    pagination déterministe.
+  [x] Exemption de parité des routes de plateforme (arbitré par Sébastien le 2026-09-29, `Must`,
+    `.specdd/bootstrap.project.md`) — aucun changement de code.
+  [ ] Trace `warn!` avec @subject sur chaque `403` de la route (arbitré par Sébastien le
+    2026-09-29, `Must`), jamais le token ; nouveau Scenario et test de capture.
+  [x] @groups_by_user : « ignorer » gelé et documenté (arbitré par Sébastien le 2026-09-29,
+    `Must`) — aucun changement.
   [ ] Convertir les treize `Scenario` en au moins treize tests nommés distincts du
     `#[cfg(test)] mod tests` de `./admin.rs` (tout l'observable vit sur la surface HTTP de ce
     fichier, aucun test ne déborde dans ./tests/) : « admin obtient la liste paginée avec les
@@ -232,7 +233,7 @@ Done when:
   La batterie complète /tooling.sdd passe verte sur toutes les combinaisons de features —
     `--no-default-features` comprise, le fichier n'étant gated par aucune feature — sans warning
     clippy nouveau sur `./admin.rs`.
-  Les cinq lignes `[?]` de `Tasks` ont chacune une décision de Sébastien reflétée dans la spec.
+  Les cinq lignes [arbitré 2026-09-29] de `Tasks` ont chacune une décision de Sébastien reflétée dans la spec.
   La spec est relue et approuvée par Sébastien ; seule l'implementer convertit ensuite les
     `Scenario` en tests.
 
