@@ -89,6 +89,16 @@ Must:
   Lire @E::Column et @E::Relation — les mêmes déclarations que le schéma GraphQL Seaography
     traverse — source de vérité commune entre les surfaces : un même belongs_to alimente à la fois
     la traversée GraphQL et les references de l'IR, zéro duplication de déclaration.
+  Refuser les doublons à l'enregistrement (arbitré par Sébastien le 2026-09-29) : @ir::IrRegistry::register `assert!` (message
+    explicite citant le nom) qu'aucune entité déjà enregistrée ne porte le même `resource_name` ni
+    le même @table_name ; pas de `#[allow(clippy::panic)]`, `assert!` suffit.
+  @ir::EntityIr et @ir::FieldIr restent `pub` et @Serialize (arbitré par Sébastien le 2026-09-29) : la sérialisation directe est
+    acceptée ; le champ `references` a deux états contractuels — noms de table bruts après
+    @ir::resource_ir seule, `resource_name` résolus après @ir::IrRegistry::write_to_file — et la
+    production de l'artefact reste réservée à @ir::IrRegistry::write_to_file par convention.
+  Le repli `("string", null)` de @ir::openapi_type est figé comme contrat (arbitré par Sébastien le 2026-09-29) : toute variante amont
+    future de @ColumnType (`#[non_exhaustive]`) tombe dessus ; aucune preuve possible tant qu'aucune
+    variante nouvelle n'existe.
 
 Must not:
   Exiger de l'app consommatrice, pour l'IR, des annotations dédiées en plus de @MiryadResource —
@@ -191,13 +201,14 @@ Handles:
     @TableRef::FunctionCall, et futures variantes, @TableRef étant `#[non_exhaustive]` en amont,
     vérifié sea-query 1.0.2 — : branche de repli vers @Option::None.
   Table qualifiée par un schéma ou aliasée : @TableName.0 — le schéma — est jeté avec le champ
-    alias de @TableRef, seul @TableName.1 — le nom nu — est conservé ; le registre et la
-    résolution utilisant cette même clé nue, la résolution reste correcte mais ne peut distinguer
-    deux tables qualifiées du même nom nu.
-  Collision de noms physiques — deux entités enregistrées avec le même @table_name — : la
-    résolution des references tombe sur la première entité enregistrée, en ordre @find.
-  Enregistrement double d'une même entité : deux entités et deux paires de résolution identiques
-    dans le registre, sans déduplication — voir le `[?]` de `Tasks`.
+    alias de @TableRef, seul @TableName.1 — le nom nu — est conservé ; le nom nu suffit, contrat
+    écrit (arbitré 2026-09-29) : deux tables qualifiées du même nom nu qui collisionnent sont
+    refusées par @ir::IrRegistry::register (voir ci-dessous), jamais confondues en silence.
+  Collision de noms physiques ou enregistrement double (arbitré 2026-09-29) : @ir::IrRegistry::register
+    fait échouer par `assert!` explicite tout `resource_name` ou tout @table_name déjà enregistré —
+    erreur de programmation détectée au démarrage, dans l'esprit du refus de collision de
+    @resource_name au montage du routeur REST ; plus de résolution silencieuse sur la première
+    entité ni de doublon dans le tableau JSON.
   Variante de @ColumnType inconnue à l'écriture de la crate : le repli de @ir::openapi_type rend
     `("string", null)` au lieu d'une erreur de compilation.
   Politique @AccessPolicy::Group : transmise sans interprétation, sa sérialisation définie dans
@@ -206,24 +217,16 @@ Handles:
     erreur.
 
 Tasks:
-  [?] @ir::IrRegistry ne déduplique ni n'avertit en collision : deux @ir::IrRegistry::register
-    d'une même entité produisent deux entrées identiques dans le tableau JSON, et deux tables
-    physiques partageant le même @table_name nu résolvent les references vers la première entité
-    enregistrée. Contrat pris tel quel, ou @ir::IrRegistry::register doit-il dédupliquer ou
-    refuser ?
-  [?] @ir::EntityIr est `pub` et @Serialize : un consommateur de @ir::resource_ir peut
-    court-circuiter @ir::IrRegistry::write_to_file et sérialiser l'objet, avec des `references`
-    restées noms de table bruts, sans aucun signal distinguant les deux états contractuels du
-    champ. Réserver la sérialisation d'artefact à @ir::IrRegistry::write_to_file, ou accepter la
-    sérialisation directe de @ir::FieldIr et @ir::EntityIr ?
-  [?] Repli `("string", null)` de @ir::openapi_type : toute variante amont actuelle a une branche
-    explicite, aucune testabilité de la branche de repli tant que @ColumnType n'ajoute pas de
-    variante — `#[non_exhaustive]`. Figer sa forme dès maintenant — la première variante amont
-    future tombe sur `("string", null)` par contrat — ou laisser sans preuve ?
-  [?] Perte de la qualification : @TableName.0 — le schéma — est jeté par le source et la clé du
-    registre est le @table_name nu. Les apps miryad ont-elles des tables qualifiées hors public —
-    auquel cas la collision d'homonymes est réelle — ou le nom nu suffit et cette suffisance
-    devient un contrat à écrire ici ?
+  [ ] @ir::IrRegistry::register : `assert!` sur `resource_name` et @table_name en doublon (arbitré
+    par Sébastien le 2026-09-29, `Must`) ; deux nouveaux Scenario et tests (doublon de
+    `resource_name`, collision de @table_name) ; le Scenario « chaînage inclus » ne doit plus
+    supposer de second enregistrement de la même entité.
+  [x] Sérialisation directe acceptée, deux états de `references` documentés (arbitré par
+    Sébastien le 2026-09-29, `Must`) — doc-comment de @ir::EntityIr à compléter, aucun changement de
+    comportement.
+  [x] Repli `("string", null)` figé comme contrat (arbitré par Sébastien le 2026-09-29, `Must`).
+  [x] Nom de table nu suffisant, contrat écrit ; les collisions sont refusées à l'enregistrement
+    (arbitré par Sébastien le 2026-09-29, `Handles`).
   [ ] Rejouer la matrice complète de /tooling.sdd après ajout des tests des `Scenario` — défaut,
     `--no-default-features`, `swagger-ui`, `graphql`, `graphiql`, `mcp`, `--all-features`, clippy
     `-D warnings` sur chaque combinaison et `cargo fmt --check` — @ir n'étant pas gaté, la
@@ -288,7 +291,7 @@ Done when:
     externe.
   La matrice /tooling.sdd est verte en défaut et sous `--no-default-features` — @ir est sans
     gating —, et le harnais n'ajoute aucun warning sur les fichiers touchés.
-  Les questions `[?]` portées par `Tasks` ont été arbitrées par Sébastien, portées dans `Must`,
+  Les questions [arbitré 2026-09-29] portées par `Tasks` ont été arbitrées par Sébastien, portées dans `Must`,
     `Handles` ou `Tasks`.
   Le fichier est lisible, `npx specdd lint src/ir.sdd` sort sans erreur, et Sébastien a approuvé la
     spec : le comportement accidentel de #19 ne devient contrat qu'à ce prix.
@@ -442,8 +445,8 @@ Scenario: Les entités apparaissent dans l'ordre d'enregistrement, chaînage inc
   Given un @ir::IrRegistry construit par chaînage : `@ir::IrRegistry::new().register::<@recipe::Entity>().register::<@ingredient::Entity>()`
   When @ir::IrRegistry::write_to_file écrit un fichier
   Then le fichier contient @recipe::Entity et @ingredient::Entity dans l'ordre d'enregistrement,
-    sans tri ni déduplication — un second @ir::IrRegistry::register de la même entité produirait
-    deux entrées identiques
+    sans tri — un second @ir::IrRegistry::register de la même entité échoue par `assert!`
+    (arbitré 2026-09-29)
 
 Example:
   Mapping @ir::openapi_type — @ColumnType → `("type", "format")`, `null` = @format non émis en JSON

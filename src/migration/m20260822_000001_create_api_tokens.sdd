@@ -70,6 +70,10 @@ Must:
   Laisse la trace de l'application uniquement au `tracing` @info de @exec_up_with et
     @exec_down_with de sea-orm-migration — le fichier n'émet aucune trace propre et n'ajoute le
     contrat d'aucune.
+  `subject` reste sans index dans cette migration immuable (arbitré par Sébastien le 2026-09-29) : l'index est posé par une
+    migration suivante (./mod.sdd, `Tasks`).
+  `down` strict non idempotent et `IF NOT EXISTS` sans lecture de schéma : règle générale de
+    ./mod.sdd (arbitré par Sébastien le 2026-09-29).
 
 Must not:
   Réécrire, renommer, déplacer ou dupliquer le @up ou le @down committé : @DeriveMigrationName
@@ -114,7 +118,7 @@ Accepts:
 Returns:
   @up — `Ok(())` une fois la table présente sous le nom contractuel, première pose comme re-pose ;
     `Ok` prouve seulement la mise en place `IF NOT EXISTS`, pas la conformité du schéma
-    préexistant (vérification absente, voir Tasks `[?]`)
+    préexistant (vérification absente, voir Tasks [arbitré 2026-09-29])
   @down — `Ok(())` une fois `DROP TABLE` exécuté ; muet sur la suppression de ligne de tracking,
     qui appartient au framework
   Aucune autre fonction, ce qui clôt `Accepts`
@@ -132,7 +136,7 @@ Handles:
   @up rejoué sur une base déjà conforme, et auto-réparation d'une pose SQLite interrompue avant la
     ligne de tracking, grâce à @if_not_exists (chemin sans transaction vérifié au source)
   Une table préexistante du même nom hors-forme (drift d'un schéma posé à la main ou par un autre
-    migrateur) : @up l'acquitte sans vérifier, sans tester (scénario absent), et avec Tasks `[?]`
+    migrateur) : @up l'acquitte sans vérifier, sans tester (scénario absent), et avec Tasks [arbitré 2026-09-29]
   La remontée partielle : @down ne peut s'exécuter qu'après ceux des migrations 002 et 003,
     @Migrator inversant l'ordre d'application ; les contraintes posées ici sont autonomes (aucune
     FK entrante) et @down reste symétrique de @up sans no-op ni oubli d'objet à défaire
@@ -156,21 +160,17 @@ Tasks:
     `up_tolerates_drifted_table` ; `down_drops_the_table` ; `down_errors_without_table` ;
     `applied_name_is_the_file_stem` ; `down_then_up_restores_schema`. Tests d'exécution réels sur
     la batterie de /tooling.sdd, hors base de données externe.
-  [?] `subject` ne porte aucun index alors que @list_tokens_handler de `../rest/tokens.rs` filtre
-    et paginature dessus ; seul `id` (PK) et `token_hash` (unique) sont indexés. Contrat assumé
-    (petite table) ou dette à corriger par une migration suivante — 001 étant immuable ?
-  [?] @down est non idempotent (@drop_table sans @if_exists, @DbErr garanti sur table absente) :
-    gèle-t-on ce contrat de remontée stricte, ou planifie-t-on la remédiation en `if_exists` par
-    une migration suivante ?
-  [?] `IF NOT EXISTS` acquitte une table préexistante hors forme sans lire le schéma : accepte-t-on
-    ce silence pour ce contrat, ou exige-t-on d'une migration suivante une vérification explicite
-    de la dérive ?
+  [x] Index sur `subject` par une migration suivante, la 001 étant immuable (arbitré par
+    Sébastien le 2026-09-29, `Must`) — tâche dans ./mod.sdd.
+  [x] `down` strict gelé (arbitré par Sébastien le 2026-09-29, règle générale de ./mod.sdd).
+  [x] `IF NOT EXISTS` sans lecture de schéma gelé (arbitré par Sébastien le 2026-09-29, règle
+    générale de ./mod.sdd).
 
 Done when:
   Les douze `Scenario` sont chacun vérifiés par un test nommé distinct identifié dans `Tasks`,
     tous jouables via la batterie de /tooling.sdd sur `sqlite::memory:` sans base de données
     externe, @up et @down inchangés depuis l'approbation (immuabilité — le fichier ne reçoit plus
-    jamais de `git diff`), chaque `[?]` de `Tasks` tranché par Sébastien sans réinterprétation du
+    jamais de `git diff`), chaque [arbitré 2026-09-29] de `Tasks` tranché par Sébastien sans réinterprétation du
     contrat figé, et la spec approuvée par Sébastien.
 
 Scenario: @up pose miryad_api_tokens

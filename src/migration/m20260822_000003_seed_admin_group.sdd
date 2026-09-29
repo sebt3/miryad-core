@@ -65,10 +65,10 @@ Must:
     @ConnectionTrait> de @users::group::ensure_group : une spécialisation concrète
     @sea_orm::DatabaseConnection ferait échouer la compilation de ce seed.
   Conduire @down par un @DELETE SQL brut ciblant l'égalité exacte sur le nom : @execute_unprepared("DELETE FROM miryad_groups WHERE name = 'admin'") — littéral `'admin'` non lu à @ADMIN_GROUP_NAME,
-    asymétrie d'avec @up qui lit la constante, consignée en `Tasks` `[?]` et déjà signalée dans
+    asymétrie d'avec @up qui lit la constante, consignée en `Tasks` [arbitré 2026-09-29] et déjà signalée dans
     /src/users/group.sdd ; l'égalité SQL sans COLLATE (aucun posé par 000002, vérifié dans sa
     source) est binaire et sensible à la casse sur SQLite backend des tests, donc `Admin` ne lui
-    répond pas et `Admin` survit — collation Postgres à la [?] de /src/users/group.sdd.
+    répond pas et `Admin` survit — collation Postgres à la [arbitré 2026-09-29] de /src/users/group.sdd.
   Emporter par cascade, dans @down, les lignes de membership pointant vers le groupe supprimé :
     la FK @on_delete Cascade que 000002 pose sur `miryad_group_memberships.group_id` vers
     `miryad_groups.id` s'applique — y compris sur SQLite, backend des tests : vérifié au source
@@ -106,6 +106,15 @@ Must:
     toute ligne nommée `admin` lors de son @DELETE — y compris une ligne née d'un claim OIDC passé
     par @sync_group_memberships ou d'un SQL manuel antérieur à l'application : la migration ne
     pose aucune trace de provenance et n'en lit aucune.
+  `down` avec le littéral `'admin'` : contrainte documentaire (arbitré par Sébastien le 2026-09-29) — la constante
+    @ADMIN_GROUP_NAME et le littéral bougent ensemble, au besoin par une migration suivante ; miroir
+    de ../users/group.sdd.
+  Le `down` cascade la destruction des memberships du groupe `admin` (arbitré par Sébastien le 2026-09-29) : un rollback est
+    destructif, un re-`up` ne les restaure pas, l'ex-admin redevient non-admin jusqu'au prochain
+    login (le claim resynchronise) — fail-closed, cohérent avec ../users/membership.sdd.
+  Le seed identifie le groupe par le nom seul (arbitré par Sébastien le 2026-09-29) : présence-par-nom, sans valeur imposée ni
+    provenance tracée ; `up` acquitte une ligne `admin` préexistante, `down` efface toute ligne
+    nommée `admin`, même née d'un claim OIDC. Contrat congelé, en miroir de ../users/group.sdd.
 
 Must not:
   Réécrire, renommer, déplacer ou dupliquer le @up ou le @down committé : @DeriveMigrationName
@@ -123,7 +132,7 @@ Must not:
     contredirait la frontière Authentik que /src/users/group.sdd pose en `Must not`.
   Remplacer dans @up la constante @ADMIN_GROUP_NAME par le littéral `"admin"`, ou dans @down le
     littéral par la constante : l'état figé est up-constante/down-littéral, documenté tel quel ;
-    l'uniformiser sans arbitrage masquerait la `Tasks` `[?]` au lieu de la trancher.
+    l'uniformiser sans arbitrage masquerait la `Tasks` [arbitré 2026-09-29] au lieu de la trancher.
   Écrire @seaql_migrations_miryad_core ou @seaql_migrations dans @up ou @down : l'écriture du
     tracking est l'affaire exclusive du framework.
   Envelopper @up ou @down dans une transaction propre (@manager::begin, @TransactionTrait) ni
@@ -198,7 +207,7 @@ Raises:
   @up — @sea_orm::DbErr::RecordNotFound fabriquée par @ensure_group, avec le message texte
     `group admin vanished`, dans l'unique cas où l'@INSERT a échoué et la SELECT de reprise
     revient vide ; le
-    masque @Err(_) qui jette toute autre cause d'@INSERT est le `[?]` ouvert de
+    masque @Err(_) qui jette toute autre cause d'@INSERT est le [arbitré 2026-09-29] ouvert de
     /src/users/group.sdd — le seed l'hérite de fait, le consigner ici ne le tranche pas
   @up — toute panne de connexion ou de serveur atteignant le SELECT, l'@INSERT ou la SELECT de
     reprise du get-or-create
@@ -228,7 +237,7 @@ Handles:
   Memberships d'admin au rollback : le @DELETE cascade les memberships attachés au groupe (FK de
     000002, pragma @PRAGMA foreign_keys ON vérifié plus haut) ; après un re-@up le groupe existe
     de nouveau mais les ex-membres `admin` ont perdu leur ligne — seul un prochain
-    @sync_group_memberships la rattache : perte de droits consignée en `Tasks` `[?]`.
+    @sync_group_memberships la rattache : perte de droits consignée en `Tasks` [arbitré 2026-09-29].
   Ligne `admin` née hors du seed : @up l'acquitte sans écrire, @down l'efface — garantie de
     présence par nom, pas inventaire de provenance.
   Casse et tolérance : `Admin` (majuscule) est une ligne distincte que @down épargne sur le
@@ -261,30 +270,19 @@ Tasks:
     fixtures sous l'exemption `cfg(test)` de /tooling.sdd. Le test
     `admin_group_is_seeded_by_migration` de /src/users/group.rs garde la vue consommateur du
     seed et ne compte pas pour la couverture de ces scénarios.
-  [?] Le @down écrit le nom `'admin'` en SQL littéral sans lire @ADMIN_GROUP_NAME, @up la lit :
-    renommer la constante ferait @up germer sous le nom neuf et @down silencieux (0 ligne, @Ok
-    muet — `Returns`), ou survivre la ligne ancienne selon le sens du renommage. Déjà `[?]` de
-    /src/users/group.sdd : migration committée immuable, gèle-t-on la contrainte documentaire —
-    constante et littéral bougent ensemble, remédiation par migration suivante si elles dérivent
-    — ou arbitre-t-on autrement ? Arbitrage unique à rendre des deux côtés par Sébastien.
-  [?] Le @down cascade la destruction des memberships `admin` synchronisés depuis l'application :
-    un rollback, ou un @Migrator::down partiel, efface les lignes de `miryad_group_memberships`
-    attachées au groupe et un re-@up ne les restaure pas — l'ex-admin redevient non-admin tant
-    qu'Authentik n'a pas resynchronisé le claim. La perte de droits au rollback est-elle le
-    contrat (régénération par claim suivant) ou faut-il une migration suivante pour épargner les
-    données ?
-  [?] Le seed identifie par le nom seul et ne pose aucune trace d'origine : @up acquitte une
-    ligne `admin` préexistante sans imposer forme ni @created_at, @down efface toute ligne nommée
-    `admin`, y compris née d'un claim OIDC synchronisé avant application — la sémantique
-    présence-par-nom, sans valeur imposée ni provenance tracée, est-elle le contrat congelé de ce
-    seed, consigné ici et en miroir dans /src/users/group.sdd ?
+  [x] Littéral `'admin'` du `down` : contrainte documentaire (arbitré par Sébastien le 2026-09-29,
+    `Must`, miroir de ../users/group.sdd).
+  [x] Perte des memberships au rollback : contrat, régénération par le claim suivant (arbitré par
+    Sébastien le 2026-09-29, `Must`).
+  [x] Présence-par-nom, sans provenance : contrat congelé (arbitré par Sébastien le 2026-09-29,
+    `Must`).
 
 Done when:
   Les douze `Scenario` sont chacun vérifiés par un test nommé distinct identifié dans `Tasks`,
     tous jouables via la batterie de /tooling.sdd sur `sqlite::memory:` sans base de données
     externe, @up et @down inchangés depuis l'approbation (immuabilité — le fichier ne reçoit plus
-    jamais de `git diff`), chaque `[?]` de `Tasks` tranché par Sébastien sans réinterprétation du
-    contrat figé et arbitré de concert avec le `[?]` de /src/users/group.sdd sur le littéral du
+    jamais de `git diff`), chaque [arbitré 2026-09-29] de `Tasks` tranché par Sébastien sans réinterprétation du
+    contrat figé et arbitré de concert avec le [arbitré 2026-09-29] de /src/users/group.sdd sur le littéral du
     @down, et la spec approuvée par Sébastien.
 
 Scenario: @up seede une unique ligne `admin`
@@ -370,7 +368,7 @@ Scenario: `Admin` de casse distincte survit au @down
   When @down direct est appelé
   Then la ligne `admin` est supprimée et la ligne `Admin` survit, égalité binaire du backend
     SQLite des tests
-  But ce sens de la casse est celui de SQLite et la collation Postgres relève de la `[?]` déjà
+  But ce sens de la casse est celui de SQLite et la collation Postgres relève de la [arbitré 2026-09-29] déjà
     ouverte de /src/users/group.sdd, non tranchée ici
 
 Scenario: remontée totale puis re-application reconstruit le seed

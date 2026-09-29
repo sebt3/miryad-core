@@ -79,6 +79,11 @@ Must:
     en sont dépourvues).
   Laisse la trace de l'application uniquement au `tracing` @info de sea-orm-migration — aucune trace
     propre.
+  `owner_id` reste sans index (arbitré par Sébastien le 2026-09-29) : contrat assumé (table vraisemblablement petite, un DAG par
+    automatisation) ; on rouvre quand un filtre de liste par propriétaire existera réellement.
+  `down` strict et `IF NOT EXISTS` sans lecture de schéma : règle générale de ./mod.sdd (arbitré par Sébastien le 2026-09-29), par
+    cohérence avec les migrations 001 à 003 — même comportement pour toutes les migrations
+    internes, quelle que soit leur ancienneté.
 
 Must not:
   Réécrire, renommer, déplacer ou dupliquer le @up ou le @down une fois cette spec approuvée : même
@@ -148,21 +153,14 @@ Tasks:
     2026-09-23 : huit tests verts nommés d'après les huit `Scenario` (sondes réelles, sous la feature
     `sqlx-sqlite` de `[dev-dependencies]` ratifiée ci-dessus en `Depends on`), validator PASS —
     zéro diagnostic clippy sur ./m20260923_000001_create_workflow_definitions.rs.
-  [?] `owner_id` ne porte aucun index, alors qu'un futur filtre de liste par propriétaire
-    (`AccessPolicy::OwnerOnly` configuré via `workflow::definition::configure_policy`,
-    ../workflow/definition.sdd) le lirait à chaque `list` filtrée. Contrat assumé (table
-    vraisemblablement petite, un DAG par automatisation) ou dette à corriger par une migration
-    suivante ?
-  [?] Même question que 001 sur `down` non idempotent et sur l'acquittement silencieux d'une table en
-    dérive (`IF NOT EXISTS` sans vérification de forme) : gèle-t-on ces deux contrats comme pour 001,
-    par cohérence, ou est-ce l'occasion de les corriger puisque ce fichier est neuf ? Une réponse
-    différente entre 001 (gelée) et 004 (neuve) introduirait une incohérence de comportement entre
-    migrations internes.
+  [x] `owner_id` sans index : contrat assumé (arbitré par Sébastien le 2026-09-29, `Must`).
+  [x] `down` strict et `IF NOT EXISTS` gelés comme 001 (arbitré par Sébastien le 2026-09-29, règle
+    générale de ./mod.sdd).
 
 Done when:
   Les huit `Scenario` sont chacun vérifiés par un test nommé distinct, jouables via la batterie de
     /tooling.sdd sous `--features workflow` sans base de données externe, `up` et `down` inchangés
-    depuis l'approbation, chaque `[?]` de `Tasks` tranché par Sébastien, et la spec approuvée par lui.
+    depuis l'approbation, chaque [arbitré 2026-09-29] de `Tasks` tranché par Sébastien, et la spec approuvée par lui.
   ../workflow/definition.sdd est approuvée avant ou avec cette spec — les cinq colonnes doivent
     correspondre exactement au `Model` qu'elle contractualise.
 
