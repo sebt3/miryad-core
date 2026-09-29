@@ -137,14 +137,16 @@ async fn send_http_request(
     let response = builder.body(body).send().await?;
 
     let status = response.status();
-    let mut response_builder = openidconnect::http::Response::builder().status(status);
-    if let Some(headers) = response_builder.headers_mut() {
-        headers.extend(response.headers().clone());
-    }
+    let headers = response.headers().clone();
     let body = response.bytes().await?.to_vec();
-    Ok(response_builder
-        .body(body)
-        .expect("MRD-AUTH-009: failed to build HTTP response from a valid status+headers"))
+    // Construction infaillible d'une `HttpResponse` depuis un statut et des en-têtes déjà validés
+    // par `reqwest` : `Response::new` puis mutateurs directs, plus d'`expect` sur un `Result`
+    // (purge `expect_used` de `tooling.sdd`, cf. `oidc.sdd` — le seul arrêt par panic du fichier
+    // est retiré, aucun n'est ajouté).
+    let mut http_response = HttpResponse::new(body);
+    *http_response.status_mut() = status;
+    http_response.headers_mut().extend(headers);
+    Ok(http_response)
 }
 
 /// Extrait le claim `groups` du payload d'un JWT déjà vérifié (signature/expiration validées en
@@ -153,12 +155,16 @@ async fn send_http_request(
 /// génériques pour un seul champ non-standard. Absent ou malformé → liste vide, pas une erreur
 /// (tous les fournisseurs/apps ne portent pas ce claim).
 fn extract_groups_claim(jwt: &str) -> Vec<String> {
-    let parts: Vec<&str> = jwt.split('.').collect();
-    if parts.len() != 3 {
-        return Vec::new();
-    }
     use base64::Engine;
-    let Ok(payload_json) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1]) else {
+
+    let parts: Vec<&str> = jwt.split('.').collect();
+    // Garde « JWT tri-segment » (`oidc.sdd`, scenario « JWT hors trois segments, liste vide ») :
+    // toute autre longueur rend la liste vide ; le motif remplace la garde `len != 3` suivie de
+    // l'indexation `parts[1]` (purge `indexing_slicing` de `tooling.sdd`).
+    let [_, payload_segment, _] = parts.as_slice() else {
+        return Vec::new();
+    };
+    let Ok(payload_json) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(*payload_segment) else {
         return Vec::new();
     };
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload_json) else {
@@ -176,6 +182,15 @@ fn extract_groups_claim(jwt: &str) -> Vec<String> {
 }
 
 impl OidcClient {
+    /// Construit le client depuis `OidcConfig` dans l'ordre figé par `oidc.sdd` : parse de
+    /// l'issuer, construction du client HTTP (CA validée), discovery du provider, puis parse du
+    /// callback.
+    ///
+    /// # Errors
+    ///
+    /// [`AuthError::Oidc`] dont la charge utile porte `MRD-AUTH-004` (issuer non parsable),
+    /// `MRD-AUTH-007`/`MRD-AUTH-008` (CA PEM invalide, client HTTP impossible), `MRD-AUTH-005`
+    /// (discovery ou JWKS injoignable) ou `MRD-AUTH-006` (callback non parsable).
     pub async fn new(config: &OidcConfig) -> Result<Self, AuthError> {
         let issuer_url = IssuerUrl::new(config.issuer_url.clone())
             .map_err(|e| AuthError::Oidc(format!("MRD-AUTH-004: invalid OIDC issuer URL: {e:?}")))?;

@@ -55,7 +55,9 @@ async fn list_users_handler(
     let pagination = Pagination::from_raw(params.page, params.per_page);
     let paginator = user::Entity::find().paginate(&auth.db, pagination.per_page);
     let totals = paginator.num_items_and_pages().await?;
-    let users = paginator.fetch_page(pagination.page - 1).await?;
+    // `query.sdd` borne `page >= 1` : `saturating_sub(1)` ne sature jamais, l'index rendu est
+    // exactement `page - 1` (purge `arithmetic_side_effects` de `tooling.sdd`).
+    let users = paginator.fetch_page(pagination.page.saturating_sub(1)).await?;
 
     let mut groups_by_user = groups_by_user(&auth.db, users.iter().map(|u| u.id)).await?;
 

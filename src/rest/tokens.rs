@@ -94,8 +94,10 @@ async fn list_tokens_handler(
         .filter(Column::Subject.eq(&principal.subject))
         .paginate(&auth.db, pagination.per_page);
     let totals = paginator.num_items_and_pages().await?;
+    // `query.sdd` borne `page >= 1` : `saturating_sub(1)` ne sature jamais, l'index rendu est
+    // exactement `page - 1` (purge `arithmetic_side_effects` de `tooling.sdd`).
     let items = paginator
-        .fetch_page(pagination.page - 1)
+        .fetch_page(pagination.page.saturating_sub(1))
         .await?
         .into_iter()
         .map(TokenSummary::from)
@@ -220,8 +222,8 @@ mod tests {
             .await
             .expect("router does not fail");
         assert_eq!(created.status(), StatusCode::OK);
-        let created_body = json_body(created).await;
-        let cleartext = created_body["token"].as_str().expect("token present").to_string();
+        let issued_json = json_body(created).await;
+        let cleartext = issued_json["token"].as_str().expect("token present").to_string();
         assert!(cleartext.starts_with("mrd_"));
 
         let listed = app
@@ -240,7 +242,7 @@ mod tests {
             new_entry.get("token").is_none(),
             "cleartext value must never be listed"
         );
-        assert_eq!(new_entry["id"], created_body["id"]);
+        assert_eq!(new_entry["id"], issued_json["id"]);
     }
 
     #[tokio::test]

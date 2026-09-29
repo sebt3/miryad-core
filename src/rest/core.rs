@@ -14,6 +14,8 @@ use crate::rest::RestEntity;
 use crate::rest::error::RestError;
 use crate::users::resolve_user;
 
+// rest/core.sdd `Must` : `E::PrimaryKey::iter()` ne peut être vide sous la bound PK `i32` — `expect` inatteignable compilable.
+#[allow(clippy::expect_used)]
 pub(crate) fn primary_key_column<E: RestEntity>() -> E::Column {
     E::PrimaryKey::iter()
         .next()
@@ -58,7 +60,9 @@ pub(crate) async fn list<E: RestEntity>(
     let pagination = Pagination::from_raw(page, per_page);
     let paginator = E::find().filter(condition).paginate(db, pagination.per_page);
     let totals = paginator.num_items_and_pages().await?;
-    let items = paginator.fetch_page(pagination.page - 1).await?;
+    // `query.sdd` borne `page >= 1` : `saturating_sub(1)` ne sature jamais, l'index rendu est
+    // exactement `page - 1` (purge `arithmetic_side_effects` de `tooling.sdd`).
+    let items = paginator.fetch_page(pagination.page.saturating_sub(1)).await?;
 
     Ok(PagedResult {
         items,

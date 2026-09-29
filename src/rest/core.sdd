@@ -38,10 +38,12 @@ References:
     taxonomie, parité de lecture des surfaces, règle tests ≥ scenarios
   /.specdd/bootstrap.project.md — contrat transverse @HookError, interdits du harnais, frontière
     par surface : ce fichier est partagé, il ne choisit de surface aucune
-  /tooling.sdd — dette stricte tracée : l’@expect de @rest::core::primary_key_column est un des
-    sites `expect_used` de production, la soustraction `pagination.page - 1` un des sites
-    `arithmetic_side_effects` ; la batterie court ici sous les huit combinaisons de features
-    (sept plus `workflow`, amendement 2026-09-23)
+  /tooling.sdd — dette stricte de ce fichier, traitée le 2026-09-29 (tâche A1, synthèse validator
+    PASS) : la soustraction `pagination.page - 1` est passée en @saturating_sub (jamais saturée sous
+    l'invariant `page >= 1` de ./../query.sdd, comportement identique) et l’@expect de
+    @rest::core::primary_key_column est couvert par un @allow(clippy::expect_used) commenté d'une
+    ligne citant la présente spec (inatteignable compilable, `Must`) ; la batterie court ici sous les
+    huit combinaisons de features (sept plus `workflow`, amendement 2026-09-23)
   ./../lib.sdd — @rest déclaré sans gating ; @rest::core n’est jamais visible hors de la crate
   ./mod.rs — contrat ./mod.sdd : possesseur de @RestEntity (PK unique @i32 assumée comme
     limitation), des handlers et de leurs statuts de succès `200`/`204`, premier appelant des cinq
@@ -187,10 +189,11 @@ Must:
     déclencher que sur un itérateur @E::PrimaryKey::iter vide, impossible sous la bound ValueType
     @i32 de @RestEntity ;
     @rest::core::mark_all_set itère @E::Column::iter de la même emprise.
-  Porter, sans en ajouter, la dette stricte déjà tracée à /tooling.sdd : @std::result::Result::expect
-    de @rest::core::primary_key_column (`expect_used`) et la soustraction `pagination.page - 1`
-    (`arithmetic_side_effects`, sans risque de underflow car @query borne `page >= 1`) ; la purge
-    suit le calendrier de /tooling.sdd.
+  Ne porter aucune dette stricte ouverte depuis le 2026-09-29 (tâche A1 /tooling.sdd) : la
+    soustraction est `pagination.page.saturating_sub(1)` (jamais saturée, @query borne `page >= 1`) ;
+    l'@expect de @rest::core::primary_key_column reste le seul arrêt potentiel du fichier, couvert
+    par un @allow(clippy::expect_used) commenté d'une ligne citant la présente spec — inatteignable
+    compilable ci-dessus, aucune autre infraction stricte ; la purge ne doit rien en ajouter.
   Rester silencieux et sans état : aucune trace @tracing à ce jour, aucun état partageable, aucune
     variable globale ; jamais @println!, @eprintln!, @dbg! ; @tracing est seul permis pour toute
     trace future (contrat transverse /.specdd/bootstrap.project.md).
@@ -357,7 +360,7 @@ Raises:
   Panics amont vérifiés, hors du contrôle du fichier : @ActiveModelTrait::set panic sur valeur
     @sea_orm::DbErr::Type (vérifié : @ActiveModelTrait::try_set → panic wrapper) quand la colonne
     @owner_column déclarée ne reçoit pas @sea_orm::Value::from(@i32) ; @expect de @rest::core::primary_key_column
-    (inatteignable compilable, dette `expect_used`) ; @sea_orm::PaginatorTrait::paginate avec
+    (inatteignable compilable, couvert par l'@allow commenté — `Must`) ; @sea_orm::PaginatorTrait::paginate avec
     `per_page 0` est impossible — @query::Pagination::from_raw tient `per_page >= 1`. La
     soustraction `page - 1` est protégée par `page >= 1` (./../query.sdd), et l’offset calculé
     pour @sea_orm::Paginator::fetch_page ne déborde plus jamais depuis le 2026-09-27 : `page` est
@@ -431,9 +434,11 @@ Handles:
     correspondant et traduite par @From<@RestError> de ./../mcp/error.rs en codes `-320xx`/`-32603`,
     sans qu’une politique soit consultée deux fois ; @graphql n’emprunte pas ./core.rs (asymétrie
     d’architecture instruite par ./../rbac.sdd, ./../graphql/hooks.sdd en attente).
-  Dette harnais du fichier : @expect de @rest::core::primary_key_column (`expect_used`, inatteignable
-    compilable) et `pagination.page - 1` (`arithmetic_side_effects`) — les deux comptés à
-    /tooling.sdd, aucune autre infraction stricte à la lecture du fichier.
+  Dette harnais du fichier : aucune ouverte depuis le 2026-09-29 (tâche A1 /tooling.sdd) — la
+    soustraction `pagination.page - 1` est éteinte (@saturating_sub, comportement identique sous
+    `page >= 1`) et l'@expect de @rest::core::primary_key_column (`expect_used`, inatteignable
+    compilable) est couvert par un @allow commenté d'une ligne citant la présente spec ; aucune autre
+    infraction stricte à la lecture du fichier.
 
 Example:
   # Ordre contractuel de @rest::core::create — l’ordre est le contrat.
@@ -564,8 +569,8 @@ Done when:
     @before_update/@before_delete du 2026-09-23, quatre nés de l’arbitrage du 2026-09-27) disposent
     chacun d’au moins un test nommé distinct vérifiant son `Then` (mapping `Tasks` tenu, zéro test
     inline dans ./core.rs aujourd’hui donc tout est à créer ou à rattacher explicitement), et la
-    batterie /tooling.sdd est verte sur chaque combinaison de features, ./core.rs ne portant aucune
-    dette stricte au-delà des deux sites connus.
+    batterie /tooling.sdd est verte sur chaque combinaison de features, ./core.rs ne portant plus
+    aucune dette stricte ouverte depuis le 2026-09-29.
   Les huit `[?]` originaux de `Tasks` — oracle d’existence, provisioning, `OwnerOnly` sans colonne,
     colonne hors `OwnerOnly`, TOCTOU, filtre non typé, page extrême, `201` de @create — sont tous
     arbitrés par Sébastien le 2026-09-27 et reflétés dans la spec (`Must`, `Handles`, `Raises`,

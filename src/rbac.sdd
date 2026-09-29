@@ -27,8 +27,8 @@ References:
     l'incohérence @AccessPolicy::OwnerOnly sans @resource::MiryadResource::owner_column comme une
     déclaration invalide (arbitré 2026-09-27) plutôt qu'un « comportement non défini » ; les
     décisions réelles de refus, y compris pour @rbac::can_create, sont ici
-  /tooling.sdd — dette stricte `unreachable` (×2) tracée globalement, dont les deux seules
-    occurrences de production sont dans ./rbac.rs, et matrice de batteries de vérification
+  /tooling.sdd — dette stricte `unreachable` : purgée dans ./rbac.rs le 2026-09-29 (tâche A1,
+    synthèse validator PASS), et matrice de batteries de vérification
   /docs/architecture.md — récit : admin est une convention de groupe sans rien de spécial au
     schéma, lecture par @users::group::is_admin seulement, limite acceptée des tokens API quant à
     la fraîcheur de membership
@@ -203,10 +203,12 @@ Raises:
   @sea_orm::DbErr levée par @users::group::is_admin ou @users::group::is_member : une table
     manquante, une connexion invalide ou une erreur serveur annule toute décision et remonte @Err
     au lieu d'un `false` silencieux.
-  Panic @std::unreachable!("handled above") dans @rbac::evaluate et dans @rbac::list_access, sur
-    une branche @AccessPolicy::Public déclarée inatteignable par les retours anticipés au-dessus —
-    jamais atteint par une exécution normale, mais comptabilisé dette stricte `unreachable` par
-    /tooling.sdd.
+  Aucun chemin de panic dans ./rbac.rs depuis la purge harnais du 2026-09-29 : les deux @std::unreachable!
+    de @rbac::evaluate et @rbac::list_access ont été remplacés — @rbac::evaluate enchaîne directement
+    la comparaison de colonne propriétaire après le retour anticipé de @rbac::static_verdict (seule
+    @AccessPolicy::OwnerOnly l'atteint), et @rbac::list_access répond @ListAccess::Unrestricted sur la
+    branche @AccessPolicy::Public, même verdict que le retour anticipé. Comportement identique,
+    verrouillé par les tests inline existants.
   Aucune erreur inventée par @rbac::can_create : @AccessPolicy::OwnerOnly sans colonne déclarée ne
     pose aucune exception, aucun avertissement, aucune panic — simplement un refus `false`,
     fail-closed cohérent avec @rbac::evaluate (arbitré 2026-09-27, `Must`).

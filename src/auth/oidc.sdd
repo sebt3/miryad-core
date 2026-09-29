@@ -48,9 +48,11 @@ References:
     `0.12.28` (@default-features = `false`, features @rustls-tls et @json, racines @webpki-roots),
     @base64 `0.22`, @serde_json, @async-trait, @tracing — aucune de ces dépendances optionnelle
     ni gateée par une feature
-  /tooling.sdd — ce fichier porte de la dette stricte recensée là : @expect_used sur l'@expect de
-    la construction de @HttpResponse (littéral `MRD-AUTH-009` comme message) et @indexing_slicing
-    sur `parts[1]` de @extract_groups_claim ; la purge ne doit rien en ajouter ici
+  /tooling.sdd — dette stricte de ce fichier, purgée le 2026-09-29 (tâche A1, synthèse validator
+    PASS) : l'@expect de la construction de @HttpResponse est devenu une reconstruction infaillible
+    (@HttpResponse::new + @status_mut + @headers_mut().extend), et `parts[1]` de
+    @extract_groups_claim est lu par le motif `let [_, payload_segment, _] = parts.as_slice()` à
+    repli explicite ; la purge ne doit rien en ajouter ici
   /src/lib.rs — `pub mod auth` inconditionnel ; l'exemption @cfg(test) de la famille
     panic/unwrap/indexation portée par la racine de crate couvre @MockOidcClient et le `mod tests`
 
@@ -178,8 +180,9 @@ Must not:
     `013`, ni approcher `014` à `016` : la taxonomie du fichier s'arrête à `004`..`011` en charge
     utile (`009` en traces et message de panic seulement) ; cookies et redirections de login
     sont le territoire ./mod.rs et ./cookie.rs, les tokens API celui de ./token.rs
-  Ajouter un chemin de panic en production : le seul arrêt existant est l'@expect de construction
-    de @HttpResponse (dette consignée /tooling.sdd) ; @send_http_request replie une méthode HTTP
+  Ajouter un chemin de panic en production : depuis la purge harnais du 2026-09-29 (tâche A1),
+    ./oidc.rs ne porte plus aucun arrêt par panic — la construction de @HttpResponse dans
+    @send_http_request est infaillible ; @send_http_request replie une méthode HTTP
     non parseable sur @reqwest::Method::GET par @unwrap_or — aucun nouveau @unwrap(), les lints
     @expect_used/@indexing_slicing ne doivent pas empirer
   Lire l'environnement, un fichier ou un chemin pour configurer la CA : le champ @ca_cert est un
@@ -200,7 +203,7 @@ Depends on:
     `connect_timeout`/`timeout` posés depuis @OidcConfig — arbitré 2026-09-27, plus de défaut
     `aucun timeout`) et @Certificate::from_pem ; @HttpRequest/@HttpResponse de
     @openidconnect::http (crate @http) convertis dans @send_http_request, repli @GET sur méthode
-    non parseable, @expect sur la construction de la réponse
+    non parseable, reconstruction infaillible de la réponse depuis la purge du 2026-09-29
   @std::time::Duration — type des deux nouveaux champs `connect_timeout`/`timeout` de @OidcConfig ;
     @std::sync::atomic::AtomicBool — signal de rotation JWKS exposé par @OidcClient (2026-09-27)
   `tracing-subscriber` (nouvelle dev-dependency, arbitrée 2026-09-27) — capture des événements
@@ -321,10 +324,13 @@ Raises:
     seule la cause « clé/JWKS manquante » est en outre captée pour armer le signal de rotation
     (arbitré 2026-09-27, `Must`, distinction par variant précis de @ClaimsVerificationError, pas
     par texte)
-  Panique hors contrat — l'@expect au message littéral `MRD-AUTH-009: failed to build HTTP
-    response from a valid status+headers` de @send_http_request : porteur du littéral `009` mais
-    panique, pas @AuthError ; dette @expect_used consignée /tooling.sdd, purge programmée par le
-    calendrier de /tooling.sdd sans faire disparaître `009` du message
+  Aucune panique dans ./oidc.rs depuis la purge harnais du 2026-09-29 : l'@expect de
+    @send_http_request au message littéral `MRD-AUTH-009: failed to build HTTP response from a
+    valid status+headers` a été remplacé par une reconstruction infaillible (@HttpResponse::new +
+    @status_mut + @headers_mut().extend — statut et en-têtes déjà validés en amont par @reqwest).
+    Le littéral `009` ne vit plus que sur les deux chemins d'échange, payload et traces, comme
+    `Must` et `Raises` le posent (arbitré par Sébastien le 2026-09-29 : la clause « sans faire
+    disparaître `009` du message » visait la taxonomie, pas le message de la dette)
 
 Handles:
   Discovery en deux temps (document puis JWKS via le transport privé @send_http_request) : une
@@ -602,7 +608,7 @@ Scenario: Claim groups non-array, liste vide
 Scenario: JWT hors trois segments, liste vide
   Given les trois entrées `not-a-jwt` (un segment), `a.b` (deux segments) et `a.b.c.d` (quatre segments)
   When @extract_groups_claim est appelé sur chacune
-  Then les trois réponses sont des @Vec vides : la garde `parts.len() != 3` les refuse toutes, y compris le cas quatre segments qui protège l'indexation de `parts[1]` (dette @indexing_slicing consignée /tooling.sdd)
+  Then les trois réponses sont des @Vec vides : la garde sur trois segments (motif `let [_, payload_segment, _] = parts.as_slice()` depuis la purge harnais du 2026-09-29, comportement identique à l'ancienne garde `parts.len() != 3`) les refuse toutes, y compris le cas quatre segments qui protège la lecture du payload
 
 Scenario: Mock de test sans réseau : URL statique, couples frais, échange volontairement paniquant
   Given @MockOidcClient (struct unitaire sous @cfg(test), impl @OidcClientTrait) construit par son

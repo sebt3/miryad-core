@@ -13,6 +13,11 @@ use crate::users::user;
 /// `record` doit déjà être chargé — cette fonction ne fait pas de requête pour le récupérer,
 /// elle évalue une politique contre un enregistrement en main (cf. feature 4 pour le filtrage de
 /// liste, hors-scope ici).
+///
+/// # Errors
+///
+/// Propage toute [`DbErr`] de [`is_admin`] ou [`is_member`] : une panne d'infrastructure n'est
+/// jamais dégradée en refus silencieux.
 pub async fn can_read<E>(
     db: &DatabaseConnection,
     user: &user::Model,
@@ -25,6 +30,13 @@ where
     evaluate::<E>(db, E::read_policy(), E::owner_column(), user, record).await
 }
 
+/// Évalue la politique d'écriture (`write_policy`) contre un enregistrement déjà chargé, même
+/// table de décision que [`can_read`] avec la politique lue en différence.
+///
+/// # Errors
+///
+/// Propage toute [`DbErr`] de [`is_admin`] ou [`is_member`] : une panne d'infrastructure n'est
+/// jamais dégradée en refus silencieux.
 pub async fn can_write<E>(
     db: &DatabaseConnection,
     user: &user::Model,
@@ -43,6 +55,11 @@ where
 /// est refusée (`false`) hors admin — fail-closed arbitré le 2026-09-27, cohérent avec
 /// `evaluate` et [`list_access`] sur la même combinaison ; le raccourci admin reste valable sur
 /// ce chemin (une seule requête [`is_admin`]). `Group`/`AdminOnly` filtrent selon l'appartenance.
+///
+/// # Errors
+///
+/// Propage toute [`DbErr`] de [`is_admin`] : une panne d'infrastructure n'est jamais dégradée
+/// en refus silencieux.
 pub async fn can_create<E>(db: &DatabaseConnection, user: &user::Model) -> Result<bool, DbErr>
 where
     E: MiryadResource,
@@ -78,8 +95,7 @@ where
 ///
 /// Propage toute [`DbErr`] de [`is_admin`] ou [`is_member`] : une panne d'infrastructure n'est
 /// jamais dégradée en refus silencieux.
-// `E` n'est utilisé qu'à l'appel (turbofish) pour épingler l'entité évaluée : signature imposée
-// par `rbac.sdd` `Exposes` (arbitré 2026-09-27).
+// `E` n'est utilisé qu'à l'appel (turbofish) pour épingler l'entité évaluée : signature imposée par `rbac.sdd` `Exposes` (arbitré 2026-09-27).
 #[allow(clippy::extra_unused_type_parameters)]
 pub(crate) async fn static_verdict<E>(
     db: &DatabaseConnection,
@@ -98,8 +114,9 @@ where
         return Ok(Some(true));
     }
     match policy {
-        // Déjà rendu par le retour anticipé au-dessus, avant toute requête — le répéter évite
-        // d'ajouter un troisième `unreachable!` à la dette stricte tracée par `tooling.sdd`.
+        // Déjà rendu par le retour anticipé au-dessus, avant toute requête — le répéter rend un
+        // verdict explicite plutôt qu'une panic (`unreachable` de la dette stricte purgée, cf.
+        // `tooling.sdd`).
         AccessPolicy::Public => Ok(Some(true)),
         AccessPolicy::AdminOnly => Ok(Some(false)),
         AccessPolicy::Group(name) => Ok(Some(is_member(db, user.id, name).await?)),
@@ -121,24 +138,21 @@ where
     E::Model: ModelTrait<Entity = E>,
 {
     // Partie statique (Public, raccourci admin, AdminOnly, Group) partagée avec `rest::core`
-    // via `static_verdict` ; seul `OwnerOnly` rend `None` et tombe dans le match ci-dessous.
+    // via `static_verdict` ; seul `OwnerOnly` rend `None` et atteint la comparaison ci-dessous
+    // (`rbac.sdd` `Must` : `evaluate` = `static_verdict` puis la seule comparaison de colonne
+    // propriétaire — la purge `unreachable` de `tooling.sdd` retire le match et sa panic).
     if let Some(verdict) = static_verdict::<E>(db, policy, user).await? {
         return Ok(verdict);
     }
 
-    match policy {
-        AccessPolicy::OwnerOnly => {
-            // Contrat feature 1 : `owner_column() == None` avec `OwnerOnly` est un comportement
-            // non défini au niveau du trait — on choisit de refuser plutôt que de risquer un
-            // accès non voulu (fail-closed).
-            let Some(col) = owner_column else {
-                return Ok(false);
-            };
-            let owner_value = record.get(col);
-            Ok(owner_value == sea_orm::Value::from(user.id))
-        }
-        _ => unreachable!("handled above"),
-    }
+    // Contrat feature 1 : `owner_column() == None` avec `OwnerOnly` est un comportement
+    // non défini au niveau du trait — on choisit de refuser plutôt que de risquer un
+    // accès non voulu (fail-closed).
+    let Some(col) = owner_column else {
+        return Ok(false);
+    };
+    let owner_value = record.get(col);
+    Ok(owner_value == sea_orm::Value::from(user.id))
 }
 
 /// Résultat de l'évaluation RBAC pour une opération de liste (feature 4) — contrairement à
@@ -156,6 +170,14 @@ pub enum ListAccess {
     Forbidden,
 }
 
+/// Restriction pour un listage, décidée sur `read_policy` seule : jamais un booléen, jamais
+/// l'exécution de la requête — `Unrestricted`, le filtre par propriétaire ou le refus avant
+/// toute construction de requête.
+///
+/// # Errors
+///
+/// Propage toute [`DbErr`] de [`is_admin`] ou [`is_member`] : une panne d'infrastructure n'est
+/// jamais dégradée en refus silencieux.
 pub async fn list_access<E>(db: &DatabaseConnection, user: &user::Model) -> Result<ListAccess, DbErr>
 where
     E: MiryadResource,
@@ -170,7 +192,10 @@ where
     }
 
     match policy {
-        AccessPolicy::Public => unreachable!("handled above"),
+        // Déjà rendu par le retour anticipé au-dessus, avant toute requête — le répéter rend un
+        // verdict explicite plutôt qu'une panic (`unreachable` de la dette stricte purgée, cf.
+        // `tooling.sdd`, même patron que `static_verdict`).
+        AccessPolicy::Public => Ok(ListAccess::Unrestricted),
         AccessPolicy::AdminOnly => Ok(ListAccess::Forbidden),
         AccessPolicy::Group(name) => {
             if is_member(db, user.id, name).await? {
