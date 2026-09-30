@@ -51,7 +51,11 @@ Must:
     @hex::encode(@Hmac::<@Sha256>::finalize) : HMAC-SHA256 (RFC 2104, FIPS 198-1) des octets UTF-8
     de la chaîne, clé par le poivre reçu en paramètre, rendue en hexadécimal minuscule (hex 0.4.3 :
     @encode vs @encode_upper vérifiés au source), `64` caractères (arbitré par Sébastien le
-    2026-09-27, remplace le SHA-256 nu — cf. `Purpose`, `Tasks`). @hash_token, @issue_token,
+    2026-09-27, remplace le SHA-256 nu — cf. `Purpose`, `Tasks`) ; depuis l'arbitrage du
+    2026-09-30 (option a, `Tasks`), @hash_token rend @Result<@String, @AuthError> : le refus de
+    @hmac::Mac::new_from_slice (infaillible en pratique, clé de longueur libre vérifiée source
+    hmac-0.12.1) devient @AuthError::Internal (`MRD-AUTH-018`) propagé par `?` dans @issue_token,
+    @validate_token et @ensure_token — plus d'@expect sous @allow. @hash_token, @issue_token,
     @validate_token et @ensure_token reçoivent désormais tous un `pepper: &str` supplémentaire ;
     @revoke_token est inchangée (aucun hachage, suppression par PK seule).
   Le secret clair ne quitte jamais @IssuedToken.token : il n'est écrit dans aucune colonne, et
@@ -157,8 +161,8 @@ Exposes:
     le 2026-09-27)
   @generate_token et @hash_token sont privés : leur contrat (format et empreinte) est vérifié par
     les `Scenario` via la surface publique, et @hash_token aussi par les tests qui recalculent
-    l'empreinte ; @hash_token(secret : &@str, pepper : &@str) -> @String (signature changée le
-    2026-09-27)
+    l'empreinte ; @hash_token(secret : &@str, pepper : &@str) -> @Result<@String, @AuthError>
+    (signature changée le 2026-09-27, mise à @Result le 2026-09-30 — arbitrage option a, `Tasks`)
   ./mod.rs ré-exporte les quatre fonctions et les deux types sur @crate::auth ; le fichier n'est
     pas @MiryadResource : hors des surfaces génériques REST/GraphQL/MCP par entité, il n'est lu
     que par @tokens_router (self-service), par l'extracteur @AuthPrincipal de ./dual.rs (schéma
@@ -217,6 +221,10 @@ Raises:
     finalisés avec Sébastien le 2026-09-27, cf. ./error.sdd) — @ensure_token quand
     l'empreinte de la valeur fournie existe déjà en base sous un `subject` différent de celui
     demandé : rejet explicite au lieu du no-op silencieux d'avant le 2026-09-27 (`Handles`, `Tasks`)
+  @AuthError::Internal (`MRD-AUTH-018`, `500` — arbitrée par Sébastien le 2026-09-30, option a) :
+    @hash_token quand @hmac::Mac::new_from_slice refusait la poivre — chemin infaillible en
+    pratique, @Err rendu par contrat ; propagé par `?` dans @issue_token, @validate_token et
+    @ensure_token, jamais par @revoke_token (aucun hachage)
   Aucune autre variante ne naît ici : @NotAuthenticated, @InvalidSession et @Oidc appartiennent
     aux autres flux de ./error.sdd
 
@@ -253,10 +261,12 @@ Handles:
     `subject` n'existe qu'au handler, la fonction @revoke_token est sans filtre
 
 Tasks:
-  [ ] Revue 2026-09-29 : @hash_token rend `Result<String, AuthError>` au lieu d'un `expect` sous
-    `#[allow(clippy::expect_used)]` (HMAC accepte toute longueur de clé, mais `tooling.sdd` exige
-    « pas un `#[allow]` ») ; propager le `?` dans @issue_token, @validate_token, @ensure_token —
-    variante et statut d'erreur à arbitrer (`Database` inadapté : à décider avant de coder).
+  [ ] Arbitré par Sébastien le 2026-09-30 (option a) : @hash_token rend `Result<String, AuthError>`
+    au lieu de l'@expect sous `#[allow(clippy::expect_used)]` — variante @AuthError::Internal
+    (`MRD-AUTH-018`, `500`, cf. ./error.sdd), propagation par `?` dans @issue_token, @validate_token
+    et @ensure_token ; l'@allow d'une ligne de ./token.rs disparaît avec son @expect. Un `Scenario`
+    « empreinte infaillible par contrat » n'a pas de sens testable (chemin inatteignable) : la
+    preuve est la signature @Result compilée et les appelants qui propagent, consignée en `Done when`.
   [ ] Note de release avant `1.0` : le passage SHA-256 → HMAC avec poivre invalide tous les tokens
     API déjà émis (les service accounts `ensure_token` se régénèrent seuls) — à consigner dans le
     changelog, aucun code.

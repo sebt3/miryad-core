@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-/// Erreurs d'authentification du module `auth` : neuf variantes portant chacune un code unique
+/// Erreurs d'authentification du module `auth` : dix variantes portant chacune un code unique
 /// `MRD-AUTH-NNN` dans son `Display`, rendues en `text/plain` par l'implémentation
 /// `IntoResponse` de ce fichier selon la table variante → statut (invariante, sans joker).
 /// Dérives `Debug` et `thiserror::Error` uniquement — ni `Clone` ni `PartialEq`.
@@ -51,6 +51,15 @@ pub enum AuthError {
     /// cette décoration.
     #[error("MRD-AUTH-016: database error: {0}")]
     Database(#[from] sea_orm::DbErr),
+    /// Variante tuple d'un `String`, code `MRD-AUTH-018`, rendue `500` — arrêt interne de la
+    /// crate, jamais une faute du client (variante arbitrée par Sébastien le 2026-09-30,
+    /// option a) : construite par `token::hash_token` quand `hmac::Mac::new_from_slice`
+    /// refuse le poivre — infaillible en pratique (HMAC accepte toute longueur de clé,
+    /// source hmac-0.12.1) mais le contrat rend un `Err` explicite plutôt que l'`expect`
+    /// sous `#[allow]` purgé. La charge utile `String` n'est pas une source : `Error::source`
+    /// vaut `None`, comme pour `Oidc`.
+    #[error("MRD-AUTH-018: internal error: {0}")]
+    Internal(String),
 }
 
 impl IntoResponse for AuthError {
@@ -67,7 +76,12 @@ impl IntoResponse for AuthError {
             AuthError::InvalidCallback | AuthError::CsrfMismatch => StatusCode::BAD_REQUEST,
             AuthError::Oidc(_) => StatusCode::BAD_GATEWAY,
             AuthError::TokenHashConflict => StatusCode::CONFLICT,
-            AuthError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            // `Database` et `Internal` (arbitrée 2026-09-30) partagent `500` dans la table de
+            // `Must` — groupées par `|` comme le groupe `401` ci-dessus : les variantes
+            // restent nommées, le match reste sans joker, une onzième variante interrompt
+            // toujours la compilation (`match_same_arms` interdit deux armures de corps
+            // identiques séparées).
+            AuthError::Database(_) | AuthError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, self.to_string()).into_response()
     }
@@ -192,6 +206,22 @@ mod tests {
         );
     }
 
+    /// `Scenario` rendu « HTTP 500 pour 018 » et littéral `Must` de la dixième variante
+    /// (arbitrée par Sébastien le 2026-09-30, option a) — patron `{0}` comme `Oidc`,
+    /// charge utile verbatim sans filtre ni troncature.
+    #[test]
+    fn display_018_internal_payload_verbatim() {
+        let rendered = AuthError::Internal("token hash construction failed".to_string()).to_string();
+        assert_eq!(
+            rendered,
+            "MRD-AUTH-018: internal error: token hash construction failed"
+        );
+        assert_eq!(
+            rendered.strip_prefix("MRD-AUTH-018: internal error: "),
+            Some("token hash construction failed")
+        );
+    }
+
     // ——— Rendu HTTP : table variante → statut exacte, corps = octets de la Display ———
 
     /// `Scenario` : « rendu HTTP 401 pour 001 ».
@@ -280,6 +310,22 @@ mod tests {
         );
     }
 
+    /// `Scenario` : « rendu HTTP 500 pour 018 » (dixième variante arbitrée par Sébastien le
+    /// 2026-09-30, option a) — arrêt interne de la crate, jamais une faute du client :
+    /// `500`, corps = octets exacts de la `Display` (préfixe `MRD-AUTH-018: internal error: `
+    /// puis charge utile verbatim, patron `{0}` comme `Oidc`), `Content-Type` texte.
+    #[tokio::test]
+    async fn http_render_018_internal_is_500() {
+        let (status, content_type, body) =
+            render(AuthError::Internal("token hash construction failed".to_string())).await;
+        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(content_type, TEXT_PLAIN);
+        assert_eq!(
+            &body[..],
+            b"MRD-AUTH-018: internal error: token hash construction failed"
+        );
+    }
+
     // ——— Conversion `#[from]` et contrat de `source` ———
 
     /// `Scenario` : « erreur `SeaORM` convertie par l'opérateur de propagation » —
@@ -300,11 +346,12 @@ mod tests {
     }
 
     /// `Scenario` : « source présente sur 016 seulement » — `#[from]` vaut
-    /// `#[source]` (thiserror-impl 2.0.20) ; les huit autres valent `None`,
-    /// `Oidc` et les trois variantes 2026-09-27 compris.
+    /// `#[source]` (thiserror-impl 2.0.20) ; les neuf autres valent `None`,
+    /// `Oidc`, les trois variantes 2026-09-27 et `Internal` (2026-09-30) compris —
+    /// la charge utile `String` d'`Internal` n'est pas une source, comme celle d'`Oidc`.
     #[test]
     fn source_is_some_on_database_only() {
-        let nine: [(AuthError, &str); 9] = [
+        let ten: [(AuthError, &str); 10] = [
             (AuthError::NotAuthenticated, "NotAuthenticated"),
             (AuthError::InvalidSession, "InvalidSession"),
             (AuthError::InvalidCallback, "InvalidCallback"),
@@ -314,8 +361,9 @@ mod tests {
             (AuthError::TokenExpired, "TokenExpired"),
             (AuthError::TokenHashConflict, "TokenHashConflict"),
             (database_boom(), "Database"),
+            (AuthError::Internal("x".to_string()), "Internal"),
         ];
-        for (err, name) in nine {
+        for (err, name) in ten {
             let source = std::error::Error::source(&err);
             if name == "Database" {
                 let db_err = source

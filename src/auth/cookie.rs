@@ -135,13 +135,31 @@ pub(crate) fn find_sealed_cookie(header: Option<&str>, name: &str, key: &Key) ->
 /// Claim `exp` du segment payload d'un JWT, lue par `serde_json` (arbitré 2026-09-27, unifié
 /// sur la technique de `oidc.rs::extract_groups_claim`) : décodage en base64 url-safe sans
 /// bourrage — un payload bourré est un `exp` illisible, pas une tolérance — puis
-/// désérialisation vers une structure minimale. Aucune indexation ni tranche de chaîne ici.
+/// désérialisation vers une structure minimale portant `exp: Option<f64>`. Aucune indexation
+/// ni tranche de chaîne ici.
+///
+/// Portillon d'entier exact (arbitré par Sébastien le 2026-09-30, option A′,
+/// `src/auth/cookie.sdd` `Must`) : JSON n'ayant qu'un seul type nombre, `1700000000` et
+/// `1.7e9` sont le même nombre ; la tolérance porte sur le seul format de sérialisation,
+/// jamais sur la valeur. La valeur `f` n'est retenue que si `f.is_finite() && f == f.trunc()
+/// && 0.0 <= f && f < 9007199254740992.0` (`2^53`, mantisse exacte de `f64`) ; un `f64` entier
+/// dans cette plage est la représentation bit-exacte du même entier timestamp — aucun arrondi,
+/// aucune troncature. `NaN`, infinis, fractions, négatifs et `>= 2^53` rendent `None`, donc
+/// `MRD-AUTH-002` par le chemin `ok_or` existant de la lecture et `Max-Age=0` à la pose.
+///
+/// Conversion sans `unsafe` (`to_int_unchecked` est proscrit par `unsafe_code = "forbid"`) :
+/// `as u64` sous la garde — la seule des deux conversions admises de la tâche B1a qui compile
+/// sur stable 1.97.1 (`u64::TryFrom<f64>` est instable, vérifié au compilateur).
+#[allow(clippy::float_cmp, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // portillon d'entier exact impose par `src/auth/cookie.sdd` `Must` (arbitre Sebastien 2026-09-30, option A') : la garde rend l'egalite et la conversion exactes, clippy pedantic ne peut pas la voir
 fn extract_exp_claim(jwt: &str) -> Option<u64> {
     use base64::Engine;
 
+    /// `2^53` : borne exclusive de la mantisse exacte de `f64` (portillon 2026-09-30).
+    const F64_EXACT_INTEGER_LIMIT: f64 = 9_007_199_254_740_992.0;
+
     #[derive(Deserialize)]
     struct ExpClaim {
-        exp: Option<u64>,
+        exp: Option<f64>,
     }
 
     let mut segments = jwt.split('.');
@@ -153,7 +171,19 @@ fn extract_exp_claim(jwt: &str) -> Option<u64> {
     let payload_json = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload)
         .ok()?;
-    serde_json::from_slice::<ExpClaim>(&payload_json).ok()?.exp
+    let exp = serde_json::from_slice::<ExpClaim>(&payload_json).ok()?.exp?;
+    // Portillon d'entier exact verbatim du `Must` : fini, égal à sa partie entière, dans
+    // `0.0..<2^53`. Sous cette garde, `f == f.trunc()` est un test d'appartenance exact (jamais
+    // une comparaison de valeurs mesurées) et `f as u64` est total et bit-exacte (pas de NaN,
+    // pas d'infini, pas de fraction, pas de négatif, `2^53 < u64::MAX`) — clippy ne peut pas
+    // le prouver et l'alternative stable `u64::try_from(f64)` n'existe pas (TryFrom<f64> pour
+    // les entiers est instable, vérifié sur 1.97.1), `to_int_unchecked` étant proscrit par
+    // `unsafe_code = "forbid"`. L'`#[allow]` de ces trois lints `pedantic`, cité en tête de
+    // fonction, est la voie autorisée par `tooling.sdd` (`Must not`, commentaire de
+    // justification citant la spec).
+    let exact_seconds =
+        exp.is_finite() && exp == exp.trunc() && (0.0..F64_EXACT_INTEGER_LIMIT).contains(&exp);
+    exact_seconds.then_some(exp as u64)
 }
 
 /// Chaîne littérale de retrait du cookie de session : valeur vide, `Max-Age=0`, mêmes attributs
@@ -206,6 +236,25 @@ mod tests {
             "fixture : le segment payload doit porter un bourrage `=`"
         );
         format!("header.{payload}.sig")
+    }
+
+    /// JWT tri-segment dont le payload JSON porte `"exp": <exp_json>` **verbatim** — notation
+    /// flottante JSON (`1.7e9`, `1700000000.5`, `-1`, `9007199254740993.0`, …) ou entière : la
+    /// clé du portillon d'entier exact (arbitrage 2026-09-30) porte sur le format sérialisé,
+    /// pas sur la valeur.
+    fn make_jwt_exp_json(exp_json: &str) -> String {
+        let payload =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp_json}}}"#));
+        format!("header.{payload}.sig")
+    }
+
+    /// Scelle à la main (sans `build_set_cookie`) un payload `SessionPayload` à quatre clés
+    /// porteur de l'`id_token` donné, sous `key`, et rend la ligne `miryad_session=<scellé>`.
+    fn seal_session_line(id_token: &str, key: &Key) -> String {
+        let clear = format!(
+            r#"{{"id_token":"{id_token}","subject":"user-123","email":"user-123@example.com","preferred_username":"alice"}}"#
+        );
+        seal_raw(SESSION_COOKIE_NAME, &clear, key)
     }
 
     /// JWT tri-segment dont le payload encodé ne porte que `sub`, aucune claim `exp`.
@@ -667,6 +716,101 @@ mod tests {
             "`extract_exp_claim` ne trouve aucune claim, `ok_or` exige la claim : {:?}",
             result.err()
         );
+    }
+
+    /// `Scenario` : « Lecture — `exp` flottant exactement entier est accepté, aller-retour
+    /// bit-exact » (arbitré 2026-09-30, option A′). Le `Scenario` écrit `"exp": 1.7e9` —
+    /// l'entier `1700000000`, désormais passé (nous sommes en 2026) ; sa clause « postérieur à
+    /// l'heure courante de la fixture » est verrouillée à `now + 3600` rendu en notation
+    /// flottante (`<n>.0` = représentation bit-exacte de l'entier, tolérance de format seul),
+    /// et le passage par le littéral `1.7e9` — rouge avant le portillon, rejeté en
+    /// `MRD-AUTH-002` par le parse `Option<u64>` — est verrouillé par
+    /// `lecture_exp_flottant_1_7e9_rejeté_comme_expire_apres_le_portillon`.
+    #[test]
+    fn lecture_exp_flottant_exactement_entier_accepte_aller_retour_bit_exact() {
+        let key = test_key();
+        let exp = now_secs() + 3600;
+        let float_identity = identity_with(make_jwt_exp_json(&format!("{exp}.0")));
+        let int_identity = identity_with(make_jwt(exp));
+
+        let set_float = build_set_cookie(&float_identity, &key, false);
+        let pair_float = cookie_pair(&set_float);
+        // La pose relit l'exp par le même extract_exp_claim : le portillon s'y applique aussi.
+        // Avant l'arbitrage 2026-09-30, le flottant était illisible et la pose rendait
+        // silencieusement `Max-Age=0` ; après, Max-Age porte l'intervalle réel — contrat voulu,
+        // cohérent lecture/pose (consigné dans le rapport B1a).
+        assert_set_cookie_full(
+            &set_float,
+            &pair_float,
+            false,
+            exp - now_secs() - 1,
+            exp - now_secs(),
+        );
+
+        let restored = extract_session(Some(&pair_float), &key)
+            .expect("un f64 entier dans 0..<2^53 est la valeur temporelle exacte");
+        assert_eq!(restored.id_token, float_identity.id_token);
+        assert_eq!(restored.subject, "user-123");
+        assert_eq!(restored.email, float_identity.email);
+        assert_eq!(restored.preferred_username, Some("alice".to_string()));
+
+        // « identique à celui du même payload écrit `"exp": <n>` » : lecture integer seule,
+        // puis lecture des deux identités sous un en-tête combiné — première occurrence
+        // retenue (contrat `find_map` de `Handles`), la seconde est rendue intacte par la
+        // dédup, pas écrasée.
+        let pair_int = cookie_pair(&build_set_cookie(&int_identity, &key, false));
+        let restored_int = extract_session(Some(&pair_int), &key)
+            .expect("la même valeur écrite en entier lit à l'identique");
+        let both = format!("{pair_float}; {pair_int}");
+        let restored_first = extract_session(Some(&both), &key)
+            .expect("float-written id_token is the first occurrence of the session name");
+        assert_eq!(restored_first.id_token, float_identity.id_token);
+        assert_eq!(restored.subject, restored_int.subject);
+        assert_eq!(restored.email, restored_int.email);
+        assert_eq!(restored.preferred_username, restored_int.preferred_username);
+    }
+
+    /// Contrôle positif du littéral exact du `Scenario`, `"exp": 1.7e9` = `1700000000`. Cette
+    /// valeur est passée à la date de la fixture (2026) : le texte du `Scenario` la dit
+    /// « postérieure à l'heure courante », l'affirmation est devenue fausse — écart consigné
+    /// dans le rapport B1a, la sémantique du Scenario est verrouillée par le test précédent
+    /// (`now + 3600` en notation flottante, rouge avant portillon). Ce verrou-ci prouve que le
+    /// littéral traverse le portillon comme une valeur **lisible** : après l'arbitrage, la pose
+    /// lit `1700000000` (passé) et la pose comme la lecture rendent leur repli/`MRD-AUTH-002`
+    /// d'horloge (`exp <= now`), non plus une erreur de désérialisation. Non discriminant en
+    /// sortie (avant : parse refusé, après : horloge — même variante observable, même
+    /// `Max-Age=0`), consigné comme tel ; le rouge attendu est porté par le test précédent.
+    #[test]
+    fn lecture_exp_flottant_1_7e9_lisible_puis_rejete_par_horloge() {
+        let key = test_key();
+        let identity = identity_with(make_jwt_exp_json("1.7e9"));
+        let set_cookie = build_set_cookie(&identity, &key, false);
+        let pair = cookie_pair(&set_cookie);
+
+        assert_set_cookie_full(&set_cookie, &pair, false, 0, 0);
+        let result = extract_session(Some(&pair), &key);
+        assert!(
+            matches!(result, Err(AuthError::InvalidSession)),
+            "1.7e9 = 1700000000 est une valeur lisible, rejetée par l'horloge : {result:?}"
+        );
+    }
+
+    /// `Scenario` : « Lecture — `exp` flottant sans valeur temporelle exacte rend
+    /// `MRD-AUTH-002` » (arbitré 2026-09-30) — fraction, négatif et `>= 2^53` refusés par le
+    /// portillon, aucune troncature silencieuse. Ces trois cas pouvaient déjà passer avant
+    /// l'arbitrage (le parse `Option<u64>` refusait tout flottant) : verrouillés contre la
+    /// régression d'une tolérance mal calibrée.
+    #[test]
+    fn lecture_exp_flottant_sans_valeur_temporelle_exacte_rend_mrd_auth_002() {
+        let key = test_key();
+        for exp_json in ["1700000000.5", "-1", "9007199254740993.0"] {
+            let pair = seal_session_line(&make_jwt_exp_json(exp_json), &key);
+            let result = extract_session(Some(&pair), &key);
+            assert!(
+                matches!(result, Err(AuthError::InvalidSession)),
+                "`exp` {exp_json} hors du portillon (fraction, négatif, au-delà de la mantisse) : {result:?}"
+            );
+        }
     }
 
     /// `Scenario` : « Lecture — payload de JWT bourré rend `MRD-AUTH-002` » — `URL_SAFE_NO_PAD`

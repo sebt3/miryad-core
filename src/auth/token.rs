@@ -67,13 +67,19 @@ fn generate_token() -> String {
     )
 }
 
-fn hash_token(token: &str, pepper: &str) -> String {
-    // Poivre HMAC obligatoire (`src/auth/token.sdd` `Must`, arbitré 2026-09-27) : `Mac::new_from_slice` est infaillible pour HMAC (clé de longueur libre, source hmac 0.12.1), le `expect` ne peut pas se déclencher.
-    #[allow(clippy::expect_used)]
-    let mut mac =
-        Hmac::<Sha256>::new_from_slice(pepper.as_bytes()).expect("HMAC-SHA256 accepts any key length");
+/// Empreinte du secret : HMAC-SHA256 des octets UTF-8 de `token` (préfixe `mrd_` inclus),
+/// clé par le poivre `pepper`, rendue en hexadécimal minuscule (`64` caractères).
+///
+/// Retour : `Result<String, AuthError>` depuis l'arbitrage de Sébastien du 2026-09-30
+/// (option a) — le refus de `Mac::new_from_slice` (infaillible en pratique, clé de longueur
+/// libre vérifiée source hmac-0.12.1) devient `AuthError::Internal` (`MRD-AUTH-018`) de charge
+/// utile littérale `token hash construction failed`, propagé par `?` par les appelants ;
+/// remplace l'`expect` sous `#[allow(clippy::expect_used)]`, purgé.
+fn hash_token(token: &str, pepper: &str) -> Result<String, AuthError> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(pepper.as_bytes())
+        .map_err(|_| AuthError::Internal("token hash construction failed".to_string()))?;
     mac.update(token.as_bytes());
-    hex::encode(mac.finalize().into_bytes())
+    Ok(hex::encode(mac.finalize().into_bytes()))
 }
 
 /// Émet un token API : secret généré, seule l'empreinte HMAC-SHA256 poivrée est persistée ;
@@ -84,6 +90,10 @@ fn hash_token(token: &str, pepper: &str) -> String {
 ///
 /// `AuthError::Database` (`MRD-AUTH-016`) — toute panne de base sur l'`insert` de la ligne
 /// (erreur remontée nue du `DbErr` via `From<sea_orm::DbErr>`).
+///
+/// `AuthError::Internal` (`MRD-AUTH-018`) — refus du poivre par `hash_token`
+/// (`hmac::Mac::new_from_slice`) : chemin infaillible en pratique, `Err` rendu par contrat
+/// (arbitré 2026-09-30, `src/auth/token.sdd` `Raises`).
 pub async fn issue_token(
     db: &DatabaseConnection,
     subject: &str,
@@ -95,7 +105,7 @@ pub async fn issue_token(
     let active = ActiveModel {
         subject: Set(subject.to_string()),
         name: Set(name.to_string()),
-        token_hash: Set(hash_token(&token, pepper)),
+        token_hash: Set(hash_token(&token, pepper)?),
         created_at: Set(Utc::now()),
         expires_at: Set(expires_at),
         last_used_at: Set(None),
@@ -126,13 +136,17 @@ pub async fn issue_token(
 /// `AuthError::Database` (`MRD-AUTH-016`) — panne de base sur la lecture qui décide du résultat.
 /// Toute autre `DbErr` sur l'`UPDATE` de `last_used_at` est absorbée sans erreur : le secret était
 /// valide, l'horodatage est best-effort.
+///
+/// `AuthError::Internal` (`MRD-AUTH-018`) — refus du poivre par `hash_token`
+/// (`hmac::Mac::new_from_slice`) : chemin infaillible en pratique, `Err` rendu par contrat
+/// (arbitré 2026-09-30, `src/auth/token.sdd` `Raises`).
 pub async fn validate_token(
     db: &DatabaseConnection,
     token: &str,
     pepper: &str,
 ) -> Result<AuthPrincipal, AuthError> {
     let record = Entity::find()
-        .filter(Column::TokenHash.eq(hash_token(token, pepper)))
+        .filter(Column::TokenHash.eq(hash_token(token, pepper)?))
         .one(db)
         .await?
         .ok_or(AuthError::InvalidToken)?;
@@ -193,6 +207,10 @@ pub async fn revoke_token(db: &DatabaseConnection, id: i32) -> Result<(), AuthEr
 ///
 /// `AuthError::Database` (`MRD-AUTH-016`) — panne de base sur la prélecture sur `token_hash` ou
 /// sur l'`insert` (collision `UNIQUE` `token_hash` comprise).
+///
+/// `AuthError::Internal` (`MRD-AUTH-018`) — refus du poivre par `hash_token`
+/// (`hmac::Mac::new_from_slice`) : chemin infaillible en pratique, `Err` rendu par contrat
+/// (arbitré 2026-09-30, `src/auth/token.sdd` `Raises`).
 pub async fn ensure_token(
     db: &DatabaseConnection,
     subject: &str,
@@ -201,7 +219,7 @@ pub async fn ensure_token(
     expires_at: Option<DateTimeUtc>,
     pepper: &str,
 ) -> Result<(), AuthError> {
-    let hash = hash_token(token, pepper);
+    let hash = hash_token(token, pepper)?;
     let existing = Entity::find().filter(Column::TokenHash.eq(&hash)).one(db).await?;
     if let Some(existing) = existing {
         if existing.subject != subject {
@@ -390,7 +408,12 @@ mod tests {
             .await
             .expect("issuing succeeds");
 
-        assert_ne!(issued.token, hash_token(&issued.token, PEPPER));
+        assert_ne!(
+            issued.token,
+            // `hash_token` rend `Result` depuis l'arbitrage 2026-09-30 — `expect` permis
+            // sous `cfg(test)` (exemption de la famille stricte portée par `src/lib.rs`).
+            hash_token(&issued.token, PEPPER).expect("hash_token succeeds for any pepper"),
+        );
 
         let before = Entity::find_by_id(issued.id)
             .one(&db)
