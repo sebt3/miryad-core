@@ -70,6 +70,9 @@ impl From<RestError> for McpError {
             RestError::Database(e) => McpError::Database(e),
             RestError::Application(e) => McpError::Application(e),
             RestError::Internal(msg) => McpError::Internal(msg),
+            // Arbitré 2026-09-29 (`mcp/error.sdd`) : l'entrée invalide de la crate est une
+            // entrée invalide du client en JSON-RPC — charge utile `String` déplacée intacte.
+            RestError::InvalidInput(msg) => McpError::InvalidParams(msg),
         }
     }
 }
