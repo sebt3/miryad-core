@@ -538,10 +538,9 @@ mod tests {
         let (status, _headers, body) = serve(app(test_state(db)), get_request(&token)).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         let raw = String::from_utf8(body).expect("utf-8");
-        // Écart spec↔code consigné au rapport : me.sdd `Raises` attend le préfixe
-        // `MRD-REST-003: database error: ` SUIVI du Display brut du DbErr ; l'arbitrage
-        // « 500 génériques » de rest/error.rs (2026-09-29, fichier gelé pour cette tâche)
-        // ne rend que le code, sans le détail. Le verrou porte le préfixe réellement rendu.
+        // Corps 500 générique (arbitré par Sébastien le 2026-09-29, ./error.sdd) : seul
+        // `MRD-REST-003: database error` sort sur le fil, la Display complète du DbErr
+        // ne vit que dans la trace `error!` — contrat amendé dans me.sdd le 2026-10-01.
         assert!(
             raw.starts_with("MRD-REST-003: database error"),
             "c'est resolve_user qui échoue dans le handler : {raw}"

@@ -191,6 +191,7 @@ mod tests {
             database_boom(),
             RestError::Application(HookError::new("hooked")),
             RestError::Internal("upstream exploded".to_string()),
+            RestError::InvalidInput("bad input".to_string()),
         ];
         let mut database_checked = false;
         for err in &errors {
