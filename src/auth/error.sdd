@@ -257,10 +257,13 @@ Handles:
     /src/graphql/handler.sdd (gelé) et /src/mcp/handler.sdd (actif, à traiter séparément)
 
 Tasks:
-  [ ] Quatrième variante arbitrée par Sébastien le 2026-09-30 (option a, chantier ./token.sdd
+  [x] Quatrième variante arbitrée par Sébastien le 2026-09-30 (option a, chantier ./token.sdd
     `Tasks`) : @AuthError::Internal (@String, `MRD-AUTH-018: internal error: {0}`, `500`,
     @Error::source @None) — arrêt interne de la crate, émis par @hash_token et propagé par `?` ;
-    le match de @into_response et les `Scenario` de rendu passent à dix variantes.
+    le match de @into_response et les `Scenario` de rendu passent à dix variantes. Réalisé
+    2026-09-30 (vague B1, validator PASS) : variante + match groupé nommément `Database(_) |
+    Internal(_)`, deux `Scenario` ci-dessus verrouillés par
+    `display_018_internal_payload_verbatim` et `http_render_018_internal_is_500`.
   [ ] Troisième variante ajoutée sur arbitrage en session avec Sébastien (2026-09-27) :
     @AuthError::TokenHashConflict (`MRD-AUTH-017`, `409` @StatusCode::CONFLICT, variante unitaire,
     littéral `MRD-AUTH-017: token hash already provisioned for another subject`) — émise par
@@ -286,19 +289,16 @@ Tasks:
   [x] Asymétrie d'enveloppe GraphQL/MCP : confirmée hors du périmètre de ce fichier (2026-09-27,
     `Must`, `Handles`) — fix éventuel dans /src/graphql/handler.sdd (gelé, prototype) et
     /src/mcp/handler.sdd (surface active, à traiter dans un futur batch MCP).
-  [x] Convertir les 20 `Scenario` (14 originaux, 4 nés des deux variantes `400`, 2 nés de
-    @AuthError::TokenHashConflict) en au moins 20
-    tests distincts nommés dans le `mod tests` `#[cfg(test)]` inline de ./error.rs : le fichier
-    compte zéro test inline à ce jour ; écarts à couvrir intégralement, les 5 tests siblings qui
-    affirment déjà un statut (./middleware.rs un `401`, ./dual.rs deux `401`, ./mod.rs deux `502`
-    — ces deux derniers à réécrire en `400` une fois les nouvelles variantes câblées, `Tasks`
-    précédente) n'affirment ni le corps, ni le code `MRD-*`, ni le `Content-Type` et n'exercent pas
-    le contrat de ce fichier ; les huit tests de rendu HTTP tournent sous `#[tokio::test]` en
-    lisant le corps avec @axum::body::to_bytes (dev-dependencies déjà présentes via les tests de
-    ./mod.rs) — le contrat ne déborde pas du fichier, aucun test d'intégration séparé requis
+  [x] Convertir les 22 `Scenario` (14 originaux, 4 nés des deux variantes `400`, 2 nés de
+    @AuthError::TokenHashConflict, 2 nés de @AuthError::Internal le 2026-09-30) en au moins 22
+    tests distincts nommés dans le `mod tests` `#[cfg(test)]` inline de ./error.rs — conversion
+    réalisée par vagues (017 puis 018) : le fichier porte ses tests inline, dont les dix tests de
+    rendu HTTP sous `#[tokio::test]` lisant le corps avec @axum::body::to_bytes
+    (dev-dependencies déjà présentes via les tests de ./mod.rs) — le contrat ne déborde pas du
+    fichier, aucun test d'intégration séparé requis
 
 Done when:
-  Les 20 `Scenario` ont chacun au moins un test nommé distinct et vert dans le `mod tests` de
+  Les 22 `Scenario` ont chacun au moins un test nommé distinct et vert dans le `mod tests` de
     ./error.rs, sur features par défaut comme sur `--no-default-features` (fichier inconditionnel)
   La table variante → code → statut → corps → `Content-Type` et la distinction de @Error::source
     sont affirmées par les tests sans réinterprétation : assertion par chaîne exacte, pas de
@@ -434,4 +434,16 @@ Scenario: rendu HTTP 409 pour 017
   When @IntoResponse::into_response est appelée
   Then le statut est `409` (arbitré en session avec Sébastien le 2026-09-27)
   And le corps lu par @axum::body::to_bytes est exactement `MRD-AUTH-017: token hash already provisioned for another subject`
+  And l'en-tête @CONTENT_TYPE vaut `text/plain; charset=utf-8`
+
+Scenario: Display 018 Internal charge utile verbatim
+  Given l'erreur @AuthError::Internal construite avec la charge utile `token hash construction failed`
+  When la @Display est évaluée par `to_string`
+  Then la chaîne renvoyée est exactement `MRD-AUTH-018: internal error: token hash construction failed`
+
+Scenario: rendu HTTP 500 pour 018
+  Given l'erreur @AuthError::Internal avec la charge utile `token hash construction failed`
+  When @IntoResponse::into_response est appelée
+  Then le statut est `500` (arbitré par Sébastien le 2026-09-30, option a)
+  And le corps lu par @axum::body::to_bytes est exactement `MRD-AUTH-018: internal error: token hash construction failed`
   And l'en-tête @CONTENT_TYPE vaut `text/plain; charset=utf-8`

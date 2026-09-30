@@ -398,9 +398,12 @@ Tasks:
     dépendances normales de la crate depuis le poivre de ./token.sdd, pas de nouveau crate de dev
     pour ça) ; capture des traces @tracing par `tracing-subscriber` en dev-dependency, plus fiable
     qu'une lecture statique.
-  [x] Convertir les 31 `Scenario` (24 originaux, 7 nés de l'arbitrage du 2026-09-27 : PKCE
-    divergent, deux timeouts, défauts de timeout, signal de rotation, mock configurable) en au
-    moins 31 tests nommés distincts du `mod tests` `#[cfg(test)]` de ./oidc.rs : les 3 tests inline
+  [x] Convertir les 32 `Scenario` (24 originaux, 7 nés de l'arbitrage du 2026-09-27 : PKCE
+    divergent, deux timeouts, défauts de timeout, signal de rotation, mock configurable ; 1 né le
+    2026-09-30 : client public déporté depuis ./config.sdd, verrouillé par
+    `public_client_exchanges_code_without_any_authorization_header` avec le @MockIdP étendu à la
+    capture d'en-tête) en au moins 32 tests nommés distincts du `mod tests` `#[cfg(test)]` de
+    ./oidc.rs : les 3 tests inline
     existants couvrent les `Scenario` 21 et 22 et le seul cas `not-a-jwt` du `Scenario` 23 ; restent
     donc ≥28 tests à écrire — `#[test]` purs pour 004/007, `#[tokio::test]` pour les parcours
     mock-IdP (005, 006, URL, échanges, timeouts, signal de rotation, mock en `catch_unwind` pour

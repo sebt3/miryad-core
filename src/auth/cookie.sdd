@@ -300,8 +300,9 @@ Tasks:
     sont prouvées mortes par lecture du code source amont (`cookie`/`base64`), une injection
     d’horloge pour ce seul fichier serait une complexité architecturale sans bénéfice réel ; aucun
     changement, restent non testées et documentées comme telles en `Handles`.
-  [x] Convertir les 22 `Scenario` en au moins 22 tests nommés distincts (20 originaux, dont un
-    reformulé pour `secure: true`, plus les deux nés de l’arbitrage du 2026-09-27 sur `secure`),
+  [x] Convertir les 24 `Scenario` en au moins 24 tests nommés distincts (20 originaux, dont un
+    reformulé pour `secure: true`, plus les deux nés de l’arbitrage du 2026-09-27 sur `secure`,
+    plus les deux nés de l’arbitrage flottant A′ du 2026-09-30),
     dans le `mod tests` `#[cfg(test)]` inline de ./cookie.rs (le contrat ne déborde pas du fichier :
     @build_set_cookie, @cookie::CookieJar et @base64 suffisent à construire chaque entrée, y compris
     la valeur pending transplantée et le JSON non valide chiffré) ; les 4 tests inline actuels
@@ -312,7 +313,7 @@ Tasks:
     (`secure: bool`) des deux fonctions
 
 Done when:
-  22 tests nommés distincts verts, un par `Scenario`, sur features par défaut comme sur
+  24 tests nommés distincts verts, un par `Scenario`, sur features par défaut comme sur
     `--no-default-features` (fichier sans gate de feature)
   Les quatre chaînes `Set-Cookie` (pose et retrait, `secure: true` et `secure: false`) sont
     affirmées chaîne entière — nom, ordre des attributs, présence/absence de `Secure`, absence de

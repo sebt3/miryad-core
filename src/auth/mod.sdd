@@ -291,11 +291,13 @@ Handles:
     toute trace du module se limite aux deux @tracing citées en `Must`.
 
 Tasks:
-  [ ] `Secure` sur le cookie pending (revue 2026-09-29) : appliquer `MiryadAuthState::secure_cookies`
+  [x] `Secure` sur le cookie pending (revue 2026-09-29) : appliquer `MiryadAuthState::secure_cookies`
     à la pose et au retrait de `miryad_oidc_pending` (mêmes règles que la session, `SameSite=Lax`
-    conservé — retour cross-site de l'IdP). Spec amendée le 2026-10-01 : attributs littéraux de
-    `Must`/`Returns` et les deux `Scenario` portent désormais le `Secure` conditionnel — reste
-    l'implémentation et un test par valeur de `secure`.
+    conservé — retour cross-site de l'IdP). Spec amendée le 2026-09-30 : attributs littéraux de
+    `Must`/`Returns` et les deux `Scenario` portent le `Secure` conditionnel. Réalisé 2026-09-30
+    (vague B1, validator PASS) : `; Secure` inséré après `HttpOnly` à la pose (`handler_login`) et
+    à la purge (`handler_callback` succès) selon `secure_cookies`, motif identique à
+    @cookie::build_set_cookie ; un test par valeur × pose/purge, chaînes complètes affirmées.
   [ ] Garde de montage OwnerOnly-sans-colonne : voir ./../rest/mod.sdd (`assert!` plutôt que
     `#[allow(clippy::panic)]`) — pas de changement ici.
   [x] Élargir @MockOidcClient pour rendre le callback réussi testable (arbitré par Sébastien le

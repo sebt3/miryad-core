@@ -261,12 +261,15 @@ Handles:
     `subject` n'existe qu'au handler, la fonction @revoke_token est sans filtre
 
 Tasks:
-  [ ] Arbitré par Sébastien le 2026-09-30 (option a) : @hash_token rend `Result<String, AuthError>`
+  [x] Arbitré par Sébastien le 2026-09-30 (option a) : @hash_token rend `Result<String, AuthError>`
     au lieu de l'@expect sous `#[allow(clippy::expect_used)]` — variante @AuthError::Internal
     (`MRD-AUTH-018`, `500`, cf. ./error.sdd), propagation par `?` dans @issue_token, @validate_token
     et @ensure_token ; l'@allow d'une ligne de ./token.rs disparaît avec son @expect. Un `Scenario`
     « empreinte infaillible par contrat » n'a pas de sens testable (chemin inatteignable) : la
     preuve est la signature @Result compilée et les appelants qui propagent, consignée en `Done when`.
+    Réalisé 2026-09-30 (vague B1, validator PASS) : signature `-> @Result<@String, @AuthError>`,
+    @map_err en @AuthError::Internal de charge utile `token hash construction failed`, `?` aux
+    trois appelants, @allow/@expect purgés, @revoke_token intact, docs `# Errors` à jour.
   [ ] Note de release avant `1.0` : le passage SHA-256 → HMAC avec poivre invalide tous les tokens
     API déjà émis (les service accounts `ensure_token` se régénèrent seuls) — à consigner dans le
     changelog, aucun code.

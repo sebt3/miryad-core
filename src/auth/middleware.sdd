@@ -191,14 +191,15 @@ Tasks:
     (2026-09-27) — c'est la raison d'être de cet extracteur face à @AuthPrincipal, pas une
     divergence accidentelle à refermer. Si @AuthUser consultait aussi `Authorization`, il
     deviendrait un doublon de @AuthPrincipal et perdrait sa raison d'être.
-  [ ] Convertir les 11 `Scenario` ci-dessous en au moins 11 tests Rust distincts nommés dans le
+  [x] Convertir les 11 `Scenario` ci-dessous en au moins 11 tests Rust distincts nommés dans le
     `#[cfg(test)] mod tests` inline de ./middleware.rs — deux tests inline existent :
     @protected_without_cookie_returns_401 n'affirme que le statut `401` sans le corps ni le code
     `MRD-AUTH-001`, @protected_with_valid_session_passes_and_exposes_subject n'affirme @subject
     sans @email ni @id_token : les achever (corps exact, trois champs) et écrire les huit
     manquants — dépendances de test déjà en place (@tokio::test, @oneshot de @tower,
     @MockDatabase de @sea_orm, @Key de @cookie). Le contrat ne déborde pas du fichier, aucune
-    crate d'intégration séparée requise.
+    crate d'intégration séparée requise. Réalisé 2026-09-30 (vague B1, validator PASS) : les 11
+    `Scenario` ont leur test nommé distinct vert, production inchangée (mod tests uniquement)
 
 Done when:
   Les 11 `Scenario` (10 originaux, 1 nouveau sur `Debug`) ont chacun au moins un test nommé

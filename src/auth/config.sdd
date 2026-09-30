@@ -233,7 +233,12 @@ Tasks:
     @OidcConfig ; toute URL d'émetteur des scenarios finit en `.invalid` (RFC 6761 : TLD jamais
     résolu, aucun endpoint public touché) ; chaque test runtime assertit le préfixe exact du code
     `MRD-AUTH-NNN` porté par la @Display de @AuthError et l'absence de tout autre code ; le contrat
-    ne déborde pas du fichier, aucune crate d'intégration séparée n'est nécessaire
+    ne déborde pas du fichier, aucune crate d'intégration séparée n'est nécessaire. Réalisé
+    2026-09-30 (vague B1, validator PASS) : un test nommé distinct vert par `Scenario`, dont
+    `pem_block_with_invalid_der_body_refused_008_not_007` (le `Scenario` DER corrigé en `008` sur
+    mesure empirique — @Certificate::from_pem infaillible sous @__rustls seul) ; l'assertion
+    d'absence d'@Basic du client public, impossible sans harnais réseau en ./config.rs, est
+    déportée et testée sous le `Scenario` « Client public sans secret » de ./oidc.sdd
 
 Done when:
   Les 9 `Scenario` (huit originaux révisés, un nouveau sur `Debug`/client_secret absent en plus du
