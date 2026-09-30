@@ -309,11 +309,16 @@ Scenario: cookie de session liste vide puis émission pour soi
 
 Scenario: liste strictement au subject du principal, sans passe-droit admin
   Given un token nommé `alice-visible` du @subject `alice`, un token `bob-visible` du @subject `bob`,
-    et un Bearer du @subject `admin` résolu et membre du groupe `admin` de la migration 003
+    un token `admin-own` que le @subject `admin` a émis pour lui-même, et un Bearer de ce @subject
+    `admin` résolu et membre du groupe `admin` de la migration 003
   When `GET /api/v1/tokens` avec le Bearer d'alice
   Then seul `alice-visible` apparaît
   When la même requête part avec le Bearer d'admin
-  Then une page vide est rendue
+  Then seul `admin-own` apparaît — l'appartenance au groupe `admin` ne donne aucune visibilité sur
+    les tokens d'autrui, mais la ligne du Bearer est posée sous `subject` `admin` et l'auto-liste
+    s'applique identique (correction mesurée vague B3a 2026-09-30 : le `Then` « page vide » initial
+    était faux, un Bearer émet un token sous son propre subject — cf. le scenario session-cookie
+    qui rend `total_items` `1` après émission)
   But aucun principal, admin compris, ne voit le token d'un autre @subject
 
 Scenario: projection a exactement cinq champs, jamais secret, hash ni subject

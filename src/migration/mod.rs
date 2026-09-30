@@ -5,6 +5,7 @@ mod m20260822_000002_create_users_groups;
 mod m20260822_000003_seed_admin_group;
 #[cfg(feature = "workflow")]
 mod m20260923_000001_create_workflow_definitions;
+mod m20260930_000001_index_api_tokens_subject;
 
 use sea_orm::sea_query::IntoIden;
 
@@ -19,6 +20,7 @@ impl sea_orm_migration::MigratorTrait for Migrator {
             Box::new(m20260822_000003_seed_admin_group::Migration),
             #[cfg(feature = "workflow")]
             Box::new(m20260923_000001_create_workflow_definitions::Migration),
+            Box::new(m20260930_000001_index_api_tokens_subject::Migration),
         ]
     }
 
