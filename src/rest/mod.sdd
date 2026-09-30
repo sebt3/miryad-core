@@ -338,11 +338,14 @@ Handles:
     concernent ./mod.rs par aucune ligne
 
 Tasks:
-  [ ] Revue 2026-09-29 : remplacer le `panic!` + `#[allow(clippy::panic)]` du garde « OwnerOnly sans
+# Cinq taches closes 2026-10-01 (vagues B3a/B3b, validator PASS) : allow panic
+# purge, 15 tests + doctest compile_fail, troisieme garde owner_column,
+# cartographie des seize, batterie rejouee verte par le validator.
+  [x] Revue 2026-09-29 : remplacer le `panic!` + `#[allow(clippy::panic)]` du garde « OwnerOnly sans
     `owner_column` » (`resource_router`) par un `assert!` au message explicite, comme le garde
     `filter_column` — supprime l'exemption de lint ; le message cite toujours l'entité et la règle
     (les deux `should_panic(expected = …)` doivent continuer de correspondre).
-  [ ] Convertir les dix-sept `Scenario` ci-dessous en au moins dix-sept tests nommés distincts
+  [x] Convertir les dix-sept `Scenario` ci-dessous en au moins dix-sept tests nommés distincts
     du `#[cfg(test)] mod tests` de ./mod.rs (un par scenario), plus un doctest `compile_fail`
     porté par la doc de @RestEntity pour le scenario d'exclusion de clé composée :
     « La route collection expose GET et POST » → `collection_route_serves_get_and_post` ;
@@ -371,13 +374,13 @@ Tasks:
     `owner_only_without_column_panics_at_mount` ; « Entité à colonne de filtre non textuelle
     panique au montage » → `filter_column_on_non_text_column_panics_at_mount` (arbitrage
     2026-09-27, dix-neuf `Scenario` désormais).
-  [ ] Troisième garde de montage (arbitré par Sébastien le 2026-09-29) : dans
+  [x] Troisième garde de montage (arbitré par Sébastien le 2026-09-29) : dans
     @rest::resource_router, `assert!` que le type de colonne de @MiryadResource::owner_column,
     quand elle est @Some, est `ColumnType::Integer` (même patron et même emplacement que la garde
     `filter_column`, message explicite citant l'entité) ; test
     `owner_column_on_non_i32_column_panics_at_mount` (fixture à colonne @i64) et un test qu'une
     colonne `Option<i32>` monte. Vingt `Scenario` désormais.
-  [ ] Cartographier sans les dupliquer les seize tests inline existants — ils sont la preuve
+  [x] Cartographier sans les dupliquer les seize tests inline existants — ils sont la preuve
     vivante que ./mod.rs délègue fidèlement : `create_ignores_client_supplied_owner`,
     `list_filters_by_owner_for_non_admin_but_not_for_admin`, `list_pagination_returns_requested_page`,
     `list_filter_combines_with_owner_restriction`, `list_ingredients_forbidden_without_group_membership`,
@@ -398,7 +401,7 @@ Tasks:
     Sébastien le 2026-09-29, `Must`).
   [x] Tolérance aux champs inconnus confirmée comme contrat d'entrée (arbitré par Sébastien le
     2026-09-29, `Must`) — aucun @deny_unknown_fields.
-  [ ] Rejouer la batterie complète de /tooling.sdd (toutes les combinaisons de features de
+  [x] Rejouer la batterie complète de /tooling.sdd (toutes les combinaisons de features de
     /AGENTS.md, dont `--no-default-features` comme preuve de non-gating, plus
     `cargo test --doc` pour le @compile_fail) après création des tests.
 

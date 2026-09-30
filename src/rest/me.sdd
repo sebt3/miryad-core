@@ -236,7 +236,7 @@ Raises:
     SELECT/INSERT `miryad_users` par @resolve_user (y compris le @DbErr::RecordNotFound synthétique
     du bras de course, sans code propre, voir le [arbitré 2026-09-29] de /src/users/user.sdd) ou SELECT de
     @groups_by_user ; préfixe `MRD-REST-003`, pas `MRD-AUTH-016`
-  `405` corps vide, en-tête @Allow `GET` : toute autre méthode sur `/api/v1/me` — posés par le
+  `405` corps vide, en-tête @Allow `GET,HEAD` : toute autre méthode sur `/api/v1/me` — posés par le
     routeur axum avant l'extracteur, donc aussi sur une requête sans credential
   `404` du fallback applicatif : toute autre URL, y compris `/api/v1/me/` et `/api/v1/me` hors
     montage de @me_router
@@ -271,13 +271,14 @@ Tasks:
     `.specdd/bootstrap.project.md`) — aucun changement de code.
   [x] OpenAPI muet sur `/api/v1/me` assumé pour cette version (arbitré par Sébastien le
     2026-09-29) ; fragment des routes de compte inscrit à `docs/roadmap.md`.
-  [ ] Tri du tableau `groups` par nom (arbitré par Sébastien le 2026-09-29, `Must`) : `ORDER BY`
+# Deux taches closes 2026-10-01 (vague B3c, validator PASS).
+  [x] Tri du tableau `groups` par nom (arbitré par Sébastien le 2026-09-29, `Must`) : `ORDER BY`
     sur la requête des groupes de @me ; nouveau test sur l'ordre rendu.
   [x] `HEAD` : comportement implicite d'@axum gelé (arbitré par Sébastien le 2026-09-29, `Must`) —
     aucun @head refusant.
   [x] @email snapshot confirmé (arbitré par Sébastien le 2026-09-29, `Must`) — ligne de contrat
     « email = colonne de la ligne » conservée.
-  [ ] Convertir les 13 `Scenario` en au moins 13 tests distincts nommés dans le @mod tests
+  [x] Convertir les 13 `Scenario` en au moins 13 tests distincts nommés dans le @mod tests
     `#[cfg(test)]` inline de ./me.rs : sqlite en mémoire + @Migrator + @oneshot de @tower comme les
     helpers existants — le contrat ne déborde pas du fichier, aucun crate d'intégration requis.
     Décompte inline à ce jour : 2 tests. @me_reports_own_identity_and_groups approche le scenario 4

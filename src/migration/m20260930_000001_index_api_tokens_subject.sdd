@@ -37,8 +37,9 @@ Must:
     `m20260930_000001_index_api_tokens_subject` (@get_file_stem sur @file!), clé insérée/supprimée
     dans @seaql_migrations_miryad_core par le framework — même mécanisme que toutes les filles.
   Ordre d'enregistrement : après les trois internes de base (001, 002, 003) — l'index ne peut se
-    poser qu'après la table ; sous feature `workflow` l'ordre d'exécution propre à ./mod.rs
-    (004 avant 003) n'est pas affecté : cette migration n'est pas gateée et s'insère dans la
+    poser qu'après la table ; sous feature `workflow` l'ordre de remontée @down propre à ./mod.rs
+    (004 avant 003, lecture 2026-10-01 — en @up c'est 003 avant 004) n'est pas affecté : cette
+    migration n'est pas gateée et s'insère dans la
     liste hors du branchement de feature.
   Nom d'index préfixé : `idx_` + nom de table + colonne, unique dans la crate (aucun autre objet
     de ce nom n'existe ni n'est créé) ; le nom est un littéral unique du fichier, jamais recalculé

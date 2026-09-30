@@ -265,15 +265,16 @@ Handles:
 Tasks:
   [x] Couverture : les routes de compte et `/auth/*` restent hors document pour cette version
     (arbitré par Sébastien le 2026-09-29, `Must`) ; fragment des routes de compte à la roadmap.
-  [ ] @resource_openapi lit @MiryadResource::filter_column et ne déclare `filter` que quand il
+# Quatre taches closes 2026-10-01 (vague B3e, validator PASS).
+  [x] @resource_openapi lit @MiryadResource::filter_column et ne déclare `filter` que quand il
     agit (arbitré par Sébastien le 2026-09-29, `Must`) ; deux tests (avec et sans colonne).
-  [ ] Compléter les statuts d'erreur du fragment (arbitré par Sébastien le 2026-09-29, `Must`) :
+  [x] Compléter les statuts d'erreur du fragment (arbitré par Sébastien le 2026-09-29, `Must`) :
     `400`, `401`, `403` (y compris sur la liste), `404`, `415`, `422`, `500`, corps `text/plain` et
     schéma `HookErrorBody` ; réécrire le test « chaque opération déclare son jeu de statuts »
     (`resource_openapi_declares_operations_responses_and_bodies`).
   [x] Homonymes de schémas : point d'attention documentaire, aucune détection au merge (arbitré par
     Sébastien le 2026-09-29, `Must`).
-  [ ] Convertir les treize `Scenario` en au moins treize tests nommés distincts du `#[cfg(test)] mod
+  [x] Convertir les treize `Scenario` en au moins treize tests nommés distincts du `#[cfg(test)] mod
     tests` de ./openapi.rs — le contrat ne déborde pas du fichier —, sept tests inline existants
     conservés et six à créer, avec la correspondance exacte suivante :
     « @resource_openapi déclare les cinq routes CRUD » →
@@ -311,7 +312,7 @@ Tasks:
     « le document publié ne porte aucune extension `x-miryad-*` » →
       `resource_openapi_emits_no_x_miryad_extension` (à créer : sérialiser un fragment et une fusion,
       affirmer l'absence de toute clé `x-miryad-`).
-  [ ] Rejouer la matrice de /tooling.sdd sur le fichier : `--no-default-features` (preuve du non-gating
+  [x] Rejouer la matrice de /tooling.sdd sur le fichier : `--no-default-features` (preuve du non-gating
     de @openapi_router et du @Scenario hors feature), `--features swagger-ui` (UI, JSON et panic),
     défaut et `--all-features`, clippy `-D warnings` sur chaque combinaison — `missing_docs` et les
     `pedantic` sur les trois items publics déjà documentés ne doivent pas bouger.

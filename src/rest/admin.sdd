@@ -196,19 +196,20 @@ Handles:
     uniquement dans l'echo des champs `page`/`per_page` de la réponse `200`.
 
 Tasks:
-  [ ] En-tête `//!` de ./admin.rs (arbitré par Sébastien le 2026-09-29, `Must`) : remplacer
+# Quatre taches closes 2026-10-01 (vague B3, validator PASS HEAD 8518d14).
+  [x] En-tête `//!` de ./admin.rs (arbitré par Sébastien le 2026-09-29, `Must`) : remplacer
     « lecture seule » par « ne modifie aucune donnée métier ; la première vue d'un sujet crée sa
     ligne `miryad_users` ». Documentation seule.
-  [ ] `ORDER BY id` ascendant sur la liste admin (arbitré par Sébastien le 2026-09-29, `Must`) ;
+  [x] `ORDER BY id` ascendant sur la liste admin (arbitré par Sébastien le 2026-09-29, `Must`) ;
     même décision pour @rest::core::list (../rest/core.sdd) et pour ./tokens.sdd ; nouveau test de
     pagination déterministe.
   [x] Exemption de parité des routes de plateforme (arbitré par Sébastien le 2026-09-29, `Must`,
     `.specdd/bootstrap.project.md`) — aucun changement de code.
-  [ ] Trace `warn!` avec @subject sur chaque `403` de la route (arbitré par Sébastien le
+  [x] Trace `warn!` avec @subject sur chaque `403` de la route (arbitré par Sébastien le
     2026-09-29, `Must`), jamais le token ; nouveau Scenario et test de capture.
   [x] @groups_by_user : « ignorer » gelé et documenté (arbitré par Sébastien le 2026-09-29,
     `Must`) — aucun changement.
-  [ ] Convertir les treize `Scenario` en au moins treize tests nommés distincts du
+  [x] Convertir les treize `Scenario` en au moins treize tests nommés distincts du
     `#[cfg(test)] mod tests` de `./admin.rs` (tout l'observable vit sur la surface HTTP de ce
     fichier, aucun test ne déborde dans ./tests/) : « admin obtient la liste paginée avec les
     groupes de chaque utilisateur » → @admin_sees_paginated_users_with_their_groups (existant, à

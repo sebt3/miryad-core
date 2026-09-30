@@ -227,7 +227,10 @@ Handles:
     roadmap (`docs/roadmap.md`).
 
 Tasks:
-  [ ] Convertir chaque `Scenario` en un test nommé distinct du `#[cfg(test)] mod tests` de
+# Cinq taches closes 2026-10-01 (vague B3d, validator PASS) ; volet index de
+# 265 realisé par m20260930_000001 (cloture liee a l'amendement du Must
+# d'ordre de migration/mod.sdd, arbitrage Sebastian en attente).
+  [x] Convertir chaque `Scenario` en un test nommé distinct du `#[cfg(test)] mod tests` de
     ./tokens.rs (motif @test_db()/@test_state()/@app()/@request() déjà en place, `sqlite::memory:` +
     @Migrator::up + @tower::ServiceExt::oneshot, sans base externe) — `22` `Scenario`, cinq tests
     inline existants conservés et étendus : `list_only_returns_the_caller_own_tokens` (isolation, à
@@ -252,17 +255,17 @@ Tasks:
     @TokenSummary (@id, @name, @created_at, @expires_at, @last_used_at) — dette `missing_docs` du
     fichier, le `///` du structurat ne les couvre pas. Posés à la purge A3 (2026-09-29, validator
     GO), sous `missing_docs = @deny`.
-  [ ] `DELETE` en `404` unique (arbitré par Sébastien le 2026-09-29, `Handles`) : requête
+  [x] `DELETE` en `404` unique (arbitré par Sébastien le 2026-09-29, `Handles`) : requête
     @find_by_id filtrée sur @subject, suppression de la branche `403` ; adapter le test
     `cannot_revoke_someone_else_token`.
-  [ ] `POST` en `201` (arbitré par Sébastien le 2026-09-29, `Returns`) : statut, deux tests inline
+  [x] `POST` en `201` (arbitré par Sébastien le 2026-09-29, `Returns`) : statut, deux tests inline
     et fragment/doc ; pas d'en-tête `Location`.
-  [ ] Rejet `422` de @expires_at passé (arbitré par Sébastien le 2026-09-29, `Accepts`) : la
+  [x] Rejet `422` de @expires_at passé (arbitré par Sébastien le 2026-09-29, `Accepts`) : la
     sixième variante @RestError::InvalidInput est ajoutée dans ./error.sdd (`MRD-REST-005`) ; test
     `past_expiry_is_unprocessable`.
   [x] Exemption REST-only des routes de compte (arbitré par Sébastien le 2026-09-29) ; fragment
     OpenAPI de `/tokens` renvoyé à la roadmap (`docs/roadmap.md`).
-  [ ] `ORDER BY id` ascendant sur le `GET` et index sur `miryad_api_tokens.subject` par une
+  [x] `ORDER BY id` ascendant sur le `GET` et index sur `miryad_api_tokens.subject` par une
     migration suivante (arbitré par Sébastien le 2026-09-29) — la migration `001` reste immuable ;
     spec de la nouvelle migration à écrire avec ./../migration/.
   [x] @page borné à @MAX_PAGE en amont (../query.sdd, arbitré 2026-09-27) : plus de dépassement
