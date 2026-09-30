@@ -4,7 +4,7 @@
 
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, IntoActiveModel, Iterable, ModelTrait,
-    PaginatorTrait, PrimaryKeyToColumn, QueryFilter,
+    PaginatorTrait, PrimaryKeyToColumn, QueryFilter, QueryOrder,
 };
 
 use crate::auth::AuthPrincipal;
@@ -58,7 +58,12 @@ pub(crate) async fn list<E: RestEntity>(
     };
 
     let pagination = Pagination::from_raw(page, per_page);
-    let paginator = E::find().filter(condition).paginate(db, pagination.per_page);
+    // `rest/core.sdd` `Must` (arbitré 2026-09-29) : toute liste est ordonnée par la clé primaire
+    // croissante — pagination déterministe, aucune ligne sautée ni dupliquée entre deux pages.
+    let paginator = E::find()
+        .filter(condition)
+        .order_by_asc(primary_key_column::<E>())
+        .paginate(db, pagination.per_page);
     let totals = paginator.num_items_and_pages().await?;
     // `query.sdd` borne `page >= 1` : `saturating_sub(1)` ne sature jamais, l'index rendu est
     // exactement `page - 1` (purge `arithmetic_side_effects` de `tooling.sdd`).
@@ -168,8 +173,11 @@ pub(crate) async fn update<E: RestEntity>(
     active.update(db).await.map_err(|err| match err {
         // La ligne relue a disparu entre la relecture et l'`UPDATE` (course tolérée, fenêtre sans
         // verrou ni transaction — arbitrage `rest/core.sdd` 2026-09-27) : c'est un `404` légitime,
-        // plus la panne `500` qu'un `DbErr` ordinaire traduisait jusqu'ici.
-        sea_orm::DbErr::RecordNotUpdated => RestError::NotFound,
+        // plus la panne `500` qu'un `DbErr` ordinaire traduisait jusqu'ici. Sur backend sans
+        // `RETURNING` (type MySQL) `SeaORM` rend `RecordNotFound` après relecture vide là où
+        // Postgres rend `RecordNotUpdated` — même disparition, même 404 (tâche « Revue 2026-09-29 »
+        // de `rest/core.sdd`, aligné sur `auth/token.rs`).
+        sea_orm::DbErr::RecordNotUpdated | sea_orm::DbErr::RecordNotFound(_) => RestError::NotFound,
         other => RestError::Database(other),
     })
 }
@@ -1341,6 +1349,105 @@ mod tests {
         );
     }
 
+    // ------------------------------------------- ORDER BY clé primaire (arbitré 2026-09-29)
+
+    /// `Must` « Toute liste est ordonnée par la clé primaire croissante » (arbitré par Sébastien
+    /// le 2026-09-29) — preuve d'émission par `sea_orm::MockDatabase` : le `SELECT` paginé doit
+    /// porter `ORDER BY` sur la colonne de clé primaire avant `paginate`. TEST ROUGE avant
+    /// implémentation : sous `SQLite` toute table `rowid` est balayée en ordre de `rowid` — le
+    /// contenu est identique avec ou sans clause, seule la clause émise est observable.
+    #[tokio::test]
+    async fn list_applique_order_by_sur_la_cle_primaire() {
+        use sea_orm::{DbBackend, MockDatabase};
+        use std::collections::BTreeMap;
+
+        let alice = user::Model {
+            id: 7,
+            subject: "alice".to_string(),
+            email: None,
+            display_name: None,
+            created_at: chrono::Utc::now(),
+        };
+        let count_row = BTreeMap::from([("num_items".to_string(), sea_orm::Value::BigInt(Some(5)))]);
+        let db = MockDatabase::new(DbBackend::Sqlite)
+            .append_query_results([[alice]])
+            .append_query_results([[count_row]])
+            .append_query_results::<public_owned::Model, _, _>([[]])
+            .into_connection();
+
+        let page = list::<public_owned::Entity>(&db, &principal("alice"), Some(1), Some(2), None)
+            .await
+            .expect("le mock scripte les trois requêtes du listage");
+        assert_eq!(page.total_items, 5, "le `COUNT` scripté vaut 5");
+
+        let page_sql = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(sea_orm::Transaction::statements)
+            .map(ToString::to_string)
+            // Le SELECT de la page : pas le COUNT englobant, qui ne porte jamais de LIMIT.
+            .find(|sql| {
+                sql.starts_with("SELECT") && sql.contains(r#"FROM "public_owneds""#) && !sql.contains("COUNT")
+            })
+            .expect("le SELECT de la page paginée a été émis");
+        assert!(
+            page_sql.contains(r#"ORDER BY "public_owneds"."id" ASC"#),
+            "`ORDER BY` sur la clé primaire est appliqué avant @paginate : {page_sql}"
+        );
+    }
+
+    /// `Must` « Toute liste est ordonnée par la clé primaire croissante » — verrou de pagination
+    /// déterministe sur `SQLite` réel : trois pages consécutives à `per_page` 2 couvrent les cinq
+    /// lignes sans saut ni doublon, en ordre croissant de clé primaire. Consigné au rapport :
+    /// sous `SQLite` ce test est vert même sans clause (balayage `rowid`) — la preuve rouge est
+    /// le test de statement ci-dessus ; celui-ci verrouille le contrat rendu.
+    #[tokio::test]
+    async fn list_pagination_deux_pages_sans_saut_ni_doublon() {
+        let db = migrated_db().await;
+        create_entity_table(&db, recipe::Entity).await;
+        let alice = principal("alice");
+        let mut seeded = Vec::new();
+        for title in ["Un", "Deux", "Trois", "Quatre", "Cinq"] {
+            seeded.push(
+                create::<recipe::Entity>(
+                    &db,
+                    &alice,
+                    recipe::Model {
+                        id: 0,
+                        title: title.to_string(),
+                        owner_id: 0,
+                        category: "plat".to_string(),
+                    },
+                )
+                .await
+                .expect("create succeeds")
+                .id,
+            );
+        }
+
+        let mut seen: Vec<i32> = Vec::new();
+        for page_index in 1..=3 {
+            let page = list::<recipe::Entity>(&db, &alice, Some(page_index), Some(2), None)
+                .await
+                .expect("list succeeds");
+            assert_eq!(page.total_items, 5, "les totaux décrivent les cinq lignes");
+            for item in &page.items {
+                assert!(
+                    !seen.contains(&item.id),
+                    "la ligne {} est dupliquée entre deux pages",
+                    item.id
+                );
+                seen.push(item.id);
+            }
+        }
+        seeded.sort_unstable();
+        assert_eq!(seen.len(), 5, "aucune ligne n'est sautée sur les trois pages");
+        assert_eq!(
+            seen, seeded,
+            "le parcours des pages suit la clé primaire croissante"
+        );
+    }
+
     // ----------------------------------------------------------------- update
 
     /// Scenario « update `OwnerOnly` d'un inconnu : `NotFound`, résidu assumé de l'oracle ».
@@ -1651,6 +1758,67 @@ mod tests {
         assert!(
             matches!(result, Err(RestError::NotFound)),
             "la ligne disparue entre la relecture et l'UPDATE est un 404, plus jamais un 500 : {result:?}"
+        );
+    }
+
+    /// `Tasks` « Revue 2026-09-29 » — backend sans `RETURNING` (type `MySQL`) : `SeaORM` émet
+    /// l'`UPDATE`, passe `rows_affected`, puis relit la ligne ; la relecture vide rend
+    /// `DbErr::RecordNotFound` (et non `RecordNotUpdated`). `update` doit le traduire en
+    /// `NotFound`, aligné sur `auth/token.rs`. Simulation par `MockDatabase` : `UPDATE` à une
+    /// ligne affectée, relecture sans ligne. TEST ROUGE avant implémentation (sans le bras
+    /// supplémentaire, la traduction rend `Database`).
+    #[tokio::test]
+    async fn update_relecture_vide_apres_update_est_not_found_jamais_database() {
+        use sea_orm::{DbBackend, MockDatabase, MockExecResult};
+
+        let alice = user::Model {
+            id: 7,
+            subject: "alice".to_string(),
+            email: None,
+            display_name: None,
+            created_at: chrono::Utc::now(),
+        };
+        let row = never_create::Model {
+            id: 3,
+            label: "vivante".to_string(),
+        };
+        // `DbBackend::MySql` (et non `Sqlite`) : la feature `sqlite-use-returning-for-3_35` est
+        // active dans ce build, `support_returning()` y vaut `true` et `SeaORM` rend alors
+        // `RecordNotUpdated` via la voie `UPDATE ... RETURNING` — le même bras déjà couvert par la
+        // course `vanishing`. Seul un backend sans `RETURNING` (type `MySQL`) engage la relecture
+        // après `UPDATE` qui produit le `RecordNotFound` visé par cette tâche.
+        let db = MockDatabase::new(DbBackend::MySql)
+            .append_query_results([[alice]])
+            .append_query_results([[row]])
+            .append_exec_results([MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results::<never_create::Model, _, _>([[]])
+            .into_connection();
+
+        let result = update::<never_create::Entity>(
+            &db,
+            &principal("alice"),
+            3,
+            never_create::Model {
+                id: 3,
+                label: "modifiée".to_string(),
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(RestError::NotFound)),
+            "`DbErr::RecordNotFound` de la relecture après `UPDATE` (backend sans `RETURNING`) \
+             est un 404, plus jamais un 500 : {result:?}"
+        );
+        let log = db.into_transaction_log();
+        assert!(
+            log.iter()
+                .flat_map(sea_orm::Transaction::statements)
+                .any(|stmt| stmt.to_string().starts_with("UPDATE")),
+            "l'`UPDATE` a bien été émis — le chemin passe par la relecture, pas par un refus amont"
         );
     }
 
