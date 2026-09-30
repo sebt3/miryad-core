@@ -51,8 +51,10 @@ References:
 
 Must:
   Compiler sous toute la matrice de /tooling.sdd, avec un gating exactement réduit à une option : le
-    fichier ne porte que deux `#[cfg(feature = "swagger-ui")]` — celui de @openapi::@swagger_ui_router
-    et celui de son test inline ; @OpenApiEntity, @openapi::@resource_openapi et
+    fichier ne porte qu'un seul `#[cfg(feature = "swagger-ui")]` en production — celui de
+    @openapi::@swagger_ui_router ; les `#[cfg]`/@cfg(not) du `mod tests` (tests
+    @swagger_ui_route_absent_without_feature et @merging_openapi_and_swagger_ui_routers_panics,
+    `Tasks` 2026-09-29) ne comptent pas dans cette règle ; @OpenApiEntity, @openapi::@resource_openapi et
     @openapi::@openapi_router ne portent aucun `#[cfg]`, et @utoipa est une dépendance non optionnelle
     de /Cargo.toml — vérifié dans ces deux sources, conformément à ../lib.sdd (aucun gating racine pour
     `swagger-ui`).

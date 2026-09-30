@@ -30,9 +30,12 @@ References:
     passe en @RestError::Database, toute autre variante devient @RestError::Internal portant la
     @Display complète de l'@AuthError ; c'est le seul émetteur de @RestError::Internal de la crate,
     et sa doc assume qu'aucune conversion @From générique ne doit voir le jour
-  ./openapi.rs — document généré décrivant `403` et `404` en simples descriptions, sans schéma de
-    corps d'erreur ni `422` : asymétrie avec le contrat fil de ce fichier, voir `Tasks` [arbitré 2026-09-29]
-  /src/mcp/error.rs — @From<@RestError> for @McpError exhaustive 5/5, charges utiles @sea_orm::DbErr,
+  ./openapi.rs — document généré décrivant par opération les jeux exacts de statuts de la table
+    (texte brut `400`/`401`/`403`/`404`/`415`/`500` génériques, `422` bilatéral texte
+    @axum/@MRD-REST-005 + JSON @HookErrorBody), ressynchronisé vague B3e 2026-09-30 (l'avant-texte
+    « sans schéma de corps d'erreur ni 422 » décrivait l'état pré-tâche)
+  /src/mcp/error.rs — @From<@RestError> for @McpError exhaustive 6/6 (bras @RestError::InvalidInput
+    → @McpError::InvalidParams ajouté 2026-09-30, vague B3a), charges utiles @sea_orm::DbErr,
     @HookError et @String préservées ; en MCP le rendu @Display/@code du hook passe dans le champ
     JSON-RPC `data`, jamais par le @IntoResponse de ce fichier
   /src/resource.rs — @HookError (champs publics @code @Option de valeur libre et @message), charge

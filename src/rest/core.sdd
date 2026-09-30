@@ -684,6 +684,15 @@ Scenario: Table vide : totaux `0`, `items` vide, page conservée
     majorante @sea_orm ./../query.sdd), @query::PagedResult::items est vide — jamais une erreur,
     jamais une page fabriquée
 
+Scenario: Liste ordonnée par clé primaire croissante : pagination sans saut ni doublon
+  Given une table d’entité de plusieurs lignes insérées dans un ordre de clés connues, lecture
+    permise (arbitré par Sébastien le 2026-09-29 — `Must` « toute liste est ordonnée »)
+  When @rest::core::list est appelé page après page, @per_page borné au tiers des lignes
+  Then les @items de chaque page remontent par @id strictement croissant — l’@ORDER BY sur la
+    colonne de clé primaire précède @paginate (verrou du statement par @MockDatabase)
+  And la concaténation des pages recouvre chaque ligne exactement une fois : aucune ligne sautée,
+    aucune dupliquée entre deux pages consécutives
+
 Scenario: get d’un inconnu sous `OwnerOnly` : `404`, résidu assumé de l’oracle
   Given un id absent de toute ligne, une entité @AccessPolicy::OwnerOnly (read) et un utilisateur
     non-admin qui pourrait en être propriétaire

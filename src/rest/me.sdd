@@ -57,8 +57,9 @@ Must:
   Méthodes réellement servies : @get sans @head déclaré — dans @call_with_state d'axum 0.8.9
     l'endpoint @get est aussi dispatché sur @HEAD (`call!(req, HEAD, get)`, test source
     @get_accepts_head) et @RouteFuture vide le corps au niveau top-level ; toute autre méthode
-    heurte le fallback par défaut du @MethodRouter : `405`, corps vide, en-tête @Allow `GET`
-    (tests sources @method_not_allowed_by_default et @sets_allow_header)
+    heurte le fallback par défaut du @MethodRouter : `405`, corps vide, en-tête @Allow `GET,HEAD`
+    (@get route seule @HEAD, axum 0.8.9 énumère les deux dans le @Allow du fallback — réel figé,
+    même posture que ./mod.sdd pour la collection ; correction mesurée vague B3c 2026-09-30)
   Autorisation : tout principal authentifié suffit — @me_handler n'appelle pas @is_admin, ne
     consulte aucune @AccessPolicy, ne pose aucune condition de groupe ; un membre du groupe
     `admin` y accède comme un utilisateur sans groupe, et n'y voit jamais rien de plus que son
@@ -85,10 +86,9 @@ Must:
     @email @None → la clé est rendue avec la valeur JSON `null` (aucun @skip_serializing_if n'est
     déclaré) ; @groups sans appartenance → tableau vide `[]` ; aucun champ `id`, contrairement à
     @UserSummary de ./admin.rs (voir `Tasks` [arbitré 2026-09-29])
-  Ordonnancement des groupes non contractuel : aucun @order_by_* n'est émis sur le scan de
-    `miryad_group_memberships` (vérifié dans le source de @sea_orm 2.0.2 : @select.rs n'ajoute une
-    clause @ORDER BY que par méthode explicite) — l'ordre du tableau rendu est celui de la passe
-    de la base et peut varier entre deux appels ; l'ensemble des noms en revanche est contractuel
+  # Historique : avant l'arbitrage du 2026-09-29, aucun ORDER BY sur la lookup des appartenances
+  # et l'ordre rendu était celui de la passe de la base — remplacé par le `Must` « tri par nom
+  # croissant » plus bas, réalisé 2026-09-30 (vague B3c).
   Effet de bord d'écriture en base : @resolve_user est un get-or-create — le premier appel `/me`
     réussi d'un @subject inconnu INSERT une ligne `miryad_users` (@email NULL sur le chemin token,
     @display_name NULL) avant le rendu ; c'est le seul chemin d'écriture déclenchable depuis @me_handler ;
@@ -99,7 +99,9 @@ Must:
     @unwrap du harnais, il ne panique jamais
   Erreurs du handler : les deux propagations `?` portent des @sea_orm::DbErr (@resolve_user et
     @groups_by_user) convertis par le @From en @RestError::Database, rendu `500` `text/plain` au
-    corps préfixé `MRD-REST-003: database error: ` suivi du @Display brut du @DbErr ; les variantes
+    corps exactement `MRD-REST-003: database error` — générique, sans le @DbErr dans le corps
+    (arbitré 2026-09-29, @Display complète portée par la trace `error!` de ./error.sdd ; correction
+    mesurée vague B3c 2026-09-30) ; les variantes
     @NotFound, @Forbidden, @Application et @Internal (`MRD-REST-001`, `MRD-REST-002`, `MRD-REST-004`,
     `422` hook) ne sont jamais construites par ce fichier — contraste avec ./tokens.rs qui en pose
     trois
@@ -229,7 +231,8 @@ Raises:
     atteint
   `500` corps préfixé `MRD-AUTH-016: database error: ` : panne de @db sur le chemin token — le
     handler n'est pas atteint, aucun @MRD-REST-* ne peut surgir d'un échec d'extraction
-  `500` corps préfixé `MRD-REST-003: database error: ` : @sea_orm::DbErr levé dans @me_handler —
+  `500` corps exactement `MRD-REST-003: database error` (générique, @DbErr seulement dans la trace
+    `error!` de ./error.sdd, arbitré 2026-09-29) : @sea_orm::DbErr levé dans @me_handler —
     SELECT/INSERT `miryad_users` par @resolve_user (y compris le @DbErr::RecordNotFound synthétique
     du bras de course, sans code propre, voir le [arbitré 2026-09-29] de /src/users/user.sdd) ou SELECT de
     @groups_by_user ; préfixe `MRD-REST-003`, pas `MRD-AUTH-016`
@@ -374,7 +377,7 @@ Scenario: Méthode autre que GET est 405 avec Allow
   Given une base migrée et une application montée par @me_router
   When une requête `POST /api/v1/me` sans la moindre credential atteint la route
   Then le statut est `405` avec un corps vide
-  And l'en-tête @Allow vaut `GET`
+  And l'en-tête @Allow vaut `GET,HEAD` (axum énumère @HEAD aux côtés de @get seul, ./mod.sdd)
   But pas de `401` : le routeur tranche la méthode sur le chemin connu avant que l'extracteur
     d'identité ne tourne
 
@@ -393,15 +396,15 @@ Scenario: Table users absente rend le handler 500 MRD-REST-003
   And un token API émis pour `ghost-sub`, valide car émis avant la suppression
   When un `GET /api/v1/me` porte ce bearer
   Then le statut est `500`
-  And le corps `text/plain` commence par `MRD-REST-003: database error: `
+  And le corps `text/plain` est exactement `MRD-REST-003: database error` (générique, arbitré
+    2026-09-29 — @DbErr dans la trace seule)
   But pas par `MRD-AUTH-016` : l'extraction a réussi, c'est @resolve_user qui échoue dans le
     handler
 
-Scenario: Ordre des groupes non verrouillé par le contrat
-  Given une ligne `miryad_users` pour `eve-sub` membre à la fois des groupes `editors` et `viewers`
+Scenario: Le tableau groups est trié par nom croissant
+  Given une ligne `miryad_users` pour `eve-sub` membre à la fois des groupes `viewers` et `editors`
+    (posés dans cet ordre d'insertion décroissant, pour que le tri soit discriminant)
   And un token API émis pour `eve-sub`
   When un `GET /api/v1/me` porte ce bearer
-  Then @groups est un tableau de exactement deux éléments dont l'ensemble des valeurs vaut
-    `{editors, viewers}`
-  But aucune position n'est affirmée : aucun ORDER BY n'étant émis sur la lookup des appartenances,
-    l'ordre de la passe de la base est rendu tel quel
+  Then @groups est exactement le tableau `["editors", "viewers"]` — ordre de noms croissant
+    contractuel (arbitré 2026-09-29, `Must` tri), vérifié byte-exact sur le JSON rendu

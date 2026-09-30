@@ -63,9 +63,10 @@ Must:
     `total_items`, `total_pages`.
   Un utilisateur sans aucune appartenance rend `groups: []` (@Option::unwrap_or_default sur la
     lookup de la carte), et l'itérateur @ids vide court-circuite @groups_by_user avant tout SQL.
-  L'ordre des @items dans une page et l'ordre des noms dans @groups ne sont pas contractuels :
-    la requête @user::Entity::find() ne porte aucun @ORDER BY (tâche [arbitré 2026-09-29]) et @groups_by_user
-    pousse les noms dans l'ordre de parcours des memberships.
+  L'ordre des noms dans @groups n'est pas contractuel : @groups_by_user pousse les noms dans
+    l'ordre de parcours des memberships, aucun tri n'est émis sur cette carte (@items en revanche
+    est contractuel, `Must` « ordonnée par @id croissant » plus bas — le volet items de ce texte
+    pré-arbitrage est corrigé vague B3c 2026-09-30).
   Le fichier compile sous toute combinaison de features de la batterie /tooling.sdd : zéro
     attribut `#[cfg(feature = ...)]`, ni dans le code ni dans son module de tests.
   L'en-tête `//!` de ./admin.rs dit « ne modifie aucune donnée métier ; la première vue d'un sujet
@@ -146,7 +147,8 @@ Returns:
     @UserSummary `{ id, subject, email, groups }`, `page`/`per_page` en echo post-normalisation,
     `total_items`/`total_pages` = totaux réels de la table (division majorante @sea_orm).
   `403` texte brut `MRD-REST-002: access denied` (@RestError::@Forbidden → @IntoResponse).
-  `405` corps vide avec en-tête `Allow: GET` sur toute autre méthode : le @routeur de méthodes
+  `405` corps vide avec en-tête `Allow: GET,HEAD` sur toute autre méthode (@get route seule
+    @HEAD, axum énumère les deux — réel figé ./mod.sdd) : le @routeur de méthodes
     @axum répond avant les extracteurs — pas d'authentification, pas de requête SQL sur ce chemin.
   Aucun cookie posé, aucun en-tête `Location` : cette route ne fait jamais de redirection.
   En sortie de @groups_by_user : @HashMap ne contenant que les ids ayant au moins un groupe
@@ -257,6 +259,15 @@ Scenario: le non-admin authentifié est refusé
   And le corps porte `MRD-REST-002: access denied`
   But aucune page d'utilisateurs n'est rendue, ni partielle
 
+Scenario: le refus 403 trace un warn avec le subject, jamais le credential
+  Given un utilisateur `alice-sub` résolu sans appartenance `admin` et son token API valide
+  When `GET /api/v1/users` avec ce porteur rend le `403` du `Must` garde
+  Then une trace @tracing `warn!` unique est émise, portant le @subject de l'appelante
+  But la ligne capturée ne contient ni le token en clair, ni son empreinte, ni le cookie
+    (arbitré 2026-09-29, `Must` trace ; verrouillé par
+    @non_admin_403_emits_warn_trace_with_subject, ajouté a posteriori du `Tasks` qui annonçait ce
+    `Scenario`, consignation 2026-09-30)
+
 Scenario: requête anonyme refusée, même avec des paramètres invalides
   Given aucune pièce d'identité
   When `GET /api/v1/users?page=abc` sans credential
@@ -276,7 +287,7 @@ Scenario: méthode refusée avant toute authentification
   Given une requête `POST /api/v1/users` anonyme, corps vide
   When elle atteint le routeur monté par @users_router
   Then la réponse est `405`
-  And l'en-tête `Allow` est `GET`
+  And l'en-tête `Allow` est `GET,HEAD` (axum énumère @HEAD aux côtés de @get seul, ./mod.sdd)
   But aucune authentification ni requête SQL n'est exécutée — le routeur de méthodes répond
     d'abord
 
