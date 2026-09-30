@@ -1,3 +1,8 @@
+//! Entité SeaORM de la table `miryad_groups`, `ensure_group` en get-or-create par nom exact et
+//! lectures d'appartenance `is_admin`/`is_member` : la seule porte d'entrée du groupe dans le
+//! moteur. `admin` est une pure convention de nom (`ADMIN_GROUP_NAME`), rien de spécial au
+//! schéma ; les écritures de `miryad_groups` sont le monopole de `ensure_group`.
+
 use chrono::Utc;
 use sea_orm::entity::prelude::*;
 use sea_orm::{ConnectionTrait, Set};
@@ -336,6 +341,273 @@ mod tests {
                 .iter()
                 .any(|(level, _)| matches!(*level, tracing::Level::WARN | tracing::Level::ERROR)),
             "course normale : le rebond ne doit jamais être tracé `warn` ou `error` : {lines:?}"
+        );
+    }
+
+    /// Nombre de lignes de `miryad_groups`, pour les assertions « la lecture ne crée rien ».
+    async fn group_row_count(db: &DatabaseConnection) -> usize {
+        Entity::find().all(db).await.expect("query succeeds").len()
+    }
+
+    /// `Scenario` : « `ensure_group` sur un nom inconnu le crée et retourne son id ».
+    #[tokio::test]
+    async fn ensure_group_creates_unknown_group() {
+        let db = test_db().await;
+        assert!(
+            Entity::find()
+                .filter(Column::Name.eq("auditors"))
+                .one(&db)
+                .await
+                .expect("query succeeds")
+                .is_none(),
+            "GIVEN : `auditors` n'existe pas après migration"
+        );
+        assert_eq!(
+            membership::Entity::find()
+                .all(&db)
+                .await
+                .expect("query succeeds")
+                .len(),
+            0,
+            "GIVEN : `miryad_group_memberships` vide"
+        );
+
+        let id = ensure_group(&db, "auditors")
+            .await
+            .expect("le groupe inconnu est créé à la volée");
+        assert!(id > 0, "`id` posé par l'auto-incrément");
+
+        let row = Entity::find()
+            .filter(Column::Name.eq("auditors"))
+            .one(&db)
+            .await
+            .expect("query succeeds")
+            .expect("une ligne `auditors` existe");
+        assert_eq!(row.id, id);
+        assert!(
+            row.created_at.timestamp() > 0,
+            "`created_at` posé par le fichier (colonne NOT NULL au schéma)"
+        );
+        assert_eq!(
+            Entity::find()
+                .filter(Column::Name.eq("auditors"))
+                .all(&db)
+                .await
+                .expect("query succeeds")
+                .len(),
+            1,
+            "une seule ligne `auditors`"
+        );
+        assert_eq!(
+            membership::Entity::find()
+                .all(&db)
+                .await
+                .expect("query succeeds")
+                .len(),
+            0,
+            "`ensure_group` ne rattache personne : `miryad_group_memberships` reste vide"
+        );
+    }
+
+    /// `Scenario` : « `ensure_group` sur un nom existant retourne le même id sans second insert ».
+    #[tokio::test]
+    async fn ensure_group_reuses_existing_group() {
+        let db = test_db().await;
+        let first = ensure_group(&db, "auditors")
+            .await
+            .expect("premier appel crée le groupe");
+
+        let second = ensure_group(&db, "auditors")
+            .await
+            .expect("second appel réutilise la ligne");
+
+        assert_eq!(first, second, "le premier SELECT court-circuite tout insert");
+        assert_eq!(
+            Entity::find()
+                .filter(Column::Name.eq("auditors"))
+                .all(&db)
+                .await
+                .expect("query succeeds")
+                .len(),
+            1,
+            "la table ne contient toujours qu'une ligne `auditors`"
+        );
+    }
+
+    /// `Scenario` : « Deux `ensure_group` concurrents convergent vers une ligne unique » —
+    /// pattern `tokio::join!` du test de course de `./membership.rs` : le perdant heurte la
+    /// contrainte `UNIQUE`, son rebond de `SELECT` lui rend l'`id` du gagnant.
+    #[tokio::test]
+    async fn concurrent_ensure_group_converges_to_single_row() {
+        let db = test_db().await;
+        let (first, second) = tokio::join!(ensure_group(&db, "ops"), ensure_group(&db, "ops"));
+        let first = first.expect("premier appel concurrent rend Ok");
+        let second = second.expect("second appel concurrent rend Ok (rebond du perdant)");
+
+        assert_eq!(first, second, "les deux retournent le même `id`");
+        assert_eq!(
+            Entity::find()
+                .filter(Column::Name.eq("ops"))
+                .all(&db)
+                .await
+                .expect("query succeeds")
+                .len(),
+            1,
+            "`miryad_groups` ne contient qu'une seule ligne `ops`"
+        );
+    }
+
+    /// `Scenario` : « `is_admin` vrai pour un membre du groupe `admin` ».
+    #[tokio::test]
+    async fn is_admin_true_for_admin_member() {
+        let db = test_db().await;
+        let user = resolve_user(&db, "admin-user", None)
+            .await
+            .expect("resolve succeeds");
+        sync_group_memberships(&db, user.id, &["admin".to_string()])
+            .await
+            .expect("sync succeeds");
+
+        assert!(
+            is_admin(&db, user.id).await.expect("query succeeds"),
+            "membership (user, groupe `admin` seedé) trouvée par les deux SELECT de `is_member`"
+        );
+    }
+
+    /// `Scenario` : « `is_admin` faux sans membership `admin`, même membre d'autres groupes ».
+    #[tokio::test]
+    async fn is_admin_false_without_admin_membership() {
+        let db = test_db().await;
+        let editor = resolve_user(&db, "editor-user", None)
+            .await
+            .expect("resolve succeeds");
+        sync_group_memberships(&db, editor.id, &["editors".to_string()])
+            .await
+            .expect("le groupe `editors` est créé au passage");
+        let outsider = resolve_user(&db, "unsynced-user", None)
+            .await
+            .expect("resolve succeeds");
+
+        assert!(
+            !is_admin(&db, editor.id).await.expect("query succeeds"),
+            "être membre de n'importe quel autre groupe ne confère rien"
+        );
+        assert!(
+            !is_admin(&db, outsider.id).await.expect("query succeeds"),
+            "aucune sync, aucune appartenance, jamais admin"
+        );
+    }
+
+    /// `Scenario` : « Groupe inconnu : faux sans créer le groupe » — volet absence de création,
+    /// que le test gelé `is_member_false_for_unknown_group` n'assertionne pas (lecture `Handles`
+    /// de `../rbac.sdd` confirmée en source).
+    #[tokio::test]
+    async fn is_member_unknown_group_creates_no_row() {
+        let db = test_db().await;
+        let user = resolve_user(&db, "reader-user", None)
+            .await
+            .expect("resolve succeeds");
+        let rows_before = group_row_count(&db).await;
+
+        assert!(
+            !is_member(&db, user.id, "does-not-exist")
+                .await
+                .expect("le groupe absent est un `Ok(false)`, pas une erreur"),
+            "premier SELECT vide, raccourci immédiat"
+        );
+
+        assert_eq!(
+            group_row_count(&db).await,
+            rows_before,
+            "la lecture d'autorisation ne crée jamais le groupe cité"
+        );
+        assert!(
+            Entity::find()
+                .filter(Column::Name.eq("does-not-exist"))
+                .one(&db)
+                .await
+                .expect("query succeeds")
+                .is_none(),
+            "aucune ligne `does-not-exist` n'est apparue dans `miryad_groups`"
+        );
+    }
+
+    /// `Scenario` : « Utilisateur jamais vu : faux pour tout groupe, sans erreur » — la garantie
+    /// anti-orphelin est la FK du schéma, pas le code.
+    #[tokio::test]
+    async fn is_member_false_for_unknown_user_id() {
+        let db = test_db().await;
+        let unknown_user_id = 9999;
+
+        assert!(
+            !is_member(&db, unknown_user_id, "admin")
+                .await
+                .expect("aucun DbErr pour un `id` orphelin"),
+            "`is_member` ne vérifie pas l'existence de l'utilisateur"
+        );
+        assert!(
+            !is_admin(&db, unknown_user_id).await.expect("aucun DbErr"),
+            "`is_admin` délègue à `is_member`, même réponse"
+        );
+    }
+
+    /// `Scenario` : « Nom exact et casse : `Admin` n'est pas `admin` » — égalité SQL binaire,
+    /// vérifiée sur `SQLite` (backend des tests), dérive Postgres tracée en `Tasks`.
+    #[tokio::test]
+    async fn group_names_are_case_sensitive_on_test_backend() {
+        let db = test_db().await;
+        let admin_id = Entity::find()
+            .filter(Column::Name.eq(ADMIN_GROUP_NAME))
+            .one(&db)
+            .await
+            .expect("query succeeds")
+            .expect("le groupe seedé `admin` existe")
+            .id;
+
+        let capital_id = ensure_group(&db, "Admin")
+            .await
+            .expect("`Admin` est un nom inconnu, pas une variante du seed");
+        assert_ne!(capital_id, admin_id, "aucune normalisation de casse");
+
+        let user = resolve_user(&db, "capital-user", None)
+            .await
+            .expect("resolve succeeds");
+        sync_group_memberships(&db, user.id, &["Admin".to_string()])
+            .await
+            .expect("le user est rattaché à `Admin` seulement");
+
+        assert_eq!(group_row_count(&db).await, 2, "`admin` et `Admin` coexistent");
+        assert!(
+            !is_member(&db, user.id, "admin").await.expect("query succeeds"),
+            "membre de `Admin`, pas de `admin`"
+        );
+        assert!(
+            !is_admin(&db, user.id).await.expect("query succeeds"),
+            "la convention admin se lit par le nom exact, `Admin` ne confère rien"
+        );
+    }
+
+    /// `Scenario` : « Base non migrée : `Err` propagé sur les trois helpers, jamais `Ok(false)` »
+    /// — fail-fast, aucune panne d'infrastructure dégradée en refus silencieux.
+    #[tokio::test]
+    async fn group_helpers_propagate_dberr_when_tables_missing() {
+        let db = sea_orm::Database::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite connects (base non migrée)");
+
+        assert!(
+            ensure_group(&db, "x").await.is_err(),
+            "`ensure_group` : le premier SELECT échoue et remonte par `?`"
+        );
+        let member = is_member(&db, 1, "admin").await;
+        assert!(
+            member.is_err(),
+            "`is_member` ne dégrade pas la panne en `Ok(false)` : {member:?}"
+        );
+        let admin = is_admin(&db, 1).await;
+        assert!(
+            admin.is_err(),
+            "`is_admin` propage le `DbErr` délégué, jamais `Ok(false)` : {admin:?}"
         );
     }
 }

@@ -649,10 +649,9 @@ mod tests {
     }
 
     /// `Scenario` : « verbe non monté sous /auth renvoie 405 avec Allow » sur les trois routes.
-    /// Écart relevé pour arbitrage : le `Then` de la spec affirme `Allow` = `GET`, le `MethodRouter`
-    /// d'axum 0.8.9 pose `GET,HEAD` sur un `get()` sans `head()` (les tests amont de
-    /// `routing/method_routing.rs` affirment eux-mêmes `"GET,HEAD"`). Le test verrouille la réalité
-    /// amont, en attente d'arbitrage de `spec-dd` sur la ligne de spec.
+    /// `Allow` = `GET,HEAD` : contrat aligné sur la réalité amont (`get()` seul ajoute `HEAD`,
+    /// axum 0.8.9), arbitré par Sébastien le 2026-09-28 (`./mod.sdd`, même posture que la
+    /// découverte OIDC).
     #[tokio::test]
     async fn unmounted_method_under_auth_is_405_with_allow() {
         for uri in ["/auth/login", "/auth/callback", "/auth/logout"] {

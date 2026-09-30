@@ -176,8 +176,9 @@ Tasks:
     #[cfg(test)] @mod tests de ./user.rs : SQLite en mémoire migré par @crate::migration::Migrator ;
     @tokio::join! pour le scenario de course ; @sea_orm::MockDatabase pour le scenario
     RecordNotFound (feature `mock` déjà en dev-dependency). Décompte : 8 `Scenario` → au moins 8
-    tests ; un seul test inline vit aujourd'hui (@resolve_user_creates_then_reuses_same_row, qui
-    couvre le scenario « re-login »). Les tests d'usage des surfaces (REST, GraphQL, MCP via la
+    tests ; un test inline y vivait à la rédaction de la spec (@resolve_user_creates_then_reuses_same_row,
+    qui couvre le scenario « re-login »), deux autres posés par la vague « rebond d'INSERT » —
+    recompte synchronisé 2026-09-30). Les tests d'usage des surfaces (REST, GraphQL, MCP via la
     délégation de @crate::rest::core) restent dans les specs des surfaces qui les exercent.
   [x] @email : snapshot verrouillé, pas d'upsert (arbitré par Sébastien le 2026-09-29, `Must`) —
     aucun changement de code.

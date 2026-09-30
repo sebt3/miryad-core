@@ -1,3 +1,8 @@
+//! Entité SeaORM de la table `miryad_users` et get-or-create `resolve_user` : lien du claim
+//! `sub` de l'`OIDC` vers un `id` interne `i32` stable, seule identité comparée par le `RBAC`
+//! et indexée par `sync_group_memberships`. Les surfaces `REST`, `GraphQL` et `MCP` ne
+//! rencontrent ce fichier que par `resolve_user` — `User` n'est pas une `MiryadResource`.
+
 use chrono::Utc;
 use sea_orm::entity::prelude::*;
 use sea_orm::{ConnectionTrait, Set};
@@ -18,7 +23,9 @@ pub struct Model {
     /// depuis (get-or-create, pas `upsert`).
     pub email: Option<String>,
     /// Nullable, colonne réservée en attente de feature : créée à `NULL`, jamais écrite par la
-    /// crate.
+    /// crate (arbitré 2026-09-29). La migration committée qui la pose est immuable : la colonne
+    /// reste, c'est la feature consommatrice qui viendra l'écrire, pas une réécriture de
+    /// migration.
     pub display_name: Option<String>,
     /// Horodatage de création : `Utc::now` de l'application à l'`insert` (aucun défaut côté
     /// serveur), figé ensuite.
@@ -86,7 +93,7 @@ pub async fn resolve_user<C: ConnectionTrait>(
 mod tests {
     use super::*;
     use crate::migration::Migrator;
-    use sea_orm::{DbBackend, MockDatabase, RuntimeErr};
+    use sea_orm::{DbBackend, Iden, Iterable, MockDatabase, RuntimeErr};
     use sea_orm_migration::MigratorTrait;
     use std::sync::{Arc, Mutex};
 
@@ -289,5 +296,187 @@ mod tests {
                 .any(|(level, _)| matches!(*level, tracing::Level::WARN | tracing::Level::ERROR)),
             "course normale : le rebond ne doit jamais être tracé `warn` ou `error` : {lines:?}"
         );
+    }
+
+    /// `Scenario` : « première vue avec email crée la ligne complète ».
+    #[tokio::test]
+    async fn resolve_user_first_view_with_email_creates_full_row() {
+        let db = test_db().await;
+        let before = Utc::now();
+        let model = resolve_user(&db, "sub-1", Some("a@example.com"))
+            .await
+            .expect("first view creates the row");
+        let after = Utc::now();
+
+        assert!(
+            model.id > 0,
+            "`id` posé par la base, strictement positif (PK reposée par `exec_with_returning`) : {:?}",
+            model.id
+        );
+        assert_eq!(model.subject, "sub-1");
+        assert_eq!(model.email.as_deref(), Some("a@example.com"));
+        assert!(model.display_name.is_none(), "`display_name` NULL à la création");
+        assert!(
+            model.created_at >= before && model.created_at <= after,
+            "`created_at` posé à l'horloge applicative `Utc::now` de l'`insert` : {}",
+            model.created_at
+        );
+
+        let rows = Entity::find()
+            .filter(Column::Subject.eq("sub-1"))
+            .all(&db)
+            .await
+            .expect("query succeeds");
+        assert_eq!(
+            rows.len(),
+            1,
+            "une relecture par `Column::Subject` ne trouve qu'une seule ligne"
+        );
+    }
+
+    /// `Scenario` : « première vue sans email ».
+    #[tokio::test]
+    async fn resolve_user_first_view_without_email_stores_null_email() {
+        let db = test_db().await;
+        let before = Utc::now();
+        let model = resolve_user(&db, "sub-2", None)
+            .await
+            .expect("first view without email creates the row");
+        let after = Utc::now();
+
+        assert!(model.id > 0, "ligne fraîchement créée : {:?}", model.id);
+        assert_eq!(model.subject, "sub-2");
+        assert!(
+            model.email.is_none(),
+            "le `None` passé en argument devient SQL `NULL`"
+        );
+        assert!(model.display_name.is_none(), "`display_name` NULL");
+        assert!(
+            model.created_at >= before && model.created_at <= after,
+            "`created_at` non NULL, posé par l'application : {}",
+            model.created_at
+        );
+    }
+
+    /// `Scenario` : « re-login ne crée ni n'écrase rien » — verrouille le volet que le test
+    /// gelé `resolve_user_creates_then_reuses_same_row` n'assertionne pas : le `email` passé à
+    /// la re-vue est ignoré (snapshot de la première vue, get-or-create pas `upsert`, arbitré
+    /// 2026-09-29) et `created_at` comme la ligne entière restent intacts.
+    #[tokio::test]
+    async fn resolve_user_relogin_with_changed_email_overwrites_nothing() {
+        let db = test_db().await;
+        let first = resolve_user(&db, "sub-3", Some("a@example.com"))
+            .await
+            .expect("première vue crée la ligne");
+
+        let second = resolve_user(&db, "sub-3", Some("changed@example.com"))
+            .await
+            .expect("re-login rend la ligne existante");
+
+        assert_eq!(first.id, second.id, "`id` inchangé");
+        assert_eq!(
+            second.email.as_deref(),
+            Some("a@example.com"),
+            "`email` reste le snapshot de la première vue : l'argument de la re-vue n'est jamais écrit"
+        );
+        assert_eq!(first.created_at, second.created_at, "`created_at` inchangé");
+
+        let row = Entity::find()
+            .filter(Column::Subject.eq("sub-3"))
+            .one(&db)
+            .await
+            .expect("query succeeds")
+            .expect("une seule ligne posée");
+        assert_eq!(
+            row.email.as_deref(),
+            Some("a@example.com"),
+            "aucun `UPDATE` n'a modifié la ligne en base"
+        );
+    }
+
+    /// `Scenario` : « deux premières vues concurrentes du même subject ne laissent qu'une ligne »
+    /// — course du double callback OIDC reproduite par `tokio::join!` : le perdant heurte la
+    /// contrainte `UNIQUE`, le bras `Err(_)` du rebond relit par `subject` et rend la ligne du
+    /// gagnant.
+    #[tokio::test]
+    async fn two_concurrent_first_views_leave_one_row_with_the_same_id() {
+        let db = test_db().await;
+        let (first, second) = tokio::join!(
+            resolve_user(&db, "sub-race", None),
+            resolve_user(&db, "sub-race", None),
+        );
+        let first = first.expect("premier appel concurrent rend Ok");
+        let second = second.expect("second appel concurrent rend Ok (rebond du perdant)");
+
+        assert_eq!(first.id, second.id, "les deux rendent le même `id`");
+
+        let rows = Entity::find()
+            .filter(Column::Subject.eq("sub-race"))
+            .all(&db)
+            .await
+            .expect("query succeeds");
+        assert_eq!(rows.len(), 1, "la table ne porte qu'une ligne pour `sub-race`");
+    }
+
+    /// `Scenario` : « deux subjects qui ne diffèrent que par la casse sont deux utilisateurs » —
+    /// comparaison `=` SQL sans normalisation, sensible à la casse (arbitré 2026-09-29).
+    #[tokio::test]
+    async fn subjects_differing_only_by_case_are_two_distinct_users() {
+        let db = test_db().await;
+        let upper = resolve_user(&db, "sub-CASE", None)
+            .await
+            .expect("première ligne créée");
+        let lower = resolve_user(&db, "sub-case", None)
+            .await
+            .expect("seconde ligne créée, `sub` ≠ `SUB`");
+
+        assert_ne!(upper.id, lower.id, "deux `id` distincts");
+
+        let rows = Entity::find().all(&db).await.expect("query succeeds");
+        assert_eq!(rows.len(), 2, "deux lignes distinctes coexistent");
+    }
+
+    /// `Scenario` : « subject vide est posé sans garde » — comportement constaté verrouillé, la
+    /// non-vacuité du `sub` relève de `crate::auth` (arbitré 2026-09-29).
+    #[tokio::test]
+    async fn empty_subject_is_posed_as_row_without_guard() {
+        let db = test_db().await;
+        let model = resolve_user(&db, "", None)
+            .await
+            .expect("aucune garde locale dans resolve_user");
+
+        assert_eq!(model.subject, "", "une ligne avec `subject = ''` est posée");
+        let rows = Entity::find()
+            .filter(Column::Subject.eq(""))
+            .all(&db)
+            .await
+            .expect("query succeeds");
+        assert_eq!(rows.len(), 1);
+    }
+
+    /// `Scenario` : « l'entité n'expose que les cinq colonnes de la migration » — énumération de
+    /// `Column::iter()` contre le DDL de `m20260822_000002`, plus l'aller-retour
+    /// insertion-relecture avec `email` et `display_name` créés à `NULL`.
+    #[tokio::test]
+    async fn entity_exposes_exactly_the_five_columns_of_its_migration() {
+        let names: Vec<String> = Column::iter().map(|column| column.to_string()).collect();
+        assert_eq!(
+            names,
+            ["id", "subject", "email", "display_name", "created_at"],
+            "exactement les cinq colonnes de la migration, dans l'ordre du modèle"
+        );
+
+        let db = test_db().await;
+        resolve_user(&db, "sub-cols", None)
+            .await
+            .expect("ligne créée avec email et display_name à NULL");
+        let row = Entity::find()
+            .filter(Column::Subject.eq("sub-cols"))
+            .one(&db)
+            .await
+            .expect("query succeeds")
+            .expect("ligne relue");
+        assert!(row.email.is_none(), "aller-retour : `email` NULL");
+        assert!(row.display_name.is_none(), "aller-retour : `display_name` NULL");
     }
 }
