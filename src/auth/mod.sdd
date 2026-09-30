@@ -57,7 +57,10 @@ Must:
     @exchange_code exigeant le verifier exact du même couple), la
     chiffrer par @cookie::CookieJar::private_mut avec @MiryadAuthState::cookie_key sous le nom
     de cookie `miryad_oidc_pending`, et l'émettre avec les attributs littéraux
-    `HttpOnly; SameSite=Lax; Path=/; Max-Age=300`. Le nom de cookie sert d'associated-data au
+    `HttpOnly; SameSite=Lax; Path=/; Max-Age=300`, `Secure` inséré après `HttpOnly` quand
+    @MiryadAuthState::secure_cookies est `true` et omis sinon (mêmes règles que le cookie de
+    session, arbitré par Sébastien le 2026-09-29 — `SameSite=Lax` conservé, le retour de l'IdP
+    est cross-site). Le nom de cookie sert d'associated-data au
     chiffrement (source cookie 0.18.2, secure/private.rs) : @handler_callback déchiffre donc
     sous ce nom exactement.
   Dans @handler_callback : vérifier la correspondance du paramètre `state` avec le CSRF extrait
@@ -78,7 +81,9 @@ Must:
     d'échange, puis trace @tracing de niveau `info` avec le champ `subject`, puis la redirection `302` vers
     @MiryadAuthState::post_login_redirect portant deux en-têtes @SET_COOKIE ordonnés — le cookie
     de session construit par @cookie::build_set_cookie, puis la purge
-    `miryad_oidc_pending=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`.
+    `miryad_oidc_pending=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`, `Secure` inséré de même
+    selon @MiryadAuthState::secure_cookies (la purge porte les mêmes attributs que la pose,
+    arbitré 2026-09-29 — sinon le navigateur ne la substitue pas à la valeur posée en `Secure`).
   Rendre @handler_logout inconditionnel : `302` vers @MiryadAuthState::post_logout_redirect et
     @cookie::clear_cookie(), sans lire de cookie, sans toucher @MiryadAuthState::db, sans `401`
     possible. @handler_login n'utilise pas non plus le champ `db` ; seul @handler_callback le
@@ -219,12 +224,14 @@ Returns:
     pas monté ici garde le sort du routeur englobant (par défaut `404`).
   @handler_login succès — `302` @StatusCode::FOUND, en-tête `Location` = l'URL
     d'autorisation renvoyée par @authorization_url, un en-tête @SET_COOKIE
-    `miryad_oidc_pending=<valeur chiffrée>; HttpOnly; SameSite=Lax; Path=/; Max-Age=300`,
+    `miryad_oidc_pending=<valeur chiffrée>; HttpOnly; SameSite=Lax; Path=/; Max-Age=300` avec
+    `; Secure` après `HttpOnly` si @MiryadAuthState::secure_cookies est `true` (arbitré 2026-09-29),
     corps vide.
   @handler_callback succès — `302`, `Location` = le `post_login_redirect` de l'état, deux
     @SET_COOKIE dans
     l'ordre : celui de @cookie::build_set_cookie (session `miryad_session`), puis
-    `miryad_oidc_pending=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`, corps vide.
+    `miryad_oidc_pending=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0` avec `; Secure` après
+    `HttpOnly` selon la même valeur de @MiryadAuthState::secure_cookies que la pose, corps vide.
   @handler_logout — toujours `302`, `Location` = le `post_logout_redirect` de l'état,
     @SET_COOKIE
     @cookie::clear_cookie() (nom `miryad_session`, `Max-Age=0`), corps vide.
@@ -286,8 +293,9 @@ Handles:
 Tasks:
   [ ] `Secure` sur le cookie pending (revue 2026-09-29) : appliquer `MiryadAuthState::secure_cookies`
     à la pose et au retrait de `miryad_oidc_pending` (mêmes règles que la session, `SameSite=Lax`
-    conservé — retour cross-site de l'IdP). Amender les attributs littéraux de `Must`/`Returns`
-    et les Scenario `login`/`callback succès`, un test par valeur de `secure`.
+    conservé — retour cross-site de l'IdP). Spec amendée le 2026-10-01 : attributs littéraux de
+    `Must`/`Returns` et les deux `Scenario` portent désormais le `Secure` conditionnel — reste
+    l'implémentation et un test par valeur de `secure`.
   [ ] Garde de montage OwnerOnly-sans-colonne : voir ./../rest/mod.sdd (`assert!` plutôt que
     `#[allow(clippy::panic)]`) — pas de changement ici.
   [x] Élargir @MockOidcClient pour rendre le callback réussi testable (arbitré par Sébastien le
@@ -331,7 +339,9 @@ Scenario: login redirige vers le fournisseur et pose le pending chiffré
   Then le statut est `302`
   And l'en-tête `Location` vaut `https://issuer.example.com/authorize` — l'URL du mock
   And l'en-tête @SET_COOKIE commence par `miryad_oidc_pending=` suivi d'une valeur chiffrée et
-    se termine par `; HttpOnly; SameSite=Lax; Path=/; Max-Age=300`
+    se termine par `; HttpOnly; SameSite=Lax; Path=/; Max-Age=300`, avec `; Secure` inséré après
+    `HttpOnly` si l'état porte `secure_cookies: true` et omis si `false` (un test par valeur,
+    arbitré 2026-09-29)
   But aucun en-tête @SET_COOKIE ne porte nom `miryad_session` ou `Max-Age=0`
 
 Scenario: callback sans en-tête Cookie est rejeté avant la base
@@ -422,7 +432,9 @@ Scenario: callback succès pose la session puis purge le pending
   When `GET /auth/callback?code=valide&state=<csrf du pending>`
   Then le statut est `302` et `Location` vaut le `post_login_redirect`
   And deux en-têtes @SET_COOKIE sortent dans l'ordre : d'abord nom `miryad_session`, ensuite
-    nom `miryad_oidc_pending` avec `Max-Age=0`
+    nom `miryad_oidc_pending` avec `Max-Age=0`, la purge portant `; Secure` après `HttpOnly` si
+    l'état porte `secure_cookies: true` et l'omettant sinon (mêmes attributs que la pose,
+    arbitré 2026-09-29)
   And la trace `info` du succès porte le champ `subject`
   # Devient exécutable avec le mode configurable de @MockOidcClient arbitré le 2026-09-27
   # (`Tasks`, cross-file ./oidc.sdd) — plus besoin d'un fournisseur factice réseau.

@@ -500,6 +500,19 @@ Scenario: Échange de code réussi rend le jeton brut, les claims et les groups
   And le serveur fake a reçu un `POST /token` avec en-tête `Authorization: Basic`, et un corps portant `grant_type=authorization_code`, `code`, `redirect_uri` du configuré et `code_verifier` (arbitré 2026-09-27) — le secret du client ne voyage que sur cet appel
   But l'échange réussi n'a posé aucune trace @tracing
 
+Scenario: Client public sans secret — requête /token nue d'Authorization, PKCE seul
+  Given un IdP fake dont `/token` enregistre les en-têtes reçus (harnais @MockIdP du fichier),
+    monté sur une @OidcConfig à @client_secret @None, et un couple frais d'@authorization_url
+  When @exchange_code est appelé avec le code, le @Nonce et le @PkceCodeVerifier exacts du couple
+  Then le `POST /token` reçu par l'IdP fake ne porte AUCUNE en-tête `Authorization` — pas de
+    @Basic vide : @AuthType::BasicAuth n'est posé que sur la présence d'un secret (contrat de
+    ./config.sdd « client_secret absent exprime un client public », assertion déportée ici faute
+    de harnais réseau en ./config.rs)
+  And le corps porte bien `code_verifier` — le client public s'authentifie par PKCE `S256` seul
+    (arbitré 2026-09-27)
+  # La vérification de l'`id_token` de réponse est hors du `Then` : sans secret, aucune fixture
+  # HS256 vérifiable n'existe et le rejet éventuel du vérifieur ne regarde que la réponse.
+
 Scenario: Verifier PKCE divergent rejette l'échange
   Given le même IdP fake complet et couple @authorization_url valide
   When @exchange_code est appelé avec le bon code et le bon nonce mais un @PkceCodeVerifier

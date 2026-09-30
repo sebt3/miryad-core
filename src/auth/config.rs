@@ -139,4 +139,136 @@ mod tests {
         fn assert_send_sync_static<T: Send + Sync + 'static>() {}
         assert_send_sync_static::<OidcConfig>();
     }
+
+    // ——— Scenarios runtime : `OidcClient::new` sur URL `.invalid` (RFC 6761, jamais résolu) ———
+
+    /// Rendu `Display` complet du refus attendu (préfixe `MRD-AUTH-003` posé par ./error.rs),
+    /// ou `panic!` explicite si `OidcClient::new` a construit au lieu de refuser.
+    async fn display_of_new_rejection(config: &OidcConfig) -> String {
+        match crate::auth::oidc::OidcClient::new(config).await {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("un refus `AuthError::Oidc` était attendu pour cette config"),
+        }
+    }
+
+    /// `Must` de `Done when` : préfixe exact du code attendu, et exclusion explicite des autres
+    /// codes `MRD-AUTH-*` — jamais un `contains` large.
+    fn assert_display_carries_only(display: &str, prefix: &str, forbidden: &[&str]) {
+        assert!(
+            display.starts_with(prefix),
+            "préfixe attendu `{prefix}` : {display}"
+        );
+        for code in forbidden {
+            assert!(
+                !display.contains(code),
+                "le code {code} ne doit pas apparaître : {display}"
+            );
+        }
+    }
+
+    /// `Scenario` : « issuer non parseable rejette avant tout échange » — la parse de l'issuer
+    /// est la première étape de `OidcClient::new`, donc `004` seul, sans `005`/`006`/`007`/`008`.
+    #[tokio::test]
+    async fn issuer_non_parseable_rejette_004_avant_tout_echange() {
+        let config = OidcConfig {
+            issuer_url: "pas une url".to_string(),
+            client_id: "cid".to_string(),
+            client_secret: Some("secret".to_string()),
+            redirect_url: "https://app.invalid/callback".to_string(),
+            scopes: vec![],
+            ca_cert: None,
+            connect_timeout: std::time::Duration::from_secs(5),
+            timeout: std::time::Duration::from_secs(15),
+        };
+
+        let display = display_of_new_rejection(&config).await;
+        assert_display_carries_only(
+            &display,
+            "MRD-AUTH-003: OIDC error: MRD-AUTH-004:",
+            &["MRD-AUTH-005", "MRD-AUTH-006", "MRD-AUTH-007", "MRD-AUTH-008"],
+        );
+    }
+
+    /// `Scenario` : « `ca_cert` sans aucun bloc PEM refuse immédiatement en 007 » — la confusion
+    /// contenu contre chemin est nommée à la source, avant toute construction de client
+    /// (`008`) ou discovery (`005`).
+    ///
+    /// Écart spec↔code consigné dans le rapport de la tâche B1b : le `Scenario` jumeau
+    /// « bloc PEM au contenu invalide casse la construction du client HTTP » affirme `008` pour
+    /// un corps `!!!`, mais ./oidc.rs itère le PEM via `rustls_pki_types` qui décode le base64 —
+    /// un corps non décodable tombe déjà en `007` (`base64 decode error: InvalidCharacter(33)`),
+    /// et `ClientBuilder::build` n'est jamais atteint. Aucun test n'a été écrit pour ce
+    /// `Scenario` : il faut d'abord trancher la ligne de spec.
+    #[tokio::test]
+    async fn ca_cert_sans_aucun_bloc_pem_refuse_immediatement_007() {
+        let config = OidcConfig {
+            ca_cert: Some("ca-bundle.pem".to_string()),
+            ..config_with_secret("secret")
+        };
+
+        let display = display_of_new_rejection(&config).await;
+        assert_display_carries_only(
+            &display,
+            "MRD-AUTH-003: OIDC error: MRD-AUTH-007:",
+            &["MRD-AUTH-004", "MRD-AUTH-005", "MRD-AUTH-006", "MRD-AUTH-008"],
+        );
+    }
+
+    /// `Scenario` : « bloc PEM au contenu DER invalide casse la construction du client HTTP » —
+    /// corps base64 standard de `0x00 0x01 0x02` (`AAEC`) : le bloc passe le portillon `007`,
+    /// `from_pem` le stocke sans parser (`__rustls` seul) et `ClientBuilder::build` le refuse —
+    /// `008`, jamais `007`.
+    #[tokio::test]
+    async fn pem_block_with_invalid_der_body_refused_008_not_007() {
+        let config = OidcConfig {
+            ca_cert: Some("-----BEGIN CERTIFICATE-----\nAAEC\n-----END CERTIFICATE-----\n".to_string()),
+            ..config_with_secret("secret")
+        };
+
+        let display = display_of_new_rejection(&config).await;
+        assert_display_carries_only(
+            &display,
+            "MRD-AUTH-003: OIDC error: MRD-AUTH-008: failed to build OIDC HTTP client: ",
+            &["MRD-AUTH-004", "MRD-AUTH-005", "MRD-AUTH-006", "MRD-AUTH-007"],
+        );
+    }
+
+    /// `Scenario` : « `redirect_url` non parseable ne se révèle qu'après la discovery » — ordre de
+    /// sources issuer, PEM de `ca_cert`, client HTTP, discovery, redirect : sur un émetteur
+    /// injoignable c'est `005` qui tombe, et `006` reste masqué.
+    #[tokio::test]
+    async fn redirect_non_parseable_ne_se_revele_qu_apres_la_discovery_005() {
+        let config = OidcConfig {
+            redirect_url: "pas une url".to_string(),
+            ..config_with_secret("secret")
+        };
+
+        let display = display_of_new_rejection(&config).await;
+        assert_display_carries_only(
+            &display,
+            "MRD-AUTH-003: OIDC error: MRD-AUTH-005:",
+            &["MRD-AUTH-004", "MRD-AUTH-006", "MRD-AUTH-007", "MRD-AUTH-008"],
+        );
+    }
+
+    /// `Scenario` : « `client_secret` absent exprime un client public » — première moitié du
+    /// `Then`, exécutable sans fournisseur : la construction et la discovery se comportent
+    /// comme avec un secret, donc `005` sur l'émetteur `.invalid`. La seconde moitié (`/token`
+    /// sans en-tête `Authorization: Basic` sur un `IdP` fake) n'est pas exécutable dans ./config.rs
+    /// : le harnais `MockIdP` boucle-sur-`Authorization` vit en `cfg(test)` dans ./oidc.rs et
+    /// ./oidc.sdd en porte déjà le `Scenario` ; le duplicoder ici sortirait du `Owns`.
+    #[tokio::test]
+    async fn client_secret_absent_exprime_un_client_public() {
+        let config = OidcConfig {
+            client_secret: None,
+            ..config_with_secret("unused")
+        };
+
+        let display = display_of_new_rejection(&config).await;
+        assert_display_carries_only(
+            &display,
+            "MRD-AUTH-003: OIDC error: MRD-AUTH-005:",
+            &["MRD-AUTH-004", "MRD-AUTH-006", "MRD-AUTH-007", "MRD-AUTH-008"],
+        );
+    }
 }

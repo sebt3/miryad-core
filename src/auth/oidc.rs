@@ -688,7 +688,11 @@ mod tests {
         expected_code_verifier: Arc<Mutex<Option<String>>>,
         requests: Arc<Mutex<Vec<String>>>,
         token_body: Arc<Mutex<String>>,
-        token_authorization: Arc<Mutex<String>>,
+        /// En-tête `Authorization` capturé sur `POST /token` : `None` = en-tête absent,
+        /// `Some(v)` = en-tête présent de valeur `v`. Un `String` par défaut vide ne distinguerait
+        /// pas l'absence d'une en-tête vide — requis par le `Scenario` « Client public sans secret »
+        /// qui affirme l'absence totale d'en-tête (test-only, extension du 2026-09-29).
+        token_authorization: Arc<Mutex<Option<String>>>,
     }
 
     struct MockIdP {
@@ -764,7 +768,7 @@ mod tests {
                 expected_code_verifier: Arc::new(Mutex::new(None)),
                 requests: Arc::new(Mutex::new(Vec::new())),
                 token_body: Arc::new(Mutex::new(String::new())),
-                token_authorization: Arc::new(Mutex::new(String::new())),
+                token_authorization: Arc::new(Mutex::new(None)),
             });
             tokio::spawn(serve_idp(listener, Arc::clone(&state)));
 
@@ -799,7 +803,7 @@ mod tests {
                 .clone()
         }
 
-        fn token_authorization(&self) -> String {
+        fn token_authorization(&self) -> Option<String> {
             self.state
                 .token_authorization
                 .lock()
@@ -928,9 +932,8 @@ mod tests {
         *state
             .token_authorization
             .lock()
-            .expect("test mutex is not poisoned") = header_value(&request.head, "authorization")
-            .unwrap_or_default()
-            .to_string();
+            .expect("test mutex is not poisoned") =
+            header_value(&request.head, "authorization").map(str::to_string);
 
         match &state.token_mode {
             TokenMode::IdToken => {
@@ -1431,7 +1434,9 @@ mod tests {
         );
         assert_eq!(result.groups, vec!["admin".to_string(), "editors".to_string()]);
 
-        let authorization = idp.token_authorization();
+        let authorization = idp
+            .token_authorization()
+            .expect("avec un secret configuré, l'en-tête Authorization doit être posé");
         assert!(
             authorization.starts_with("Basic "),
             "le POST /token porte l'authentification Basic : {authorization:?}"
@@ -1446,6 +1451,46 @@ mod tests {
         assert!(
             body.contains(&format!("code_verifier={}", verifier.secret())),
             "PKCE S256 (arbitré 2026-09-27) : le corps porte le code_verifier : {body}"
+        );
+    }
+
+    /// `Scenario` : « Client public sans secret — requête `/token` nue d'`Authorization`, PKCE
+    /// seul » (amendé 2026-09-29 dans ./oidc.sdd, inséré entre les `Scenario` numérotés 11 et 12).
+    ///
+    /// Le mode de réponse `NoIdToken` est un choix de fixture hors assertion : sans secret aucune
+    /// fixture `HS256` vérifiable n'existe, et le commentaire du `Scenario` met la vérification de
+    /// l'`id_token` de réponse hors du `Then` — la réponse ne sert qu'à laisser la requête passer
+    /// par `/token` et y être enregistrée. Attendu vert d'emblée : oauth2 5.0.0 ne pose l'en-tête
+    /// `Basic` que sur `(AuthType::BasicAuth, Some(secret))` (source vendue `endpoint.rs`),
+    /// `AuthType::BasicAuth` n'est jamais posé sans secret par ./oidc.rs.
+    #[tokio::test]
+    async fn public_client_exchanges_code_without_any_authorization_header() {
+        let idp = MockIdP::start(IdPPlan {
+            token_mode: TokenMode::NoIdToken,
+            ..IdPPlan::default()
+        });
+        let mut config = idp.config("public-client", "secret-non-utilise");
+        // Client public (./config.sdd « client_secret absent exprime un client public »).
+        config.client_secret = None;
+        let client = OidcClient::new(&config)
+            .await
+            .expect("la discovery se comporte comme avec un secret");
+        let (_url, _csrf, nonce, verifier) = client.authorization_url();
+
+        // Résultat hors assertion (commentaire du `Scenario`) : seul ce que l'`IdP` fake a capturé
+        // preuve le contrat.
+        let _outcome = client.exchange_code("the-code", &nonce, &verifier).await;
+
+        assert_eq!(
+            idp.token_authorization(),
+            None,
+            "le POST /token d'un client public ne porte AUCUNE en-tête Authorization, \
+             pas de Basic vide"
+        );
+        let body = idp.token_body();
+        assert!(
+            body.contains(&format!("code_verifier={}", verifier.secret())),
+            "le client public prouve sa possession du code par PKCE S256 seul : {body}"
         );
     }
 

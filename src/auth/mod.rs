@@ -107,8 +107,13 @@ async fn handler_login(State(auth): State<MiryadAuthState>) -> Result<impl IntoR
     let mut private_jar = jar.private_mut(&auth.cookie_key);
     private_jar.add(Cookie::new(PENDING_COOKIE_NAME, pending_value));
     let encrypted_value = jar.get(PENDING_COOKIE_NAME).map_or("", Cookie::value);
-    let set_cookie_pending =
-        format!("{PENDING_COOKIE_NAME}={encrypted_value}; HttpOnly; SameSite=Lax; Path=/; Max-Age=300");
+    // `Secure` conditionnel (arbitré 2026-09-29, `mod.sdd` `Must`/`Returns`) : mêmes règles que
+    // le cookie de session — inséré après `HttpOnly` selon `MiryadAuthState::secure_cookies`,
+    // `SameSite=Lax` conservé (le retour de l'IdP est cross-site).
+    let secure_attr = if auth.secure_cookies { "; Secure" } else { "" };
+    let set_cookie_pending = format!(
+        "{PENDING_COOKIE_NAME}={encrypted_value}; HttpOnly{secure_attr}; SameSite=Lax; Path=/; Max-Age=300"
+    );
 
     Response::builder()
         .status(StatusCode::FOUND)
@@ -158,8 +163,12 @@ async fn handler_callback(
 
     let set_cookie_main =
         crate::auth::cookie::build_set_cookie(&identity, &auth.cookie_key, auth.secure_cookies);
+    // La purge porte les mêmes attributs que la pose (arbitré 2026-09-29, `mod.sdd` `Must`) :
+    // `Secure` inséré après `HttpOnly` selon `MiryadAuthState::secure_cookies`, sinon le
+    // navigateur ne la substitue pas à la valeur posée en `Secure`.
+    let secure_attr = if auth.secure_cookies { "; Secure" } else { "" };
     let set_cookie_clear_pending =
-        format!("{PENDING_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+        format!("{PENDING_COOKIE_NAME}=; HttpOnly{secure_attr}; SameSite=Lax; Path=/; Max-Age=0");
 
     tracing::info!(subject = %identity.subject, "OIDC authentication successful");
 
@@ -411,6 +420,11 @@ mod tests {
             "attributs littéraux du pending : {pending}"
         );
         assert!(
+            !pending.contains("; Secure"),
+            "`secure_cookies: false` (le défaut de cette fixture) : aucun `Secure` sur le pending, \
+             chaîne d'attributs exactement `HttpOnly; SameSite=Lax; Path=/; Max-Age=300` : {pending}"
+        );
+        assert!(
             !pending.contains(SESSION_COOKIE_NAME),
             "login ne pose jamais la session : {pending}"
         );
@@ -429,6 +443,37 @@ mod tests {
             3,
             "le pending porte `csrf:nonce:pkce_verifier` : {clear}"
         );
+    }
+
+    /// Deuxième test du `Scenario` « login redirige vers le fournisseur et pose le pending
+    /// chiffré » (un test par valeur, arbitré 2026-09-29) : sous `secure_cookies: true`, le
+    /// `; Secure` est inséré après `HttpOnly`, `SameSite=Lax` conservé.
+    #[tokio::test]
+    async fn login_redirects_and_sets_pending_cookie_with_secure_attribute() {
+        let app = app_on(state_on(MockOidcClient::default(), unprepared_db(), true));
+
+        let got = served(Request::builder().uri("/auth/login"), app).await;
+
+        assert_eq!(got.status, StatusCode::FOUND);
+        assert_eq!(got.location(), "https://issuer.example.com/authorize");
+
+        let cookies = got.set_cookies();
+        assert_eq!(cookies.len(), 1, "une seule ligne `Set-Cookie` : {cookies:?}");
+        let pending = cookies.first().expect("une ligne de pending");
+        assert!(
+            pending.starts_with(&format!("{PENDING_COOKIE_NAME}=")),
+            "le nom posé est le pending : {pending}"
+        );
+        assert!(
+            pending.ends_with("; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=300"),
+            "attributs littéraux du pending sous `secure_cookies: true` : `Secure` après \
+             `HttpOnly`, `SameSite=Lax` conservé : {pending}"
+        );
+        assert!(
+            !pending.contains(SESSION_COOKIE_NAME),
+            "login ne pose jamais la session : {pending}"
+        );
+        assert!(!pending.contains("Max-Age=0"), "login ne purge rien : {pending}");
     }
 
     /// `Scenario` : « callback sans en-tête Cookie est rejeté avant la base » — `400` et plus le
@@ -638,12 +683,12 @@ mod tests {
         }
     }
 
-    /// `Scenario` : « callback succès pose la session puis purge le pending » — exécutable depuis
-    /// le mode configurable de `MockOidcClient` (arbitré 2026-09-27) et une `MockDatabase` préparée
-    /// pour `resolve_user`, `ensure_group` et la lecture des appartenances. Deux `Set-Cookie`
-    /// ordonnés, `Secure` issu de `state.secure_cookies`, trace `info` avec `subject`.
-    #[tokio::test]
-    async fn callback_success_sets_session_then_purges_pending() {
+    /// Parcours « callback succès » partagé par les deux tests du `Scenario`, paramétré par
+    /// `secure_cookies` (un test par valeur, arbitré 2026-09-29) : `MockOidcClient` en mode
+    /// configurable, `MockDatabase` préparée pour `resolve_user`, `ensure_group` et la lecture des
+    /// appartenances, pending au bon CSRF. Rend la réponse servie, les traces captées et l'`exp`
+    /// du JWT de session.
+    async fn serve_callback_success(secure: bool) -> (Served, Vec<String>, u64) {
         let exp = now_secs() + 3600;
         let login_result = OidcLoginResult {
             identity: OidcIdentity {
@@ -679,7 +724,7 @@ mod tests {
         let app = app_on(state_on(
             MockOidcClient::with_login_result(login_result),
             db,
-            true,
+            secure,
         ));
         let header = pending_header("csrf-ok:nonce-ok:verifier-ok", &::cookie::Key::from(&[0u8; 64]));
 
@@ -691,6 +736,16 @@ mod tests {
             app,
         )
         .await;
+        (got, captured.lines(), exp)
+    }
+
+    /// `Scenario` : « callback succès pose la session puis purge le pending » — variante
+    /// `secure_cookies: true` (arbitré 2026-09-29) : la purge du pending porte les mêmes
+    /// attributs que la pose, donc le `; Secure` inséré après `HttpOnly`. Deux `Set-Cookie`
+    /// ordonnés, trace `info` avec `subject`.
+    #[tokio::test]
+    async fn callback_success_sets_session_then_purges_pending() {
+        let (got, lines, exp) = serve_callback_success(true).await;
 
         assert_eq!(got.status, StatusCode::FOUND);
         assert_eq!(
@@ -728,11 +783,49 @@ mod tests {
         );
         assert_eq!(
             purge,
-            &format!("{PENDING_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"),
-            "purge littérale du pending, sans `Secure`"
+            &format!("{PENDING_COOKIE_NAME}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0"),
+            "purge du pending aux mêmes attributs que la pose sous `secure_cookies: true` : \
+             `Secure` après `HttpOnly`, `SameSite=Lax` conservé"
         );
 
-        let lines = captured.lines();
+        assert_eq!(lines.len(), 1, "le succès ne trace qu'une ligne : {lines:?}");
+        let info = lines.first().expect("la trace du succès");
+        assert!(
+            info.contains("subject=user-1"),
+            "la trace `info` porte le champ `subject` : {info}"
+        );
+    }
+
+    /// `Scenario` : « callback succès pose la session puis purge le pending » — variante
+    /// `secure_cookies: false` (un test par valeur, arbitré 2026-09-29) : purge sans `Secure`,
+    /// `SameSite=Lax` conservé ; la session non plus ne porte pas `Secure`.
+    #[tokio::test]
+    async fn callback_success_sans_secure_cookies_purge_pending_sans_secure() {
+        let (got, lines, _exp) = serve_callback_success(false).await;
+
+        assert_eq!(got.status, StatusCode::FOUND);
+        assert_eq!(got.location(), "/login-done");
+        assert!(got.body.is_empty(), "corps vide");
+
+        let cookies = got.set_cookies();
+        assert_eq!(cookies.len(), 2, "session puis purge du pending : {cookies:?}");
+        let session = cookies.first().expect("première ligne : la session");
+        let purge = cookies.last().expect("seconde ligne : la purge du pending");
+
+        assert!(
+            cookie_pair(session).starts_with(&format!("{SESSION_COOKIE_NAME}=")),
+            "la session est posée en premier : {session}"
+        );
+        assert!(
+            !session.contains("; Secure"),
+            "`secure_cookies: false` : aucune attribution `Secure` sur la session : {session}"
+        );
+        assert_eq!(
+            purge,
+            &format!("{PENDING_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"),
+            "purge littérale du pending sans `Secure` sous `secure_cookies: false`"
+        );
+
         assert_eq!(lines.len(), 1, "le succès ne trace qu'une ligne : {lines:?}");
         let info = lines.first().expect("la trace du succès");
         assert!(
