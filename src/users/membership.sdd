@@ -45,9 +45,9 @@ Must:
     suppression d'une ligne déjà supprimée entre-temps retourne @Ok avec @DeleteResult::rows_affected à
     `0`, sans erreur (`executor/delete.rs:127-141`). C'est le correctif de l'issue #3 (double callback
     OIDC) ; l'instantané des ids courants n'est jamais rafraîchi pendant la boucle d'insertion.
-  Les écritures ne sont pas atomisées par ce fichier : générique sur @ConnectionTrait,
-    @sync_group_memberships n'ouvre aucune transaction ; passer une transaction rend suppressions et
-    insertions commitables ensemble. Les appelants actuels passent la connexion du pool (voir Tasks [arbitré 2026-09-29]).
+  # Historique : avant l'arbitrage du 2026-09-29, aucune transaction interne (générique sur
+  # @ConnectionTrait seul) — remplacé par le `Must` « transaction interne » plus bas, réalisé
+  # 2026-09-30 (vague B2).
   L'existence de `user_id` n'est pas vérifiée applicativement : le seul garde-fou est la FK `user_id` →
     `miryad_users.id` (et `group_id` → `miryad_groups.id`) de m20260822_000002, en force sur les deux
     backends utilisés — SQLite par `PRAGMA foreign_keys = ON` posé dès la connexion (source sqlx-sqlite
@@ -67,8 +67,11 @@ Must:
   Le fichier compile sans gating : aucune `#[cfg(feature = ...)]` ; le module @users est déclaré non-gaté
     dans `/src/lib.rs` — le fichier est concerné par toutes les combinaisons de la batterie /tooling.sdd.
   @sync_group_memberships ouvre une transaction interne et y exécute toute la réconciliation
-    (suppressions et insertions, @ensure_group compris, générique sur @sea_orm::ConnectionTrait) :
-    tout ou rien, jamais d'utilisateur à moitié réconcilié (arbitré par Sébastien le 2026-09-29).
+    (suppressions et insertions, @ensure_group compris) : tout ou rien, jamais d'utilisateur à
+    moitié réconcilié (arbitré par Sébastien le 2026-09-29). Le bound du paramètre `db` est
+    @sea_orm::ConnectionTrait + @TransactionTrait — @begin n'existe que sur @TransactionTrait
+    (source sea-orm 2.0.2), @DatabaseConnection l'implémente, les appelants en pool ne changent
+    pas (réalisé 2026-09-30, vague B2).
   Filtrer à l'entrée les noms vides ou blancs du claim, avec une trace @tracing `debug` (arbitré par Sébastien le 2026-09-29) : le
     claim OIDC est la frontière de confiance externe ; @ensure_group n'est pas gardé.
   Le nom dupliqué dans le claim reste absorbé par le `ON CONFLICT DO NOTHING`, sans
@@ -112,13 +115,16 @@ Exposes:
   @ActiveModelBehavior — implantation nue, aucun hook
   @GroupMembership — alias public de @Entity
   @sync_group_memberships — fonction publique asynchrone
-    `async fn sync_group_memberships<C: @ConnectionTrait>(db: &C, user_id: i32, groups: &[String]) -> Result<(), @DbErr>`
+    `async fn sync_group_memberships<C: @ConnectionTrait + @TransactionTrait>(db: &C, user_id: i32, groups: &[String]) -> Result<(), @DbErr>`
+    (bound élargi à @TransactionTrait le 2026-09-30 pour la transaction interne arbitrée 2026-09-29)
   @GroupMembership et @sync_group_memberships sont réexportés par le module parent (spec voisine ./mod.rs,
     via `crate::users`)
 
 Accepts:
   @sync_group_memberships — trois arguments :
-    db — référence @ConnectionTrait : pool, connexion unique ou transaction ; rien n'est ouvert ici
+    db — référence @ConnectionTrait + @TransactionTrait : pool (implémente @TransactionTrait,
+      source sea-orm 2.0.2), connexion unique ou transaction ; une @begin interne est ouverte ici
+      (voir `Must` transaction)
     user_id — identifiant interne `i32` de `miryad_users` (jamais le claim `sub`) ; existence non vérifiée
       par la fonction, la FK seule garde-fou
     groups — `&[String]` de noms du claim `groups` d'Authentik (login) ou de la liste de
@@ -127,11 +133,14 @@ Accepts:
 
 Returns:
   `Result<(), @DbErr>` — @Ok ne charrie aucune information : ni les lignes ajoutées, ni les lignes
-    retirées, ni la trace des insertions absorbées par le skip concurrent.
+    retirées, ni la trace des insertions absorbées par le skip concurrent ; @Ok implique transaction
+    interne committée (@commit réussi, réalisé 2026-09-30).
 
 Raises:
   Aucune erreur à code `MRD-*` dans ce fichier ; toutes les pannes remontent en @DbErr brut propagé par
-    `?` :
+    `?`, y compris les pannes de @begin, @commit et @rollback de la transaction interne — @Err
+    implique rollback (la transaction non committée est annulée à la drop, @rollback explicite sur
+    erreur, réalisé 2026-09-30) :
   @ensure_group : erreur de requête sur `miryad_groups`, ou @DbErr de l'@INSERT d'origine propagé
     verbatim quand la relecture est vide (arbitré 2026-09-29 — plus de @DbErr::RecordNotFound
     « vanished » fabriqué, voir ./group.sdd)
@@ -246,12 +255,17 @@ Scenario: Une sync sur un utilisateur inconnu échoue en violation de FK
     `PRAGMA foreign_keys = ON` sur SQLite de test, FK native sur PostgreSQL)
   And aucune appartenance n'existe pour cet identifiant
 
-Scenario: Une panne de ensure_group interrompt avant toute suppression
-  Given un utilisateur membre de deux groupes, et la table `miryad_groups` supprimée par SQL brut
-  When @sync_group_memberships est appelé avec un claim complet
+Scenario: Une panne d'insertion en cours de réconciliation roule tout et remonte le DbErr
+  Given un utilisateur membre de deux groupes `a` et `b`, un claim `["a", "b", "c"]` dont la
+    création du groupe `c` avortée par un trigger SQLite @RAISE(ABORT) sur l'@INSERT
+    dans `miryad_groups` (moyen d'induction vérifié — l'ancienne panne par @DROP TABLE
+    @miryad_groups en cascade FK était invérifiable, corrigé 2026-09-30)
+  When @sync_group_memberships est appelé avec ce claim
   Then l'appel retourne un @DbErr propagé de @ensure_group
-  And les deux appartenances de l'utilisateur sont intactes : la boucle des noms s'exécute avant
-    suppressions et insertions
+  And rien n'est appliqué : les appartenances d'origine sont intactes et le groupe `c` ne
+    survit pas — la transaction interne a rollé la totalité (aucune fenêtre
+    « suppression commitée avant la panne », la boucle des noms étant dans la même
+    transaction que les suppressions)
 
 Scenario: La suppression d'un utilisateur cascade sur ses appartenances
   Given un utilisateur membre d'un groupe
