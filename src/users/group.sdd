@@ -273,7 +273,7 @@ Example:
   base non migrée → @Err(@sea_orm::DbErr) sur les trois fonctions, jamais @Ok(@false)
 
 Tasks:
-  [ ] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé, dans le
+  [x] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé, dans le
     `#[cfg(test)] @mod tests` de ./group.rs (le contrat ne déborde pas du fichier : rbac.rs,
     rest/admin.rs et graphql/principal.rs ont leurs propres specs et tests). Le fichier compte 3
     tests inline : `admin_group_is_seeded_by_migration` couvre « le seed 000003 pose le groupe
@@ -289,6 +289,8 @@ Tasks:
     `group_helpers_propagate_dberr_when_tables_missing` (base `sqlite::memory:` non migrée, sans
     @Migrator::up). Toutes les fixtures suivent le harnais existant : SQLite mémoire +
     @crate::migration::Migrator::up, `l'exemption cfg(test)` de /tooling.sdd pour les @expect.
+    Réalisé 2026-09-30 (B2, validator PASS) : treize tests nommés distincts verts, les trois
+    d'origine gelés sans renommage.
   [x] Rebond d'`INSERT` de @ensure_group (arbitré par Sébastien le 2026-09-29, `Must`) : propager
     l'@sea_orm::DbErr d'origine quand la relance ne trouve rien, trace @tracing `debug` au rebond ;
     supprime le @DbErr::RecordNotFound « vanished » ; miroir de ./user.sdd.

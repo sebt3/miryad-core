@@ -172,10 +172,13 @@ Handles:
     @email NULL.
 
 Tasks:
-  [ ] Convertir chaque `Scenario` de cette spec en un test Rust distinct nommé dans le
+  [x] Convertir chaque `Scenario` de cette spec en un test Rust distinct nommé dans le
     #[cfg(test)] @mod tests de ./user.rs : SQLite en mémoire migré par @crate::migration::Migrator ;
     @tokio::join! pour le scenario de course ; @sea_orm::MockDatabase pour le scenario
-    RecordNotFound (feature `mock` déjà en dev-dependency). Décompte : 8 `Scenario` → au moins 8
+    RecordNotFound (feature `mock` déjà en dev-dependency). Réalisé 2026-09-30 (vague B2,
+    validator PASS) : 8/8 `Scenario` couverts par dix tests nommés distincts, course réellement
+    concurrente (@tokio::join! sur connexion unique), chemin de rebond verrouillé déterministement
+    par les tests MockDatabase. Décompte historique : 8 `Scenario` → au moins 8
     tests ; un test inline y vivait à la rédaction de la spec (@resolve_user_creates_then_reuses_same_row,
     qui couvre le scenario « re-login »), deux autres posés par la vague « rebond d'INSERT » —
     recompte synchronisé 2026-09-30). Les tests d'usage des surfaces (REST, GraphQL, MCP via la
@@ -191,8 +194,9 @@ Tasks:
     transverse ajoutée à `.specdd/bootstrap.project.md`.
   [x] @subject : frontière de confiance, documenté, aucune garde locale (arbitré par Sébastien le
     2026-09-29, `Must`) — aucun changement de code.
-  [ ] @display_name : colonne réservée documentée (arbitré par Sébastien le 2026-09-29, `Must`) —
-    doc-comment sur le champ de `./user.rs`, aucun changement de comportement.
+  [x] @display_name : colonne réservée documentée (arbitré par Sébastien le 2026-09-29, `Must`) —
+    doc-comment sur le champ de `./user.rs`, aucun changement de comportement. Réalisé 2026-09-30
+    (B2) : doc-comment posé reprenant le contrat du `Must`.
   [x] @users::user::Relation vide durablement (arbitré par Sébastien le 2026-09-29) : le `Must
     not` est le verrou explicite.
 

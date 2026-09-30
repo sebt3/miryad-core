@@ -108,9 +108,10 @@ Exposes:
     modifie pas) : @users::is_admin et @users::is_member génériques sur `C: @ConnectionTrait`
     retournant @Result<@bool, @sea_orm::DbErr> ; @users::resolve_user générique sur le même
     @ConnectionTrait retournant @Result<@user::Model, @sea_orm::DbErr> ;
-    @users::sync_group_memberships générique sur @ConnectionTrait retournant
-    @Result<(), @sea_orm::DbErr> ; @users::ensure_service_account sur @DatabaseConnection
-    concret retournant @Result<(), @sea_orm::DbErr>.
+    @users::sync_group_memberships générique sur @ConnectionTrait + @TransactionTrait (bound
+    élargi le 2026-09-30 pour la transaction interne) retournant @Result<(), @sea_orm::DbErr> ;
+    @users::ensure_service_account sur @DatabaseConnection
+    concret retournant @Result<(), @AuthError> (type changé le 2026-09-30, arbitré 2026-09-29).
   Non mis à plat, atteignables par le chemin du sous-module seulement : @group::ensure_group
     (pub, consommé par ./membership.rs et par ./migration/m20260822_000003_seed_admin_group.rs
     par le chemin enfant), et les items générés par @DeriveEntityModel de chaque entité —
@@ -145,10 +146,10 @@ Tasks:
   [x] @ensure_group non aplati : omission assumée (arbitré par Sébastien le 2026-09-29, `Must`).
   [x] `DbErr` de passage nues, code par la surface (arbitré par Sébastien le 2026-09-29, `Must`,
     règle transverse ajoutée à `.specdd/bootstrap.project.md`).
-  [ ] Bloc `//!` en tête de `./user.rs`, `./group.rs`, `./membership.rs` et
+  [x] Bloc `//!` en tête de `./user.rs`, `./group.rs`, `./membership.rs` et
     `./service_account.rs` (arbitré par Sébastien le 2026-09-29, `Must`) — documentation seule,
-    aucun changement de `./mod.rs`.
-  [ ] Convertir les cinq `Scenario` en au moins cinq tests nommés et distincts : quatre dans un
+    aucun changement de `./mod.rs`. Réalisé 2026-09-30 (B2).
+  [x] Convertir les cinq `Scenario` en au moins cinq tests nommés et distincts : quatre dans un
     `mod tests` `#[cfg(test)]` de ./mod.rs à créer (le fichier n'a aucun test inline à ce jour)
     — résolution compilée des neuf chemins plats avec assert runtime sur @users::ADMIN_GROUP_NAME
     `admin`, identité de type des trois alias, list `use` mixte modules + items, résolution des
@@ -156,7 +157,9 @@ Tasks:
     combinaison `--no-default-features` de la matrice de /tooling.sdd, l'exercice de features
     débordant du fichier. L'absence de glob et la liste exacte de neuf items relèvent de la
     relecture `Done when` : aucun outil de compile-failure n'existe dans le dépôt pour prouver
-    qu'un chemin plat absent n'existe pas.
+    qu'un chemin plat absent n'existe pas. Réalisé 2026-09-30 (B2, validator PASS) : quatre tests
+    inline à l'identité de type réellement affirmée, cinquième consigné en commentaire du
+    `mod tests` et prouvé par le combo `--no-default-features` vert.
 
 Done when:
   Cinq `Scenario` ont chacun au moins un test nommé distinct et vert, ou une place explicite
