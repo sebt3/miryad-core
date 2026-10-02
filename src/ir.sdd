@@ -217,21 +217,29 @@ Handles:
     erreur.
 
 Tasks:
-  [ ] @ir::IrRegistry::register : `assert!` sur `resource_name` et @table_name en doublon (arbitré
-    par Sébastien le 2026-09-29, `Must`) ; deux nouveaux Scenario et tests (doublon de
+  [x] @ir::IrRegistry::register : `assert!` sur `resource_name` et @table_name en doublon (arbitré
+    par Sébastien le 2026-09-29, `Must`) ; deux nouveaux tests (doublon de
     `resource_name`, collision de @table_name) ; le Scenario « chaînage inclus » ne doit plus
     supposer de second enregistrement de la même entité.
+    Le mot « Scenario » de cette tâche était un abus de nommage corrigé 2026-10-02 (validator
+    B5b) : le `Done when` impose « exactement dix-huit `Scenario` » et la spec ne porte aucun
+    Scenario de doublon distinct — le contrat doublon vit dans le `Must`, le `Handles` et le `Then`
+    du chaînage. Réalisé : @assert! aux deux branches (message citant nom et branche, doc
+    `# Panics`), rouge consigné (« test did not panic »), deux @should_panic distincts, chaînage
+    réécrit sans second enregistrement.
   [x] Sérialisation directe acceptée, deux états de `references` documentés (arbitré par
     Sébastien le 2026-09-29, `Must`) — doc-comment de @ir::EntityIr à compléter, aucun changement de
     comportement.
   [x] Repli `("string", null)` figé comme contrat (arbitré par Sébastien le 2026-09-29, `Must`).
   [x] Nom de table nu suffisant, contrat écrit ; les collisions sont refusées à l'enregistrement
     (arbitré par Sébastien le 2026-09-29, `Handles`).
-  [ ] Rejouer la matrice complète de /tooling.sdd après ajout des tests des `Scenario` — défaut,
+  [x] Rejouer la matrice complète de /tooling.sdd après ajout des tests des `Scenario` — défaut,
     `--no-default-features`, `swagger-ui`, `graphql`, `graphiql`, `mcp`, `--all-features`, clippy
     `-D warnings` sur chaque combinaison et `cargo fmt --check` — @ir n'étant pas gaté, la
     combinaison `--no-default-features` est l'authentique garde de cette absence.
-  [ ] Convertir les dix-huit `Scenario` en au moins dix-huit tests nommés et distincts — neuf
+    Réalisé 2026-10-02 (validator B5b) : seize commandes rejouées, vertes hors baseline gelée
+    graphql (7/8 sites) ; `--no-default-features` confirme l'absence de gating.
+  [x] Convertir les dix-huit `Scenario` en au moins dix-huit tests nommés et distincts — neuf
     conservés, neuf créés — dans le `#[cfg(test)] mod tests` de `./ir.rs`, le contrat ne déborde
     pas du fichier, et avec la correspondance exacte suivante :
     « @ir::resource_ir reflète les champs et types déclarés » →
@@ -279,6 +287,10 @@ Tasks:
     Neuf tests conservés, neuf à créer, total dix-huit pour dix-huit `Scenario` ; tous vivent dans
     le `#[cfg(test)] mod tests` de `./ir.rs`, le contrat ne déborde pas dans les crates
     d'intégration.
+    Réalisé 2026-10-02 (B5b, validator PASS) : mapping nom à nom vérifié assertion par assertion
+    (dont le mapping @openapi_type variante par variante et la forme @write_to_file octet à
+    octet), extension des nulls @owner_column/@filter_column sur @ingredient faite comme
+    prescrit, 18/18 verts sur la matrice.
 
 Done when:
   La spec porte exactement dix-huit `Scenario`, chacun vérifié par son test nommé distinct listé
