@@ -220,6 +220,13 @@ Tasks:
     aucun changement de code.
   [ ] Commentaire dans le test inline expliquant le nom `mod` de l'@AppMigration (arbitré par
     Sébastien le 2026-09-29, `Must`) — aucun renommage.
+  [?] Question spec-dd 2026-10-02 (Sébastien) — le `Must` d'ordre (gelé 2026-09-23 : « trois
+    @Box… pas un de plus », « `004` toujours en dernière position ») est littéralement violé par
+    la quatrième entrée @index_api_tokens_subject que la tâche du 2026-09-29 ordonnait. Amendement
+    proposé : réécrire le `Must` en « la liste porte exactement les migrations définies par leurs
+    specs filles, `create_api_tokens`/`create_users_groups`/`seed_admin_group` dans cet ordre,
+    puis les index/évolutions dans l'ordre chronologique de leurs specs » — la main sur ce texte
+    est la tienne (gel daté). En attendant, la tâche « Migration suivante » reste `[ ]`.
 
 Done when:
   Les dix `Scenario` (neuf originaux, un pour l'amendement 2026-09-23) sont chacun vérifiés par au

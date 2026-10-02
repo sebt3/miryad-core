@@ -272,6 +272,12 @@ Tasks:
     d'offset ici.
   [x] Conversion défensive `500` `MRD-REST-004` gelée comme contrat (arbitré par Sébastien le
     2026-09-29) — corps générique, détail en trace (./error.sdd).
+  [?] Question spec-dd 2026-10-02 (Sébastien) — @TokenHashConflict rendu `MRD-REST-004`/`500`
+    par le catch-all de @to_rest_error : en attente depuis B1. Recommandation : septième variante
+    @RestError::Conflict (`MRD-REST-006`, `409`) dans ./error.sdd, câblée ici au lieu du catch-all
+    — le conflit d'empreinte est une décision de politique, pas une panne interne. Gel actuel :
+    le catch-all `other => Internal` n'est pas touché tant que l'arbitrage n'est pas posé ;
+    si le gel 500 est délibéré, le dire et la presente ligne passe `[x]` sur cette lecture.
 
 Done when:
   Les `22` `Scenario` sont chacun vérifiés par un test nommé distinct du module de tests inline de

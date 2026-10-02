@@ -197,6 +197,14 @@ Tasks:
   [x] Filtre des noms vides ou blancs en entrée de @sync_group_memberships (arbitré par Sébastien
     le 2026-09-29, `Must`), trace `debug` ; nouveau Scenario « claim contenant une chaîne vide :
     aucun groupe créé ».
+  [?] Question spec-dd 2026-10-02 (Sébastien) — tâche `[ ]` « Traces » : le code pose la trace
+    debug sous garde `added > 0 || removed > 0` (réconciliation effective), le `Must` dit
+    littéralement « par réconciliation » sans condition. Option A (recommandée, code déjà écrit
+    pour ça) : amender le `Must` en « par réconciliation effective ». Option B : `Must` littéral
+    (trace à chaque appel) et recibler les captures de ../auth/mod.rs l.790/828, dont
+    l'assertion `lines.len() == 1` est une sur-assertion au regard de ../auth/mod.sdd (aucune
+    exclusivité contractuelle — prouvé par le validator). Le tranchement débloque la dernière
+    `[ ]` du module users.
 
 Done when:
   Chacun des 11 `Scenario` dispose d'au moins un test distinct qui vérifie son `Then`, les 4 tests inline

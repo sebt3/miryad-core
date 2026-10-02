@@ -296,6 +296,16 @@ Tasks:
     le HTML » → @markdown_record_keeps_raw_html_chars (à créer). Le contrat déborde du fichier
     côté enveloppe : la mise en `content: [{ "type": "text" }]` et le mapping -32603 appartiennent
     aux specs ./handler.sdd et ./error.sdd (tests de ces specs, pas de celles-ci).
+  [?] Question spec-dd 2026-10-02 (Sébastien) — bloque la conversion `[ ]` des 11 `Scenario` :
+    @Returns et trois @Then promettent newline initial et lignes vides que @handlebars 6.4.4
+    consomme (block tags standalone). Réel mesuré, verrouillé par égalité exacte en test :
+    record 2 champs `- **id**: 1\n- **title**: Tarte\n`, record `{}` → `""`, liste 1 item
+    `- id=1 owner_id=7 title=Tarte \n_page 1/1, 1 item(s) au total_\n`, liste vide
+    `_page 1/0, 0 item(s) au total_\n`. Recommandation (avis du validator) : bouger le contrat
+    (écrire les `Then`/@Returns sur le réel) — les gabarits-littéraux cités sont déjà conformes
+    au code ; l'inverse (changer les gabarits pour restaurer les lignes vides promises) est un
+    changement de fil visible par l'agent MCP, donc un nouveau cycle spec-first, pas une
+    harmonisation.
 
 Done when:
   Chaque `Scenario` dispose d'au moins un test nommé distinct vérifiant son `Then` dans le

@@ -218,6 +218,13 @@ Tasks:
     `MRD-*`.
   [ ] Rejouer la batterie complète de `/tooling.sdd` plus `cargo doc` sur chaque combinaison de
     features utilisée par les scenario doc.
+  [!] Constat spec-dd 2026-10-02 (vague B4d2, signalé par le validator) — `cargo doc
+    --no-default-features` émet un avertissement @rustdoc::broken_intra_doc_links, `unresolved
+    link to @frontend::@static_frontend_router` (../lib.rs l.89), quand `static-frontend` est
+    amputé : le `Must` de la présente spec promet zéro tel lien « selon la feature sélectionnée ».
+    Écart préexistant, hors périmètre mcp. À trancher au passage de cette spec : corriger le lien
+    (gating @cfg ou chemin d'adresse résolvable) — la correction est dans ../lib.rs, donc dans le
+    @Owns de cette spec.
 
 Done when:
   La spec porte exactement treize `Scenario` (douze originaux, un pour l'amendement @workflow du

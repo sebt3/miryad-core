@@ -398,6 +398,19 @@ Tasks:
     ./error.sdd, aucun changement ici.
   [x] PK exigée à `create`/`update` : friction assumée et documentée dans la description de l'outil
     ((arbitré par Sébastien le 2026-09-29), `Handles`), parité REST conservée ; à corriger sur les deux surfaces ensemble.
+  [?] Question spec-dd 2026-10-02 (Sébastien) — bloquent la conversion `[ ]` des 19 `Scenario`
+    (les tests verrouillent le réel, la narration est inconstructible) :
+    S19 « `Get` sur `secret` @AdminOnly table absente → @McpError::Database » est impossible :
+    @static_verdict rend @Forbidden avant tout accès table (@rbac.rs l.100-127, contrat
+    ../rest/core.sdd — le changer pour la narration serait une régression d'oracle). Le test
+    suit le découpage du `Tasks` : @Database via table @recipes absente en @OwnerOnly.
+    Recommandation : réécrire Given/When du `Scenario` sur cette variante (contrat à bouger,
+    wire à garder). S15 « deux `id` divergents » inconstructible par @McpEntity::call (une seule
+    clé `id` sur le fil, les deux passes lisent le même @Value) ; recommandation : reformuler en
+    propriété (« toute divergence est inexprimable, l'`id` de l'enveloppe est la seule cible »)
+    et consigner l'inconstructibilité. Q6 mineure jointe : l'exemple de @Raises cite
+    `…expected struct @ListParams` mais le test s'arrête à la sous-chaîne `expected struct` —
+    verrouiller le nom de structure (égalité caractère à caractère) ou rester en deçà ?
 
 Done when:
   La spec porte exactement dix-neuf `Scenario` et chacun est vérifié par au moins un test nommé
