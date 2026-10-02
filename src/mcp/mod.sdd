@@ -14,7 +14,8 @@ Purpose:
     ./mod.rs n'en porte aucun. Le fichier est aussi le point par lequel la promesse de
     ../lib.sdd (`POST /mcp` sous `mcp`, cinq tools par entité) devient adressable par
     l'application consommatrice, et le point où le contrat racine — `mcp` n'embarque
-    vylinl-core `0.7.4` que réduit à `hbs` et `crypto`, `default-features = false` —
+    vynil-core `0.7.7` que réduit à `hbs` (`crypto` en est purgé depuis l'arbitrage du
+    2026-09-29, exécuté 2026-10-02), `default-features = false` —
     conditionne sa compilation. Asymétrie de forme avec ./graphql/mod.rs signalée ici : les
     cinq enfants sont tous `mod` privés (un seul adresseur par item, les chemins longs
     `miryad_core::mcp::<enfant>::*` ne résolvent pas), alors que le module graphql ouvre trois
@@ -42,21 +43,24 @@ Structure:
 Owns:
   ./mod.rs
     Y compris tout `#[cfg(test)] mod tests` inline ou doctest porté par son bloc `//!` : le
-    fichier n'en porte aucun à la rédaction, et ces preuves sont à créer par `Tasks`.
+    fichier n'en portait aucun à la rédaction ; les preuves ont été créées 2026-10-02 (B4d2,
+    validator PASS).
 
 References:
   /miryad-core.sdd — contrat hérité : parité des trois surfaces lues à l'identique depuis la
     seule métadonnée @MiryadResource, codes `MRD-<DOMAINE>-NNN` dont le domaine `MRD-MCP`,
     exception @HookError sans code, et la ligne `Must` racine qui impose « `mcp` n'embarque
-    vylinl-core que en `hbs` et `crypto` (`default-features = false`) »
+    vynil-core que en `hbs` (`crypto` en est purgé, `default-features = false`) » (citation
+    alignée sur la Must racine le 2026-10-02)
   ../lib.sdd — déclare @mcp sous `#[cfg(feature = "mcp")]` (le gating vit là, à la déclaration,
-    pas dans ./mod.rs — vérifié aux lignes 147-149 de ../lib.rs), promet `POST /mcp` — cinq
+    pas dans ./mod.rs — vérifié aux lignes 149-150 de ../lib.rs), promet `POST /mcp` — cinq
     tools par entité (@mcp::mcp_router) — sous `mcp`, interdit tout `pub use` de racine, et
     pose que @mcp n'est pas présenté comme consommant @query tant que @query est documenté
     comme l'usage REST actuel
   /Cargo.toml — graphe `[features]` : `mcp = ["dep:vynil-core"]`, et la ligne
-    `vynil-core = { version = "0.7.4", default-features = false, features = ["hbs", "crypto"],
-    optional = true }` ; lecture seule, propriétaire /miryad-core.sdd
+    `vynil-core = { version = "0.7.7", default-features = false, features = ["hbs"],
+    optional = true }` (citation alignée sur le /Cargo.toml le 2026-10-02) ; lecture seule,
+    propriétaire /miryad-core.sdd
   /docs/architecture.md — récit du module MCP (rôle, sortie des formats)
   ../rest/mod.sdd et /src/rest/core.sdd — @RestEntity (borne de @register::<@E>) et
     @rest::core::@list, @rest::core::@get, @rest::core::@create, @rest::core::@update,
@@ -78,14 +82,15 @@ Must:
     définis par les enfants (vérifié aux cinq sources), la surface du module est donc
     exactement la somme de ses enfants, sans filtre ni surplus.
   Tenir vérifié au source amont, non à la doc, ce que le contrat racine embarque et ce que les
-    enfants en consomment : dans vylinl-core `0.7.4` (source du registre lu : lib.rs, hbs.rs,
+    enfants en consomment : dans vynil-core `0.7.7` (source du registre relu 2026-10-02 ;
+    lib.rs, hbs.rs,
     hbs_json.rs), `pub mod hbs` n'est gated que par la feature Cargo `hbs` ; @HandleBars (@new,
     @render) et le helper @json_to_str — utilisé en dur dans les templates par défaut de
     ./format.rs avec `format="json_pretty"` et `format="yaml"`, tous deux implémentés dans
     hbs_json.rs vendorisé sous serde_yaml — ne dépendent pas de `crypto` ; `crypto` n'apporte
     dans le module `hbs` que trois helpers de template (@argon_hash, @bcrypt_hash,
     @gen_private_key) qu'aucun template embarqué par miryad-core n'invoque ;
-    `default-features = false` ampute vylinl-core de `http`, `rhai` et `hbs-scripting` — donc
+    `default-features = false` ampute vynil-core de `http`, `rhai` et `hbs-scripting` — donc
     de sa reqwest propre, de rhai et de @kube, @oci_client et @object_store. ./mod.rs doit
     rester le seul point de la crate dont la compilation dépend de cet état du graphe, et le
     vérifier sur la matrice de /tooling.sdd.
@@ -95,15 +100,15 @@ Must:
     ré-exporte ; sans ces deux `pub use` la promesse racine est inatteignable, et ./mod.rs est
     l'unique porte de ré-export du module.
   Rester déclaratif et muet : aucune définition (type, fonction, trait, état, macro), aucune
-    ligne exécutable, vylinl-core n'est référencé nulle part dans ./mod.rs (il n'est consommé
+    ligne exécutable, vynil-core n'est référencé nulle part dans ./mod.rs (il n'est consommé
     que par ./format.rs et ./handler.rs, vérifié au source), zéro @tracing, aucun littéral
     `MRD-MCP-` écrit ici (les codes `MRD-MCP-001`..`MRD-MCP-010` vivent en ./error.rs) ; le
     fichier ne peut pas paniquer de son propre fait.
   Rester identique sous toute combinaison contenant `mcp` : ./mod.rs ne mentionne `graphql`,
     `graphiql`, `swagger-ui` ni `static-frontend` sous aucune forme (aucun cfg croisé) ; la
     surface est la même en `mcp` seul et en `--all-features` — la coexistence `mcp` + `graphql`
-    est débloquée depuis le bump vylinl-core `0.7.4` (commit `6384a68`, « débloque la
-    combinaison graphql+mcp »).
+    est débloquée depuis le bump vynil-core `0.7.4` (commit `6384a68`, « débloque la
+    combinaison graphql+mcp » ; la version courante est `0.7.7`).
   Garder l'en-tête `//!` aligné sur la promesse réelle : rôle (« 5 tools CRUD par entité,
     sortie JSON/YAML/Markdown »), mention de l'exigence de la feature `mcp`, et deux liens
     intra-doc `crate::mcp::@McpToolRegistry` et `crate::mcp::@mcp_router` qui résolvent en
@@ -134,14 +139,17 @@ Must not:
     les champs @page, @per_page et @filter de @ListParams, et ../lib.sdd interdit de documenter
     @mcp comme consommant @query — facetter @query derrière @mcp crée la dérive documentaire
     que ../lib.sdd veut éviter.
-  Référence directe, dans ./mod.rs, de vylinl-core, @axum, @sea_orm ou @serde_json : le fichier
-    ne contient aucun `use` hors de ses quatre `pub use` ; toute importation directe dans le
+  Référence directe, dans ./mod.rs, de vynil-core, @axum, @sea_orm ou @serde_json : la zone
+    non-test du fichier ne contient aucun `use` hors de ses quatre `pub use` (rescopé
+    2026-10-02 : le `mod tests` que cette spec impose en `Tasks` @use bien @sea_orm/@serde/@axum
+    sous @cfg(test) — l'interdit porte sur la zone de compilation de production) ; toute
+    importation directe dans le
     fichier d'agrégation masquerait quel enfant justifie quelle dépendance du contrat racine et
-    ruinerait la lisibilité du graphe `hbs` + `crypto` vérifiée en `Must`.
+    ruinerait la lisibilité du graphe `hbs` seul vérifiée en `Must` (`crypto` purgé 2026-10-02).
 
 Depends on:
-  Graphe `[features]` de /Cargo.toml (lecture) — `mcp = ["dep:vynil-core"]`, vylinl-core
-    `0.7.4` optionnel `default-features = false, features = ["hbs", "crypto"]`
+  Graphe `[features]` de /Cargo.toml (lecture) — `mcp = ["dep:vynil-core"]`, vynil-core
+    `0.7.7` optionnel `default-features = false, features = ["hbs"]` (aligné 2026-10-02)
   ./error.rs — @McpError et les motifs `MRD-MCP-001`..`MRD-MCP-007` ; le @HookError applicatif
     restitué sans taxonomie de la crate ; l'implémentation de @From<@RestError> qui branche la
     parité de lecture sur le domaine REST
@@ -151,9 +159,10 @@ Depends on:
     nulle à la surface publique
   ./registry.rs — @McpToolRegistry, dispatch runtime par nom d'entité branché sur
     /src/rest/core.rs et ../resource.rs
-  vylinl-core `0.7.4` — feature `mcp` de /Cargo.toml ; ./mod.rs ne le référence pas directement
+  vynil-core `0.7.7` — feature `mcp` de /Cargo.toml ; ./mod.rs ne le référence pas directement
     mais ne compile qu'avec lui (@vynil_core::hbs::@HandleBars consommé par ./format.rs et
-    ./handler.rs) ; conséquences de `hbs`/`crypto` vérifiées au source du registre (cf. `Must`)
+    ./handler.rs) ; conséquences de `hbs` vérifiées au source du registre (cf. `Must` — `crypto`
+    purgé 2026-10-02, absent du contrat comme des graphes mesurés)
   /src/auth/state.sdd et /src/auth/principal.sdd — @MiryadAuthState (borne @FromRef de
     @mcp_router) et @AuthPrincipal (extraction dual-auth du handler) que la surface montée
     consomme — contrat des enfants, pas d'ici
@@ -184,7 +193,7 @@ Exposes:
     double adressage de ./graphql/mod.rs — asymétrie signalée, `Tasks` [arbitré 2026-09-29])
   L'en-tête `//!` et ses deux liens (@mcp::@McpToolRegistry, @mcp::@mcp_router) — deux des
     quatre items, @McpError et @OutputFormat n'y sont pas cités ; aucun `#[cfg(test)] mod tests`
-    inline à la rédaction — les preuves du fichier sont à créer (`Tasks`)
+    inline à la rédaction — les preuves du fichier ont été créées 2026-10-02 (B4d2)
 
 Accepts:
   La sélection du graphe `[features]` (/Cargo.toml) comme seule entrée du fichier : ni entrée
@@ -216,7 +225,7 @@ Raises:
     ./error.rs et ./error.sdd en porte l'autorité
   Modes de défaillance de gating, côté compilation — sans `mcp` : toute import
     `miryad_core::mcp::*` échoue (`E0432`/`E0433`, module non déclaré, ../lib.sdd) ; avec la
-    feature mais un graphe amputé de vylinl-core (dérive hors contrat racine) : ./format.rs et
+    feature mais un graphe amputé de vynil-core (dérive hors contrat racine) : ./format.rs et
     ./handler.rs n'importent plus @vynil_core::hbs (`E0432` en cascade) — ./mod.rs ne peut ni
     rattraper ni signaler, la prévention est la conformité de /Cargo.toml vérifiée en `Must`
   Chemin long tenté avec la feature présente — `miryad_core::mcp::registry::McpToolRegistry`,
@@ -249,7 +258,7 @@ Handles:
     le fait de ./error.rs ; ./mod.rs ne fait passer le type que par son `pub use`
 
 Tasks:
-  [ ] Convertir les six `Scenario` en au moins six preuves nommées distinctes, une par scenario,
+  [x] Convertir les six `Scenario` en au moins six preuves nommées distinctes, une par scenario,
     avec la correspondance : « quatre ré-exports et la chaîne de montage résolvent sous mcp » →
     `mcp_surface_four_reexports_resolve`, test inline du `#[cfg(test)] mod tests` à créer dans
     ./mod.rs sous `#[cfg(feature = "mcp")]` (chemins courts @crate::mcp::* seuls ; chaîne
@@ -264,19 +273,25 @@ Tasks:
     de même, une négation de compilation ne pouvant vivre dans la cible qu'elle nie ; « enfants
     jamais joignables en chemin long » → doctest `compile_fail` du bloc `//!`
     (`use miryad_core::mcp::protocol;` — `E0603`, collecté seulement quand le module compile,
-    stable sur la matrice) ; « mcp n'ajoute que vylinl-core au graphe » → preuve par runs nommés
+    stable sur la matrice) ; « mcp n'ajoute que vynil-core au graphe » → preuve par runs nommés
     `cargo tree --no-default-features -e normal --depth 1` vs
     `cargo tree --no-default-features --features mcp -e normal --depth 1` : l'unique ajout de
-    dépendance directe est vylinl-core `0.7.4`, et `cargo tree -i rhai` comme
+    dépendance directe est vynil-core (mesuré `0.7.7`, la spec initiale citait `0.7.4`), et
+    `cargo tree -i rhai` comme
     `cargo tree -i kube` n'ont aucun résultat (features `http`/`rhai`/`k8s`/`oci`/`s3` de
-    vylinl-core absentes) ; « liens d'en-tête résolus dans la configuration où le fichier
+    vynil-core absentes) ; « liens d'en-tête résolus dans la configuration où le fichier
     compile » → run nommé `cargo doc --no-default-features --features mcp` sans avertissement
     `rustdoc::broken_intra_doc_links` sur ./mod.rs ; « mcp et graphql coexistent sans
     interférence » → `mcp_graphql_coexist`, test inline du même module sous
     `#[cfg(all(feature = "mcp", feature = "graphql"))]` référençant @mcp_router et
     @crate::graphql::@graphql_router dans une même unité de compilation. Les six preuves ne
     sauraient être réduites à moins de six ; aucune ne peut rester implicite.
-  [ ] Purger `crypto` de `vynil-core` dans /Cargo.toml (`features = ["hbs"]`) (arbitré par Sébastien le 2026-09-29) : ses helpers de
+    Réalisé 2026-10-02 (B4d2, validator PASS) : les six preuves vivent — deux tests inline
+    (@mcp_surface_four_reexports_resolve, @mcp_graphql_coexist sous @cfg(all)), doctest
+    `compile_fail` @E0603 collecté sous @mcp, runs @cargo tree (unique ajout direct
+    @vynil-core 0.7.7, `-i rhai`/`-i kube` vides), @cargo doc sans lien cassé sur ./mod.rs,
+    absence prouvée par les runs nommés de la batterie.
+  [x] Purger `crypto` de `vynil-core` dans /Cargo.toml (`features = ["hbs"]`) (arbitré par Sébastien le 2026-09-29) : ses helpers de
     template (@argon_hash, @bcrypt_hash, @gen_private_key) ne sont pas voulus pour les templates
     @OutputFormat::Custom. Vérifier que le graphe `mcp` reste vert et que `openssl`, `argon2` et
     `bcrypt` disparaissent (`cargo tree --no-default-features --features mcp -i openssl` sans
@@ -284,17 +299,28 @@ Tasks:
     partagée et `vynil-core?/rhai` peut avoir besoin de `crypto` — si oui, l'activer sous
     `workflow` seulement (`vynil-core?/crypto`). Batterie complète de /tooling.sdd ; mise à jour
     du Scenario « `mcp` n'ajoute que vynil-core au graphe » qui cite `crypto`.
+    Réalisé 2026-10-02 (B4d2, validator PASS) : `features = ["hbs"]` posé, @Cargo.lock perd
+    exactement le bloc crypto (openssl/argon2/bcrypt et satellites, zéro ajout) ; mesure sous
+    `mcp`, `workflow` et `--all-features` : les trois paquets sont absents des trois graphes —
+    `rhai` de @vynil-core 0.7.7 ne dépend pas de `crypto`, donc `vynil-core?/crypto` n'est PAS
+    ajouté à `workflow` (le « si oui » est mesuré non) ; Scenario graphe ressynchronisé
+    (ligne `And` réécrite sur la purge) ; batterie complète rejouée verte par le validator
+    (hors baseline gelée graphql).
   [x] Documentation de surface de ../lib.sdd étendue aux quatre items publics (@mcp_router,
     @McpToolRegistry, @McpError, @OutputFormat) (arbitré par Sébastien le 2026-09-29) — ../lib.sdd mis à jour ; la doc racine de
     ../lib.rs suit (tâche de ../lib.sdd).
   [x] Convention de surface : enfants fermés (`mod` privés) et items ré-exportés, un seul adresseur
     par item (arbitré par Sébastien le 2026-09-29) ; ./graphql/mod.rs s'aligne (lot GraphQL, tâche à écrire là-bas).
-  [ ] Rejouer la batterie complète de /tooling.sdd (toutes les combinaisons de /AGENTS.md,
+  [x] Rejouer la batterie complète de /tooling.sdd (toutes les combinaisons de /AGENTS.md,
     `--no-default-features` comme preuve d'absence, `--features mcp` comme preuve de surface,
     `--all-features` comme preuve de coexistence, plus `cargo test --doc` pour le doctest
     `compile_fail` et les runs `cargo tree`/`cargo doc` de l'épreuve de graphe) après création
     des preuves ; les trois [arbitré 2026-09-29] ci-dessus reçoivent une décision de Sébastien reportée dans
     la spec ou portée vers la spec concernée.
+    Réalisé 2026-10-02 (validator PASS) : seize commandes rejouées + `cargo test --doc` sous
+    @mcp + runs @cargo tree/@cargo doc nommés — tout vert hors baseline gelée graphql (7/8
+    sites, carve-out @tooling.sdd) ; décisions des trois lignes arbitrées portées dans la
+    présente spec (purge `crypto` exécutée et Scenario ressynchronisé).
 
 Done when:
   Chaque `Scenario` de la présente spec est couvert par sa preuve nommée distincte — deux tests
@@ -303,9 +329,10 @@ Done when:
     graphe, doc) — soit au moins six preuves nommées pour six scenarios ; la batterie de
     /tooling.sdd passe verte sur toutes les combinaisons de features avec `-- -D warnings`,
     `--no-default-features` prouvant l'absence du module et `--all-features` la coexistence
-    mcp+graphql ; le graphe de dépendances sous `mcp` est exact (vylinl-core seul ajouté, en
-    `hbs` + `crypto`, rien des features `http`/`rhai`/`k8s`/`oci`/`s3` de vylinl-core) ; les
-    lignes [arbitré 2026-09-29] ont reçu une décision de Sébastien (embarquement de `crypto`, exhaustivité de
+    mcp+graphql ; le graphe de dépendances sous `mcp` est exact (vynil-core seul ajouté, en
+    `hbs` seul (`crypto` purgé 2026-10-02), rien des features `http`/`rhai`/`k8s`/`oci`/`s3` de vynil-core) ; les
+    lignes [arbitré 2026-09-29] ont reçu une décision de Sébastien (purge de `crypto`, exécutée
+    2026-10-02, exhaustivité de
     la documentation de surface de ../lib.sdd, convention d'adressage vs ./graphql/mod.sdd) ;
     la spec est relue et approuvée par lui.
 
@@ -350,18 +377,21 @@ Scenario: enfants jamais joignables en chemin long
     — `pub(crate)` ou privés chez leurs enfants — sont inaccessibles y compris sous `mcp` : la
     surface publique est exactement les quatre items, aucun autre point d'entrée n'existe
 
-Scenario: mcp n'ajoute que vylinl-core au graphe de dépendances
+Scenario: mcp n'ajoute que vynil-core au graphe de dépendances
   Given deux runs `cargo tree --no-default-features -e normal --depth 1` : sans feature `mcp`,
     puis avec
   When on compare les deux arbres de dépendances directes
-  Then le second n'ajoute exactement qu'une ligne : vylinl-core `0.7.4` — ni reqwest embarquée
-    par vylinl-core via sa feature `http` par défaut (exclue par `default-features = false`),
+  Then le second n'ajoute exactement qu'une ligne : vynil-core `0.7.7` — ni reqwest embarquée
+    par vynil-core via sa feature `http` par défaut (exclue par `default-features = false`),
     ni @rhai, @kube, @oci_client, @object_store (vérifié : `cargo tree ... -i rhai` et
     `cargo tree ... -i kube` sans résultat sous `mcp`)
-  And sous `mcp`, @openssl, @argon2 et @bcrypt apparaissent par la seule feature `crypto` de
-    vylinl-core (`cargo tree --no-default-features --features mcp -i openssl` : chaîne unique
-    vylinl-core puis miryad-core) — coût assumé par le contrat racine tant que `Tasks` [arbitré 2026-09-29]
-    sur `crypto` n'est pas tranché
+  And sous `mcp`, @openssl, @argon2 et @bcrypt sont ABSENTS du graphe depuis la purge de
+    `crypto` (arbitrée 2026-09-29, exécutée 2026-10-02 — la ligne initiale qui les voyait
+    « apparaître par la seule feature `crypto` » est éteinte) :
+    `cargo tree --no-default-features --features mcp -i openssl` (idem @argon2, @bcrypt) sans
+    résultat, sous `workflow` et `--all-features` aussi (@vynil-core @rhai ne dépend pas de
+    `crypto` en 0.7.7) — coût nul, objectif racine « retirer @openssl natif du graphe des
+    consommateurs » atteint
   But @reqwest reste au graphe des deux runs : dépendance obligatoire de la crate (auth/OIDC),
     pas une embarcation de `mcp`
 
@@ -381,6 +411,6 @@ Scenario: mcp et graphql coexistent sans interférence
     référence @mcp_router en chemin court mcp et @crate::graphql::@graphql_router en chemin
     court graphql dans une même unité de compilation
   Then la compilation réussit et le test passe : ./mod.rs ne change aucune ligne entre `mcp`
-    seul et `mcp` + `graphql` (coexistence débloquée par le bump vylinl-core `0.7.4`, commit
+    seul et `mcp` + `graphql` (coexistence débloquée par le bump vynil-core `0.7.4`, commit
     `6384a68`), et la surface publique de @mcp reste exactement les quatre items, ni amputée ni
     étendue par la présence de @graphql
