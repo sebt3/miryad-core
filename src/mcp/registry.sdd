@@ -309,8 +309,10 @@ Handles:
   @E::Model avec @Option colonnes : absences acceptées en @None (source @serde) ; PK présente
     dans le corps de @McpOp::Create exigée par @serde puis retirée par @rest::core::create —
     l'appelant envoie un `id` que la base réattribue (exigence identique côté @Json REST, parité
-    tenue) : friction assumée, documentée dans la description de l'outil (`id` ignoré à la
-    création, mettre `0`), à corriger sur les deux surfaces ensemble le jour où le template en
+    tenue) : friction assumée, consignée ici comme fait comportemental (la description wire de
+    l'outil reste le littéral `Create a new {name}` figé par ./handler.sdd — resserrement
+    2026-10-02 sur validation du validator : le texte initial affirmait une mention dans la
+    description, ce que contredit la table des cinq littéraux), à corriger sur les deux surfaces ensemble le jour où le template en
     souffre ((arbitré par Sébastien le 2026-09-29)).
   Collision de clés à l'@insertion : `assert!` explicite dans @register, y compris pour un même type
     enregistré deux fois ((arbitré par Sébastien le 2026-09-29)) — plus de remplacement silencieux ni de re-registration idempotente.

@@ -93,8 +93,10 @@ Must:
     de @sea_orm::DbErr::Custom vérifié dans sea-orm `2.0.2` `src/error.rs:59` ; @String recopié sans
     troncature), et pour @McpError::Application `#[error("{}", .0.message)]` : message du @HookError nu, sans
     @code, sans préfixe, sans sous-chaîne `MRD-`
-  @data ne vaut @Some que pour @McpError::Application dont @HookError::code vaut @Some, et porte alors
-    exactement l'objet @serde_json à une clé `{"code": <code>}` — jamais mélangé au code numérique @rpc_code
+  @data ne vaut @Some que pour @McpError::Application, et porte toujours
+    exactement l'objet @serde_json à une clé `{"code": <code>}`, la clé valant `null` quand
+    @HookError::code vaut @None (harmonisé 2026-10-02 avec l'arbitrage 2026-09-29 ci-dessous «
+    toujours `{"code": <code>}` ») — jamais mélangé au code numérique @rpc_code
     (documenté aux lignes 41-42 du fichier), jamais validé ni filtré : une application qui mentirait en posant
     `MRD-MCP-001` dans son @code le verrait sortir tel quel dans `data.code`
   @Error::source vaut @Some seulement pour @McpError::Database et remonte le @sea_orm::DbErr embarqué —
@@ -281,8 +283,8 @@ Example: matrice exhaustive erreur source → code numérique → message @Displ
   @McpError::NotFound → `-32002` → `MRD-MCP-002: resource not found` → clé absente
   @McpError::Database encapsulant @sea_orm::DbErr::Custom `boom` → `-32603` →
     `MRD-MCP-003: database error: Custom Error: boom` → clé absente
-  @McpError::Render de `bad template` → `-32603` → `MRD-MCP-004: template render error: bad template` →
-    clé absente
+  @McpError::Render de `bad template` → `-32603` → `MRD-MCP-004: output rendering error: bad template` →
+    clé absente (texte aligné sur l'arbitrage 2026-09-29 du @Display, harmonisation 2026-10-02)
   @McpError::InvalidParams de `invalid type: integer -1, expected u64` → `-32602` →
     `MRD-MCP-005: invalid params: invalid type: integer -1, expected u64` → clé absente
   @McpError::UnknownTool de `ghost_get` → `-32601` → `MRD-MCP-006: unknown tool: ghost_get` → clé absente
@@ -303,25 +305,35 @@ Example: matrice exhaustive erreur source → code numérique → message @Displ
     `MRD-MCP-007: internal error: MRD-AUTH-003: OIDC error: discovery failed` — double code imbriqué, `Tasks [arbitré 2026-09-29]`)
 
 Tasks:
-  [ ] Trois variantes @McpError::MethodNotFound (`MRD-MCP-008`), @McpError::ParseError (`MRD-MCP-009`),
+  [x] Trois variantes @McpError::MethodNotFound (`MRD-MCP-008`), @McpError::ParseError (`MRD-MCP-009`),
     @McpError::InvalidRequest (`MRD-MCP-010`), @McpError::wire_message, message de @McpError::Render
     généralisé, @data de @McpError::Application toujours `{"code": …}`, et @From<@RestError> 6/6
     (@RestError::InvalidInput → @McpError::InvalidParams, arbitré (arbitré par Sébastien le 2026-09-29), ./../rest/error.sdd) — tâche de
     ./error.rs seul ; ses Scenario sont mis à jour (fin de fichier). Trois Scenario ajoutés.
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : les trois variantes avec @rpc_code
+    `-32601`/`-32700`/`-32600` et @Display littéraux exacts, @wire_message (trois génériques
+    `-32603`, reste verbatim), @Render → `output rendering error: {0}`, @data toujours
+    `{"code": …}` (clé `null` sans code hook), @From<@RestError> 6/6 sans joker dont
+    @InvalidInput → @InvalidParams charge déplacée intacte — table @rpc_code 11/11 exhaustive
+    verrouillée test par test.
   [x] Tout le dispatch passe par @McpError (arbitré par Sébastien le 2026-09-29) (`Must`) : @UnknownTool et @InvalidParams construits par
     ./handler.rs, @MethodNotFound, @ParseError et @InvalidRequest nouvelles ; tâche de code dans
     ./handler.sdd.
   [x] @McpError::Internal conservé comme miroir défensif exercé par son Scenario (arbitré par Sébastien le 2026-09-29) (`Must`).
-  [ ] Corps `-32603` génériques et détail en trace, même règle que ./../rest/error.sdd (arbitré par Sébastien le 2026-09-29) :
+  [x] Corps `-32603` génériques et détail en trace, même règle que ./../rest/error.sdd (arbitré par Sébastien le 2026-09-29) :
     @wire_message dans ./error.rs, traces dans ./handler.rs ; @McpError::InvalidParams reste verbatim.
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : @wire_message générique posé ici (pureté
+    sans @tracing certifiée dans ./error.rs), trace `error!` avec la @Display complète posée en
+    ./handler.rs (B4c) ; `panne_de_base_rend_un_moins_32603_generique_et_trace_le_detail` assert
+    le corps générique sans fuite et le détail @DbErr dans la trace seule.
   [x] Double code : le code `MRD-MCP-*` est le seul vu du client, le `MRD-AUTH-NNN` imbriqué ne vit
     que dans la @Display et la trace (arbitré par Sébastien le 2026-09-29) (`Must`).
   [x] @data de @McpError::Application toujours `{"code": <code|null>}`, parité REST (arbitré par Sébastien le 2026-09-29) (`Must`) ;
     tâche de code portée par la tâche @McpError de ce fichier.
   [x] La cartographie suffit, le Scenario @From @RestError::Application tient lieu de test de parité
     du hook (arbitré par Sébastien le 2026-09-29).
-  [ ] Convertir les dix-sept `Scenario` en au moins dix-sept tests distincts nommés dans un `#[cfg(test)]
-    @mod tests` à créer dans ./error.rs (0 test inline à ce jour ; le module test ne tourne donc que sous
+  [x] Convertir les vingt `Scenario` en au moins vingt tests distincts nommés dans un `#[cfg(test)]
+    @mod tests` créé dans ./error.rs (le module test ne tourne que sous
     `--features mcp` et `--all-features` de la batterie /tooling.sdd) : S1..S9 = triple (@rpc_code, @Display,
     @data) par variante construite directement ; S10 = @Error::source sur les huit variantes ; S11 =
     @From<@sea_orm::DbErr> dérivé ; S12..S16 = @From<@RestError> variante par variante ; S17 = preuve par les
@@ -332,9 +344,13 @@ Tasks:
     (cartographiés par /src/resource.sdd) affirment le rendu REST. La forme sérialisée de l'enveloppe et la
     disparition de la clé `data` s'affirment dans ./protocol.rs sous ./protocol.sdd à venir ; la parité des
     refus MCP↔REST reste le scenario de ./../rest/core.sdd — aucun de ces débordements ne se rejoue ici.
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : 20 Scenario (les dix-sept initiaux +
+    trois protocole de la tâche ci-dessus, compte corrigé 2026-10-02 sur validation du validator)
+    → 20 tests nommés distincts, verts sous `--features mcp` et `--all-features` ; S10 exercé sur
+    les onze valeurs actuelles ; la forme sérialisée est bien verrouillée côté ./protocol.rs.
 
 Done when:
-  Les dix-sept `Scenario` disposent chacun d'au moins un test nommé distinct et vert, sous `--features mcp` et
+  Les vingt `Scenario` disposent chacun d'au moins un test nommé distinct et vert, sous `--features mcp` et
     `--all-features` (seules combinaisons compilant le fichier), et `--no-default-features` compile sans @mcp ni
     @McpError
   La table `Example` est affirmée exhaustivement en test : chaque variante a sa cellule (code, message, `data`)

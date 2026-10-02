@@ -90,7 +90,9 @@ Must:
   Les clés wire `items`, `page`, `per_page`, `total_items` et `total_pages` sont un contrat
     inter-surfaces : le JSON REST (`Json<@PagedResult<_>>` de @rest), la sortie MCP (@serde_json
     de la page rendue par @rest::core::list dans @mcp::registry, gabarit Handlebars par défaut
-    `_page {{page}}/{{total_pages}}, {{total_items}} item(s)_` de @mcp::format) et le schéma
+    `_page {{page}}/{{total_pages}}, {{total_items}} item(s) au total_` (citation corrigée
+    2026-10-02, tâche arbitrée 2026-09-29 de ./mcp/format.sdd — le texte initial omettait
+    ` au total`) de @mcp::format) et le schéma
     OpenAPI `Paged{Model}` de ./rest/openapi.rs en dépendent champ pour champ, et @Vec vide y
     sérialise `[]`, jamais `null`.
   @Pagination::from_raw est le point unique de normalisation des listes : @rest::resource_router,

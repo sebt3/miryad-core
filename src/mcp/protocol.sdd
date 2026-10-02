@@ -7,9 +7,11 @@ Purpose:
     l'intégralité du protocole : `vynil-core` 0.7.4, amont de la feature `mcp`, n'expose aucun type
     JSON-RPC/MCP — vérifié au registre des sources (modules utilitaires seulement ; l'unique
     mention « MCP » de son README vise le rendu `hbs` de sorties d'outils, pas un protocole). Le
-    fichier ne définit aucune constante d'erreur ni aucune version MCP : les codes sont des @i32
-    libres posés par les appelants (./handler.rs, /src/mcp/error.rs), la version « 2.0 » est un
-    littéral de construction.
+    fichier ne définit aucune constante d'erreur : les codes sont des @i32
+    libres posés par les appelants (./handler.rs, /src/mcp/error.rs), la version `2.0` de JSON-RPC
+    est un littéral de construction. Il expose en revanche @PROTOCOL_VERSION, la version de
+    protocole MCP (arbitré par Sébastien le 2026-09-29 — harmonisation 2026-10-02 : le texte
+    initial niait toute version MCP, ce que contredisait déjà l'arbitrage en @Exposes).
 
 Owns:
   ./protocol.rs
@@ -37,7 +39,9 @@ Must:
     constructeur : le littéral `"2.0"` est codé en dur dans @JsonRpcResponse::ok et
     @JsonRpcResponse::err_with_data, @JsonRpcResponse::jsonrpc est un `&'static str` sans
     `skip_serializing_if`, et aucune constante partagée n'existe dans le fichier (deux
-    occurrences du littéral)
+    occurrences du littéral dans les constructeurs, plus la comparaison de validation du champ
+    @jsonrpc dans @parse_request, imposée par la règle de validation ci-dessous — précision
+    d'harmonisation 2026-10-02)
   Exclusivité @result/@error tenue par les constructeurs : @JsonRpcResponse::ok pose @result
     @Some et @error @None ; @err et @err_with_data posent @error @Some(@RpcError) et @result @None —
     aucune réponse construite par eux ne porte `result` et `error` ensemble. Les champs restent
@@ -187,20 +191,32 @@ Handles:
     @data ; le type ne distingue aucune plage.
 
 Tasks:
-  [ ] Enveloppes `-32700`/`-32600` (arbitré par Sébastien le 2026-09-29) : @parse_request et @ProtocolRejection, corps lu en
+  [x] Enveloppes `-32700`/`-32600` (arbitré par Sébastien le 2026-09-29) : @parse_request et @ProtocolRejection, corps lu en
     octets, HTTP `200` ; les rejets de transport (`401`, `405`, `413`, `415`) restent HTTP.
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : @parse_request sur @&[u8] avec ordre de
+    validation (1)-(6), @ProtocolRejection, @rejection_response dans ./handler.rs en HTTP `200`
+    `id` `null`, rejets de transport hors enveloppe vérifiés en tests.
   [x] Batch non supporté, réponse unique `-32600` (spec MCP 2025-06) (arbitré par Sébastien le 2026-09-29).
-  [ ] @id non-@Option dans les constructeurs de @JsonRpcResponse, `null` pour les erreurs à id
+  [x] @id non-@Option dans les constructeurs de @JsonRpcResponse, `null` pour les erreurs à id
     inconnu ; `id: null` explicite en requête = InvalidRequest (arbitré par Sébastien le 2026-09-29).
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : @id `@Value` toujours sérialisé,
+    constructeurs posant @Value::Null à id inconnu, `id: null` → @ProtocolRejection::InvalidRequest
+    — verrouillés par les Scenario correspondants et par `id_null_explicite_rend_moins_32600_pas_un_202`.
   [x] Validation durcie : `jsonrpc` égal à `2.0`, `id` chaîne ou nombre, clés inconnues ignorées (arbitré par Sébastien le 2026-09-29)
     (`Must`).
-  [ ] Typer @InitializeResult et @ToolDeclaration dans ./protocol.rs, @PROTOCOL_VERSION ici (arbitré par Sébastien le 2026-09-29) ;
-    ./handler.rs les construit.
-  [ ] Retirer du doc-comment d'en-tête de ./protocol.rs le pointeur `kydah-mcp-template/src/mcp.rs`
+  [x] Typer @InitializeResult et @ToolDeclaration dans ./protocol.rs, @PROTOCOL_VERSION ici (arbitré par Sébastien le 2026-09-29) ;
+    ./handler.rs les construit. Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : les trois
+    items sont dans ./protocol.rs, consommés par ./handler.rs (plus de @const dupliqué ni de
+    @json! anonyme), clés wire verrouillées par un test dédié.
+  [x] Retirer du doc-comment d'en-tête de ./protocol.rs le pointeur `kydah-mcp-template/src/mcp.rs`
     et déclarer la forme indépendante (arbitré par Sébastien le 2026-09-29) — documentation seule.
-  [ ] Convertir les `Scenario` (réécrits le 2026-09-29) en tests distincts nommés dans le `mod tests`
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : grep « kydah » vide dans tout ./protocol.rs.
+  [x] Convertir les `Scenario` (réécrits le 2026-09-29) en tests distincts nommés dans le `mod tests`
     `#[cfg(test)]` de ./protocol.rs : tests unitaires synchrones sur @parse_request et
     @serde_json::to_value, sans routeur ni DB — contrat entièrement contenu dans le fichier.
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : 17 Scenario → 17 tests nommés distincts
+    + 1 verrou de tâche hors Scenario (clés wire de @InitializeResult/@ToolDeclaration), rejoués
+    verts sous `--no-default-features --features mcp` et `--all-features`.
 
 Done when:
   Les `Scenario` (réécrits le 2026-09-29 : lecture par @parse_request, id non-@Option) ont chacun au moins un test nommé distinct et vert dans ./protocol.rs, rejoués
@@ -210,7 +226,8 @@ Done when:
     absence exacte de `result`, `error`, `data`, `id`, littéral `2.0`, code libre transporté, `null`
     explicite rendu contre clé absente ; `id` toujours présent, `null` pour les erreurs à id inconnu
   Les six lignes [arbitré 2026-09-29] de `Tasks` sont arbitrées par Sébastien le 2026-09-29 et leur suite est
-    reflétée dans le contrat ; les tâches de code (`[ ]`) restent à exécuter
+    reflétée dans le contrat ; les tâches de code sont exécutées depuis 2026-10-02 (fusion
+    B4a+B4c, validator PASS)
 
 Scenario: Requête complète acceptée
   Given le corps `{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{"cursor":"x"}}`

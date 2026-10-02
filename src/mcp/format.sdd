@@ -265,14 +265,17 @@ Tasks:
     à `delete` (rendu de @Value::Null) sont retirés.
   [x] Ordre lexicographique des clés : contrat wire gelé, verrouillé par les Scenario d'ordre exact
     (arbitré par Sébastien le 2026-09-29) (`Must`).
-  [ ] Corriger la citation du gabarit dans ../query.sdd : le texte exact de @Returns est
+  [x] Corriger la citation du gabarit dans ../query.sdd : le texte exact de @Returns est
     `_page {{page}}/{{total_pages}}, {{total_items}} item(s) au total_` avec la ligne d'items (arbitré par Sébastien le 2026-09-29) —
-    documentation seule dans ../query.sdd.
+    documentation seule dans ../query.sdd. Corrigé 2026-10-02 par spec-dd (le texte cité dans
+    ../query.sdd omettait ` au total`).
   [x] Mode strict documenté comme promesse (« l'app doit viser juste »), sans dérogation au moteur
     (arbitré par Sébastien le 2026-09-29) (`Must`).
-  [ ] À la purge du harnais sur ce module (../../tooling.sdd) : commentaires `///` sur les trois
+  [x] À la purge du harnais sur ce module (../../tooling.sdd) : commentaires `///` sur les trois
     variants publics @Json, @Yaml, @Markdown de @OutputFormat (@Custom est le seul documenté),
-    seuls points `missing_docs` du fichier.
+    seuls points `missing_docs` du fichier. Soldé par la vague A3 de purge du harnais
+    (validator PASS) : les trois variants portent leur `///`, vérifié HEAD 2b8c15d sous
+    `missing_docs = "deny"`.
   [ ] Convertir les onze `Scenario` en au moins onze tests nommés distincts du
     `#[cfg(test)] mod tests` de ./format.rs, un par scenario : « enregistrement rendu en JSON par
     défaut » → @json_format_renders_valid_json (existant, à tendre vers l'égalité exacte) ;

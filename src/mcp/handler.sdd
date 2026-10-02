@@ -88,9 +88,12 @@ Must:
     `Delete a {name} by id`, et @inputSchema exacts : page/per_page `integer` et filter `string`
     optionnels pour `_list` ; `id` `integer` requis pour `_get` et `_delete` (le même @Value de
     schéma, sérialisé deux fois) et une copie littérale identique pour `_update` ; `{"type":"object"}`
-    sans propriétés pour `_create`, dont la description précise que `id` est ignoré à la création
-    (mettre `0`) et que `id` du corps est ignoré à la mise à jour au profit de l'`id` d'appel
-    (arbitré 2026-09-29, ./registry.sdd). Ordre déterministe (ci-dessus) ; @McpToolRegistry.format
+    sans propriétés pour `_create` ; le fait comportemental que `id` est ignoré à la création
+    (mettre `0`) et que `id` du corps est ignoré à la mise à jour au profit de l'`id` d'appel est
+    porté par ./registry.sdd (arbitré 2026-09-29) et ne figure pas dans les descriptions, qui
+    restent les cinq littéraux ci-dessus — resserrement de clause 2026-10-02 sur validation du
+    validator, la lecture contraire rendant faux le Scenario « tools/list déclare cinq tools par
+    entité » qui affirme les littéraux inchangés. Ordre déterministe (ci-dessus) ; @McpToolRegistry.format
     n'entre dans aucune déclaration.
   Traiter `tools/call` en trois étapes ordonnées : désérialisation de @params en @ToolCallParams
     (`name` obligatoire, @ToolCallParams.arguments default `{}`, arbitré 2026-09-29) sous
@@ -274,24 +277,41 @@ Handles:
     parse ; UTF-8 ou JSON invalide : `-32700` (enveloppe) — plus aucun `400`/`422` du parseur.
 
 Tasks:
-  [ ] Convertir les `Scenario` (réécrits et complétés le 2026-09-29, une trentaine) en tests nommés distincts dans le `mod tests`
-    `#[cfg(test)]` de ./handler.rs — le fichier compte 0 test inline à ce jour ; gabarits à
+  [x] Convertir les `Scenario` (réécrits et complétés le 2026-09-29, une trentaine) en tests nommés distincts dans le `mod tests`
+    `#[cfg(test)]` de ./handler.rs — le fichier comptait 0 test inline avant la tâche ; gabarits à
     dupliquer de ./registry.rs (sqlite mémoire + @Migrator::up + entité @RestEntity fixture
     `recipes` + @issue_token) et de ../auth/dual.rs (@Router::oneshot via @tower::ServiceExt) ;
     les scénarios de politique (`-32001`, fixture en @AccessPolicy::OwnerOnly avec possédant
     divergent) et de hook (`-32000`, fixture @MiryadResource::before_create retournant @HookError
     avec @code `HOOK-42`) portent leurs propres entités fixtures dans ce même `mod tests` ; le
     contrat reste confiné au fichier, aucune crate de /tests/ nécessaire
-  [ ] Deux niveaux d'erreur (arbitré par Sébastien le 2026-09-29) : lire le corps en octets, appeler @parse_request ; `-32700`/`-32600`
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : 23 Scenario → 23 tests nommés distincts
+    + 1 test de parité @Done when (24 au total), verts sous `--features mcp` (×8 rondes, dont une
+    `--test-threads=1`) et `--all-features` ; sérialisation interne du module documentée (cache
+    d'intérêt @tracing global, bissection consignée) — validée acceptable par le validator.
+  [x] Deux niveaux d'erreur (arbitré par Sébastien le 2026-09-29) : lire le corps en octets, appeler @parse_request ; `-32700`/`-32600`
     à `id` `null`, HTTP `200` ; refus de transport et d'authentification inchangés en HTTP.
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : corps lu en @&[u8] après auth, @parse_request,
+    @rejection_response en HTTP `200` `id` `null` (corps exacts affirmés à l'égalité, non-UTF-8
+    inclus) ; `401`/`405`+@Allow/`404`/`415`/`413` inchangés en HTTP, extraction-avant-corps
+    attestée par le test dédié.
   [x] Négociation de version : le serveur annonce @PROTOCOL_VERSION, le client décide (arbitré par Sébastien le 2026-09-29) ;
     `jsonrpc` vérifié par @parse_request (`-32600`). Aucun changement de version offerte.
-  [ ] `id: null` explicite → `-32600` (arbitré par Sébastien le 2026-09-29) ; distinction absent/nul portée par @parse_request.
-  [ ] Tout le dispatch par @McpError (arbitré par Sébastien le 2026-09-29) : @MethodNotFound (`MRD-MCP-008`), @UnknownTool
+  [x] `id: null` explicite → `-32600` (arbitré par Sébastien le 2026-09-29) ; distinction absent/nul portée par @parse_request.
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : `id_null_explicite_rend_moins_32600_pas_un_202`
+    verrouille la sortie `-32600` sous `200` (plus jamais `202`), la distinction étant portée par
+    ./protocol.rs.
+  [x] Tout le dispatch par @McpError (arbitré par Sébastien le 2026-09-29) : @MethodNotFound (`MRD-MCP-008`), @UnknownTool
     (`MRD-MCP-006`), @InvalidParams (`MRD-MCP-005`), @ParseError (`MRD-MCP-009`), @InvalidRequest
-    (`MRD-MCP-010`) — codes et variantes à créer dans /src/mcp/error.sdd.
-  [ ] Traces (arbitré par Sébastien le 2026-09-29) : `error!` sur `-32603` avec la @Display complète, `warn!` sur `-32001`, jamais les
+    (`MRD-MCP-010`) — codes et variantes créés dans /src/mcp/error.sdd (B4a).
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : les quatre littéraux nus de `-32601`/
+    `-32602` du fichier sont éliminés, messages du fil exacts `MRD-MCP-008/006/005` affirmés à
+    l'égalité ; @ParseError/@InvalidRequest alimentés par @ProtocolRejection.
+  [x] Traces (arbitré par Sébastien le 2026-09-29) : `error!` sur `-32603` avec la @Display complète, `warn!` sur `-32001`, jamais les
     `arguments` ni un corps ; corps client générique pour `-32603` (@McpError::wire_message).
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : @wire_message sur le fil (aucun @to_string
+    de @Display dans le corps), @error! avec détail @DbErr complet dans la trace seule, @warn! sur
+    `-32001` sans arguments ni token (test d'absence affirmé).
 
 Done when:
   Chaque `Scenario` a au moins un test nommé distinct et vert, joués sur
@@ -304,7 +324,7 @@ Done when:
     rendue `-32001`/`-32002` par ./error.rs (test de comparaison lu, pas supposé), aucune divergence
     fonctionnelle MCP↔REST n'est laissée silencieuse.
   Les cinq lignes [arbitré 2026-09-29] sont arbitrées par Sébastien (2026-09-29) et leurs suites reflétées dans le
-    contrat ; les tâches `[ ]` restent à exécuter, chacune sur son fichier.
+    contrat ; les tâches sont exécutées depuis 2026-10-02 (fusion B4a+B4c, validator PASS).
 
 Scenario: tools/call valide avec token API
   Given @mcp_router monté sur un sqlite mémoire migré avec @McpToolRegistry::register pour l'entité
