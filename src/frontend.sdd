@@ -146,8 +146,11 @@ Exposes:
     `pub fn static_frontend_router<S>(assets_dir: impl Into<PathBuf>) -> Router<S>` avec
     `S: Clone + Send + Sync + 'static`, assemblé seulement sous
     `static-frontend` par @lib.rs.
-  Le corps et les en-têtes des réponses HTTP rendus sans retouche : le fichier emballe
-    @tower_http dans un @axum::Router sans couche, sans en-tête ajouté, sans middleware @tower.
+  Le corps et les en-têtes des réponses HTTP rendus sans retouche, à l'unique exception de
+    l'en-tête `cache-control: no-cache` posé sur toute réponse `text/html` (arbitré 2026-09-29,
+    `Must` ; le texte initial « sans couche, sans en-tête ajouté, sans middleware @tower » était
+    la strate d'avant l'arbitrage, harmonisé 2026-10-02) : le fichier emballe @tower_http dans un
+    @axum::Router, la seule couche étant @html_no_cache conditionnée au `content-type`.
 
 Accepts:
   Tout assets_dir convertible en @std::path::PathBuf — @String, `&str`,
@@ -167,7 +170,8 @@ Returns:
     la seule composition est le service statique avec repli sur index.html.
   Les réponses HTTP produites par @tower_http — fichier servi, coquille, `206`,
     `304`, `307`, `416`, `404`, `405`, `412`,
-    `500` — avec statuts et en-têtes inchangés.
+    `500` — avec statuts et en-têtes inchangés, sauf `cache-control: no-cache` ajouté sur les
+    réponses `text/html` (strates harmonisées 2026-10-02, cf. `Exposes` et `Must`).
 
 Raises:
   Nulle part d'erreur Rust : @frontend::static_frontend_router ne renvoie pas de
@@ -200,19 +204,29 @@ Handles:
     indisponibles et @frontend n'est jamais déclaré.
 
 Tasks:
-  [ ] `cache-control: no-cache` sur les réponses `text/html` (arbitré par Sébastien le 2026-09-29,
+  [x] `cache-control: no-cache` sur les réponses `text/html` (arbitré par Sébastien le 2026-09-29,
     `Must`) : couche @axum ou @tower_http (`SetResponseHeader`) sur le routeur rendu, dépendance
     `set-header` de @tower_http à ajouter si absente ; adapter les Scenario « coquille SPA rendue
     sur route inconnue » et « coquille SPA servie directement au chemin racine ».
-  [ ] Aligner le commentaire de documentation de @frontend::static_frontend_router sur la source
+    Réalisé 2026-10-02 (B5c, validator PASS) : couche @axum @html_no_cache conditionnée au
+    `content-type` (variante sans `set-header`, la dépendance est absente du manifeste — branche
+    conditionnelle de la tâche) ; rouge consigné (2 FAILED `None` vs `Some("no-cache")`) ;
+    Scenario « route inconnue » déjà porteur de son `And`, Scenario « racine » complété 2026-10-02 ;
+    conditionnalité prouvée par le verrou du fichier servi (en-tête absent).
+  [x] Aligner le commentaire de documentation de @frontend::static_frontend_router sur la source
     (arbitré par Sébastien le 2026-09-29, `Must`) — documentation seule, aucun changement de
     comportement.
+    Réalisé 2026-10-02 (B5c, validator PASS) : triade `405`+@allow / `404` vide / `200` coquille
+    plus la phrase `cache-control`, doc seule.
   [x] Chemins invalides et sous-chemins de fichier : coquille en `200`, convention SPA assumée
     (arbitré par Sébastien le 2026-09-29, `Must`).
-  [ ] Rejouer la batterie complète de /tooling.sdd après l'ajout des tests ci-dessous : le
+  [x] Rejouer la batterie complète de /tooling.sdd après l'ajout des tests ci-dessous : le
       module ne se construit que sur défaut et `--all-features`, et les cinq autres
       combinaisons doivent compiler sans lui.
-  [ ] Convertir chaque `Scenario` en test Rust nommé et distinct, au minimum dix-neuf
+      Réalisé 2026-10-02 (validator B5c) : seize commandes + @clippy @static-frontend rejouées ;
+      module absent des cinq combinaisons hors défaut/all-features, comptes cohérents
+      (482 défaut / 463 sans défaut / 652 all-features).
+  [x] Convertir chaque `Scenario` en test Rust nommé et distinct, au minimum dix-neuf
       tests pour dix-neuf `Scenario`, correspondance complète — les deux premiers vivent
       déjà dans le mod inline @frontend::tests et seront complétés d'assertions jusqu'à
       vérifier tout leur `Then` : « fichier statique servi en GET » →
@@ -239,6 +253,12 @@ Tasks:
       contrôle de compilation qui résout @frontend::static_frontend_router sous
       `static-frontend`, dont l'absence est en outre prouvée par la batterie
       `--no-default-features` de /tooling.sdd.
+      Réalisé 2026-10-02 (B5c, validator PASS) : 19 Scenario → 19 tests nommés distincts
+      (2 préexistants complétés, 17 créés), mapping nom à nom vérifié assertion par assertion
+      au source (HEAD sans corps, 307 avec query, `%2e%2e` ET `..` littéral, `%00`, `404` vide
+      sans `content-type`, 304 déterministe, 412, 206/416, panic du merge double-fallback,
+      routes déclarées avant coquille, witness de gating) ; fixtures @StdFs (tempfile absent du
+      manifeste, non nommé par la spec).
 
 Done when:
   Chacun des dix-neuf `Scenario` dispose d'un test nommé distinct, correspondant à la
@@ -276,6 +296,8 @@ Scenario: coquille SPA servie directement au chemin racine
   When le client envoie un GET vers `/`
   Then la réponse est `200` et le corps est l'octet-à-octet du index.html racine
   And le `content-type` est `text/html`
+  And la réponse porte `cache-control: no-cache` (adapté 2026-10-02 par la tâche
+  d'arbitrage 2026-09-29 — toute réponse `text/html` porte l'en-tête)
 
 Scenario: requête HEAD rend les en-têtes sans corps
   Given le même assets_dir
