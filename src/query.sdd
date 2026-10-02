@@ -208,14 +208,15 @@ Handles:
     2026-09-29).
 
 Tasks:
-  [ ] En-tête `//!` de `./query.rs` (arbitré par Sébastien le 2026-09-29, `Must`) : remplacer
+  [x] En-tête `//!` de `./query.rs` (arbitré par Sébastien le 2026-09-29, `Must`) : remplacer
     « et plus tard GraphQL/MCP » par « REST et MCP (via `rest::core::list`) ; GraphQL utilise ses
     propres curseurs seaography » ; aligner le `///` de @query dans `./lib.rs` et corriger
     ./lib.sdd (`Must` et Scenario « commentaire de @query aligne la réalité »). Documentation
     seule, aucun changement de comportement.
-    État 2026-10-02 (B5a, validator PASS) : en-tête de ./query.rs corrigé (formulation exacte du
-    `Must`, « plus tard » absent) ; reste le `///` de @query dans ../lib.rs (l.156, encore
-    « REST/GraphQL/MCP ») et la correction de ./lib.sdd — tâche hôte dans ./lib.sdd, vague lib.
+    État 2026-10-02, soldé (B5a + B5d, validator PASS sur les deux volets) : en-tête de
+    ./query.rs corrigé (formulation exacte du `Must`, « plus tard » absent) ; `///` de @query
+    aligné mot à mot dans ../lib.rs (B5d, test @query_doc_matches_reality rouge→vert) ; la
+    formulation « REST/GraphQL/MCP » n'existe plus dans la source ni dans ./lib.sdd.
   [x] @page est désormais bornée par @MAX_PAGE (arbitré par Sébastien le 2026-09-27, `Must`,
     `Exposes`, `Handles`) : ajouter la constante @MAX_PAGE = `u64::MAX / @MAX_PER_PAGE`, étendre
     @Pagination::from_raw pour clamper @page au-dessus de ce plafond avec @u64::min (même patron
@@ -260,8 +261,8 @@ Done when:
     nouveau lorsque la tâche de purge `missing_docs` le touche.
   Les quatre lignes `[?]` de `Tasks` ont une décision de Sébastien reflétée dans la spec — borne
     de @page par @MAX_PAGE (2026-09-27), puis en-tête `//!`, asymétrie zéro contre négatif et
-    constructeur unique de @Pagination (2026-09-29, `Must`). Reste à appliquer : le texte de
-    l'en-tête `//!` (tâche `[ ]`).
+    constructeur unique de @Pagination (2026-09-29, `Must`) ; l'en-tête `//!` et son alignement
+    dans ../lib.rs sont appliqués depuis 2026-10-02 (B5a + B5d), plus rien en attente.
   La spec est relue et approuvée par Sébastien, seule l'implementer convertissant ensuite les
     `Scenario` en tests.
 

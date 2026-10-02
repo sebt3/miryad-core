@@ -3,7 +3,7 @@
 //! Table `miryad_workflow_definitions` : le seul endroit où un DAG de workflow est stocké et
 //! administré — CRUD gratuit sur REST/GraphQL/MCP par le mécanisme générique de la crate. Porte la
 //! forme stockée d'un step ([`StepDefinition`], enveloppe de colonne [`DagSteps`]) et
-//! [`validate_dag`], la seule validation structurelle de DAG de toute la crate (`MRD-WORKFLOW-004`
+//! `validate_dag`, la seule validation structurelle de DAG de toute la crate (`MRD-WORKFLOW-004`
 //! via [`WorkflowError::InvalidDag`]). La validation est déclenchée par les hooks
 //! [`MiryadResource`] de création et de mise à jour (rendu `422`, erreur applicative de l'admin
 //! qui écrit le DAG) et jamais par `ActiveModelBehavior::before_save` (rendu `500`, panne
@@ -30,7 +30,7 @@ use crate::workflow::error::WorkflowError;
 /// amont, et le couple `kind`/`config` que seul un `impl MiryadWorkflowStep` du registre de
 /// l'application interprète. Aucune validation portée par le type lui-même : tout
 /// [`StepDefinition`] isolé est constructible, seule la liste complète d'un DAG est validable
-/// ([`validate_dag`]).
+/// (`validate_dag`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StepDefinition {
     /// Identifiant du step, unique dans son DAG — cible des arêtes `depends_on`.
@@ -50,7 +50,7 @@ pub struct StepDefinition {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, FromJsonQueryResult)]
 pub struct DagSteps(
     /// Les steps du DAG, dans l'ordre d'origine — l'ordre de la liste est celui des messages
-    /// d'erreur de [`validate_dag`].
+    /// d'erreur de `validate_dag`.
     pub Vec<StepDefinition>,
 );
 

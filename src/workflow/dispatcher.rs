@@ -1,7 +1,7 @@
 //! Service Restate `StepDispatcher` (feature `workflow`) : exécution durable d'un step de
 //! workflow, quel que soit son kind.
 //!
-//! Jointure entre le monde [`MiryadWorkflowStep`] (Rust pur, ./step.rs — qui ne connaît pas
+//! Jointure entre le monde [`crate::workflow::step::MiryadWorkflowStep`] (Rust pur, ./step.rs — qui ne connaît pas
 //! Restate) et le protocole `restate-sdk` (./interpreter.rs, ce fichier) : les services
 //! `restate-sdk` sont liés à la compilation (`Endpoint::builder().bind(...)`), aucun
 //! enregistrement dynamique par kind n'est possible — un seul service existe pour tous les

@@ -254,6 +254,18 @@ Tasks:
     migré, relire le @Model, comparer — prouve la lecture par @FromJsonQueryResult que seule
     l'écriture prouvait. À faire au batch de clôture du moteur (levée du standby) ; nouveau
     Scenario « aller-retour d'un DAG par la colonne `steps` ».
+  [ ] Hygiène @cargo doc (ouverte 2026-10-02, vague B5d, remontée du validator — hors gate du
+    standby : modification de doc-comment seule, aucune dépendance, aucun comportement, aucune
+    interaction avec la décision moteur @apalis) — @cargo doc @--no-default-features @--features
+    @workflow émet trois avertissements @private_intra_doc_links depuis ./definition.rs (l.6,
+    l.33, l.53) : tous trois lient @validate_dag, qui est @pub(crate) ; la doc publique ne peut
+    pas le nommer en lien. Remède attendu (patron lib.sdd l.89, remède explicitement admis au
+    @Raises de ../lib.sdd depuis 2026-10-02) : citation en chemin de code non lié, la phrase
+    gardant son sens. Épreuve : zéro avertissement imputable à ./definition.rs sur @cargo doc
+    @workflow et @--all-features.
+    Réalisé 2026-10-02 (B5e-mini, validator consolidé PASS) : les trois liens déliés en chemin
+    de code (item @pub(crate)), phrases inchangées ; @cargo doc workflow et @all-features à
+    zéro avertissement au brut ; hunks doc-seule @diff-vérifiés.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.

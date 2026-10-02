@@ -241,6 +241,19 @@ Tasks:
     s'écrivent contre @run_invocation et les fonctions pures ; le `Scenario` d'isolation des panics
     reste couvert par le spike (`Tasks` `[x]` ci-dessus, invoquer @execute deux fois suppose un
     serveur).
+  [ ] Hygiène @cargo doc (ouverte 2026-10-02, vague B5d, remontée du validator — hors gate du
+    standby : modification de doc-comment seule, aucune dépendance, aucun comportement, aucune
+    interaction avec la décision moteur @apalis) — @cargo doc @--no-default-features @--features
+    @workflow émet un avertissement @broken_intra_doc_links depuis ./dispatcher.rs l.4 : lien
+    @[`MiryadWorkflowStep`] non résolu alors que le trait est `pub` dans ./step.rs — la doc
+    module ne le nomme pas dans ses @use. Remède attendu (à la différence de lib.sdd l.89, ici le
+    lien EST résolvable) : chemin d'adresse complet @crate::workflow::step::@MiryadWorkflowStep,
+    ou @MiryadWorkflowStep importé dans la portée de la doc. Épreuve : zéro avertissement
+    imputable à ./dispatcher.rs sur @cargo doc @workflow et @--all-features.
+    Réalisé 2026-10-02 (B5e-mini, validator consolidé PASS) : lien [crate::workflow::step::
+    @MiryadWorkflowStep] (chemin complet, item `pub` résolvable — pas de dé-liaison, l'import de
+    portée écarté pour @unused_imports) ; @cargo doc workflow et @all-features à zéro
+    avertissement au brut.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow` — périmètre
