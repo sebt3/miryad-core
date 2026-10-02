@@ -133,10 +133,9 @@ Depends on:
     l'inverse, ces modules consomment @query.
 
 Exposes:
-  @DEFAULT_PER_PAGE — `pub const` @u64, valeur `100`, défaut de @per_page. Sans commentaire
-    `///` aujourd'hui (dette `missing_docs` portée en `Tasks`).
-  @MAX_PER_PAGE — `pub const` @u64, valeur `1000`, plafond absolu de @per_page. Même dette
-    `missing_docs`.
+  @DEFAULT_PER_PAGE — `pub const` @u64, valeur `100`, défaut de @per_page. Documenté par son
+    `///` depuis la purge du harnais (dette `missing_docs` soldée, cf. `Tasks`).
+  @MAX_PER_PAGE — `pub const` @u64, valeur `1000`, plafond absolu de @per_page. Documenté de même.
   @MAX_PAGE — `pub const` @u64, valeur `u64::MAX / @MAX_PER_PAGE`, plafond de sûreté de @page
     (arbitré 2026-09-27) : garantit que `per_page * page` ne déborde jamais un `u64` chez
     l'appelant, quel que soit le @per_page valide réellement choisi. Dette `missing_docs`.
@@ -214,6 +213,9 @@ Tasks:
     propres curseurs seaography » ; aligner le `///` de @query dans `./lib.rs` et corriger
     ./lib.sdd (`Must` et Scenario « commentaire de @query aligne la réalité »). Documentation
     seule, aucun changement de comportement.
+    État 2026-10-02 (B5a, validator PASS) : en-tête de ./query.rs corrigé (formulation exacte du
+    `Must`, « plus tard » absent) ; reste le `///` de @query dans ../lib.rs (l.156, encore
+    « REST/GraphQL/MCP ») et la correction de ./lib.sdd — tâche hôte dans ./lib.sdd, vague lib.
   [x] @page est désormais bornée par @MAX_PAGE (arbitré par Sébastien le 2026-09-27, `Must`,
     `Exposes`, `Handles`) : ajouter la constante @MAX_PAGE = `u64::MAX / @MAX_PER_PAGE`, étendre
     @Pagination::from_raw pour clamper @page au-dessus de ce plafond avec @u64::min (même patron
@@ -226,10 +228,12 @@ Tasks:
     contrat (arbitré par Sébastien le 2026-09-29, `Must`) ; privatisation des champs renvoyée à la
     préparation de `1.0`. Aucun appelant du dépôt ne contourne aujourd'hui : aucun changement de
     code.
-  [ ] À la purge du harnais sur le module (/tooling.sdd) : commentaires `///` sur les huit items
+  [x] À la purge du harnais sur le module (/tooling.sdd) : commentaires `///` sur les huit items
     publics qui lèvent `missing_docs` — @DEFAULT_PER_PAGE, @MAX_PER_PAGE, le champ @per_page de
     @Pagination et les champs @items, @page, @per_page, @total_items et @total_pages de
     @PagedResult.
+    Soldé par la purge documentaire de la phase A et vérifié 2026-10-02 (B5a, validator PASS) :
+    les huit items portent leur `///`, fichier vert sous `missing_docs = "deny"`.
   [x] Convertir les dix `Scenario` en au moins dix tests nommés distincts du `#[cfg(test)] mod
     tests` de `./query.rs`, un par scenario (quatre existants conservés, six à créer) :
     « paramètres absents — valeurs par défaut » → `defaults_when_absent` (existant) ;

@@ -225,8 +225,9 @@ Tasks:
     @build_http_client, défauts `5s`/`15s` à documenter au champ ou via une fonction `Default`
     séparée (pas de `#[derive(Default)]` sur la struct entière, les cinq champs obligatoires
     resteraient sans valeur par défaut sensée).
-  [ ] Convertir les `Scenario` en autant de tests distincts nommés dans un module de tests
-    `#[cfg(test)]` à créer dans ./config.rs (le fichier compte 0 test inline à ce jour) : les
+  [x] Convertir les `Scenario` en autant de tests distincts nommés dans un module de tests
+    `#[cfg(test)]` de ./config.rs (le texte « à créer… 0 test inline » était celui d'avant la
+    vague B1) : les
     scenarios runtime sous `#[tokio::test]` (@tokio est déjà dev-dependency avec `macros` et
     `rt-multi-thread`, @OidcClient::new est atteignable dans la crate), l'affirmation @Send et
     @Sync comme appel d'une fonction générique bornée `@T: @Send + @Sync` instantiée sur

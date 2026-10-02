@@ -261,9 +261,10 @@ Example:
   list × non-admin × `OwnerOnly` avec col None → @rbac::ListAccess::Forbidden
 
 Tasks:
-  [ ] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé, un test par
+  [x] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé, un test par
     scénario minimum, dans le `#[cfg(test)] mod tests` de ./rbac.rs, avec les fixtures manquantes
-    ajoutées. Huit tests inline existent déjà et couvrent : « Lecture `Public` : tout principal
+    ajoutées. Douze tests inline existent déjà (les huit initiaux plus les quatre des arbitrages
+    2026-09-27 : S20-S23) et couvrent : « Lecture `Public` : tout principal
     passe » → `public_policy_always_allows` ; « Écriture `OwnerOnly` : propriétaire passe, autre
     refusé, admin passe » → `owner_only_allows_owner_denies_others_allows_admin` ; « Lecture
     `Group` : membre passe, admin passe, étranger refusé » →
@@ -275,7 +276,7 @@ Tasks:
     `list_access_owner_only_filters_for_non_admin_but_not_admin` ; « Listage `Group` : non restreint
     pour membre, interdit pour étranger » →
     `list_access_group_policy_forbidden_without_membership`.
-    Seize tests à créer, un par scénario restant : `admin_only_write_policy_allows_admin` ;
+    Quinze tests à créer, un par scénario restant : `admin_only_write_policy_allows_admin` ;
     `owner_only_read_policy_allows_owner_and_denies_others` ;
     `admin_shortcut_wins_before_ownerless_fail_closed` ;
     `filter_by_owner_condition_returns_only_own_rows` ;
@@ -286,16 +287,21 @@ Tasks:
     `can_create_public_or_owner_only_never_queries_db` ;
     `can_create_admin_only_grants_admin_denies_others` ;
     `can_create_group_grants_admin_and_member_only` ;
-    `can_create_owner_only_without_column_is_fail_closed` ;
     `public_reads_create_list_never_touch_missing_tables` ;
     `non_public_paths_propagate_dberr_when_tables_missing` ;
     `owner_only_null_owner_value_denies_non_admin` ;
-    `service_account_follows_group_membership_as_regular_user`. Les fixtures `drafts` (read `Group
-    "drafts"`, write Group "maintainers"), `memos` (OwnerOnly read et write, owner_column `None`),
-    `bulletins` (read `AdminOnly`, write `Public`), `ledgers` (OwnerOnly read et write, owner
-    column Option<i32>) restent à ajouter au mod tests. Chaque test utilise une connexion SQLite
+    `service_account_follows_group_membership_as_regular_user`. Les fixtures @drafts (read @Group
+    « ghosts » — lecture du `Scenario` « groupe inconnu », la mention `Group` « drafts » était un
+    résidu descriptif corrigé 2026-10-02 ; write @Group « maintainers »), @bulletins (read
+    `AdminOnly`, write `Public`) et @ledgers (OwnerOnly read et write, owner
+    column Option<i32>) restent à ajouter au mod tests ; @memos et @can_create_owner_only_without_column_is_fail_closed,
+    un temps listés ici, préexistaient déjà au `mod tests` (constaté B5a). Chaque test utilise une connexion SQLite
     mémoire migrée par @crate::migration, sauf les scénarios de propagation qui veulent une base
     non migrée.
+    Réalisé 2026-10-02 (B5a, validator PASS) : 27 `Scenario` effectifs → 27 tests nommés
+    distincts (12 préexistants + 15 nouveaux), mapping nom à nom vérifié assertion par
+    assertion, fixtures @drafts/@bulletins/@ledgers ajoutées, `Then` réels (filtre sqlite réel,
+    connexion non migrée comme preuve d'absence, non-création de groupe prouvée par comptage).
   [x] Extraire @rbac::static_verdict de @rbac::evaluate (arbitré 2026-09-27, `Must`, `Exposes`) :
     factorisation pure, aucun changement de comportement observable de @rbac::can_read/can_write
     attendu — les deux nouveaux scenarios de `static_verdict` et les huit existants sur
@@ -313,6 +319,12 @@ Tasks:
     toutes les entités, contrairement à ./rbac.rs qui retourne `false`. Différé (2026-09-27) : le
     pont GraphQL reste un prototype sans consommateur (exception `Must` de /miryad-core.sdd), cette
     asymétrie n'est pas arbitrée dans cette version mineure.
+  [x] Question spec-dd 2026-10-02 (posée en `[?]`, résolue le même jour sur validation du
+    validator B5a — aucune ambiguïté de contrat, le `Given` du `Scenario` est explicite, seule la
+    parenthèse descriptive de la tâche était périmée) : texte de la tâche de conversion corrigé
+    sur les comptes réels (27 `Scenario`, 12 préexistants, 15 nouveaux, @memos et
+    @can_create_owner_only_without_column_is_fail_closed déjà présents) et sur la fixture
+    @drafts en lecture @Group « ghosts » ; les deux `[x]` correspondants posés.
   [x] Colonne propriétaire `Some` portant la valeur `None` : c'est le contrat (arbitré par
     Sébastien le 2026-09-29, `Handles`) — un propriétaire absent n'est le propriétaire de
     personne, refusé hors admin, fail-closed ; pas d'erreur de cohérence (un `500` sur une donnée
@@ -327,13 +339,15 @@ Tasks:
     reportée à la tâche de purge du harnais `/tooling.sdd`, module par module avec Sébastien
     (arbitré le 2026-09-29) — la dette est stable à deux, elle ne grossit pas ; la refonte des
     `match` est un travail à part entière, pas un effet de bord d'arbitrage.
-  [ ] Rejouer la batterie complète de /tooling.sdd après conversion des seize tests et après chaque
+  [x] Rejouer la batterie complète de /tooling.sdd après conversion des quinze tests nouveaux et après chaque
     arbitrage `[?]`, pour que le ratio tests/scenario et le harnais restent verts sur toutes les
     combinaisons de features.
+    Réalisé 2026-10-02 (validator de la vague B5a) : seize commandes rejouées, vertes hors
+    baseline gelée graphql (7/8 sites) ; `rbac::tests` 27/27 nommément.
 
 Done when:
-  Les vingt-huit scénarios (vingt-quatre originaux, deux du fail-closed de @rbac::can_create et
-    deux de @rbac::static_verdict, tous arbitrés le 2026-09-27) ont chacun au moins un test
+  Les vingt-sept scénarios (décompte réel revérifié 2026-10-02 à la vague B5a — le décompte
+    « vingt-huit » était une surcomptage ; tous arbitrés le 2026-09-27) ont chacun au moins un test
     distinct nommé, la batterie /tooling.sdd est verte sur chaque combinaison de features, et
     ./rbac.rs ne porte plus de dette stricte `unreachable` lors de la purge programmée de
     /tooling.sdd (arbitrage du 2026-09-29 : purge reportée, non requise ici).
