@@ -210,16 +210,30 @@ Tasks:
     (@get_migration_files), nom et teneur du tracking dédié, absence du défaut
     @seaql_migrations, @steps @Some(@1) et @Some(@0), second @up idempotent, @down @Some(@1) sur
     003, et consommatrice-avant-miryad-core.
-  [ ] Avertissement dans le doc-comment de @Migrator sur @fresh/@reset (arbitré par Sébastien le
+    État 2026-10-03 (B5f, validator PASS) : dix `Scenario` réels (la tâche dit « neuf », texte
+    d'avant l'amendement 2026-09-23 — le `Done when` dit « dix »), dix tests nommés distincts
+    verts, dont cinq verrous du réel portant commentaire « Écart consigné » — cette `[ ]` se
+    clôture dans le même commit que l'amendement Q3 et son extension ci-dessous.
+  [x] Avertissement dans le doc-comment de @Migrator sur @fresh/@reset (arbitré par Sébastien le
     2026-09-29, `Must`) — documentation seule, aucun wrapper.
-  [ ] Doc-comment de @Migrator sur @steps `Some(n)` (arbitré par Sébastien le 2026-09-29, `Must`)
+    Réalisé 2026-10-03 (B5f, validator PASS) : doc @Migrator complétée (droppe toutes les tables
+    y compris celles de la consommatrice, pas de wrapper, ne jamais appeler sur une connexion
+    partagée en production), formulations du `Must` citées, diff doc-seul.
+  [x] Doc-comment de @Migrator sur @steps `Some(n)` (arbitré par Sébastien le 2026-09-29, `Must`)
     — documentation seule, responsabilité du caller.
+    Réalisé 2026-10-03 (B5f, validator PASS) : doc @Migrator complétée avec l'exemple d'état
+    partiel prescrit (base à jour de 002 sans le groupe `admin` du seed 003), responsabilité du
+    caller, aucun wrapper ne force @None.
   [x] Nom de tracking conservé, exception écrite dans /miryad-core.sdd (arbitré par Sébastien le
     2026-09-29, `Must`) — aucun renommage.
   [x] Règle de nommage `mYYYYMMDD_NNNNNN_nom` (arbitré par Sébastien le 2026-09-29, `Must`) —
     aucun changement de code.
-  [ ] Commentaire dans le test inline expliquant le nom `mod` de l'@AppMigration (arbitré par
+  [x] Commentaire dans le test inline expliquant le nom `mod` de l'@AppMigration (arbitré par
     Sébastien le 2026-09-29, `Must`) — aucun renommage.
+    Réalisé 2026-10-03 (B5f, validator PASS) : six lignes de commentaire dans le test existant —
+    @DeriveMigrationName rend le stem du fichier déclarant (@get_file_stem(file!())), donc « mod »
+    pour ./mod.rs ; inoffensif (le tracking ne porte que cette entrée), empiriquement verrouillé
+    par le test consommatrice-en-tête ; aucun renommage.
   [?] Question spec-dd 2026-10-02 (Sébastien) — le `Must` d'ordre (gelé 2026-09-23 : « trois
     @Box… pas un de plus », « `004` toujours en dernière position ») est littéralement violé par
     la quatrième entrée @index_api_tokens_subject que la tâche du 2026-09-29 ordonnait. Amendement
@@ -227,6 +241,22 @@ Tasks:
     specs filles, `create_api_tokens`/`create_users_groups`/`seed_admin_group` dans cet ordre,
     puis les index/évolutions dans l'ordre chronologique de leurs specs » — la main sur ce texte
     est la tienne (gel daté). En attendant, la tâche « Migration suivante » reste `[ ]`.
+  [?] Corollaires Scenario de l'arbitrage Q3 ci-dessus (posée 2026-10-03, B5f — les tests de la
+    tâche de conversion verrouillent le réel, commentaires « Écart consigné » dans ./mod.rs ;
+    amender en même temps que le `Must`) : (1) ligne 242, « exactement trois entries » → « les
+    trois internes en ordre figé puis les enregistrements chronologiques » (réel : 4, 5 sous
+    @workflow) ; (2) lignes 250-251 et (3) ligne 280, « trois lignes » → « exactement les
+    enregistrements » ; (4) lignes 282 et 286-287 : @down @Some(@1) défait l'index
+    @m20260930_000001_index_api_tokens_subject, non la seed 003 (@exec_down_with itère les
+    appliquées en ordre inverse d'enregistrement, @sea-orm-migration 2.0.2 @exec.rs:305) —
+    retitrer « down d'un pas défait la dernière appliquée », réécrire @applied/@pending,
+    conserver l'And @miryad_groups intact ; (5) lignes 311-314 : 3/4 entrées → 4/5, l'entrée
+    @workflow restant quatrième. Mettre à jour au même passage le texte de la tâche de
+    conversion (« neuf `Scenario`… huit tests… @down @Some(@1) sur 003 » — réel : dix, neuf,
+    l'index). Facultatif relevé par le validator : l'And de sonde @has_table(@seaql_migrations)
+    du Scenario de coexistence n'est asserté qu'implicitement par le test existant — un
+    @assert!(@has_table) explicite est d'un ligne si tu le veux, l'acte de délégation suffit
+    sinon.
 
 Done when:
   Les dix `Scenario` (neuf originaux, un pour l'amendement 2026-09-23) sont chacun vérifiés par au
