@@ -180,9 +180,11 @@ Depends on:
   @sea_orm — @DatabaseConnection au seul type ; @EntityTrait/@Model/@ActiveModel atteints par le
     supertrait @MiryadResource de @RestEntity, aucune mutation @sea_orm directe (sea-orm `2`,
     dépendance obligatoire de /Cargo.toml)
-  @serde_json — @Value, @from_value, @to_value ; @null → `invalid type: unit value, expected
-    struct` vérifié au source `serde_json 1.0.151` (impl @Deserializer for @Value : @Null →
-    @visit_unit, `value/de.rs`) ; clé absente : non-@Option → @Err(@missing_field), @Option →
+  @serde_json — @Value, @from_value, @to_value ; @null → `invalid type: null, expected
+    struct <Nom>` mesuré à l'exécution et en sonde indépendante sous `serde_json 1.0.151` (le
+    texte initial de cette spec affirmait `invalid type: unit value` d'après @visit_unit dans
+    `value/de.rs` — contredit par la mesure, harmonisé 2026-10-02 sur le message réel verrouillé
+    en test) ; clé absente : non-@Option → @Err(@missing_field), @Option →
     @None — vérifié au source `serde 1.0.229` (@private::de::missing_field → @visit_none)
   @async_trait — méthode @async de @McpEntity boxée en @dyn ; @serde, @serde_json et @async-trait
     sont non optionnels dans /Cargo.toml ; @vynil-core est la seule dépendance gated `mcp` et ce
@@ -260,7 +262,8 @@ Raises:
   `MRD-MCP-005` (@McpError::InvalidParams) — cinq chemins de désérialisation : @ListParams
     (@McpOp::List), @IdParams (@McpOp::Get, @McpOp::Delete), @E::Model (@McpOp::Create), @IdParams
     puis @E::Model (@McpOp::Update, deux passes) ; message @serde recopié dans @Display
-    ("missing field `title`", "invalid type: unit value, expected struct @ListParams", hors
+    ("missing field `title`", "invalid type: null, expected struct @ListParams" — message mesuré,
+    harmonisé 2026-10-02, hors
     plage @u64/@i32, etc.) ; la base n'est jamais atteinte sur ces chemins — observable, un
     @McpError::Database concurrent n'est jamais construit avant la délégation.
   `MRD-MCP-004` (@McpError::Render) — l'échec de @serde_json::to_value sur @McpOp::List,
@@ -369,9 +372,10 @@ Tasks:
     corps @Id ligne deux : seule la ligne une mute) ; « `_update` : sans @id ou corps incomplet,
     `MRD-MCP-005` sans écriture » → `update_missing_id_or_incomplete_body_invalid_params_no_write`
     ; « `_delete` : @Value::Null, inconnu `MRD-MCP-002`, refus `MRD-MCP-001` » →
-    `delete_returns_json_null_then_unknown_id_not_found` ; « exposition en ensemble, jamais en
-    ordre » → `registry_exposes_entities_as_a_set_not_an_order` (deux entités, assertions
-    d'appartenance — toute assertion d'ordre est proscrite, [arbitré 2026-09-29] ci-dessous) ; « traduction @RestError
+    `delete_returns_json_null_then_unknown_id_not_found` ; « exposition en ordre croissant des
+    clés » → `registered_entities_are_exposed_in_ascending_key_order` (deux entités, assertion
+    d'égalité d'ordre — nom et formulation initiaux « ensemble, jamais en ordre » obsolètes de
+    l'arbitrage BTreeMap 2026-09-29, corrigés 2026-10-02) ; « traduction @RestError
     sans perte de décision, jamais @UnknownTool d'ici » →
     `rest_to_mcp_error_translation_loses_no_decision` (table absente → @Database
     `MRD-MCP-003` ; @AdminOnly refusé → @Forbidden ; @id inconnu → @NotFound ; aucune variante
@@ -380,10 +384,16 @@ Tasks:
     produire) le prendront.
   [x] @arguments absents : la substitution de `{}` vit dans ./handler.rs (arbitré par Sébastien le 2026-09-29) ; ce fichier reste
     défensif sur @Null, aucun changement ici.
-  [ ] @register : `assert!` sur clé déjà présente, y compris un même type deux fois (arbitré par Sébastien le 2026-09-29) (`Must`) ;
-    remplacer le test qui fige l'écrasement par des tests `should_panic`.
-  [ ] @entities passe de @HashMap à @BTreeMap (arbitré par Sébastien le 2026-09-29) : `tools/list` en ordre croissant des clés ; les
-    tests d'ensemble deviennent des tests d'ordre exact.
+  [x] @register : `assert!` sur clé déjà présente, y compris un même type deux fois (arbitré par Sébastien le 2026-09-29) (`Must`) ;
+    remplacer le test qui fige l'écrasement par des tests `should_panic`. Réalisé 2026-10-02
+    (B4d1, validator PASS) : `assert!` + doc `# Panics` style gardes du crate, rouge consigné
+    (« test did not panic as expected »), deux `should_panic` distincts (nom en collision, même
+    type deux fois).
+  [x] @entities passe de @HashMap à @BTreeMap (arbitré par Sébastien le 2026-09-29) : `tools/list` en ordre croissant des clés ; les
+    tests d'ensemble deviennent des tests d'ordre exact. Réalisé 2026-10-02 (B4d1, validator PASS) :
+    @BTreeMap posé, ordre d'égalité exact asserti (`["ingredients", "recipes"]`, enregistrement
+    `recipes` premier — ordre des clés, pas d'insertion), ./handler.rs intact et son test
+    d'ordre vert, flaky HashMap éteint.
   [x] Message de @McpError::Render généralisé (« output rendering error ») (arbitré par Sébastien le 2026-09-29) : porté par
     ./error.sdd, aucun changement ici.
   [x] PK exigée à `create`/`update` : friction assumée et documentée dans la description de l'outil
@@ -470,7 +480,7 @@ Scenario: tout outil appelé avec @arguments @null est `MRD-MCP-005` avant tout 
     @serde_json::Value::Null — le cas où `tools/call` omet @arguments (défaut @Value de
     ./handler.rs)
   Then chacun des cinq rend @McpError::InvalidParams (`MRD-MCP-005`, @Display portant
-    `invalid type: unit value` vérifié source @serde_json) — @null n'est pas @Object, même pour un
+    `invalid type: null` mesuré, harmonisé 2026-10-02) — @null n'est pas @Object, même pour un
     `_list` dont toutes les propriétés sont optionnelles
   And aucune ligne n'a été écrite ni lue : la base est intacte après les cinq tentatives
   And la qualification de cette dureté (accepter @null comme `{}` ?) est la ligne [arbitré 2026-09-29] de `Tasks`

@@ -25,7 +25,9 @@ References:
   ./registry.rs — autre consommateur : alimente @render avec @serde_json::to_value de la page
     (@rest::core::list), de l'enregistrement (get/create/update) ; @McpOp::Delete n'est plus rendu
     (confirmation fixe posée par ./handler.rs, arbitré 2026-09-29) ; porte @McpToolRegistry.format (@pub(crate)) fixé à la construction.
-  ./error.rs — @McpError::Render(@String), affiché `MRD-MCP-004: template render error: {0}`,
+  ./error.rs — @McpError::Render(@String), affiché `MRD-MCP-004: output rendering error: {0}`
+    (texte de l'arbitrage 2026-09-29, aligné ici le 2026-10-02 — le préfixe initial
+    `template render error:` était périmé),
     code JSON-RPC -32603, @data @None.
   ../query.sdd — les clés `items`, `page`, `per_page`, `total_items` et `total_pages` de
     @PagedResult, promises là-bas comme contrat inter-surfaces, sont l'interface de données que
@@ -140,7 +142,7 @@ Returns:
 
 Raises:
   @McpError::Render(@String) — code `MRD-MCP-004`, message complet
-    `MRD-MCP-004: template render error: Renderer error: {détail handlebars}` (préfixe @./error.rs
+    `MRD-MCP-004: output rendering error: Renderer error: {détail handlebars}` (préfixe @./error.rs
     + affichage @vynil @Error::HbsRenderError vérifiée en amont) — produit par l'unique
     @map_err(@e| @McpError::Render(@e.to_string())) de @render, par @./handler.rs en réponse
     JSON-RPC code -32603 @data @None, sans contenu partiel. Quatre branches amont l'atteignent,
@@ -362,7 +364,7 @@ Scenario: clé absente en mode strict — pas de fallback, MRD-MCP-004
   When @render est appelé avec @RenderShape::List sur la page
     `{"items": [], "page": 1, "per_page": 100, "total_items": 0, "total_pages": 0}`
   Then le résultat est @Err(@McpError::Render(…)) dont l'affichage porte le préfixe
-    `MRD-MCP-004: template render error:`
+    `MRD-MCP-004: output rendering error:`
   But aucun texte n'est produit — ni `Titre : `, ni un repli sur le JSON par défaut
 
 Scenario: gabarit syntaxiquement invalide — MRD-MCP-004
