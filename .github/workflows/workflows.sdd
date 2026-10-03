@@ -74,6 +74,19 @@ Tasks:
     pas finie — c'est l'effet voulu, pas une raison de retirer le drapeau.
   [ ] Décider s'il faut séparer `test`, `fmt` et `clippy` en jobs dédiés dès que la matrice est
     jouée (parallélisme, lisibilité des échecs).
+  [?] Question spec-dd 2026-10-03 (Sébastien) — tension entre la matrice complète et le carve-out
+    gelé du pont, à trancher avant la première `[ ]` : les tests sont verts sur les huit
+    combinaisons (batterie jouée à chaque vague — la matrice des tests est extensible sans
+    risque), mais @cargo clippy est rouge de façon DURABLE sous @graphql/@graphiql/@all-features
+    sur les 7/8 sites gelés de l'exception du pont (/tooling.sdd, carve-out acté 2026-09-29,
+    purge à ton arbitrage). Allonger le job clippy tel quel (tâche 1) rendrait la CI rouge
+    indéfiniment, ce qui n'est pas la même logique que la tâche 2 (« rouge le temps de la purge
+    » — là la purge est close hors pont). Options : (A) allonger la matrice des TESTS seulement
+    et laisser clippy sur défaut + `--no-default-features` (les deux verts) tant que le pont est
+    gelé ; (B) matrice clippy complète avec @continue-on-error limité aux trois graphes gelés,
+    tracé à la ligne ; (C) trancher d'abord la purge des 7/8 sites du pont (qui ferme la ligne
+    `[!]` de /tooling.sdd et rend A/B caduques). La tâche 3 (jobs dédiés) est distincte et
+    tienne ; les trois se traitent ensemble si tu choisis A ou B.
 
 Done when:
   La CI prouve les tests, le harnais et le formatage sur chaque combinaison de features, et un
