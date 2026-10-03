@@ -253,7 +253,7 @@ Handles:
     /tooling.sdd, la ligne seedée existe dès @migration::Migrator::up quelque soit la combinaison.
 
 Tasks:
-  [ ] Convertir les douze `Scenario` en au moins douze tests nommés distincts dans un
+  [x] Convertir les douze `Scenario` en au moins douze tests nommés distincts dans un
     `#[cfg(test)] @mod tests` de ./m20260822_000003_seed_admin_group.rs — le fichier ne porte
     aucun test inline aujourd'hui. Fixtures `sqlite::memory:` des dev-dependencies de
     /Cargo.toml, pattern @tokio::test des tests de ./mod.rs ; @SchemaManager::new(&db) pour les
@@ -270,6 +270,11 @@ Tasks:
     fixtures sous l'exemption `cfg(test)` de /tooling.sdd. Le test
     `admin_group_is_seeded_by_migration` de /src/users/group.rs garde la vue consommateur du
     seed et ne compte pas pour la couverture de ces scénarios.
+    Réalisé 2026-10-03 (B5g, validator PASS) : douze tests nommés distincts, mapping nom à nom
+    vérifié au source (@down_cascades_admin_memberships avec @is_admin @Ok(false) prouvé après
+    down et après re-up, @full_rollback_then_reapply_restores_seed avec @created_at strictement
+    plus récent, @applied_name_is_the_seed_stem en SQL brut sur le tracking dédié), verts sur les
+    huit graphes — verrous du réel, zéro écart, production intacte (diff pur additif).
   [x] Littéral `'admin'` du `down` : contrainte documentaire (arbitré par Sébastien le 2026-09-29,
     `Must`, miroir de ../users/group.sdd).
   [x] Perte des memberships au rollback : contrat, régénération par le claim suivant (arbitré par

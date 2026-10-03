@@ -146,7 +146,7 @@ Handles:
     fichier consigne sans trancher
 
 Tasks:
-  [ ] Convertir les douze `Scenario` en au moins douze tests nommés distincts dans le
+  [x] Convertir les douze `Scenario` en au moins douze tests nommés distincts dans le
     `#[cfg(test)] mod tests` de ./m20260822_000001_create_api_tokens.rs, sur `sqlite::memory:`
     (pattern de ./mod.rs), assertions par @SchemaManager::has_table et @has_column (sonde de
     @sea-schema rendue activable par la feature `sqlx-sqlite` de @sea-orm-migration en
@@ -160,6 +160,10 @@ Tasks:
     `up_tolerates_drifted_table` ; `down_drops_the_table` ; `down_errors_without_table` ;
     `applied_name_is_the_file_stem` ; `down_then_up_restores_schema`. Tests d'exécution réels sur
     la batterie de /tooling.sdd, hors base de données externe.
+    Réalisé 2026-10-03 (B5g, validator PASS) : douze tests nommés distincts, mapping nom à nom
+    vérifié assertion par assertion au source (@token_hash_rejects_duplicate sur ses trois
+    branches, @created_at_has_no_server_default avec sa branche But), verts sur les huit graphes
+    — verrous du réel, zéro rouge, production intacte (diff pur additif).
   [x] Index sur `subject` par une migration suivante, la 001 étant immuable (arbitré par
     Sébastien le 2026-09-29, `Must`) — tâche dans ./mod.sdd.
   [x] `down` strict gelé (arbitré par Sébastien le 2026-09-29, règle générale de ./mod.sdd).

@@ -94,7 +94,8 @@ Must:
     contrat exploitable par une migration suivante (Tasks [arbitré 2026-09-29]).
   Enforcement des FK sur SQLite sans que ce fichier code quoi que ce soit : le default du connecteur
     posé @PRAGMA foreign_keys = ON (vérifié au source de sqlx-sqlite 0.9.0 — version épinglée par
-    /Cargo.lock, et non la 0.8.6 citée par ../users/membership.sdd — src/options/mod.rs:187), donc
+    /Cargo.lock, citation alignée sur ../users/membership.sdd depuis 2026-10-03, l'ancienne
+    strate 0.8.6 étant soldée à l'arbitrage 2026-09-29 — src/options/mod.rs:187), donc
     `user_id` et `group_id` inconnus sont refusés à l'insertion par les tests comme par une app
     SQLite ; Postgres enforce nativement.
   Identité de tracking : @DeriveMigrationName nomme cette migration par le seul stem
@@ -236,7 +237,7 @@ Handles:
     fichier consigne sans trancher.
 
 Tasks:
-  [ ] Convertir les vingt `Scenario` en au moins vingt tests nommés distincts dans le @mod tests
+  [x] Convertir les vingt `Scenario` en au moins vingt tests nommés distincts dans le @mod tests
     `#[cfg(test)]` de ./m20260822_000002_create_users_groups.rs (le fichier n'en porte aucun
     aujourd'hui), sur `sqlite::memory:` (pattern des tests de ./mod.rs), assertions par
     @SchemaManager::has_table et @has_column (sonde sea-schema 0.18.1 rendue activable par la feature
@@ -255,14 +256,24 @@ Tasks:
     `down_errors_without_tables`, `applied_name_is_the_file_stem`,
     `down_then_up_restores_the_schema`, `names_are_case_binary_on_sqlite`. Tests d'exécution réels
     sur la batterie de /tooling.sdd, hors base de données externe.
+    Réalisé 2026-10-03 (B5g, validator PASS) : vingt tests nommés distincts, mapping nom à nom
+    vérifié au source (trois uniques avec @COUNT=1, deux cascades avec survie croisée,
+    @names_are_case_binary_on_sqlite avec count 2 puis @is_err) ; un seul écart Then-contredit
+    (@up_swallows_a_drifted_memberships_table) — verrou du réel consigné et `And` du `Scenario`
+    amendé au même commit sur validation du validator (l'ancien texte contredisait le `Given` du
+    même Scenario : la paire littérale y est inconstructible, « no such column »).
   [x] Contraintes sans nom : contrat assumé (arbitré par Sébastien le 2026-09-29, `Must`).
   [x] Collation : décision de ../users/group.sdd (arbitré par Sébastien le 2026-09-29, `Must`).
   [x] Dérive avalée : règle générale de ./mod.sdd, une seule décision pour les migrations
     (arbitré par Sébastien le 2026-09-29).
   [x] `down` strict gelé (arbitré par Sébastien le 2026-09-29, règle générale de ./mod.sdd).
-  [ ] Mettre à jour la citation de ../users/membership.sdd : sqlx-sqlite `0.8.6`
+  [x] Mettre à jour la citation de ../users/membership.sdd : sqlx-sqlite `0.8.6`
     (`options/mod.rs:185`) devient `0.9.0` (`options/mod.rs:187`), version épinglée par
     /Cargo.lock (arbitré par Sébastien le 2026-09-29) — documentation seule.
+    Satisfait dès la vague users (B2, validator PASS) : ../users/membership.sdd cite déjà
+    « sqlx-sqlite 0.9.0 @options/mod.rs:187 (épinglée par /Cargo.lock ; arbitré 2026-09-29) » ;
+    la présente phrase du @Must (« et non la 0.8.6 citée par… », bloc @Enforcement des FK),
+    devenue strate périmée, est harmonisée 2026-10-03.
   [x] Le Scenario SQLite suffit, pas de preuve Postgres (arbitré par Sébastien le 2026-09-29,
     `Must`).
 
@@ -382,8 +393,8 @@ Scenario: une miryad_group_memberships préexistante en dérive est avalée sans
   When @up de cette migration est appliqué
   Then @up retourne `Ok(())` — le `CREATE TABLE IF NOT EXISTS` saute sans lire la forme existante
   And @has_column confirme `user_id` mais nulle part `group_id` : dérive non vérifiée, non réparée
-  And une insertion SQL complète partageant deux fois la même paire (`user_id`, `group_id`) sur des
-    @id inventés réussit en `Ok` : ni la FK ni l'unique ne protègent cette table dérivée
+  And deux insertions complètes partageant le même `user_id` sur des @id inventés réussissent en
+    `Ok` : ni la FK ni l'unique ne protègent cette table dérivée — et la paire (`user_id`, `group_id`) littérale ne peut même pas être tentée : sans colonne `group_id`, elle échoue en `DbErr` « no such column » (amendé 2026-10-03, validator B5g : l'ancien texte contredisait le `Given` du même Scenario)
   But ce comportement est une tolérance constatée, pas une prescription — Tasks [arbitré 2026-09-29]
 
 Scenario: @down défait les trois tables dans l'ordre FK
