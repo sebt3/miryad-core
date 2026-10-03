@@ -164,10 +164,18 @@ Handles:
     corps est documentée par Restate, pas contractualisée ici.
 
 Tasks:
-  [ ] Troncature de la @Display de @WorkflowError::RestateRejected à 1 KiB (arbitré par Sébastien le 2026-09-29) (`Must`) : helper
+  [x] Troncature de la @Display de @WorkflowError::RestateRejected à 1 KiB (arbitré par Sébastien le 2026-09-29) (`Must`) : helper
     de coupe sur frontière de caractère dans ./error.rs, champ `body` inchangé ; deux Scenario.
-  [ ] Variante @WorkflowError::InvalidConfig (`MRD-WORKFLOW-007`) (arbitré par Sébastien le 2026-09-29) (`Must`) : ajoutée dans
+    Réalisé 2026-10-03 (B6a, validator PASS) : @truncated_body (budget 1024, recul
+    @is_char_boundary + @saturating_sub, repli @let-else — pas de @floor_char_boundary instable),
+    confiné au seul @#[error] de @RestateRejected ; rouge consigné (corps 3000 rendu en entier) ;
+    deux tests à égalité exacte (préfixe + 1024 + `…`, @body 3000 conservé ; `€` à l'octet 1023
+    reculé, sans @U+FFFD).
+  [x] Variante @WorkflowError::InvalidConfig (`MRD-WORKFLOW-007`) (arbitré par Sébastien le 2026-09-29) (`Must`) : ajoutée dans
     ./error.rs ; la validation elle-même est une tâche de ./client.sdd.
+    Réalisé 2026-10-03 (B6a, validator PASS) : variante @InvalidConfig(String), Display exacte
+    caractère à caractère verrouillée ; doc consignant qu'elle n'est construite que par
+    @WorkflowConfig::validate, jamais par @classify_transport_error (prouvé au grep production).
   [x] Convertir les scenarios de cette spec en tests distincts nommés dans `mod tests` de ./error.rs :
     fichier neuf à l'origine ; vérifié en revue 2026-09-24 : un test nommé par `Scenario` (sept, dont
     les variantes de configuration ajoutées le même jour), verts.
@@ -175,7 +183,7 @@ Tasks:
 Done when:
   Les `Scenario` ci-dessous ont chacun au moins un test nommé distinct et vert, sur la feature
     `workflow` seule et en cumul avec chaque autre feature de /tooling.sdd qui compile avec elle.
-  Les deux [arbitré 2026-09-29] de `Tasks` sont arbitrés par Sébastien (2026-09-29) ; leurs tâches de code (`[ ]`) restent à exécuter.
+  Les deux [arbitré 2026-09-29] de `Tasks` sont arbitrés par Sébastien (2026-09-29) ; leurs tâches de code sont exécutées depuis 2026-10-03 (B6a, validator PASS).
   La spec est relue et approuvée par Sébastien avant qu'une ligne de ./error.rs soit écrite.
 
 Scenario: Unreachable sur échec de connexion

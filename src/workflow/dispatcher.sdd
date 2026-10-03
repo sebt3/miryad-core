@@ -241,7 +241,7 @@ Tasks:
     s'écrivent contre @run_invocation et les fonctions pures ; le `Scenario` d'isolation des panics
     reste couvert par le spike (`Tasks` `[x]` ci-dessus, invoquer @execute deux fois suppose un
     serveur).
-  [ ] Hygiène @cargo doc (ouverte 2026-10-02, vague B5d, remontée du validator — hors gate du
+  [x] Hygiène @cargo doc (ouverte 2026-10-02, vague B5d, remontée du validator — hors gate du
     standby : modification de doc-comment seule, aucune dépendance, aucun comportement, aucune
     interaction avec la décision moteur @apalis) — @cargo doc @--no-default-features @--features
     @workflow émet un avertissement @broken_intra_doc_links depuis ./dispatcher.rs l.4 : lien

@@ -254,7 +254,7 @@ Tasks:
     migré, relire le @Model, comparer — prouve la lecture par @FromJsonQueryResult que seule
     l'écriture prouvait. À faire au batch de clôture du moteur (levée du standby) ; nouveau
     Scenario « aller-retour d'un DAG par la colonne `steps` ».
-  [ ] Hygiène @cargo doc (ouverte 2026-10-02, vague B5d, remontée du validator — hors gate du
+  [x] Hygiène @cargo doc (ouverte 2026-10-02, vague B5d, remontée du validator — hors gate du
     standby : modification de doc-comment seule, aucune dépendance, aucun comportement, aucune
     interaction avec la décision moteur @apalis) — @cargo doc @--no-default-features @--features
     @workflow émet trois avertissements @private_intra_doc_links depuis ./definition.rs (l.6,
