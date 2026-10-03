@@ -13,6 +13,10 @@ Purpose:
 
 Owns:
   ./miryad.rs
+  ./tests/cli.rs — rattaché 2026-10-03 à sa création (règle de
+    /.specdd/bootstrap.project.md : les fichiers de /tests/ n'ont pas de spec propre et sont
+    rattachés à la spec du contrat exercé ; l'en-tête d'exemption `cfg(test)` relève du
+    `Can modify ./tests/*.rs` de /tooling.sdd, le reste du fichier de la présente autorité)
 
 Can read:
   ../lib.rs — vérification à la source : l'exemption `#![cfg_attr(test, allow(...))]` est un
@@ -149,17 +153,51 @@ Tasks:
     Sébastien le 2026-09-29, `Must`) — aucun comportement, `about` non contractuel.
   [x] Frontière CLI / IR : le `Must not` de /src/ir.sdd est conservé, le CLI n'appelle pas
     @ir::IrRegistry (arbitré par Sébastien le 2026-09-29, `Must`).
-  [ ] Tests dans `./tests/cli.rs` avec `CARGO_BIN_EXE_miryad` (arbitré par Sébastien le
+  [x] Tests dans `./tests/cli.rs` avec `CARGO_BIN_EXE_miryad` (arbitré par Sébastien le
     2026-09-29, `Must`) : convertir les six `Scenario`, en-tête d'exemption `cfg(test)` de
     /tooling.sdd ; la spec de `./tests/cli.rs` est à rattacher à cette spec.
-  [!] Le harnais ne peut pas encore prouver la propreté de ce fichier : `cargo clippy
+    Réalisé 2026-10-03 (B5h, validator PASS après revalidation ciblée) : ./tests/cli.rs créée
+    avec l'en-tête d'exemption copie exacte du patron ./tests/resource.rs, rattachement fait au
+    @Owns ci-dessus ; flake @ETXTBSY du test de renommage corrigé (copie manuelle + @sync_all
+    + fermeture du descripteur avant @exec, cause citée en commentaire) — preuve 40+60+60 runs
+    parallèles et 8 runs séquentiels sans échec après 2/25 reproduits avant.
+  [x] Le harnais ne peut pas encore prouver la propreté de ce fichier : `cargo clippy
     --all-targets` comme `cargo clippy --bin miryad` (features par défaut et
     `--no-default-features`) échouent sur les 55 erreurs `deny` et 136 warnings `missing_docs`
     de la lib — cargo compile la lib avant la cible bin, qui n'est jamais atteinte (mesure du
     jour de la spec). Le fichier est propre à l'examen — aucune forme de la famille stricte —
     mais la batterie /tooling.sdd ne le prouvera qu'après la purge module par module. À ne
     fermer qu'avec un passage `cargo clippy --all-targets -- -D warnings` atteignant la cible.
-  [ ] Convertir les six `Scenario` en au moins six tests distincts nommés, sur le pattern des
+    Critère tenu 2026-10-03 (validator B5h) : la purge de la dette lib est faite ;
+    @cargo clippy @--all-targets @-D @warnings défaut et @--no-default-features sortent à exit 0
+    en atteignant la cible ; @cargo clippy @--bin @miryad @-D @warnings passe sur les deux
+    graphes (re-vérifié sur cible fraîche au @touch). Les.graphes @graphql/@graphiql/@all-features
+    restent rouges sur les seuls sites gelés du pont (carve-out de /tooling.sdd), hors du critère.
+  [?] Question spec-dd 2026-10-03 (Sébastien, validator B5h) — l'écart du point final de
+    l'about. Le @Must (« l'aide porte en ligne d'about le commentaire de @Cli, exactement — …
+    données. », point inclus) et le @Then du Scenario d'aide (« texte exact du commentaire »)
+    sont contredits par le réel, mécanisme vérifié au source de la pile : @clap_derive 4.6.4
+    @format_doc_comment → @remove_period consomme le `.` final de l'aide courte (pas de
+    @verbatim_doc_comment sur la structure vide) — le binaire rend « …de données » sans point.
+    Le test verrouille le réel (commentaire « Écart consigné (B5h, 2026-10-03) » dans
+    ./tests/cli.rs). Deux voies : (A) recommandée, cohérente avec les harmonisations mesurées
+    précédentes (messages serde 2026-10-02) — amender les deux lignes de spec sur ce que
+    @clap_derive produit réellement : dans le @Must, remplacer « exactement — `CLI de
+    scaffolding miryad — génère une application depuis un modèle de données.` — » par « hors le
+    point final consommé par @clap_derive (@remove_period sur l'aide courte, pas de
+    @verbatim_doc_comment sur cette structure vide — @clap_derive 4.6.4 de /Cargo.lock) — donc
+    `CLI de scaffolding miryad — génère une application depuis un modèle de données` sans son
+    `.` — » ; dans le @Then, remplacer « texte exact du commentaire de @Cli » par « texte du
+    commentaire de @Cli hors le point final consommé par @clap_derive (@remove_period) » ; le
+    verrou @ABOUT du test ne bouge pas, son commentaire sera repointé à l'amendement.
+    (B) @verbatim_doc_comment = contrat wire nouveau (point réintroduit), hors B5h, code avant
+    spec — le flux l'interdit tant que non approuvé. Joints à la présente question, deux points
+    mineurs relevés par le validator : le @And « ni connexion ouverte » du Scenario 1 n'est pas
+    assertable à bas coût (accepter, ou exiger une preuve — l'autre clause « ni fichier écrit »
+    est prouvée par répertoire temporaire vide) ; et l'assertion @stderr vide pour `-h` seul
+    est ajoutée par la tâche de correction du flake (renforcement du verrou existant, pas un
+    contrat nouveau).
+  [x] Convertir les six `Scenario` en au moins six tests distincts nommés, sur le pattern des
     cibles bin : crate d'intégration `./tests/cli.rs`, exécutable lancé par
     @std::process::Command via `env!("CARGO_BIN_EXE_miryad")` (variable posée par cargo pour
     les tests d'intégration — vérifié), assertions sur code de sortie, stdout et stderr, en
@@ -175,6 +213,14 @@ Tasks:
     à cette spec à sa création — règle de `.specdd/bootstrap.project.md` : les fichiers de
     /tests/ n'ont pas de spec propre — et portera l'en-tête d'exemption `test` que /tooling.sdd
     réserve à ces crates.
+    Réalisé 2026-10-03 (B5h, validator PASS après revalidation ciblée) : mapping nom à nom des
+    six tests vérifié assertion par assertion au source (@first_display_flag_wins tient ses
+    trois cas dont l'égalité octet-à-octet `--help --version` vs `--help`, renommage par copie
+    réelle du @Given avec @Usage: miryad-scaffold exact et version restée `miryad`, silence du
+    lancement vide prouvé par répertoire temporaire reste vide) ; verrou du réel maintenu pour
+    l'about — le commentaire « Écart consigné » et sa mention « mesuré 2/25 » (reproduction
+    locale de l'implementer, à distinguer des 1/40 du validator) seront repointés à l'amendement
+    du `[?]` ci-dessus, arbitrage de Sébastien en attente.
 
 Done when:
   La spec porte exactement six `Scenario` et au moins six tests distincts nommés vérifiant
