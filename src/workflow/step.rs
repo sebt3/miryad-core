@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 
+use super::durable::MiryadDurableStep;
 use super::error::WorkflowError;
 
 /// Un type de step de workflow (« kind ») : la façon pour une application consommatrice d'ajouter
@@ -83,13 +84,17 @@ pub struct StepError {
 }
 
 /// Les kinds de step connus d'une application donnée, construits explicitement au démarrage et
-/// consultés en lecture seule par le dispatcher interne via `Self::dispatch`.
+/// consultés en lecture seule par le dispatcher interne via `Self::dispatch` et `Self::durable`.
+///
+/// Deux magasins internes (ordinaires, durables) sous **un seul espace de noms** : un `kind()`
+/// ne peut être pris que par un seul kind, durable ou ordinaire (#26, ./durable.sdd).
 ///
 /// Aucun champ public, aucune découverte automatique, aucun registre global : identique au
 /// pattern des autres registres de la crate (`IrRegistry`, `McpToolRegistry`).
 #[derive(Default)]
 pub struct StepRegistry {
     steps: HashMap<&'static str, Box<dyn MiryadWorkflowStep>>,
+    durables: HashMap<&'static str, Box<dyn MiryadDurableStep>>,
 }
 
 impl StepRegistry {
@@ -99,29 +104,61 @@ impl StepRegistry {
         Self::default()
     }
 
-    /// Ajoute un kind au registre et rend le registre pour chaînage. Possède le `step` (boîté en
-    /// interne) : le registre vit typiquement du démarrage de l'app jusqu'à son arrêt.
+    /// Ajoute un kind ordinaire au registre et rend le registre pour chaînage. Possède le `step`
+    /// (boîté en interne) : le registre vit typiquement du démarrage de l'app jusqu'à son arrêt.
     ///
     /// # Errors
     ///
     /// [`WorkflowError::DuplicateStepKind`] (`MRD-WORKFLOW-006`) si `step.kind()` collide avec un
-    /// kind déjà enregistré : erreur de configuration du démarrage de l'app, jamais une entrée
-    /// utilisateur. Rien n'est inséré, le premier kind reste celui du registre — un écrasement
-    /// silencieux serait un bug de configuration masqué.
+    /// kind déjà enregistré, **ordinaire ou durable** (#26 — un seul espace de noms) : erreur de
+    /// configuration du démarrage de l'app, jamais une entrée utilisateur. Rien n'est inséré, le
+    /// premier kind reste celui du registre — un écrasement silencieux serait un bug de
+    /// configuration masqué.
     pub fn register(&mut self, step: impl MiryadWorkflowStep + 'static) -> Result<&mut Self, WorkflowError> {
         let kind = step.kind();
-        if self.steps.contains_key(kind) {
+        if self.steps.contains_key(kind) || self.durables.contains_key(kind) {
             return Err(WorkflowError::DuplicateStepKind(kind.to_string()));
         }
         self.steps.insert(kind, Box::new(step));
         Ok(self)
     }
 
-    /// Retourne le futur de [`MiryadWorkflowStep::run`] du kind trouvé — jamais exécuté ici,
-    /// c'est le dispatcher interne qui l'`.await` — ou un [`StepError`] `retryable: false`
-    /// (`kind inconnu: {kind}`) quand aucun `impl` n'enregistre ce kind : référence absente du
-    /// registre = erreur de configuration du DAG, jamais transitoire, donc jamais retryable.
-    /// `run` (#26, 2026-10-04) est l'identité du run, relayée au `run` du kind sans être lue ici.
+    /// Ajoute un kind **durable** (./durable.sdd) au registre et rend le registre pour chaînage,
+    /// dans le même espace de noms que [`Self::register`] : le magasin durable est distinct, la
+    /// clé est partagée.
+    ///
+    /// # Errors
+    ///
+    /// [`WorkflowError::DuplicateStepKind`] (`MRD-WORKFLOW-006`) si `step.kind()` est déjà pris,
+    /// par un kind ordinaire **ou** durable : rien n'est inséré, le premier kind reste celui du
+    /// registre — même contrat de configuration que [`Self::register`] (#26).
+    pub fn register_durable(
+        &mut self,
+        step: impl MiryadDurableStep + 'static,
+    ) -> Result<&mut Self, WorkflowError> {
+        let kind = step.kind();
+        if self.steps.contains_key(kind) || self.durables.contains_key(kind) {
+            return Err(WorkflowError::DuplicateStepKind(kind.to_string()));
+        }
+        self.durables.insert(kind, Box::new(step));
+        Ok(self)
+    }
+
+    /// Le kind durable enregistré sous `kind`, ou `None` — seul point d'entrée de ./dispatcher.rs
+    /// pour les kinds durables, consulté **avant** [`Self::dispatch`]. Un kind durable ne se
+    /// résout jamais par `dispatch` : les deux magasins sont disjoints, seul l'espace de noms des
+    /// clés est partagé (#26, ./durable.sdd).
+    pub(crate) fn durable(&self, kind: &str) -> Option<&dyn MiryadDurableStep> {
+        self.durables.get(kind).map(|boîte| &**boîte)
+    }
+
+    /// Retourne le futur de [`MiryadWorkflowStep::run`] du kind **ordinaire** trouvé — jamais
+    /// exécuté ici, c'est le dispatcher interne qui l'`.await` — ou un [`StepError`]
+    /// `retryable: false` (`kind inconnu: {kind}`) quand aucun `impl` ordinaire n'enregistre ce
+    /// kind : référence absente du registre = erreur de configuration du DAG, jamais transitoire,
+    /// donc jamais retryable. Un kind **durable** enregistré ne se résout pas ici : `dispatch` ne
+    /// regarde que le magasin ordinaire, [`Self::durable`] l'autre (#26). `run` (#26, 2026-10-04)
+    /// est l'identité du run, relayée au `run` du kind sans être lue ici.
     /// Capture de durée explicite (`use<'r>`, Hypothesis `'s: 'r`) : sous `#[async_trait]`, le
     /// futur rendu par le `run` d'un `dyn MiryadWorkflowStep` emprunte `self` et `run` — sans
     /// elle, `impl Future` ne peut pas les capturer (`E0700`, édition 2024) ; `'s: 'r` borne la
@@ -460,6 +497,135 @@ mod tests {
             .expect("le kind « panique-dans-run » est enregistré, dispatch doit rendre un futur");
         // Étape 2 — le panic éclate au poll du futur, tel que le kind l'a émis, sans conversion.
         let _ = run_future.await;
+    }
+
+    // ── Fixtures #26 lot B : un kind durable et un kind ordinaire partageant l'espace de noms ──
+
+    /// Kind durable de fixture (Scenario « un kind durable enregistré ne se résout pas par
+    /// `dispatch` ») : son `run` n'est jamais appelé ici — aucun `StepContext` constructible en
+    /// test (borne `restate-sdk` `0.12.1`, ./durable.sdd).
+    struct DurableD;
+    /// Kind ordinaire `"x"` du Scenario « collision d'enregistrement entre kind ordinaire et kind
+    /// durable » : identifiable par sa sortie propre, prouvant « sans écraser le premier ».
+    struct OrdinaireX;
+    /// Kind durable `"x"` du même Scenario — même `kind()` que [`OrdinaireX`], sous le même
+    /// `StepRegistry` ou l'autre selon le sens testé.
+    struct DurableX;
+
+    #[async_trait::async_trait]
+    impl crate::workflow::durable::MiryadDurableStep for DurableD {
+        fn kind(&self) -> &'static str {
+            "d"
+        }
+        async fn run(
+            &self,
+            _ctx: &crate::workflow::durable::StepContext<'_>,
+            _config: Value,
+            _inputs: HashMap<String, Value>,
+        ) -> Result<Value, StepError> {
+            unreachable!("aucun StepContext constructible en test — ce run n'est jamais appelé")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::workflow::durable::MiryadDurableStep for DurableX {
+        fn kind(&self) -> &'static str {
+            "x"
+        }
+        async fn run(
+            &self,
+            _ctx: &crate::workflow::durable::StepContext<'_>,
+            _config: Value,
+            _inputs: HashMap<String, Value>,
+        ) -> Result<Value, StepError> {
+            unreachable!("aucun StepContext constructible en test — ce run n'est jamais appelé")
+        }
+    }
+
+    fixture_kind!(
+        OrdinaireX,
+        "x",
+        |_run: &RunInfo, _config: Value, _inputs: HashMap<String, Value>| { Ok(json!("ordinaire")) }
+    );
+
+    /// Scenario « un kind durable enregistré ne se résout pas par `dispatch` » (#26) : `durable`
+    /// et `dispatch` consultent des magasins disjoints — `durable("d")` rend `Some`,
+    /// `dispatch("d", ..)` rend le `StepError` « kind inconnu » non retryable comme pour un kind
+    /// jamais enregistré, `durable("inconnu")` rend `None`.
+    #[test]
+    fn un_kind_durable_ne_se_résout_pas_par_dispatch() {
+        let mut registry = StepRegistry::new();
+        registry
+            .register_durable(DurableD)
+            .expect("kind durable distinct");
+        assert!(registry.durable("d").is_some(), "durable(\"d\") doit rendre Some");
+        assert!(
+            registry.durable("inconnu").is_none(),
+            "durable(\"inconnu\") doit rendre None"
+        );
+        match registry.dispatch("d", &run_info(), json!(null), no_inputs()) {
+            Err(error) => {
+                assert_eq!(error.message, "kind inconnu: d");
+                assert!(
+                    !error.retryable,
+                    "un kind durable non résolu par dispatch reste une erreur de configuration, \
+                     jamais retryable"
+                );
+            }
+            Ok(_) => panic!("un kind durable ne doit jamais se résoudre par dispatch"),
+        }
+    }
+
+    /// Scenario « collision d'enregistrement entre kind ordinaire et kind durable » (#26) : un
+    /// `kind()` déjà pris, dans l'un ou l'autre sens (ordinaire puis durable, durable puis
+    /// ordinaire), rend `DuplicateStepKind` sans rien insérer ni écraser — les deux magasins
+    /// partagent un seul espace de noms.
+    #[tokio::test]
+    async fn collision_croisée_entre_ordinaire_et_durable_rend_une_erreur() {
+        // Sens ordinaire d'abord : le durable refusé, l'ordinaire reste résolvable par dispatch.
+        let mut registry = StepRegistry::new();
+        registry
+            .register(OrdinaireX)
+            .expect("premier enregistrement ordinaire");
+        let Err(erreur) = registry.register_durable(DurableX) else {
+            panic!("un kind durable reprenant un kind ordinaire doit rendre un Err");
+        };
+        assert!(
+            matches!(&erreur, crate::workflow::error::WorkflowError::DuplicateStepKind(k) if k == "x"),
+            "variante attendue DuplicateStepKind(\"x\") : {erreur:?}"
+        );
+        let run = run_info();
+        let futur = registry
+            .dispatch("x", &run, json!(null), no_inputs())
+            .expect("le premier kind ordinaire doit rester enregistré");
+        assert_eq!(futur.await.ok(), Some(json!("ordinaire")));
+        assert!(
+            registry.durable("x").is_none(),
+            "le durable refusé ne doit rien avoir inséré"
+        );
+
+        // Sens durable d'abord : l'ordinaire refusé, le durable reste résolvable par durable().
+        let mut registry = StepRegistry::new();
+        registry
+            .register_durable(DurableX)
+            .expect("premier enregistrement durable");
+        let Err(erreur) = registry.register(OrdinaireX) else {
+            panic!("un kind ordinaire reprenant un kind durable doit rendre un Err");
+        };
+        assert!(
+            matches!(&erreur, crate::workflow::error::WorkflowError::DuplicateStepKind(k) if k == "x"),
+            "variante attendue DuplicateStepKind(\"x\") : {erreur:?}"
+        );
+        let trouvé = registry
+            .durable("x")
+            .expect("le premier kind durable doit rester enregistré");
+        assert_eq!(trouvé.kind(), "x");
+        assert!(
+            registry
+                .dispatch("x", &run_info(), json!(null), no_inputs())
+                .is_err(),
+            "l'ordinaire refusé ne doit rien avoir inséré"
+        );
     }
 
     /// Scenario « `RunInfo` est transmis intact au kind » (#26) : `dispatch` avec

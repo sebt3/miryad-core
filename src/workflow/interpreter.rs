@@ -26,16 +26,11 @@ use super::definition::DagSteps;
 use super::definition::StepDefinition;
 use super::definition::validate_dag;
 use super::dispatcher::StepInvocation;
+use super::durable::DEPTH_HEADER;
 
 /// Marque du workflow Restate — struct unitaire sans état : tout l'état d'une marche (`completed`,
 /// `results`) vit local au handler `run`, rejoué depuis le journal Restate à la reprise.
 pub struct DagInterpreter;
-
-/// Nom de l'en-tête de profondeur d'imbrication des sous-workflows (#26).
-/// Déclaration PROVISOIRE portée par ./interpreter.rs : la constante est déclarée par ./durable.rs
-/// au lot B (#26, ./durable.sdd `Exposes` : `DEPTH_HEADER`) et déplacée là alors, valeur inchangée
-/// `"x-miryad-depth"` — ./interpreter.sdd `Tasks` #26 lot A.
-pub(crate) const DEPTH_HEADER: &str = "x-miryad-depth";
 
 /// Profondeur du run lue depuis la valeur brute de l'en-tête [`DEPTH_HEADER`] : un `u32` valide
 /// est rendu tel quel ; en-tête absent, non numérique ou hors plage `u32` rend `0` — un run

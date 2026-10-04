@@ -10,6 +10,7 @@
 pub mod client;
 pub mod definition;
 pub mod dispatcher;
+pub mod durable;
 pub mod error;
 pub mod interpreter;
 pub mod rhai_step;
@@ -27,6 +28,7 @@ pub use definition::{
     configure_policy,
 };
 pub use dispatcher::{StepDispatcher, recommended_options};
+pub use durable::{MiryadDurableStep, StepContext};
 pub use error::WorkflowError;
 pub use interpreter::DagInterpreter;
 pub use rhai_step::RhaiStep;

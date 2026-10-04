@@ -14,6 +14,7 @@ use restate_sdk::prelude::{Context, ContextSideEffects, HandlerError, Json, Term
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::durable::StepContext;
 use super::step::{RunInfo, StepError, StepRegistry};
 
 /// Corps de requête de [`StepDispatcher::execute`] — forme sérialisée échangée avec
@@ -73,6 +74,19 @@ impl StepDispatcher {
             step_id,
             depth,
         };
+        // Étape 1b (#26, 2026-10-04) — branche durable : un kind durable consulté avant le
+        // registre ordinaire, appelé **sans** `ctx.run()` englobant (l'envelopper interdirait tout
+        // `ctx.request`/`ctx.sleep` à l'intérieur, limite du SDK que ./durable.rs existe pour
+        // lever) ; il journalise lui-même ses effets via StepContext. Retour immédiat, l'étape 2
+        // n'a pas lieu. Aucune politique de retry posée ici : la traduction est le seul site
+        // `step_error_to_handler_error`, comme pour un kind ordinaire.
+        if let Some(durable) = self.registry.durable(&kind) {
+            return durable
+                .run(&StepContext::new(&ctx, run_info), config, inputs)
+                .await
+                .map(Json)
+                .map_err(step_error_to_handler_error);
+        }
         // Un seul `ctx.run()` par invocation : l'exécution du kind est journalisée d'un bloc,
         // jamais rejouée après reprise sur crash. La fermeture se borne à déléguer à
         // `run_invocation` (rien d'autre ne s'y ajoute). Jamais de `.retry_policy()` ici — la
@@ -244,6 +258,26 @@ mod tests {
             _inputs: HashMap<String, Value>,
         ) -> Result<Value, StepError> {
             Ok(json!({ "run_key": run.run_key, "step_id": run.step_id, "depth": run.depth }))
+        }
+    }
+
+    /// Kind durable de fixture `"d"` (scenario « un kind durable n'est pas résolu par
+    /// `run_invocation` », #26) : son `run` n'est jamais appelé — aucun `StepContext`
+    /// constructible en test (borne `restate-sdk` `0.12.1`).
+    struct DurableD;
+
+    #[async_trait::async_trait]
+    impl crate::workflow::durable::MiryadDurableStep for DurableD {
+        fn kind(&self) -> &'static str {
+            "d"
+        }
+        async fn run(
+            &self,
+            _ctx: &crate::workflow::durable::StepContext<'_>,
+            _config: Value,
+            _inputs: HashMap<String, Value>,
+        ) -> Result<Value, StepError> {
+            unreachable!("aucun StepContext constructible en test — ce run n'est jamais appelé")
         }
     }
 
@@ -427,6 +461,40 @@ mod tests {
             valeur,
             json!({ "run_key": "r1", "step_id": "s1", "depth": 3 }),
             "les trois champs du RunInfo doivent parvenir au kind tels qu'émis"
+        );
+    }
+
+    /// Scenario « un kind durable n'est pas résolu par `run_invocation` » (#26) : la branche
+    /// durable vit dans `execute` (étape 1b), jamais dans `run_invocation` — corps de la
+    /// fermeture `ctx.run`. Un `StepRegistry` ne contenant que le durable `"d"` reste, vu de
+    /// `run_invocation`, le cas du kind inconnu : `TerminalError` `404` « kind inconnu: d » —
+    /// même forme que le Scenario « kind inconnu produit une erreur 404 », jamais la branche
+    /// ordinaire qui exécuterait le durable dans un `ctx.run()`.
+    #[tokio::test]
+    async fn un_kind_durable_n_est_pas_résolu_par_run_invocation() {
+        let mut registry = StepRegistry::new();
+        registry
+            .register_durable(DurableD)
+            .expect("kind durable distinct");
+        assert!(
+            registry.durable("d").is_some(),
+            "la fixture est bien au magasin durable"
+        );
+        let Err(erreur) = run_invocation(
+            &registry,
+            "d".to_string(),
+            run_info(),
+            Value::Null,
+            HashMap::new(),
+        )
+        .await
+        else {
+            panic!("un durable absent du registre ordinaire doit rendre une erreur, jamais Ok");
+        };
+        let affiche = AsRef::<dyn StdError>::as_ref(&erreur).to_string();
+        assert_eq!(
+            affiche, "Terminal error [404]: kind inconnu: d",
+            "le durable ne se résout pas par run_invocation : {affiche}"
         );
     }
 

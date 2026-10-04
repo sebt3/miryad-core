@@ -49,6 +49,9 @@ use std::time::Instant;
 
 use miryad_core::workflow::DagInterpreter;
 use miryad_core::workflow::DagSteps;
+// `MiryadDurableStep` et `StepContext` ne sont pas encore ré-exportés à plat (tâche ./mod.sdd
+// #26, dernier fichier du lot) : chemin du module `durable`, public d'office par
+// ./workflow/mod.rs — même précédent que `RunInfo` ci-dessous.
 use miryad_core::workflow::MiryadWorkflowStep;
 use miryad_core::workflow::StepDefinition;
 use miryad_core::workflow::StepDispatcher;
@@ -57,6 +60,7 @@ use miryad_core::workflow::StepRegistry;
 // `RunInfo` n'est pas encore ré-exporté à plat (tâche ./mod.sdd #26, lot B) : chemin du module
 // `step`, public d'office par ./workflow/mod.rs.
 use miryad_core::workflow::WorkflowConfig;
+use miryad_core::workflow::durable::{MiryadDurableStep, StepContext};
 use miryad_core::workflow::recommended_options;
 use miryad_core::workflow::register_deployment;
 use miryad_core::workflow::step::RunInfo;
@@ -97,6 +101,10 @@ struct Record(Log);
 struct Fail;
 /// Kind `"flaky"` : échoue `retryable: true` tant que son compteur est sous 3, puis réussit.
 struct Flaky(Arc<AtomicUsize>);
+/// Kind durable de fixture (tâche ./durable.sdd) : `sleep` brièvement via `StepContext` —
+/// impossible dans une fermeture `ctx.run()`, donc preuve que le dispatcher n'enveloppe pas les
+/// kinds durables — puis rend son `RunInfo`, preuve de la transmission de l'identité du run.
+struct DurableSleeper;
 
 #[async_trait::async_trait]
 impl MiryadWorkflowStep for Record {
@@ -157,6 +165,23 @@ impl MiryadWorkflowStep for Flaky {
     }
 }
 
+#[async_trait::async_trait]
+impl MiryadDurableStep for DurableSleeper {
+    fn kind(&self) -> &'static str {
+        "durable_sleep"
+    }
+    async fn run(
+        &self,
+        ctx: &StepContext<'_>,
+        _config: Value,
+        _inputs: HashMap<String, Value>,
+    ) -> Result<Value, StepError> {
+        ctx.sleep(Duration::from_millis(1500)).await?;
+        let run = ctx.run_info();
+        Ok(json!({ "run_key": run.run_key, "step_id": run.step_id, "depth": run.depth }))
+    }
+}
+
 /// Pile de test : Restate en conteneur + endpoint applicatif en tâche tokio, déploiement
 /// enregistré. `_container` garde le conteneur vivant jusqu'à la fin du test.
 struct Stack {
@@ -200,6 +225,7 @@ impl Stack {
             .register(Record(Arc::clone(&log)))
             .and_then(|r| r.register(Fail))
             .and_then(|r| r.register(Flaky(Arc::clone(&flaky_calls))))
+            .and_then(|r| r.register_durable(DurableSleeper))
             .expect("kinds distincts");
         let endpoint = Endpoint::builder()
             .bind(DagInterpreter)
@@ -393,5 +419,47 @@ async fn step_transitoire_rejoue_sans_rejouer_les_steps_termines() {
         journal.iter().filter(|e| e.as_str() == "start:A").count(),
         1,
         "A ne doit jamais être rejoué : {journal:?}"
+    );
+}
+
+/// Scenario (./durable.sdd `Tasks`) « un kind durable dort durablement puis rend son `RunInfo` » :
+/// prouve la branche durable de `StepDispatcher::execute` — le `StepContext::sleep` du kind de
+/// fixture échouerait si le dispatcher l'enveloppait dans un `ctx.run()` (le SDK interdit tout
+/// appel de contexte dans une fermeture `ctx.run`, et le `StepContext` n'y serait même pas
+/// constructible) — et la transmission de `RunInfo` : `run_key` est la clé du run déclenché,
+/// `step_id` celui du step, `depth` vaut `0` pour un run racine. Sans la branche durable, le kind
+/// ne se résoudrait pas (le `dispatch` ordinaire rend « kind inconnu ») et l'attache échouerait.
+#[tokio::test]
+#[ignore = "exige podman et l'image restate"]
+async fn un_kind_durable_dort_durablement_et_reçoit_son_run_info() {
+    let stack = Stack::start().await;
+    let dag = DagSteps(vec![step("D", &[], "durable_sleep", json!({}))]);
+    let handle = trigger_run(&stack.config, &stack.http, &dag)
+        .await
+        .expect("le déclenchement doit être accepté");
+    let response = stack
+        .http
+        .get(format!(
+            "{}/restate/workflow/DagInterpreter/{}/attach",
+            stack.config.ingress_url, handle.run_key
+        ))
+        .timeout(Duration::from_mins(2))
+        .send()
+        .await
+        .expect("l'attache au workflow doit répondre");
+    let status = response.status().as_u16();
+    let body = response.json::<Value>().await.unwrap_or(Value::Null);
+    assert_eq!(
+        status, 200,
+        "le kind durable doit mener le run au bout : {status} {body}"
+    );
+    assert_eq!(
+        body["D"]["run_key"], handle.run_key,
+        "le run_key vu par le kind doit être la clé du run déclenché : {body}"
+    );
+    assert_eq!(body["D"]["step_id"], "D", "le step_id vu par le kind : {body}");
+    assert_eq!(
+        body["D"]["depth"], 0,
+        "un run racine est à la profondeur 0 : {body}"
     );
 }
