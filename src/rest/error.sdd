@@ -1,12 +1,13 @@
 Spec: error — taxonomie @RestError et rendu REST
 
 Purpose:
-  Centraliser les échecs de la surface REST dans le seul type public @RestError à six variantes
-    (sixième @RestError::InvalidInput arbitrée 2026-09-29, posée 2026-09-30 vague B3a),
-    chacune portant soit un code unique `MRD-REST-NNN` (`001` à `005`) dans sa @Display, soit une
+  Centraliser les échecs de la surface REST dans le seul type public @RestError à sept variantes
+    (sixième @RestError::InvalidInput arbitrée 2026-09-29, posée 2026-09-30 vague B3a ; septième
+    @RestError::Conflict arbitrée 2026-10-03),
+    chacune portant soit un code unique `MRD-REST-NNN` (`001` à `006`) dans sa @Display, soit une
     @HookError — l'erreur applicative du consommateur, jamais codée `MRD-*` — et décider leur rendu
     @IntoResponse pour REST : statut exact par variante, corps `text/plain` porteur du code pour
-    `001` à `004`, corps JSON à deux clés sans `MRD-*` pour @RestError::Application. Le fichier ne
+    `001` à `004` et `006`, corps JSON à deux clés sans `MRD-*` pour @RestError::Application. Le fichier ne
     construit lui-même aucune erreur : les variantes viennent des handlers ./mod.rs, ./admin.rs,
     ./me.rs et ./tokens.rs (opérateur `?` puis @From<@sea_orm::DbErr>, @ok_or, @map_err explicite),
     et le même @RestError irrigue la surface MCP par @From<@RestError> for @McpError
@@ -51,7 +52,7 @@ References:
 
 Must:
   Table de rendu invariante et exhaustive, sans bras joker de premier niveau — le `match` de
-    @into_response nomme les six variantes, l'ajout d'une septième interrompt la compilation avant
+    @into_response nomme les sept variantes, l'ajout d'une huitième interrompt la compilation avant
     rendu par défaut, à l'image de /src/auth/error.rs :
     @RestError::NotFound → `MRD-REST-001` → `404` (@StatusCode::NOT_FOUND) → corps texte exactement
       `MRD-REST-001: resource not found` → @CONTENT_TYPE `text/plain; charset=utf-8`
@@ -72,6 +73,11 @@ Must:
       (@StatusCode::UNPROCESSABLE_ENTITY) → corps texte `MRD-REST-005: invalid input: ` suivi du
       message → @CONTENT_TYPE `text/plain; charset=utf-8` ; premier émetteur : ./tokens.rs,
       @expires_at déjà passé au `POST`
+    @RestError::Conflict, septième variante ajoutée le 2026-10-03 (variante unitaire : le conflit
+      d'empreinte est une décision de politique, pas une panne interne) → `MRD-REST-006` → `409`
+      (@StatusCode::CONFLICT) → corps texte exactement `MRD-REST-006: conflict`, sans détail →
+      @CONTENT_TYPE `text/plain; charset=utf-8` ; émetteur : @to_rest_error de ./tokens.rs sur
+      @AuthError::TokenHashConflict (parité avec le `409` de /src/auth/error.rs)
   Le code `MRD-REST-NNN` est dans le corps en texte brut pour `404`/`403`/`500` ; le corps `422` ne
     contient jamais la sous-chaîne `MRD-` — la séparation contrat transverse @HookError / taxonomie
     `MRD-*` passe par la variante, pas par un préfixe commun
@@ -164,13 +170,14 @@ Depends on:
   /src/resource.rs — @HookError, type public du contrat consommateur importé ici
 
 Exposes:
-  @RestError — enum `pub` à six variantes, derives @Debug et @thiserror::Error uniquement, sans
+  @RestError — enum `pub` à sept variantes, derives @Debug et @thiserror::Error uniquement, sans
     @Clone ni @PartialEq ; accessible seulement par @crate::rest::error::RestError — ./mod.rs ne le
     ré-exporte pas
     @RestError::NotFound — variante unitaire, code `MRD-REST-001`
     @RestError::Forbidden — variante unitaire, code `MRD-REST-002`
     @RestError::Database — variante tuple d'un @sea_orm::DbErr sous `#[from]`, code `MRD-REST-003`
     @RestError::Application — variante tuple d'un @HookError, sans `#[from]`, sans code `MRD-*`
+    @RestError::Conflict — variante unitaire, code `MRD-REST-006`
     @RestError::Internal — variante tuple d'un @String, code `MRD-REST-004` ; sa doc-comment
       n'assume atteignable qu'une variante d'un autre sous-système réellement joignable, et proscrit
       le @From générique
@@ -232,7 +239,8 @@ Handles:
     en @RestError::Database (`MRD-REST-003`) et convertit le reste en @RestError::Internal
     (`MRD-REST-004`) — le message embarqué (`MRD-AUTH-NNN: …`) ne vit que dans la trace, le corps
     client ne porte que le code `MRD-REST-004` (arbitré 2026-09-29).
-  Consommation MCP des mêmes erreurs : conversion 1:1 des six variants par /src/mcp/error.rs —
+  Consommation MCP des mêmes erreurs : conversion des sept variants (@RestError::Conflict →
+    @McpError::Internal, miroir défensif sans chemin MCP vivant, arbitré 2026-10-03) par /src/mcp/error.rs —
     @RestError::NotFound→@McpError::NotFound (`-32002`), @RestError::Forbidden→@McpError::Forbidden
     (`-32001`), @RestError::Database/@RestError::Application/@RestError::Internal charges utiles
     préservées ; le `422` et l'en-tête @Json n'existent pas en MCP, le @code du hook y passe dans le
@@ -277,7 +285,7 @@ Tasks:
     exacts `403`/`404`/`500` de ce fichier, et /tests/resource.rs n'exerce rien de ce contrat.
 
 Done when:
-  Les 15 `Scenario` ont chacun au moins un test nommé distinct et vert dans ./error.rs, sur features
+  Les 16 `Scenario` ont chacun au moins un test nommé distinct et vert dans ./error.rs, sur features
     par défaut comme sur `--no-default-features` (fichier inconditionnel)
   La table variante → code → statut → corps → content-type et la distinction de @Error::source sont
     affirmées sans réinterprétation : comparaison de chaînes exactes pour le texte, @serde_json
@@ -374,7 +382,8 @@ Scenario: rendu HTTP 422 JSON sans code de hook
     clé `message` valant `boom`
 
 Scenario: source de l'erreur sur Database seulement
-  Given une valeur de chacune des six variantes de @RestError (sixième ajoutée 2026-09-30),
+  Given une valeur de chacune des sept variantes de @RestError (sixième ajoutée 2026-09-30,
+    septième 2026-10-03),
     @RestError::Database encapsulant
     @sea_orm::DbErr::Custom de texte `boom`, @RestError::InvalidInput du message `bad input` et
     @RestError::Application encapsulant un @HookError quel
@@ -399,7 +408,15 @@ Scenario: Internal portant un AuthError garde le code AUTH hors du corps client
   And le rendu HTTP est `500` avec le corps `MRD-REST-004: internal error` en `text/plain; charset=utf-8`
   And le double code n'apparaît que dans la @Display et la trace (arbitré 2026-09-29)
 
+Scenario: rendu HTTP 409 pour 006
+  Given l'erreur @RestError::Conflict
+  When la @Display est évaluée puis @IntoResponse::into_response appelée
+  Then la @Display vaut exactement `MRD-REST-006: conflict`
+  And le rendu HTTP est `409` avec le corps `MRD-REST-006: conflict` en
+    `text/plain; charset=utf-8`
+
 Example: matrice variante → code → statut → content-type → corps exact
+  @RestError::Conflict → `MRD-REST-006` → `409` → `text/plain; charset=utf-8` → `MRD-REST-006: conflict`
   @RestError::NotFound → `MRD-REST-001` → `404` → `text/plain; charset=utf-8` → `MRD-REST-001: resource not found`
   @RestError::Forbidden → `MRD-REST-002` → `403` → `text/plain; charset=utf-8` → `MRD-REST-002: access denied`
   @RestError::Database encapsulant @sea_orm::DbErr::Custom `boom` → `MRD-REST-003` → `500` →

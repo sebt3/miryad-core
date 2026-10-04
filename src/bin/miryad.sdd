@@ -44,8 +44,10 @@ Must:
     fichier, n'ouvre aucune connexion base ou réseau, ne lance aucun sous-processus et n'émet
     aucune trace @tracing. Silencieux par défaut.
   Garder clap comme seul producteur des sorties : l'aide porte en ligne d'about le commentaire
-    de documentation de @Cli, exactement — `CLI de scaffolding miryad — génère une application
-    depuis un modèle de données.` — ; le message de version est bâti par @clap_derive depuis
+    de documentation de @Cli, hors le point final consommé par @clap_derive (@remove_period sur
+    l'aide courte, pas de @verbatim_doc_comment sur cette structure vide — @clap_derive 4.6.4 de
+    /Cargo.lock) — donc `CLI de scaffolding miryad — génère une application depuis un modèle de
+    données` sans son `.` ; le message de version est bâti par @clap_derive depuis
     `CARGO_PKG_VERSION`, donc suit /Cargo.toml sans changement ici.
   N'émettre que deux codes de sortie : `0` (argv vide accepté ; demandes d'aide et de version)
     et `2` (tout argv invalide — `USAGE_CODE` de clap, valeur `2` vérifiée dans le source de
@@ -173,30 +175,12 @@ Tasks:
     en atteignant la cible ; @cargo clippy @--bin @miryad @-D @warnings passe sur les deux
     graphes (re-vérifié sur cible fraîche au @touch). Les.graphes @graphql/@graphiql/@all-features
     restent rouges sur les seuls sites gelés du pont (carve-out de /tooling.sdd), hors du critère.
-  [?] Question spec-dd 2026-10-03 (Sébastien, validator B5h) — l'écart du point final de
-    l'about. Le @Must (« l'aide porte en ligne d'about le commentaire de @Cli, exactement — …
-    données. », point inclus) et le @Then du Scenario d'aide (« texte exact du commentaire »)
-    sont contredits par le réel, mécanisme vérifié au source de la pile : @clap_derive 4.6.4
-    @format_doc_comment → @remove_period consomme le `.` final de l'aide courte (pas de
-    @verbatim_doc_comment sur la structure vide) — le binaire rend « …de données » sans point.
-    Le test verrouille le réel (commentaire « Écart consigné (B5h, 2026-10-03) » dans
-    ./tests/cli.rs). Deux voies : (A) recommandée, cohérente avec les harmonisations mesurées
-    précédentes (messages serde 2026-10-02) — amender les deux lignes de spec sur ce que
-    @clap_derive produit réellement : dans le @Must, remplacer « exactement — `CLI de
-    scaffolding miryad — génère une application depuis un modèle de données.` — » par « hors le
-    point final consommé par @clap_derive (@remove_period sur l'aide courte, pas de
-    @verbatim_doc_comment sur cette structure vide — @clap_derive 4.6.4 de /Cargo.lock) — donc
-    `CLI de scaffolding miryad — génère une application depuis un modèle de données` sans son
-    `.` — » ; dans le @Then, remplacer « texte exact du commentaire de @Cli » par « texte du
-    commentaire de @Cli hors le point final consommé par @clap_derive (@remove_period) » ; le
-    verrou @ABOUT du test ne bouge pas, son commentaire sera repointé à l'amendement.
-    (B) @verbatim_doc_comment = contrat wire nouveau (point réintroduit), hors B5h, code avant
-    spec — le flux l'interdit tant que non approuvé. Joints à la présente question, deux points
-    mineurs relevés par le validator : le @And « ni connexion ouverte » du Scenario 1 n'est pas
-    assertable à bas coût (accepter, ou exiger une preuve — l'autre clause « ni fichier écrit »
-    est prouvée par répertoire temporaire vide) ; et l'assertion @stderr vide pour `-h` seul
-    est ajoutée par la tâche de correction du flake (renforcement du verrou existant, pas un
-    contrat nouveau).
+  [x] Écart du point final de l'about : arbitré par Sébastien le 2026-10-03, voie A. Le `Must` et
+    le `Then` du Scenario d'aide sont amendés sur ce que @clap_derive 4.6.4 produit (@remove_period
+    consomme le `.` final de l'aide courte) ; pas de @verbatim_doc_comment. Le @And « ni connexion
+    ouverte » du Scenario 1 est accepté sans preuve (« ni fichier écrit » reste prouvé par
+    répertoire temporaire vide) ; l'assertion stderr vide sur `-h` seul est entérinée comme
+    renforcement du verrou existant.
   [x] Convertir les six `Scenario` en au moins six tests distincts nommés, sur le pattern des
     cibles bin : crate d'intégration `./tests/cli.rs`, exécutable lancé par
     @std::process::Command via `env!("CARGO_BIN_EXE_miryad")` (variable posée par cargo pour
@@ -219,8 +203,8 @@ Tasks:
     réelle du @Given avec @Usage: miryad-scaffold exact et version restée `miryad`, silence du
     lancement vide prouvé par répertoire temporaire reste vide) ; verrou du réel maintenu pour
     l'about — le commentaire « Écart consigné » et sa mention « mesuré 2/25 » (reproduction
-    locale de l'implementer, à distinguer des 1/40 du validator) seront repointés à l'amendement
-    du `[?]` ci-dessus, arbitrage de Sébastien en attente.
+    locale de l'implementer, à distinguer des 1/40 du validator) sont repointés à l'amendement
+    ci-dessus (arbitré 2026-10-03) : tâche autorisée, commentaire seul.
 
 Done when:
   La spec porte exactement six `Scenario` et au moins six tests distincts nommés vérifiant
@@ -248,7 +232,7 @@ Scenario: --help affiche l'about du squelette sur stdout
   When il est lancé avec l'argument `--help`, ou avec `-h`
   Then le code de sortie est `0`
   And stderr est vide
-  And stdout porte la ligne d'about — texte exact du commentaire de @Cli — puis une ligne
+  And stdout porte la ligne d'about — texte du commentaire de @Cli hors le point final consommé par @clap_derive (@remove_period) — puis une ligne
     commençant par `Usage:` et nommant le programme appelé
   And le bloc `Options:` liste `-h, --help` avec le texte `Print help` sans mention d'aide
     longue (`see more` absent sur structure vide) et `-V, --version` avec `Print version`

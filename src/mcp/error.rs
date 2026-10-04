@@ -113,6 +113,8 @@ impl From<RestError> for McpError {
             // Arbitré 2026-09-29 (`mcp/error.sdd`) : l'entrée invalide de la crate est une
             // entrée invalide du client en JSON-RPC — charge utile `String` déplacée intacte.
             RestError::InvalidInput(msg) => McpError::InvalidParams(msg),
+            // Arbitré 2026-10-03 (`mcp/error.sdd`) : miroir défensif sans chemin MCP vivant — fil générique.
+            RestError::Conflict => McpError::Internal(RestError::Conflict.to_string()),
         }
     }
 }
@@ -371,6 +373,18 @@ mod tests {
                 None
             )
         );
+    }
+
+    /// `Scenario` : « `From` `RestError::Conflict` devient `McpError::Internal` sans
+    /// charge utile » — miroir défensif sans chemin MCP vivant (arbitré 2026-10-03) :
+    /// `wire_message` générique, `-32603`, `data` absent.
+    #[test]
+    fn from_rest_conflict_devient_internal_sans_charge_utile() {
+        let err: McpError = RestError::Conflict.into();
+        assert!(matches!(err, McpError::Internal(_)), "{err:?}");
+        assert_eq!(err.wire_message(), "MRD-MCP-007: internal error");
+        assert_eq!(err.rpc_code(), -32603);
+        assert_eq!(err.data(), None);
     }
 
     // ——— Variantes de protocole et message fil (arbitré 2026-09-29) ———

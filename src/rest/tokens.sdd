@@ -66,11 +66,13 @@ Must:
     cette route, plus d'oracle d'existence.
   @DbErr remonte par `?` en @RestError::Database (`MRD-REST-003`, `500`) — comptage, fetch de page,
     @find_by_id ; les @AuthError de @issue_token/@revoke_token passent par @to_rest_error, @match
-    explicite sans @From<@AuthError> générique : @Database → @RestError::Database, toute autre
-    variante → @RestError::Internal (`MRD-REST-004`, `500`, corps générique — ./error.sdd).
-  @issue_token et @revoke_token ne produisent en pratique que @AuthError::Database (garanti par
+    explicite sans @From<@AuthError> générique : @Database → @RestError::Database,
+    @TokenHashConflict → @RestError::Conflict (`MRD-REST-006`, `409`, arbitré 2026-10-03), toute
+    autre variante → @RestError::Internal (`MRD-REST-004`, `500`, corps générique — ./error.sdd).
+  @issue_token et @revoke_token ne produisent en pratique que @AuthError::Database et
+    @AuthError::TokenHashConflict (MRD-AUTH-018 traverse @issue_token par contrat, voir
     ../auth/token.sdd) : la branche @other de @to_rest_error est une conversion défensive sans
-    chemin atteignable ni test inline (voir `Tasks` [arbitré 2026-09-29]).
+    chemin atteignable en production, exercée par un test inline (voir `Tasks` [arbitré 2026-09-29]).
   Le fichier n'émet aucune trace : pas de @tracing importé, et la famille @println/@eprintln/@dbg
     est interdite par /tooling.sdd — les erreurs sont rendues par @RestError (corps génériques
     pour les `500`, détail en trace émise par ./error.rs, arbitré 2026-09-29).
@@ -192,6 +194,9 @@ Raises:
   @RestError::Database (`MRD-REST-003`, `500`) : tout @DbErr — comptage et fetch du `GET`,
     @find_by_id du `DELETE`, insertion de @issue_token du `POST` (collision UNIQUE `token_hash`
     incluse, bien que le secret soit tiré fort), DELETE de @revoke_token
+  @RestError::Conflict (`MRD-REST-006`, `409`) : @AuthError::TokenHashConflict via @to_rest_error ;
+    comme la branche Internal, aucun chemin vivant sur ces deux voies (secret tiré fort), conversion
+    correcte exercée par un test inline
   @RestError::Internal (`MRD-REST-004`, `500`) : uniquement via le fallback de @to_rest_error sur un
     @AuthError non-@Database — variante que le moteur ne produit pas sur ces deux voies, branche
     défensive jamais atteinte (`Tasks` [arbitré 2026-09-29])
@@ -272,12 +277,18 @@ Tasks:
     d'offset ici.
   [x] Conversion défensive `500` `MRD-REST-004` gelée comme contrat (arbitré par Sébastien le
     2026-09-29) — corps générique, détail en trace (./error.sdd).
-  [?] Question spec-dd 2026-10-02 (Sébastien) — @TokenHashConflict rendu `MRD-REST-004`/`500`
-    par le catch-all de @to_rest_error : en attente depuis B1. Recommandation : septième variante
-    @RestError::Conflict (`MRD-REST-006`, `409`) dans ./error.sdd, câblée ici au lieu du catch-all
-    — le conflit d'empreinte est une décision de politique, pas une panne interne. Gel actuel :
-    le catch-all `other => Internal` n'est pas touché tant que l'arbitrage n'est pas posé ;
-    si le gel 500 est délibéré, le dire et la presente ligne passe `[x]` sur cette lecture.
+  [x] @TokenHashConflict → @RestError::Conflict (`MRD-REST-006`, `409`) : arbitré par Sébastien le
+    2026-10-03. Ajouter la septième variante dans ./error.rs (rendu, @Display, test
+    @Scenario « rendu HTTP 409 pour 006 »), câbler @to_rest_error, ajouter la conversion défensive
+    @RestError::Conflict → @McpError::Internal dans ../mcp/error.rs, test inline de @to_rest_error
+    sur un @AuthError::TokenHashConflict. Le catch-all `other => Internal` n'est plus touché pour
+    cette variante. Périmètre multi-fichiers : une tâche par fichier (error.rs, tokens.rs, mcp/error.rs).
+    Réalisé 2026-10-03 (cycle validator PASS sur les trois portions) : septième variante +
+    rendu `409` + test « rendu HTTP 409 pour 006 » dans ./error.rs ; bras nommé
+    @TokenHashConflict → @RestError::Conflict dans @to_rest_error + test inline dans ./tokens.rs ;
+    bras @RestError::Conflict → @McpError::Internal (match 7/7 sans joker) + test inline dans
+    ../mcp/error.rs ; batterie 8/8 tests verte, clippy critère 5/5 à zéro warning, dette gelée
+    inchangée (7/8/8 hors src/graphql/**).
 
 Done when:
   Les `22` `Scenario` sont chacun vérifiés par un test nommé distinct du module de tests inline de

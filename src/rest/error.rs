@@ -1,5 +1,5 @@
-//! Taxonomie d'erreur de la surface REST — le seul type public `RestError` à six
-//! variantes, chacune portant soit un code unique `MRD-REST-001` à `MRD-REST-005` dans
+//! Taxonomie d'erreur de la surface REST — le seul type public `RestError` à sept
+//! variantes, chacune portant soit un code unique `MRD-REST-001` à `MRD-REST-006` dans
 //! sa `Display`, soit le `HookError` applicatif du consommateur, jamais codé `MRD-*`.
 //! L'`IntoResponse` décidé ici fixe par variante le statut et la forme du corps : texte
 //! porteur du code, ou JSON `{code, message}` pour le rejet métier. Les corps `500` sont
@@ -17,8 +17,8 @@ use serde::Serialize;
 
 use crate::resource::HookError;
 
-/// Erreur des handlers REST — six variantes, chacune portant soit un code unique
-/// `MRD-REST-NNN` (`001` à `005`) dans sa `Display`, soit le `HookError` applicatif
+/// Erreur des handlers REST — sept variantes, chacune portant soit un code unique
+/// `MRD-REST-NNN` (`001` à `006`) dans sa `Display`, soit le `HookError` applicatif
 /// (`Application`, jamais `MRD-*`). Son `IntoResponse` rend statut et corps par variante.
 #[derive(Debug, thiserror::Error)]
 pub enum RestError {
@@ -46,6 +46,12 @@ pub enum RestError {
     /// par Sébastien le 2026-09-29) ; `422` partagé avec `Application`, qui garde son corps JSON.
     #[error("MRD-REST-005: invalid input: {0}")]
     InvalidInput(String),
+    /// `MRD-REST-006` — conflit d'empreinte de token, rendu `409` (septième variante,
+    /// arbitrée par Sébastien le 2026-10-03 : une décision de politique, pas une panne
+    /// interne). Émetteur : `to_rest_error` de `rest::tokens` sur
+    /// `AuthError::TokenHashConflict`, parité avec le `409` de `auth::error`.
+    #[error("MRD-REST-006: conflict")]
+    Conflict,
 }
 
 #[derive(Serialize)]
@@ -81,6 +87,7 @@ impl IntoResponse for RestError {
             RestError::InvalidInput(_) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, self.to_string()).into_response()
             }
+            RestError::Conflict => (StatusCode::CONFLICT, self.to_string()).into_response(),
         }
     }
 }
@@ -192,7 +199,9 @@ mod tests {
             RestError::Application(HookError::new("hooked")),
             RestError::Internal("upstream exploded".to_string()),
             RestError::InvalidInput("bad input".to_string()),
+            RestError::Conflict,
         ];
+        assert_eq!(errors.len(), 7, "une valeur par variante, sept depuis 2026-10-03");
         let mut database_checked = false;
         for err in &errors {
             match err {
@@ -353,6 +362,22 @@ mod tests {
             &body[..],
             b"MRD-REST-005: invalid input: expires_at must be in the future"
         );
+    }
+
+    /// `Scenario` : « rendu HTTP 409 pour 006 » — septième variante arbitrée par Sébastien
+    /// le 2026-10-03, émetteur `to_rest_error` de `rest::tokens` sur
+    /// `AuthError::TokenHashConflict` (parité avec le `409` de `auth::error`). La variante
+    /// est muette — la spec n'autorise que les deux traces `error!` des variantes `500` —
+    /// donc aucun abonné `tracing` n'est capturé ici : le mutisme est certifié par la
+    /// branche du `match` qui ne pose que statut + corps (`Done when` de la spec).
+    #[tokio::test]
+    async fn http_render_006_conflict_is_409() {
+        let err = RestError::Conflict;
+        assert_eq!(err.to_string(), "MRD-REST-006: conflict");
+        let (status, content_type, body) = render(err).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(content_type, TEXT_PLAIN);
+        assert_eq!(&body[..], b"MRD-REST-006: conflict");
     }
 
     /// `Scenario` : « `Internal` portant un `AuthError` garde le code AUTH hors du corps

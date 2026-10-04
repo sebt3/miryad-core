@@ -41,7 +41,8 @@ References:
   /docs/architecture.md — récit cité par le bloc `//!` du fichier, non contractuel
 
 Must:
-  Compiler sans aucun gating de feature : aucune condition `#[cfg(feature = ...)]` dans le fichier ;
+  Compiler sans aucun gating de feature : aucune condition `#[cfg(feature = ...)]` dans le fichier
+    hors `#[cfg(test)]` (arbitré 2026-10-03) ;
     ses seules dépendances de typage sont @sea_orm::EntityTrait, @serde::Serialize (feature
     `derive` de la dépendance obligatoire @serde de /Cargo.toml) et @crate::auth::AuthPrincipal,
     toutes non optionnelles. La batterie de /tooling.sdd le vérifie au minimum sur
@@ -281,7 +282,7 @@ Tasks:
   [ ] Convertir les vingt `Scenario` originaux en au moins vingt tests nommés distincts, un par
     scenario. État des lieux : 0 test inline dans ./resource.rs, 2 tests rattachés existants dans
     ../tests/resource.rs, 1 scenario couvert par des tests de la surface déléguée — soit 17 tests à
-    créer dans ../tests/resource.rs. Correspondance scenario → test : « construction de @HookError
+    créer, dans le `#[cfg(test)] mod tests` de ./resource.rs (arbitré 2026-10-03). Correspondance scenario → test : « construction de @HookError
     sans code » → `hook_error_new_leaves_code_none` ; « code applicatif libre porté par @HookError »
     → `hook_error_with_code_preserves_code_and_message` ; « copie et rendu @Debug de @HookError » →
     `hook_error_clone_preserves_debug_fields` ; « variantes unitaires d'@AccessPolicy en chaînes
@@ -316,12 +317,10 @@ Tasks:
     `Done when` (« chaque `Scenario` vérifié par au moins un test nommé distinct ») ; le lieu dit
     deux fois (« 17 tests à créer dans ../tests/resource.rs » ici et au `Done when`) n'est pas
     satisfait à la lettre.
-  [?] Question spec-dd 2026-10-02 (Sébastien, validator B5b) — faut-il déplacer les dix-sept
-    tests inline vers ./../tests/resource.rs (une tâche autorisée le fera), ou amender tâche et
-    `Done when` pour lire « dans le `#[cfg(test)] mod tests` de ./resource.rs » ? L'amendement
-    libère aussi le `Must` de non-gating de son ambiguïté (deux tests @cfg(feature) inline ; à
-    étendre alors explicitement à « hors `#[cfg(test)]` »). Tâche `[ ]` sus-jacente en attente de
-    cette réponse.
+  [x] Lieu des dix-sept tests : arbitré par Sébastien le 2026-10-03 — ils restent inline, dans le
+    `#[cfg(test)] mod tests` de ./resource.rs ; la tâche et le `Done when` sont amendés en ce
+    sens, aucun déplacement. Le `Must` de non-gating s'entend « hors `#[cfg(test)]` » : les deux
+    tests @cfg(feature) inline n'y contreviennent pas.
   [!] #19 La doc de @MiryadResource::resource_name affirme que le nom fait « le type GraphQL ». Vérifié
     dans la source `seaography-2.0.0-rc.9` (@EntityObjectBuilder::type_name) : le nom d'objet
     GraphQL et l'identifiant passé aux hooks viennent du nom de table SQL en CamelCase, jamais de
@@ -346,8 +345,8 @@ Tasks:
 Done when:
   La spec porte exactement vingt-six `Scenario` (vingt originaux, six de l'amendement
     @before_update/@before_delete du 2026-09-23) et chaque `Scenario` est vérifié par au moins un
-    test nommé distinct au total : 17 tests rattachés créés dans ../tests/resource.rs pour les
-    scenarios originaux, 2 tests rattachés existants, 2 tests de ./rest/mod.rs pour « position du
+    test nommé distinct au total : 17 tests rattachés créés inline dans le `#[cfg(test)] mod tests`
+    de ./resource.rs pour les scenarios originaux, 2 tests rattachés existants, 2 tests de ./rest/mod.rs pour « position du
     hook dans la création », plus 6 tests rattachés pour l'amendement — 27 tests distincts pour 26
     `Scenario`.
   Les tests passent sur chaque combinaison de la matrice de /tooling.sdd, y compris

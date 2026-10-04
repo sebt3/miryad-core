@@ -710,14 +710,10 @@ mod tests {
     /// `Scenario` : « tout outil appelé avec `arguments` `null` est `MRD-MCP-005` avant tout
     /// accès base » — les cinq bras, base intacte après les cinq tentatives.
     ///
-    /// Écart consigné (réel verrouillé, spec non modifiée) : le `Then` de la spec cite
-    /// `invalid type: unit value` « vérifié source `serde_json` » (`registry.sdd` l.473, répété aux
-    /// l.183 et l.263). Sous le graphe verrouillé (`serde_json` `1.0.151`, serde `1.0.229`), la
-    /// lecture `from_value::<Struct>(Value::Null)` rend en réalité `invalid type: null, expected
-    /// struct <nom>` — sonde indépendante sur ces versions exactes et exécution de ce test le
-    /// confirment tous les deux. La variante et le code `MRD-MCP-005` du `Then` tiennent seuls ;
-    /// la sous-chaîne `serde_json` est verrouillée ici sur sa valeur réelle, en attendant
-    /// l'arbitrage de Sébastien sur les trois lignes de la spec.
+    /// Qualification (Q6 arbitré par Sébastien le 2026-10-03, `registry.sdd` `Tasks`) : le test
+    /// reste en deçà de l'exemple de `Raises` — lu comme illustratif — en verrouillant la
+    /// sous-chaîne `expected struct` sans verrouiller le nom de structure (détail interne de
+    /// `serde`). Le `Then` de la spec cite `invalid type: null` mesuré (harmonisé 2026-10-02).
     #[tokio::test]
     async fn null_arguments_rejected_before_any_dispatch() {
         let db = test_db().await;
@@ -748,8 +744,8 @@ mod tests {
             );
             assert!(
                 display.contains("invalid type: null, expected struct"),
-                "{op:?} sur arguments nuls — message reel de serde_json sous le graphe verrouille \
-                 (ecart consigne avec la sous-chaine citee par la spec) : {display}"
+                "{op:?} sur arguments nuls — message reel de serde_json sous le graphe verrouille ; \
+                 Q6 arbitre 2026-10-03 : sous-chaine verrouilee, nom de structure non verrouille : {display}"
             );
         }
 
@@ -1000,14 +996,13 @@ mod tests {
         );
     }
 
-    /// `Scenario` : « `_update` : `id` de dispatch divergent de celui du corps — la cible reste
-    /// l'`id` de dispatch ». Consigné : la divergence de deux `id` dans une même envelope n'est
-    /// pas constructible par `McpEntity::call` (l'unique clé `id` de l'objet nourrit la passe
-    /// `IdParams` et la passe `E::Model` — les deux passes lisent le même `Value`) ; le forçage du
-    /// `WHERE` sur l'`id` de `IdParams` est décidé et prouvé par `rest::core::update`
-    /// (`../rest/core.sdd`). Ce test verrouille la conséquence observable au niveau du registre :
-    /// la cible est la ligne de l'`id` de l'envelope, l'autre ligne reste intacte, le `Ok` porte
-    /// cet `id`.
+    /// `Scenario` : « `_update` : une divergence d'`id` est inexprimable, l'`id` de l'enveloppe
+    /// est la seule cible » — propriété du protocole (arbitré 2026-10-03) : la divergence de deux
+    /// `id` dans une même envelope n'est pas constructible par `McpEntity::call` (les deux passes
+    /// de lecture, `IdParams` puis `E::Model`, lisent la même clé `id` du `Value`). Conséquence
+    /// verrouillée au niveau registre : la cible est la ligne de l'`id` de l'enveloppe, l'autre
+    /// reste intacte, le `Ok` porte cet `id` — le forçage du `WHERE` est décidé et prouvé par
+    /// `rest::core::update` (`../rest/core.sdd`).
     #[tokio::test]
     async fn update_uses_dispatch_id_not_body_id_as_target() {
         let db = test_db().await;
@@ -1139,14 +1134,12 @@ mod tests {
     }
 
     /// `Scenario` : « traduction `RestError` → `McpError` sans perte de décision, `UnknownTool`
-    /// jamais construit d'ici » — les trois verdicts distincts (`Database`, `NotFound`,
-    /// `Forbidden`) sortent du seul `From<RestError>` de `error.rs`, mêmes verdicts que REST sur
-    /// les mêmes entrées brutes. Consigné sur la narration : la politique `AdminOnly` de la
-    /// fixture `secret` refusant avant toute atteinte de table (oracle d'existence de
-    /// `rest/core.rs`), c'est la table `recipes` (`OwnerOnly`, verdict `None` en attente de
-    /// relecture de la ligne) qui est absente pour produire la branche `Database` — la mapping
-    /// `Tasks` (« table absente → `Database` ; `AdminOnly` refusé → `Forbidden` ») découple ces
-    /// deux branches.
+    /// jamais construit d'ici » — `Get` sur `recipes` (`OwnerOnly`) dont la table est absente rend
+    /// `Database` (`MRD-MCP-003`), `Delete` d'un `id` jamais inséré rend `NotFound`
+    /// (`MRD-MCP-002`), `Get` d'une ligne `secret` (`AdminOnly`) présente par `alice` sans admin
+    /// rend `Forbidden` (`MRD-MCP-001` — `static_verdict` refuse avant tout accès table). Trois
+    /// verdicts distincts par le seul `From<RestError>` de `error.rs`, mêmes verdicts que REST sur
+    /// les mêmes entrées brutes ; ni `UnknownTool` ni `Internal` ne sont observables par `call`.
     #[tokio::test]
     async fn rest_to_mcp_error_translation_loses_no_decision() {
         let alice = principal("alice");

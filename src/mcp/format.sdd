@@ -122,15 +122,17 @@ Returns:
     pour @Value::Null et la chaîne vide.
   @DEFAULT_MARKDOWN_RECORD_TEMPLATE =
     `{{#each this}}\n- **{{@key}}**: {{this}}\n{{/each}}\n` : une ligne `- **clé**: valeur` par
-    champ de l'objet, chaque itération émettant d'abord son propre saut de ligne — deux champs
-    rendent donc une ligne vide ENTRE les deux ; l'objet vide `{}` rend le seul dernier
-    @\n du gabarit (texte `"\n"`). Valeurs non scalaires via @JsonRender amont : objet imbriqué
+    champ de l'objet. Réel arbitré le 2026-10-03 : @handlebars 6.4.4 consomme les sauts de ligne
+    adjacents aux balises de bloc seules sur leur ligne (standalone block tags) — deux champs
+    rendent `- **id**: 1\n- **title**: Tarte\n` (ni `\n` initial ni ligne vide entre champs) et
+    l'objet vide `{}` rend la chaîne vide `""`. Valeurs non scalaires via @JsonRender amont : objet imbriqué
     → littéral `[object]`, tableau → `[v1, v2]`, @Json::Null → vide après `: `.
   @DEFAULT_MARKDOWN_LIST_TEMPLATE =
     `{{#each items}}\n- {{#each this}}{{@key}}={{this}} {{/each}}\n{{/each}}\n` suivi de
     `_page {{page}}/{{total_pages}}, {{total_items}} item(s) au total_\n` : par item une ligne
     `- clé=valeur clé=valeur … ` avec une espace finale y compris après la dernière paire,
-    et une ligne vide entre items (le @\n initial du corps) ; le pied de page est
+    sans ligne vide entre items ni `\n` initial (balises standalone consommées par @handlebars
+    6.4.4, réel arbitré le 2026-10-03) ; le pied de page est
     émis même avec @items vide, avec les valeurs brutes de la page — une table vide rend
     `1/0` (../query.sdd @Done when amont @sea_orm : `0` ligne fait `0` page), jamais réécrit en
     `1/1`. La valeur @{{total_pages}} rendue n'est jamais recalculée ici.
@@ -278,7 +280,7 @@ Tasks:
     seuls points `missing_docs` du fichier. Soldé par la vague A3 de purge du harnais
     (validator PASS) : les trois variants portent leur `///`, vérifié HEAD 2b8c15d sous
     `missing_docs = "deny"`.
-  [ ] Convertir les onze `Scenario` en au moins onze tests nommés distincts du
+  [x] Convertir les onze `Scenario` en au moins onze tests nommés distincts du
     `#[cfg(test)] mod tests` de ./format.rs, un par scenario : « enregistrement rendu en JSON par
     défaut » → @json_format_renders_valid_json (existant, à tendre vers l'égalité exacte) ;
     « enregistrement rendu en YAML par défaut » → @yaml_format_renders_yaml_not_json (existant) ;
@@ -296,16 +298,12 @@ Tasks:
     le HTML » → @markdown_record_keeps_raw_html_chars (à créer). Le contrat déborde du fichier
     côté enveloppe : la mise en `content: [{ "type": "text" }]` et le mapping -32603 appartiennent
     aux specs ./handler.sdd et ./error.sdd (tests de ces specs, pas de celles-ci).
-  [?] Question spec-dd 2026-10-02 (Sébastien) — bloque la conversion `[ ]` des 11 `Scenario` :
-    @Returns et trois @Then promettent newline initial et lignes vides que @handlebars 6.4.4
-    consomme (block tags standalone). Réel mesuré, verrouillé par égalité exacte en test :
-    record 2 champs `- **id**: 1\n- **title**: Tarte\n`, record `{}` → `""`, liste 1 item
-    `- id=1 owner_id=7 title=Tarte \n_page 1/1, 1 item(s) au total_\n`, liste vide
-    `_page 1/0, 0 item(s) au total_\n`. Recommandation (avis du validator) : bouger le contrat
-    (écrire les `Then`/@Returns sur le réel) — les gabarits-littéraux cités sont déjà conformes
-    au code ; l'inverse (changer les gabarits pour restaurer les lignes vides promises) est un
-    changement de fil visible par l'agent MCP, donc un nouveau cycle spec-first, pas une
-    harmonisation.
+  [x] Lignes vides promises par les gabarits Markdown : arbitré par Sébastien le 2026-10-03 — le
+    contrat suit le réel (@handlebars 6.4.4, standalone block tags). `Returns` et les trois
+    `Scenario` Markdown réécrits ; changer les gabarits serait un changement de fil visible par
+    l'agent MCP, donc un cycle spec-first séparé. Les commentaires « Écart consigné » de
+    ./format.rs deviennent obsolètes : une tâche autorisée les retire, les égalités exactes des
+    tests restent.
 
 Done when:
   Chaque `Scenario` dispose d'au moins un test nommé distinct vérifiant son `Then` dans le
@@ -337,9 +335,9 @@ Scenario: enregistrement rendu en YAML par défaut
 Scenario: enregistrement rendu en Markdown par défaut
   Given un @HandleBars::new() et @OutputFormat::Markdown
   When @render est appelé avec @RenderShape::Record sur `{"id": 1, "title": "Tarte"}`
-  Then le texte rendu est exactement `\n- **id**: 1\n\n- **title**: Tarte\n\n` — une ligne par
-    champ, une ligne vide entre les champs, @\n final du gabarit
-  And l'objet vide `{}` rend le seul texte `"\n"` — sans erreur malgré le mode strict
+  Then le texte rendu est exactement `- **id**: 1\n- **title**: Tarte\n` — une ligne par champ,
+    sans ligne vide ni `\n` initial (balises de bloc standalone consommées par le moteur)
+  And l'objet vide `{}` rend la chaîne vide `""` — sans erreur malgré le mode strict
 
 Scenario: page rendue en Markdown par défaut
   Given un @HandleBars::new() et @OutputFormat::Markdown
@@ -347,8 +345,8 @@ Scenario: page rendue en Markdown par défaut
     `{"items": [{"id": 1, "owner_id": 7, "title": "Tarte"}], "page": 1, "per_page": 100,
     "total_items": 1, "total_pages": 1}`
   Then le texte rendu est exactement
-    `\n- id=1 owner_id=7 title=Tarte \n\n_page 1/1, 1 item(s) au total_\n` — les paires
-    `clé=valeur` séparées par une espace, une espace finale aussi après la dernière, une ligne
+    `- id=1 owner_id=7 title=Tarte \n_page 1/1, 1 item(s) au total_\n` — les paires
+    `clé=valeur` séparées par une espace, une espace finale aussi après la dernière, aucune ligne
     vide entre items, et le pied de page toujours présent
   And `per_page` de la page n'apparaît nulle part dans le rendu
 
@@ -357,7 +355,7 @@ Scenario: liste vide — aucune ligne d'items et pied 1/0
   When @render est appelé avec @RenderShape::List sur la page
     `{"items": [], "page": 1, "per_page": 100, "total_items": 0, "total_pages": 0}` — les totaux
     qu'un @sea_orm::Paginator rend sur une table vide (../query.sdd)
-  Then le texte rendu est exactement `\n_page 1/0, 0 item(s) au total_\n`
+  Then le texte rendu est exactement `_page 1/0, 0 item(s) au total_\n`
   And aucun caractère d'item n'est émis
   But le `1/0` du pied n'est ni ramené à `1/1` ni remplacé par `aucun résultat`
 

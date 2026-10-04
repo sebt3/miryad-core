@@ -17,12 +17,17 @@ use crate::auth::{AuthError, AuthPrincipal, MiryadAuthState, issue_token, revoke
 use crate::query::{PagedResult, Pagination};
 use crate::rest::error::RestError;
 
-/// `issue_token`/`revoke_token` ne produisent en pratique que `AuthError::Database` — les autres
-/// variantes appartiennent au flow OIDC/session, jamais atteintes ici. Conversion explicite
-/// plutôt qu'un `From<AuthError>` générique qui laisserait croire à une correspondance 1:1.
+/// Dispatch explicite des `AuthError` de `issue_token`/`revoke_token`, sans `From<AuthError>`
+/// générique qui laisserait croire à une correspondance 1:1 : `Database` passe-through,
+/// `TokenHashConflict` → `RestError::Conflict` (`MRD-REST-006`, `409`) — variante produite
+/// par `ensure_token` (`auth/token.sdd` `MRD-AUTH-017`), hors de cette surface : bras nommé
+/// par l'arbitré 2026-10-03 pour la parité `409` avec `auth/error.rs`, sans chemin vivant
+/// sur ces voies `POST`/`DELETE` ni test de route, exercé directement par le test inline ;
+/// toute autre variante → `RestError::Internal` défensif (branche sans chemin atteignable).
 fn to_rest_error(err: AuthError) -> RestError {
     match err {
         AuthError::Database(db_err) => RestError::Database(db_err),
+        AuthError::TokenHashConflict => RestError::Conflict,
         other => RestError::Internal(other.to_string()),
     }
 }
@@ -1435,6 +1440,50 @@ mod tests {
             resp.status(),
             StatusCode::NOT_FOUND,
             "rien n'existe hors du nest /api/v1"
+        );
+    }
+
+    // ——— Dispatch de `to_rest_error` ———
+
+    /// Tâche « `TokenHashConflict` → `RestError::Conflict` » (arbitré 2026-10-03) — verrou du
+    /// `Must` de la spec (`to_rest_error` = `match` explicite à trois bras, sans
+    /// `From<AuthError>` générique) : `TokenHashConflict` → `RestError::Conflict` (`409`,
+    /// Display exactement `MRD-REST-006: conflict`) ; le bras `Database` passe-through avec
+    /// le `DbErr` conservé en `source` ; toute autre variante tombe dans le catch-all
+    /// défensif `RestError::Internal` (charge utile portant le code `MRD-AUTH-*`, rendu
+    /// `MRD-REST-004`).
+    #[test]
+    fn to_rest_error_maps_token_hash_conflict_to_conflict() {
+        use std::error::Error as _;
+
+        // Bras arbitré 2026-10-03 : variante unitaire, sans charge utile.
+        let converted = to_rest_error(AuthError::TokenHashConflict);
+        assert!(
+            matches!(converted, RestError::Conflict),
+            "TokenHashConflict doit mapper sur RestError::Conflict, pas sur : {converted:?}"
+        );
+        assert_eq!(converted.to_string(), "MRD-REST-006: conflict");
+
+        // Bras inchangé : Database pass-through, DbErr conservé en source.
+        let converted = to_rest_error(AuthError::Database(sea_orm::DbErr::Custom("boom".to_string())));
+        assert!(
+            matches!(converted, RestError::Database(_)),
+            "Database doit rester RestError::Database : {converted:?}"
+        );
+        let source = converted
+            .source()
+            .expect("la variante Database conserve son DbErr en source");
+        assert_eq!(source.to_string(), "Custom Error: boom");
+
+        // Catch-all défensif conservé tel quel : variante non-Database/non-Conflict → Internal.
+        let converted = to_rest_error(AuthError::Oidc("x".to_string()));
+        assert!(
+            matches!(converted, RestError::Internal(_)),
+            "toute autre variante doit mapper sur RestError::Internal : {converted:?}"
+        );
+        assert_eq!(
+            converted.to_string(),
+            "MRD-REST-004: internal error: MRD-AUTH-003: OIDC error: x"
         );
     }
 }

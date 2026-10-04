@@ -787,11 +787,12 @@ mod tests {
              `Secure` après `HttpOnly`, `SameSite=Lax` conservé"
         );
 
-        assert_eq!(lines.len(), 1, "le succès ne trace qu'une ligne : {lines:?}");
-        let info = lines.first().expect("la trace du succès");
+        // Sur-assertion `lines.len() == 1` levée le 2026-10-03 (`../users/membership.sdd`,
+        // arbitré option A) : le contrat ne verrouille que la présence de la trace `info` du
+        // succès portant le champ `subject`, pas le compte des lignes capturées.
         assert!(
-            info.contains("subject=user-1"),
-            "la trace `info` porte le champ `subject` : {info}"
+            lines.iter().any(|line| line.contains("subject=user-1")),
+            "le succès émet une trace `info` portant le champ `subject` : {lines:?}"
         );
     }
 
@@ -825,11 +826,12 @@ mod tests {
             "purge littérale du pending sans `Secure` sous `secure_cookies: false`"
         );
 
-        assert_eq!(lines.len(), 1, "le succès ne trace qu'une ligne : {lines:?}");
-        let info = lines.first().expect("la trace du succès");
+        // Sur-assertion `lines.len() == 1` levée le 2026-10-03 (`../users/membership.sdd`,
+        // arbitré option A) : le contrat ne verrouille que la présence de la trace `info` du
+        // succès portant le champ `subject`, pas le compte des lignes capturées.
         assert!(
-            info.contains("subject=user-1"),
-            "la trace `info` porte le champ `subject` : {info}"
+            lines.iter().any(|line| line.contains("subject=user-1")),
+            "le succès émet une trace `info` portant le champ `subject` : {lines:?}"
         );
     }
 

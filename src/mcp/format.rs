@@ -115,16 +115,6 @@ mod tests {
 
     /// `Scenario` : « enregistrement rendu en Markdown par défaut » — une ligne `- **clé**: valeur`
     /// par champ, clés lexicographiques ; l'objet vide rend sans erreur malgré le mode strict.
-    ///
-    /// Écart consigné (réel verrouillé, spec non modifiée — arbitrage Sébastien requis avant
-    /// passage `[x]`) : le `Then` attend `\n- **id**: 1\n\n- **title**: Tarte\n\n` et l'objet vide
-    /// `"\n"` (`format.sdd` l.328-330, `Returns` l.121-126). Réel sous handlebars 6.4.4 (moteur
-    /// de `HandleBars::new()`, sonde indépendante sur les versions verrouillées) : les blocs
-    /// `{{#each}}`/`{{/each}}` seuls sur leur ligne consomment les sauts de ligne adjacents
-    /// (standalone block tags) — deux champs rendent `- **id**: 1\n- **title**: Tarte\n` (aucune
-    /// ligne vide entre champs, pas de `\n` initial) et `{}` rend la chaîne vide `""`, pas
-    /// `"\n"`. Le rendu attendu par la spec exigerait un changement de gabarit (donc de fil) :
-    /// tranché par Sébastien, pas par l'implementer.
     #[test]
     fn markdown_format_renders_field_list() {
         let mut engine = HandleBars::new();
@@ -134,7 +124,7 @@ mod tests {
         assert_eq!(
             output, "- **id**: 1\n- **title**: Tarte\n",
             "une ligne par champ en ordre lexicographique ; les newline de gabarit adjacentes aux \
-             blocs standalone sont consommees par le moteur (ecart consigne avec la spec)"
+             blocs standalone sont consommees par le moteur"
         );
         let empty = render(
             &mut engine,
@@ -145,19 +135,14 @@ mod tests {
         .expect("objet vide rend sans erreur en mode strict");
         assert_eq!(
             empty, "",
-            "l'objet vide rend vide (ecart consigne : la spec attend `\"\\n\"`)"
+            "l'objet vide rend vide (newline de gabarit adjacentes aux blocs standalone \
+             consommees par le moteur)"
         );
     }
 
     /// `Scenario` : « page rendue en Markdown par défaut » — ligne `- clé=valeur ` par item avec
     /// espace finale aussi après la dernière paire, pied de page toujours présent ; `per_page`
     /// n'apparaît nulle part.
-    ///
-    /// Écart consigné (même arbitrage que `markdown_format_renders_field_list`) : le `Then`
-    /// attend `\n- id=1 owner_id=7 title=Tarte \n\n_page 1/1, 1 item(s) au total_\n`
-    /// (`format.sdd` l.337-340, `Returns` l.127-134) ; le réel standalone-consommé est
-    /// `- id=1 owner_id=7 title=Tarte \n_page 1/1, 1 item(s) au total_\n` — ni `\n` initial ni
-    /// ligne vide avant le pied de page.
     #[test]
     fn markdown_list_renders_exact_lines_and_footer() {
         let mut engine = HandleBars::new();
@@ -166,8 +151,8 @@ mod tests {
         assert_eq!(
             output, "- id=1 owner_id=7 title=Tarte \n_page 1/1, 1 item(s) au total_\n",
             "paires separees par une espace, espace finale apres la derniere, pied de page \
-             present ; newline de gabarit adjacentes aux blocs standalone consommees (ecart \
-             consigne avec la spec sur le `\n` initial et la ligne vide avant le pied)"
+             present ; newline de gabarit adjacentes aux blocs standalone consommees par le moteur \
+             (pas de `\n` initial ni de ligne vide avant le pied)"
         );
         assert!(
             !output.contains("per_page") && !output.contains("100"),
@@ -178,10 +163,6 @@ mod tests {
     /// `Scenario` : « liste vide — aucune ligne d'items et pied 1/0 » — seul le pied est émis,
     /// avec les totaux bruts de `sea_orm` sur table vide (`1/0` jamais ramené à `1/1`, jamais
     /// remplacé par « aucun résultat »).
-    ///
-    /// Écart consigné (même arbitrage) : le `Then` attend `\n_page 1/0, 0 item(s) au total_\n`
-    /// (`format.sdd` l.348) ; le réel est `_page 1/0, 0 item(s) au total_\n` sans `\n` initial
-    /// (standalone). Le fond du Scenario — aucun caractère d'item, pied brut `1/0` — tient.
     #[test]
     fn markdown_list_empty_renders_footer_only() {
         let mut engine = HandleBars::new();
@@ -218,13 +199,6 @@ mod tests {
     /// `Custom` écrit pour un enregistrement appelé sur une page sans `title` : `Err(Render)`,
     /// aucun texte partiel (`Titre : ` comme repli sur le JSON par défaut sont tous deux exclus —
     /// un `Err` ne rend pas de texte).
-    ///
-    /// Écart consigné (réel verrouillé, spec non modifiée) : le `Then` cite le préfixe
-    /// `MRD-MCP-004: template render error:` (`format.sdd` l.364-365, répété aux l.28-29 et
-    /// l.142-143). La message de `McpError::Render` a été généralisé en
-    /// `MRD-MCP-004: output rendering error: ` par l'arbitrage Sébastien 2026-09-29, déjà soldé
-    /// et carried by `./error.rs` l.27 (tâche `[x]` de `registry.sdd` l.387-388) ; le préfixe
-    /// `MRD-MCP-004:` exigé par les autres Scenario tient à l'identique.
     #[test]
     fn custom_missing_key_renders_mrd_mcp_004() {
         let mut engine = HandleBars::new();

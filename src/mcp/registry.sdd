@@ -398,19 +398,14 @@ Tasks:
     ./error.sdd, aucun changement ici.
   [x] PK exigée à `create`/`update` : friction assumée et documentée dans la description de l'outil
     ((arbitré par Sébastien le 2026-09-29), `Handles`), parité REST conservée ; à corriger sur les deux surfaces ensemble.
-  [?] Question spec-dd 2026-10-02 (Sébastien) — bloquent la conversion `[ ]` des 19 `Scenario`
-    (les tests verrouillent le réel, la narration est inconstructible) :
-    S19 « `Get` sur `secret` @AdminOnly table absente → @McpError::Database » est impossible :
-    @static_verdict rend @Forbidden avant tout accès table (@rbac.rs l.100-127, contrat
-    ../rest/core.sdd — le changer pour la narration serait une régression d'oracle). Le test
-    suit le découpage du `Tasks` : @Database via table @recipes absente en @OwnerOnly.
-    Recommandation : réécrire Given/When du `Scenario` sur cette variante (contrat à bouger,
-    wire à garder). S15 « deux `id` divergents » inconstructible par @McpEntity::call (une seule
-    clé `id` sur le fil, les deux passes lisent le même @Value) ; recommandation : reformuler en
-    propriété (« toute divergence est inexprimable, l'`id` de l'enveloppe est la seule cible »)
-    et consigner l'inconstructibilité. Q6 mineure jointe : l'exemple de @Raises cite
-    `…expected struct @ListParams` mais le test s'arrête à la sous-chaîne `expected struct` —
-    verrouiller le nom de structure (égalité caractère à caractère) ou rester en deçà ?
+  [x] Questions S19, S15, Q6 : arbitrées par Sébastien le 2026-10-03, recommandations suivies.
+    S19 — le Scenario de traduction se joue sur `recipes` (@OwnerOnly, table absente →
+    @Database), `secret` @AdminOnly ne passe jamais par la table (@static_verdict rend @Forbidden
+    avant tout accès) : contrat réécrit, wire et oracle RBAC inchangés. S15 — reformulé en
+    propriété (divergence inexprimable), inconstructibilité consignée. Q6 — le test reste en deçà :
+    sous-chaîne `expected struct`, sans verrouiller le nom de structure (détail interne de serde) ;
+    l'exemple de @Raises est lu comme illustratif. Les commentaires « Écart consigné » de
+    ./registry.rs deviennent obsolètes : une tâche autorisée les retire.
 
 Done when:
   La spec porte exactement dix-neuf `Scenario` et chacun est vérifié par au moins un test nommé
@@ -573,13 +568,16 @@ Scenario: `_update` : @id lu sur une copie, corps relu en passe deux — la rég
   And le titre muté est visible sur le modèle @Ok — le modèle complet est bien parvenu à
     @rest::core::update
 
-Scenario: `_update` : @id de dispatch divergent de celui du corps — la cible reste l'@id de dispatch
+Scenario: `_update` : une divergence d'@id est inexprimable, l'@id de l'enveloppe est la seule cible
   Given deux lignes `R1` et `R2` d'@alice créées via @McpOp::Create
-  When @McpOp::Update est dispatché avec @id de dispatch `R1.id` et un @E::Model corps portant
-    `"id": R2.id` et un nouveau @title
+  When @McpOp::Update est dispatché avec une seule clé `id` valant `R1.id` dans l'enveloppe (le
+    corps est relu sur le même @Value en deux passes — @IdParams puis @E::Model — donc ne peut
+    porter qu'un @id) et un nouveau @title
   Then la ligne `R1` est mutée et `R2` est intacte après appel — c'est l'@id de @IdParams qui est
-    passé à @rest::core::update, jamais celui du corps, et @rest::core::update force le @WHERE
-    (./../rest/core.sdd) ; le @Ok rendu porte `R1.id`
+    passé à @rest::core::update, et @rest::core::update force le @WHERE (./../rest/core.sdd) ;
+    le @Ok rendu porte `R1.id`
+  And l'inconstructibilité de deux `id` divergents par @McpEntity::call est consignée comme
+    propriété du protocole (arbitré 2026-10-03), non comme cas de test
 
 Scenario: `_update` : sans @id ou sans modèle complet, `MRD-MCP-005` sans écriture
   Given une ligne existante d'@alice et @McpOp::Update
@@ -608,9 +606,9 @@ Scenario: deux entités enregistrées sont exposées dans l'ordre croissant des 
     stable et testable (arbitré 2026-09-29)
 
 Scenario: traduction @RestError → @McpError sans perte de décision, @UnknownTool jamais construit d'ici
-  Given une base où la table de la fixture `secret` est ABSENTE, un @id inconnu demandé sur une
-    table présente, et @alice sans droits sur `secret` présente
-  When trois @McpEntity::@call sont dispatchés : @McpOp::Get sur `secret` (table absente),
+  Given une base où la table de la fixture `recipes` (@OwnerOnly) est ABSENTE, un @id inconnu
+    demandé sur une table présente, et @alice sans droits sur `secret` (@AdminOnly) présente
+  When trois @McpEntity::@call sont dispatchés : @McpOp::Get sur `recipes` (table absente),
     @McpOp::Delete d'un @id jamais inséré, @McpOp::Get d'une ligne `secret` présente
   Then les trois @Err sont distinctement @McpError::Database (`MRD-MCP-003`), @McpError::NotFound
     (`MRD-MCP-002`) et @McpError::Forbidden (`MRD-MCP-001`) — mêmes verdicts que la surface REST

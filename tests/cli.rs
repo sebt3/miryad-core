@@ -39,12 +39,10 @@ use std::process::Output;
 /// moins le `.` final, que `clap_derive` retire (`remove_period`, vérifié dans la pile résolue
 /// `clap_derive 4.6.4` de /Cargo.lock — la structure vide n'a pas de `verbatim_doc_comment`).
 ///
-/// Écart consigné (B5h, 2026-10-03) : le `Must` de `src/bin/miryad.sdd` promet la ligne d'about
-/// « exactement » le commentaire de `Cli` — point final inclus — et le `Then` du Scenario
-/// « --help affiche l'about du squelette sur stdout » dit « texte exact du commentaire de
-/// documentation de `Cli` ». Le binaire compilé rend le texte **sans** le point final. Ce test
-/// verrouille le réel observé ; la ligne de spec reste à arbitrer par Sébastien entre la lettre
-/// du `Must` et le comportement de `clap_derive`.
+/// Cette valeur verrouille le contrat amendé du 2026-10-03 dans `src/bin/miryad.sdd` (voie A,
+/// arbitrée par Sébastien) : le `Must` et le `Then` du Scenario d'aide disent désormais ce
+/// que `clap_derive` produit — le commentaire de `Cli` hors le point final consommé par
+/// `remove_period`. La spec dit le réel.
 const ABOUT: &str = "CLI de scaffolding miryad — génère une application depuis un modèle de données";
 
 /// Ligne de version attendue : template `clap` `{name} {version}` + saut de ligne, `name` figé
@@ -143,7 +141,7 @@ fn help_prints_about_and_flags_on_stdout_exit_0() {
     assert_eq!(
         lines.first().copied().expect("l'aide porte une ligne d'about"),
         ABOUT,
-        "première ligne = texte du commentaire de `Cli` hors point final (écart consigné B5h)"
+        "première ligne = texte du commentaire de `Cli` hors point final (amendé 2026-10-03)"
     );
     assert!(
         lines.iter().skip(1).any(|line| line.starts_with("Usage:")),

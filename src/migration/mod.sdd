@@ -31,22 +31,27 @@ References:
   ../lib.rs — declaration @pub mod migration sans @cfg, doc d'usage @Migrator::up(&db, None)
 
 Must:
-  @migrations de @Migrator renvoie trois @Box inconditionnels, dans cet ordre et pas un de plus :
+  @migrations de @Migrator renvoie exactement les migrations définies par les specs filles :
+    d'abord les trois internes inconditionnelles, dans cet ordre figé —
     @m20260822_000001_create_api_tokens::Migration, puis
     @m20260822_000002_create_users_groups::Migration, puis
-    @m20260822_000003_seed_admin_group::Migration — suivis, uniquement sous `#[cfg(feature =
-    "workflow")]` (amendement 2026-09-23), d'un quatrième :
-    @m20260923_000001_create_workflow_definitions::Migration.
+    @m20260822_000003_seed_admin_group::Migration — puis les évolutions dans l'ordre
+    chronologique de leurs specs : @m20260923_000001_create_workflow_definitions::Migration
+    (uniquement sous `#[cfg(feature = "workflow")]`, amendement 2026-09-23), puis
+    @m20260930_000001_index_api_tokens_subject::Migration (inconditionnelle). Toute migration
+    ultérieure s'ajoute en fin de liste. Amendement arbitré par Sébastien le 2026-10-03 (Q5) : le
+    texte d'origine « trois, pas un de plus » était gelé avant la migration d'index.
   Ordre d'application = ordre du @Vec écrit ici, vérifié au source de sea-orm-migration 2.0.2 :
     @get_migration_files préserve l'ordre de @migrations, @exec_up_with itère les pending dans cet
     ordre, aucun tri ni graphe de dépendance n'existe (@MigrationOrder a disparu en 2.x) — toute
     correction d'ordre passe par la réécriture de cette liste (elle-même gelée pour les trois
-    premières entrées, voir `Must not`) ; 004 est toujours en dernière position quand elle est
-    présente, jamais insérée avant 003.
+    premières entrées, voir `Must not`) ; une migration ajoutée n'est jamais insérée avant une
+    entrée déjà enregistrée : l'ordre de la liste suit l'ordre chronologique des specs.
   Remontée @down en ordre inverse vérifiée au source (@into_iter().rev() de @exec_down_with sur la
-    liste des appliquées en ordre @migrations) : sous `workflow`, 004 d'abord, puis 003 (le seed
-    @DELETE sa ligne avant que 002 ne droppe ses tables), puis 002, puis 001 ; hors `workflow`, 003
-    d'abord comme avant l'amendement.
+    liste des appliquées en ordre @migrations) : l'index `20260930_000001` d'abord, puis sous
+    `workflow` 004, puis 003 (le seed @DELETE sa ligne avant que 002 ne droppe ses tables), puis
+    002, puis 001 ; @down @Some(@1) défait donc la dernière appliquée — l'index — et non la seed
+    003.
   @migration_table_name surchargée renvoie @Alias::new("seaql_migrations_miryad_core").into_iden()
     — nom exact 28 caractères, sous la limite Postgres de 63 donc jamais tronqué — appelé par le
     framework à chaque @install, lecture du tracking, @insert_migration_record et
@@ -153,7 +158,8 @@ Accepts:
 Returns:
   @up et @down : @Result<@(), @DbErr> — @Ok ne garantit que ce que each fille garantit de son
     @up/@down plus la cohérence des lignes de tracking, rien sur la forme préexistante du schéma
-  @migrations : trois @Box<dyn @MigrationTrait> exactement, en ordre d'enregistrement
+  @migrations : les @Box<dyn @MigrationTrait> des specs filles (quatre, cinq sous `workflow`),
+    en ordre d'enregistrement
   @migration_table_name : un @DynIden frais à chaque appel, de contenu constant
   @get_migration_models : lignes du tracking triées par @version ascissant (@Order::Asc vérifié au
     source), indépendamment de l'ordre d'exécution ; @get_migration_with_status et les listes
@@ -202,14 +208,14 @@ Tasks:
     table (`Must`). Sébastien (2026-09-23) : aucun garde-fou de code — une fois `workflow` activée,
     plus de retour en arrière supporté, documenté comme tel (`docs/architecture.md`, à la clôture),
     rien de plus.
-  [ ] Convertir les neuf `Scenario` en au moins neuf tests nommés distincts dans le
+  [ ] Convertir les dix `Scenario` en au moins dix tests nommés distincts dans le
     `#[cfg(test)] mod tests` de ./mod.rs, sur `sqlite::memory:` (pattern du test inline
     existant), la batterie de /tooling.sdd sans base externe : le test inline existant
     @composes_with_an_independent_migrator_sharing_the_default_table_name couvre le scénario de
-    coexistence consommatrice-après, huit tests à créer — liste pure sans base
+    coexistence consommatrice-après, neuf tests à créer — liste pure sans base
     (@get_migration_files), nom et teneur du tracking dédié, absence du défaut
     @seaql_migrations, @steps @Some(@1) et @Some(@0), second @up idempotent, @down @Some(@1) sur
-    003, et consommatrice-avant-miryad-core.
+    l'index (dernière appliquée), et consommatrice-avant-miryad-core.
     État 2026-10-03 (B5f, validator PASS) : dix `Scenario` réels (la tâche dit « neuf », texte
     d'avant l'amendement 2026-09-23 — le `Done when` dit « dix »), dix tests nommés distincts
     verts, dont cinq verrous du réel portant commentaire « Écart consigné » — cette `[ ]` se
@@ -234,29 +240,14 @@ Tasks:
     @DeriveMigrationName rend le stem du fichier déclarant (@get_file_stem(file!())), donc « mod »
     pour ./mod.rs ; inoffensif (le tracking ne porte que cette entrée), empiriquement verrouillé
     par le test consommatrice-en-tête ; aucun renommage.
-  [?] Question spec-dd 2026-10-02 (Sébastien) — le `Must` d'ordre (gelé 2026-09-23 : « trois
-    @Box… pas un de plus », « `004` toujours en dernière position ») est littéralement violé par
-    la quatrième entrée @index_api_tokens_subject que la tâche du 2026-09-29 ordonnait. Amendement
-    proposé : réécrire le `Must` en « la liste porte exactement les migrations définies par leurs
-    specs filles, `create_api_tokens`/`create_users_groups`/`seed_admin_group` dans cet ordre,
-    puis les index/évolutions dans l'ordre chronologique de leurs specs » — la main sur ce texte
-    est la tienne (gel daté). En attendant, la tâche « Migration suivante » reste `[ ]`.
-  [?] Corollaires Scenario de l'arbitrage Q3 ci-dessus (posée 2026-10-03, B5f — les tests de la
-    tâche de conversion verrouillent le réel, commentaires « Écart consigné » dans ./mod.rs ;
-    amender en même temps que le `Must`) : (1) ligne 242, « exactement trois entries » → « les
-    trois internes en ordre figé puis les enregistrements chronologiques » (réel : 4, 5 sous
-    @workflow) ; (2) lignes 250-251 et (3) ligne 280, « trois lignes » → « exactement les
-    enregistrements » ; (4) lignes 282 et 286-287 : @down @Some(@1) défait l'index
-    @m20260930_000001_index_api_tokens_subject, non la seed 003 (@exec_down_with itère les
-    appliquées en ordre inverse d'enregistrement, @sea-orm-migration 2.0.2 @exec.rs:305) —
-    retitrer « down d'un pas défait la dernière appliquée », réécrire @applied/@pending,
-    conserver l'And @miryad_groups intact ; (5) lignes 311-314 : 3/4 entrées → 4/5, l'entrée
-    @workflow restant quatrième. Mettre à jour au même passage le texte de la tâche de
-    conversion (« neuf `Scenario`… huit tests… @down @Some(@1) sur 003 » — réel : dix, neuf,
-    l'index). Facultatif relevé par le validator : l'And de sonde @has_table(@seaql_migrations)
-    du Scenario de coexistence n'est asserté qu'implicitement par le test existant — un
-    @assert!(@has_table) explicite est d'un ligne si tu le veux, l'acte de délégation suffit
-    sinon.
+  [x] Q3 — `Must` d'ordre (gelé 2026-09-23) violé par la quatrième entrée
+    @index_api_tokens_subject : arbitré par Sébastien le 2026-10-03, amendement proposé accepté.
+    `Must`, `Returns` et les `Scenario` réécrits (les trois internes en ordre figé, puis les
+    évolutions chronologiques ; quatre entrées, cinq sous `workflow` ; @down @Some(@1) défait
+    l'index). Les cinq verrous du réel « Écart consigné » de ./mod.rs deviennent conformes à la
+    spec : une tâche autorisée retire ces commentaires et repointe les noms de tests (« trois »
+    → « les enregistrements »). Facultatif repris : un @assert!(@has_table) explicite sur
+    @seaql_migrations dans le Scenario de coexistence — accepté, une ligne.
 
 Done when:
   Les dix `Scenario` (neuf originaux, un pour l'amendement 2026-09-23) sont chacun vérifiés par au
@@ -266,19 +257,22 @@ Done when:
     sont tranchés par Sébastien sans réécriture des deux méthodes surchargées, et la spec est
     approuvée par lui.
 
-Scenario: @migrations enregistre exactement les trois internes en ordre figé
+Scenario: @migrations enregistre les trois internes en ordre figé puis les évolutions chronologiques
   Given une crate compilée, aucune base branchée
   When @Migrator::get_migration_files est appelé dans un test
-  Then la liste compte exactement trois entries dans l'ordre `m20260822_000001_create_api_tokens`,
-    `m20260822_000002_create_users_groups`, `m20260822_000003_seed_admin_group`
+  Then la liste compte exactement les enregistrements des specs filles — quatre, cinq sous
+    `workflow` — dans l'ordre `m20260822_000001_create_api_tokens`,
+    `m20260822_000002_create_users_groups`, `m20260822_000003_seed_admin_group`, puis (sous
+    `workflow`) `m20260923_000001_create_workflow_definitions`, puis
+    `m20260930_000001_index_api_tokens_subject`
   And chaque entry porte le statut @MigrationStatus::Pending avant tout contact base
 
-Scenario: le tracking dédié porte les trois entrées sous seaql_migrations_miryad_core
+Scenario: le tracking dédié porte toutes les entrées sous seaql_migrations_miryad_core
   Given une base SQLite en mémoire sans aucune table
   When @Migrator::up(@db, @None) retourne @Ok(())
   Then la sonde @has_table répond @true pour `seaql_migrations_miryad_core`
-  And @Migrator::get_migration_models rend exactement trois lignes dont les @version sont les trois
-    noms d'enregistrement
+  And @Migrator::get_migration_models rend exactement les enregistrements, dont les @version sont
+    les noms d'enregistrement
 
 Scenario: le défaut seaql_migrations n'est jamais créé par le Migrator miryad-core
   Given une base SQLite en mémoire où seul @Migrator::up(@db, @None) a réussi
@@ -307,15 +301,17 @@ Scenario: un second up applique rien quand tout est appliqué
   When un second @Migrator::up(@db, @None) est appelé
   Then le résultat est @Ok(())
   And @Migrator::get_pending_migrations rend une liste vide
-  And @Migrator::get_migration_models compte toujours trois lignes
+  And @Migrator::get_migration_models compte toujours exactement les enregistrements
 
-Scenario: down d'un pas défait la dernière appliquée, la seed 003
+Scenario: down d'un pas défait la dernière appliquée, l'index api_tokens
   Given une base SQLite en mémoire où @Migrator::up(@db, @None) a appliqué les trois filles
   When @Migrator::down(@db, @Some(@1)) retourne
   Then le résultat est @Ok(())
-  And @Migrator::get_applied_migrations ne rend plus que 001 puis 002 dans l'ordre @migrations
-  And @Migrator::get_pending_migrations rend la seule entrée `m20260822_000003_seed_admin_group`
-  And @has_table répond @true pour `miryad_groups` — le rollback de 002 n'a pas été touché
+  And @Migrator::get_applied_migrations ne rend plus que les enregistrements précédant l'index
+    (001, 002, 003, puis 004 sous `workflow`) dans l'ordre @migrations
+  And @Migrator::get_pending_migrations rend la seule entrée
+    `m20260930_000001_index_api_tokens_subject`
+  And @has_table répond @true pour `miryad_groups` — la seed 003 n'a pas été touchée
 
 Scenario: le migrateur consommatrice au tracking défaut s'installe après miryad-core
   Given une base SQLite en mémoire où @Migrator::up(@db, @None) a appliqué les trois filles, et un
@@ -338,7 +334,8 @@ Scenario: la quatrième migration n'existe que sous la feature workflow
   Given deux builds de test, l'un sans la feature `workflow`, l'autre avec
   When @Migrator::migrations() est appelé dans chacun puis @Migrator::up(@db, @None) exécuté sur une
     base neuve
-  Then sans `workflow`, exactement trois entrées apparaissent dans
+  Then sans `workflow`, exactement quatre entrées apparaissent dans
     `seaql_migrations_miryad_core` et la table `miryad_workflow_definitions` n'existe pas
-  And avec `workflow`, quatre entrées apparaissent, la quatrième après les trois premières, et
+  And avec `workflow`, cinq entrées apparaissent, la quatrième après les trois premières et
+    avant l'index, et
     `miryad_workflow_definitions` existe

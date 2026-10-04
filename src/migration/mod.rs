@@ -102,7 +102,7 @@ mod tests {
 
     /// Stems enregistrés dans `migrations()`, en ordre d'enregistrement : les trois internes en
     /// ordre figé, puis sous `workflow` la 004 gated, puis l'index de 2026-09-30 (dernière
-    /// position réelle depuis l'arbitrage du 2026-09-29 tracé aux `Tasks` `[?]` de ./mod.sdd).
+    /// position réelle, arbitrage du 2026-09-29 tracé dans ./mod.sdd).
     /// L'ordre d'enregistrement coïncide avec l'ordre lexicographique des versions (règle
     /// `mYYYYMMDD_NNNNNN_nom` de ./mod.sdd), donc aussi avec le tri `@Order::Asc` de
     /// `get_migration_models` (vérifié au source `exec.rs:26`).
@@ -147,17 +147,13 @@ mod tests {
             .collect()
     }
 
-    /// Scenario : « @migrations enregistre exactement les trois internes en ordre figé ».
-    ///
-    /// Écart consigné (B5f, 2026-10-02) : le `Then` « la liste compte exactement trois entries »
-    /// (./mod.sdd ligne 242) est contredit par le réel — la liste porte aussi
-    /// `m20260930_000001_index_api_tokens_subject` (dernière position depuis l'arbitrage du
-    /// 2026-09-29 ordonnant cette migration ; le `Tasks` `[?]` de ./mod.sdd attend la réécriture
-    /// du `Must` gelé). Rouge constaté à la conversion avant cet ajustement : 4 entries rendues
-    /// au lieu de 3. Le verrou ci-dessous verrouille le réel : les trois internes en ordre figé,
-    /// suivis des enregistrements postérieurs en ordre chronologique.
+    /// Scenario : « @migrations enregistre les trois internes en ordre figé puis les évolutions
+    /// chronologiques ». Contrat vérifié : la liste compte exactement les enregistrements des
+    /// specs filles — quatre, cinq sous `workflow` — dans l'ordre figé des trois internes suivi
+    /// des évolutions chronologiques (la 004 gated sous `workflow`, l'index de 2026-09-30 en
+    /// dernière position), chaque entrée au statut `Pending` avant tout contact base.
     #[tokio::test]
-    async fn get_migration_files_registers_the_three_internals_in_frozen_order() {
+    async fn get_migration_files_registers_the_registered_migrations_in_frozen_order() {
         let files = Migrator::get_migration_files();
         let names: Vec<&str> = files.iter().map(sea_orm_migration::Migration::name).collect();
         assert_eq!(
@@ -173,14 +169,10 @@ mod tests {
         );
     }
 
-    /// Scenario : « le tracking dédié porte les trois entrées sous `seaql_migrations_miryad_core` ».
-    ///
-    /// Écart consigné (B5f, 2026-10-02) : le `And` « rend exactement trois lignes » (./mod.sdd
-    /// lignes 250-251) est contredit par le réel depuis l'enregistrement de
-    /// `m20260930_000001_index_api_tokens_subject` (arbitrage du 2026-09-29, `Tasks` `[?]`) —
-    /// quatre lignes sous les features par défaut, cinq sous `workflow`. Rouge constaté à la
-    /// conversion : quatre lignes rendues. Le contrat intact — le nom dédié et le contenu
-    /// exactement égal aux enregistrements — est verrouillé ci-dessous.
+    /// Scenario : « le tracking dédié porte toutes les entrées sous
+    /// `seaql_migrations_miryad_core` ». Contrat vérifié : `install` auto-crée la table dédiée au
+    /// premier `up`, et `get_migration_models` rend exactement les enregistrements — quatre
+    /// versions, cinq sous `workflow` — dans l'ordre du tri `version` ascendant.
     #[tokio::test]
     async fn the_dedicated_tracking_table_carries_the_registered_versions() {
         let db = fresh_db().await;
@@ -284,14 +276,10 @@ mod tests {
         }
     }
 
-    /// Scenario : « un second up applique rien quand tout est appliqué ».
-    ///
-    /// Écart consigné (B5f, 2026-10-02) : le `And` « compte toujours trois lignes » (./mod.sdd
-    /// ligne 280) est contredit par le réel — quatre lignes sous les features par défaut, cinq
-    /// sous `workflow`, à cause du même enregistrement `m20260930_000001_index_api_tokens_subject`
-    /// (`Tasks` `[?]`). Rouge constaté à la conversion : 4 ≠ 3. L'invariant d'idempotence (le
-    /// second `up` n'ajoute aucune ligne) est verrouillé par snapshot avant/après, sans mordre
-    /// sur le nombre à arbitrer.
+    /// Scenario : « un second up applique rien quand tout est appliqué ». Contrat vérifié : le
+    /// second `up` retourne `Ok(())`, `get_pending_migrations` rend une liste vide, le snapshot
+    /// avant/après du tracking est inchangé et celui-ci compte exactement les enregistrements —
+    /// quatre lignes, cinq sous `workflow`.
     #[tokio::test]
     async fn a_second_up_applies_nothing_when_everything_is_already_applied() {
         let db = fresh_db().await;
@@ -321,16 +309,11 @@ mod tests {
         );
     }
 
-    /// Scenario : « down d'un pas défait la dernière appliquée, la seed 003 ».
-    ///
-    /// Écart consigné (B5f, 2026-10-02) : « la dernière appliquée » n'est plus la seed 003 depuis
-    /// l'enregistrement de `m20260930_000001_index_api_tokens_subject` en fin de liste (arbitrage
-    /// du 2026-09-29, `Tasks` `[?]`). `exec_down_with` itère les appliquées en ordre inverse de
-    /// `migrations()` (vérifié au source sea-orm-migration 2.0.2, `exec.rs:305`) : `down(Some(1))`
-    /// défait donc l'index, pas le seed. Rouges constatés à la conversion : `applied` = [001, 002,
-    /// 003] et `pending` = [index] au lieu de « [001, 002] / [003] » (./mod.sdd lignes 282, 286-287
-    /// obsolètes). Le contrat générique — un pas défait la dernière appliquée en ordre inverse, et
-    /// lui seule — est verrouillé ci-dessous, `miryad_groups` intact inclus.
+    /// Scenario : « down d'un pas défait la dernière appliquée, l'index `api_tokens` ». Contrat
+    /// vérifié : `exec_down_with` itère les appliquées en ordre inverse de `migrations()`
+    /// (vérifié au source sea-orm-migration 2.0.2, `exec.rs:305`), donc `down(Some(1))` défait
+    /// `m20260930_000001_index_api_tokens_subject` — et lui seule — sans toucher au seed 003,
+    /// `miryad_groups` intacte.
     #[tokio::test]
     async fn down_one_step_undoes_the_last_applied_entry() {
         let db = fresh_db().await;
@@ -418,15 +401,10 @@ mod tests {
     }
 
     /// Scenario : « la quatrième migration n'existe que sous la feature workflow » (amendement
-    /// 2026-09-23 — dixième `Scenario` de ./mod.sdd, hors des « neuf » de la tâche de conversion,
-    /// couvert ici pour le `Done when` qui exige un test nommé distinct par `Scenario`).
-    ///
-    /// Écart consigné (B5f, 2026-10-02) : les comptes « exactement trois entrées » / « quatre
-    /// entrées » (./mod.sdd lignes 311-314) sont obsolètes du même arbitrage `[?]` — le réel rend
-    /// quatre entrées sans `workflow`, cinq avec ; la migration workflow reste la quatrième
-    /// enregistrée, insérée après les trois internes et avant l'index de 2026-09-30. Rouge
-    /// constaté à la conversion : 4 ≠ 3. Le contrat gateé — table et entrée présentes seulement
-    /// sous `workflow` — est verrouillé ci-dessous sur les deux graphes.
+    /// 2026-09-23 — dixième `Scenario` de ./mod.sdd). Contrat vérifié sur les deux graphes : le
+    /// tracking porte exactement les enregistrements du graphe de features courant — quatre
+    /// entrées sans `workflow`, cinq avec — et `miryad_workflow_definitions` n'existe que sous
+    /// `workflow`, son entrée étant la quatrième, après les trois internes et avant l'index.
     #[tokio::test]
     async fn the_workflow_definitions_entry_exists_only_under_the_workflow_feature() {
         let db = fresh_db().await;
@@ -463,6 +441,10 @@ mod tests {
         }
     }
 
+    /// Scenario : « le migrateur consommatrice au tracking défaut s'installe après
+    /// miryad-core ». Contrat vérifié : l'`AppMigrator` au `migration_table_name` par défaut
+    /// compose après le `Migrator` miryad-core sans collision, `has_table` répond `true` pour
+    /// `seaql_migrations`, et un rejeu du `Migrator` miryad-core reste `Ok(())`.
     #[tokio::test]
     async fn composes_with_an_independent_migrator_sharing_the_default_table_name() {
         let db = Database::connect("sqlite::memory:")
@@ -481,6 +463,16 @@ mod tests {
         AppMigrator::up(&db, None)
             .await
             .expect("app migrator composes without colliding on the tracking table");
+
+        // Then du Scenario : c'est l'`AppMigrator` qui installe la table de suivi par défaut.
+        let manager = SchemaManager::new(&db);
+        assert!(
+            manager
+                .has_table("seaql_migrations")
+                .await
+                .expect("has_table probe succeeds"),
+            "`has_table` répond true pour `seaql_migrations` après le run de l'app"
+        );
 
         // Régression : réappliquer le migrateur miryad-core après que l'app ait tourné son propre
         // migrateur (table de suivi par défaut) ne doit pas non plus échouer.

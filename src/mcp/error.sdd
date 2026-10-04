@@ -104,7 +104,7 @@ Must:
     `#[from]`, `expand.rs::impl_enum` émet une branche @source par variante, @None ailleurs) ; les dix autres
     valent @None, @McpError::Application compris dont le @HookError n'est déclaré ni `#[from]` ni `#[source]` —
     miroir exact de ./../rest/error.rs
-  @From<@RestError> exhaustif 6/6 sans joker (@RestError::InvalidInput → @McpError::InvalidParams, arbitré 2026-09-29), charges utiles déplacées intactes (@sea_orm::DbErr, @HookError,
+  @From<@RestError> exhaustif 7/7 sans joker (@RestError::InvalidInput → @McpError::InvalidParams, arbitré 2026-09-29 ; @RestError::Conflict → @McpError::Internal, miroir défensif sans chemin MCP vivant, arbitré 2026-10-03), charges utiles déplacées intactes (@sea_orm::DbErr, @HookError,
     @String) : seules la @Display et la monnaie changent — le code de domaine suit la surface, et les suffixes
     ne sont pas transitifs : @RestError::NotFound `MRD-REST-001` → @McpError::NotFound `MRD-MCP-002`,
     @RestError::Forbidden `MRD-REST-002` → @McpError::Forbidden `MRD-MCP-001` (contre-épreuve : aucune des
@@ -192,7 +192,7 @@ Exposes:
     `MRD-MCP-005`, `-32602`), @McpError::UnknownTool (tuple @String, `MRD-MCP-006`, `-32601`),
     @McpError::Internal (tuple @String, `MRD-MCP-007`, `-32603`), @McpError::Application (tuple @HookError,
     aucun `MRD-*`, `-32000`)
-  @From<@RestError> for @McpError — conversion publique exhaustive 6/6 sans perte de charge utile, empruntée
+  @From<@RestError> for @McpError — conversion publique exhaustive 7/7 sans perte de charge utile, empruntée
     par `?` dans ./registry.rs
   @From<@sea_orm::DbErr> for @McpError — dérivée du `#[from]`
   @Display dérivée publique — les onze messages de la matrice `Example`
@@ -246,7 +246,7 @@ Raises:
     inconnu ou ressource absente du registre) (arbitré par Sébastien le 2026-09-29) ; `MRD-MCP-008` via @McpError::MethodNotFound (méthode
     hors des trois connues), `MRD-MCP-009` via @McpError::ParseError (JSON ou UTF-8 invalide),
     `MRD-MCP-010` via @McpError::InvalidRequest (enveloppe, batch, `id` nul) — tous par ./handler.rs.
-  `MRD-MCP-007` via @McpError::Internal — @From<@RestError::Internal> seulement ; miroir défensif sans
+  `MRD-MCP-007` via @McpError::Internal — @From<@RestError::Internal> et @From<@RestError::Conflict> (2026-10-03) seulement ; miroir défensif sans
     chemin MCP vivant, conservé et exercé par son Scenario (arbitré par Sébastien le 2026-09-29) ; sur le fil, @wire_message rend
     `MRD-MCP-007: internal error` sans charge utile, le double code éventuel ne vit que dans la @Display
     et la trace.
@@ -332,7 +332,7 @@ Tasks:
     tâche de code portée par la tâche @McpError de ce fichier.
   [x] La cartographie suffit, le Scenario @From @RestError::Application tient lieu de test de parité
     du hook (arbitré par Sébastien le 2026-09-29).
-  [x] Convertir les vingt `Scenario` en au moins vingt tests distincts nommés dans un `#[cfg(test)]
+  [x] Convertir les vingt `Scenario` (vingt et un depuis le 2026-10-03 : tâche `[ ]` du Scenario Conflict portée par ../rest/tokens.sdd) en au moins vingt tests distincts nommés dans un `#[cfg(test)]
     @mod tests` créé dans ./error.rs (le module test ne tourne que sous
     `--features mcp` et `--all-features` de la batterie /tooling.sdd) : S1..S9 = triple (@rpc_code, @Display,
     @data) par variante construite directement ; S10 = @Error::source sur les huit variantes ; S11 =
@@ -350,7 +350,7 @@ Tasks:
     les onze valeurs actuelles ; la forme sérialisée est bien verrouillée côté ./protocol.rs.
 
 Done when:
-  Les vingt `Scenario` disposent chacun d'au moins un test nommé distinct et vert, sous `--features mcp` et
+  Les vingt et un `Scenario` disposent chacun d'au moins un test nommé distinct et vert, sous `--features mcp` et
     `--all-features` (seules combinaisons compilant le fichier), et `--no-default-features` compile sans @mcp ni
     @McpError
   La table `Example` est affirmée exhaustivement en test : chaque variante a sa cellule (code, message, `data`)
@@ -492,6 +492,13 @@ Scenario: @From @RestError::Internal garde le double code dans la @Display seule
   Then la @Display est exactement `MRD-MCP-007: internal error: MRD-AUTH-003: OIDC error: discovery failed`
   And @wire_message vaut exactement `MRD-MCP-007: internal error` — le code AUTH imbriqué ne sort pas
     sur le fil (arbitré 2026-09-29)
+  And le code numérique est `-32603` avec @data @None
+
+Scenario: @From @RestError::Conflict devient @McpError::Internal sans charge utile
+  Given l'erreur @RestError::Conflict (septième variante, arbitrée 2026-10-03 — aucun chemin MCP
+    vivant, miroir défensif)
+  When @From<@RestError> est appliquée puis le triple évalué
+  Then le résultat est @McpError::Internal et @wire_message vaut exactement `MRD-MCP-007: internal error`
   And le code numérique est `-32603` avec @data @None
 
 Scenario: la porte feature `mcp` gouverne toute la surface du fichier
