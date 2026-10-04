@@ -34,7 +34,7 @@ References:
   ./definition.sdd — `DagSteps`, `StepDefinition`, `validate_dag`, @WorkflowError::InvalidDag : DAG
     reçu en entrée de `run`, validé avant tout walk
   ./dispatcher.sdd — service Restate `StepDispatcher`, handler `execute`, `StepInvocation` (`kind`,
-    `config`, `inputs`) : seul destinataire des appels `ctx.request` de ce fichier
+    `config`, `inputs`, et depuis #26 `run_key`, `step_id`, `depth`) : seul destinataire des appels `ctx.request` de ce fichier
   ./step.sdd — forme d'`inputs` (`HashMap<String, serde_json::Value>`, une entrée par `depends_on`) :
     ./interpreter.rs est le seul endroit de la crate qui l'assemble, depuis les résultats collectés
   ./client.sdd — seul déclencheur d'une invocation de `DagInterpreter::run`, via
@@ -60,6 +60,15 @@ Must:
       `TerminalError::new_with_code(400, err.to_string())` (le `to_string()` porte déjà le préfixe
       `MRD-WORKFLOW-004:`, réutilisé tel quel, jamais reconstruit) ; aucun step exécuté si cette
       validation échoue.
+    1b. (#26) Lecture de la profondeur : `depth: u32 = parse_depth(ctx.headers() → valeur de
+      l'en-tête `x-miryad-depth`)` (constante `DEPTH_HEADER`, déclarée par ./durable.rs) ;
+      en-tête **absent, non numérique ou hors `u32` → `0`** (un run déclenché par
+      `client::trigger_run` n'en porte pas ; le garde-fou de récursion protège contre un
+      emballement, pas contre un appelant hostile — il vit dans ./subworkflow.rs, pas ici). Cette
+      lecture ne lève aucune erreur. À vérifier au source `restate-sdk` `0.12.1` : `ctx.headers()` de
+      `WorkflowContext` rend bien les en-têtes de l'invocation en cours (sinon le noter ici et
+      rouvrir la question avec Sébastien — ne pas contourner par le corps du DAG, ./client.sdd fixe
+      ce corps).
     2. Boucle jusqu'à ce que `completed.len() == dag.0.len()` (`completed: HashSet<String>`,
       `results: HashMap<String, serde_json::Value>`, les deux initialisées vides) :
       a. `ready_steps(&dag.0, &completed)` (fonction pure, `Must` ci-dessous) — la liste des steps
@@ -69,7 +78,10 @@ Must:
       b. Pour chaque step de `ready`, assembler les `inputs` par @build_inputs (fonction pure, `Must`
         ci-dessous) — une entrée par id de `depends_on`, valeur = `results.get(id)` (toujours @Some à
         ce point, chaque dépendance étant dans `completed`, donc déjà dans `results`) ; construire `StepInvocation {
-        kind: step.kind.clone(), config: step.config.clone(), inputs }` et pousser
+        kind: step.kind.clone(), config: step.config.clone(), inputs, run_key: ctx.key().to_string(),
+        step_id: step.id.clone(), depth }` (#26, 2026-10-04 : `run_key` est la clé de workflow Restate
+        de ce run — `WorkflowContext::key()` — et `depth` la profondeur lue **une fois** en tête de
+        `run`, étape 1b) et pousser
         `ctx.request::<Json<StepInvocation>, Json<serde_json::Value>>(RequestTarget::Service { name:
         "StepDispatcher".into(), handler: "execute".into() }, Json(invocation)).call()` dans un
         `DurableFuturesUnordered` construit pour cette couche — jamais `futures::future::join_all`,
@@ -133,7 +145,8 @@ Depends on:
     `DurableFuturesUnordered`, `ctx.request`, `RequestTarget::Service`, `HandlerError`,
     `TerminalError`
   ./definition.rs — `DagSteps`, `StepDefinition`, `validate_dag`
-  ./dispatcher.rs — `StepInvocation` (nom des champs `kind`/`config`/`inputs`), noms de service/handler
+  ./durable.rs — constante `DEPTH_HEADER` (nom de l'en-tête de profondeur, #26)
+  ./dispatcher.rs — `StepInvocation` (champs `kind`/`config`/`inputs`/`run_key`/`step_id`/`depth`), noms de service/handler
     `"StepDispatcher"`/`"execute"`
   @std::collections::{HashMap, HashSet} — aucune dépendance externe
 
@@ -190,6 +203,12 @@ Handles:
     dépend de quel step répond le plus vite, pas de sa position dans le DAG).
 
 Tasks:
+  [ ] #26 lot A (2026-10-04) : lire `depth` (étape 1b), renseigner `run_key`/`step_id`/`depth` dans
+    `StepInvocation`. `DEPTH_HEADER` vient de ./durable.rs : si le lot A passe avant le lot B, le
+    déclarer provisoirement en constante `pub(crate)` dans ./interpreter.rs puis le déplacer au lot B
+    (valeur inchangée : `"x-miryad-depth"`). `run` n'est pas testable en unitaire (borne
+    `WorkflowContext` inchangée) : la lecture de l'en-tête est extraite dans `pub(crate) fn
+    parse_depth(raw: Option<&str>) -> u32`, couverte par les Scenario ci-dessous.
   [x] Premier échec de couche interrompt immédiatement, sans attendre les frères ni les annuler :
     Sébastien (2026-09-23) — convient tel quel pour l'instant ; si un cas d'usage réel s'avère
     problématique (effets de bord coûteux sur des frères abandonnés), la spec évoluera alors, pas
@@ -283,3 +302,13 @@ Scenario: DAG à une seule couche complète en un seul fan-out
   When `run` s'exécute jusqu'au bout
   Then une seule itération de la boucle principale a eu lieu (un seul `DurableFuturesUnordered`
     construit), `results` porte les trois sorties, `Ok(Json(results))` rendu
+
+Scenario: parse_depth lit un entier valide (#26)
+  Given l'en-tête `Some("2")`
+  When `parse_depth` est appelé
+  Then le résultat est `2`
+
+Scenario: parse_depth rend 0 pour un en-tête absent, non numérique ou hors plage (#26)
+  Given `None`, `Some("abc")`, `Some("-1")` et `Some("99999999999")`
+  When `parse_depth` est appelé sur chacun
+  Then chaque résultat est `0` — jamais de panic, jamais d'erreur

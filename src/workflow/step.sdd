@@ -45,8 +45,11 @@ Must:
     `fn kind(&self) -> &'static str` — clé stable du kind, utilisée comme clé de @StepRegistry et
       comme valeur du champ `kind` d'un @StepDefinition (./definition.sdd) ; deux kinds ne partagent
       jamais la même valeur (garanti par @StepRegistry::register, `Must` ci-dessous)
-    `async fn run(&self, config: @serde_json::Value, inputs: @HashMap<@String, @serde_json::Value>)
-      -> Result<@serde_json::Value, StepError>` — exécute le step ; `config` est le contenu opaque du
+    `async fn run(&self, run: &RunInfo, config: @serde_json::Value, inputs: @HashMap<@String,
+      @serde_json::Value>) -> Result<@serde_json::Value, StepError>` — exécute le step ; `run`
+      (ajouté 2026-10-04, #26 « contexte de run », **changement cassant du trait**, API instable avant
+      `1.0`) est l'identité du run en lecture seule, assemblée par ./interpreter.rs et transmise par
+      ./dispatcher.rs — un kind qui n'en a pas besoin l'ignore (`_run`) ; `config` est le contenu opaque du
       champ `config` du @StepDefinition correspondant (./definition.sdd, non interprété par ce
       fichier) ; `inputs` porte la sortie de chacune des dépendances déclarées de ce step
       (`depends_on` du @StepDefinition, ./definition.sdd), une entrée par id de step amont, clé =
@@ -58,6 +61,14 @@ Must:
       Le retour est la valeur que @DagInterpreter (./interpreter.sdd) collecte et republie en `inputs`
       de chacun des steps qui déclarent celui-ci en dépendance — ./step.rs ne construit ni ne consomme
       lui-même `inputs`, il ne fait que le transporter jusqu'à l'`impl` du kind.
+  @RunInfo — struct `pub`, `#[derive(Debug, Clone, PartialEq, Eq)]`, trois champs `pub` (#26,
+    2026-10-04), donnée pure sans `restate-sdk` : `run_key: @String` (clé du run en cours, c'est-à-dire
+    la clé de workflow Restate de l'invocation de @DagInterpreter qui exécute ce step — pour un run
+    enfant, la clé dérivée par le parent, ./durable.sdd) ; `step_id: @String` (`id` du
+    @StepDefinition en cours d'exécution, unique dans son DAG) ; `depth: @u32` (profondeur
+    d'imbrication des sous-workflows : `0` pour un run déclenché par `client::trigger_run`, `+1` à
+    chaque niveau de sous-workflow, ./subworkflow.sdd). Les trois sont fournis à **tous** les kinds,
+    durables ou non. Aucune identité de déclencheur dans cette itération (`Tasks` `[?]`).
   @StepError — struct `pub`, deux champs `pub` : `message: @String`, `retryable: @bool`. `#[derive(Debug,
     thiserror::Error)]` avec `#[error("{message}")]`. `retryable = true` signale un échec transitoire
     (réseau, ressource momentanément indisponible) que ./dispatcher.rs doit laisser au retry Restate ;
@@ -81,11 +92,20 @@ Must:
       `#[must_use]`, l'ignorer est un avertissement, et une bibliothèque publiée ne panique pas sur
       ses entrées de configuration ; l'app garde le fail-fast en un `?`/`expect` de son `main`). Plus
       aucun site `panic!` dans ./step.rs.
-    `pub(crate) fn dispatch(&self, kind: &str, config: @serde_json::Value, inputs:
+    `fn register_durable(&mut self, step: impl MiryadDurableStep + 'static) -> Result<&mut Self,
+      WorkflowError>` (#26, 2026-10-04) — ajoute un kind **durable** (./durable.sdd) dans le même
+      espace de noms que `register` : un `kind()` déjà pris, par un kind ordinaire **ou** durable,
+      rend @WorkflowError::DuplicateStepKind sans rien insérer. Le registre garde deux collections
+      internes (ordinaires, durables), jamais deux espaces de noms.
+    `pub(crate) fn durable(&self, kind: &str) -> Option<&dyn MiryadDurableStep>` (#26) — le kind
+      durable enregistré sous `kind`, ou @None ; seul point d'entrée de ./dispatcher.rs pour les kinds
+      durables, consulté **avant** `dispatch`.
+    `pub(crate) fn dispatch(&self, kind: &str, run: &RunInfo, config: @serde_json::Value, inputs:
       @HashMap<@String, @serde_json::Value>) -> Result<impl Future<Output =
       Result<@serde_json::Value, StepError>>, StepError>` — retourne le futur de `run` du kind trouvé
       (jamais exécuté par ce fichier), ou @Err(StepError { message: format!("kind inconnu: {kind}"),
-      retryable: false }) si `kind` n'est enregistré par aucun `impl` — seul point d'entrée que
+      retryable: false }) si `kind` n'est enregistré par aucun `impl` **ordinaire** (un kind durable ne se
+      résout pas ici : `dispatch` ne regarde que les kinds ordinaires, `durable` les autres) — seul point d'entrée que
       ./dispatcher.rs appelle, `pub(crate)` : jamais exposé hors de la crate, l'app consommatrice
       construit un @StepRegistry mais ne le consulte jamais directement. `inputs` transite tel quel
       vers `run` du kind trouvé, sans que @StepRegistry ne l'inspecte ni ne le construise — c'est
@@ -99,8 +119,10 @@ Must:
   Compiler uniquement sous `#[cfg(feature = "workflow")]`.
 
 Must not:
-  Dépendre de `restate-sdk` : ni le trait, ni @StepError, ni @StepRegistry n'importent quoi que ce
-    soit du crate `restate-sdk` — un kind de step s'écrit et se teste sans jamais instancier un
+  Dépendre de `restate-sdk` : ni le trait, ni @StepError, ni @RunInfo, ni @StepRegistry ne nomment
+    quoi que ce soit du crate `restate-sdk` (le registre référence le trait @MiryadDurableStep de
+    ./durable.rs, qui, lui, parle `restate-sdk` : la frontière est le chemin `restate_sdk::*`, jamais
+    écrit dans ce fichier) — un kind de step s'écrit et se teste sans jamais instancier un
     `restate-server`. La traduction vers les types Restate (@HandlerError, @TerminalError) est
     entièrement de ./dispatcher.rs.
   Interpréter le contenu de `config`, de `inputs` ou de la valeur de retour de `run` : ce fichier les
@@ -114,8 +136,8 @@ Must not:
   Autoriser deux `impl` enregistrées sous le même `kind()` sans échec bruyant : @StepRegistry::register
     ne permet jamais une collision silencieuse — un kind écraserait l'autre sans avertissement serait
     un bug de configuration masqué ; l'échec est un @Err, jamais un `panic!`.
-  Fournir un `impl MiryadWorkflowStep` par défaut ou un kind intégré dans ce fichier : le seul kind
-    fourni par la crate (`"rhai"`) vit dans ./rhai_step.rs, une spec séparée — ./step.rs ne possède que
+  Fournir un `impl MiryadWorkflowStep` par défaut ou un kind intégré dans ce fichier : les kinds
+    fournis par la crate (`"rhai"`, `"subworkflow"`) vivent dans ./rhai_step.rs et ./subworkflow.rs, une spec séparée — ./step.rs ne possède que
     le trait et le registre, jamais un kind concret.
 
 Forbids:
@@ -187,6 +209,20 @@ Handles:
     renomme ni n'aplatit rien, la structure de chaque valeur reste celle que le step amont a retournée.
 
 Tasks:
+  [ ] #26 lot A — contexte de run (2026-10-04) : ajouter @RunInfo ; passer `&RunInfo` en premier
+    paramètre de `MiryadWorkflowStep::run` et de `dispatch` ; mettre à jour les fixtures de `mod tests`
+    (tous les kinds de fixture) et les tests ; propager le changement de signature à ./rhai_step.rs
+    (impl + tests, un helper de test `run_info()` rend un `RunInfo` neutre). Ordre : après #27
+    (./rhai_step.sdd), pour ne pas mélanger deux changements dans les mêmes tests.
+  [ ] #26 lot B — kinds durables (2026-10-04) : ajouter `register_durable` et `durable`, le
+    deuxième magasin interne et la vérification de collision croisée ; dépend de ./durable.rs (le
+    trait doit exister pour compiler) — à faire dans le même lot que ./durable.sdd.
+  [?] Identité du déclencheur dans @RunInfo (#26, point « autorisation ») : aucun identifiant
+    d'utilisateur ne traverse aujourd'hui `client::trigger_run` → `DagInterpreter::run` ; l'enfant
+    d'un sous-workflow ne peut donc pas « hériter des droits » du déclencheur. Recommandation : ne
+    rien faire dans cette itération (le consommateur n'en a pas besoin) ; si le besoin vient, ajouter
+    un champ optionnel `trigger: Option<String>` à @RunInfo transporté comme `depth` (en-tête
+    Restate), pas dans le corps du DAG. À arbitrer par Sébastien.
   [x] Codification de @StepError : Sébastien (2026-09-23) — pas de champ `code`, imposer une
     codification des erreurs applicatives de workflow irait trop loin. Décision reflétée dans `Must`,
     définitive.
@@ -214,6 +250,7 @@ Tasks:
     avertissement au brut.
 
 Done when:
+  Les `Scenario` ajoutés par #26 (marqués `(#26)`) ont chacun un test nommé distinct et vert.
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
   La spec est relue et approuvée par Sébastien avant qu'une ligne de ./step.rs soit écrite.
 
@@ -268,3 +305,22 @@ Scenario: run reçoit la config telle quelle, sans validation préalable
     est exécuté
   Then la valeur retournée est structurellement identique à la valeur d'entrée — aucune normalisation,
     aucun champ ajouté ou retiré par le chemin @StepRegistry
+
+Scenario: RunInfo est transmis intact au kind (#26)
+  Given un kind de fixture dont `run` rend `json!({"run_key": run.run_key, "step_id": run.step_id,
+    "depth": run.depth})`, enregistré, et `RunInfo { run_key: "r1", step_id: "s1", depth: 2 }`
+  When `StepRegistry::dispatch("<kind>", &run_info, config, inputs)` puis `.await` du futur rendu
+  Then le résultat est @Ok(json!({"run_key": "r1", "step_id": "s1", "depth": 2}))
+
+Scenario: un kind durable enregistré ne se résout pas par dispatch (#26)
+  Given un @StepRegistry avec un kind durable de fixture « d » (kind sans `Context`, jamais appelé ici)
+  When `durable("d")` puis `dispatch("d", ..)` sont appelés
+  Then `durable("d")` rend @Some, `dispatch("d", ..)` rend @Err(StepError { retryable: false, message:
+    "kind inconnu: d" }), et `durable("inconnu")` rend @None
+
+Scenario: collision d'enregistrement entre kind ordinaire et kind durable (#26)
+  Given un kind ordinaire `"x"` déjà enregistré par `register`
+  When `register_durable` reçoit un kind durable dont `kind()` vaut `"x"`, puis l'inverse (durable
+    d'abord, `register` ensuite)
+  Then chaque second enregistrement rend @Err(WorkflowError::DuplicateStepKind("x")) sans écraser le
+    premier

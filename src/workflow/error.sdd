@@ -57,6 +57,12 @@ Must:
     @WorkflowError::InvalidConfig(@String) → `MRD-WORKFLOW-007` → @Display `MRD-WORKFLOW-007:
       invalid workflow configuration: {0}` (arbitré 2026-09-29) — `admin_url` ou `ingress_url` vide ou
       non parsable en URL `http`/`https`, détectée avant tout appel réseau (./client.sdd).
+    @WorkflowError::MaxDepthExceeded { depth: @u32, max: @u32 } → `MRD-WORKFLOW-008` → @Display
+      `MRD-WORKFLOW-008: sub-workflow depth {depth} exceeds the maximum of {max}` (#26, 2026-10-04) —
+      garde-fou de récursion du kind `"subworkflow"` : `depth` est la profondeur que le run enfant
+      aurait eue, `max` le plafond du kind. Même statut que `InvalidDag` : erreur de **structure** du
+      workflow (et non de communication Restate), déclarée ici parce que ce fichier est l'unique
+      porteur de la taxonomie `MRD-WORKFLOW-*` ; construite exclusivement par ./subworkflow.rs.
   Classifier un @reqwest::Error brut (reqwest `0.12.28`, verifié `src/error.rs` du crate) par
     @client::classify_transport_error(@reqwest::Error) -> WorkflowError, seule fonction du fichier en
     dehors du type : `@reqwest::Error::is_decode() || @reqwest::Error::is_body()` devient
@@ -148,6 +154,9 @@ Raises:
   `MRD-WORKFLOW-006` — @WorkflowError::DuplicateStepKind : rendu exclusivement par
     `StepRegistry::register` (./step.rs) quand `kind()` collide avec un kind déjà enregistré —
     même nature (configuration au démarrage), le kind fautif en `{0}`.
+  `MRD-WORKFLOW-008` — @WorkflowError::MaxDepthExceeded : rendu exclusivement par ./subworkflow.rs
+    (`SubWorkflowStep::run`) quand la profondeur du run enfant dépasse `max_depth` ; traduit par
+    ce fichier-là en @StepError non retryable (la récursion ne se résorbe pas en rejouant).
   `MRD-WORKFLOW-007` — @WorkflowError::InvalidConfig : rendu exclusivement par
     @WorkflowConfig::validate (./client.rs), appelée en tête de @client::register_deployment et de
     @client::trigger_run, sur `admin_url` ou `ingress_url` vide, non parsable ou de schéma hors
@@ -164,6 +173,8 @@ Handles:
     corps est documentée par Restate, pas contractualisée ici.
 
 Tasks:
+  [ ] #26 : variante @WorkflowError::MaxDepthExceeded (`MRD-WORKFLOW-008`) ajoutée dans ./error.rs
+    (`Must`, un `Scenario`) — à faire avant ./subworkflow.rs qui la construit.
   [x] Troncature de la @Display de @WorkflowError::RestateRejected à 1 KiB (arbitré par Sébastien le 2026-09-29) (`Must`) : helper
     de coupe sur frontière de caractère dans ./error.rs, champ `body` inchangé ; deux Scenario.
     Réalisé 2026-10-03 (B6a, validator PASS) : @truncated_body (budget 1024, recul
@@ -251,3 +262,8 @@ Scenario: InvalidConfig rend le code MRD-WORKFLOW-007
   Given une @WorkflowError::InvalidConfig de message `admin_url is empty`
   When la @Display est évaluée
   Then la chaîne est exactement `MRD-WORKFLOW-007: invalid workflow configuration: admin_url is empty`
+
+Scenario: MaxDepthExceeded rend le code MRD-WORKFLOW-008 (#26)
+  Given une @WorkflowError::MaxDepthExceeded { depth: 5, max: 4 }
+  When la @Display est évaluée
+  Then la chaîne est exactement `MRD-WORKFLOW-008: sub-workflow depth 5 exceeds the maximum of 4`

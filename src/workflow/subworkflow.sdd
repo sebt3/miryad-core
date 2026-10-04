@@ -1,0 +1,190 @@
+Spec: subworkflow — kind natif `"subworkflow"`, exécution d'un DAG enfant avec garde-fou de profondeur
+
+Purpose:
+  Porter le kind durable fourni par la crate pour le cas d'usage de l'issue sebt3/miryad-core#26 : un
+    step dont l'exécution est **un autre DAG**, lancé comme run enfant (`DagInterpreter`, workflow
+    Restate de clé dérivée, ./durable.sdd) et attendu jusqu'à sa fin, de façon durable et idempotente au
+    rejeu. Du point de vue du DAG parent, c'est un step comme un autre (il se place dans une couche,
+    fan-out compris) ; sa sortie est la table des sorties du DAG enfant.
+  Le DAG enfant est **en ligne dans le `config`** du step : la crate ne charge jamais de définition en
+    base dans le moteur (règle de déterminisme de ./interpreter.sdd), et le cas du consommateur est
+    justement un DAG fabriqué par run. Une application qui veut « lancer la définition stockée X »
+    écrit son propre kind durable (elle charge X, puis `ctx.run_child_dag`) — hors de ce fichier.
+  Porte le **garde-fou de récursion** : `validate_dag` ne voit que le DAG courant, un cycle A → B → A
+    traverse plusieurs définitions. Le plafond est une profondeur maximale **à l'exécution**
+    (défaut + surcharge applicative), pas une détection de cycle statique (qui ne couvrirait pas les
+    DAG fabriqués par run, recommandation du 2026-10-04).
+  Fichier neuf, conception.
+
+Owns:
+  ./subworkflow.rs
+
+Can modify:
+  ../../tests/workflow_restate.rs — tests d'intégration `#[ignore]` contre un vrai `restate-server`
+    (même fichier que ./interpreter.sdd)
+
+References:
+  ./durable.sdd — @MiryadDurableStep, @StepContext (`run_info`, `run_child_dag`)
+  ./step.sdd — @RunInfo, @StepError, @StepRegistry (`register_durable`)
+  ./definition.sdd — @DagSteps, `validate_dag` (`pub(crate)`)
+  ./error.sdd — @WorkflowError::MaxDepthExceeded (`MRD-WORKFLOW-008`), @WorkflowError::InvalidDag
+    (`MRD-WORKFLOW-004`)
+  ./interpreter.sdd — service `DagInterpreter` appelé en enfant ; lit la profondeur posée par @StepContext
+  ./rhai_step.sdd — modèle de forme (kind natif, `new` + `Default`, enregistré par l'app)
+
+Must:
+  `DEFAULT_MAX_DEPTH` — `pub const DEFAULT_MAX_DEPTH: u32 = 4` : profondeur maximale d'un run enfant
+    (`0` = run racine déclenché par `client::trigger_run`, `1` = enfant direct…) ; un enfant de
+    profondeur `5` est refusé par le défaut. Valeur choisie assez haute pour l'orchestration réelle,
+    assez basse pour qu'un cycle échoue vite — surchargeable (ci-dessous).
+  `SubWorkflowStep` — struct `pub`, un champ privé `max_depth: @u32`. `SubWorkflowStep::new(max_depth:
+    @u32) -> Self` (`#[must_use]`) ; `impl Default` rend `new(DEFAULT_MAX_DEPTH)`. L'app l'enregistre
+    elle-même (`StepRegistry::register_durable(SubWorkflowStep::default())`) : aucun
+    auto-enregistrement, comme ./rhai_step.sdd.
+  `SubWorkflowConfig` — struct privée `#[derive(Deserialize)]`, un champ `dag: @DagSteps`, désérialisée
+    depuis le `config` du step par `serde_json::from_value`.
+  `prepare(run: &RunInfo, config: @serde_json::Value, max_depth: @u32) -> Result<@DagSteps, StepError>` —
+    fonction privée **pure** (sans `StepContext`, donc testable en unitaire), qui porte tout ce que
+    `run` décide avant d'appeler le moteur, dans cet ordre, interrompue au premier échec :
+    1. `from_value::<SubWorkflowConfig>(config)` — @Err → @StepError { retryable: false, message:
+        format!("config subworkflow invalide: {e}") } ;
+    2. `child_depth = run.depth.saturating_add(1)` ; si `child_depth > max_depth` → @StepError {
+        retryable: false, message: @WorkflowError::MaxDepthExceeded { depth: child_depth, max:
+        max_depth }.to_string() } (`MRD-WORKFLOW-008`) — la récursion ne se résorbe pas en rejouant ;
+    3. `definition::validate_dag(&dag.0)` — @Err(e) → @StepError { retryable: false, message:
+        e.to_string() } (`MRD-WORKFLOW-004` verbatim) : échec avant tout appel, pas après le démarrage
+        d'un run enfant condamné ;
+    4. @Ok(dag).
+  `impl MiryadDurableStep for SubWorkflowStep` :
+    `kind()` rend `"subworkflow"`.
+    `async fn run(&self, ctx, config, _inputs)` : `prepare(ctx.run_info(), config, self.max_depth)?`
+    puis `ctx.run_child_dag(&dag).await?` ; sortie = `Value::Object(map.into_iter().collect())` (clé =
+    id du step enfant, valeur = sa sortie, comme les `results` de `DagInterpreter::run`), sans
+    enveloppe. `inputs` du parent **non transmis à l'enfant** dans cette itération (`Tasks`).
+  Propagation d'échec : un enfant en échec fait échouer ce step, donc le parent (comportement par
+    défaut de ./interpreter.sdd, premier échec de couche interrompt le run) — pas de branche de repli.
+  Compiler uniquement sous `#[cfg(feature = "workflow")]`.
+
+Must not:
+  Charger une définition en base, ou résoudre le DAG enfant par un nom : le DAG est en ligne dans le
+    `config` (déterminisme, `Purpose`).
+  Calculer la clé du run enfant ou poser l'en-tête de profondeur ici : c'est @StepContext::run_child_dag
+    (./durable.sdd), seul point qui les connaît.
+  Rendre `retryable: true` pour un échec de `prepare` ou un échec de l'enfant : les trois causes
+    (config, profondeur, DAG invalide) sont déterministes ; l'échec d'un enfant rejoué donnerait le même
+    résultat (les retries éventuels de ses steps se jouent *dans* l'enfant).
+  Détecter les cycles inter-définitions par parcours statique : hors périmètre (`Purpose`).
+  Importer `restate_sdk::*` : tout passe par @StepContext (le kind est lui aussi sans dépendance
+    directe au SDK).
+
+Forbids:
+  `restate_sdk::*`, `reqwest::*` dans ./subworkflow.rs
+
+Depends on:
+  ./durable.rs — @MiryadDurableStep, @StepContext
+  ./step.rs — @RunInfo, @StepError
+  ./definition.rs — @DagSteps, `validate_dag` (`pub(crate)`)
+  ./error.rs — @WorkflowError
+  @serde (derive), @serde_json, @async-trait
+
+Exposes:
+  `SubWorkflowStep` — struct `pub`, `new(u32)` et `impl Default` `pub`
+  `DEFAULT_MAX_DEPTH` — `pub const`
+
+Accepts:
+  `run` : un `config` de la forme `{"dag": [ {id, depends_on, kind, config}, ... ]}` ; tout autre
+    contenu est rejeté par `prepare` (étape 1). `inputs` ignoré.
+
+Returns:
+  `run` : un objet JSON `{ id du step enfant: sortie }` ou @StepError toujours `retryable: false`.
+
+Raises:
+  `MRD-WORKFLOW-008` (profondeur) et `MRD-WORKFLOW-004` (DAG invalide) portés par le **message** du
+    @StepError (@StepError n'a pas de champ `code`, ./step.sdd) ; aucun autre code.
+
+Handles:
+  Profondeur exactement au plafond : `run.depth = max_depth - 1` → enfant à `max_depth`, accepté ;
+    `run.depth = max_depth` → enfant à `max_depth + 1`, refusé.
+  `max_depth = 0` : aucun sous-workflow possible (le premier enfant serait à la profondeur `1`) — un
+    moyen légitime pour une app de désactiver le kind sans le retirer.
+  Sous-DAG vide (`dag: []`) : refusé par `validate_dag` (`MRD-WORKFLOW-004`), message verbatim.
+  Rejeu après crash : géré par @StepContext::run_child_dag (clé enfant déterministe, ./durable.sdd).
+  Observabilité : le run enfant a la clé `{run_key parent}:{step_id}` ; l'arbre des runs se lit par
+    préfixe de clé dans l'UI Restate.
+
+Tasks:
+  [ ] Implémenter ./subworkflow.rs (`prepare` d'abord, tests rouges ensuite verts, puis `run`) ; ajouter
+    la variante `MaxDepthExceeded` en amont (./error.sdd) ; ordre de lot : après ./durable.sdd.
+  [ ] Tests d'intégration `#[ignore]` (`../../tests/workflow_restate.rs`, exigent `podman` + image
+    `restate`, lancement `--ignored`, même mécanique que ./interpreter.sdd) : (1) nominal — un parent
+    `A` (kind d'écho) puis `S` (`subworkflow`, `depends_on: ["A"]`) dont le DAG enfant est deux steps
+    d'écho en chaîne ; la sortie de `S` contient les deux sorties enfant ; (2) échec — un step enfant
+    non retryable fait échouer `S` puis le run parent, message du fils conservé ; (3) profondeur —
+    `SubWorkflowStep::new(1)` et un DAG qui se rappelle lui-même : le run échoue avec
+    `MRD-WORKFLOW-008` en un nombre borné de niveaux, sans emballement ; (4) un kind durable de
+    fixture qui `sleep` brièvement et renvoie `run_info()` (tâche de ./durable.sdd).
+  [?] **Propager les `inputs` du parent vers l'enfant** (#26) : en v1 l'enfant ne reçoit rien du parent
+    (ses steps racine ont `inputs` vide) ; l'application fabrique le DAG enfant en y embarquant les
+    valeurs utiles dans les `config`. Recommandation : ne rien ajouter tant qu'un besoin réel ne
+    l'impose pas ; si besoin, passer par un champ optionnel `inputs` du `config` du step copié dans la
+    `config` des steps racine enfants, pas par un nouveau canal Restate. Non bloquant pour
+    l'implémentation. À arbitrer par Sébastien.
+  [?] **Branche de repli sur échec d'enfant** (#26, point « propagation d'échec ») : v1 = l'échec de
+    l'enfant fait échouer le parent. Une sortie exposant l'échec (`{"error": ...}`) pour une branche de
+    repli demande un contrat d'échec dans ./interpreter.sdd (aujourd'hui : tout `Err` interrompt le
+    run). Non bloquant ; à rouvrir sur besoin.
+  [?] **Autorisation / droits du déclencheur** (#26) : sans identité dans @RunInfo, l'enfant n'hérite de
+    rien (voir ./step.sdd `Tasks`). Non bloquant.
+
+Done when:
+  Les `Scenario` ci-dessous ont chacun un test nommé distinct et vert (`prepare` et `kind`/`Default`,
+    sans serveur Restate), sur la feature `workflow` ; les quatre intégrations de `Tasks` écrites et
+    vertes avec `--ignored` quand `podman` est disponible.
+  ./durable.sdd et ./error.sdd (variante `008`) sont approuvées avant ou avec cette spec.
+
+Scenario: prepare rend le DAG d'un config valide
+  Given `run.depth = 0`, `max_depth = 4`, `config = {"dag": [{"id": "a", "depends_on": [], "kind":
+    "x", "config": {}}]}`
+  When `prepare` est appelé
+  Then le résultat est @Ok(DagSteps) portant un seul step d'id `"a"`
+
+Scenario: prepare refuse un config sans champ dag
+  Given `config = {"autre": 1}`
+  When `prepare` est appelé
+  Then le résultat est @Err(StepError { retryable: false, message }) dont le message commence par
+    `config subworkflow invalide: `
+
+Scenario: prepare accepte la profondeur exactement au plafond
+  Given `run.depth = 3`, `max_depth = 4` et un `config` valide
+  When `prepare` est appelé
+  Then le résultat est @Ok — l'enfant serait à la profondeur 4, pas au-delà
+
+Scenario: prepare refuse un enfant au-delà du plafond
+  Given `run.depth = 4`, `max_depth = 4` et un `config` valide
+  When `prepare` est appelé
+  Then le résultat est @Err(StepError { retryable: false, message }) avec `message` exactement
+    `MRD-WORKFLOW-008: sub-workflow depth 5 exceeds the maximum of 4`
+
+Scenario: max_depth zéro désactive le sous-workflow
+  Given `run.depth = 0`, `max_depth = 0` et un `config` valide
+  When `prepare` est appelé
+  Then le résultat est @Err avec le message `MRD-WORKFLOW-008: sub-workflow depth 1 exceeds the
+    maximum of 0`
+
+Scenario: prepare refuse un DAG enfant invalide avant tout appel
+  Given `run.depth = 0`, `max_depth = 4` et un `config` dont le DAG contient un cycle (`a` dépend de
+    `b`, `b` de `a`)
+  When `prepare` est appelé
+  Then le résultat est @Err(StepError { retryable: false, message }) dont le message commence par
+    `MRD-WORKFLOW-004:`
+
+Scenario: prepare refuse un DAG enfant vide
+  Given `config = {"dag": []}`
+  When `prepare` est appelé
+  Then le résultat est @Err dont le message commence par `MRD-WORKFLOW-004:`
+
+Scenario: le kind et le défaut sont ceux du contrat
+  Given `SubWorkflowStep::default()`
+  When `kind()` est appelé et que `max_depth` est observé par un `prepare` à `run.depth = 3` puis `4`
+  Then `kind()` vaut `"subworkflow"`, `DEFAULT_MAX_DEPTH` vaut `4`, la profondeur 3 passe et la
+    profondeur 4 est refusée — le défaut applique bien `DEFAULT_MAX_DEPTH`

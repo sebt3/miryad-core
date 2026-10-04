@@ -32,10 +32,13 @@ References:
     comme mécanisme de fan-out est référencé ici pour mémoire, pas comme dépendance de code
 
 Must:
-  `StepInvocation` — struct `pub(crate)`, `#[derive(Serialize, Deserialize)]`, trois champs
-    `pub(crate)` (élargissement ratifié au batch ./interpreter.rs 2026-09-23 : le `Must` étape 2.b de
+  `StepInvocation` — struct `pub(crate)`, `#[derive(Serialize, Deserialize)]`, six champs
+    `pub(crate)` (#26, 2026-10-04 : `run_key`, `step_id`, `depth` ajoutés aux trois d'origine ;
+    élargissement ratifié au batch ./interpreter.rs 2026-09-23 : le `Must` étape 2.b de
     ./interpreter.sdd le construit par littéral, et les `Scenario` de cette spec en font autant) :
-    `kind: @String`, `config: @serde_json::Value`, `inputs: @HashMap<@String, @serde_json::Value>`.
+    `kind: @String`, `config: @serde_json::Value`, `inputs: @HashMap<@String, @serde_json::Value>`,
+    `run_key: @String`, `step_id: @String`, `depth: @u32` (les trois derniers composent le
+    @RunInfo de ./step.sdd, reconstruit par ce fichier avant l'appel du kind).
     Forme du corps de requête de `StepDispatcher::execute`, consommée via `Json<StepInvocation>`
     (wrapper `restate_sdk::prelude::Json`, requis pour tout type non primitif traversant le protocole
     `restate-sdk`, vérifié au spike : un struct nu sans ce wrapper ne satisfait pas les bornes internes
@@ -55,19 +58,27 @@ Must:
     le fil du protocole est `StepDispatcher`/`execute` en toutes circonstances. Un seul handler :
     `async fn execute(&self, ctx: Context<'_>, req: Json<StepInvocation>) -> Result<Json<@serde_json::Value>,
     HandlerError>`. Corps exact :
-    1. Décompose `req` en `kind`, `config`, `inputs`.
-    2. `ctx.run(move || run_invocation(&self.registry, kind, config, inputs)).await` — un seul
-      `ctx.run()` par invocation de `execute`, jamais plus, la fermeture se bornant à déléguer à
-      @run_invocation (rien d'autre ne s'y ajoute).
+    1. Décompose `req` en `kind`, `config`, `inputs` et construit le @RunInfo (`run_key`, `step_id`,
+      `depth`).
+    1b. (#26) Si `self.registry.durable(&kind)` rend @Some(step) : **branche durable** — appelle
+      `step.run(&StepContext::new(&ctx, run_info), config, inputs).await`, **sans** `ctx.run()` global
+      (un kind durable journalise lui-même ses effets via @StepContext, ./durable.sdd), puis
+      `.map(Json).map_err(step_error_to_handler_error)` ; retour immédiat, l'étape 2 n'a pas lieu.
+      Un kind durable n'est jamais enveloppé : l'envelopper interdirait tout appel
+      `ctx.request`/`ctx.sleep` à l'intérieur (limite d'une fermeture `ctx.run`, issue #26).
+    2. Branche ordinaire : `ctx.run(move || run_invocation(&self.registry, kind, run_info, config,
+      inputs)).await` — un seul `ctx.run()` par invocation de `execute` pour un kind ordinaire,
+      jamais plus, la fermeture se bornant à déléguer à @run_invocation (rien d'autre ne s'y ajoute).
     3. Le `?` sur le résultat de `ctx.run(...).await` (type @Result<Json<Value>, TerminalError>,
       signature vérifiée au spike : `ctx.run` retourne toujours un échec en @TerminalError, jamais en
       @HandlerError, quel que soit ce que la fermeture a retourné) convertit vers le type de retour du
       handler via `From<TerminalError> for HandlerError` (vérifié `src/errors.rs` de `restate-sdk`
       `0.12.1`).
-  `run_invocation(registry: &StepRegistry, kind: @String, config: @serde_json::Value, inputs:
-    @HashMap<@String, @serde_json::Value>) -> Result<Json<@serde_json::Value>, HandlerError>` —
-    `async fn` privée, seul corps de la fermeture de @ctx.run : `registry.dispatch(&kind, config,
-    inputs)` (./step.sdd) ; un @Err de `dispatch` (kind inconnu — seule erreur que cette fonction
+  `run_invocation(registry: &StepRegistry, kind: @String, run_info: @RunInfo, config:
+    @serde_json::Value, inputs: @HashMap<@String, @serde_json::Value>) ->
+    Result<Json<@serde_json::Value>, HandlerError>` —
+    `async fn` privée, seul corps de la fermeture de @ctx.run : `registry.dispatch(&kind, &run_info,
+    config, inputs)` (./step.sdd) ; un @Err de `dispatch` (kind inconnu — seule erreur que cette fonction
     rend avant l'await du futur, ./step.sdd) est traduit en `404` par la `Must` « Kind inconnu »
     ci-dessous, jamais par `step_error_to_handler_error` ; sur @Ok, await du futur retourné et le
     @StepError éventuel est traduit par cette dernière fonction, avant retour. Séparaison tranchée
@@ -122,8 +133,10 @@ Must not:
     explicite — un seul mécanisme, pas deux à maintenir en cohérence).
   Traduire un kind inconnu par la même fonction qu'un @StepError applicatif, ni lui donner le code
     `500` : chemins et codes distincts, voir `Must`.
-  Envelopper l'exécution du kind dans plus d'un `ctx.run()`, ou appeler `ctx.run()` en dehors de
-    `execute` : un step = un `ctx.run()`, exactement l'invariant vérifié au spike pour la mémoïsation
+  Envelopper un kind **durable** dans un `ctx.run()` (#26) : il appelle lui-même les primitives
+    durables, un `ctx.run()` englobant les rendrait inutilisables.
+  Envelopper l'exécution d'un kind ordinaire dans plus d'un `ctx.run()`, ou appeler `ctx.run()` en
+    dehors de `execute` : un step ordinaire = un `ctx.run()`, exactement l'invariant vérifié au spike pour la mémoïsation
     (un step déjà journalisé n'est jamais rejoué après une reprise sur crash).
   Intercepter un panic du `run()` d'un kind par un mécanisme propre à ce fichier (`catch_unwind`,
     `tokio::task::spawn` dédié) : inutile, vérifié par spike (2026-09-23, méthode : un kind de fixture
@@ -148,7 +161,7 @@ Depends on:
   @serde (derive) + @serde_json — forme de `StepInvocation` et du corps de retour
 
 Exposes:
-  `StepInvocation` — struct `pub(crate)`, trois champs, `Serialize` + `Deserialize`
+  `StepInvocation` — struct `pub(crate)`, six champs, `Serialize` + `Deserialize`
   `StepDispatcher` — struct `pub`, `new` `pub`, champ `registry` privé
   `recommended_options` — `pub fn recommended_options() -> restate_sdk::endpoint::ServiceOptions`,
     sans argument, rend `ServiceOptions::new().retry_policy_max_attempts(5)
@@ -190,6 +203,10 @@ Handles:
     l'auteur d'un kind : un `run()` qui se déclare `retryable: true` doit être idempotent ou tolérant à
     une réexécution complète, ./step.rs n'impose rien de ce côté (à documenter dans docs/architecture.md
     à la clôture, pas un contrat vérifiable ici).
+  Kind durable en échec (#26) : un @StepError `retryable: true` devient un @HandlerError retryable
+    — Restate rejoue `execute` depuis le journal (les effets déjà journalisés par @StepContext ne sont
+    pas rejoués, seuls les suivants le sont) ; `retryable: false` devient une @TerminalError comme
+    pour un kind ordinaire. Même `step_error_to_handler_error`, aucun second site de traduction.
   Step non-retryable : un seul passage dans `ctx.run()`, `TerminalError` immédiate, aucune tentative
     supplémentaire — le run global du DAG (./interpreter.rs) voit l'échec au premier essai, quelle que
     soit la `ServiceOptions` posée par l'app (`retryable: false` court-circuite toute politique de
@@ -212,6 +229,13 @@ Handles:
     affectée.
 
 Tasks:
+  [ ] #26 lot A (2026-10-04) : élargir `StepInvocation` (`run_key`, `step_id`, `depth`), construire le
+    @RunInfo dans `execute`, le faire passer à `run_invocation` puis à `dispatch` ; adapter les
+    tests existants à la nouvelle signature de `run_invocation`.
+  [ ] #26 lot B (2026-10-04) : branche durable de `execute` (étape 1b), après ./durable.sdd ; la
+    branche n'est pas testable en unitaire (@StepContext enveloppe un `Context` non virtualisé,
+    même borne que `execute` lui-même) — preuve par un test d'intégration `#[ignore]`
+    (`../../tests/workflow_restate.rs`, voir ./subworkflow.sdd `Tasks`).
   [x] À l'implémentation de ce fichier : retirer le `#[allow(dead_code)]` posé sur
     @StepRegistry::dispatch dans ./step.rs (batch du 2026-09-23, motif : ./dispatcher.rs est son
     unique appelant, pas encore écrit) — condition de ce batch, même traitement que le retrait
@@ -321,3 +345,15 @@ Scenario: un seul ctx.run() par invocation de execute
   Then le compteur vaut exactement `1` après l'invocation — un seul appel à `run`, confirmant qu'aucun
     chemin de ./dispatcher.rs n'appelle `StepRegistry::dispatch` ou le futur qu'il retourne plus d'une
     fois par invocation réussie
+
+Scenario: le RunInfo atteint le kind ordinaire (#26)
+  Given un @StepRegistry avec un kind de fixture dont `run` rend `json!({"run_key": run.run_key,
+    "step_id": run.step_id, "depth": run.depth})`
+  When `run_invocation` est appelé avec `RunInfo { run_key: "r1", step_id: "s1", depth: 3 }`
+  Then le résultat est @Ok(Json(json!({"run_key": "r1", "step_id": "s1", "depth": 3})))
+
+Scenario: un kind durable n'est pas résolu par run_invocation (#26)
+  Given un @StepRegistry avec uniquement un kind durable de fixture « d »
+  When `run_invocation` est appelé avec `kind = "d"`
+  Then le résultat est la @TerminalError `404` « kind inconnu: d » — la branche durable vit dans
+    `execute`, jamais dans `run_invocation` (qui reste le corps de la fermeture `ctx.run`)

@@ -2,8 +2,9 @@ Spec: mod — agrégation du module `workflow`, gating, ré-exports, graphe de d
 
 Purpose:
   Contrat d'agrégation de `src/workflow/` (convention `.specdd/bootstrap.project.md` : un `mod.rs` a
-    sa propre spec, n'owne que lui-même, chaque enfant garde la sienne) : déclare les sept
-    sous-modules (`error`, `client`, `step`, `dispatcher`, `definition`, `interpreter`, `rhai_step`),
+    sa propre spec, n'owne que lui-même, chaque enfant garde la sienne) : déclare les neuf
+    sous-modules (`error`, `client`, `step`, `dispatcher`, `definition`, `interpreter`, `rhai_step`,
+    et depuis #26 `durable`, `subworkflow`),
     ré-exporte à plat les types que l'app consommatrice doit toucher pour intégrer le moteur de
     workflow, et documente le graphe complet des dépendances Cargo que la feature `workflow`
     introduit — consolidé ici parce que chaque spec enfant n'a proposé qu'un fragment du diff
@@ -27,7 +28,8 @@ Can modify:
 
 References:
   ./error.sdd, ./client.sdd, ./step.sdd, ./dispatcher.sdd, ./definition.sdd, ./interpreter.sdd,
-    ./rhai_step.sdd — les sept enfants, chacun `Owns` son propre `.rs`, ce fichier ne les décrit pas
+    ./rhai_step.sdd, ./durable.sdd, ./subworkflow.sdd — les neuf enfants, chacun `Owns` son propre
+    `.rs`, ce fichier ne les décrit pas
   /src/lib.sdd — amendée le 2026-09-23 : `#[cfg(feature = "workflow")] pub mod workflow;`, douzième
     `pub mod` de la racine
   /miryad-core.sdd — `Owns: ./Cargo.toml` ; ce fichier documente le diff attendu sans le posséder
@@ -36,10 +38,10 @@ References:
   /docs/roadmap.md — feature 7/9, moteur de workflow ; ce module en est l'implémentation
 
 Must:
-  `mod.rs` déclare les sept sous-modules, tous `pub` (chaque enfant expose des types que l'app doit
+  `mod.rs` déclare les neuf sous-modules, tous `pub` (chaque enfant expose des types que l'app doit
     atteindre, directement ou via les ré-exports ci-dessous) : `pub mod client;`, `pub mod
     definition;`, `pub mod dispatcher;`, `pub mod error;`, `pub mod interpreter;`, `pub mod step;`,
-    `pub mod rhai_step;` — un seul bloc, aucun sous-module gated par une feature plus fine que
+    `pub mod rhai_step;`, `pub mod durable;`, `pub mod subworkflow;` — un seul bloc, aucun sous-module gated par une feature plus fine que
     `workflow` elle-même (./rhai_step.sdd : le kind `"rhai"` compile dès que `workflow` est active,
     pas derrière une feature séparée — décision actée lors de la rédaction de ce fichier, cohérente
     avec `mcp` qui active `vynil-core` sans sous-feature dédiée).
@@ -47,9 +49,9 @@ Must:
     register_deployment, trigger_run}` ; `definition::{Entity as WorkflowDefinition, Column as
     WorkflowDefinitionColumn, Model as WorkflowDefinitionModel, ActiveModel as
     WorkflowDefinitionActiveModel, StepDefinition, DagSteps, WorkflowPolicy, configure_policy}` ;
-    `dispatcher::{StepDispatcher, recommended_options}` ; `error::WorkflowError` ;
-    `interpreter::DagInterpreter` ; `rhai_step::RhaiStep` ; `step::{MiryadWorkflowStep, StepError,
-    StepRegistry}`. Chemins consommés : `miryad_core::workflow::WorkflowConfig`,
+    `dispatcher::{StepDispatcher, recommended_options}` ; `durable::{MiryadDurableStep, StepContext}` ; `error::WorkflowError` ;
+    `interpreter::DagInterpreter` ; `rhai_step::RhaiStep` ; `subworkflow::SubWorkflowStep` ;
+    `step::{MiryadWorkflowStep, RunInfo, StepError, StepRegistry}`. Chemins consommés : `miryad_core::workflow::WorkflowConfig`,
     `miryad_core::workflow::DagInterpreter`, etc. — jamais `miryad_core::workflow::client::WorkflowConfig`
     (à la différence de `resource.rs`/`Must not` qui refuse tout ré-export racine : ce module a
     plusieurs fichiers internes et une app doit en toucher la plupart pour intégrer le moteur, contexte
@@ -110,8 +112,8 @@ Depends on:
     ce qu'ils réexportent
 
 Exposes:
-  Voir `Must` — vingt chemins plats sous `miryad_core::workflow::` (4 `client`, 8 `definition`,
-    2 `dispatcher`, 1 `error`, 1 `interpreter`, 1 `rhai_step`, 3 `step`)
+  Voir `Must` — vingt-quatre chemins plats sous `miryad_core::workflow::` (4 `client`, 8 `definition`,
+    2 `dispatcher`, 2 `durable`, 1 `error`, 1 `interpreter`, 1 `rhai_step`, 1 `subworkflow`, 4 `step`)
 
 Accepts:
   Rien — fichier de déclaration et de ré-export pur, aucune fonction, aucun état
@@ -131,6 +133,10 @@ Handles:
     autre module gated de la crate (`/src/lib.sdd`, `Handles`) — aucun squelette d'API résiduel.
 
 Tasks:
+  [ ] #26 (2026-10-04) : déclarer `durable` et `subworkflow`, ajouter les quatre ré-exports
+    (`MiryadDurableStep`, `StepContext`, `SubWorkflowStep`, `RunInfo`) et étendre le test de chemins
+    plats (`../../tests/workflow_flat_paths.rs` et `mod tests`) à ces quatre chemins — dernier
+    fichier du lot #26, après ./durable.rs et ./subworkflow.rs.
   [x] Mécanique Cargo de `tokio` : Sébastien (2026-09-23, relecture du lot) — `tokio` entre dans
     `[dependencies]` en `optional = true`, activé par `workflow` seule via `dep:tokio` ;
     l'entrée `[dev-dependencies]` existante est conservée inchangée (les tests existants restent
@@ -144,7 +150,7 @@ Tasks:
     identifiés par ./client.sdd (rollout avec `force: true`, `Service` Kubernetes stable) et
     ./dispatcher.sdd (isolation des panics, `RunRetryPolicy`), l'asymétrie GraphQL de
     `before_update`/`before_delete` (/src/resource.sdd, amendement 2026-09-23).
-  [ ] Mettre à jour `docs/roadmap.md`, feature 9 : passer de "reprise du moteur de workflow, si une
+  [x] Mettre à jour `docs/roadmap.md`, feature 9 (fait 2026-10-04, standby levé et lot #26/#27 décrit) : passer de "reprise du moteur de workflow, si une
     solution saine se présente" à un état reflétant les sept specs de ce module approuvées (ou en
     cours d'implémentation), une fois cette relecture faite.
   [ ] Mettre à jour `miryad-core.sdd`, Tasks : la ligne 153-154 ("Décider si le moteur de workflow
@@ -163,8 +169,8 @@ Tasks:
     `miryad_core::workflow::…`.
 
 Done when:
-  Les sept specs enfants (`error`, `client`, `step`, `dispatcher`, `definition`, `interpreter`,
-    `rhai_step`) sont approuvées.
+  Les neuf specs enfants (`error`, `client`, `step`, `dispatcher`, `definition`, `interpreter`,
+    `rhai_step`, `durable`, `subworkflow`) sont approuvées.
   `/src/lib.sdd`, `/tooling.sdd` et `AGENTS.md` (commandes de la batterie) reflètent la huitième
     combinaison de features (`workflow`).
   `/Cargo.toml` porte exactement le diff décrit en `Must`, vérifié par `cargo tree --features

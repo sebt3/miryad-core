@@ -1,0 +1,181 @@
+Spec: durable — kinds de step « durables » (accès au Context Restate), @StepContext
+
+Purpose:
+  Porter le second point d'extension de step du moteur : @MiryadDurableStep, pour les kinds qui, au-delà
+    d'un calcul pur, **pilotent le moteur lui-même** — lancer un workflow enfant et en attendre la fin,
+    dormir durablement, journaliser leurs propres effets de bord (issue sebt3/miryad-core#26, besoin du
+    consommateur vanyline, 2026-10-04). Un kind ordinaire (@MiryadWorkflowStep, ./step.sdd) s'exécute
+    dans **un seul** `ctx.run()` posé par ./dispatcher.rs : une fermeture `ctx.run()` ne peut appeler ni
+    `ctx.request`, ni `ctx.sleep`, ni créer d'awakeable (limite du SDK), donc un kind ordinaire ne peut
+    ni attendre un enfant ni dormir durablement ; le contourner par `client::trigger_run` (HTTP) puis un
+    sondage depuis le step n'est ni durable ni idempotent au rejeu (./client.sdd : aucune lecture de
+    statut). Le dispatcher appelle donc un kind durable **sans** `ctx.run()` englobant, et lui remet un
+    @StepContext, façade volontairement étroite de `restate_sdk::Context`.
+  Surface étroite plutôt que le `Context` complet (recommandation du 2026-10-04, à confirmer) : une API
+    publique instable avant `1.0` ne doit pas être couplée à la version de `restate-sdk` ; chaque
+    capacité ajoutée à @StepContext est un engagement, et le sous-ensemble ci-dessous suffit au cas
+    d'usage (sous-workflow) et au sondage durable (`sleep` + effet journalisé).
+  Fichier neuf, conception. Les signatures `restate-sdk` `0.12.1` citées (`Context::sleep`,
+    `Context::request` + `RequestTarget::workflow`, `Request::header`/`call`, `ContextSideEffects::run`)
+    sont vérifiées dans le source local ; les types exacts des génériques de `run` (bornes
+    `Serialize`/`Deserialize`, enveloppe `Json`) sont à relire en source à l'implémentation, comme
+    ./dispatcher.sdd l'a fait pour `ctx.run`.
+
+Owns:
+  ./durable.rs
+
+References:
+  ./step.sdd — @RunInfo, @StepError, @StepRegistry (`register_durable`, `durable`) ; ce fichier fournit
+    le trait que le registre stocke
+  ./dispatcher.sdd — seul appelant de @MiryadDurableStep::run (branche durable de `execute`, étape 1b)
+    et seul constructeur de @StepContext
+  ./interpreter.sdd — lit l'en-tête `DEPTH_HEADER` que @StepContext::run_child_dag pose
+  ./definition.sdd — @DagSteps (sous-DAG remis à @StepContext::run_child_dag)
+  ./subworkflow.sdd — premier (et seul, à la rédaction) `impl` de @MiryadDurableStep fourni par la crate
+  `restate-sdk` `0.12.1` : `Context`, `ContextTimers::sleep`, `ContextClient::request`,
+    `RequestTarget::workflow(name, key, handler)`, `Request::{header, call}`, `ContextSideEffects::run`
+
+Must:
+  `DEPTH_HEADER` — `pub(crate) const DEPTH_HEADER: &str = "x-miryad-depth"` : nom de l'en-tête de
+    requête qui porte la profondeur d'imbrication d'un run enfant (écrit par
+    @StepContext::run_child_dag, lu par ./interpreter.rs). Une constante, jamais deux littéraux.
+  @MiryadDurableStep — trait `pub`, `#[async_trait::async_trait]`, super-traits `Send + Sync`
+    (même raison que @MiryadWorkflowStep : `dyn` dans @StepRegistry) :
+    `fn kind(&self) -> &'static str` — clé stable, **même espace de noms** que les kinds ordinaires
+      (@StepRegistry::register_durable rend @WorkflowError::DuplicateStepKind sur collision, ./step.sdd) ;
+    `async fn run(&self, ctx: &StepContext<'_>, config: @serde_json::Value, inputs: @HashMap<@String,
+      @serde_json::Value>) -> Result<@serde_json::Value, StepError>` — mêmes `config`/`inputs`/retour
+      que @MiryadWorkflowStep::run (forme et provenance : ./step.sdd) ; l'identité du run se lit par
+      `ctx.run_info()`. Le dispatcher ne l'enveloppe dans aucun `ctx.run()` : **c'est au kind de
+      journaliser ses effets** (`ctx.run_effect`) ; tout appel non déterministe hors de ces primitives
+      (horloge, aléa, I/O) casse le rejeu — contrat à rappeler dans la rustdoc du trait.
+  @StepContext<'a> — struct `pub`, **opaque** (aucun champ `pub`), deux champs privés : `ctx: &'a
+    restate_sdk::prelude::Context<'a>` et `run: @RunInfo`. `pub(crate) fn new(ctx: &'a Context<'a>, run:
+    RunInfo) -> Self` — unique constructeur, appelé par ./dispatcher.rs ; une app ne construit jamais un
+    @StepContext (elle ne peut en recevoir un que dans `run`). Méthodes :
+    `fn run_info(&self) -> &RunInfo` — identité du run en lecture seule.
+    `async fn sleep(&self, duration: std::time::Duration) -> Result<(), StepError>` — délègue à
+      `ctx.sleep(duration).await` ; l'erreur (`TerminalError`, p. ex. annulation de l'invocation) devient
+      @StepError { retryable: false, message: e.to_string() }.
+    `async fn run_effect<T, F, Fut>(&self, f: F) -> Result<T, StepError>` — effet de bord journalisé :
+      délègue à `ctx.run(...)` de `restate-sdk` (résultat mémoïsé dans le journal, jamais rejoué après
+      reprise) ; mêmes bornes que le SDK sur `T` (`Serialize + Deserialize`, enveloppe `Json` gérée en
+      interne — l'appelant manipule `T` nu) ; un @StepError `retryable: true` de la fermeture est laissé à
+      la politique de retry du `bind()` (comme ./dispatcher.sdd), un `retryable: false` devient une
+      @TerminalError ; l'échec final est rendu en @StepError `retryable: false` avec le message de
+      l'erreur terminale. **Un seul appel concurrent par @StepContext n'est pas imposé** mais
+      `run_effect` ne doit pas être appelé dans la fermeture d'un autre `run_effect` (limite du SDK).
+    `async fn run_child_dag(&self, dag: &DagSteps) -> Result<@HashMap<@String, @serde_json::Value>,
+      StepError>` — lance un `DagInterpreter` enfant et attend sa fin, **de façon idempotente au
+      rejeu** :
+      1. `child_key = child_run_key(&self.run.run_key, &self.run.step_id)` (déterministe : la même
+          invocation parente rejouée recalcule la même clé, donc ne crée jamais de doublon — la clé
+          de workflow Restate est unique par run) ;
+      2. `ctx.request::<Json<DagSteps>, Json<HashMap<String, Value>>>(RequestTarget::workflow(
+          "DagInterpreter", child_key, "run"), Json(dag.clone())).header(DEPTH_HEADER.to_string(),
+          self.run.depth.saturating_add(1).to_string()).call().await` ;
+      3. @Err(TerminalError) du fils (DAG invalide `400`, step en échec, annulation) → @StepError
+          { retryable: false, message: e.to_string() } — **un échec de l'enfant fait échouer le parent**
+          (valeur par défaut, `Tasks` ci-dessous) ; @Ok(Json(map)) → @Ok(map).
+  `child_run_key(run_key: &str, step_id: &str) -> @String` — `pub(crate)`, fonction pure :
+    `format!("{run_key}:{step_id}")`. Lisible dans l'UI Restate : l'arbre des runs se reconstruit par
+    préfixe de clé (observabilité parent/enfant de #26, sans canal supplémentaire).
+  Compiler uniquement sous `#[cfg(feature = "workflow")]`.
+
+Must not:
+  Exposer `restate_sdk::Context` (ni `&Context`, ni un clone, ni `ctx()`) par @StepContext : la
+    surface est le sous-ensemble ci-dessus, toute capacité nouvelle passe par une méthode dédiée et un
+    `Scenario`/`Tasks`. Aucune méthode `awakeable` dans cette itération (`Tasks`).
+  Appeler `ctx.run()` autour de `ctx.sleep`/`ctx.request` : c'est précisément la limite que ce
+    fichier existe pour lever.
+  Déléguer la politique de retry à ce fichier : comme ./dispatcher.rs, aucune `.retry_policy()` posée
+    ici — la politique est celle du `bind()` du service `StepDispatcher`.
+  Charger quoi que ce soit en base (le sous-DAG est reçu par valeur, même règle que ./interpreter.sdd :
+    déterminisme du rejeu) ni importer `reqwest` (frontière protocole `restate-sdk` / HTTP nu,
+    ./client.sdd).
+  Calculer une profondeur ailleurs qu'ici et dans ./interpreter.rs : `run.depth + 1` pour l'enfant, par
+    `saturating_add` (`arithmetic_side_effects` en `deny`) ; le plafond lui-même est de
+    ./subworkflow.rs.
+  Rester bavard : aucun @println!, @eprintln!, @dbg! ; @tracing seulement si utile, jamais d'inputs/config
+    dans une trace (peuvent porter des secrets).
+
+Forbids:
+  `reqwest::*` dans ./durable.rs
+
+Depends on:
+  `restate-sdk` 0.12 (lock `0.12.1`) — `Context`, `RequestTarget`, `Json`, `TerminalError`,
+    `ContextSideEffects`
+  ./step.rs — @RunInfo, @StepError
+  ./definition.rs — @DagSteps
+  @async-trait, @serde_json, @std::collections::HashMap, @std::time::Duration
+
+Exposes:
+  `MiryadDurableStep` — trait `pub`, deux méthodes (`kind`, `run`)
+  `StepContext` — struct `pub` opaque : `run_info`, `sleep`, `run_effect`, `run_child_dag` (`pub`) ;
+    `new` `pub(crate)`
+  `DEPTH_HEADER`, `child_run_key` — `pub(crate)`
+
+Accepts:
+  `run_child_dag` : un @DagSteps déjà validé ou non — `DagInterpreter::run` revalide systématiquement
+    (`400` + `MRD-WORKFLOW-004`, ./interpreter.sdd) ; ./subworkflow.rs valide en amont pour échouer
+    avant l'appel.
+
+Returns:
+  `run_child_dag` : la table `{ id du step enfant -> sortie }` du run enfant, telle que rendue par
+    `DagInterpreter::run`.
+  Toute méthode fallible : @StepError, jamais une `HandlerError`/`TerminalError` brute (traduction par
+    ./dispatcher.rs au retour de `run`).
+
+Raises:
+  Aucun code `MRD-WORKFLOW-*` : ce fichier ne construit aucun @WorkflowError ; les messages des
+    erreurs du fils (dont `MRD-WORKFLOW-004`) transitent verbatim dans @StepError::message.
+
+Handles:
+  Rejeu après crash du parent : `run_child_dag` recalcule la même `child_key` ; Restate rattache
+    l'appel au run enfant déjà démarré (un workflow n'exécute `run` qu'une fois par clé) — pas de
+    doublon, pas de nouveau run. À prouver en intégration (`Tasks`), pas en unitaire.
+  Enfant en échec : message du fils conservé, parent en échec non retryable (le rejeu donnerait le
+    même échec).
+  Annulation de l'invocation parente pendant `sleep` ou `run_child_dag` : @StepError non retryable ;
+    l'enfant n'est pas annulé par ce fichier (aucun mécanisme d'annulation propagée dans cette
+    itération, cohérent avec ./interpreter.sdd, « pas d'annulation des frères »).
+
+Tasks:
+  [ ] Implémenter ./durable.rs : le trait, @StepContext (`run_info`, `sleep`, `run_effect`,
+    `run_child_dag`), `DEPTH_HEADER`, `child_run_key` ; relire en source `restate-sdk` `0.12.1` les
+    bornes de `ctx.run` et la forme de `Request::header` avant d'écrire les signatures génériques ;
+    rustdoc du trait (contrat de déterminisme) et de chaque méthode (règle `missing_errors_doc`).
+  [ ] Ordre de lot : après ./step.sdd lot A (`RunInfo`), avant ./step.sdd lot B (le registre
+    référence le trait).
+  [ ] Reporté sur demande : **awakeable** (#26 — réveil par l'application via l'ingress Restate,
+    sans connexion longue ni sondage). Le consommateur s'en passe pour sa première version (sondage
+    dans un kind ordinaire) ; à rouvrir sur besoin réel avec une méthode dédiée de @StepContext
+    (`awakeable<T>() -> (String, impl Future<Output = Result<T, StepError>>)`) et son `Scenario`
+    d'intégration. Recommandation Claude 2026-10-04, à confirmer par Sébastien.
+  [ ] Test d'intégration `#[ignore]` d'un kind durable de fixture qui `sleep` puis renvoie
+    `run_info()` (`../../tests/workflow_restate.rs`) : prouve la branche durable de ./dispatcher.rs
+    (aucun `ctx.run()` englobant, sinon `sleep` échoue) et la transmission de `RunInfo`.
+
+Done when:
+  Les `Scenario` ci-dessous ont chacun un test nommé distinct et vert, sur la feature `workflow` ; les
+    méthodes de @StepContext non testables en unitaire (aucun `Context` virtualisé par `restate-sdk`
+    `0.12.1`) sont couvertes par le test d'intégration de `Tasks`.
+  ./step.sdd (lot A et B) est approuvée avant ou avec cette spec.
+
+Scenario: child_run_key est déterministe et lisible
+  Given `run_key = "run-1"` et `step_id = "sous"`
+  When `child_run_key` est appelé deux fois
+  Then les deux résultats valent `"run-1:sous"` — la même entrée donne toujours la même clé (condition
+    de l'idempotence au rejeu)
+
+Scenario: deux steps du même run ont des clés enfants distinctes
+  Given `run_key = "run-1"` et deux `step_id` différents `"a"` et `"b"`
+  When `child_run_key` est appelé pour chacun
+  Then les deux clés diffèrent
+
+Scenario: un kind durable de fixture s'enregistre et se retrouve par durable()
+  Given un kind durable de fixture de `kind()` `"d"` (son `run` n'est jamais appelé : aucun
+    @StepContext constructible en test) enregistré par `StepRegistry::register_durable`
+  When `StepRegistry::durable("d")` est appelé
+  Then le résultat est @Some et son `kind()` vaut `"d"` — preuve que le trait est dyn-compatible
+    (`Box<dyn MiryadDurableStep>`)
