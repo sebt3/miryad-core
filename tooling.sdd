@@ -1,6 +1,6 @@
 Spec: Harnais qualité (clippy, rustfmt, lints)
 
-Platform: clippy 0.1.97 (stable 1.97.1), rustfmt stable, table [lints] de Cargo.toml
+Platform: clippy 0.1.99 (stable 1.99.0), rustfmt stable, table [lints] de Cargo.toml
 
 Purpose:
   Définir le harnais qui guide les agents d'implémentation et le validateur : formatage
@@ -45,6 +45,12 @@ Must:
   Formatter avec `cargo fmt --check` à la toolchain stable : `./rustfmt.toml` ne contient
     aucune option instable, aucun toolchain nightly n'est nécessaire.
   Exposer la batterie canonique dans ./AGENTS.md, reprise à l'identique par l'agent `validator`.
+  Suivre la stable roulante de CI (`dtolnay/rust-toolchain@stable`, non épinglée — acté
+    2026-10-04) : une montée de toolchain qui ajoute des lints dans les groupes `deny` rougit la
+    batterie et se traite par la correction des sites signalés, ou par `#[allow]` justifié quand
+    le contrat impose le code signalé (ex. `unused_async_trait_impl` apparu en clippy 1.99 sur
+    @FromRequestParts::from_request_parts, dont l'`async` est imposé par le trait axum) — jamais
+    par l'épinglage de la toolchain.
 
 Must not:
   Accepter un `#[allow(...)]` d'un lint du harnais dans du code de production sans commentaire
