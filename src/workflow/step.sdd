@@ -214,6 +214,12 @@ Tasks:
     (tous les kinds de fixture) et les tests ; propager le changement de signature à ./rhai_step.rs
     (impl + tests, un helper de test `run_info()` rend un `RunInfo` neutre). Ordre : après #27
     (./rhai_step.sdd), pour ne pas mélanger deux changements dans les mêmes tests.
+    Réalisé 2026-10-04 (commit c491a08) mais tâche tenue ouverte : le validator a prouvé au
+    compilateur que la signature verbatim de `dispatch` dans `Must` (`impl Future` nu avec
+    `&RunInfo`) est inexécutable (`E0700`, toutes variantes testées) ; la réalisation retenue —
+    `dispatch<'s: 'r, 'r>(…) -> Result<impl Future + use<'r>, StepError>`, contrat observable
+    intégralement préservé — attend l'amendement du `Must` par Sébastien (précédent : correction
+    du super-trait « à l'implémentation 2026-09-23 »). Passage `[x]` lié à cet arbitrage.
   [ ] #26 lot B — kinds durables (2026-10-04) : ajouter `register_durable` et `durable`, le
     deuxième magasin interne et la vérification de collision croisée ; dépend de ./durable.rs (le
     trait doit exister pour compiler) — à faire dans le même lot que ./durable.sdd.

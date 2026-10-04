@@ -229,9 +229,13 @@ Handles:
     affectée.
 
 Tasks:
-  [ ] #26 lot A (2026-10-04) : élargir `StepInvocation` (`run_key`, `step_id`, `depth`), construire le
+  [x] #26 lot A (2026-10-04) : élargir `StepInvocation` (`run_key`, `step_id`, `depth`), construire le
     @RunInfo dans `execute`, le faire passer à `run_invocation` puis à `dispatch` ; adapter les
     tests existants à la nouvelle signature de `run_invocation`.
+    Réalisé 2026-10-04 (commit c491a08, validator PASS) : `StepInvocation` à six champs, `RunInfo`
+    reconstruit dans `execute` depuis le corps reçu, relayé intact à `run_invocation` puis
+    `dispatch(&kind, &run_info, …)` ; test `le_run_info_atteint_le_kind_ordinaire` à égalité
+    exacte ; les quatre tests préexistants adaptés sans changement d'observable.
   [ ] #26 lot B (2026-10-04) : branche durable de `execute` (étape 1b), après ./durable.sdd ; la
     branche n'est pas testable en unitaire (@StepContext enveloppe un `Context` non virtualisé,
     même borne que `execute` lui-même) — preuve par un test d'intégration `#[ignore]`

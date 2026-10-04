@@ -173,8 +173,12 @@ Handles:
     corps est documentée par Restate, pas contractualisée ici.
 
 Tasks:
-  [ ] #26 : variante @WorkflowError::MaxDepthExceeded (`MRD-WORKFLOW-008`) ajoutée dans ./error.rs
+  [x] #26 : variante @WorkflowError::MaxDepthExceeded (`MRD-WORKFLOW-008`) ajoutée dans ./error.rs
     (`Must`, un `Scenario`) — à faire avant ./subworkflow.rs qui la construit.
+    Réalisé 2026-10-04 (commit c491a08, validator PASS batterie 17/17 hors carve-out graphql) :
+    variante structurée `MaxDepthExceeded { depth, max }`, Display verrouillée à égalité exacte par
+    le test nommé ; construite nulle part hors tests — l'unique constructeur attendu sera
+    ./subworkflow.rs (lot B).
   [x] Troncature de la @Display de @WorkflowError::RestateRejected à 1 KiB (arbitré par Sébastien le 2026-09-29) (`Must`) : helper
     de coupe sur frontière de caractère dans ./error.rs, champ `body` inchangé ; deux Scenario.
     Réalisé 2026-10-03 (B6a, validator PASS) : @truncated_body (budget 1024, recul

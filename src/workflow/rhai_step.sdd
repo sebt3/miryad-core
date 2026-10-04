@@ -210,10 +210,13 @@ Tasks:
     @JoinError reste couverte-par-lecture (@Handles défensif « jamais observée », aucun chemin de test
     sans dévier du contrat — tokio 1.53.1 capture tout panic de fermeture, vérifié source ; depuis
     #27, la closure de `with_setup` offre ce chemin de test, cf. Scenario « closure qui panique »).
-  [ ] #26 lot A (2026-10-04) : adapter `impl MiryadWorkflowStep for RhaiStep` à la nouvelle
+  [x] #26 lot A (2026-10-04) : adapter `impl MiryadWorkflowStep for RhaiStep` à la nouvelle
     signature (`_run: &RunInfo`) et tous les tests de `mod tests` (helper `run_info()` neutre :
     `RunInfo { run_key: "t".into(), step_id: "s".into(), depth: 0 }`). Aucun changement de
     comportement ; à faire **après** la tâche #27 ci-dessous.
+    Réalisé 2026-10-04 (commit c491a08, validator PASS) : impl adapté (`_run` ignoré), helper
+    `run_info()` au littéral de la tâche, vingt sites de tests migrés, les quinze tests préexistants
+    verts à l'identique — aucun changement d'observable.
   [x] #27 `with_setup` (2026-10-04) : ajouter `setups`, `with_setup`, l'appel des closures dans le
     `spawn_blocking` (`Must`) ; rustdoc de `with_setup` (synchronicité des fonctions Rhai,
     `block_on` + runtime multi-thread, surcharge de `MAX_OPERATIONS`) ; en-tête de module de
