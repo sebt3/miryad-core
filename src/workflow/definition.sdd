@@ -243,6 +243,18 @@ Tasks:
     générique pour un doublon **dans le périmètre d'un même propriétaire** (statut et corps, sans fuite
     de contrainte brute, règle de ../rest/error.sdd) et le consigner ici — si l'existant est un `500`
     générique, le noter en `[?]` plutôt que d'inventer un nouveau code dans cette tâche.
+    Constat à l'implémentation (2026-10-04) — test inline `crud_doublon_meme_proprietaire_rend_database_
+    sans_fuite_de_contrainte`, base sqlite migrée (index #28 en place), politique défaut `AdminOnly`,
+    création par `rest::core::create` : la seconde ligne du couple (`owner_id`, `name`) violente
+    l'index composite, le `DbErr` traverse l'opérateur `?` en @RestError::Database et @IntoResponse
+    rend `500` texte exactement `MRD-REST-003: database error` — corps générique, aucun détail de la
+    contrainte sur le fil (le `UNIQUE constraint failed` de SQLite ne sort qu'en trace `error!`,
+    arbitré 2026-09-29 de ../rest/error.sdd) ; le même `name` chez un autre propriétaire est accepté
+    par le même chemin générique. [?] : une collision pourtant **attendue** sous `OwnerOnly` (deux
+    utilisateurs qui créent leur « mon-workflow ») rend donc un `500` générique — la mapper en `409`
+    (@RestError::Conflict existe depuis 2026-10-03 mais n'a @AuthError::TokenHashConflict pour seul
+    émetteur) ou en `422` demande de distinguer la violation d'unicité dans la masse des `DbErr` ;
+    arbitrage de Sébastien à trancher, pas de code neuf inventé ici.
   [x] `before_update`/`before_delete` sur @MiryadResource : specs de `/src/resource.sdd` et
     `/src/rest/core.sdd` amendées le 2026-09-23, implémentation livrée le même jour (commits
     145b17e hooks + appels, 1d68b79 câblage `rest::core::update`/`delete`, validator PASS).

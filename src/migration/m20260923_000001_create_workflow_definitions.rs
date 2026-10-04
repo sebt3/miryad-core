@@ -18,12 +18,7 @@ impl MigrationTrait for Migration {
                             .auto_increment()
                             .primary_key(),
                     )
-                    .col(
-                        ColumnDef::new(WorkflowDefinition::Name)
-                            .string()
-                            .not_null()
-                            .unique_key(),
-                    )
+                    .col(ColumnDef::new(WorkflowDefinition::Name).string().not_null())
                     .col(ColumnDef::new(WorkflowDefinition::Steps).json().not_null())
                     .col(ColumnDef::new(WorkflowDefinition::OwnerId).integer())
                     .col(
@@ -31,6 +26,37 @@ impl MigrationTrait for Migration {
                             .timestamp_with_time_zone()
                             .not_null(),
                     )
+                    .to_owned(),
+            )
+            .await?;
+        // Unicité du nom par propriétaire (#28) : l'index composite borne les définitions
+        // possédées ; en SQL `NULL` n'égale pas `NULL` dans un index composite, donc les
+        // définitions sans propriétaire lui échappent — c'est l'index partiel ci-dessous qui les
+        // borne (`m20260923_000001_create_workflow_definitions.sdd` `Must`).
+        manager
+            .create_index(
+                Index::create()
+                    .unique()
+                    .if_not_exists()
+                    .name("uq_miryad_workflow_definitions_owner_name")
+                    .table(WorkflowDefinition::Table)
+                    .col(WorkflowDefinition::OwnerId)
+                    .col(WorkflowDefinition::Name)
+                    .to_owned(),
+            )
+            .await?;
+        // `Index::create().unique().and_where(...)` — partiel, rendu `WHERE ...` vérifié au
+        // source de sea-query `1.0.2` (`prepare_filter` des constructeurs Postgres et SQLite),
+        // donc émis sur les deux backends sans repli `execute_unprepared`.
+        manager
+            .create_index(
+                Index::create()
+                    .unique()
+                    .if_not_exists()
+                    .name("uq_miryad_workflow_definitions_name_unowned")
+                    .table(WorkflowDefinition::Table)
+                    .col(WorkflowDefinition::Name)
+                    .and_where(Expr::col(WorkflowDefinition::OwnerId).is_null())
                     .to_owned(),
             )
             .await
@@ -54,7 +80,7 @@ enum WorkflowDefinition {
     CreatedAt,
 }
 
-// Phase test-first : les tests des huit `Scenario` de
+// Phase test-first : les tests des onze `Scenario` de
 // `m20260923_000001_create_workflow_definitions.sdd` sont écrits avant le comportement de
 // production (le `Migration` et son `DeriveIden` suivent dans ce fichier).
 
@@ -88,6 +114,21 @@ mod tests {
         db.execute_unprepared(&format!(
             "INSERT INTO {TABLE} (name, steps, created_at) \
              VALUES ('{name}', '[{{\"step\": \"notify\"}}]', '2026-09-23T00:00:00Z')"
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    /// Ligne complète **possédée** (`owner_id` fourni) — forme des `Scenario` #28 de partage du
+    /// `name` entre propriétaires.
+    async fn insert_owned_row(
+        db: &DatabaseConnection,
+        name: &str,
+        owner_id: i64,
+    ) -> Result<(), sea_orm::DbErr> {
+        db.execute_unprepared(&format!(
+            "INSERT INTO {TABLE} (name, steps, owner_id, created_at) \
+             VALUES ('{name}', '[{{\"step\": \"notify\"}}]', {owner_id}, '2026-09-23T00:00:00Z')"
         ))
         .await
         .map(|_| ())
@@ -162,23 +203,26 @@ mod tests {
         );
     }
 
-    /// Scenario: name dupliqué est rejeté
+    /// Scenario: même name pour un même propriétaire est rejeté — l'index unique
+    /// `uq_miryad_workflow_definitions_owner_name` sur (`owner_id`, `name`) (#28). Remplace le
+    /// test « name dupliqué est rejeté » d'avant #28 (unicité globale).
     #[tokio::test]
-    async fn duplicate_name_is_rejected() {
+    async fn same_owner_duplicate_name_is_rejected() {
         let db = db_with_table_up().await;
 
-        insert_full_row(&db, "deploy-app")
+        insert_owned_row(&db, "deploy-app", 1)
             .await
-            .expect("first insertion with name deploy-app is Ok(())");
-        let second = insert_full_row(&db, "deploy-app").await;
+            .expect("first owned row (deploy-app, owner 1) is Ok(())");
+        let second = insert_owned_row(&db, "deploy-app", 1).await;
         assert!(
             second.is_err(),
-            "second insertion sharing the name must fail with a DbErr"
+            "second row sharing both owner_id and name must fail with a DbErr"
         );
 
         let rows = select(
             &db,
-            "SELECT COUNT(*) AS n FROM miryad_workflow_definitions WHERE name = 'deploy-app'",
+            "SELECT COUNT(*) AS n FROM miryad_workflow_definitions \
+             WHERE name = 'deploy-app' AND owner_id = 1",
         )
         .await;
         let count = rows
@@ -186,7 +230,54 @@ mod tests {
             .expect("COUNT always returns one row")
             .try_get::<i64>("", "n")
             .expect("count decodes as integer");
-        assert_eq!(count, 1, "exactly one row carries the duplicated name");
+        assert_eq!(count, 1, "exactly one row carries the (owner_id, name) pair");
+    }
+
+    /// Scenario: même name pour deux propriétaires différents est accepté (#28) — l'index est
+    /// composite sur (`owner_id`, `name`) et non plus monocolonne sur `name`.
+    #[tokio::test]
+    async fn same_name_for_two_different_owners_is_accepted() {
+        let db = db_with_table_up().await;
+
+        insert_owned_row(&db, "ci", 1)
+            .await
+            .expect("row (ci, owner 1) is Ok(())");
+        insert_owned_row(&db, "ci", 2)
+            .await
+            .expect("row (ci, owner 2) must coexist — uniqueness is per owner (#28)");
+    }
+
+    /// Scenario: même name sans propriétaire est rejeté (#28) — l'index composite laisse passer
+    /// deux `NULL` (`NULL` n'égale pas `NULL` en SQL) ; l'index partiel `WHERE owner_id IS NULL`
+    /// est ce qui ferme ce trou.
+    #[tokio::test]
+    async fn same_name_without_owner_is_rejected() {
+        let db = db_with_table_up().await;
+
+        insert_full_row(&db, "ci")
+            .await
+            .expect("first unowned row (ci, owner_id omitted) is Ok(())");
+        let second = insert_full_row(&db, "ci").await;
+        assert!(
+            second.is_err(),
+            "second unowned row with the same name must fail with a DbErr — the partial index \
+             WHERE owner_id IS NULL does the work the composite index cannot (#28)"
+        );
+    }
+
+    /// Scenario: un name sans propriétaire et le même name possédé coexistent (#28) — l'index
+    /// partiel ne contraint que les lignes `owner_id IS NULL`, l'index composite ne distingue pas
+    /// NULL de 1 : les deux formes coexistent.
+    #[tokio::test]
+    async fn unowned_and_owned_name_coexist() {
+        let db = db_with_table_up().await;
+
+        insert_full_row(&db, "ci")
+            .await
+            .expect("unowned row (ci, owner_id omitted) is Ok(())");
+        insert_owned_row(&db, "ci", 1)
+            .await
+            .expect("owned row (ci, owner 1) must coexist with the unowned one (#28)");
     }
 
     /// Scenario: `owner_id` accepte NULL

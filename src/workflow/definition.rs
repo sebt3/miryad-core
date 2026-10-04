@@ -159,8 +159,9 @@ pub struct Model {
     /// Clé primaire entière auto-incrémentée (convention `miryad_*` de la crate).
     #[sea_orm(primary_key)]
     pub id: i32,
-    /// Nom unique de la définition — colonne de filtre et de libellé de la ressource.
-    #[sea_orm(unique)]
+    /// Nom de la définition, unique **par propriétaire** (#28, 2026-10-04) — la contrainte vit
+    /// dans les deux index de la migration `m20260923_000001`, jamais dans la colonne. Colonne de
+    /// filtre et de libellé de la ressource.
     pub name: String,
     /// Le DAG lui-même, colonne JSON.
     pub steps: DagSteps,
@@ -382,6 +383,37 @@ mod tests {
         }
     }
 
+    /// Base migrée complète (tables internes de `crate::migration`, dont
+    /// `miryad_workflow_definitions` dans sa forme #28 avec les deux index uniques) — fixture du
+    /// seul test de `mod tests` qui écrit réellement en base.
+    async fn base_migreee() -> sea_orm::DatabaseConnection {
+        use sea_orm_migration::MigratorTrait as _;
+        let db = sea_orm::Database::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite connects");
+        crate::migration::Migrator::up(&db, None)
+            .await
+            .expect("migrations apply cleanly");
+        db
+    }
+
+    /// Principal dont l'utilisateur (provisionné par `resolve_user`) est membre du groupe admin —
+    /// sous le défaut `AdminOnly` (jamais de `configure_policy` dans ce binaire), c'est la seule
+    /// identité que `rbac::can_create` admet à la création.
+    async fn principal_admin(db: &sea_orm::DatabaseConnection, subject: &str) -> AuthPrincipal {
+        use crate::users::{ADMIN_GROUP_NAME, resolve_user, sync_group_memberships};
+        let user = resolve_user(db, subject, None).await.expect("user provisioned");
+        sync_group_memberships(db, user.id, &[ADMIN_GROUP_NAME.to_string()])
+            .await
+            .expect("admin membership synced");
+        AuthPrincipal {
+            subject: subject.to_string(),
+            email: None,
+            preferred_username: None,
+            source: PrincipalSource::ApiToken { token_id: 1 },
+        }
+    }
+
     /// Extrait le texte libre de `WorkflowError::InvalidDag` ; toute autre issue est une faute
     /// distincte, marquée rouge explicitement.
     fn message_invalid_dag(resultat: Result<(), WorkflowError>) -> String {
@@ -564,5 +596,87 @@ mod tests {
         );
         assert!(matches!(Entity::filter_column(), Some(Column::Name)));
         assert!(matches!(Entity::label_column(), Some(Column::Name)));
+    }
+
+    /// Scenario « le Model ne déclare plus d'unicité globale sur `name` (#28) » : l'attribut
+    /// `#[sea_orm(unique)]` est retiré de la colonne — l'unicité par propriétaire n'existe que
+    /// dans le schéma de la migration (deux index de
+    /// `../migration/m20260923_000001_create_workflow_definitions.sdd`).
+    #[test]
+    fn le_model_ne_declare_plus_unicite_globale_sur_name() {
+        use sea_orm::ColumnTrait as _;
+        assert!(
+            !Column::Name.def().is_unique(),
+            "`name` ne doit plus être marqué unique dans le `Model` : la contrainte vit dans les \
+             index de la migration (#28)"
+        );
+    }
+
+    /// Consignation de la tâche #28 — ce que rend le CRUD générique pour un doublon **dans le
+    /// périmètre d'un même propriétaire**, vérifié à l'implémentation sur base migrée (les deux
+    /// index #28 sont donc ceux qui jouent) : premier `create` `Ok` ; doublon même (`owner_id`,
+    /// `name`) → `RestError::Database` → rendu `500` à corps texte générique
+    /// `MRD-REST-003: database error`, sans fuite de la contrainte brute (règle « corps `500`
+    /// génériques et détail en trace », arbitré 2026-09-29, `../rest/error.sdd`) ; et le même
+    /// `name` chez un autre propriétaire passe par le même chemin générique (#28).
+    #[tokio::test]
+    async fn crud_doublon_meme_proprietaire_rend_database_sans_fuite_de_contrainte() {
+        use crate::rest::core::create;
+        use crate::rest::error::RestError;
+        use axum::response::IntoResponse as _;
+
+        let db = base_migreee().await;
+        let admin = principal_admin(&db, "sujet-admin-un").await;
+
+        let corps = Model {
+            id: 0,
+            name: "deploy".to_string(),
+            steps: DagSteps(dag_valide()),
+            owner_id: None,
+            created_at: Utc::now(),
+        };
+        create::<Entity>(&db, &admin, corps.clone())
+            .await
+            .expect("première création `deploy` par le CRUD générique réussit");
+
+        let doublon = create::<Entity>(&db, &admin, corps.clone())
+            .await
+            .expect_err("le doublon (`owner_id`, `name`) doit être refusé par l'index composite #28");
+        assert!(
+            matches!(doublon, RestError::Database(_)),
+            "la contrainte violée devient `RestError::Database` (`MRD-REST-003`), jamais une \
+             variante fabriquée ici : {doublon:?}"
+        );
+
+        // Rendu fil (`../rest/error.sdd`) : `500` générique, aucune fuite de contrainte brute.
+        let reponse = doublon.into_response();
+        assert_eq!(
+            reponse.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "le doublon même-propriétaire rend `500`"
+        );
+        let octets = axum::body::to_bytes(reponse.into_body(), usize::MAX)
+            .await
+            .expect("le corps se relit");
+        let texte = String::from_utf8(octets.to_vec()).expect("le corps est en utf-8");
+        assert_eq!(texte, "MRD-REST-003: database error");
+        for trace_interdite in [
+            "UNIQUE",
+            "unique",
+            "uq_miryad",
+            "constraint",
+            "miryad_workflow_definitions",
+        ] {
+            assert!(
+                !texte.contains(trace_interdite),
+                "le détail de la contrainte ne traverse jamais le fil : {texte:?}"
+            );
+        }
+
+        // Raison d'être de #28 : un autre propriétaire crée le même `name` par le même chemin.
+        let second_admin = principal_admin(&db, "sujet-admin-deux").await;
+        create::<Entity>(&db, &second_admin, corps)
+            .await
+            .expect("le même `name` chez un autre propriétaire est accepté par le CRUD (#28)");
     }
 }
