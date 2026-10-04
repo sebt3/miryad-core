@@ -51,6 +51,13 @@ Must:
     dupliquer ici.
   Garder le bloc `//!` comme orientation du module : il compose avec la doc externe que
     /src/lib.sdd met sur la déclaration `pub mod users` pour la page docs.rs du module.
+  Ne pas mettre à plat @ensure_group : omission assumée (arbitré par Sébastien le 2026-09-29). Primitive réservée à
+    ./membership.rs et aux migrations, accessible par le chemin enfant `users::group::ensure_group` ;
+    la façade plate n'expose que les items destinés aux appelants du moteur.
+  Laisser chaque module enfant porter son bloc `//!` en tête de fichier (arbitré par Sébastien le 2026-09-29) : c'est ce qui éteint
+    les quatre `missing_docs` « for a module » des lignes `pub mod`, sans toucher ce fichier.
+  Les @sea_orm::DbErr de la surface plate restent nues (arbitré par Sébastien le 2026-09-29) : le code `MRD-*` est posé par la
+    surface qui les traduit (règle transverse de `.specdd/bootstrap.project.md`).
 
 Must not:
   Gater sous une feature une déclaration ou un ré-export : aucune feature de /Cargo.toml ne
@@ -101,9 +108,10 @@ Exposes:
     modifie pas) : @users::is_admin et @users::is_member génériques sur `C: @ConnectionTrait`
     retournant @Result<@bool, @sea_orm::DbErr> ; @users::resolve_user générique sur le même
     @ConnectionTrait retournant @Result<@user::Model, @sea_orm::DbErr> ;
-    @users::sync_group_memberships générique sur @ConnectionTrait retournant
-    @Result<(), @sea_orm::DbErr> ; @users::ensure_service_account sur @DatabaseConnection
-    concret retournant @Result<(), @sea_orm::DbErr>.
+    @users::sync_group_memberships générique sur @ConnectionTrait + @TransactionTrait (bound
+    élargi le 2026-09-30 pour la transaction interne) retournant @Result<(), @sea_orm::DbErr> ;
+    @users::ensure_service_account sur @DatabaseConnection
+    concret retournant @Result<(), @AuthError> (type changé le 2026-09-30, arbitré 2026-09-29).
   Non mis à plat, atteignables par le chemin du sous-module seulement : @group::ensure_group
     (pub, consommé par ./membership.rs et par ./migration/m20260822_000003_seed_admin_group.rs
     par le chemin enfant), et les items générés par @DeriveEntityModel de chaque entité —
@@ -135,22 +143,13 @@ Raises:
     en `Tasks`, pas un contrat de ce fichier.
 
 Tasks:
-  [?] @ensure_group est pub dans ./group.rs, consommé depuis ./membership.rs et la migration de
-    seed par le chemin enfant, mais n'est pas mis à plat ici alors que tous les autres items
-    pub destinés à sortir du module le sont : omission assumée (réservé à l'usage interne et
-    aux migrations) ou mise à plat à ajouter pour la cohérence de la facade ?
-  [?] Les @sea_orm::DbErr de la surface plate (@users::resolve_user,
-    @users::sync_group_memberships, @users::is_admin, @users::is_member,
-    @users::ensure_service_account) ne portent aucun code `MRD-*`, alors que
-    `.specdd/bootstrap.project.md` en prescrit un pour toute erreur interne de la crate : le
-    contrat transverse plie-t-il pour @sea_orm::DbErr de passage, ou y a-t-il un trou à traiter
-    module par module ? L'arbitrage déborde les quatre specs enfants et cette agrégation ; la
-    conversion des `Scenario` ne doit pas graver l'absence actuelle comme contrat.
-  [?] Les quatre avertissements `missing_docs` « for a module » portent sur les lignes de
-    déclaration `pub mod` de ce fichier : documenter au niveau agrégé (doc externe sur les
-    quatre déclarations ici) ou laisser chaque enfant porter son bloc `//!` en tête de fichier,
-    ce qui éteint les avertissements sans toucher ce fichier ?
-  [ ] Convertir les cinq `Scenario` en au moins cinq tests nommés et distincts : quatre dans un
+  [x] @ensure_group non aplati : omission assumée (arbitré par Sébastien le 2026-09-29, `Must`).
+  [x] `DbErr` de passage nues, code par la surface (arbitré par Sébastien le 2026-09-29, `Must`,
+    règle transverse ajoutée à `.specdd/bootstrap.project.md`).
+  [x] Bloc `//!` en tête de `./user.rs`, `./group.rs`, `./membership.rs` et
+    `./service_account.rs` (arbitré par Sébastien le 2026-09-29, `Must`) — documentation seule,
+    aucun changement de `./mod.rs`. Réalisé 2026-09-30 (B2).
+  [x] Convertir les cinq `Scenario` en au moins cinq tests nommés et distincts : quatre dans un
     `mod tests` `#[cfg(test)]` de ./mod.rs à créer (le fichier n'a aucun test inline à ce jour)
     — résolution compilée des neuf chemins plats avec assert runtime sur @users::ADMIN_GROUP_NAME
     `admin`, identité de type des trois alias, list `use` mixte modules + items, résolution des
@@ -158,13 +157,15 @@ Tasks:
     combinaison `--no-default-features` de la matrice de /tooling.sdd, l'exercice de features
     débordant du fichier. L'absence de glob et la liste exacte de neuf items relèvent de la
     relecture `Done when` : aucun outil de compile-failure n'existe dans le dépôt pour prouver
-    qu'un chemin plat absent n'existe pas.
+    qu'un chemin plat absent n'existe pas. Réalisé 2026-09-30 (B2, validator PASS) : quatre tests
+    inline à l'identité de type réellement affirmée, cinquième consigné en commentaire du
+    `mod tests` et prouvé par le combo `--no-default-features` vert.
 
 Done when:
   Cinq `Scenario` ont chacun au moins un test nommé distinct et vert, ou une place explicite
     dans la matrice de /tooling.sdd pour celui hors fichier ; la relecture confirme quatre
     `pub mod` sans gating et quatre `pub use` couvrant exactement les neuf items d'`Exposes`,
-    sans glob ni renommage ; les trois lignes `[?]` sont arbitrées par Sébastien ; `cargo check`
+    sans glob ni renommage ; les trois lignes [arbitré 2026-09-29] sont arbitrées par Sébastien ; `cargo check`
     n'ajoute aucun avertissement sur ce fichier au-delà des quatre déjà tracés ; la batterie de
     /tooling.sdd passe verte sur toutes les combinaisons ; la spec est approuvée par lui.
 

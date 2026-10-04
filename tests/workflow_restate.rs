@@ -13,6 +13,29 @@
 //! crash du *processus service* — le serveur de test vit dans le processus du test et ne peut pas
 //! être tué sans tuer le test. Le rejeu d'un step transitoire, lui, est exercé ici.
 
+// Famille panic/unwrap/indexation tolérée dans cette crate de test : en-tête d'exemption
+// équivalent à celui de `src/lib.rs`, posé d'après le `Must` de `tooling.sdd` — une crate
+// d'intégration n'hérite pas des attributs de la librairie. Groupes `pedantic` et `cargo`
+// restent `deny` sous `cfg(test)` : les deux `duration_suboptimal_units` mesurés ici sont
+// corrigés dans le code (unités canoniques), non éteints par l'en-tête.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::dbg_macro,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::print_stdout,
+        clippy::print_stderr,
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
 #![cfg(feature = "workflow")]
 
 use std::collections::HashMap;
@@ -37,6 +60,7 @@ use miryad_core::workflow::register_deployment;
 use miryad_core::workflow::trigger_run;
 use restate_sdk::prelude::Endpoint;
 use restate_sdk::prelude::HttpServer;
+use restate_sdk::prelude::IntoServiceDefinition;
 use serde_json::Value;
 use serde_json::json;
 
@@ -161,7 +185,11 @@ impl Stack {
             .expect("kinds distincts");
         let endpoint = Endpoint::builder()
             .bind(DagInterpreter)
-            .bind_with_options(StepDispatcher::new(registry), recommended_options())
+            .bind(
+                StepDispatcher::new(registry)
+                    .into_service_definition()
+                    .options(recommended_options()),
+            )
             .build();
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", app))
             .await
@@ -175,7 +203,7 @@ impl Stack {
         };
         let http = reqwest::Client::new();
         // Attente de disponibilité de l'admin API, puis enregistrement du déploiement.
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_mins(1);
         loop {
             let up = http
                 .get(format!("{}/health", config.admin_url))
@@ -211,7 +239,7 @@ impl Stack {
                 "{}/restate/workflow/DagInterpreter/{}/attach",
                 self.config.ingress_url, handle.run_key
             ))
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_mins(2))
             .send()
             .await
             .expect("l'attache au workflow doit répondre");

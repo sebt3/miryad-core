@@ -87,11 +87,13 @@ mod tests {
 
     fn test_state(db: DatabaseConnection) -> MiryadAuthState {
         MiryadAuthState {
-            oidc_client: std::sync::Arc::new(MockOidcClient),
+            oidc_client: std::sync::Arc::new(MockOidcClient::default()),
             cookie_key: ::cookie::Key::from(&[0u8; 64]),
             post_login_redirect: "/".to_string(),
             post_logout_redirect: "/".to_string(),
             db,
+            secure_cookies: false,
+            token_pepper: "test-pepper".to_string(),
         }
     }
 
@@ -116,7 +118,7 @@ mod tests {
     #[tokio::test]
     async fn graphql_handler_injects_database_connection_into_request_context() {
         let db = test_db().await;
-        let token = issue_token(&db, "alice", "test", None)
+        let token = issue_token(&db, "alice", "test", None, "test-pepper")
             .await
             .expect("issuing succeeds")
             .token;

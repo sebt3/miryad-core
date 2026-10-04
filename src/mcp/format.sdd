@@ -3,7 +3,7 @@ Spec: format — mise en forme des sorties de tools MCP (Handlebars + JSON)
 Purpose:
   Fixer la chaîne de rendu des sorties de `tools/call` MCP : à partir d'un @OutputFormat choisi
     une fois pour toute l'app au montage (@McpToolRegistry::new), d'une forme interne
-    (@RenderShape::Record pour get/create/update/delete, @RenderShape::List pour list) et d'un
+    (@RenderShape::Record pour get/create/update — delete n'est plus rendu depuis le 2026-09-29, @RenderShape::List pour list) et d'un
     @serde_json::Value déjà produit par @./registry.rs, choisir la chaîne template Handlebars et
     la rendre via le moteur @vynil_core::hbs. Ce que l'agent MCP lit dans @content du tool result
     est exactement ce texte brut : un seul bloc `{ "type": "text" }`, jamais du JSON structuré ni
@@ -23,9 +23,11 @@ References:
     `{ "content": [{ "type": "text", "text": text }] }` ; en cas d'@Err il appelle
     @McpError::rpc_code (le @Render vaut -32603, standard JSON-RPC « Internal error »).
   ./registry.rs — autre consommateur : alimente @render avec @serde_json::to_value de la page
-    (@rest::core::list), de l'enregistrement (get/create/update) et @Value::Null pour
-    @McpOp::Delete ; porte @McpToolRegistry.format (@pub(crate)) fixé à la construction.
-  ./error.rs — @McpError::Render(@String), affiché `MRD-MCP-004: template render error: {0}`,
+    (@rest::core::list), de l'enregistrement (get/create/update) ; @McpOp::Delete n'est plus rendu
+    (confirmation fixe posée par ./handler.rs, arbitré 2026-09-29) ; porte @McpToolRegistry.format (@pub(crate)) fixé à la construction.
+  ./error.rs — @McpError::Render(@String), affiché `MRD-MCP-004: output rendering error: {0}`
+    (texte de l'arbitrage 2026-09-29, aligné ici le 2026-10-02 — le préfixe initial
+    `template render error:` était périmé),
     code JSON-RPC -32603, @data @None.
   ../query.sdd — les clés `items`, `page`, `per_page`, `total_items` et `total_pages` de
     @PagedResult, promises là-bas comme contrat inter-surfaces, sont l'interface de données que
@@ -90,7 +92,7 @@ Accepts:
   @data : tout @serde_json::Value. Trois fournisseurs réels : objet d'un enregistrement
     (`get`/`create`/`update`, sérialisation SeaORM @Model), objet page
     `    { items, page, per_page, total_items, total_pages }` (`list`, via @rest::core::list et
-    ../query.sdd), et @Value::Null (`delete`, branche @McpOp::Delete de ./registry.rs).
+    ../query.sdd), et @Value::Null (propriété de @render, plus appelée pour `delete` depuis le 2026-09-29).
   @engine : un moteur construit par @HandleBars::new() hors du fichier, par ./handler.rs à
     chaque @tools/call — le fichier n'appelle jamais @register_template, @engine_mut, ni
     n'enregistre de partial : le gabarit est rendu à la source (@render_template), sans cache.
@@ -120,15 +122,17 @@ Returns:
     pour @Value::Null et la chaîne vide.
   @DEFAULT_MARKDOWN_RECORD_TEMPLATE =
     `{{#each this}}\n- **{{@key}}**: {{this}}\n{{/each}}\n` : une ligne `- **clé**: valeur` par
-    champ de l'objet, chaque itération émettant d'abord son propre saut de ligne — deux champs
-    rendent donc une ligne vide ENTRE les deux ; l'objet vide `{}` rend le seul dernier
-    @\n du gabarit (texte `"\n"`). Valeurs non scalaires via @JsonRender amont : objet imbriqué
+    champ de l'objet. Réel arbitré le 2026-10-03 : @handlebars 6.4.4 consomme les sauts de ligne
+    adjacents aux balises de bloc seules sur leur ligne (standalone block tags) — deux champs
+    rendent `- **id**: 1\n- **title**: Tarte\n` (ni `\n` initial ni ligne vide entre champs) et
+    l'objet vide `{}` rend la chaîne vide `""`. Valeurs non scalaires via @JsonRender amont : objet imbriqué
     → littéral `[object]`, tableau → `[v1, v2]`, @Json::Null → vide après `: `.
   @DEFAULT_MARKDOWN_LIST_TEMPLATE =
     `{{#each items}}\n- {{#each this}}{{@key}}={{this}} {{/each}}\n{{/each}}\n` suivi de
     `_page {{page}}/{{total_pages}}, {{total_items}} item(s) au total_\n` : par item une ligne
     `- clé=valeur clé=valeur … ` avec une espace finale y compris après la dernière paire,
-    et une ligne vide entre items (le @\n initial du corps) ; le pied de page est
+    sans ligne vide entre items ni `\n` initial (balises standalone consommées par @handlebars
+    6.4.4, réel arbitré le 2026-10-03) ; le pied de page est
     émis même avec @items vide, avec les valeurs brutes de la page — une table vide rend
     `1/0` (../query.sdd @Done when amont @sea_orm : `0` ligne fait `0` page), jamais réécrit en
     `1/1`. La valeur @{{total_pages}} rendue n'est jamais recalculée ici.
@@ -140,7 +144,7 @@ Returns:
 
 Raises:
   @McpError::Render(@String) — code `MRD-MCP-004`, message complet
-    `MRD-MCP-004: template render error: Renderer error: {détail handlebars}` (préfixe @./error.rs
+    `MRD-MCP-004: output rendering error: Renderer error: {détail handlebars}` (préfixe @./error.rs
     + affichage @vynil @Error::HbsRenderError vérifiée en amont) — produit par l'unique
     @map_err(@e| @McpError::Render(@e.to_string())) de @render, par @./handler.rs en réponse
     JSON-RPC code -32603 @data @None, sans contenu partiel. Quatre branches amont l'atteignent,
@@ -151,7 +155,7 @@ Raises:
     écrit pour un enregistrement mais appelant une clé de page, ou l'inverse — le fichier ne
     pré-vérifie rien) ;
     mode strict : @{{#each}} dont la valeur est @Json::Null ou un scalaire sans bloc inverse —
-    c'est le chemin du tool `_delete` en Markdown (@Value::Null) ;
+    plus le chemin de `_delete` depuis l'arbitrage du 2026-09-29 (jamais rendu) ;
     helper inconnu ou erreur interne d'un helper (@json_to_str avec `format=` inconnu, par
     exemple) remontée en @RenderError imbriqué.
   Aucune panic, aucun @unwrap, aucun @expect dans le code de production du fichier : la chaîne
@@ -162,12 +166,10 @@ Raises:
     données ; @./registry.rs en fabrique aussi via @serde_json::to_value hors format.
 
 Handles:
-  `delete` (donnée @Value::Null) : @Json et @Yaml rendent le texte vide, que @./handler.rs
-    pose dans `content` — l'agent reçoit un bloc `text` vide ; @Markdown échoue en `MRD-MCP-004`
-    APRÈS que la suppression a été commise en base (./registry.rs exécute @rest::core::delete
-    avant le rendu : @handle_tools_call ne rend qu'après @Ok) — l'agent voit un -32603 sur une
-    opération pourtant réussie ; asymétrie portée en `Tasks` `[?]`. @Custom reçoit @Value::Null
-    comme contexte racine et rend ce que son gabarit en fait.
+  `delete` : jamais rendu par ce fichier (arbitré par Sébastien le 2026-09-29) — ./handler.rs pose la confirmation fixe `deleted`
+    dans `content` sans appeler @render, quelle que soit la forme de sortie, si bien que la
+    suppression commise en base ne peut plus être suivie d'un échec de rendu ; le cas
+    @Value::Null + gabarit @Markdown en `MRD-MCP-004` a disparu.
   `list` sur table vide : @page `1`, @total_pages `0` → pied `_page 1/0, 0 item(s) au total_` ;
     le @each sur @items vide itère zéro fois et ne déclenche pas le mode strict (garde amont
     vérifiée @handlebars 6.4.4).
@@ -181,8 +183,8 @@ Handles:
   Ordre des objets : sans @serde_json/preserve_order dans toute la batterie (vérifiée @cargo
     tree en `--features mcp` et `--all-features` : seules `default`, `std`, `raw_value`), les
     cartes @serde_json sont des @BTreeMap → clés itérées et sérialisées en ordre lexicographique.
-    Le résultat exact des gabarits Markdown en dépend ; cette stabilité d'ordre est un effet d'unification
-    de features, portée en `Tasks` `[?]`, pas un contrat que ./format.rs calcule.
+    Cet ordre est un contrat wire gelé (arbitré 2026-09-29) : les Scenario d'ordre exact le verrouillent ;
+    si une dépendance amont active un jour `preserve_order`, ils cassent et le signalent.
   Sans trace : ./format.rs n'émet aucun @tracing — les @warn eventuels des helpers non-string de
     @vynil appartiennent à l'amont, pas au fichier.
   Toute combinaison de features : en dehors de @mcp le fichier n'existe pas à la compilation ;
@@ -215,12 +217,18 @@ Must:
     @Json/@Yaml ne produisent pas une sérialisation.
   Rester un fichier pur : aucune lecture de @DatabaseConnection, aucun extracteur @axum, aucun
     cookie ni token — la donnée arrive déjà sérialisée (@Returns de ./registry.rs).
-  Conserver @render comme point unique de rendu pour TOUTES les opérations (get/create/update/
-    list/delete) : @McpOp::Delete n'a pas de chemin spécial dans ce fichier, sa forme vide est
-    un effet de @Value::Null + gabarit.
+  Conserver @render comme point unique de rendu pour les opérations `list`, `get`, `create` et
+    `update` : @McpOp::Delete n'y passe plus (arbitré par Sébastien le 2026-09-29) (confirmation fixe `deleted` posée par
+    ./handler.rs).
   Ne jamais dépendre d'un gabarit pré-enregistré dans le moteur : @render passe la source à
     @HandleBars::render, le moteur est jetable — un @HandleBars neuf par appel rend exactement
     le même texte qu'un moteur usagé.
+  L'ordre lexicographique des clés des rendus Markdown et `clé=valeur` est un contrat wire gelé
+    (arbitré par Sébastien le 2026-09-29) ; les tests d'ordre exact des Scenario le verrouillent.
+  Le mode strict de Handlebars est une promesse documentée (arbitré par Sébastien le 2026-09-29) : hérité de @setup_handlebars amont,
+    tout gabarit @Custom qui vise une clé absente échoue en `-32603` (`MRD-MCP-004`, message
+    générique sur le fil, détail en trace) ; miryad-core ne dévie pas du moteur, l'application doit
+    viser juste.
 
 Must not:
   Fallback sur un autre format, un gabarit de secours ou un @json_to_str JSON quand un rendu
@@ -229,7 +237,7 @@ Must not:
     transformation serait une divergence avec ce que @./handler.rs pose dans `content`.
   Offrir un cinquième format ni exposer Toml : @json_to_str accepte `format="toml"` et
     `toml_pretty` chez l'amont, mais @OutputFormat n'a pas de variant Toml — seul un @Custom
-    exploitant le helper y a accès ; asymétrie portée en `Tasks` `[?]`.
+    exploitant le helper y a accès ; asymétrie portée en `Tasks` [arbitré 2026-09-29].
   Appliquer un gabarit par-tool ou par-field d'un même tool (`_list` et `_get` d'une même
     entité partagent obligatoirement le @OutputFormat du montage) — le tri @format × @shape est
     le seul axe de variation.
@@ -246,7 +254,7 @@ Forbids:
 
 Depends on:
   @vynil_core::hbs::HandleBars — @via la feature @mcp (@dep:vynil-core version `0.7.4` verrouillée,
-    @default-features = false, @features = ["hbs", "crypto"] de ../../Cargo.toml) ; moteur Handlebars
+    @default-features = false, @features = ["hbs"] de ../../Cargo.toml depuis le 2026-09-29, `crypto` purgée) ; moteur Handlebars
     unifié @handlebars 6.4.4 + @handlebars_misc_helpers 0.17.0 (@cargo tree vérifié).
   @./error.rs — @McpError et sa variante @Render (`MRD-MCP-004`) ; ./format.rs est l'émetteur
     principal de cette variante pour la surface MCP.
@@ -256,30 +264,23 @@ Depends on:
   ../query.sdd — contrat sur les clés du JSON de page que le gabarit Markdown liste lit.
 
 Tasks:
-  [?] `delete` en Markdown échoue APRÈS suppression commise : @Value::Null + gabarit Record =
-    @{{#each this}} strict → @MRD-MCP-004 → JSON-RPC -32603, alors que la ligne est déjà détruite
-    (./registry.rs exécute avant le rendu) et qu'en @Json/@Yaml ce même tool rend un texte vide
-    toléré. Faut-il une forme/message de succès dédié pour @McpOp::Delete (sans rendu des
-    données), rendre le texte vide toléré pour Markdown, ou assumer l'échec ? Décision Sébastien.
-  [?] L'ordre lexicographique des clés (BTreeMap, absence de @serde_json/preserve_order vérifiée
-    dans la batterie entière) est-il un contrat wire ou un accident d'unification ? La moindre
-    dépendance amont activant @preserve_order retournerait les lignes `- **clé**: valeur` et les
-    paires `clé=valeur` en ordre de déclaration, sans toucher une ligne de miryad-core. Gel
-    explicite (test d'ordre exact, déjà en Scenarios) ou documenté comme non contractuel ?
-  [?] ../query.sdd cite le gabarit sous la forme `_page {{page}}/{{total_pages}}, {{total_items}}
-    item(s)_` sans le ` au total` final ni la ligne d'items — la citation est
-    tronquée vs le contrat exact de @Returns : on corrige ../query.sdd ou ce fichier acte-t-il
-    la dérive acceptée ? (doc cross-spec, aucune des deux surfaces ne bouge.)
-  [?] Le mode strict vient de @setup_handlebars amont (@set_strict_mode(true)), pas d'un choix
-    de miryad-core : tout gabarit @Custom adressant une clé absente échoue en -32603 au lieu de
-    rendre vide. Le documente-t-on comme promesse (« l'app doit viser juste ») ou miryad-core
-    devrait-il dévier du moteur — @HandleBars::new() est construit par ./handler.rs, un
-    assouplissement (@engine_mut + @set_strict_mode(false)) y aurait sa place, pas dans
-    ./format.rs ? Question de contrat, pas d'implémentation.
-  [ ] À la purge du harnais sur ce module (../../tooling.sdd) : commentaires `///` sur les trois
+  [x] `delete` : confirmation fixe `deleted` posée par ./handler.rs, jamais rendu par ce fichier
+    (arbitré par Sébastien le 2026-09-29) — tâche de code dans ./handler.sdd ; ce fichier ne change pas, seuls ses Scenario relatifs
+    à `delete` (rendu de @Value::Null) sont retirés.
+  [x] Ordre lexicographique des clés : contrat wire gelé, verrouillé par les Scenario d'ordre exact
+    (arbitré par Sébastien le 2026-09-29) (`Must`).
+  [x] Corriger la citation du gabarit dans ../query.sdd : le texte exact de @Returns est
+    `_page {{page}}/{{total_pages}}, {{total_items}} item(s) au total_` avec la ligne d'items (arbitré par Sébastien le 2026-09-29) —
+    documentation seule dans ../query.sdd. Corrigé 2026-10-02 par spec-dd (le texte cité dans
+    ../query.sdd omettait ` au total`).
+  [x] Mode strict documenté comme promesse (« l'app doit viser juste »), sans dérogation au moteur
+    (arbitré par Sébastien le 2026-09-29) (`Must`).
+  [x] À la purge du harnais sur ce module (../../tooling.sdd) : commentaires `///` sur les trois
     variants publics @Json, @Yaml, @Markdown de @OutputFormat (@Custom est le seul documenté),
-    seuls points `missing_docs` du fichier.
-  [ ] Convertir les onze `Scenario` en au moins onze tests nommés distincts du
+    seuls points `missing_docs` du fichier. Soldé par la vague A3 de purge du harnais
+    (validator PASS) : les trois variants portent leur `///`, vérifié HEAD 2b8c15d sous
+    `missing_docs = "deny"`.
+  [x] Convertir les onze `Scenario` en au moins onze tests nommés distincts du
     `#[cfg(test)] mod tests` de ./format.rs, un par scenario : « enregistrement rendu en JSON par
     défaut » → @json_format_renders_valid_json (existant, à tendre vers l'égalité exacte) ;
     « enregistrement rendu en YAML par défaut » → @yaml_format_renders_yaml_not_json (existant) ;
@@ -297,6 +298,12 @@ Tasks:
     le HTML » → @markdown_record_keeps_raw_html_chars (à créer). Le contrat déborde du fichier
     côté enveloppe : la mise en `content: [{ "type": "text" }]` et le mapping -32603 appartiennent
     aux specs ./handler.sdd et ./error.sdd (tests de ces specs, pas de celles-ci).
+  [x] Lignes vides promises par les gabarits Markdown : arbitré par Sébastien le 2026-10-03 — le
+    contrat suit le réel (@handlebars 6.4.4, standalone block tags). `Returns` et les trois
+    `Scenario` Markdown réécrits ; changer les gabarits serait un changement de fil visible par
+    l'agent MCP, donc un cycle spec-first séparé. Les commentaires « Écart consigné » de
+    ./format.rs deviennent obsolètes : une tâche autorisée les retire, les égalités exactes des
+    tests restent.
 
 Done when:
   Chaque `Scenario` dispose d'au moins un test nommé distinct vérifiant son `Then` dans le
@@ -305,7 +312,7 @@ Done when:
   La batterie ../../tooling.sdd est verte sur `--no-default-features --features mcp` et
     `--all-features` (les seules combinaisons où le fichier compile) et ./format.rs ne porte plus
     d'avertissement `missing_docs` quand la tâche de purge le touche.
-  Les quatre lignes `[?]` de `Tasks` ont une décision de Sébastien reflétée dans la spec (delete
+  Les quatre lignes [arbitré 2026-09-29] de `Tasks` ont une décision de Sébastien reflétée dans la spec (delete
     en Markdown, ordre des clés, citation de ../query.sdd, mode strict).
   La spec est relue et approuvée par Sébastien, seule l'implementer convertissant ensuite les
     `Scenario` en tests.
@@ -328,9 +335,9 @@ Scenario: enregistrement rendu en YAML par défaut
 Scenario: enregistrement rendu en Markdown par défaut
   Given un @HandleBars::new() et @OutputFormat::Markdown
   When @render est appelé avec @RenderShape::Record sur `{"id": 1, "title": "Tarte"}`
-  Then le texte rendu est exactement `\n- **id**: 1\n\n- **title**: Tarte\n\n` — une ligne par
-    champ, une ligne vide entre les champs, @\n final du gabarit
-  And l'objet vide `{}` rend le seul texte `"\n"` — sans erreur malgré le mode strict
+  Then le texte rendu est exactement `- **id**: 1\n- **title**: Tarte\n` — une ligne par champ,
+    sans ligne vide ni `\n` initial (balises de bloc standalone consommées par le moteur)
+  And l'objet vide `{}` rend la chaîne vide `""` — sans erreur malgré le mode strict
 
 Scenario: page rendue en Markdown par défaut
   Given un @HandleBars::new() et @OutputFormat::Markdown
@@ -338,8 +345,8 @@ Scenario: page rendue en Markdown par défaut
     `{"items": [{"id": 1, "owner_id": 7, "title": "Tarte"}], "page": 1, "per_page": 100,
     "total_items": 1, "total_pages": 1}`
   Then le texte rendu est exactement
-    `\n- id=1 owner_id=7 title=Tarte \n\n_page 1/1, 1 item(s) au total_\n` — les paires
-    `clé=valeur` séparées par une espace, une espace finale aussi après la dernière, une ligne
+    `- id=1 owner_id=7 title=Tarte \n_page 1/1, 1 item(s) au total_\n` — les paires
+    `clé=valeur` séparées par une espace, une espace finale aussi après la dernière, aucune ligne
     vide entre items, et le pied de page toujours présent
   And `per_page` de la page n'apparaît nulle part dans le rendu
 
@@ -348,7 +355,7 @@ Scenario: liste vide — aucune ligne d'items et pied 1/0
   When @render est appelé avec @RenderShape::List sur la page
     `{"items": [], "page": 1, "per_page": 100, "total_items": 0, "total_pages": 0}` — les totaux
     qu'un @sea_orm::Paginator rend sur une table vide (../query.sdd)
-  Then le texte rendu est exactement `\n_page 1/0, 0 item(s) au total_\n`
+  Then le texte rendu est exactement `_page 1/0, 0 item(s) au total_\n`
   And aucun caractère d'item n'est émis
   But le `1/0` du pied n'est ni ramené à `1/1` ni remplacé par `aucun résultat`
 
@@ -365,7 +372,7 @@ Scenario: clé absente en mode strict — pas de fallback, MRD-MCP-004
   When @render est appelé avec @RenderShape::List sur la page
     `{"items": [], "page": 1, "per_page": 100, "total_items": 0, "total_pages": 0}`
   Then le résultat est @Err(@McpError::Render(…)) dont l'affichage porte le préfixe
-    `MRD-MCP-004: template render error:`
+    `MRD-MCP-004: output rendering error:`
   But aucun texte n'est produit — ni `Titre : `, ni un repli sur le JSON par défaut
 
 Scenario: gabarit syntaxiquement invalide — MRD-MCP-004
@@ -377,7 +384,7 @@ Scenario: gabarit syntaxiquement invalide — MRD-MCP-004
     échoue au rendu (@render_template), pas au montage du registre
   And la fonction rend sans panic sur ce chemin
 
-Scenario: delete (null) — Json et Yaml rendent vide
+Scenario: donnée @Value::Null — Json et Yaml rendent vide (propriété de @render, `delete` ne l'appelle plus)
   Given un @HandleBars::new()
   When @render est appelé avec @OutputFormat::Json puis avec @OutputFormat::Yaml, en
     @RenderShape::Record, sur @serde_json::Value::Null — la valeur que ./registry.rs rend pour
@@ -385,14 +392,14 @@ Scenario: delete (null) — Json et Yaml rendent vide
   Then les deux appels succeedent et rendent la chaîne vide `""`
   And @./handler.rs encapsule ce vide en `content` d'un unique bloc `text` de chaîne vide
 
-Scenario: delete (null) — Markdown échoue en MRD-MCP-004
+Scenario: donnée @Value::Null — Markdown échoue en MRD-MCP-004 (propriété de @render, `delete` ne l'appelle plus)
   Given un @HandleBars::new() et @OutputFormat::Markdown
   When @render est appelé avec @RenderShape::Record sur @serde_json::Value::Null
   Then le résultat est @Err d'affichage préfixée `MRD-MCP-004:` — @{{#each this}} sur une valeur
     @null déclenche @RenderError::strict_error amont (@handlebars 6.4.4 vérifiée, mode strict
     actif via @setup_handlebars)
   But aucun texte vide n'est rendu, contrairement à @Json et @Yaml sur la même donnée —
-    asymétrie portée en `Tasks` `[?]`
+    asymétrie portée en `Tasks` [arbitré 2026-09-29]
 
 Scenario: Markdown par défaut n'échappe pas le HTML
   Given un @HandleBars::new() et @OutputFormat::Markdown

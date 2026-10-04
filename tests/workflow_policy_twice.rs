@@ -1,10 +1,32 @@
 //! Crate d'intégration rattachée à `src/workflow/definition.sdd` : le `Scenario` « un second
-//! appel à configure_policy rend une erreur » exige sa propre politique initiale dans un processus
+//! appel à `configure_policy` rend une erreur » exige sa propre politique initiale dans un processus
 //! où aucune autre pose n'a eu lieu (`OnceLock` : une seule pose par processus, `Tasks` de la spec :
 //! « les tests qui la couvrent l'isolent dans un processus dédié »). Dédoublé de
 //! `tests/workflow_policy.rs` parce que les deux `Scenario` posent des premières politiques
 //! différentes et partagent sinon le même processus.
 
+// Famille panic/unwrap/indexation tolérée dans cette crate de test : en-tête d'exemption
+// équivalent à celui de `src/lib.rs`, posé d'après le `Must` de `tooling.sdd` — une crate
+// d'intégration n'hérite pas des attributs de la librairie. Groupes `pedantic` et `cargo`
+// restent `deny` sous `cfg(test)`.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::dbg_macro,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::print_stdout,
+        clippy::print_stderr,
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
 #![cfg(feature = "workflow")]
 
 use miryad_core::resource::AccessPolicy;
@@ -14,7 +36,7 @@ use miryad_core::workflow::definition::Entity;
 use miryad_core::workflow::definition::WorkflowPolicy;
 use miryad_core::workflow::definition::configure_policy;
 
-/// Scenario « un second appel à configure_policy rend une erreur » : ce test pose lui-même sa
+/// Scenario « un second appel à `configure_policy` rend une erreur » : ce test pose lui-même sa
 /// première politique (`Public`/`Public`), la vérifie lue par `read_policy`/`write_policy` — puis
 /// le second appel doit rendre `PolicyAlreadySet`, quelle que soit la valeur proposée, et la
 /// première politique reste la politique effective.

@@ -101,10 +101,17 @@ Must:
   Lire la claim `exp` du payload JWT déchiffré par @serde_json plutôt que par sous-chaîne (arbitré
     2026-09-27, unifié sur la technique de ./oidc.rs::@extract_groups_claim) : décodage du segment
     payload en @base64::engine::general_purpose::URL_SAFE_NO_PAD (inchangé), puis
-    @serde_json::from_slice vers une structure minimale portant `exp: Option<u64>`, la valeur du
-    champ prise telle quelle. Élimine du même geste la dette `indexing_slicing` de
-    production de l'ancienne implémentation par tranches — plus aucune indexation manuelle de
-    chaîne dans ce fichier.
+    @serde_json::from_slice vers une structure minimale portant `exp: Option<@f64>`, avec le portillon
+    d'entier exact acté par Sébastien le 2026-09-30 (arbitrage Q1, option A′) : la valeur `f` n'est
+    retenue — convertie en @u64 par @f64::to_int_unchecked ou `as` sous la garde — que si
+    `f.is_finite() && f == f.trunc() && f >= 0.0 && f < 9007199254740992.0` (`2^53`, mantisse exacte
+    de @f64) ; un @f64 entier dans cette plage est la représentation bit-exacte du même entier
+    timestamp — aucun arrondi, aucune troncature, la tolérance porte sur le seul format de
+    sérialisation JSON (qui ne distingue pas `1700000000` de `1.7e9`), jamais sur la valeur.
+    `NaN`, infinis, fractions, négatifs et `≥ 2^53` sont des `exp` illisibles, rejetés en
+    `MRD-AUTH-002` comme les autres causes de la famille (3) de `Raises`. Élimine du même geste la
+    dette `indexing_slicing` de production de l'ancienne implémentation par tranches — plus aucune
+    indexation manuelle de chaîne dans ce fichier.
   Compilation inconditionnelle : aucun `#[cfg(feature = ...)]` dans le fichier, @cookie (feature
     `private`), @base64, @serde et @serde_json non optionnels dans /Cargo.toml, `pub mod cookie` non
     gateé dans ./mod.rs et `pub mod auth` non gateé dans /src/lib.rs — la batterie de /tooling.sdd,
@@ -222,8 +229,9 @@ Raises:
     UTF-8 (@str::from_utf8) — énumération exacte de la fonction `unseal`, source cookie-0.18.2 ;
     (2) @serde_json::from_str échoue sur le clair déchiffré ; (3) claim `exp` absente ou illisible
     du @id_token déchiffré — nombre de segments séparés par un point différent de `3`, bourrage `=`
-    du payload, absence du literal `"exp":`, absence de chiffre en tête après les deux-points (le
-    parse d’une tranche vide rend un @Option::None) ; (4) @SystemTime antérieur à @UNIX_EPOCH (@Result::map_err) ; (5) `exp` `≤` `now`
+    du payload, parse @serde_json du segment payload en échec, `exp` non numérique, ou flottant
+    hors du portillon d'entier exact de `Must` (`NaN`, infini, fraction, négatif, `≥ 2^53`) ;
+    (4) @SystemTime antérieur à @UNIX_EPOCH (@Result::map_err) ; (5) `exp` `≤` `now`
   @build_set_cookie et @clear_cookie : aucune erreur, aucun @Result — toute dégradation est
     silencieuse et bornée (`Max-Age=0` pour `exp` introuvable, replis morts décrits en `Handles`)
 
@@ -254,6 +262,15 @@ Handles:
     leurs conversions en @Option::None suivies de `?` sont des branches vivantes de la lecture
 
 Tasks:
+  [ ] Dette assumée (revue 2026-09-29, Sébastien) : la vérification en navigateur réel de
+    `SameSite=Strict` sur `miryad_session` (Chrome/Firefox + Authentik : la toute première
+    requête d'atterrissage après le callback part-elle avec le cookie ?) n'est pas planifiée. Si le
+    login s'avère cassé, repasser en `Lax` (amender `Must` et les tests de pose/retrait) ; sinon
+    inscrire en `Must` que `post_login_redirect` ne doit pas être une page authentifiée côté serveur.
+  [x] Arbitré par Sébastien le 2026-09-30 (option A′) : @extract_exp_claim tolère un `exp` flottant
+    (`1.7e9`) uniquement s'il est exactement entier dans `0..<2^53` (portillon de `Must`, aller-retour
+    @f64↔@u64 bit-exacte, jamais de troncature) ; `NaN`, infinis, fractions, négatifs et `≥ 2^53`
+    restent `MRD-AUTH-002`. Implémentation + tests dus (deux `Scenario` « flottant »).
   [x] AJOUT REQUIS (Sébastien, 2026-09-27, voir ./oidc.sdd et ./principal.sdd) : porter
     @preferred_username dans le cycle session — quatrième clé de @SessionPayloadRef et
     @SessionPayload (`preferred_username`, absente sérialisée `null`), recopiée verbatim de
@@ -261,12 +278,12 @@ Tasks:
     @preferred_username @None sans invalidation (cf. `Must` rétro-compatibilité). Sans ce champ,
     le claim serait @Some au login puis @None à chaque requête suivante — le maillon qui fait ou
     défait la chaîne oidc → dual → @AuthPrincipal.
-  [ ] `Secure` conditionnel (arbitré 2026-09-27) : ajouter `secure: @bool` à @build_set_cookie et
+  [x] `Secure` conditionnel (arbitré 2026-09-27) : ajouter `secure: @bool` à @build_set_cookie et
     @clear_cookie, sourcé depuis `MiryadAuthState::secure_cookies` (champ ajouté le 2026-09-27,
     ./state.sdd `Must` — décision finalisée), appelants à mettre à jour dans ./mod.rs. Choisi
     plutôt qu’un `Secure` inconditionnel pour ne pas casser le dev HTTP local, et plutôt qu’un
     silence total pour rester sûr par défaut en production.
-  [ ] `SameSite=Strict` sur `miryad_session`, `Lax` réservé au pending (arbitré 2026-09-27) : rien
+  [x] `SameSite=Strict` sur `miryad_session`, `Lax` réservé au pending (arbitré 2026-09-27) : rien
     n’oblige le cookie de session à partager la contrainte du pending, seul concerné par la
     redirection cross-site du callback — coût accepté, un lien externe vers l’app depuis un autre
     site n’authentifie pas la toute première requête (navigation suivante dans le site : authentifié).
@@ -283,8 +300,9 @@ Tasks:
     sont prouvées mortes par lecture du code source amont (`cookie`/`base64`), une injection
     d’horloge pour ce seul fichier serait une complexité architecturale sans bénéfice réel ; aucun
     changement, restent non testées et documentées comme telles en `Handles`.
-  [ ] Convertir les 22 `Scenario` en au moins 22 tests nommés distincts (20 originaux, dont un
-    reformulé pour `secure: true`, plus les deux nés de l’arbitrage du 2026-09-27 sur `secure`),
+  [x] Convertir les 24 `Scenario` en au moins 24 tests nommés distincts (20 originaux, dont un
+    reformulé pour `secure: true`, plus les deux nés de l’arbitrage du 2026-09-27 sur `secure`,
+    plus les deux nés de l’arbitrage flottant A′ du 2026-09-30),
     dans le `mod tests` `#[cfg(test)]` inline de ./cookie.rs (le contrat ne déborde pas du fichier :
     @build_set_cookie, @cookie::CookieJar et @base64 suffisent à construire chaque entrée, y compris
     la valeur pending transplantée et le JSON non valide chiffré) ; les 4 tests inline actuels
@@ -295,7 +313,7 @@ Tasks:
     (`secure: bool`) des deux fonctions
 
 Done when:
-  22 tests nommés distincts verts, un par `Scenario`, sur features par défaut comme sur
+  24 tests nommés distincts verts, un par `Scenario`, sur features par défaut comme sur
     `--no-default-features` (fichier sans gate de feature)
   Les quatre chaînes `Set-Cookie` (pose et retrait, `secure: true` et `secure: false`) sont
     affirmées chaîne entière — nom, ordre des attributs, présence/absence de `Secure`, absence de
@@ -446,9 +464,30 @@ Scenario: Lecture — id_token sans claim exp rend MRD-AUTH-002
   Given la paire produite par @build_set_cookie pour un @OidcIdentity dont l’@id_token tri-segment
     n’encode aucune claim `exp` (la pose a donc rendu `Max-Age=0`, cf. scenario Pose dédié)
   When @extract_session reçoit la ligne dépouillée de ses attributs et repostée sous la clé de pose
-  Then l’erreur est @AuthError::InvalidSession — @extract_exp_claim ne trouve pas le literal
-    `"exp":` dans le payload, et la lecture ne connaît pas le repli `0` de la pose : @Option::ok_or
-    exige la claim
+  Then l’erreur est @AuthError::InvalidSession — @extract_exp_claim rend @Option::None sur le champ
+    `exp` absent (@serde_json sur la structure minimale), et la lecture ne connaît pas le repli `0`
+    de la pose : @Option::ok_or exige la claim
+
+Scenario: Lecture — exp flottant exactement entier est accepté, aller-retour bit-exact
+  Given une session dont le payload JWT porte la claim `exp` au format flottant JSON — l’entier
+    `now + 3600` de la fixture écrit en notation `f64` (ex. `1790730000.0` ou `1.79073e9`), donc
+    postérieur à l’heure courante
+  When @extract_session reçoit la ligne sous la clé de pose
+  Then la lecture réussit : le portillon d’entier exact de `Must` retient la valeur (finie, `trunc`
+    égale, dans `0..<2^53`) et la convertit en l’entier de secondes sans aucun arrondi
+  And la pose du même payload a rendu le `Max-Age` correspondant (même fonction `@extract_exp_claim`
+    des deux côtés, aucune divergence pose/lecture sur un flottant entier)
+  And à titre de verrou historique, la forme `1.7e9` (entier `1700000000`, aujourd’hui passé) est
+    bien lisible par le portillon puis rejetée par l’horloge `exp ≤ now` en `MRD-AUTH-002` —
+    jamais par le portillon
+
+Scenario: Lecture — exp flottant sans valeur temporelle exacte rend MRD-AUTH-002
+  Given trois payloads JWT dont la claim `exp` vaut respectivement `1700000000.5` (fraction),
+    `-1` (négatif) et une valeur `≥ 2^53` (`9007199254740993.0`)
+  When @extract_session reçoit la ligne correspondante sous la clé de pose pour chacun
+  Then les trois lectures échouent en @AuthError::InvalidSession — le portillon d’entier exact de
+    `Must` refuse la fraction, le négatif et l’au-delà de la mantisse, aucune troncature silencieuse
+    n’est opérée
 
 Scenario: Lecture — payload de JWT bourré rend MRD-AUTH-002
   Given un @OidcIdentity dont l’@id_token a un segment de payload encodé en base64 url-safe terminé

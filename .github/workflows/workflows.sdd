@@ -21,12 +21,18 @@ References:
 
 Must:
   Déclencher les tests sur `push` et `pull_request` vers `main`.
-  Lancer `cargo test` au moins en features par défaut (`static-frontend`), en
-    `--no-default-features`, et en `--all-features`.
-  Rejouer le harnais clippy sur chaque combinaison de features (`--no-default-features`,
-    défaut, `swagger-ui`, `graphql` avec `--all-targets`, `mcp`, `--all-features`), le `-D
-    warnings` escaladant tout avertissement résiduel hors `[lints]` : ce que
+  Lancer `cargo test` sur les huit combinaisons de la batterie de `../../tooling.sdd`
+    (`--no-default-features`, défaut `static-frontend`, `swagger-ui`, `graphql`, `graphiql`,
+    `mcp`, `workflow`, `--all-features`) : les tests sont verts partout, y compris sur le pont
+    GraphQL.
+  Rejouer le harnais clippy sur chaque combinaison de features **hors pont GraphQL**
+    (`--no-default-features`, défaut, `swagger-ui`, `mcp`, `workflow`, avec `--all-targets`), le
+    `-D warnings` escaladant tout avertissement résiduel hors `[lints]` : ce que
     `../../tooling.sdd` déclare interdit doit casser la CI, pas seulement le poste de travail.
+  Le pont GraphQL (`src/graphql/**`, features `graphql`, `graphiql`, et `--all-features` qui les
+    inclut) est un prototype sans consommateur (arbitré par Sébastien le 2026-10-03) : il ne
+    bloque jamais une release. Aucun job clippy bloquant ne cible un graphe contenant `graphql`
+    tant que le carve-out de `../../tooling.sdd` tient ; ses tests, eux, restent bloquants.
   Vérifier le formatage avec `cargo fmt -- --check` sur la toolchain stable (aucune option
     instable dans `../../rustfmt.toml`).
   Mettre en cache lesArtifacts Cargo entre les steps (`Swatinem/rust-cache`).
@@ -53,6 +59,14 @@ Scenario: régression sur une feature isolée
   Then cette combinaison échoue et bloque le merge
   And les autres combinaisons continuent de s'exécuter, pour que chaque écart soit visible
 
+Scenario: dette du pont GraphQL
+  Given les sites clippy gelés de `src/graphql/**` (carve-out de `../../tooling.sdd`)
+  When la CI tourne sur un push vers `main` ou sur un tag `v*`
+  Then aucun job clippy ne cible un graphe contenant `graphql`, donc la dette du pont ne rougit
+    ni le merge ni la publication
+  And les tests des huit combinaisons, `graphql`, `graphiql` et `--all-features` compris, restent
+    bloquants
+
 Scenario: tag désaligné
   Given un tag `v0.2.0` est poussé alors que `Cargo.toml` porte la version `0.1.3`
   When le workflow de publication démarre
@@ -61,19 +75,30 @@ Scenario: tag désaligné
 Scenario: harnais contourné
   Given un `#[allow(clippy::unwrap_used)]` sans justification de spec est introduit dans du
     code de production
-  When le job clippy tourne en `--all-features`
+  When le job clippy tourne sur le graphe `mcp` ou sur le défaut
   Then l'avertissement escaladé en `-D warnings` fait échouer le job
   And la revue demande la correction, pas un `#[allow]` de plus
 
 Tasks:
-  [ ] Allonger les jobs de test et de clippy sur la matrice complète de features (`--no-default-features`,
-    `swagger-ui`, `graphql`, `mcp`) — l'état actuel ne teste que défaut et `--all-features`, et
-    ne teste aucune combinaison `--no-default-features`.
+  [ ] Allonger les jobs de test (huit combinaisons) et de clippy (cinq combinaisons hors pont :
+    `--no-default-features`, défaut, `swagger-ui`, `mcp`, `workflow`) dans ./ci.yml ; retirer le
+    pas `cargo clippy --all-features` actuel, rouge durablement sur les sites gelés du pont et qui
+    bloquerait la CI (arbitré 2026-10-03, option A). Une tâche par fichier : ./ci.yml seul.
+    Réalisé 2026-10-03 (validator PASS) : job test en matrice `include` de huit entrées (les huit
+    combinaisons de la batterie /tooling.sdd, graphql/graphiql/`--all-features` bloquants), job
+    clippy en matrice de cinq entrées hors pont avec `--all-targets -- -D warnings`, pas
+    `cargo clippy --all-features` retiré, `fail-fast: false` sans `continue-on-error`, job `fmt`
+    byte-à-byte inchangé, ./publish.yml non touché ; les quatorze commandes rejouées localement
+    vertes.
   [ ] Confirmer que le job clippy garde `-- -D warnings` dès que `../../tooling.sdd` est à zéro
     dette : le harnais est en `deny` à l'adoption, donc la CI est rouge tant que la purge n'est
     pas finie — c'est l'effet voulu, pas une raison de retirer le drapeau.
   [ ] Décider s'il faut séparer `test`, `fmt` et `clippy` en jobs dédiés dès que la matrice est
     jouée (parallélisme, lisibilité des échecs).
+  [x] Tension matrice complète / carve-out du pont : arbitré par Sébastien le 2026-10-03, option
+    A — matrice des tests étendue, clippy sans graphe `graphql`. Le pont est un prototype qui ne
+    doit en aucun cas gêner une release. `publish.yml` ne lance que `cargo test` (défaut) avant
+    `cargo publish` : aucun changement requis côté publication pour cette décision.
 
 Done when:
   La CI prouve les tests, le harnais et le formatage sur chaque combinaison de features, et un

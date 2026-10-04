@@ -18,7 +18,7 @@ References:
     il ownée la table de tracking dédiée @seaql_migrations_miryad_core
   ./m20260822_000001_create_api_tokens.sdd — migration précédente : @miryad_api_tokens reste sans
     aucune FK vers `miryad_users` (un token survit à la disparition de la ligne utilisateur), et son
-    `[?]` de tolérance de dérive sous @if_not_exists est le même qu'ici
+    [arbitré 2026-09-29] de tolérance de dérive sous @if_not_exists est le même qu'ici
   ./m20260822_000003_seed_admin_group.rs — migration suivante : son @up insère via @ensure_group une
     ligne de @miryad_groups que ce fichier pose, et son @down DELETE `miryad_groups` par SQL brut
     avec le littéral `'admin'` — littéralement absent d'ici (vérifié à la lecture intégrale),
@@ -26,7 +26,7 @@ References:
   ../users/user.rs et ../users/user.sdd — entité @users::user::Model miroir de @miryad_users à la
     colonne près ; @resolve_user en est le seul rédacteur
   ../users/group.sdd — entité miroir de @miryad_groups ; @ensure_group en est le seul rédacteur ; son
-    `[?]` collation et son `[?]` littéral `'admin'` de 000003 portent sur ce que ce fichier pose
+    [arbitré 2026-09-29] collation et son [arbitré 2026-09-29] littéral `'admin'` de 000003 portent sur ce que ce fichier pose
   ../users/membership.sdd — entité miroir de @miryad_group_memberships à 3 colonnes exactement ;
     @sync_group_memberships en est le seule rédacteur et son @ON CONFLICT cible la paire `user_id`,
     `group_id` de l'index unique posé ici
@@ -91,10 +91,11 @@ Must:
     `CONSTRAINT` quand @ForeignKey::create() n'a pas de @name (backend/postgres/foreign_key.rs) et
     SQLite ne rend jamais le nom de FK (backend/sqlite/foreign_key.rs) — clause rendue :
     `FOREIGN KEY (...) REFERENCES ... ON DELETE CASCADE`. Les deux FK n'ont donc pas de nom de
-    contrat exploitable par une migration suivante (Tasks `[?]`).
+    contrat exploitable par une migration suivante (Tasks [arbitré 2026-09-29]).
   Enforcement des FK sur SQLite sans que ce fichier code quoi que ce soit : le default du connecteur
     posé @PRAGMA foreign_keys = ON (vérifié au source de sqlx-sqlite 0.9.0 — version épinglée par
-    /Cargo.lock, et non la 0.8.6 citée par ../users/membership.sdd — src/options/mod.rs:187), donc
+    /Cargo.lock, citation alignée sur ../users/membership.sdd depuis 2026-10-03, l'ancienne
+    strate 0.8.6 étant soldée à l'arbitrage 2026-09-29 — src/options/mod.rs:187), donc
     `user_id` et `group_id` inconnus sont refusés à l'insertion par les tests comme par une app
     SQLite ; Postgres enforce nativement.
   Identité de tracking : @DeriveMigrationName nomme cette migration par le seul stem
@@ -121,6 +122,16 @@ Must:
     le canal de test dépend d'un backend (SQLite via les dev-dependencies de /Cargo.toml).
   Laisse la trace de l'application uniquement au `tracing` @info de @exec_up_with et @exec_down_with
     de sea-orm-migration — le fichier n'émet aucune trace propre et n'ajoute le contrat d'aucune.
+  Contraintes sans nom (unique de paire, deux FK CASCADE) (arbitré par Sébastien le 2026-09-29) : contrat assumé, tout se fait par
+    les colonnes comme le `ON CONFLICT` de ../users/membership.rs ; une migration suivante qui devra
+    en changer le fera par SQL ciblé.
+  Collation et casse (arbitré par Sébastien le 2026-09-29) : aucun COLLATE, égalité exacte sensible à la casse ; la décision est
+    portée par ../users/group.sdd (`Must`), collation insensible à la charge de l'application.
+  `down` strict (ordre FK obligatoire) et `IF NOT EXISTS` sans lecture de schéma : règle générale
+    de ./mod.sdd (arbitré par Sébastien le 2026-09-29), y compris pour une @miryad_group_memberships préexistante hors forme.
+  Le rendu inline de l'unique de paire (@TableCreateStatement::index, documenté « MySQL only » en
+    amont mais effectif sous Postgres et SQLite) est prouvé par le Scenario SQLite (arbitré par Sébastien le 2026-09-29) ; aucune
+    preuve Postgres dans ce dépôt — risque écrit, hors périmètre.
 
 Must not:
   Réécrire, renommer, déplacer ou dupliquer le @up ou le @down committé : @DeriveMigrationName fait
@@ -140,7 +151,7 @@ Must not:
     d'une migration suivante, jamais de ce fichier.
   Renverser l'ordre des trois @drop_table de @down ou y ajouter @if_exists : le premier point ferait
     dépendre la remontée d'une tolérance backend au lieu de défaire proprement les FK, le second
-    fait partie du gel de contrat (Tasks `[?]`).
+    fait partie du gel de contrat (Tasks [arbitré 2026-09-29]).
   Toucher @miryad_api_tokens, @seaql_migrations_miryad_core ou toute table d'une autre migration
     dans @up ou @down : l'écriture du tracking est l'affaire exclusive du framework.
   Émettre @println, @eprintln ou @dbg, ni fabriquer de code `MRD-*` : seul un @DbErr brut du backend
@@ -178,7 +189,7 @@ Accepts:
 Returns:
   @up — `Ok(())` une fois les trois tables présentes sous leurs noms contractuels, première pose
     comme re-pose ; `Ok` prouve seulement la mise en place `IF NOT EXISTS`, pas la conformité des
-    schémas préexistants (vérification absente, Tasks `[?]`)
+    schémas préexistants (vérification absente, Tasks [arbitré 2026-09-29])
   @down — `Ok(())` une fois les trois `DROP TABLE` exécutés dans l'ordre contractuel ; muet sur la
     suppression des lignes de tracking, qui appartient au framework
   Aucune autre fonction, ce qui clôt `Accepts`
@@ -203,7 +214,7 @@ Handles:
     transaction unique annule tout et la réexécution repart d'une base sans les trois tables.
   Une table préexistante hors-forme (drift posée à la main ou par un autre migrateur) : @up l'acquitte
     sans vérifier ; le cas le plus mordant est une @miryad_group_memberships dérivée — son CREATE
-    TABLE sauté ne repose ni les deux FK ni l'unique de paire, et rien ne le signale (Tasks `[?]`,
+    TABLE sauté ne repose ni les deux FK ni l'unique de paire, et rien ne le signale (Tasks [arbitré 2026-09-29],
     Scenario dédié).
   Rollback complet : @Migrator inversant l'ordre d'application (vérifié au source de sea-orm-migration
     2.0.2, @exec_down_with en @rev sur les migrations appliquées), @down de ./m20260822_000003_seed_admin_group.rs
@@ -226,7 +237,7 @@ Handles:
     fichier consigne sans trancher.
 
 Tasks:
-  [ ] Convertir les vingt `Scenario` en au moins vingt tests nommés distincts dans le @mod tests
+  [x] Convertir les vingt `Scenario` en au moins vingt tests nommés distincts dans le @mod tests
     `#[cfg(test)]` de ./m20260822_000002_create_users_groups.rs (le fichier n'en porte aucun
     aujourd'hui), sur `sqlite::memory:` (pattern des tests de ./mod.rs), assertions par
     @SchemaManager::has_table et @has_column (sonde sea-schema 0.18.1 rendue activable par la feature
@@ -245,39 +256,32 @@ Tasks:
     `down_errors_without_tables`, `applied_name_is_the_file_stem`,
     `down_then_up_restores_the_schema`, `names_are_case_binary_on_sqlite`. Tests d'exécution réels
     sur la batterie de /tooling.sdd, hors base de données externe.
-  [?] Contraintes sans nom : l'unique de paire et les deux FK CASCADE sont posés sans @name — le
-    backend les baptise hors contrat (`sqlite_autoindex_*`, `..._user_id_fkey` côté Postgres) et une
-    migration suivante ne peut pas les cibler par nom (drop/replace d'un index par son nom
-    impossible). Contrat assumé (tout se fait par les colonnes, comme le @ON CONFLICT de
-    ../users/membership.rs) ou correction par une migration suivante qui les renomme ?
-  [?] Collation et casse : aucun COLLATE déclaré sur `subject`, `name` ni la paire — binaire sur
-    SQLite (Scenario le prouve : `admin` et `Admin` coexistent), collation de la base sur Postgres.
-    ../users/user.sdd tranche « sensible à la casse sur les deux », ../users/group.sdd laisse la
-    question `[?]` pour la convention `admin`. Fixe-t-on un contrat de comparaison déterministe
-    (COLLATE porté par une migration suivante, ou normalisation dans ../users/group.rs) ou fige-t-on
-    « dépend des collations de la base de l'app » ?
-  [?] Dérive avalée par @if_not_exists : un CREATE TABLE préexistant hors-forme est acquitté sans
-    lecture du schéma — pour @miryad_group_memberships cela peut signifier une table posée sans FK
-    ni unique de paire (Scenario dédié, insertion orpheline alors `Ok`). Le `[?]` jumeau de
-    /src/migration/m20260822_000001_create_api_tokens.sdd est la même question ; une seule décision
-    pour les deux ou réponse par fichier ?
-  [?] @down non idempotent (trois @drop_table sans @if_exists, @DbErr garanti sur base absente) et
-    ordre d'FK obligatoire : gèle-t-on ce contrat de remontée stricte comme celui de 000001, ou
-    planifie-t-on la remédiation `if_exists` par une migration suivante ?
-  [?] Référence amont périmée hors de ce fichier : ../users/membership.sdd appuie l'enforcement
-    SQLite des FK sur sqlx-sqlite 0.8.6 (@options/mod.rs:185) alors que /Cargo.lock épingle 0.9.0 —
-    le même default vérifié à la 0.9.0 (src/options/mod.rs:187) porte ce contrat ; met-on à jour la
-    citation de ../users/membership.sdd ?
-  [?] Doc-comment amont en décalage : @TableCreateStatement::index est documenté « MySQL only » alors
-    que le rendu Postgres et SQLite est inline et effectif (implémentation par défaut de
-    @prepare_table_index_expression, vérifiée) ; le Scenario SQLite de l'unique de paire fige ce
-    rendu pour le backend des tests, suffit-il ou exige-t-on une preuve contractuelle du rendu Postgres ?
+    Réalisé 2026-10-03 (B5g, validator PASS) : vingt tests nommés distincts, mapping nom à nom
+    vérifié au source (trois uniques avec @COUNT=1, deux cascades avec survie croisée,
+    @names_are_case_binary_on_sqlite avec count 2 puis @is_err) ; un seul écart Then-contredit
+    (@up_swallows_a_drifted_memberships_table) — verrou du réel consigné et `And` du `Scenario`
+    amendé au même commit sur validation du validator (l'ancien texte contredisait le `Given` du
+    même Scenario : la paire littérale y est inconstructible, « no such column »).
+  [x] Contraintes sans nom : contrat assumé (arbitré par Sébastien le 2026-09-29, `Must`).
+  [x] Collation : décision de ../users/group.sdd (arbitré par Sébastien le 2026-09-29, `Must`).
+  [x] Dérive avalée : règle générale de ./mod.sdd, une seule décision pour les migrations
+    (arbitré par Sébastien le 2026-09-29).
+  [x] `down` strict gelé (arbitré par Sébastien le 2026-09-29, règle générale de ./mod.sdd).
+  [x] Mettre à jour la citation de ../users/membership.sdd : sqlx-sqlite `0.8.6`
+    (`options/mod.rs:185`) devient `0.9.0` (`options/mod.rs:187`), version épinglée par
+    /Cargo.lock (arbitré par Sébastien le 2026-09-29) — documentation seule.
+    Satisfait dès la vague users (B2, validator PASS) : ../users/membership.sdd cite déjà
+    « sqlx-sqlite 0.9.0 @options/mod.rs:187 (épinglée par /Cargo.lock ; arbitré 2026-09-29) » ;
+    la présente phrase du @Must (« et non la 0.8.6 citée par… », bloc @Enforcement des FK),
+    devenue strate périmée, est harmonisée 2026-10-03.
+  [x] Le Scenario SQLite suffit, pas de preuve Postgres (arbitré par Sébastien le 2026-09-29,
+    `Must`).
 
 Done when:
   Les vingt `Scenario` sont chacun vérifiés par un test nommé distinct identifié dans `Tasks`, tous
     jouables via la batterie de /tooling.sdd sur `sqlite::memory:` sans base de données externe,
     @up et @down inchangés depuis l'approbation (immuabilité — le fichier ne reçoit plus jamais de
-    `git diff`), chaque `[?]` de `Tasks` tranché par Sébastien sans réinterprétation du contrat figé
+    `git diff`), chaque [arbitré 2026-09-29] de `Tasks` tranché par Sébastien sans réinterprétation du contrat figé
     (les tranches touchant la collation ou les noms de contraintes s'écrivent par migration
     suivante), et la spec approuvée par Sébastien.
 
@@ -389,9 +393,9 @@ Scenario: une miryad_group_memberships préexistante en dérive est avalée sans
   When @up de cette migration est appliqué
   Then @up retourne `Ok(())` — le `CREATE TABLE IF NOT EXISTS` saute sans lire la forme existante
   And @has_column confirme `user_id` mais nulle part `group_id` : dérive non vérifiée, non réparée
-  And une insertion SQL complète partageant deux fois la même paire (`user_id`, `group_id`) sur des
-    @id inventés réussit en `Ok` : ni la FK ni l'unique ne protègent cette table dérivée
-  But ce comportement est une tolérance constatée, pas une prescription — Tasks `[?]`
+  And deux insertions complètes partageant le même `user_id` sur des @id inventés réussissent en
+    `Ok` : ni la FK ni l'unique ne protègent cette table dérivée — et la paire (`user_id`, `group_id`) littérale ne peut même pas être tentée : sans colonne `group_id`, elle échoue en `DbErr` « no such column » (amendé 2026-10-03, validator B5g : l'ancien texte contredisait le `Given` du même Scenario)
+  But ce comportement est une tolérance constatée, pas une prescription — Tasks [arbitré 2026-09-29]
 
 Scenario: @down défait les trois tables dans l'ordre FK
   Given une base SQLite en mémoire après un @up réussi de cette @Migration, avec un utilisateur, un
@@ -431,4 +435,4 @@ Scenario: sans COLLATE déclaré, `Admin` n'est pas `admin` sur le backend des t
   Then l'insertion est `Ok` : deux lignes distinctes `admin` et `Admin` coexistent sous la contrainte
     UNIQUE, comparaison binaire sur SQLite
   And une seconde insertion de `Admin` échoue en @DbErr : l'unicité compare bien, mais au bit près
-  But ce sens exact côté Postgres dépend de la collation de la base : Tasks `[?]`
+  But ce sens exact côté Postgres dépend de la collation de la base : Tasks [arbitré 2026-09-29]

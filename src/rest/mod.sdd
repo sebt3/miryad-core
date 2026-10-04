@@ -151,15 +151,30 @@ Must:
     bien `GET/POST /api/v1/{resource}` et `GET/PUT/DELETE /api/v1/{resource}/{id}` avec « RBAC
     et pagination automatiques » — comprendre « via ./core.rs », la doc ne doit promettre une
     page sans pagination ni un accès anonyme.
-  Refuser au montage, par @panic, deux déclarations invalides détectables sans requête (arbitré
-    par Sébastien le 2026-09-27, même mécanisme que la collision de @resource_name — `Handles`) :
+  Refuser au montage, par @panic, trois déclarations invalides détectables sans requête (arbitré
+    par Sébastien le 2026-09-27 pour les deux premières, le 2026-09-29 pour la troisième, même
+    mécanisme que la collision de @resource_name — `Handles`) :
     une entité dont @AccessPolicy::OwnerOnly (lecture ou écriture) est déclarée avec
     @MiryadResource::owner_column à `None` (incohérence documentée par ../resource.sdd, défendue
     en aval par @rbac::can_create — ../rbac.sdd) ; une entité dont @MiryadResource::filter_column
     est déclarée sur une colonne non textuelle (../rest/core.sdd réserve `filter` aux colonnes
-    texte). Les deux vérifications s'exécutent avant tout montage de route, dans
+    texte) ; une entité dont @MiryadResource::owner_column est @Some d'une colonne dont le type
+    n'est pas entier `i32` (`ColumnType::Integer`, nullable accepté) — @rbac::evaluate compare
+    des @sea_orm::Value strictement et ne matche jamais un autre type (arbitré 2026-09-29,
+    ../rbac.sdd). Les trois vérifications s'exécutent avant tout montage de route, dans
     @rest::resource_router lui-même — une entité mal déclarée ne monte jamais, elle ne répond
     jamais `403`/`500` à la première requête.
+  Le fragment OpenAPI de ./openapi.rs déclare tous les statuts réels de la surface (`400`, `401`,
+    `403` y compris sur la liste, `404`, `415`, `422`, `500`) (arbitré par Sébastien le 2026-09-29) — voir ./openapi.sdd.
+  Le `422` est partagé entre le rejet de désérialisation d'@axum (texte), @RestError::InvalidInput
+    (texte, `MRD-REST-005`) et @RestError::Application (JSON `{code, message}`) (arbitré par Sébastien le 2026-09-29) : le client
+    branche sur la forme du corps, documentée dans le document OpenAPI ; ni statut distinct ni
+    format unifié (./error.sdd).
+  ./mod.rs ne porte aucune trace (arbitré par Sébastien le 2026-09-29) : les refus @AuthPrincipal sont déjà tracés en `debug` par
+    ./../auth/dual.rs, le reste appartient à la @TraceLayer de l'hôte.
+  La tolérance aux champs inconnus est le contrat d'entrée de la surface (arbitré par Sébastien le 2026-09-29) : un paramètre inconnu
+    dans la query (@ListParams sans @deny_unknown_fields) et un champ JSON inconnu en `POST`/`PUT`
+    sont ignorés, ce qui permet de faire évoluer le modèle sans casser les clients.
 
 Must not:
   Composer lui-même @admin::users_router, @me::me_router, @tokens::tokens_router ou les
@@ -295,7 +310,8 @@ Handles:
     collection) se fusionnent dans le @MethodRouter sans conflit, les routes du moteur
     restant intactes
   Déclaration invalide détectée au montage (arbitré 2026-09-27) : @AccessPolicy::OwnerOnly sans
-    @MiryadResource::owner_column, ou @MiryadResource::filter_column sur une colonne non textuelle
+    @MiryadResource::owner_column, @MiryadResource::owner_column sur une colonne non `i32`
+    (arbitré 2026-09-29), ou @MiryadResource::filter_column sur une colonne non textuelle
     → @rest::resource_router @panic avant de construire le moindre chemin, message explicite
     citant l'entité et la règle violée — jamais un `403`/`500` à la première requête sur une
     entité mal déclarée
@@ -322,7 +338,14 @@ Handles:
     concernent ./mod.rs par aucune ligne
 
 Tasks:
-  [ ] Convertir les dix-sept `Scenario` ci-dessous en au moins dix-sept tests nommés distincts
+# Cinq taches closes 2026-10-01 (vagues B3a/B3b, validator PASS) : allow panic
+# purge, 15 tests + doctest compile_fail, troisieme garde owner_column,
+# cartographie des seize, batterie rejouee verte par le validator.
+  [x] Revue 2026-09-29 : remplacer le `panic!` + `#[allow(clippy::panic)]` du garde « OwnerOnly sans
+    `owner_column` » (`resource_router`) par un `assert!` au message explicite, comme le garde
+    `filter_column` — supprime l'exemption de lint ; le message cite toujours l'entité et la règle
+    (les deux `should_panic(expected = …)` doivent continuer de correspondre).
+  [x] Convertir les dix-sept `Scenario` ci-dessous en au moins dix-sept tests nommés distincts
     du `#[cfg(test)] mod tests` de ./mod.rs (un par scenario), plus un doctest `compile_fail`
     porté par la doc de @RestEntity pour le scenario d'exclusion de clé composée :
     « La route collection expose GET et POST » → `collection_route_serves_get_and_post` ;
@@ -351,7 +374,13 @@ Tasks:
     `owner_only_without_column_panics_at_mount` ; « Entité à colonne de filtre non textuelle
     panique au montage » → `filter_column_on_non_text_column_panics_at_mount` (arbitrage
     2026-09-27, dix-neuf `Scenario` désormais).
-  [ ] Cartographier sans les dupliquer les seize tests inline existants — ils sont la preuve
+  [x] Troisième garde de montage (arbitré par Sébastien le 2026-09-29) : dans
+    @rest::resource_router, `assert!` que le type de colonne de @MiryadResource::owner_column,
+    quand elle est @Some, est `ColumnType::Integer` (même patron et même emplacement que la garde
+    `filter_column`, message explicite citant l'entité) ; test
+    `owner_column_on_non_i32_column_panics_at_mount` (fixture à colonne @i64) et un test qu'une
+    colonne `Option<i32>` monte. Vingt `Scenario` désormais.
+  [x] Cartographier sans les dupliquer les seize tests inline existants — ils sont la preuve
     vivante que ./mod.rs délègue fidèlement : `create_ignores_client_supplied_owner`,
     `list_filters_by_owner_for_non_admin_but_not_for_admin`, `list_pagination_returns_requested_page`,
     `list_filter_combines_with_owner_restriction`, `list_ingredients_forbidden_without_group_membership`,
@@ -364,28 +393,15 @@ Tasks:
     du hook dans la création » de ../resource.sdd, qui les revendique explicitement. Ils
     restent ici (le fichier les ownne), leurs `Then` ne redéfinissent pas le contrat de la
     présente spec.
-  [?] Le fragment OpenAPI de ./openapi.rs ne déclare que `200`/`403`/`404` (et `204` pour
-    delete) tandis que la surface réellement montée répond aussi `400` (rejets @Query/@Path/@Json),
-    `401` (@AuthError), `415` (@Content-Type) et `500` (`MRD-REST-003`) ; `list` n'y déclare que
-    `200` alors que le test inline `list_ingredients_forbidden_without_group_membership` prouve
-    le `403`. Tranché en partie le 2026-09-27 : `POST` répond désormais `201 Created` (`Must`), le
-    fragment OpenAPI est à mettre à jour en conséquence — ./openapi.sdd (à produire) en héritera.
-    Reste ouvert : complète-t-on @openapi::resource_openapi avec tous les statuts réels (`400`,
-    `401`, `415`, `500`, `403` sur `list`), ou assume-t-on un document volontairement minimal ?
-  [?] Le statut `422` est commun au @JsonDataError d'@axum (corps texte) et au
-    @RestError::@Application du @HookError (corps JSON `{code, message}`) : un client ne
-    distingue les deux que par le corps. Arbitre-t-on une distinction de statut, un format de
-    corps unifié, ou suppose-t-on le client branché sur la présence de `code` ?
-  [?] ./mod.rs ne porte aucune @trace, et le refus @AuthPrincipal sur les routes CRUD ne
-    produit aucune trace portée par la crate (à l'inverse de l'extraction @AuthUser de
-    /src/auth/middleware.rs). Le harnais impose @tracing « pour toute trace » mais n'impose pas
-    de tracer : exige-t-on une trace @debug au montage (routes de l'entité E) ou au refus sur
-    cette surface, ou l'observation reste-t-elle explicitement à la @TraceLayer de l'hôte ?
-  [?] @ListParams n'a pas de @deny_unknown_fields — un paramètre inconnu dans la query est
-    silencieusement ignoré ; et @E::Model @sans @deny_unknown_fields ignore aussi les champs
-    JSON inconnus en `POST`/`PUT`. Garde-t-on cette tolérance comme contrat d'entrée de la
-    surface REST (elle est aujourd'hui un défaut de @serde, pas une décision écrite) ?
-  [ ] Rejouer la batterie complète de /tooling.sdd (toutes les combinaisons de features de
+  [x] Complétude OpenAPI : tous les statuts réels sont déclarés (arbitré par Sébastien le
+    2026-09-29, `Must`) — tâche de code portée par ./openapi.sdd.
+  [x] `422` partagé : statut conservé, distinction par la forme du corps, documentée en OpenAPI
+    (arbitré par Sébastien le 2026-09-29, `Must`).
+  [x] Aucune trace dans ./mod.rs : l'observation reste à la @TraceLayer de l'hôte (arbitré par
+    Sébastien le 2026-09-29, `Must`).
+  [x] Tolérance aux champs inconnus confirmée comme contrat d'entrée (arbitré par Sébastien le
+    2026-09-29, `Must`) — aucun @deny_unknown_fields.
+  [x] Rejouer la batterie complète de /tooling.sdd (toutes les combinaisons de features de
     /AGENTS.md, dont `--no-default-features` comme preuve de non-gating, plus
     `cargo test --doc` pour le @compile_fail) après création des tests.
 
@@ -529,6 +545,16 @@ Scenario: Entité à colonne de filtre non textuelle panique au montage
   When @rest::resource_router::<@CetteEntité, @MiryadAuthState>() est appelé
   Then l'appel @panic avant de construire un chemin quelconque — `filter` reste réservé aux
     colonnes texte (arbitré 2026-09-27, contrat partagé avec ../rest/core.sdd)
+
+Scenario: Entité à colonne propriétaire non `i32` panique au montage
+  Given une entité de test déclarant @MiryadResource::owner_column sur une colonne @i64 (ou
+    @String), politique `OwnerOnly`
+  When @rest::resource_router::<@CetteEntité, @MiryadAuthState>() est appelé
+  Then l'appel @panic avant de construire un chemin quelconque, message citant l'entité et la
+    règle « owner_column doit être `i32` » — sans quoi @rbac::evaluate refuserait éternellement
+    et silencieusement hors admin (arbitré 2026-09-29, contrat de ../resource.sdd)
+  But une colonne `Option<i32>` (nullable) est acceptée : le cas « valeur `None` » relève de
+    ../rbac.sdd, pas du montage
 
 Scenario: Deux routers en chevauchement sur un même verbe paniquent au montage, pas à la requête
   Given un routeur hôte qui enregistre lui-même `GET /api/v1/recipes` vers son handler

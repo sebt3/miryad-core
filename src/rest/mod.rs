@@ -14,13 +14,16 @@ use axum::extract::{FromRef, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use sea_orm::{ActiveModelTrait, EntityTrait, IntoActiveModel, PrimaryKeyToColumn, PrimaryKeyTrait};
+use sea_orm::sea_query::ColumnType;
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, PrimaryKeyToColumn, PrimaryKeyTrait,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::auth::{AuthPrincipal, MiryadAuthState};
 use crate::query::PagedResult;
-use crate::resource::MiryadResource;
+use crate::resource::{AccessPolicy, MiryadResource};
 use error::RestError;
 
 /// Entités éligibles au routeur CRUD générique — en plus de `MiryadResource`, il faut pouvoir
@@ -28,6 +31,51 @@ use error::RestError;
 /// (`DeriveEntityModel` fournit `IntoActiveModel` automatiquement). Contrainte assumée : une
 /// seule colonne de clé primaire, de type `i32` — vrai pour toutes les entités du crate à ce
 /// jour, documentée comme limite dans `docs/architecture.md`.
+///
+/// Une entité à clé primaire composée (ou, à défaut, un `Model` ne dérivant pas `Deserialize`)
+/// qui implémente pourtant `MiryadResource` reste exclue du routeur à la compilation :
+/// `sea-orm 2` donne aux clés composées un `PrimaryKeyTrait::ValueType` tuple, jamais `i32`.
+/// La vérification vit dans le doctest `compile_fail` ci-dessous — le doctest réussit quand
+/// la compilation échoue.
+///
+/// ```compile_fail
+/// use miryad_core::auth::MiryadAuthState;
+/// use miryad_core::resource::{AccessPolicy, MiryadResource};
+/// use miryad_core::rest::resource_router;
+/// use sea_orm::entity::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+/// #[sea_orm(table_name = "composite_keys")]
+/// pub struct Model {
+///     #[sea_orm(primary_key, auto_increment = false)]
+///     pub first: i32,
+///     #[sea_orm(primary_key, auto_increment = false)]
+///     pub second: i32,
+/// }
+///
+/// #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+/// pub enum Relation {}
+///
+/// impl ActiveModelBehavior for ActiveModel {}
+///
+/// impl MiryadResource for Entity {
+///     fn resource_name() -> &'static str {
+///         "composites"
+///     }
+///     fn read_policy() -> AccessPolicy {
+///         AccessPolicy::Public
+///     }
+///     fn write_policy() -> AccessPolicy {
+///         AccessPolicy::Public
+///     }
+///     fn owner_column() -> Option<Column> {
+///         None
+///     }
+/// }
+///
+/// let _router = resource_router::<Entity, MiryadAuthState>();
+/// ```
 pub trait RestEntity:
     MiryadResource<
         Model: Serialize + DeserializeOwned + IntoActiveModel<<Self as EntityTrait>::ActiveModel> + Sync,
@@ -59,12 +107,59 @@ struct ListParams {
 /// Réutilise `MiryadAuthState` (feature 2b) — même état que l'auth, rien de nouveau à composer
 /// côté app. Préfixe `/api/v1` figé dans le crate (feature 6) — élimine par construction la
 /// collision avec une route SPA du frontend dont le nom correspondrait à un `resource_name`.
+///
+/// # Panics
+///
+/// Refuse au montage trois déclarations invalides détectables sans requête (arbitré
+/// 2026-09-27 pour les deux premières, 2026-09-29 pour la troisième) : `AccessPolicy::OwnerOnly`
+/// (lecture ou écriture) avec `owner_column` à `None`, `filter_column` désignant une colonne non
+/// textuelle, ou `owner_column` désignant une colonne de type autre que `ColumnType::Integer`.
+/// Le message cite l'entité et la règle violée ; une entité mal déclarée ne monte jamais et ne
+/// répond jamais à une requête.
 pub fn resource_router<E, S>() -> Router<S>
 where
     E: RestEntity,
     S: Clone + Send + Sync + 'static,
     MiryadAuthState: FromRef<S>,
 {
+    // mod.sdd « Refuser au montage, par panic » (arbitré 2026-09-27) : garde exécutée avant
+    // toute construction de chemin, OwnerOnly sans owner_column. `assert!` : message explicite
+    // identique, sans le macro `panic!` (purge de l'exemption de lint, tâche « Revue
+    // 2026-09-29 »).
+    assert!(
+        !(matches!(E::read_policy(), AccessPolicy::OwnerOnly)
+            || matches!(E::write_policy(), AccessPolicy::OwnerOnly))
+            || E::owner_column().is_some(),
+        "`{}` declares `AccessPolicy::OwnerOnly` with `owner_column` None — invalid MiryadResource declaration, refusing to mount its router",
+        E::resource_name()
+    );
+
+    if let Some(filter_column) = E::filter_column() {
+        let def = filter_column.def();
+        // Colonne textuelle au sens sea-query : `String` ou `Text` — `filter` y reste réservé
+        // (./core.sdd). `assert!` : même panic explicite que le garde ci-dessus, sans le macro
+        // `panic!` (mod.sdd « Refuser au montage, par panic » — arbitrage 2026-09-27).
+        assert!(
+            matches!(def.get_column_type(), ColumnType::String(_) | ColumnType::Text),
+            "`{}` declares `filter_column` on a non-textual column — `filter` is reserved for text columns, refusing to mount its router",
+            E::resource_name()
+        );
+    }
+
+    if let Some(owner_column) = E::owner_column() {
+        let def = owner_column.def();
+        // Colonne `i32` au sens sea-query : `ColumnType::Integer`, nullable accepté — la
+        // valeur `None` relève de ../rbac.sdd, pas du montage. `rbac::evaluate` compare des
+        // `sea_orm::Value` strictement : hors `Integer`, il ne matcherait jamais et refuserait
+        // éternellement hors admin (mod.sdd « Refuser au montage, par panic » — arbitrage
+        // 2026-09-29).
+        assert!(
+            matches!(def.get_column_type(), ColumnType::Integer),
+            "`{}` declares `owner_column` on a non-`i32` column — `owner_column` must be `i32`, refusing to mount its router",
+            E::resource_name()
+        );
+    }
+
     let collection_path = format!("/{}", E::resource_name());
     let item_path = format!("/{}/{{id}}", E::resource_name());
 
@@ -109,8 +204,11 @@ async fn create_handler<E: RestEntity>(
     State(auth): State<MiryadAuthState>,
     principal: AuthPrincipal,
     Json(body): Json<E::Model>,
-) -> Result<Json<E::Model>, RestError> {
-    Ok(Json(core::create::<E>(&auth.db, &principal, body).await?))
+) -> Result<(StatusCode, Json<E::Model>), RestError> {
+    Ok((
+        StatusCode::CREATED,
+        Json(core::create::<E>(&auth.db, &principal, body).await?),
+    ))
 }
 
 async fn update_handler<E: RestEntity>(
@@ -133,13 +231,25 @@ async fn delete_handler<E: RestEntity>(
 
 #[cfg(test)]
 mod tests {
+    // Le `Scenario` « Surface disponible sans aucune feature » de `./mod.sdd` n'a pas de test
+    // unitaire ici, conformément à la tâche « Convertir » et au précédent `../users/mod.rs` : sa
+    // preuve est la combinaison `--no-default-features` de la batterie de `/tooling.sdd` — ce
+    // fichier ne porte aucun `#[cfg(feature = ...)]`, la compilation et les tests inline de la
+    // surface CRUD sur cette combinaison (et sur `--all-features`) sont la preuve. Les autres
+    // `Scenario` ont chacun un test nommé distinct ci-dessous, ou sont prouvés par un test
+    // existant cartographié dans `./mod.sdd` (`owner_only_without_column_panics_at_mount`,
+    // `filter_column_on_non_text_column_panics_at_mount`) ou par le doctest `compile_fail` de la
+    // doc de `RestEntity` (exclusion de clé composée).
+
     use super::*;
+    use crate::auth::cookie::build_set_cookie;
     use crate::auth::issue_token;
-    use crate::auth::oidc::MockOidcClient;
+    use crate::auth::oidc::{MockOidcClient, OidcIdentity};
     use crate::migration::Migrator;
     use crate::users::resolve_user as auth_resolve_user;
     use axum::body::Body;
     use axum::http::Request;
+    use axum::routing::patch;
     use sea_orm::ActiveValue::Set;
     use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Schema};
     use sea_orm_migration::MigratorTrait;
@@ -401,6 +511,161 @@ mod tests {
         }
     }
 
+    // Fixture de l'arbitrage 2026-09-27 (`Must` « Refuser au montage, par panic ») : entité
+    // `OwnerOnly` en écriture déclarant `owner_column` à `None`.
+    mod ownerless {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "ownerless")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub label: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        // Déclaration invalide (../resource.sdd) : `OwnerOnly` en écriture sans colonne
+        // propriétaire. Jamais montée ni requêtée — `resource_router` doit refuser le montage.
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "ownerless"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+        }
+    }
+
+    // Fixture de l'arbitrage 2026-09-27 (`Must` « Refuser au montage, par panic ») : entité dont
+    // `filter_column` désigne une colonne `i32` — `filter` reste réservé aux colonnes texte
+    // (./core.sdd), le montage doit refuser avant toute route construite.
+    mod numberfilter {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "numberfilters")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub count: i32,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "numberfilters"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+            fn filter_column() -> Option<Column> {
+                Some(Column::Count)
+            }
+        }
+    }
+
+    // Fixture du troisième garde (arbitrage 2026-09-29, `Must` « Refuser au montage, par panic ») :
+    // entité `OwnerOnly` en écriture dont `owner_column` désigne une colonne `i64` —
+    // `rbac::evaluate` compare des `sea_orm::Value` strictement et ne matcherait jamais un `i32`
+    // utilisateur : refus du montage avant toute route construite.
+    mod bigowner {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "bigowners")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub owner_id: i64,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        // Déclaration invalide (../resource.sdd, arbitrage 2026-09-29) : colonne propriétaire
+        // `i64`. Jamais montée ni requêtée — `resource_router` doit refuser le montage.
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "bigowner"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn owner_column() -> Option<Column> {
+                Some(Column::OwnerId)
+            }
+        }
+    }
+
+    // Contre-épreuve du troisième garde (même arbitrage) : une colonne propriétaire nullable
+    // `Option<i32>` reste du `ColumnType::Integer` — le montage est accepté, le cas « valeur
+    // `None` » relève de ../rbac.sdd, pas du montage.
+    mod optowner {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "optowners")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub owner_id: Option<i32>,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "optowners"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn owner_column() -> Option<Column> {
+                Some(Column::OwnerId)
+            }
+        }
+    }
+
     async fn test_db() -> DatabaseConnection {
         let db = Database::connect("sqlite::memory:")
             .await
@@ -431,11 +696,13 @@ mod tests {
 
     fn test_state(db: DatabaseConnection) -> MiryadAuthState {
         MiryadAuthState {
-            oidc_client: std::sync::Arc::new(MockOidcClient),
+            oidc_client: std::sync::Arc::new(MockOidcClient::default()),
             cookie_key: ::cookie::Key::from(&[0u8; 64]),
             post_login_redirect: "/".to_string(),
             post_logout_redirect: "/".to_string(),
             db,
+            secure_cookies: false,
+            token_pepper: "test-pepper".to_string(),
         }
     }
 
@@ -450,7 +717,7 @@ mod tests {
     }
 
     async fn bearer_for(db: &DatabaseConnection, subject: &str) -> String {
-        issue_token(db, subject, "test", None)
+        issue_token(db, subject, "test", None, "test-pepper")
             .await
             .expect("issuing succeeds")
             .token
@@ -477,6 +744,57 @@ mod tests {
         serde_json::from_slice(&bytes).expect("valid JSON body")
     }
 
+    /// Corps texte brut d'une réponse — les rejets `400`/`401`/`404` d'axum et de `AuthError`
+    /// ne sont pas du JSON, `json_body` ne s'applique qu'aux corps de la crate.
+    async fn text_body(resp: axum::response::Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("readable body");
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// JWT tri-segment dont la claim `exp` vaut `exp` (copie du pattern de `../auth/dual.rs`) —
+    /// `extract_session` relit cette claim côté serveur.
+    fn make_jwt(exp: u64) -> String {
+        use base64::Engine;
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#));
+        format!("header.{payload}.sig")
+    }
+
+    fn future_exp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after epoch")
+            .as_secs()
+            + 3600
+    }
+
+    /// Paire `nom=valeur` isolée d'un en-tête `Set-Cookie` (premier segment avant `;`).
+    fn cookie_pair(set_cookie: &str) -> String {
+        set_cookie
+            .split(';')
+            .next()
+            .expect("cookie pair present")
+            .to_string()
+    }
+
+    /// Cookie `miryad_session` valide signé de la clé de l'état, pour le `subject` donné
+    /// (pattern de construction de `../auth/dual.rs`, Scenario « Le cookie de session traverse
+    /// la surface CRUD »).
+    fn session_cookie_for(state: &MiryadAuthState, subject: &str) -> String {
+        let identity = OidcIdentity {
+            id_token: make_jwt(future_exp()),
+            subject: subject.to_string(),
+            email: None,
+            preferred_username: None,
+        };
+        cookie_pair(&build_set_cookie(
+            &identity,
+            &state.cookie_key,
+            state.secure_cookies,
+        ))
+    }
+
     #[tokio::test]
     async fn create_ignores_client_supplied_owner() {
         let db = test_db().await;
@@ -495,7 +813,7 @@ mod tests {
             .oneshot(json_request("POST", "/api/v1/recipes", &token, Some(body)))
             .await
             .expect("router does not fail");
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::CREATED);
         let created = json_body(resp).await;
         assert_eq!(created["owner_id"], alice.id);
     }
@@ -522,7 +840,7 @@ mod tests {
                 .oneshot(json_request("POST", "/api/v1/recipes", owner_token, Some(body)))
                 .await
                 .expect("create succeeds");
-            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(resp.status(), StatusCode::CREATED);
         }
 
         let alice_list = app_ref
@@ -787,10 +1105,36 @@ mod tests {
         assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
 
         let delete_resp = app_ref
+            .clone()
             .oneshot(json_request("DELETE", "/api/v1/recipes/999999", &token, None))
             .await
             .expect("router does not fail");
         assert_eq!(delete_resp.status(), StatusCode::NOT_FOUND);
+
+        // Élargissement rattaché à `../rest/core.sdd` (oracle d'existence, arbitrage 2026-09-27) :
+        // la recette (`OwnerOnly`) est le résidu assumé qui répond `404` ; sous `Group` (lecture)
+        // et `AdminOnly` (écriture), un id inconnu répond `403` — `static_verdict` refuse avant
+        // toute relecture de la table, l'existence de la ligne n'est jamais trahie.
+        let ingredient_get = app_ref
+            .clone()
+            .oneshot(json_request("GET", "/api/v1/ingredients/999999", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(
+            ingredient_get.status(),
+            StatusCode::FORBIDDEN,
+            "l'oracle d'existence est fermé pour la lecture `Group`"
+        );
+
+        let ingredient_delete = app_ref
+            .oneshot(json_request("DELETE", "/api/v1/ingredients/999999", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(
+            ingredient_delete.status(),
+            StatusCode::FORBIDDEN,
+            "l'oracle d'existence est fermé pour l'écriture `AdminOnly`"
+        );
     }
 
     #[tokio::test]
@@ -806,7 +1150,7 @@ mod tests {
             .await
             .expect("router does not fail");
 
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::CREATED);
         let created = json_body(resp).await;
         assert_eq!(created["label"], "GADGET");
     }
@@ -851,7 +1195,7 @@ mod tests {
             .oneshot(json_request("POST", "/api/v1/doodads", &token, Some(create_body)))
             .await
             .expect("create succeeds");
-        assert_eq!(created.status(), StatusCode::OK);
+        assert_eq!(created.status(), StatusCode::CREATED);
         let created = json_body(created).await;
         let id = created["id"].as_i64().expect("id present");
 
@@ -1044,7 +1388,7 @@ mod tests {
                 .oneshot(json_request("POST", "/api/v1/doodads", &token, Some(body)))
                 .await
                 .expect("create succeeds");
-            assert_eq!(created.status(), StatusCode::OK);
+            assert_eq!(created.status(), StatusCode::CREATED);
             let created = json_body(created).await;
             ids.push(created["id"].as_i64().expect("id present"));
         }
@@ -1124,8 +1468,637 @@ mod tests {
             .await
             .expect("router does not fail");
 
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::CREATED);
         let created = json_body(resp).await;
         assert_eq!(created["title"], "Tarte");
+    }
+
+    // ——— Conversion des `Scenario` de `./mod.sdd` (tâche « Convertir ») : un test nommé
+    // distinct par Scenario non prouvé par un test existant. Chaque test est un verrou du
+    // comportement réel de la surface assemblée (délégation à ./core.rs, rejets d'axum). ———
+
+    /// `Scenario` : « La route collection expose GET et POST ».
+    #[tokio::test]
+    async fn collection_route_serves_get_and_post() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        let resp = app_ref
+            .clone()
+            .oneshot(json_request("GET", "/api/v1/recipes", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let page = json_body(resp).await;
+        for key in ["items", "page", "per_page", "total_items", "total_pages"] {
+            assert!(
+                page.get(key).is_some(),
+                "les cinq clés wire de PagedResult doivent être là, manque `{key}` : {page}"
+            );
+        }
+        assert_eq!(page["items"], serde_json::json!([]), "base vierge : items vide");
+
+        let body = serde_json::json!({
+            "id": 0, "title": "Tarte", "owner_id": 0, "category": "dessert",
+        });
+        let resp = app_ref
+            .clone()
+            .oneshot(json_request("POST", "/api/v1/recipes", &token, Some(body)))
+            .await
+            .expect("router does not fail");
+        assert_eq!(
+            resp.status(),
+            StatusCode::CREATED,
+            "201 à la création (arbitré 2026-09-27)"
+        );
+        let created = json_body(resp).await;
+        assert_eq!(created["title"], "Tarte");
+
+        let page = json_body(
+            app_ref
+                .oneshot(json_request("GET", "/api/v1/recipes", &token, None))
+                .await
+                .expect("router does not fail"),
+        )
+        .await;
+        assert_eq!(page["total_items"], 1);
+        assert_eq!(
+            page["items"][0]["id"], created["id"],
+            "le GET suivant contient le créé"
+        );
+    }
+
+    /// `Scenario` : « Verbe hors liste répond 405 avec Allow ».
+    #[tokio::test]
+    async fn unlisted_verb_returns_405_with_allow() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        let resp = app_ref
+            .oneshot(json_request("PATCH", "/api/v1/recipes", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+        let allow = resp
+            .headers()
+            .get("allow")
+            .expect("en-tête Allow présent sur un 405 d'axum")
+            .to_str()
+            .expect("Allow en ASCII")
+            .to_string();
+        let methods: Vec<&str> = allow.split(',').map(str::trim).collect();
+        for expected in ["GET", "HEAD", "POST"] {
+            assert!(
+                methods.contains(&expected),
+                "l'en-tête Allow `{allow}` doit contenir {expected}"
+            );
+        }
+
+        let body = text_body(resp).await;
+        assert!(
+            !body.contains("MRD-REST-"),
+            "le 405 vient d'axum, aucune erreur de la crate ne doit filtrer : {body}"
+        );
+    }
+
+    /// `Scenario` : « HEAD passe par le handler GET de la collection ».
+    #[tokio::test]
+    async fn head_is_served_by_collection_get() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        let resp = app_ref
+            .oneshot(json_request("HEAD", "/api/v1/recipes", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "HEAD servi par list_handler avec le corps retiré (axum 0.8.9)"
+        );
+        assert!(text_body(resp).await.is_empty(), "aucun corps sur HEAD");
+    }
+
+    /// `Scenario` : « La route item répond GET, PUT et DELETE ».
+    #[tokio::test]
+    async fn item_route_serves_get_put_delete() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        let create_body = serde_json::json!({
+            "id": 0, "title": "Tarte", "owner_id": 0, "category": "dessert",
+        });
+        let created = json_body(
+            app_ref
+                .clone()
+                .oneshot(json_request("POST", "/api/v1/recipes", &token, Some(create_body)))
+                .await
+                .expect("create succeeds"),
+        )
+        .await;
+        let id = created["id"].as_i64().expect("id present");
+
+        let resp = app_ref
+            .clone()
+            .oneshot(json_request(
+                "GET",
+                &format!("/api/v1/recipes/{id}"),
+                &token,
+                None,
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(json_body(resp).await["title"], "Tarte");
+
+        let update_body = serde_json::json!({
+            "id": id, "title": "Tarte modifiee", "owner_id": 0, "category": "dessert",
+        });
+        let resp = app_ref
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/v1/recipes/{id}"),
+                &token,
+                Some(update_body),
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(json_body(resp).await["title"], "Tarte modifiee");
+
+        let resp = app_ref
+            .clone()
+            .oneshot(json_request(
+                "DELETE",
+                &format!("/api/v1/recipes/{id}"),
+                &token,
+                None,
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(text_body(resp).await.is_empty(), "204 sans corps");
+
+        let resp = app_ref
+            .oneshot(json_request(
+                "GET",
+                &format!("/api/v1/recipes/{id}"),
+                &token,
+                None,
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(text_body(resp).await, "MRD-REST-001: resource not found");
+    }
+
+    /// `Scenario` : « id non numérique répond 400 avant tout handler ».
+    #[tokio::test]
+    async fn non_numeric_id_returns_400() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        let resp = app_ref
+            .oneshot(json_request("GET", "/api/v1/recipes/abc", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "rejet FailedToDeserializePathParams d'axum, pas 404"
+        );
+        let body = text_body(resp).await;
+        assert!(
+            !body.contains("MRD-REST-"),
+            "get_handler jamais appelé, Path<i32> échoue avant : {body}"
+        );
+    }
+
+    /// `Scenario` : « id hors portée i32 répond 400 ».
+    #[tokio::test]
+    async fn id_out_of_i32_range_returns_400() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        // 3 000 000 000 > i32::MAX : même rejet Path que l'id non numérique, la borne i32 de
+        // la signature de get_handler est observable sur le fil.
+        let resp = app_ref
+            .oneshot(json_request("GET", "/api/v1/recipes/3000000000", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = text_body(resp).await;
+        assert!(
+            !body.contains("MRD-REST-"),
+            "rejet d'axum, pas de la crate : {body}"
+        );
+    }
+
+    /// `Scenario` : « Chemin inconnu sous le préfixe monté répond 404 ».
+    #[tokio::test]
+    async fn unknown_path_under_mount_returns_404() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        let resp = app_ref
+            .oneshot(json_request("GET", "/api/v1/ghosts", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "404 du fallback par défaut d'axum — ./mod.rs ne pose aucun fallback"
+        );
+        let body = text_body(resp).await;
+        assert!(
+            !body.contains("MRD-REST-"),
+            "MRD-REST-001 viendrait de ./core.rs, jamais atteint sur un chemin inexistant : {body}"
+        );
+    }
+
+    /// `Scenario` : « Refus d'authentification précède tout parsing de corps et de query ».
+    #[tokio::test]
+    async fn auth_rejection_short_circuits_body_and_query() {
+        let db = test_db().await;
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        // POST sans aucun credential, corps JSON syntaxiquement invalide : 401, pas 400 —
+        // l'extraction AuthPrincipal précède Json dans l'ordre de signature.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/recipes")
+            .header("Content-Type", "application/json")
+            .body(Body::from("{ ceci n'est pas du json"))
+            .expect("valid request");
+        let resp = app_ref.clone().oneshot(req).await.expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            text_body(resp).await,
+            "MRD-AUTH-001: not authenticated (no session cookie)"
+        );
+
+        // GET sans credential, query mal typée : 401 aussi, Query n'est pas atteint.
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/v1/recipes?page=abc")
+            .body(Body::empty())
+            .expect("valid request");
+        let resp = app_ref.oneshot(req).await.expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// `Scenario` : « Paramètre query mal typé répond 400 avec credentials valides ».
+    #[tokio::test]
+    async fn malformed_query_returns_400_when_authenticated() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        let resp = app_ref
+            .clone()
+            .oneshot(json_request("GET", "/api/v1/recipes?page=abc", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "QueryRejection d'axum");
+        let body = text_body(resp).await;
+        assert!(
+            !body.contains("MRD-REST-"),
+            "rejet d'axum, pas de la crate : {body}"
+        );
+
+        // Paramètre inconnu ignoré (ListParams sans deny_unknown_fields) : 200, page rendue
+        // telle que normalisée.
+        let resp = app_ref
+            .oneshot(json_request(
+                "GET",
+                "/api/v1/recipes?page=2&inconnu=1",
+                &token,
+                None,
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(json_body(resp).await["page"], 2);
+    }
+
+    /// `Scenario` : « page et `per_page` à zéro sont renvoyés normalisés ».
+    #[tokio::test]
+    async fn wire_observes_normalized_pagination() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        for title in ["Un", "Deux", "Trois"] {
+            let body = serde_json::json!({
+                "id": 0, "title": title, "owner_id": 0, "category": "plat",
+            });
+            app_ref
+                .clone()
+                .oneshot(json_request("POST", "/api/v1/recipes", &token, Some(body)))
+                .await
+                .expect("create succeeds");
+        }
+
+        let resp = app_ref
+            .oneshot(json_request(
+                "GET",
+                "/api/v1/recipes?page=0&per_page=0",
+                &token,
+                None,
+            ))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let page = json_body(resp).await;
+        // La normalisation vue est celle de Pagination::from_raw via core::list (../query.sdd) :
+        // ./mod.rs ne fait que passer les Option bruts.
+        assert_eq!(page["page"], 1, "page 0 rendue normalisée à 1");
+        assert_eq!(page["per_page"], 1, "per_page 0 rendu normalisé à 1");
+    }
+
+    /// `Scenario` : « Corps JSON invalide est refusé avant le hook ».
+    #[tokio::test]
+    async fn invalid_json_body_refuses_before_hook() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        // Corps syntaxiquement invalide : 400 (JsonSyntaxError d'axum), before_create jamais
+        // appelé — aucun code WIDGET-001 ne doit apparaître.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/widgets")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from("{ ce ci n'est pas du json"))
+            .expect("valid request");
+        let resp = app_ref.clone().oneshot(req).await.expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = text_body(resp).await;
+        assert!(
+            !body.contains("WIDGET-001"),
+            "le hook n'est jamais appelé : {body}"
+        );
+
+        // Aucune ligne insérée.
+        let resp = app_ref
+            .clone()
+            .oneshot(json_request("GET", "/api/v1/widgets", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(json_body(resp).await["total_items"], 0);
+
+        // Même POST sans en-tête Content-Type application/json : 415.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/widgets")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(r#"{"id": 0, "owner_id": 0, "label": "gadget"}"#))
+            .expect("valid request");
+        let resp = app_ref.clone().oneshot(req).await.expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        // Corps JSON valide de mauvaise forme : 422 JsonDataError, statut partagé avec le 422
+        // HookError (arbitrage `Tasks`).
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/widgets")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"nope": true}"#))
+            .expect("valid request");
+        let resp = app_ref.clone().oneshot(req).await.expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Toujours aucune ligne insérée : sur aucune de ces branches le hook n'a tourné.
+        let resp = app_ref
+            .oneshot(json_request("GET", "/api/v1/widgets", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(json_body(resp).await["total_items"], 0);
+    }
+
+    /// `Scenario` : « Trois entités coexistent sous le préfixe figé ».
+    #[tokio::test]
+    async fn three_entities_coexist_under_fixed_prefix() {
+        let db = test_db().await;
+        let alice_token = bearer_for(&db, "alice").await;
+        let stranger_token = bearer_for(&db, "stranger").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+
+        // Une recette et un widget créés par alice — le with_state unique scelle l'état des
+        // cinq nest assemblés par `app` sans conflit de montage.
+        let recipe_body = serde_json::json!({
+            "id": 0, "title": "Tarte", "owner_id": 0, "category": "dessert",
+        });
+        app_ref
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/recipes",
+                &alice_token,
+                Some(recipe_body),
+            ))
+            .await
+            .expect("create succeeds");
+        let widget_body = serde_json::json!({"id": 0, "owner_id": 0, "label": "gadget"});
+        app_ref
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/widgets",
+                &alice_token,
+                Some(widget_body),
+            ))
+            .await
+            .expect("create succeeds");
+
+        // GET /recipes : la page des recettes de alice.
+        let recipes = json_body(
+            app_ref
+                .clone()
+                .oneshot(json_request("GET", "/api/v1/recipes", &alice_token, None))
+                .await
+                .expect("router does not fail"),
+        )
+        .await;
+        assert_eq!(recipes["total_items"], 1);
+        assert_eq!(recipes["items"][0]["title"], "Tarte");
+
+        // GET /widgets : la page des widgets — lecture Public, visible du stranger.
+        let widgets = json_body(
+            app_ref
+                .clone()
+                .oneshot(json_request("GET", "/api/v1/widgets", &stranger_token, None))
+                .await
+                .expect("router does not fail"),
+        )
+        .await;
+        assert_eq!(widgets["total_items"], 1);
+        assert_eq!(widgets["items"][0]["label"], "GADGET");
+
+        // GET /ingredients : 403 pour le stranger (politique Group "editors") — les routeurs
+        // ne se marchent pas dessus.
+        let resp = app_ref
+            .oneshot(json_request("GET", "/api/v1/ingredients", &stranger_token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(text_body(resp).await, "MRD-REST-002: access denied");
+    }
+
+    /// Handler du routeur hôte pour le Scenario suivant — verbe complémentaire maison.
+    async fn host_patch_handler() -> (StatusCode, &'static str) {
+        (StatusCode::OK, "hote")
+    }
+
+    /// `Scenario` : « Le routeur hôte qui ajoute un verbe complémentaire coexiste avec les
+    /// routes CRUD ».
+    #[tokio::test]
+    async fn host_complementary_verb_coexists() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = Router::new()
+            .route("/api/v1/recipes", patch(host_patch_handler))
+            .merge(resource_router::<recipe::Entity, MiryadAuthState>())
+            .with_state(state);
+
+        let resp = app_ref
+            .clone()
+            .oneshot(json_request("PATCH", "/api/v1/recipes", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(text_body(resp).await, "hote", "c'est le handler hôte qui répond");
+
+        // La fusion des MethodRouters à verbes disjoints n'a rien écrasé : le GET est
+        // toujours servi par list_handler (corps PagedResult).
+        let resp = app_ref
+            .oneshot(json_request("GET", "/api/v1/recipes", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            json_body(resp).await.get("total_items").is_some(),
+            "le GET passe toujours par list_handler"
+        );
+    }
+
+    /// `Scenario` : « Deux routers en chevauchement sur un même verbe paniquent au montage,
+    /// pas à la requête ».
+    #[test]
+    #[should_panic(expected = "Overlapping method route")]
+    fn overlapping_verb_merge_panics_at_assembly() {
+        // Le routeur hôte enregistre lui-même GET /api/v1/recipes (chemin applati identique,
+        // verbe get en commun) puis merge le routeur de la même entité : Router::merge panic
+        // au montage (axum 0.8.9, track_caller), avant toute requête. ./mod.rs ne déduplique
+        // rien — l'unicité du resource_name est une charge de l'app.
+        let _merged = Router::new()
+            .route("/api/v1/recipes", get(|| async { "" }))
+            .merge(resource_router::<recipe::Entity, MiryadAuthState>());
+    }
+
+    /// `Scenario` : « Le cookie de session traverse la surface CRUD ».
+    #[tokio::test]
+    async fn session_cookie_round_trips_crud() {
+        let db = test_db().await;
+        let alice_token = bearer_for(&db, "alice").await;
+        let bob_token = bearer_for(&db, "bob").await;
+        let state = test_state(db);
+        let cookie = session_cookie_for(&state, "alice");
+        let app_ref = app(state);
+
+        // Une recette par propriétaire, via Bearer.
+        for token in [&alice_token, &bob_token] {
+            let body = serde_json::json!({
+                "id": 0, "title": "Tarte", "owner_id": 0, "category": "dessert",
+            });
+            let resp = app_ref
+                .clone()
+                .oneshot(json_request("POST", "/api/v1/recipes", token, Some(body)))
+                .await
+                .expect("create succeeds");
+            assert_eq!(resp.status(), StatusCode::CREATED);
+        }
+
+        // GET au seul cookie de session chiffré valide, sans en-tête Authorization : 200 —
+        // la branche cookie de l'impl FromRequestParts (../auth/dual.sdd) alimente le même
+        // AuthPrincipal que les tokens API. La restriction RBAC appliquée est celle de
+        // l'utilisatrice du cookie : alice ne voit que sa ligne.
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/v1/recipes")
+            .header("Cookie", cookie)
+            .body(Body::empty())
+            .expect("valid request");
+        let resp = app_ref.oneshot(req).await.expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(resp).await["total_items"],
+            1,
+            "OwnerOnly restreint la page au sujet du cookie, la ligne de bob reste hors de portée"
+        );
+    }
+
+    // Scenario « Entité `OwnerOnly` sans colonne propriétaire panique au montage » (arbitrage
+    // 2026-09-27, `Must` « Refuser au montage, par panic ») : `resource_router` panic avant de
+    // construire le moindre chemin — l'entité mal déclarée ne répondra jamais `403`/`500` à la
+    // première requête. Le message cite l'entité (`ownerless`) et la règle violée.
+    #[test]
+    #[should_panic(expected = "`ownerless` declares `AccessPolicy::OwnerOnly`")]
+    fn owner_only_without_column_panics_at_mount() {
+        let _router = resource_router::<ownerless::Entity, MiryadAuthState>();
+    }
+
+    // Scenario « Entité à colonne de filtre non textuelle panique au montage » (arbitrage
+    // 2026-09-27, même mécanique) : `filter` reste réservé aux colonnes texte, une
+    // `filter_column` sur colonne `i32` refuse le montage, message citant l'entité
+    // (`numberfilters`) et la règle violée.
+    #[test]
+    #[should_panic(expected = "`numberfilters` declares `filter_column` on a non-textual column")]
+    fn filter_column_on_non_text_column_panics_at_mount() {
+        let _router = resource_router::<numberfilter::Entity, MiryadAuthState>();
+    }
+
+    // Scenario « Entité à colonne propriétaire non `i32` panique au montage » (arbitrage
+    // 2026-09-29, `Must` « Refuser au montage, par panic ») : `owner_column` sur colonne `i64`
+    // refuse le montage avant toute route construite — `rbac::evaluate` ne matcherait jamais la
+    // colonne et refuserait éternellement hors admin. Message citant l'entité (`bigowner`) et la
+    // règle.
+    #[test]
+    #[should_panic(expected = "`bigowner` declares `owner_column` on a non-`i32` column")]
+    fn owner_column_on_non_i32_column_panics_at_mount() {
+        let _router = resource_router::<bigowner::Entity, MiryadAuthState>();
+    }
+
+    // Contre-épreuve du même Scenario (`But`) : colonne `Option<i32>` nullable, même politique
+    // `OwnerOnly` — le type est `ColumnType::Integer`, le montage passe. Verrou du réel attendu
+    // vert à sa rédaction (il garde ouverte l'acceptation des colonnes nullables, cas qui
+    // relève de ../rbac.sdd).
+    #[test]
+    fn owner_column_as_nullable_i32_mounts() {
+        let _router = resource_router::<optowner::Entity, MiryadAuthState>();
     }
 }

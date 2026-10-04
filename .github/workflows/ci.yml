@@ -11,8 +11,28 @@ on:
 
 jobs:
   test:
-    name: Tests
+    name: Tests (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            args: ""
+          - name: no-default
+            args: "--no-default-features"
+          - name: swagger-ui
+            args: "--no-default-features --features swagger-ui"
+          - name: graphql
+            args: "--no-default-features --features graphql"
+          - name: graphiql
+            args: "--no-default-features --features graphiql"
+          - name: mcp
+            args: "--no-default-features --features mcp"
+          - name: workflow
+            args: "--no-default-features --features workflow"
+          - name: all-features
+            args: "--all-features"
     steps:
       - uses: actions/checkout@v7
 
@@ -22,11 +42,8 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: cargo test
-        run: cargo test
-
-      - name: cargo test --all-features
-        run: cargo test --all-features
+      - name: cargo test (${{ matrix.name }})
+        run: cargo test ${{ matrix.args }}
 
   fmt:
     name: Format
@@ -46,8 +63,24 @@ jobs:
         run: cargo fmt -- --check
 
   clippy:
-    name: Clippy
+    name: Clippy (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pas de graphe contenant graphql ni --all-features : carve-out du pont gele
+        # (./workflows.sdd, arbitre par Sebastien le 2026-10-03, option A).
+        include:
+          - name: no-default
+            args: "--no-default-features"
+          - name: default
+            args: ""
+          - name: swagger-ui
+            args: "--no-default-features --features swagger-ui"
+          - name: mcp
+            args: "--no-default-features --features mcp"
+          - name: workflow
+            args: "--no-default-features --features workflow"
     steps:
       - uses: actions/checkout@v7
 
@@ -59,8 +92,5 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: cargo clippy --all-targets
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: cargo clippy --all-features --all-targets
-        run: cargo clippy --all-features --all-targets -- -D warnings
+      - name: cargo clippy (${{ matrix.name }})
+        run: cargo clippy --all-targets ${{ matrix.args }} -- -D warnings

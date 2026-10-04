@@ -38,10 +38,12 @@ References:
     taxonomie, parité de lecture des surfaces, règle tests ≥ scenarios
   /.specdd/bootstrap.project.md — contrat transverse @HookError, interdits du harnais, frontière
     par surface : ce fichier est partagé, il ne choisit de surface aucune
-  /tooling.sdd — dette stricte tracée : l’@expect de @rest::core::primary_key_column est un des
-    sites `expect_used` de production, la soustraction `pagination.page - 1` un des sites
-    `arithmetic_side_effects` ; la batterie court ici sous les huit combinaisons de features
-    (sept plus `workflow`, amendement 2026-09-23)
+  /tooling.sdd — dette stricte de ce fichier, traitée le 2026-09-29 (tâche A1, synthèse validator
+    PASS) : la soustraction `pagination.page - 1` est passée en @saturating_sub (jamais saturée sous
+    l'invariant `page >= 1` de ./../query.sdd, comportement identique) et l’@expect de
+    @rest::core::primary_key_column est couvert par un @allow(clippy::expect_used) commenté d'une
+    ligne citant la présente spec (inatteignable compilable, `Must`) ; la batterie court ici sous les
+    huit combinaisons de features (sept plus `workflow`, amendement 2026-09-23)
   ./../lib.sdd — @rest déclaré sans gating ; @rest::core n’est jamais visible hors de la crate
   ./mod.rs — contrat ./mod.sdd : possesseur de @RestEntity (PK unique @i32 assumée comme
     limitation), des handlers et de leurs statuts de succès `200`/`204`, premier appelant des cinq
@@ -172,7 +174,10 @@ Must:
     traduction de sa sortie change) : @rest::core::update et @rest::core::delete décident
     @rbac::can_write sur @existing puis émettent leur SQL cible (PK seule, sans filtre owner) ;
     @rest::core::update dont l’`UPDATE` rend @sea_orm::DbErr::RecordNotUpdated (la ligne relue a
-    disparu avant l’écriture) rend désormais @RestError::NotFound (`MRD-REST-001`), plus jamais
+    disparu avant l’écriture) ou @sea_orm::DbErr::RecordNotFound (relecture interne de
+    @ActiveModelTrait::update vide sur les backends sans @RETURNING type MySQL — aligné sur
+    ./../auth/token.sdd, revue 2026-09-29) rend désormais @RestError::NotFound (`MRD-REST-001`),
+    plus jamais
     @RestError::Database (`500`) ; @rest::core::delete lit désormais
     @sea_orm::DeleteResult::rows_affected et rend @RestError::NotFound quand il vaut `0` (la ligne
     a disparu entre la relecture et le `DELETE`), @Ok(()) seulement quand une ligne a réellement
@@ -187,13 +192,18 @@ Must:
     déclencher que sur un itérateur @E::PrimaryKey::iter vide, impossible sous la bound ValueType
     @i32 de @RestEntity ;
     @rest::core::mark_all_set itère @E::Column::iter de la même emprise.
-  Porter, sans en ajouter, la dette stricte déjà tracée à /tooling.sdd : @std::result::Result::expect
-    de @rest::core::primary_key_column (`expect_used`) et la soustraction `pagination.page - 1`
-    (`arithmetic_side_effects`, sans risque de underflow car @query borne `page >= 1`) ; la purge
-    suit le calendrier de /tooling.sdd.
+  Ne porter aucune dette stricte ouverte depuis le 2026-09-29 (tâche A1 /tooling.sdd) : la
+    soustraction est `pagination.page.saturating_sub(1)` (jamais saturée, @query borne `page >= 1`) ;
+    l'@expect de @rest::core::primary_key_column reste le seul arrêt potentiel du fichier, couvert
+    par un @allow(clippy::expect_used) commenté d'une ligne citant la présente spec — inatteignable
+    compilable ci-dessus, aucune autre infraction stricte ; la purge ne doit rien en ajouter.
   Rester silencieux et sans état : aucune trace @tracing à ce jour, aucun état partageable, aucune
     variable globale ; jamais @println!, @eprintln!, @dbg! ; @tracing est seul permis pour toute
     trace future (contrat transverse /.specdd/bootstrap.project.md).
+  Toute liste est ordonnée par la clé primaire croissante (arbitré par Sébastien le 2026-09-29) : @rest::core::list applique un
+    `ORDER BY` sur la colonne de clé primaire avant @paginate — pagination déterministe, jamais de
+    ligne sautée ou dupliquée entre deux pages ; les listes de ./admin.rs et ./tokens.rs suivent la
+    même règle.
 
 Must not:
   Choisir un statut HTTP ni importer @axum : ./core.rs ne produit que @RestError ; la table
@@ -321,8 +331,10 @@ Raises:
   `MRD-REST-001` par @RestError::NotFound — trois chemins : la relecture
     @sea_orm::EntityTrait::find_by_id(id).one rend @None dans @rest::core::get,
     @rest::core::update, @rest::core::delete, après le verdict statique de @rbac::static_verdict
-    (`Must`) ; @sea_orm::DbErr::RecordNotUpdated de @ActiveModelTrait::update (la ligne relue a
-    disparu avant l’`UPDATE`, arbitré 2026-09-27) ; @sea_orm::DeleteResult::rows_affected `0` de
+    (`Must`) ; @sea_orm::DbErr::RecordNotUpdated ou @sea_orm::DbErr::RecordNotFound de
+    @ActiveModelTrait::update (la ligne relue a
+    disparu avant l’`UPDATE`, arbitré 2026-09-27 ; @RecordNotFound pour la relecture interne sur
+    backends sans @RETURNING, revue 2026-09-29) ; @sea_orm::DeleteResult::rows_affected `0` de
     @sea_orm::EntityTrait::delete_by_id (la ligne relue a disparu avant le `DELETE`, arbitré
     2026-09-27). Rendu : `404` REST (./error.rs), @McpError::NotFound `-32002` (`MRD-MCP-002`).
     @rest::core::list ne l’atteint jamais.
@@ -337,7 +349,8 @@ Raises:
     création ne retrouve aucune ligne), erreurs de @rbac::list_access, des @rbac::can_* et de
     @rbac::static_verdict propagées telles quelles, @num_items_and_pages, @fetch_page, contrainte
     violée à l’@ActiveModelTrait::insert, @sea_orm::EntityTrait::delete_by_id. Rendu : `500` REST,
-    @McpError::Database `-32603` (`MRD-MCP-003`). @sea_orm::DbErr::RecordNotUpdated et
+    @McpError::Database `-32603` (`MRD-MCP-003`). @sea_orm::DbErr::RecordNotUpdated,
+    @sea_orm::DbErr::RecordNotFound de @update (revue 2026-09-29) et
     `rows_affected == 0` ne relèvent plus de ce chemin depuis le 2026-09-27 (voir `MRD-REST-001`
     ci-dessus).
   @RestError::Application(@HookError), sans code `MRD-*` par contrat transverse (@HookError)
@@ -353,7 +366,7 @@ Raises:
   Panics amont vérifiés, hors du contrôle du fichier : @ActiveModelTrait::set panic sur valeur
     @sea_orm::DbErr::Type (vérifié : @ActiveModelTrait::try_set → panic wrapper) quand la colonne
     @owner_column déclarée ne reçoit pas @sea_orm::Value::from(@i32) ; @expect de @rest::core::primary_key_column
-    (inatteignable compilable, dette `expect_used`) ; @sea_orm::PaginatorTrait::paginate avec
+    (inatteignable compilable, couvert par l'@allow commenté — `Must`) ; @sea_orm::PaginatorTrait::paginate avec
     `per_page 0` est impossible — @query::Pagination::from_raw tient `per_page >= 1`. La
     soustraction `page - 1` est protégée par `page >= 1` (./../query.sdd), et l’offset calculé
     pour @sea_orm::Paginator::fetch_page ne déborde plus jamais depuis le 2026-09-27 : `page` est
@@ -416,7 +429,8 @@ Handles:
     les appelait).
   Courses (aucun verrou, aucune transaction — fenêtre tolérée, arbitré le 2026-09-27) : @update dont
     la ligne disparaît entre @sea_orm::EntityTrait::find_by_id et @ActiveModelTrait::update →
-    @sea_orm::DbErr::RecordNotUpdated propagé → @RestError::NotFound (`MRD-REST-001`), plus jamais
+    @sea_orm::DbErr::RecordNotUpdated propagé (backend avec @RETURNING) ou @sea_orm::DbErr::RecordNotFound
+    propagé (relecture interne sur backend sans @RETURNING, revue 2026-09-29) → @RestError::NotFound (`MRD-REST-001`), plus jamais
     `500` ; @delete dont la ligne disparaît entre la relecture et
     @sea_orm::EntityTrait::delete_by_id → @sea_orm::DeleteResult::rows_affected `0` lu →
     @RestError::NotFound, plus jamais un `204` muet sur rien de supprimé ; une mutation d’owner
@@ -427,9 +441,11 @@ Handles:
     correspondant et traduite par @From<@RestError> de ./../mcp/error.rs en codes `-320xx`/`-32603`,
     sans qu’une politique soit consultée deux fois ; @graphql n’emprunte pas ./core.rs (asymétrie
     d’architecture instruite par ./../rbac.sdd, ./../graphql/hooks.sdd en attente).
-  Dette harnais du fichier : @expect de @rest::core::primary_key_column (`expect_used`, inatteignable
-    compilable) et `pagination.page - 1` (`arithmetic_side_effects`) — les deux comptés à
-    /tooling.sdd, aucune autre infraction stricte à la lecture du fichier.
+  Dette harnais du fichier : aucune ouverte depuis le 2026-09-29 (tâche A1 /tooling.sdd) — la
+    soustraction `pagination.page - 1` est éteinte (@saturating_sub, comportement identique sous
+    `page >= 1`) et l'@expect de @rest::core::primary_key_column (`expect_used`, inatteignable
+    compilable) est couvert par un @allow commenté d'une ligne citant la présente spec ; aucune autre
+    infraction stricte à la lecture du fichier.
 
 Example:
   # Ordre contractuel de @rest::core::create — l’ordre est le contrat.
@@ -456,6 +472,14 @@ Example:
     @sea_orm::EntityTrait::delete_by_id.
 
 Tasks:
+# Deux taches closes 2026-10-01 (vague B3, validator PASS) ; levevement
+# 478 : amendement Raises/Must/Handles RecordNotFound fait par spec-dd le 2026-10-01.
+  [x] `ORDER BY` sur la clé primaire dans @rest::core::list (arbitré par Sébastien le 2026-09-29,
+    `Must`) ; nouveau Scenario et test de pagination déterministe (deux pages consécutives sans
+    ligne sautée ni dupliquée).
+  [x] Revue 2026-09-29 : @update traduit aussi `DbErr::RecordNotFound` en `NotFound` (backend sans
+    `RETURNING` type MySQL, aligné sur ./../auth/token.rs) en plus de `RecordNotUpdated` ; amender
+    `Raises` de @update et ajouter un test si la simulation par @sea_orm::MockDatabase le permet.
   [x] Amendement du 2026-09-23 (@before_update, @before_delete) : convertir les quatre nouveaux
     `Scenario` en tests nommés distincts dans ./mod.rs (même style que les tests existants de hook de
     création) : « mutation before_update écrite, invariants après » →
@@ -464,32 +488,32 @@ Tasks:
     `update_hook_hostile_ne_contourne_les_invariants` ; « rejet before_delete, aucun DELETE » →
     `before_delete_hook_error_blocks_delete_without_mrd_code`. Dépend de l’implémentation de
     ./../resource.sdd (mêmes quatre nouveaux hooks) — les deux amendements s’implémentent ensemble.
-  [ ] Oracle d’existence (des huit `[?]` originaux, tous arbitrés par Sébastien le 2026-09-27) :
+  [x] Oracle d’existence (des huit `[?]` originaux, tous arbitrés par Sébastien le 2026-09-27) :
     fermé pour `AdminOnly`/`Group` par @rbac::static_verdict avant relecture
     (`Must`, ./../rbac.sdd). Résidu assumé sur `OwnerOnly`, indécidable sans enregistrement — pas un
     refus uniforme `403` généralisé, qui aurait coûté une relecture systématique sans gain réel pour
     cette politique. Implémentation : appeler @rbac::static_verdict avant
     @sea_orm::EntityTrait::find_by_id dans @get/@update/@delete.
-  [ ] Provisionnement : contrat voulu, documenté comme tel (`Handles`) — aucun changement de code,
+  [x] Provisionnement : contrat voulu, documenté comme tel (`Handles`) — aucun changement de code,
     seule la spec change (le `[?]` devient une affirmation).
-  [ ] `OwnerOnly` sans colonne à la création : fail-closed transféré à @rbac::can_create
+  [x] `OwnerOnly` sans colonne à la création : fail-closed transféré à @rbac::can_create
     (./../rbac.sdd, `[?]` résolu là) et défense supplémentaire au montage REST (panic,
     ./../rest/mod.sdd) — aucun changement dans ./core.rs, @rbac::can_create refusant déjà avant que
     @rest::core::create n’insère quoi que ce soit.
-  [ ] Injection de colonne étendue à toute entité à `owner_column` déclarée, indépendamment de
+  [x] Injection de colonne étendue à toute entité à `owner_column` déclarée, indépendamment de
     `write_policy` (`Must`, `Handles`) — nouveau chemin de code dans @rest::core::create et
     @rest::core::update, plus plus seulement conditionné à `write_policy == OwnerOnly`.
-  [ ] TOCTOU : fenêtre tolérée (pas de verrou), mais @sea_orm::DbErr::RecordNotUpdated →
+  [x] TOCTOU : fenêtre tolérée (pas de verrou), mais @sea_orm::DbErr::RecordNotUpdated →
     @RestError::NotFound (au lieu de `Database`) dans @update, et lecture de
     @sea_orm::DeleteResult::rows_affected → @RestError::NotFound si `0` dans @delete (`Must`,
     `Raises`).
-  [ ] `filter` non typé : fermé par le montage refusé de ./../rest/mod.sdd sur colonne non
+  [x] `filter` non typé : fermé par le montage refusé de ./../rest/mod.sdd sur colonne non
     textuelle (`Must not`) — aucun changement de code dans ./core.rs, la garantie est amont.
-  [ ] Page extrême : fermée par @query::MAX_PAGE (./../query.sdd) — aucun changement de code dans
+  [x] Page extrême : fermée par @query::MAX_PAGE (./../query.sdd) — aucun changement de code dans
     ./core.rs, la garantie est amont.
-  [ ] Statut de @create : `201` désormais (./../rest/mod.sdd `Must`) — aucun changement de code
+  [x] Statut de @create : `201` désormais (./../rest/mod.sdd `Must`) — aucun changement de code
     dans ./core.rs, qui ne choisit toujours aucun statut HTTP.
-  [ ] Convertir les trente-cinq `Scenario` de cette spec (vingt-sept originaux, quatre de
+  [x] Convertir les trente-cinq `Scenario` de cette spec (vingt-sept originaux, quatre de
     l’amendement before_update/before_delete, quatre nés de l’arbitrage du 2026-09-27) en au moins
     trente-cinq tests Rust distincts nommés, un scenario minimum par test ; ./core.rs ne porte aucun
     test inline à la rédaction (0 tests), les preuves actuelles sont les seize tests de ./mod.rs
@@ -554,8 +578,8 @@ Done when:
     @before_update/@before_delete du 2026-09-23, quatre nés de l’arbitrage du 2026-09-27) disposent
     chacun d’au moins un test nommé distinct vérifiant son `Then` (mapping `Tasks` tenu, zéro test
     inline dans ./core.rs aujourd’hui donc tout est à créer ou à rattacher explicitement), et la
-    batterie /tooling.sdd est verte sur chaque combinaison de features, ./core.rs ne portant aucune
-    dette stricte au-delà des deux sites connus.
+    batterie /tooling.sdd est verte sur chaque combinaison de features, ./core.rs ne portant plus
+    aucune dette stricte ouverte depuis le 2026-09-29.
   Les huit `[?]` originaux de `Tasks` — oracle d’existence, provisioning, `OwnerOnly` sans colonne,
     colonne hors `OwnerOnly`, TOCTOU, filtre non typé, page extrême, `201` de @create — sont tous
     arbitrés par Sébastien le 2026-09-27 et reflétés dans la spec (`Must`, `Handles`, `Raises`,
@@ -668,6 +692,15 @@ Scenario: Table vide : totaux `0`, `items` vide, page conservée
   Then @query::PagedResult::total_items vaut `0`, @query::PagedResult::total_pages vaut `0` (division
     majorante @sea_orm ./../query.sdd), @query::PagedResult::items est vide — jamais une erreur,
     jamais une page fabriquée
+
+Scenario: Liste ordonnée par clé primaire croissante : pagination sans saut ni doublon
+  Given une table d’entité de plusieurs lignes insérées dans un ordre de clés connues, lecture
+    permise (arbitré par Sébastien le 2026-09-29 — `Must` « toute liste est ordonnée »)
+  When @rest::core::list est appelé page après page, @per_page borné au tiers des lignes
+  Then les @items de chaque page remontent par @id strictement croissant — l’@ORDER BY sur la
+    colonne de clé primaire précède @paginate (verrou du statement par @MockDatabase)
+  And la concaténation des pages recouvre chaque ligne exactement une fois : aucune ligne sautée,
+    aucune dupliquée entre deux pages consécutives
 
 Scenario: get d’un inconnu sous `OwnerOnly` : `404`, résidu assumé de l’oracle
   Given un id absent de toute ligne, une entité @AccessPolicy::OwnerOnly (read) et un utilisateur

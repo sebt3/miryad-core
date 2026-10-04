@@ -44,8 +44,11 @@ Must:
     `text/javascript`), plus `accept-ranges` `bytes`, `content-length`
     égal à la tranche livrée et `last-modified` dès que le système de fichiers expose le
     mtime du fichier.
-  Ne jamais poser de `cache-control` ni d'`etag` dans la réponse : la validité
-    ne repose que sur `last-modified`, `if-modified-since`,
+  Poser `cache-control: no-cache` sur toute réponse de contenu `text/html` — la coquille (repli,
+    racine, `/index.html`) et tout `index.html` de sous-répertoire (arbitré par Sébastien le 2026-09-29) : un `index.html` trop mis
+    en cache casse les déploiements du frontend. Aucun `etag`, et aucun `cache-control` sur les
+    assets non HTML (leur nom haché relève du bundler, l'application peut les surcharger) ; la
+    validité des assets ne repose que sur `last-modified`, `if-modified-since`,
     `if-unmodified-since`.
   Rendre la coquille assets_dir/index.html pour tout `GET` ou `HEAD` sans fichier
     valide trouvable — fichier manquant, chemin invalidé (`..`, racine, préfixe de
@@ -90,6 +93,12 @@ Must:
   N'émettre ici aucune trace — ni macro `tracing`, ni @println!, ni @eprintln!,
     ni @dbg! — pas même sur la voie des `500` amont, et ne porter aucun code
     `MRD-<DOMAINE>-NNN`.
+  Les chemins invalides (`..` encodé, octet nul) et les sous-chemins de fichier rendent la coquille
+    avec `200` (arbitré par Sébastien le 2026-09-29) : convention SPA assumée, écrite ici ; le commentaire de documentation de
+    @frontend::static_frontend_router décrit exactement la source (`405` hors `GET`/`HEAD`, `404`
+    quand `index.html` manque, `200` avec la coquille sinon).
+  Les routes inconnues sous `/api` rendent la coquille en `200` (arbitré par Sébastien le 2026-09-29) : ce fichier ne déclare aucune
+    route d'API (`Must not`) ; c'est à l'hôte de poser un fallback `404` sous son préfixe d'API.
 
 Must not:
   Sérialiser une erreur d'API sur un fichier manquant, une méthode refusée ou un chemin
@@ -137,8 +146,11 @@ Exposes:
     `pub fn static_frontend_router<S>(assets_dir: impl Into<PathBuf>) -> Router<S>` avec
     `S: Clone + Send + Sync + 'static`, assemblé seulement sous
     `static-frontend` par @lib.rs.
-  Le corps et les en-têtes des réponses HTTP rendus sans retouche : le fichier emballe
-    @tower_http dans un @axum::Router sans couche, sans en-tête ajouté, sans middleware @tower.
+  Le corps et les en-têtes des réponses HTTP rendus sans retouche, à l'unique exception de
+    l'en-tête `cache-control: no-cache` posé sur toute réponse `text/html` (arbitré 2026-09-29,
+    `Must` ; le texte initial « sans couche, sans en-tête ajouté, sans middleware @tower » était
+    la strate d'avant l'arbitrage, harmonisé 2026-10-02) : le fichier emballe @tower_http dans un
+    @axum::Router, la seule couche étant @html_no_cache conditionnée au `content-type`.
 
 Accepts:
   Tout assets_dir convertible en @std::path::PathBuf — @String, `&str`,
@@ -158,7 +170,8 @@ Returns:
     la seule composition est le service statique avec repli sur index.html.
   Les réponses HTTP produites par @tower_http — fichier servi, coquille, `206`,
     `304`, `307`, `416`, `404`, `405`, `412`,
-    `500` — avec statuts et en-têtes inchangés.
+    `500` — avec statuts et en-têtes inchangés, sauf `cache-control: no-cache` ajouté sur les
+    réponses `text/html` (strates harmonisées 2026-10-02, cf. `Exposes` et `Must`).
 
 Raises:
   Nulle part d'erreur Rust : @frontend::static_frontend_router ne renvoie pas de
@@ -191,23 +204,29 @@ Handles:
     indisponibles et @frontend n'est jamais déclaré.
 
 Tasks:
-  [?] — La coquille, index.html au premier chef, se rend sans `cache-control` ni
-      `etag` : un index.html trop mis en cache casse les déploiements du frontend. Le
-      contrat veut-il rester cette absence amont, exiger un `cache-control` porté par une
-      couche @axum sur le routeur, ou laisser ce choix à l'application consommatrice ?
-  [?] — Le commentaire de documentation promet « renvoie index.html plutôt qu'un 404 pour
-      toute route non trouvée », alors que la source rend `405` hors `GET` et
-      `HEAD`, `404` quand index.html manque, et `200` même sur les chemins
-      `..` invalidés. Aligne-t-on le commentaire sur la source, ou change-t-on le
-      comportement, par exemple avec
-      @ServeDir::call_fallback_on_method_not_allowed ?
-  [?] — Chemins invalides (`..` encodé, octet nul) et sous-chemins de fichier rendent la
-      coquille avec `200` : convention SPA assumée ou `4xx` explicite à préférer,
-      pour le référencement et le sondage ?
-  [ ] Rejouer la batterie complète de /tooling.sdd après l'ajout des tests ci-dessous : le
+  [x] `cache-control: no-cache` sur les réponses `text/html` (arbitré par Sébastien le 2026-09-29,
+    `Must`) : couche @axum ou @tower_http (`SetResponseHeader`) sur le routeur rendu, dépendance
+    `set-header` de @tower_http à ajouter si absente ; adapter les Scenario « coquille SPA rendue
+    sur route inconnue » et « coquille SPA servie directement au chemin racine ».
+    Réalisé 2026-10-02 (B5c, validator PASS) : couche @axum @html_no_cache conditionnée au
+    `content-type` (variante sans `set-header`, la dépendance est absente du manifeste — branche
+    conditionnelle de la tâche) ; rouge consigné (2 FAILED `None` vs `Some("no-cache")`) ;
+    Scenario « route inconnue » déjà porteur de son `And`, Scenario « racine » complété 2026-10-02 ;
+    conditionnalité prouvée par le verrou du fichier servi (en-tête absent).
+  [x] Aligner le commentaire de documentation de @frontend::static_frontend_router sur la source
+    (arbitré par Sébastien le 2026-09-29, `Must`) — documentation seule, aucun changement de
+    comportement.
+    Réalisé 2026-10-02 (B5c, validator PASS) : triade `405`+@allow / `404` vide / `200` coquille
+    plus la phrase `cache-control`, doc seule.
+  [x] Chemins invalides et sous-chemins de fichier : coquille en `200`, convention SPA assumée
+    (arbitré par Sébastien le 2026-09-29, `Must`).
+  [x] Rejouer la batterie complète de /tooling.sdd après l'ajout des tests ci-dessous : le
       module ne se construit que sur défaut et `--all-features`, et les cinq autres
       combinaisons doivent compiler sans lui.
-  [ ] Convertir chaque `Scenario` en test Rust nommé et distinct, au minimum dix-neuf
+      Réalisé 2026-10-02 (validator B5c) : seize commandes + @clippy @static-frontend rejouées ;
+      module absent des cinq combinaisons hors défaut/all-features, comptes cohérents
+      (482 défaut / 463 sans défaut / 652 all-features).
+  [x] Convertir chaque `Scenario` en test Rust nommé et distinct, au minimum dix-neuf
       tests pour dix-neuf `Scenario`, correspondance complète — les deux premiers vivent
       déjà dans le mod inline @frontend::tests et seront complétés d'assertions jusqu'à
       vérifier tout leur `Then` : « fichier statique servi en GET » →
@@ -234,6 +253,12 @@ Tasks:
       contrôle de compilation qui résout @frontend::static_frontend_router sous
       `static-frontend`, dont l'absence est en outre prouvée par la batterie
       `--no-default-features` de /tooling.sdd.
+      Réalisé 2026-10-02 (B5c, validator PASS) : 19 Scenario → 19 tests nommés distincts
+      (2 préexistants complétés, 17 créés), mapping nom à nom vérifié assertion par assertion
+      au source (HEAD sans corps, 307 avec query, `%2e%2e` ET `..` littéral, `%00`, `404` vide
+      sans `content-type`, 304 déterministe, 412, 206/416, panic du merge double-fallback,
+      routes déclarées avant coquille, witness de gating) ; fixtures @StdFs (tempfile absent du
+      manifeste, non nommé par la spec).
 
 Done when:
   Chacun des dix-neuf `Scenario` dispose d'un test nommé distinct, correspondant à la
@@ -242,7 +267,7 @@ Done when:
   La batterie de /tooling.sdd est verte sur chaque combinaison — défaut et
     `--all-features` contiennent ce module, les cinq `--no-default-features`
     compilent sans lui — et clippy n'émet aucun avertissement sur ce fichier.
-  Les trois tâches ouvertes `[?]` sont arbitrées par Sébastien et leur décision inscrite
+  Les trois tâches ouvertes [arbitré 2026-09-29] sont arbitrées par Sébastien et leur décision inscrite
     dans cette spec, et Sébastien a approuvé cette spec.
 
 Scenario: fichier statique servi en GET
@@ -255,6 +280,7 @@ Scenario: coquille SPA rendue sur route inconnue
   When le client envoie un GET vers `/recipes/42`
   Then la réponse est `200` et le corps est l'octet-à-octet de index.html
   And le `content-type` est `text/html`
+  And `cache-control` vaut `no-cache` (arbitré 2026-09-29)
 
 Scenario: en-têtes du fichier servi portent sa matière
   Given le même assets_dir
@@ -262,13 +288,16 @@ Scenario: en-têtes du fichier servi portent sa matière
   Then `content-type` vaut `text/javascript`
   And `content-length` égale la taille du fichier
   And `accept-ranges` vaut `bytes`
-  But ni `cache-control` ni `etag` ne sont présents
+  But ni `cache-control` ni `etag` ne sont présents (asset non HTML ; seul le contenu `text/html`
+    porte `cache-control: no-cache`, arbitré 2026-09-29)
 
 Scenario: coquille SPA servie directement au chemin racine
   Given le même assets_dir
   When le client envoie un GET vers `/`
   Then la réponse est `200` et le corps est l'octet-à-octet du index.html racine
   And le `content-type` est `text/html`
+  And la réponse porte `cache-control: no-cache` (adapté 2026-10-02 par la tâche
+  d'arbitrage 2026-09-29 — toute réponse `text/html` porte l'en-tête)
 
 Scenario: requête HEAD rend les en-têtes sans corps
   Given le même assets_dir

@@ -88,6 +88,11 @@ Must:
   Rester silencieux : aucun @tracing, @println!, @eprintln!, @dbg! — cohérent avec ./error.sdd et le
     contrat transverse.
   Compiler uniquement sous `#[cfg(feature = "workflow")]`.
+  @WorkflowConfig::validate (arbitré par Sébastien le 2026-09-29) — `pub fn validate(&self) -> Result<(), WorkflowError>`, pure, sans
+    I/O : `admin_url` et `ingress_url` doivent se parser en URL absolue de schéma `http` ou `https`
+    (sinon @WorkflowError::InvalidConfig, message nommant le champ fautif) ; `deployment_url` n'est
+    ni validée ni inspectée (décision du 2026-09-23 conservée : c'est à l'application de savoir ce
+    qu'elle expose et comment Restate doit la joindre).
 
 Must not:
   Attendre la complétion d'un run dans @client::trigger_run, ni exposer de fonction de lecture de
@@ -129,9 +134,13 @@ Exposes:
     dag: &DagSteps) -> Result<RunHandle, WorkflowError>`
 
 Accepts:
-  @WorkflowConfig déjà construit et validé par l'appelant — aucune validation de forme d'URL dans ce
-    fichier (une `admin_url` vide ou non-URL échoue à la construction de la requête @reqwest, classée
-    @WorkflowError::RestateUnreachable par ./error.sdd). Décision de Sébastien (2026-09-23) :
+  @WorkflowConfig : `admin_url` et `ingress_url` sont validées avant tout appel réseau (arbitré par Sébastien le 2026-09-29) — vides,
+    non parsables ou de schéma autre que `http`/`https` → @WorkflowError::InvalidConfig
+    (`MRD-WORKFLOW-007`), plus classées @WorkflowError::RestateUnreachable. La validation vit dans
+    @WorkflowConfig::validate, appelée en tête de @client::register_deployment et de
+    @client::trigger_run (la config est construite par l'application par littéral de champs `pub`,
+    comme @auth::OidcConfig : le point de contrôle est le premier usage) ; l'application peut aussi
+    l'appeler elle-même au démarrage.
     ./client.rs ne restreint ni n'inspecte la forme de `deployment_url` (IP de pod vs nom de `Service`
     Kubernetes) — c'est à l'application consommatrice de savoir ce qu'elle expose et comment Restate
     doit la joindre, pas à cette crate d'en décider ou de le deviner. Recommandation d'usage (un
@@ -146,7 +155,7 @@ Returns:
     enregistrement et réutilisation d'un déploiement identique
   @client::trigger_run : @Ok(RunHandle) sur `202` avec `invocationId` décodé ; toute autre forme de
     succès HTTP (`2xx` hors `202`) non observée au spike — traitée comme `202` (le corps est décodé
-    de la même façon, `Tasks [?]` si Restate venait à distinguer)
+    de la même façon, `Tasks [arbitré 2026-09-29]` si Restate venait à distinguer)
 
 Raises:
   `MRD-WORKFLOW-001` (@WorkflowError::RestateUnreachable) — serveur Restate injoignable sur
@@ -180,6 +189,17 @@ Handles:
     opérationnel du self-host (stratégie de rollout, `Tasks`).
 
 Tasks:
+  [x] Validation de @WorkflowConfig (arbitré par Sébastien le 2026-09-29) : @WorkflowConfig::validate, appelée en tête de
+    @client::register_deployment et de @client::trigger_run, rend @WorkflowError::InvalidConfig
+    (`MRD-WORKFLOW-007`, variante ajoutée par ./error.sdd) pour `admin_url`/`ingress_url` vide, non
+    parsable ou de schéma hors `http`/`https` ; trois Scenario ci-dessous.
+    Réalisé 2026-10-03 (B6a, validator PASS) : @validate/@validate_http_url en tête des deux
+    entrées, @reqwest::Url (déjà dans le @Depends on, aucune dépendance nouvelle) ; quatre tests
+    (le Scenario « non parsable » sur ses deux volets) ; preuve d'absence d'appel établie sur
+    listener vivant (ingress valide capturerait — 0 requête capturée) et par typage des variantes
+    (seul @validate construit @InvalidConfig) ; @deployment_url jamais touchée, atteinte du
+    réseau prouvée par le stub. Note du validator pour la prochaine relecture : nommer @validate
+    en @Exposes (surface publique) — non bloquant.
   [x] Rive de signature (implémentation 2026-09-23) : ./client.rs declare @client::trigger_run
     generique (`dag: &T` bornee @serde::Serialize) parce que @DagSteps appartient à
     ./definition.rs (batch ulterieur, `Owns` etranger interdit d'empietement). Au batch de
@@ -215,7 +235,7 @@ Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
   Les trois décisions de `Tasks` sont reflétées dans docs/architecture.md à la clôture de la feature
     (`Service` Kubernetes stable recommandé, risque `force: true` sur rollout, déduplication hors
-    périmètre) — aucune n'est laissée en `[?]` non documenté.
+    périmètre) — aucune n'est laissée en [arbitré 2026-09-29] non documenté.
   ./error.sdd est approuvée avant ou avec cette spec (dépendance directe, pas de test de ./client.rs
     ne peut s'écrire sans @WorkflowError stabilisé).
   La spec est relue et approuvée par Sébastien avant qu'une ligne de ./client.rs soit écrite.
@@ -273,3 +293,22 @@ Scenario: le corps envoyé à trigger_run est le DagSteps tel quel, sans envelop
   When @client::trigger_run construit la requête
   Then le corps JSON capturé par le serveur de test désérialise en la même @DagSteps — aucun
     champ ajouté (pas de `run_key` dans le corps, il ne vit que dans l'URL), aucun champ retiré
+
+Scenario: URL d'admin vide refusée avant tout appel réseau
+  Given une @WorkflowConfig dont `admin_url` est la chaîne vide
+  When @client::register_deployment est appelée
+  Then le résultat est @Err(@WorkflowError::InvalidConfig) de code `MRD-WORKFLOW-007`, message nommant
+    `admin_url`
+  And aucune connexion réseau n'a été tentée (arbitré par Sébastien le 2026-09-29)
+
+Scenario: URL non parsable ou de schéma inattendu refusée
+  Given une @WorkflowConfig dont `ingress_url` vaut `pas une url`, puis une autre dont `admin_url` vaut
+    `ftp://restate:9070`
+  When @WorkflowConfig::validate est appelée sur chacune
+  Then chacune rend @Err(@WorkflowError::InvalidConfig), `MRD-WORKFLOW-007`, le champ fautif nommé
+  And @client::trigger_run rend la même erreur sans appel réseau
+
+Scenario: deployment_url n'est pas validée
+  Given une @WorkflowConfig valide dont `deployment_url` vaut `n'importe quoi`
+  When @WorkflowConfig::validate est appelée
+  Then le résultat est @Ok — la forme de `deployment_url` reste à la charge de l'application

@@ -7,9 +7,11 @@ Purpose:
     l'intégralité du protocole : `vynil-core` 0.7.4, amont de la feature `mcp`, n'expose aucun type
     JSON-RPC/MCP — vérifié au registre des sources (modules utilitaires seulement ; l'unique
     mention « MCP » de son README vise le rendu `hbs` de sorties d'outils, pas un protocole). Le
-    fichier ne définit aucune constante d'erreur ni aucune version MCP : les codes sont des @i32
-    libres posés par les appelants (./handler.rs, /src/mcp/error.rs), la version « 2.0 » est un
-    littéral de construction.
+    fichier ne définit aucune constante d'erreur : les codes sont des @i32
+    libres posés par les appelants (./handler.rs, /src/mcp/error.rs), la version `2.0` de JSON-RPC
+    est un littéral de construction. Il expose en revanche @PROTOCOL_VERSION, la version de
+    protocole MCP (arbitré par Sébastien le 2026-09-29 — harmonisation 2026-10-02 : le texte
+    initial niait toute version MCP, ce que contredisait déjà l'arbitrage en @Exposes).
 
 Owns:
   ./protocol.rs
@@ -18,17 +20,15 @@ References:
   ./mod.rs — `mod protocol;` privé, aucune ré-export : les trois types ne sortent pas de la crate
     (les exports publics du module sont @McpError, @OutputFormat, @mcp_router, @McpToolRegistry) ;
     /src/lib.rs gate `pub mod mcp` derrière `#[cfg(feature = "mcp")]`
-  ./handler.rs — unique consommateur des trois types : extraction @axum::Json<@JsonRpcRequest>,
-    construction de toute réponse par @JsonRpcResponse::ok/@err/@err_with_data, short-circuit des
-    notifications (@id absent → `202` sans enveloppe). Contient la constante @PROTOCOL_VERSION
-    `2024-11-05` et construit les résultats de `initialize` et les déclarations d'outils de
-    `tools/list` (`name`, `description`, `inputSchema`) en @json! anonymes — aucun type dédié ici,
-    question de place ouverte en `Tasks` `[?]`
+  ./handler.rs — unique consommateur : lit le corps de `POST /mcp` en octets, appelle
+    @parse_request, construit toute réponse par @JsonRpcResponse::ok/@err/@err_with_data (jamais
+    de réponse à une notification : `202` sans enveloppe). Le résultat de `initialize` et les
+    déclarations d'outils sont typés ici (@InitializeResult, @ToolDeclaration) (arbitré par Sébastien le 2026-09-29) et construits
+    par ./handler.rs ; la constante @PROTOCOL_VERSION `2024-11-05` vit ici aussi.
   /src/mcp/error.rs — @McpError::rpc_code et @McpError::data fournissent les codes `-32000`,
-    `-32001`, `-32002`, `-32601`, `-32602`, `-32603` et le `data` optionnel que
-    @JsonRpcResponse::err_with_data borne sans les interpréter ; son doc-comment déclare les plages
-    réservées `-32700..-32600` et `-32000..-32099`, mais aucun code de la crate n'émet `-32700` ni
-    `-32600` (`Tasks` `[?]`)
+    `-32001`, `-32002`, `-32601`, `-32602`, `-32603` et, depuis l'arbitrage du 2026-09-29, `-32700`
+    (@McpError::ParseError) et `-32600` (@McpError::InvalidRequest), plus le `data` optionnel que
+    @JsonRpcResponse::err_with_data borne sans l'interpréter
   ./registry.rs — ne consomme aucun type de ce fichier : @McpEntity::call manipule @params en @Value
     brut et @McpError ; l'enveloppe JSON-RPC est posée par ./handler.rs seulement
   /src/rest/error.sdd — contraste d'enveloppe : la même monnaie d'erreur rend texte/JSON HTTP côté
@@ -39,17 +39,20 @@ Must:
     constructeur : le littéral `"2.0"` est codé en dur dans @JsonRpcResponse::ok et
     @JsonRpcResponse::err_with_data, @JsonRpcResponse::jsonrpc est un `&'static str` sans
     `skip_serializing_if`, et aucune constante partagée n'existe dans le fichier (deux
-    occurrences du littéral)
+    occurrences du littéral dans les constructeurs, plus la comparaison de validation du champ
+    @jsonrpc dans @parse_request, imposée par la règle de validation ci-dessous — précision
+    d'harmonisation 2026-10-02)
   Exclusivité @result/@error tenue par les constructeurs : @JsonRpcResponse::ok pose @result
     @Some et @error @None ; @err et @err_with_data posent @error @Some(@RpcError) et @result @None —
     aucune réponse construite par eux ne porte `result` et `error` ensemble. Les champs restent
     `pub` sous le struct `pub(crate)` : une construction par champs directe, jamais pratiquée dans
     la crate hors tests, pourrait produire l'enveloppe double
-  Nullabilité exacte : `id`, `result`, `error` et `data` sont sous
-    `skip_serializing_if = "@Option::is_none"` — un @None supprime la clé (jamais `"id": null`
-    implicitement), un @Some(@Value::Null) la rend présente valant JSON `null` (le `skip` ne teste
-    que @None). @RpcError::code et @RpcError::message sont les deux seuls champs sans @Option :
-    toujours sérialisés
+  Nullabilité exacte (arbitré par Sébastien le 2026-09-29) : `id` est **toujours** sérialisé — @JsonRpcResponse::id est un
+    @Value non-@Option, `null` JSON pour les erreurs de parse et de requête invalide dont l'id est
+    inconnu (JSON-RPC 2.0 exige `id` dans toute réponse) ; `result`, `error` et `data` sont sous
+    `skip_serializing_if = "@Option::is_none"` — un @None supprime la clé, un @Some(@Value::Null)
+    la rend présente valant JSON `null`. @RpcError::code et @RpcError::message sont les deux seuls
+    champs sans @Option : toujours sérialisés
   @JsonRpcResponse::err délègue à @JsonRpcResponse::err_with_data avec @None : une réponse d'erreur
     produite par @err ne porte jamais la clé `data`, ni `null` — la forme `data` absente contre
     `data` présent est le contrat de délégation
@@ -62,20 +65,22 @@ Must:
     @Deserialize pour la requête). L'ordre d'émission des clés est l'ordre de déclaration
     (comportement constaté du derive @serde sur le lock @serde 1.0.229, non une garantie de
     version — les tests affirment par @serde_json interprété, même règle que /src/rest/error.sdd)
-  @JsonRpcRequest::params absent comme explicitement `null` tombent à @Value::Null via
-    `#[serde(default)]` : l'absence et le `null` explicite ne sont pas distinguables en aval. @id
-    absent comme explicitement `null` tombent à @None, confondus — @serde_json appelle @visit_none
-    sur `null` pour un @Option (vérifié `de.rs:1673` du lock @serde_json 1.0.151), donc
-    @Some(@Value::Null) est inatteignable par désérialisation
-  Seules clés lues par la désérialisation : @jsonrpc et @method requis en @String (leur absence est
-    une @serde error de catégorie Data), @id @Option<@Value> acceptant toute valeur JSON sans
-    contrainte, et toute clé inconnue est ignorée — @JsonRpcRequest ne pose pas de
-    `deny_unknown_fields`
-  @JsonRpcRequest::jsonrpc n'est jamais lu après désérialisation (`#[allow(dead_code)]`) : seule sa
-    présence est exigée, sa valeur n'est nulle part comparée à `2.0` — une requête déclarant `1.0`
-    traverse le type. Le durcissement est un `[?]` de `Tasks`, pas une marge de l'implémenteur
-  Derives exacts, sans dérive d'assertion possible : @JsonRpcRequest derive @Deserialize seul ;
-    @JsonRpcResponse et @RpcError dérivent @Serialize seuls — aucun @Debug, @Clone ni @PartialEq,
+  @parse_request (arbitré par Sébastien le 2026-09-29) — point d'entrée unique de lecture, pur (`&[u8]` vers @Result), qui rend
+    @ParsedRequest ou @ProtocolRejection dans cet ordre : (1) le corps n'est pas du JSON valide →
+    @ProtocolRejection::Parse ; (2) la racine n'est pas un objet — tableau (batch, non supporté :
+    la spec MCP l'a retiré en 2025-06), scalaire — → @ProtocolRejection::InvalidRequest ; (3) `jsonrpc`
+    absent ou différent de la chaîne `"2.0"` → InvalidRequest ; (4) `method` absent ou non-@String →
+    InvalidRequest ; (5) clé `id` présente valant `null`, ou autre chose qu'une chaîne ou qu'un
+    nombre → InvalidRequest (JSON-RPC interdit un `id` nul dans une requête) ; (6) clé `id`
+    absente → @ParsedRequest::Notification ; sinon @ParsedRequest::Call. Clés inconnues ignorées,
+    sans `deny_unknown_fields`. @params absent comme `null` : @Value::Null, indistinguables.
+  Les clés lues sont `jsonrpc`, `method`, `id` et `params` (arbitré par Sébastien le 2026-09-29) : `jsonrpc` est vérifié égal à
+    `"2.0"`, `id` est une chaîne ou un nombre JSON, toute autre clé est ignorée. Une requête
+    déclarant `1.0` est rejetée en InvalidRequest, plus jamais tolérée.
+  Derives exacts : @JsonRpcResponse et @RpcError dérivent @Serialize seuls, @InitializeResult et
+    @ToolDeclaration aussi ; @JsonRpcRequest, @ParsedRequest et @ProtocolRejection dérivent @Debug
+    et @PartialEq (comparables dans les tests, arbitré 2026-09-29) mais pas @Deserialize — la
+    lecture passe par @parse_request seul ; @JsonRpcResponse et @RpcError
     donc tout test compare des @serde_json::Value interprétés, jamais les structures
   Compilation sous la seule feature `mcp`, aucun `#[cfg(feature = ...)]` interne : le gate vient de
     /src/lib.rs ; la batterie de `./tooling.sdd` doit exercer ce fichier sur la combinaison
@@ -85,8 +90,8 @@ Must:
     portent aucun effet de bord dans leur construction
   Front de surface : ce fichier ne sert que MCP ; la version de protocole qu'il déclare est
     uniquement JSON-RPC `2.0` (littéral de construction), la version MCP `2024-11-05` vit en
-    @PROTOCOL_VERSION dans ./handler.rs qui ignore la version proposée par le client — aucune
-    négociation n'existe nulle part. La parité REST/GraphQL/MCP du contrat transverse
+    @PROTOCOL_VERSION (ici, arbitré 2026-09-29) ; la négociation de version — écho de la version
+    du client si elle est égale, sinon la version du serveur — vit dans ./handler.rs. La parité REST/GraphQL/MCP du contrat transverse
     (`.specdd/bootstrap.project.md`) porte sur la lecture de @MiryadResource, pas sur la forme
     d'enveloppe : l'asymétrie de forme REST (texte/`code`+`message`, /src/rest/error.sdd) contre
     enveloppe JSON-RPC est constitutive, pas un décalage à combler
@@ -95,13 +100,12 @@ Must not:
   Modifier une clé wire, un littéral `2.0`, un ordre de champs ou une règle de `skip` sans arbitrage
     de Sébastien : ces octets sont le contrat fil de `POST /mcp` pour tout client MCP du template
     miryad
-  Émettre une erreur JSON-RPC depuis ce fichier, `-32700`/`-32600` inclus : la construction de code
-    appartient à ./handler.rs et /src/mcp/error.rs ; boucher le trou des codes standard absents est
-    est une décision de `Tasks` `[?]`, pas un réflexe d'implémentation
-  Durcir silencieusement @JsonRpcRequest (ajouter `deny_unknown_fields`, contraindre @id en `string`
-    ou `number`, contrôler la valeur de `jsonrpc`) ou relâcher ses requis (`jsonrpc`/@method en
-    @Option) : chaque mouvement déplace des rejets entre la frontière HTTP `400` et l'enveloppe
-    JSON-RPC, et les deux sens heurtent un `[?]` ouvert
+  Poser un code numérique JSON-RPC dans ce fichier : @parse_request rend @ProtocolRejection sans
+    code ni message, la construction de code appartient à ./handler.rs et /src/mcp/error.rs
+    (@McpError::ParseError, @McpError::InvalidRequest, arbitré 2026-09-29)
+  Ajouter `deny_unknown_fields` ou assouplir la validation de @parse_request (accepter `jsonrpc`
+    autre que `2.0`, un `id` nul ou structuré, un batch) sans arbitrage : la tolérance aux clés
+    inconnues et la rigueur sur `jsonrpc`, `method` et `id` sont le contrat (arbitré 2026-09-29)
   Réutiliser @JsonRpcResponse ou @RpcError comme enveloppe d'une autre route que la surface MCP, ou
     leur ajouter un rendu @axum::Json hors ./handler.rs
 
@@ -117,181 +121,194 @@ Depends on:
     `data`
 
 Exposes:
-  @JsonRpcRequest — struct `pub(crate)` dérivant @Deserialize seul, quatre champs `pub` :
-    @JsonRpcRequest::jsonrpc — @String requis, capturé jamais lu (`#[allow(dead_code)]`)
-    @JsonRpcRequest::id — @Option<@Value> : absent, `null` ou toute valeur JSON
-    @JsonRpcRequest::method — @String requis, seul discriminant de dispatch lu par ./handler.rs
-    @JsonRpcRequest::params — @Value sous `default` : absent ou `null` → @Value::Null
-  @JsonRpcResponse — struct `pub(crate)` dérivant @Serialize seul, champs `pub` @jsonrpc
-    (`&'static str`, toujours émis), @id/@result/@error (@Option sous skip) ; trois méthodes
-    `pub(crate)` :
-    @JsonRpcResponse::ok : @Option<@Value> + @result @Value → enveloppe succès `2.0`
-    @JsonRpcResponse::err : @id + @code @i32 + @message `impl @Into<@String>` → délègue vers
-      @JsonRpcResponse::err_with_data
-    @JsonRpcResponse::err_with_data : ajoute @data @Option<@Value> transporté verbatim
+  @JsonRpcRequest — struct `pub(crate)`, champs `pub` : @JsonRpcRequest::id (@Value, chaîne ou
+    nombre, jamais `null`), @JsonRpcRequest::method (@String) et @JsonRpcRequest::params (@Value,
+    @Value::Null si absent). Construit par @parse_request seul.
+  @ParsedRequest — enum `pub(crate)` : @ParsedRequest::Call(@JsonRpcRequest) et
+    @ParsedRequest::Notification (`id` absent, aucune réponse).
+  @ProtocolRejection — enum `pub(crate)` : @ProtocolRejection::Parse (JSON invalide) et
+    @ProtocolRejection::InvalidRequest (enveloppe invalide) ; sans code ni message.
+  @parse_request — `pub(crate) fn parse_request(body: &[u8]) -> @Result<@ParsedRequest,
+    @ProtocolRejection>`, pure, sans I/O ni trace.
+  @JsonRpcResponse — struct `pub(crate)` dérivant @Serialize seul, champs `pub` @jsonrpc (`&'static
+    str`, toujours émis), @id (@Value, toujours émis), @result et @error (@Option sous skip) ;
+    constructeurs `pub(crate)` : @JsonRpcResponse::ok (@id @Value + @result), @JsonRpcResponse::err
+    (@id + @code @i32 + @message `impl @Into<@String>`, délègue vers @err_with_data avec @None),
+    @JsonRpcResponse::err_with_data (ajoute @data @Option<@Value> verbatim). Un @id inconnu se
+    passe en @Value::Null.
   @RpcError — struct `pub(crate)` dérivant @Serialize seul : @code @i32 et @message @String toujours
-    émis, @data @Option<@Value> skip-if-none
-  Rien pour les consommateurs de la crate : ./mod.rs ne ré-exporte aucun des trois types — surface
-    publique MCP portée par @mcp_router et @McpToolRegistry (./registry.rs, /src/mcp/error.sdd à
-    venir)
+    émis, @data @Option<@Value> skip-if-none.
+  @PROTOCOL_VERSION — `pub(crate) const` &str `2024-11-05`.
+  @InitializeResult et @ToolDeclaration — structs `pub(crate)` @Serialize, formes wire de
+    `initialize` (`protocolVersion`, `capabilities`, `serverInfo`) et d'une déclaration d'outil
+    (`name`, `description`, `inputSchema`) — arbitré (arbitré par Sébastien le 2026-09-29), jusque-là des @json! anonymes.
+  Rien pour les consommateurs de la crate : ./mod.rs ne ré-exporte aucun de ces types.
 
 Accepts:
-  @JsonRpcRequest — le corps unique `application/json` (suffixe `+json` accepté) de `POST /mcp`,
-    mis en tampon puis désérialisé par @axum::Json<@JsonRpcRequest> : un seul objet requête, pas de
-    lot ; @id de n'importe quel type JSON (la conformité JSON-RPC, `string` ou `number` seulement,
-    n'est pas imposée) ; n'importe quelles clés supplémentaires
-  @JsonRpcResponse::ok — @id par valeur (@Some attendu, @None autorisé et visible au fil du flux)
-    et @result @Value par valeur, y compris @Value::Null
-  @JsonRpcResponse::err et @JsonRpcResponse::err_with_data — @id par valeur, @code @i32 libre,
-    @message de tout type vers @String (@&str ou @String, verbatim), @data @Option<@Value> ; appel
-    synchrone, sans état ni généricité de feature
-  Aucune entrée pour @RpcError hors @JsonRpcResponse::err_with_data dans le code de production
+  @parse_request — un tampon d'octets quelconque : le corps unique `application/json` de `POST /mcp`
+    lu par ./handler.rs ; un seul objet requête, jamais de lot ; @id chaîne ou nombre ; clés
+    supplémentaires ignorées.
+  @JsonRpcResponse::ok — @id @Value par valeur (@Value::Null admis) et @result @Value par valeur,
+    y compris @Value::Null.
+  @JsonRpcResponse::err et @JsonRpcResponse::err_with_data — @id @Value par valeur, @code @i32
+    libre, @message de tout type vers @String (verbatim), @data @Option<@Value>.
+  Aucune entrée pour @RpcError hors @JsonRpcResponse::err_with_data dans le code de production.
 
 Returns:
-  Désérialisation @JsonRpcRequest — champs peuplés selon les règles du `Must` : @params jamais
-    @Option (défaut @Value::Null), @id @None pour absent comme pour `null`, clés inconnues écartées
-    sans trace
-  @JsonRpcResponse::ok — @Self portant `jsonrpc` `2.0`, @result @Some, @error @None
-  @JsonRpcResponse::err / @JsonRpcResponse::err_with_data — @Self portant `jsonrpc` `2.0`, @error
-    @Some(@RpcError{code, message, data}), @result @None ; @data @None se traduit par l'absence de
-    la clé, pas par `null`
+  @parse_request — @Ok(@ParsedRequest::Call) pour une requête valide, @Ok(@ParsedRequest::Notification)
+    pour un objet valide sans clé `id`, @Err(@ProtocolRejection::Parse) ou
+    @Err(@ProtocolRejection::InvalidRequest) selon l'ordre de `Must`.
+  @JsonRpcResponse::ok — @Self portant `jsonrpc` `2.0`, @id, @result @Some, @error @None.
+  @JsonRpcResponse::err / @JsonRpcResponse::err_with_data — @Self portant `jsonrpc` `2.0`, @id,
+    @error @Some(@RpcError{code, message, data}), @result @None ; @data @None se traduit par
+    l'absence de la clé, pas par `null`.
   Sérialisation (par @axum::Json dans ./handler.rs, statut `200`) — les enveloppes exactes de
-    l'`Example` : jamais les clés `result` et `error` ensemble, jamais `id`/`result`/`error`/`data`
-    rendus `null` par omission implicite
+    l'`Example` : jamais `result` et `error` ensemble, `id` toujours présent, jamais
+    `result`/`error`/`data` rendus `null` par omission implicite.
 
 Raises:
   Aucune erreur construite ou émise par ce fichier : les constructeurs ne retournent jamais de
-    @Result, @code n'est jamais validé, aucun `MRD-*` n'apparaît ici
-  Rejets amont de @JsonRpcRequest — syntaxe JSON invalide, contenu trailing, @jsonrpc/@method
-    absents ou non-@String : @serde_json::error::Category de type Syntax ou Data propagé par
-    @axum::Json en @JsonSyntaxError/@JsonDataError → `400` texte ; @Content-Type non-JSON → `415`
-    (états vérifiés dans le source axum 0.8.9, json.rs et ses tests propres) — jamais une enveloppe
-    @RpcError ; le couple `-32700`/`-32600` que ces cas auraient dû porter n'est émis nulle part
-    dans la crate (`Tasks` `[?]`)
+    @Result, @code n'est jamais validé, aucun `MRD-*` n'apparaît ici. @parse_request rend un
+    @ProtocolRejection typé, que ./handler.rs traduit en `-32700`/`-32600` (HTTP `200`, enveloppe à
+    `id` `null`, arbitré (arbitré par Sébastien le 2026-09-29)) via @McpError::ParseError/@McpError::InvalidRequest.
+  Rejets de transport : `Content-Type` non-JSON, méthode HTTP, taille, authentification restent des
+    rejets HTTP hors enveloppe (`415`, `405`, `413`, `401`), rendus avant ./handler.rs — voir la
+    règle « deux niveaux » de ./handler.sdd.
   Repli axum sur échec de sérialisation d'une réponse (`500` `text/plain`, vérifié dans axum 0.8.9) :
-    inatteignable avec le jeu de champs @Value, @String et `&'static str` de ces types
+    inatteignable avec le jeu de champs @Value, @String et `&'static str` de ces types.
 
 Handles:
-  Notification JSON-RPC (`id` absent) : le type la capture en @id @None et s'arrête là ; la réponse
-    `202` sans corps appartient à @mcp_handler dans ./handler.rs, qui ne construit alors aucune
-    @JsonRpcResponse
-  `params` omis ≡ `params: null` : les deux rendus @Value::Null sont indistinguables ici ; en aval
-    `tools/call` sans `params` échoue donc à la lecture de @ToolCallParams (./handler.rs) avec
-    `-32602` — conséquence observable du `default` de ce fichier
-  Codes standard en transit : `-32601` (méthode inconnue, nom d'outil sans suffixe opérationnel,
-    entité absente du registre — ./handler.rs) et `-32602` (arguments invalides — ./handler.rs) ;
-    les six codes de @McpError::rpc_code arrivent eux par @JsonRpcResponse::err_with_data avec leur
-    @data (`code` libre de @HookError portée en `data`). Le type ne distingue aucune plage : il les
-    transporte tous, réservés ou libres
-  Lot JSON-RPC (tableau de requêtes en racine) : forme sans type ici, refusée par @serde sur
-    @JsonRpcRequest avant tout dispatch → rejet `400` d'@axum::Json, pas l'erreur unique `-32600`
-    qu'évoque la spec JSON-RPC (`Tasks` `[?]`)
+  Notification JSON-RPC (`id` absent) : @parse_request rend @ParsedRequest::Notification ; la réponse
+    `202` sans corps appartient à ./handler.rs, qui ne construit aucune @JsonRpcResponse.
+  `id: null` explicite : requête invalide, @ProtocolRejection::InvalidRequest — plus jamais une
+    notification (arbitré (arbitré par Sébastien le 2026-09-29)).
+  `params` omis ≡ `params: null` : les deux rendent @Value::Null ; en aval `tools/call` sans `params`
+    échoue à la lecture de @ToolCallParams (./handler.rs) avec `-32602`.
+  Lot JSON-RPC (tableau en racine) : @ProtocolRejection::InvalidRequest, réponse unique `-32600` à
+    `id` `null`, aucun support de batch (arbitré (arbitré par Sébastien le 2026-09-29)).
+  Codes standard en transit : `-32700`, `-32600`, `-32601`, `-32602`, `-32603` et les six codes
+    `-32000..-32002` de @McpError::rpc_code arrivent par @JsonRpcResponse::err_with_data avec leur
+    @data ; le type ne distingue aucune plage.
 
 Tasks:
-  [?] Codes standard jamais émis : corps syntaxiquement invalide, clé requise absente, type de @id
-    arbitraire et `Content-Type` non-JSON sortent en `400`/`415` texte d'@axum::Json, jamais en
-    enveloppe @RpcError (`-32700` parse, `-32600` requête invalide absents de toute la crate) : un
-    client MCP strict attend l'enveloppe JSON-RPC — enturer ces rejets (extracteur ou layer dédié)
-    ou la surface 4xx texte est-elle un choix assumé ?
-  [?] Batch non supporté : un tableau en racine est rejeté `400` sans réponse JSON-RPC ; la spec
-    JSON-RPC laisse le serveur répondre d'une erreur unique `-32600` — choix conscient ou trou à
-    combler (avec ou sans vrai support de batch) ?
-  [?] `id` des réponses : @JsonRpcResponse::ok/@err acceptent @id @None et produisent une enveloppe
-    sans clé `id` (non conforme — JSON-RPC exige `id` dans toute réponse), et une requête dont `id`
-    porte un `null` explicite tombe à @None, donc part en notification `202` sans réponse :
-    forcer un @id non-@Option dans les constructeurs, ou laisser la souplesse (réflexe JSON-RPC 1.0
-    d'un `id` à `null` sur message inconnu) ? ./handler.rs ne produit jamais l'enveloppe sans `id`
-    aujourd'hui.
-  [?] Validation de la requête : @JsonRpcRequest::jsonrpc jamais comparé (`1.0` traverse), @id
-    libre (un objet passe), clés inconnues ignorées — durcir (`jsonrpc` `2.0` exigé sous `-32600`,
-    @id restreint à `string` ou `number`, ou rien) ou figer la tolérance comme contrat ?
-  [?] Place des formes JSON-RPC/MCP non typées ici : résultat de `initialize` (@protocolVersion,
-    @capabilities, @serverInfo) et déclarations d'outils (`name`, `description`, `inputSchema`)
-    sont des @json! anonymes dans ./handler.rs ; ce fichier est pourtant le fichier de types —
-    typer ces formes ici, ou la place reste-t-elle auprès de leur seul producteur ?
-  [?] Le doc-comment d'en-tête référence `kydah-mcp-template/src/mcp.rs`, référence hors graphe de
-    dépendances et invérifiable par la batterie : garder le pointeur, le retirer, ou déclarer la
-    forme indépendante ?
-  [ ] Convertir les 12 `Scenario` en au moins 12 tests distincts nommés dans le `mod tests`
-    `#[cfg(test)]` de ./protocol.rs (le fichier ne compte aucun test inline à ce jour ; ./handler.rs
-    aucun non plus, les deux tests de ./registry.rs n'exercent pas ces types) : tests unitaires
-    synchrones sur @serde_json::from_str/@serde_json::to_value, sans routeur ni DB — contrat
-    entièrement contenu dans le fichier, aucune intégration externe requise.
+  [x] Enveloppes `-32700`/`-32600` (arbitré par Sébastien le 2026-09-29) : @parse_request et @ProtocolRejection, corps lu en
+    octets, HTTP `200` ; les rejets de transport (`401`, `405`, `413`, `415`) restent HTTP.
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : @parse_request sur @&[u8] avec ordre de
+    validation (1)-(6), @ProtocolRejection, @rejection_response dans ./handler.rs en HTTP `200`
+    `id` `null`, rejets de transport hors enveloppe vérifiés en tests.
+  [x] Batch non supporté, réponse unique `-32600` (spec MCP 2025-06) (arbitré par Sébastien le 2026-09-29).
+  [x] @id non-@Option dans les constructeurs de @JsonRpcResponse, `null` pour les erreurs à id
+    inconnu ; `id: null` explicite en requête = InvalidRequest (arbitré par Sébastien le 2026-09-29).
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : @id `@Value` toujours sérialisé,
+    constructeurs posant @Value::Null à id inconnu, `id: null` → @ProtocolRejection::InvalidRequest
+    — verrouillés par les Scenario correspondants et par `id_null_explicite_rend_moins_32600_pas_un_202`.
+  [x] Validation durcie : `jsonrpc` égal à `2.0`, `id` chaîne ou nombre, clés inconnues ignorées (arbitré par Sébastien le 2026-09-29)
+    (`Must`).
+  [x] Typer @InitializeResult et @ToolDeclaration dans ./protocol.rs, @PROTOCOL_VERSION ici (arbitré par Sébastien le 2026-09-29) ;
+    ./handler.rs les construit. Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : les trois
+    items sont dans ./protocol.rs, consommés par ./handler.rs (plus de @const dupliqué ni de
+    @json! anonyme), clés wire verrouillées par un test dédié.
+  [x] Retirer du doc-comment d'en-tête de ./protocol.rs le pointeur `kydah-mcp-template/src/mcp.rs`
+    et déclarer la forme indépendante (arbitré par Sébastien le 2026-09-29) — documentation seule.
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : grep « kydah » vide dans tout ./protocol.rs.
+  [x] Convertir les `Scenario` (réécrits le 2026-09-29) en tests distincts nommés dans le `mod tests`
+    `#[cfg(test)]` de ./protocol.rs : tests unitaires synchrones sur @parse_request et
+    @serde_json::to_value, sans routeur ni DB — contrat entièrement contenu dans le fichier.
+    Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : 17 Scenario → 17 tests nommés distincts
+    + 1 verrou de tâche hors Scenario (clés wire de @InitializeResult/@ToolDeclaration), rejoués
+    verts sous `--no-default-features --features mcp` et `--all-features`.
 
 Done when:
-  Les 12 `Scenario` ont chacun au moins un test nommé distinct et vert dans ./protocol.rs, rejoués
+  Les `Scenario` (réécrits le 2026-09-29 : lecture par @parse_request, id non-@Option) ont chacun au moins un test nommé distinct et vert dans ./protocol.rs, rejoués
     sur la combinaison `--no-default-features --features mcp` et `--all-features` de `./tooling.sdd`
     (fichier gate `mcp`, inutile sur les autres combinaisons)
   Les formes wire de l'`Example` sont affirmées clé par clé par @serde_json interprété : présence/
     absence exacte de `result`, `error`, `data`, `id`, littéral `2.0`, code libre transporté, `null`
-    explicite rendu contre clé absente
-  La tolérance courante de @JsonRpcRequest (clés inconnues, @id libre, valeur `jsonrpc` non vérifiée)
-    est affirmée telle quelle tant qu'aucun `[?]` ne soit arbitré — aucun test n'attend un
-    durcissement
-  Les six lignes `[?]` de `Tasks` sont arbitrées par Sébastien et leur suite reflétée dans le
-    contrat ou le code
+    explicite rendu contre clé absente ; `id` toujours présent, `null` pour les erreurs à id inconnu
+  Les six lignes [arbitré 2026-09-29] de `Tasks` sont arbitrées par Sébastien le 2026-09-29 et leur suite est
+    reflétée dans le contrat ; les tâches de code sont exécutées depuis 2026-10-02 (fusion
+    B4a+B4c, validator PASS)
 
-Scenario: Requête complète désérialisée
+Scenario: Requête complète acceptée
   Given le corps `{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{"cursor":"x"}}`
-  When il est désérialisé en @JsonRpcRequest
-  Then @JsonRpcRequest::jsonrpc vaut `2.0`, @JsonRpcRequest::method vaut `tools/list`
-  And @JsonRpcRequest::id est @Some de la valeur nombre `7`, @JsonRpcRequest::params l'objet
-    contenant la clé `cursor` valant `x`
+  When @parse_request le lit
+  Then le résultat est @ParsedRequest::Call dont @JsonRpcRequest::id est le nombre `7`,
+    @JsonRpcRequest::method vaut `tools/list` et @JsonRpcRequest::params l'objet contenant `cursor` valant `x`
 
 Scenario: params absent ou null confondus
-  Given le corps `{"jsonrpc":"2.0","id":1,"method":"ping"}` sans clé `params`
-  And le même corps avec `"params":null` explicite
-  When chacun est désérialisé en @JsonRpcRequest
+  Given le corps `{"jsonrpc":"2.0","id":1,"method":"ping"}` sans clé `params`, et le même corps avec
+    `"params":null` explicite
+  When @parse_request lit chacun
   Then @JsonRpcRequest::params vaut @Value::Null dans les deux cas, sans distinction possible
 
-Scenario: id null confondu avec id absent
-  Given le corps `{"jsonrpc":"2.0","method":"x","id":null}` avec un `null` explicite à la clé `id`
-  When il est désérialisé en @JsonRpcRequest
-  Then @JsonRpcRequest::id est @None, la valeur qu'a aussi une requête sans clé `id` — le chemin qui
-    mène ./handler.rs au short-circuit `202`
+Scenario: id absent est une notification
+  Given le corps `{"jsonrpc":"2.0","method":"notifications/initialized"}` sans clé `id`
+  When @parse_request le lit
+  Then le résultat est @ParsedRequest::Notification
 
-Scenario: id structuré accepté verbatim
-  Given le corps `{"jsonrpc":"2.0","id":{"k":[1]},"method":"x"}` où @id est un objet, alors que
-    JSON-RPC ne réserve à l'identifiant que `string`, `number` et `null`
-  When il est désérialisé en @JsonRpcRequest
-  Then la conversion réussit et @JsonRpcRequest::id est @Some de l'objet restitué, sans validation ni
-    refus de ce niveau
+Scenario: id null explicite est une requête invalide
+  Given le corps `{"jsonrpc":"2.0","method":"x","id":null}`
+  When @parse_request le lit
+  Then le résultat est @Err(@ProtocolRejection::InvalidRequest) — plus une notification (arbitré 2026-09-29)
 
-Scenario: jsonrpc absent rejeté à la désérialisation
-  Given le corps `{"id":1,"method":"x"}` dépourvu de la clé `jsonrpc`
-  When la tentative de désérialisation en @JsonRpcRequest est évaluée
-  Then l'erreur @serde mentionne `missing field` pour `jsonrpc`
-  And un corps amputé de @method à la place échoue de la même façon — une telle requête n'atteint
-    jamais le dispatch, @axum::Json la rejette en `400` texte
+Scenario: id structuré ou booléen refusé
+  Given les corps `{"jsonrpc":"2.0","id":{"k":[1]},"method":"x"}` et `{"jsonrpc":"2.0","id":true,"method":"x"}`
+  When @parse_request lit chacun
+  Then chacun rend @Err(@ProtocolRejection::InvalidRequest) — seuls chaîne et nombre sont admis
+
+Scenario: id chaîne accepté verbatim
+  Given le corps `{"jsonrpc":"2.0","id":"req-1","method":"x"}`
+  When @parse_request le lit
+  Then le résultat est @ParsedRequest::Call dont @JsonRpcRequest::id est la chaîne `req-1`
+
+Scenario: version jsonrpc autre que 2.0 refusée
+  Given le corps `{"jsonrpc":"1.0","id":1,"method":"x"}`, et le corps `{"id":1,"method":"x"}` sans `jsonrpc`
+  When @parse_request lit chacun
+  Then chacun rend @Err(@ProtocolRejection::InvalidRequest)
+
+Scenario: method absent ou non textuel refusé
+  Given le corps `{"jsonrpc":"2.0","id":1}` et le corps `{"jsonrpc":"2.0","id":1,"method":5}`
+  When @parse_request lit chacun
+  Then chacun rend @Err(@ProtocolRejection::InvalidRequest)
+
+Scenario: JSON invalide rend Parse
+  Given le tampon `{"jsonrpc":` (JSON tronqué) et le tampon `not json`
+  When @parse_request lit chacun
+  Then chacun rend @Err(@ProtocolRejection::Parse)
+
+Scenario: batch et racine non objet refusés
+  Given le tampon `[{"jsonrpc":"2.0","id":1,"method":"x"}]` (batch) et le tampon `42`
+  When @parse_request lit chacun
+  Then chacun rend @Err(@ProtocolRejection::InvalidRequest) — pas de support de batch (arbitré 2026-09-29)
 
 Scenario: clés inconnues ignorées
   Given le corps `{"jsonrpc":"2.0","id":1,"method":"x","shard":5,"telemetry":true}`
-  When il est désérialisé en @JsonRpcRequest
-  Then la conversion réussit, les quatre champs attendus sont peuplés
-  And `shard` et `telemetry` sont ignorés sans trace — @JsonRpcRequest ne refuse aucune clé
+  When @parse_request le lit
+  Then le résultat est @ParsedRequest::Call, les trois champs sont peuplés
+  And `shard` et `telemetry` sont ignorés sans trace
 
 Scenario: Enveloppe de succès sérialisée
-  Given @JsonRpcResponse::ok avec @Some du nombre `7` et pour @result l'objet `{"ok":true}`
+  Given @JsonRpcResponse::ok avec le nombre `7` pour @id et pour @result l'objet `{"ok":true}`
   When la valeur est sérialisée puis interprétée par @serde_json
   Then l'objet a exactement trois clés : `jsonrpc` valant `2.0`, `id` valant `7`, `result` l'objet
     `{"ok":true}`
   But aucune clé `error` n'est présente
 
 Scenario: result null rendu explicitement
-  Given @JsonRpcResponse::ok avec @Some du nombre `7` et @Value::Null comme @result
+  Given @JsonRpcResponse::ok avec le nombre `7` pour @id et @Value::Null comme @result
   When la valeur est sérialisée puis interprétée par @serde_json
   Then la clé `result` est présente et vaut JSON `null` — le skip ne porte que sur @None
   And `error` reste absente
 
 Scenario: Enveloppe d'erreur sans result ni data
-  Given @JsonRpcResponse::err avec @Some du nombre `7`, le code `-32601` et le message
+  Given @JsonRpcResponse::err avec le nombre `7` pour @id, le code `-32601` et le message
     `Method not found: x`
   When la valeur est sérialisée puis interprétée par @serde_json
   Then l'objet est exactement `{"jsonrpc":"2.0","id":7,"error":{"code":-32601,"message":"Method not found: x"}}`
   But aucune clé `result` n'apparaît et l'objet `error` ne porte aucune clé `data`
 
 Scenario: data transportée verbatim par err_with_data
-  Given @JsonRpcResponse::err_with_data avec @Some du nombre `1`, le code `-32000`, un message
+  Given @JsonRpcResponse::err_with_data avec le nombre `1` pour @id, le code `-32000`, un message
     quelconque et @Some de l'objet `{"code":"WIDGET-001"}` comme @data
   When la valeur est sérialisée puis interprétée par @serde_json
   Then l'objet `error` porte `code` `-32000`, @message verbatim et `data` exactement l'objet
@@ -299,28 +316,27 @@ Scenario: data transportée verbatim par err_with_data
   And @JsonRpcResponse::err sur mêmes @id/@code/@message produit la même enveloppe amputée de la clé
     `data`, preuve de la délégation
 
-Scenario: Enveloppe sans id
-  Given @JsonRpcResponse::err avec @None comme @id, le code `-32601` et un message quelconque
+Scenario: Enveloppe d'erreur à id null
+  Given @JsonRpcResponse::err avec @Value::Null comme @id, le code `-32700` et le message `Parse error`
   When la valeur est sérialisée puis interprétée par @serde_json
-  Then l'objet n'a que deux clés `jsonrpc` et `error`, la clé `id` est absente — non conforme mais
-    construisible par le type seul, et que ./handler.rs ne produit jamais (notifications
-    court-circuitées en `202`)
+  Then l'objet est exactement `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`
+  And la clé `id` est présente valant `null` (arbitré 2026-09-29, JSON-RPC exige `id` dans toute réponse)
 
 Scenario: Code libre transporté sans filtre
-  Given @JsonRpcResponse::err avec @Some du nombre `1`, le code `-31337` hors de toute plage
+  Given @JsonRpcResponse::err avec le nombre `1` pour @id, le code `-31337` hors de toute plage
     JSON-RPC et le message `x`
   When la valeur est sérialisée puis interprétée par @serde_json
   Then `error.code` vaut exactement `-31337`, aucun refus ni repli sur un code standard — la plage
     réservée `-32700..-32600` documentée par /src/mcp/error.rs n'est imposée nulle part ici
 
 Example: matrices des formes fil de ce fichier
-  Corps entrant minimal `{"jsonrpc":"2.0","method":"m"}` → @JsonRpcRequest de @jsonrpc `2.0`, @id
-    @None, @method `m`, @params @Value::Null
-  @JsonRpcResponse::ok(@Some(7), json `{"tools":[]}`) → `{"jsonrpc":"2.0","id":7,"result":{"tools":[]}}`
-  @JsonRpcResponse::ok(@Some(7), @Value::Null) → `{"jsonrpc":"2.0","id":7,"result":null}`
-  @JsonRpcResponse::err(@Some(7), -32601, `Method not found: x`) →
+  Corps entrant minimal `{"jsonrpc":"2.0","method":"m"}` → @parse_request rend @ParsedRequest::Notification
+  Corps `{"jsonrpc":"2.0","id":1,"method":"m"}` → @ParsedRequest::Call, @id `1`, @method `m`, @params @Value::Null
+  @JsonRpcResponse::ok(7, json `{"tools":[]}`) → `{"jsonrpc":"2.0","id":7,"result":{"tools":[]}}`
+  @JsonRpcResponse::ok(7, @Value::Null) → `{"jsonrpc":"2.0","id":7,"result":null}`
+  @JsonRpcResponse::err(7, -32601, `Method not found: x`) →
     `{"jsonrpc":"2.0","id":7,"error":{"code":-32601,"message":"Method not found: x"}}`
-  @JsonRpcResponse::err_with_data(@Some(1), -32000, `boom`, @Some(json `{"code":"WIDGET-001"}`)) →
+  @JsonRpcResponse::err_with_data(1, -32000, `boom`, @Some(json `{"code":"WIDGET-001"}`)) →
     `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"boom","data":{"code":"WIDGET-001"}}}`
-  @JsonRpcResponse::err(@None, -32601, `x`) → `{"jsonrpc":"2.0","error":{"code":-32601,"message":"x"}}` —
-    sans clé `id`, forme que seule une construction directe peut produire ici
+  @JsonRpcResponse::err(@Value::Null, -32700, `Parse error`) →
+    `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`

@@ -175,11 +175,11 @@ Tasks:
     une validation irait à l'encontre du principe déjà établi trois fois dans ce fichier (pas de
     constructeur, pas de builder, zéro logique) ; le problème se voit dès le premier essai de
     login/logout en déploiement.
-  [ ] Deux nouveaux champs `secure_cookies: bool` et `token_pepper: String` (arbitré 2026-09-27,
+  [x] Deux nouveaux champs `secure_cookies: bool` et `token_pepper: String` (arbitré 2026-09-27,
     `Must`, cross-file avec ./cookie.sdd et ./token.sdd) — mise à jour de tous les littéraux de
     construction de la crate (./mod.rs, ./middleware.rs, ./dual.rs, /src/rest, /src/graphql, tests
     inline partout où @MiryadAuthState est construit par littéral).
-  [ ] Convertir les 11 `Scenario` (9 originaux, 2 nés des deux nouveaux champs) en au moins 11
+  [x] Convertir les 11 `Scenario` (9 originaux, 2 nés des deux nouveaux champs) en au moins 11
     tests distincts nommés dans le `mod tests` `#[cfg(test)]` inline de ./state.rs — le contrat ne
     déborde pas du fichier ; suggestions : @clone_shares_oidc_provider, @clone_deep_copies_redirects,
     @db_clone_shares_pool (sqlite en mémoire comme ./dual.rs), @identity_from_ref_keeps_arc,

@@ -23,10 +23,11 @@ Must:
     `dbg_macro`, `todo`, `unimplemented`, `print_stdout`, `print_stderr`,
     `arithmetic_side_effects`, `indexing_slicing`, `unwrap_in_result`, `panic_in_result_fn`.
   Contenir dans `[lints.rust]` `unsafe_code = "forbid"`.
-  Contenir `missing_docs = "warn"` dans `[lints.rust]`, et non `deny` : c'est un lint rustc, un
-    `deny` rendrait `cargo build` et `cargo test` impossibles à lancer et bloquerait donc la
-    purge de la dette qu'il est censé piloter. L'escalade en erreur bloquante est assurée par le
-    `-D warnings` de la CI (`./.github/workflows/workflows.sdd`).
+  Contenir `missing_docs = "deny"` dans `[lints.rust]` depuis la fin de la purge (2026-09-29,
+    tâche de bascule exécutée — crate à zéro avertissement). Le harnais est né en `warn` : un
+    `deny` prématuré rendait `cargo build`/`cargo test` impossibles à lancer et bloquait la purge
+    qu'il pilotait ; l'escalade en `deny` est la fin naturelle de cette purge, et le `-D warnings`
+    de la CI (`./.github/workflows/workflows.sdd`) reste l'escalade hors harnais.
   Tolérer la famille panic/unwrap/indexation uniquement sous `cfg(test)` : exemption globale
     portée par la racine de crate dans ./src/lib.rs pour la librairie, et par un en-tête
     équivalent dans chaque crate de ./tests/ — une crate d'intégration n'hérite pas des
@@ -78,18 +79,34 @@ Scenario: indexation directe en production
   And la correction attendue est un `get()` traité ou une branche explicite, pas un `#[allow]`
 
 Tasks:
-  [ ] Purger la dette du harnais à l'adoption : 56 erreurs de production en features par défaut,
+  [x] Purger la dette du harnais à l'adoption : 56 erreurs de production en features par défaut,
     67 en `--all-features`, plus 136 avertissements `missing_docs` (160 en `--all-features`).
-    Répartition détaillée dans les trois tâches ci-dessous.
-  [ ] Purger la dette stricte de production : `arithmetic_side_effects` 3, `expect_used` 2 à 3,
+    Répartition détaillée dans les trois tâches ci-dessous. Solde 2026-09-29 (série A1–A4 + F,
+    synthèse validator GO) : zéro hors `src/graphql/**` sur les huit combinaisons ; sous graphql,
+    les seuls diagnostics sont les 7 sites gelés (8 avec `graphiql`) de l'exception du pont.
+  [x] Purger la dette stricte de production : `arithmetic_side_effects` 3, `expect_used` 2 à 3,
     `unreachable` 2 et `indexing_slicing` 4 (`src/auth/mod.rs` deux fois, `src/auth/cookie.rs`,
-    `src/auth/oidc.rs` au point de départ, mesures `--lib --all-features`).
-  [ ] Purger la dette `pedantic` de production : `missing_errors_doc` 18, `doc_markdown` 12,
+    `src/auth/oidc.rs` au point de départ, mesures `--lib --all-features`). Carve-out acté
+    (Sébastien, 2026-09-29) : `src/graphql/**` est exclu par l'exception du pont gelé
+    (/miryad-core.sdd, 2026-09-27) — l'unique site restant `graphql/registry.rs` (@expect_used)
+    n'est pas compté ici.
+  [x] Purger la dette `pedantic` de production : `missing_errors_doc` 18, `doc_markdown` 12,
     `must_use_candidate` 7 à 11, `match_same_arms` 3, `items_after_statements` 2,
-    `enum_glob_use` 1, `too_many_lines` 1, `map_unwrap_or` 2.
-  [ ] Documenter les items publics manquants : `missing_docs` 136 en features par défaut,
+    `enum_glob_use` 1, `too_many_lines` 1, `map_unwrap_or` 2. Carve-out acté (Sébastien,
+    2026-09-29) : `src/graphql/**` exclu par la même exception ; la doc seule des fichiers
+    graphql est reprise par la tâche `missing_docs` ci-dessous. `no_effect_underscore_binding`
+    (9) : re-mesuré à **0** le 2026-09-29 après purge des deny (les combos vertes laissent
+    désormais compiler `tests/` sous clippy — la catégorie n'existe pas sur l'arbre).
+  [x] Poser l'en-tête d'exemption @cfg(test) de la famille stricte dans chaque crate de ./tests/
+    (`resource.rs`, `workflow_policy.rs`, `workflow_policy_twice.rs`, `workflow_restate.rs`,
+    `workflow_flat_paths.rs`) — `Must` de la présente spec jamais honoré depuis leur création
+    (2026-09-23), rendu mesurable par la purge A2 : 25 sites deny mesurés sous la combinaison
+    `workflow` (`expect_used` ×14, `indexing_slicing` ×7, `arithmetic_side_effects` ×1, `panic` ×1
+    hors `duration_suboptimal_units` ×2 à corriger dans le code du test, plus 1 `deprecated`
+    rustdoc `bind_with_options`). Le combo clippy `workflow` reste rouge jusqu'ici.
+  [x] Documenter les items publics manquants : `missing_docs` 136 en features par défaut,
     160 en `--all-features` au point de départ.
-  [ ] Basculer `missing_docs` en `deny` quand la crate est à zéro avertissement, en gardant
+  [x] Basculer `missing_docs` en `deny` quand la crate est à zéro avertissement, en gardant
     l'exemption `cfg(test)`.
   [ ] Décider (Sébastien) si `cargo audit` entre dans la CI : l'`AGENTS.md` de l'ancien workflow
     le listait dans les commandes de validation, alors qu'aucun job de CI ne le lance et qu'il
@@ -100,5 +117,7 @@ Tasks:
 
 Done when:
   `cargo clippy --all-targets -- -D warnings`, la même commande sur chacune des combinaisons de
-    features listées plus haut, et `cargo fmt --check` sortent sans un seul avertissement, et
-    `./miryad-core.sdd` ne porte plus de tâche ouverte de dette harnais.
+    features listées plus haut, et `cargo fmt --check` sortent sans un seul avertissement, carve-out
+    acté (2026-09-29) : les combinaisons incluant `graphql` peuvent échouer sur les seuls sites
+    gelés de `src/graphql/**` (exception du pont sans consommateur, /miryad-core.sdd 2026-09-27),
+    et `./miryad-core.sdd` ne porte plus de tâche ouverte de dette harnais.

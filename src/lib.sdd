@@ -48,8 +48,9 @@ Must:
     construit et lie elle-même (`Endpoint::builder().bind(...)`) — une intégration de forme
     différente des trois autres surfaces, à ne pas présenter comme une route de plus dans le même
     tableau.
-  Documenter @query comme la pagination utilisée aujourd'hui par REST, sans laisser entendre
-    que @graphql ou @mcp consomment déjà @query.
+  Documenter @query comme la pagination partagée par REST et MCP (MCP via @rest::core::list),
+    sans laisser entendre que @graphql la consomme (curseurs @seaography propres) — arbitré par
+    Sébastien le 2026-09-29, à l'unisson de ./query.sdd.
   Ne laisser aucun lien du bloc `//!` produire un avertissement `rustdoc::broken_intra_doc_links`
     selon la feature sélectionnée : les références aux modules gated doivent rester valables
     quand @frontend, @graphql, @mcp ou @workflow ne sont pas compilés.
@@ -105,7 +106,7 @@ Depends on:
     Compilé seulement sous `graphql` ; apporte `seaography` et `async-graphql`.
   ./ir.rs
   ./mcp/mod.rs
-    Compilé seulement sous `mcp` ; seul consommateur de `vynil-core` sous `hbs`/`crypto`.
+    Compilé seulement sous `mcp` ; seul consommateur de `vynil-core` sous `hbs` (sans `crypto`, arbitré 2026-09-29).
   ./migration/mod.rs
   ./query.rs
   ./rbac.rs
@@ -123,7 +124,7 @@ Exposes:
   @frontend — service SPA @frontend::static_frontend_router ; gated par `static-frontend`.
   @graphql — @graphql::graphql_router sur schéma Seaography ; gated par `graphql`.
   @ir — @ir::resource_ir et @ir::IrRegistry pour le générateur frontend ; toujours compilé.
-  @mcp — @mcp::mcp_router et @mcp::McpToolRegistry ; gated par `mcp`.
+  @mcp — @mcp::mcp_router, @mcp::McpToolRegistry, @mcp::McpError et @mcp::OutputFormat ; gated par `mcp` (arbitré par Sébastien le 2026-09-29, quatre items publics du module).
   @migration — @migration::Migrator et ses migrations `miryad_*` ; toujours compilé.
   @query — @query::Pagination et @query::PagedResult ; toujours compilé.
   @rbac — @rbac::can_read, @rbac::can_create, @rbac::can_write, @rbac::list_access,
@@ -170,8 +171,11 @@ Raises:
     publique de la 0.1.3 sur docs.rs est pourtant construite, la vérification de cette ligne
     relevant de docs.rs ou d'un canal compatible `feature`.
   Aucun avertissement `rustdoc::broken_intra_doc_links` du bloc `//!`, y compris quand une
-    feature gated est absente ; la correction attendue est une forme de lien robuste au graphe de
-    features, pas la désactivation du lint.
+    feature gated est absente ; la correction attendue est une citation en chemin de code non lié
+    ou une forme de lien robuste au graphe de features, jamais la désactivation du lint
+    (amendement 2026-10-02, validator B5d : la dé-liaison est le remède retenu pour l.89 — le
+    chemin reste cité en code, la doc n'est pas appauvrie sur le fond ; la désactivation du
+    lint reste interdite).
   Aucune erreur runtime : la racine n'émet pas de code `MRD-*` ; les codes `MRD-*` restent
     le contrat des specs enfants.
 
@@ -198,7 +202,7 @@ Tasks:
     ci-dessous — le calque est pris du scenario parallèle ; un test résiduel hors feature serait un
     squelette contraire au `Handles`), tableau de features complété à six lignes (écart préexistant
     au `Must` réparé au passage), validator PASS.
-  [ ] Convertir les douze `Scenario` originaux en au moins douze tests nommés et distincts, un par
+  [x] Convertir les douze `Scenario` originaux en au moins douze tests nommés et distincts, un par
     scenario, avec la correspondance exacte suivante : « surface par défaut complète » →
     `default_surface_compiles` ; « graphql gated par la feature graphql » →
     `graphql_gated_compiles` ; « graphiql implique graphql à la racine » →
@@ -211,12 +215,47 @@ Tasks:
     de features » → `doc_links_feature_stable` ; « surface complète en toutes features » →
     `all_features_surface` ; « l'exécutable miryad reste hors de l'exemption racine » →
     `bin_target_unaffected`. Aucune vérification ne peut rester implicite ou déléguée sans test.
-  [ ] Après l'échec attendu des tests ou vérifications ci-dessus, corriger `./lib.rs` : aligner
-    le commentaire de @query sur l'usage REST actuel, fiabiliser les liens du bloc `//!` sur
+    Réalisé 2026-10-02 (B5d, validator PASS au nom à nom) : 12 `Scenario` → 12 tests nommés
+    distincts, témoins de compilation/chemins (pas de fakes), vérifiés graphe par graphe
+    (défaut 482+7, mcp 558+8, graphiql = graphql+1 = preuve d'implication) ; les trois tests des
+    corrections étaient rouges avant, verts après. Réserve consignée du validator :
+    @hook_error_doc asserte trois @contains dont la co-localisation n'est pas verrouillée comme
+    une seule affirmation — non bloquant, à resserrer le jour où la racine bouge.
+  [x] Après l'échec attendu des tests ou vérifications ci-dessus, corriger `./lib.rs` : aligner
+    le commentaire de @query sur l'usage REST et MCP (arbitré 2026-09-29, ./query.sdd), fiabiliser les liens du bloc `//!` sur
     chaque combinaison de features, et documenter @HookError comme exception de la taxonomie
     `MRD-*`.
-  [ ] Rejouer la batterie complète de `/tooling.sdd` plus `cargo doc` sur chaque combinaison de
+    Réalisé 2026-10-02 (B5d, validator PASS) : trois hunks — @query `///` aligné mot à mot sur la
+    formulation arbitrée de ./query.sdd (ROUGE consigné) ; lien l.89 dé-lié en chemin de code
+    (ROUGE consigné, épreuve `[!]` : count 1 → 0 sous @no-default-features, 0 sur les six
+    combinaisons sans workflow) ; bloc `//!` nommant @HookError avec sa clause « jamais de code
+    `MRD-*` sur ce chemin » (ROUGE consigné). Gating des modules : diff nul au @diff.
+  [x] Rejouer la batterie complète de `/tooling.sdd` plus `cargo doc` sur chaque combinaison de
     features utilisée par les scenario doc.
+    Statut 2026-10-02 (validator B5d) : seize commandes rejouées vertes hors baseline gelée
+    graphql (7/8 sites, non grossie) ; @cargo doc sur les huit combinaisons — zéro avertissement
+    sauf @workflow et `--all-features` : cinq avertissements dont un lien cassé, tous imputables
+    à `src/workflow/**` (@definition.rs l.6/33/53 liens vers @validate_dag `pub(crate)`,
+    @dispatcher.rs l.4 lien non résolu vers @MiryadWorkflowStep pourtant `pub`, @step.rs l.64
+    lien vers @Self::dispatch `pub(crate)`), préexistants, hors @Owns de cette spec. Tâches
+    ouvertes dans les specs workflow concernées ; cette `[ ]` se clôture dès que @cargo doc
+    @workflow est à zéro avertissement.
+    Soldé 2026-10-02 (B5e-mini, validator consolidé PASS) : les cinq avertissements workflow
+    corrigés par les tâches ouvertes (dé-liaison des deux @pub(crate), lien chemin complet pour
+    le @pub) ; @cargo doc @--no-deps sur les huit combinaisons : 0 warning PARTOUT au brut ;
+    seize commandes re-rejouées vertes hors baseline gelée (7/8 sites, non grossie).
+  [x] Constat spec-dd 2026-10-02 (vague B4d2, signalé par le validator) — `cargo doc
+    --no-default-features` émet un avertissement @rustdoc::broken_intra_doc_links, `unresolved
+    link to @frontend::@static_frontend_router` (../lib.rs l.89), quand `static-frontend` est
+    amputé : le `Must` de la présente spec promet zéro tel lien « selon la feature sélectionnée ».
+    Écart préexistant, hors périmètre mcp. À trancher au passage de cette spec : corriger le lien
+    (gating @cfg ou chemin d'adresse résolvable) — la correction est dans ../lib.rs, donc dans le
+    @Owns de cette spec.
+    Résolu 2026-10-02 (B5d, validator PASS) : remède retenu = citation en chemin de code non lié
+    (le troisième remède que l'amendement du @Raises ci-dessus rend explicite) ; épreuve brute :
+    count @broken_intra_doc_links 1 → 0 sous @no-default-features, zéro sur les six combinaisons
+    sans @workflow ; sous @workflow subsiste un autre lien cassé, imputable à
+    `src/workflow/dispatcher.rs` et hors de cette spec (tâche ouverte dans sa spec fille).
 
 Done when:
   La spec porte exactement treize `Scenario` (douze originaux, un pour l'amendement @workflow du
@@ -248,7 +287,7 @@ Scenario: graphiql implique graphql à la racine
 Scenario: mcp gated par la feature mcp
   Given un build `--no-default-features --features mcp`
   When la cible de test référence @mcp sous `#[cfg(feature = "mcp")]`
-  Then @mcp::mcp_router et @mcp::McpToolRegistry sont résolvables
+  Then @mcp::mcp_router, @mcp::McpToolRegistry, @mcp::McpError et @mcp::OutputFormat sont résolvables
 
 Scenario: workflow gated par la feature workflow
   Given un build `--no-default-features --features workflow`
@@ -262,7 +301,11 @@ Scenario: static-frontend retiré garde le reste de la surface
   Given un build `--no-default-features`
   When la bibliothèque compile
   Then @rest, @resource et @ir sont toujours disponibles
-  And @frontend n'est pas déclaré et `tower-http` n'est pas dans le graphe de dépendances
+  And @frontend n'est pas déclaré et @tower-http n'est plus dépendance directe de
+    @miryad_core, activable uniquement par @static-frontend (demeure dans la closure de
+    compilation via @reqwest/@openidconnect — mesuré @cargo @tree, harmonisé 2026-10-02 ; le
+    verrou du test porte sur la dépendance directe et sa clause @optional, pas sur la closure
+    incompressible)
 
 Scenario: chemins documentés résolus sans ré-export racine
   Given un test qui référence @auth::MiryadAuthState, @auth::auth_router,
@@ -284,8 +327,9 @@ Scenario: exemption alignée exactement sur la famille stricte
 Scenario: commentaire de @query aligne la réalité
   Given la documentation racine générée avec n'importe quelle combinaison de features
   When @query est présentée
-  Then elle est décrite comme la pagination utilisée aujourd'hui par REST
-  But ni @graphql ni @mcp ne sont présentés comme consommant déjà @query
+  Then elle est décrite comme la pagination partagée par REST et MCP (MCP via
+    @rest::core::list)
+  But @graphql n'est pas présenté comme consommant @query (curseurs @seaography propres)
 
 Scenario: documentation de @HookError
   Given la documentation racine générée avec n'importe quelle combinaison de features

@@ -27,8 +27,8 @@ References:
     l'incohérence @AccessPolicy::OwnerOnly sans @resource::MiryadResource::owner_column comme une
     déclaration invalide (arbitré 2026-09-27) plutôt qu'un « comportement non défini » ; les
     décisions réelles de refus, y compris pour @rbac::can_create, sont ici
-  /tooling.sdd — dette stricte `unreachable` (×2) tracée globalement, dont les deux seules
-    occurrences de production sont dans ./rbac.rs, et matrice de batteries de vérification
+  /tooling.sdd — dette stricte `unreachable` : purgée dans ./rbac.rs le 2026-09-29 (tâche A1,
+    synthèse validator PASS), et matrice de batteries de vérification
   /docs/architecture.md — récit : admin est une convention de groupe sans rien de spécial au
     schéma, lecture par @users::group::is_admin seulement, limite acceptée des tokens API quant à
     la fraîcheur de membership
@@ -203,10 +203,12 @@ Raises:
   @sea_orm::DbErr levée par @users::group::is_admin ou @users::group::is_member : une table
     manquante, une connexion invalide ou une erreur serveur annule toute décision et remonte @Err
     au lieu d'un `false` silencieux.
-  Panic @std::unreachable!("handled above") dans @rbac::evaluate et dans @rbac::list_access, sur
-    une branche @AccessPolicy::Public déclarée inatteignable par les retours anticipés au-dessus —
-    jamais atteint par une exécution normale, mais comptabilisé dette stricte `unreachable` par
-    /tooling.sdd.
+  Aucun chemin de panic dans ./rbac.rs depuis la purge harnais du 2026-09-29 : les deux @std::unreachable!
+    de @rbac::evaluate et @rbac::list_access ont été remplacés — @rbac::evaluate enchaîne directement
+    la comparaison de colonne propriétaire après le retour anticipé de @rbac::static_verdict (seule
+    @AccessPolicy::OwnerOnly l'atteint), et @rbac::list_access répond @ListAccess::Unrestricted sur la
+    branche @AccessPolicy::Public, même verdict que le retour anticipé. Comportement identique,
+    verrouillé par les tests inline existants.
   Aucune erreur inventée par @rbac::can_create : @AccessPolicy::OwnerOnly sans colonne déclarée ne
     pose aucune exception, aucun avertissement, aucune panic — simplement un refus `false`,
     fail-closed cohérent avec @rbac::evaluate (arbitré 2026-09-27, `Must`).
@@ -220,11 +222,14 @@ Handles:
   Cas @AccessPolicy::Group où le groupe cité n'existe jamais en base : @users::group::is_member
     répond @Ok(`false`) sans lever d'erreur, l'accès est refusé comme pour un non-membre.
   Cas @AccessPolicy::OwnerOnly avec colonne @Some mais valeur @None sur la ligne : comparée à
-    @sea_orm::Value::from(i32) elle ne matche jamais, donc `false` éternel hors admin — documenté
-    en `[?]`.
+    @sea_orm::Value::from(i32) elle ne matche jamais, donc `false` éternel hors admin — contrat
+    assumé (arbitré 2026-09-29) : une ligne sans propriétaire n'appartient à personne, seul
+    l'admin y accède ; pas d'erreur de cohérence remontée, la donnée est réparable par l'admin.
   Cas d'une colonne propriétaire typée autre qu'i32 (i64/u32/String…) : jamais égal (variante
-    différente), refus éternel hors admin, aucun avertissement compilateur — remonte en `[?]`
-    ci-dessous.
+    différente), refus éternel hors admin — déclaration invalide depuis l'arbitrage du 2026-09-29 :
+    `owner_column` doit être de type `i32` (contrat de ../resource.sdd), et ./rest/mod.sdd refuse
+    de monter l'entité dont la colonne propriétaire a un autre type ; ce fichier ne vérifie rien
+    lui-même et garde son refus fail-closed.
   Chemins Public avant toute query, @rbac::can_create sans colonne OwnerOnly et @rbac::list_access
     Public — trois cas où ./rbac.rs ne lit aucune table, vérifiables sur une connexion aux tables
     absentes (scénarios dédiés).
@@ -256,9 +261,10 @@ Example:
   list × non-admin × `OwnerOnly` avec col None → @rbac::ListAccess::Forbidden
 
 Tasks:
-  [ ] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé, un test par
+  [x] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé, un test par
     scénario minimum, dans le `#[cfg(test)] mod tests` de ./rbac.rs, avec les fixtures manquantes
-    ajoutées. Huit tests inline existent déjà et couvrent : « Lecture `Public` : tout principal
+    ajoutées. Douze tests inline existent déjà (les huit initiaux plus les quatre des arbitrages
+    2026-09-27 : S20-S23) et couvrent : « Lecture `Public` : tout principal
     passe » → `public_policy_always_allows` ; « Écriture `OwnerOnly` : propriétaire passe, autre
     refusé, admin passe » → `owner_only_allows_owner_denies_others_allows_admin` ; « Lecture
     `Group` : membre passe, admin passe, étranger refusé » →
@@ -270,7 +276,7 @@ Tasks:
     `list_access_owner_only_filters_for_non_admin_but_not_admin` ; « Listage `Group` : non restreint
     pour membre, interdit pour étranger » →
     `list_access_group_policy_forbidden_without_membership`.
-    Seize tests à créer, un par scénario restant : `admin_only_write_policy_allows_admin` ;
+    Quinze tests à créer, un par scénario restant : `admin_only_write_policy_allows_admin` ;
     `owner_only_read_policy_allows_owner_and_denies_others` ;
     `admin_shortcut_wins_before_ownerless_fail_closed` ;
     `filter_by_owner_condition_returns_only_own_rows` ;
@@ -281,21 +287,26 @@ Tasks:
     `can_create_public_or_owner_only_never_queries_db` ;
     `can_create_admin_only_grants_admin_denies_others` ;
     `can_create_group_grants_admin_and_member_only` ;
-    `can_create_owner_only_without_column_is_fail_closed` ;
     `public_reads_create_list_never_touch_missing_tables` ;
     `non_public_paths_propagate_dberr_when_tables_missing` ;
     `owner_only_null_owner_value_denies_non_admin` ;
-    `service_account_follows_group_membership_as_regular_user`. Les fixtures `drafts` (read `Group
-    "drafts"`, write Group "maintainers"), `memos` (OwnerOnly read et write, owner_column `None`),
-    `bulletins` (read `AdminOnly`, write `Public`), `ledgers` (OwnerOnly read et write, owner
-    column Option<i32>) restent à ajouter au mod tests. Chaque test utilise une connexion SQLite
+    `service_account_follows_group_membership_as_regular_user`. Les fixtures @drafts (read @Group
+    « ghosts » — lecture du `Scenario` « groupe inconnu », la mention `Group` « drafts » était un
+    résidu descriptif corrigé 2026-10-02 ; write @Group « maintainers »), @bulletins (read
+    `AdminOnly`, write `Public`) et @ledgers (OwnerOnly read et write, owner
+    column Option<i32>) restent à ajouter au mod tests ; @memos et @can_create_owner_only_without_column_is_fail_closed,
+    un temps listés ici, préexistaient déjà au `mod tests` (constaté B5a). Chaque test utilise une connexion SQLite
     mémoire migrée par @crate::migration, sauf les scénarios de propagation qui veulent une base
     non migrée.
-  [ ] Extraire @rbac::static_verdict de @rbac::evaluate (arbitré 2026-09-27, `Must`, `Exposes`) :
+    Réalisé 2026-10-02 (B5a, validator PASS) : 27 `Scenario` effectifs → 27 tests nommés
+    distincts (12 préexistants + 15 nouveaux), mapping nom à nom vérifié assertion par
+    assertion, fixtures @drafts/@bulletins/@ledgers ajoutées, `Then` réels (filtre sqlite réel,
+    connexion non migrée comme preuve d'absence, non-création de groupe prouvée par comptage).
+  [x] Extraire @rbac::static_verdict de @rbac::evaluate (arbitré 2026-09-27, `Must`, `Exposes`) :
     factorisation pure, aucun changement de comportement observable de @rbac::can_read/can_write
     attendu — les deux nouveaux scenarios de `static_verdict` et les huit existants sur
     @rbac::evaluate doivent rester verts sans modification de leurs `Then`.
-  [ ] @rbac::can_create ne consulte pas encore @MiryadResource::owner_column, créant un
+  [x] @rbac::can_create ne consulte pas encore @MiryadResource::owner_column, créant un
     @AccessPolicy::OwnerOnly sans colonne accordé (`true`) alors que la lecture enregistrement et la
     liste refusent le même enregistrement. Arbitré par Sébastien le 2026-09-27 : `false` explicite
     quand `OwnerOnly` et `owner_column` est `None`, fail-closed cohérent avec @rbac::evaluate
@@ -308,35 +319,42 @@ Tasks:
     toutes les entités, contrairement à ./rbac.rs qui retourne `false`. Différé (2026-09-27) : le
     pont GraphQL reste un prototype sans consommateur (exception `Must` de /miryad-core.sdd), cette
     asymétrie n'est pas arbitrée dans cette version mineure.
-  [?] Un enregistrement dont la colonne propriétaire déclarée `Some` porte la valeur `None` ne
-    matche jamais l'id d'un i32 hors admin : un propriétaire sans valeur est un trou de propriété
-    éternellement refusé. Est-ce le contrat attendu (et faut-il le documenter dans
-    @MiryadResource::owner_column) ou une donnée cassée qui devrait plutôt faire remonter une
-    erreur de cohérence ?
-  [?] Pour une entité déclarant sa colonne propriétaire dans un type d'identifiant autre qu'i32,
-    @sea_orm::Value ne matche jamais @sea_orm::Value::from(@users::user::Model::id) : le refus est
-    absolu et silencieux hors admin. Faut-il imposer un type de colonne (contrat
-    @MiryadResource::owner_column), logger l'incohérence, ou normaliser la comparaison
-    (@sea_orm::Value → type cible avant égalité) ?
-  [?] @rbac::evaluate et @rbac::list_access contiennent chacun un @std::unreachable!("handled
-    above") sur une branche @AccessPolicy::Public déjà court-circuitée, comptés dans la dette
-    stricte `unreachable` de /tooling.sdd. Purger maintenant en reformulant (ex. un seul `match`
-    complet éliminant la duplication), ou attendre la purge programmée dans /tooling.sdd ?
-  [ ] Rejouer la batterie complète de /tooling.sdd après conversion des seize tests et après chaque
+  [x] Question spec-dd 2026-10-02 (posée en `[?]`, résolue le même jour sur validation du
+    validator B5a — aucune ambiguïté de contrat, le `Given` du `Scenario` est explicite, seule la
+    parenthèse descriptive de la tâche était périmée) : texte de la tâche de conversion corrigé
+    sur les comptes réels (27 `Scenario`, 12 préexistants, 15 nouveaux, @memos et
+    @can_create_owner_only_without_column_is_fail_closed déjà présents) et sur la fixture
+    @drafts en lecture @Group « ghosts » ; les deux `[x]` correspondants posés.
+  [x] Colonne propriétaire `Some` portant la valeur `None` : c'est le contrat (arbitré par
+    Sébastien le 2026-09-29, `Handles`) — un propriétaire absent n'est le propriétaire de
+    personne, refusé hors admin, fail-closed ; pas d'erreur de cohérence (un `500` sur une donnée
+    que l'admin peut réparer serait pire). À documenter dans @MiryadResource::owner_column
+    (../resource.sdd, tâche `[ ]`). Le Scenario existant « valeur `None` : refusé hors admin » le
+    verrouille déjà, aucun changement de code.
+  [x] Colonne propriétaire non `i32` : `owner_column` doit être de type `i32` (arbitré par
+    Sébastien le 2026-09-29) — contrat écrit dans ../resource.sdd, garde de montage
+    `assert!` dans @rest::resource_router (../rest/mod.sdd, tâche `[ ]`). ./rbac.rs ne change pas :
+    son refus fail-closed reste la défense en profondeur.
+  [x] Les deux `unreachable!("handled above")` de @rbac::evaluate et @rbac::list_access : purge
+    reportée à la tâche de purge du harnais `/tooling.sdd`, module par module avec Sébastien
+    (arbitré le 2026-09-29) — la dette est stable à deux, elle ne grossit pas ; la refonte des
+    `match` est un travail à part entière, pas un effet de bord d'arbitrage.
+  [x] Rejouer la batterie complète de /tooling.sdd après conversion des quinze tests nouveaux et après chaque
     arbitrage `[?]`, pour que le ratio tests/scenario et le harnais restent verts sur toutes les
     combinaisons de features.
+    Réalisé 2026-10-02 (validator de la vague B5a) : seize commandes rejouées, vertes hors
+    baseline gelée graphql (7/8 sites) ; `rbac::tests` 27/27 nommément.
 
 Done when:
-  Les vingt-huit scénarios (vingt-quatre originaux, deux du fail-closed de @rbac::can_create et
-    deux de @rbac::static_verdict, tous arbitrés le 2026-09-27) ont chacun au moins un test
+  Les vingt-sept scénarios (décompte réel revérifié 2026-10-02 à la vague B5a — le décompte
+    « vingt-huit » était une surcomptage ; tous arbitrés le 2026-09-27) ont chacun au moins un test
     distinct nommé, la batterie /tooling.sdd est verte sur chaque combinaison de features, et
-    ./rbac.rs ne porte plus de dette stricte `unreachable` si l'arbitrage de la dernière ligne
-    `[?]` le demande.
-  Deux des cinq `[?]`/`[!]` originaux de `Tasks` sont arbitrés (fail-closed de @rbac::can_create ;
-    fail-open GraphQL différé, prototype sans consommateur). Restent ouverts et à soumettre à
-    Sébastien : valeur `None` sur une colonne propriétaire déclarée, colonne propriétaire non-i32,
-    et la purge `unreachable` (calendrier /tooling.sdd) — aucun ne reste un comportement accidentel
-    passé sous silence pour autant, chacun est documenté en `Handles`/`Raises`.
+    ./rbac.rs ne porte plus de dette stricte `unreachable` lors de la purge programmée de
+    /tooling.sdd (arbitrage du 2026-09-29 : purge reportée, non requise ici).
+  Cinq des six `[?]`/`[!]` de `Tasks` sont arbitrés (fail-closed de @rbac::can_create, 2026-09-27 ;
+    valeur `None` sur une colonne propriétaire = contrat, colonne non-i32 = déclaration invalide
+    refusée au montage REST, purge `unreachable` reportée à /tooling.sdd, 2026-09-29) ; le sixième,
+    le fail-open du pont GraphQL, reste `[?]` différé (prototype sans consommateur).
 
 Scenario: Lecture `Public` : tout principal authentifié passe
   Given la fixture recipe avec `read_policy` @AccessPolicy::Public, un utilisateur `anyone` sans

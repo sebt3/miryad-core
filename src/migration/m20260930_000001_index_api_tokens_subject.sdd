@@ -1,0 +1,112 @@
+Spec: m20260930_000001_index_api_tokens_subject — index de lecture sur `miryad_api_tokens.subject`
+
+Purpose:
+  Quatrième migration interne enregistrée par @migration::Migrator (cinquième sous feature
+    `workflow`) : pose un index non unique sur la colonne `subject` de @miryad_api_tokens, posée
+    sans index par la migration immuable m20260822_000001 (arbitré par Sébastien le 2026-09-29,
+    cf. ../rest/tokens.sdd — les lectures de liste et de réconciliation par titulaire sont les
+    chemins chauds). @up pose l'index de façon auto-réparante (@if_not_exists), @down la défait
+    en strict ; la spec de la migration 001 n'est pas touchée, sa table n'est pas modifiée.
+
+Owns:
+  ./m20260930_000001_index_api_tokens_subject.rs
+
+References:
+  ./mod.rs — déclare ce module et l'enregistre en @migrations (après les trois internes, la 004
+    `workflow` restant à sa position) ; il owne la liste et la table de tracking
+    @seaql_migrations_miryad_core
+  ./m20260822_000001_create_api_tokens.sdd — table cible, figée et immuable : `subject` y est
+    @string @not_null sans index, ce fichier est la réponse contractuelle à ce choix
+  ../auth/token.rs — entité @ApiToken dont les lecteurs (@validate_token par empreinte,
+    @ensure_token par prélecture `token_hash`) et la surface self-service sont les bénéficiaires ;
+    aucune modification d'entité n'est nécessaire : @SeaORM n'a pas d'@Index sur @DeriveEntityModel
+  /miryad-core.sdd — tables internes `miryad_*`, interdit de réélire une migration committée
+  /tooling.sdd — batterie et matrice de features auxquelles ce fichier est soumis
+
+Must:
+  @up pose sur @ApiToken::Table (`miryad_api_tokens`) un index monocolonne non unique sur
+    `subject`, nommé `idx_miryad_api_tokens_subject` (@Index::create().name(...).table(...).column(...).if_not_exists()),
+    et rien d'autre.
+  @if_not_exists rendu : l'exécution sur une base où l'index existe déjà est un @Ok sans effet —
+    auto-réparation si l'@up était interrompu avant l'enregistrement du tracking, même doctrine que
+    @if_not_exists de la migration 001 ; la règle générale est posée par ./mod.sdd.
+  @down @Index::drop sur `idx_miryad_api_tokens_subject` en strict (sans @if_exists) et rien
+    d'autre : un @down sur une base où l'index n'est pas là échoue en @Err — règle « @down strict
+    non idempotent » de ./mod.sdd (arbitré 2026-09-29).
+  Identité de tracking : @DeriveMigrationName nomme la migration par le seul stem du fichier,
+    `m20260930_000001_index_api_tokens_subject` (@get_file_stem sur @file!), clé insérée/supprimée
+    dans @seaql_migrations_miryad_core par le framework — même mécanisme que toutes les filles.
+  Ordre d'enregistrement : après les trois internes de base (001, 002, 003) — l'index ne peut se
+    poser qu'après la table ; sous feature `workflow` l'ordre de remontée @down propre à ./mod.rs
+    (004 avant 003, lecture 2026-10-01 — en @up c'est 003 avant 004) n'est pas affecté : cette
+    migration n'est pas gateée et s'insère dans la
+    liste hors du branchement de feature.
+  Nom d'index préfixé : `idx_` + nom de table + colonne, unique dans la crate (aucun autre objet
+    de ce nom n'existe ni n'est créé) ; le nom est un littéral unique du fichier, jamais recalculé
+    par @SeaQL @Iden sur l'entité — @SeaORM 2 ne pose pas d'@Index sur @DeriveEntityModel, ce nom
+    n'existe donc nulle part ailleurs à faire coïncider.
+  Ne porte aucun gating de feature : @migration::Migrator, ./mod.rs et /src/lib.rs l'exposent sans
+    @cfg ; compile et s'applique sur chaque combinaison de /tooling.sdd.
+  Laisse la trace d'application uniquement au @tracing `info` de @exec_up_with/@exec_down_with de
+    sea-orm-migration — aucune trace propre dans ce fichier.
+
+Must not:
+  Modifier la table (aucune @ALTER, aucune colonne, aucune contrainte), toucher aux migrations
+    committées, ou poser un @unique_key déguisé : l'index est non unique, plusieurs tokens d'un
+    même titulaire sont le cas normal (@rotating_the_secret de ./../users/service_account.sdd).
+  Réécrire, renommer ou déplacer @up/@down une fois committé : correction par migration suivante.
+  Émettre un @if_exists dans @down, lire le schéma existant, ou inspecter le contenu de la table.
+
+Exposes:
+  @Migration struct publique unitaire portant @#[derive(DeriveMigrationName)] et @impl de
+    @MigrationTrait sous @#[async_trait::async_trait] (pattern exact des sœurs — le derive
+    @DeriveMigration n'existe pas dans sea-orm-migration 2.0.2, le prelude ne_exporte que
+    @DeriveMigrationName, mesuré vague B3d 2026-09-30) : @up/@down écrits à la main, @is_async
+    non surchargée (`true` par défaut), seul symbole public du fichier ; ./mod.rs l'enregistre,
+    il n'est ré-exporté nulle part d'autre.
+
+Accepts:
+  @up/@down : @&SchemaManager de sea-orm-migration, aucune autre entrée ; @is_async rend `true`.
+
+Returns:
+  @Ok(()) de @up une fois l'index posé ou déjà là ; @Ok(()) de @down une fois l'index supprimé.
+
+Raises:
+  @Err de @sea_orm::DbErr propagé des statements : @down sur base sans l'index (strict), @up sur
+    table absente (l'index ne survit pas à sa table : @Migrator garantit l'ordre 001→004 ici,
+    sinon panne de wiring consignée à ./mod.rs).
+
+Handles:
+  Rejeu de @up après interruption avant tracking : @if_not_exists absorbe, l'enregistrement de
+    tracking se conclut au second passage — doctrine commune des @up de la crate.
+
+Scenario: up pose un index nommé sur la colonne subject
+  Given une base vide passée par @Migrator::up complet (les migrations de base, sans `workflow`)
+  When on interroge la liste des index de `miryad_api_tokens` (PRAGMA index_list côté SQLite,
+    ou relecture du catalogue au choix du test)
+  Then un index non unique nommé `idx_miryad_api_tokens_subject` figure, portant la seule colonne
+    `subject`
+  And le nom `idx_miryad_api_tokens_subject` est enregistré dans la table de tracking sous le stem
+    `m20260930_000001_index_api_tokens_subject`
+
+Scenario: rejeu de up est idempotent, down est strict
+  Given la base du scenario précédent
+  When @up de cette migration est rejouée une seconde fois
+  Then @Ok(()) est rendu sans effet observable (liste d'index inchangée, @if_not_exists)
+  But @down de cette migration exécutée puis rejouée rend @Ok(()) la première fois et @Err de
+    @sea_orm::DbErr la seconde (strict sans @if_exists, règle ./mod.sdd)
+
+Scenario: la migration suit l'ordre d'enregistrement attendu
+  Given @Migrator::get_migration_files sous features par défaut
+  Then la liste contient quatre entrées dont `m20260930_000001_index_api_tokens_subject`, après
+    les trois internes de base ; sous feature `workflow` elle en contient cinq
+
+Done when:
+  Les trois `Scenario` ont au moins un test nommé distinct et vert (dans ./m20260930_000001_index_api_tokens_subject.rs
+  sous `#[cfg(test)]`, ou dans ./mod.rs si le harnais @Migrator de test y vit déjà — consigné à
+  ./mod.sdd `Tasks`), sur features par défaut, `--no-default-features` et `--all-features`
+  (fichier non gateé)
+  Le fichier est enregistré dans @migrations de ./mod.rs et la batterie de /tooling.sdd passe
+  verte avec lui, sans @#[allow] ni dette de harnais ajoutés
+  La spec est relue et approuvée par Sébastien, le `Tasks` de ./mod.sdd est clos après synthèse
+  `validator`

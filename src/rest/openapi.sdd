@@ -19,7 +19,8 @@ Can read:
   ./mod.rs — le préfixe `/api/v1` réellement monté par @rest::@resource_router et les @ListParams
     `page`/`per_page`/`filter` que consomme @list_handler — le document doit décrire ces routes-là
   ./core.rs — sémantique effective de `filter` (appliqué seulement si @MiryadResource::filter_column est
-    @Some) et statut `200` de la création (jamais `201`)
+    @Some) et statut `201` de la création (le handler de ./mod.rs répond `201 Created` depuis
+    l'arbitrage 2026-09-27 de ./mod.sdd `Must`)
   ./error.rs — les codes réellement émis sur ces routes (`MRD-REST-001` en `404`, `MRD-REST-002` en
     `403`, `422` JSON {code, message} pour @HookError, `MRD-REST-003`/`MRD-REST-004` en `500`) — corps
     que le document ne restitue pas
@@ -50,8 +51,10 @@ References:
 
 Must:
   Compiler sous toute la matrice de /tooling.sdd, avec un gating exactement réduit à une option : le
-    fichier ne porte que deux `#[cfg(feature = "swagger-ui")]` — celui de @openapi::@swagger_ui_router
-    et celui de son test inline ; @OpenApiEntity, @openapi::@resource_openapi et
+    fichier ne porte qu'un seul `#[cfg(feature = "swagger-ui")]` en production — celui de
+    @openapi::@swagger_ui_router ; les `#[cfg]`/@cfg(not) du `mod tests` (tests
+    @swagger_ui_route_absent_without_feature et @merging_openapi_and_swagger_ui_routers_panics,
+    `Tasks` 2026-09-29) ne comptent pas dans cette règle ; @OpenApiEntity, @openapi::@resource_openapi et
     @openapi::@openapi_router ne portent aucun `#[cfg]`, et @utoipa est une dépendance non optionnelle
     de /Cargo.toml — vérifié dans ces deux sources, conformément à ../lib.sdd (aucun gating racine pour
     `swagger-ui`).
@@ -68,16 +71,24 @@ Must:
     `integer` nues) — mêmes clés que les cinq champs sérialisés de @PagedResult de ../query.rs : les
     deux fichiers ne sont reliés par aucun lien de compilation, seule l'identité des clés tient le
     contrat.
-  Déclarer sur l'opération `GET` de collection trois query parameters non requis — `page` et `per_page`
-    (`integer`) et `filter` (`string`) — et sur chacune des trois opérations d'item le path parameter
-    `id` (`integer`, requis) ; ni @format (`int32`/`int64`) ni bornes (`1`, plafond `1000` de @query) ne
-    sont déclarés sur ces schémas.
-  Déclarer par opération les statuts et corps suivants, descriptions en français literalles : liste
-    `200` « Liste paginée » en `application/json` (référence vers @Paged{Model}) ; création corps
-    requis @Model en `application/json`, réponses `200` « Créé » (@Model, `application/json`) et `403`
-    « Refusé » ; lecture `200` « Trouvé », `403`, `404` « Non trouvé » ; mise à jour corps @Model,
-    `200` « Mis à jour », `403`, `404` ; suppression `204` « Supprimé » sans contenu, `403`, `404`. Les
-    réponses d'erreur sont déclarées sans schéma de corps.
+  Déclarer sur l'opération `GET` de collection deux query parameters non requis — `page` et
+    `per_page` (`integer`) — plus `filter` (`string`) **uniquement** quand @MiryadResource::filter_column
+    est @Some (arbitré par Sébastien le 2026-09-29) (l'entité sans colonne de filtre ne déclare pas `filter`, que ./core.rs
+    ignorerait) — et sur chacune des trois opérations d'item le path parameter `id` (`integer`,
+    requis) ; ni @format (`int32`/`int64`) ni bornes (`1`, plafond `1000` de @query) ne sont déclarés
+    sur ces schémas.
+  Déclarer par opération les statuts et corps suivants, descriptions en français littérales (arbitré par Sébastien le 2026-09-29) :
+    succès — liste `200` « Liste paginée » (`application/json`, référence @Paged{Model}) ; création
+    corps requis @Model, `201` « Créé » (@Model) ; lecture `200` « Trouvé » ; mise à jour corps
+    @Model, `200` « Mis à jour » ; suppression `204` « Supprimé » sans contenu. Erreurs, toutes
+    opérations : `400` « Requête invalide » (rejets d'@axum sur query, path et JSON, texte),
+    `401` « Non authentifié » (`MRD-AUTH-*`, texte), `403` « Refusé » (`MRD-REST-002`), `500`
+    « Erreur interne » (`MRD-REST-003`/`MRD-REST-004`, corps générique) ; opérations d'item :
+    `404` « Non trouvé » (`MRD-REST-001`) ; création et mise à jour : `415` « Content-Type non
+    supporté » ; création, mise à jour et suppression : `422` « Corps non traitable ou rejet métier
+    » — texte pour la désérialisation d'@axum et `MRD-REST-005`, JSON `{code, message}` (schéma
+    `HookErrorBody`, `code` nullable) pour un @HookError. Les corps d'erreur texte sont déclarés
+    `text/plain` de type chaîne.
   Déclarer un @utoipa::openapi::security::@SecurityScheme @Http @Bearer, enregistré sous le nom literal
     `bearer_auth`, avec une description non nulle — le fichier porte la phrase exacte « Coller le token
     seul, sans le préfixe "Bearer" : Swagger UI l'ajoute automatiquement. », visible telle quelle dans
@@ -128,6 +139,12 @@ Must:
     @Extensions — ni en racine, ni par chemin, ni par opération — et ne nomme aucun préfixe `x-` ; le
     JSON sérialisé d'un fragment (ou de fragments fusionnés) ne contient aucune clé `x-miryad-*`,
     interdiction héritée de /miryad-core.sdd dont ce fichier est l'artefact tentant.
+  Les routes de compte (`/api/v1/me`, `/api/v1/users`, `/api/v1/tokens`) et `/auth/*` n'ont aucun
+    fragment (arbitré par Sébastien le 2026-09-29) : exclusion assumée pour cette version, fragment des routes de compte inscrit à
+    `docs/roadmap.md` ; les redirections navigateur `/auth/*` restent hors document (déjà arbitré).
+  Les homonymes de schémas `Model` sans `#[schema(as)]` restent un point d'attention documentaire
+    (arbitré par Sébastien le 2026-09-29) : la fusion @utoipa écarte le second en silence et la crate ne peut pas intercepter le
+    `merge` ; `#[schema(as)]` reste une exigence d'usage de `docs/architecture.md`.
 
 Must not:
   Ajouter une extension `x-miryad-*` (ou toute clé `x-`) au document pour pousser du scaffolding
@@ -147,9 +164,6 @@ Must not:
   Réécrire les schémas avec la macro @utoipa::@path ou @utoipa_axum : ils exigent une fonction concrète
     par route, incompatible avec les handlers génériques par entité — choix acté et documenté dans
     /docs/architecture.md ; de même ne pas exiger un @ToSchema écrit à la main sur @PagedResult.
-  Déclarer la création en `201` : le handler de ./mod.rs répond `200` avec le modèle créé (test inline
-    `openapi_router_serves_the_spec_as_json` de ./mod.rs côté surface) ; le document doit décrire le
-    `200` réellement émis.
   Poser @swagger_ui_router ou son test hors de leur `#[cfg(feature = "swagger-ui")]` : @utoipa_swagger_ui
     est optionnelle, un `#[cfg]` manquant casse la compilation `--no-default-features`.
 
@@ -235,9 +249,8 @@ Handles:
   Collision du nom d'enveloppe : une entité dont le schéma s'appellerait `PagedX`, homonyme du
     `Paged{Model}` d'une autre, tombe sous la même règle — premier schéma gagné, le second écarté en
     silence.
-  Entité sans @MiryadResource::filter_column : le query parameter `filter` reste déclaré sur sa liste
-    — ./core.rs l'ignore sans erreur quand aucune colonne de filtre n'est déclarée (source vérifiée) ;
-    sur-déclaration ouverte en `Tasks`.
+  Entité sans @MiryadResource::filter_column : le query parameter `filter` n'est plus déclaré sur sa
+    liste (arbitré 2026-09-29) — le document ne déclare que ce qui agit.
   Entité dont @ToSchema::schemas rapporte des schémas imbriqués : ils sont enregistrés à leurs noms, sans
     filtre ni renommage ; un @Model feuille n'ajoute rien.
   `page`/`per_page` hors bornes ou non numériques au sens @query : la normalisation et le rejet `400`
@@ -250,32 +263,18 @@ Handles:
     feature) est un `Scenario` de cette spec.
 
 Tasks:
-  [?] Couverture du document : @resource_openapi fragmente les routes CRUD montées par l'app, mais le
-    crate monte aussi @rest::@users_router (`GET /api/v1/users`), @rest::@me_router (`GET /api/v1/me`),
-    @rest::@tokens_router (`/api/v1/tokens`), @auth::@auth_router (`/auth/*`) et, sous leurs features,
-    @graphql::@graphql_router (`POST /api/graphql`) et @mcp::@mcp_router (`POST /mcp`) — aucune de ces
-    routes n'a de fragment dans la crate, et un `openapi.json` construit à coups de
-    @resource_openapi::@merge ne les mentionne pas. L'asymétrie REST interne (admin/me/tokens absents du
-    contrat documenté) est-elle le périmètre voulu d'OpenAPI (décision à consigner ici), ou le crate
-    doit-il fournir des fragments pour ses propres routes ? (GraphQL et MCP hors document par nature de
-    surface, hors question.)
-  [?] Le query parameter `filter` est déclaré sur la liste de toute entité, y compris celles qui ne
-    déclarent pas de @MiryadResource::filter_column — ./core.rs l'ignore alors silencieusement
-    (vérifié). Le document sur-déclare : garder tel quel, ou @resource_openapi doit-il lire
-    @filter_column pour ne déclarer `filter` que quand il agit ?
-  [?] Le document n'ajoute aux réponses déclarées ni `400` (rejet @serde des query parameters / corps
-    malformés, émis par @axum), ni `401` (@auth::@AuthPrincipal refusant le cookie/token absent —
-    `MRD-AUTH-014` entre autres), ni `422` (corps JSON {code, message} de @HookError via
-    @RestError::@Application de ./error.rs), ni `500` (`MRD-REST-003`/`MRD-REST-004`) ; les `403` et
-    `404` déclarés sont de plus sans schéma de corps alors que serveur répond une chaîne textuelle
-    `MRD-REST-…`. Contrat public = sous-ensemble connu (et il faut l'écrire comme tel) ou document à
-    compléter de ces réponses ?
-  [?] Homonymes de schémas en fusion : deux @ToSchema sans `#[schema(as)]` portent le nom @Model et la
-    fusion écarte le second en silence (source @utoipa vérifiée) ; /docs/architecture.md pose
-    `#[schema(as)]` en exigence d'usage non forcée par @OpenApiEntity. Le risque reste-t-il un point
-    d'attention documentaire, ou une vérification (refus, détection au merge) est-elle due aux
-    consommateurs ?
-  [ ] Convertir les treize `Scenario` en au moins treize tests nommés distincts du `#[cfg(test)] mod
+  [x] Couverture : les routes de compte et `/auth/*` restent hors document pour cette version
+    (arbitré par Sébastien le 2026-09-29, `Must`) ; fragment des routes de compte à la roadmap.
+# Quatre taches closes 2026-10-01 (vague B3e, validator PASS).
+  [x] @resource_openapi lit @MiryadResource::filter_column et ne déclare `filter` que quand il
+    agit (arbitré par Sébastien le 2026-09-29, `Must`) ; deux tests (avec et sans colonne).
+  [x] Compléter les statuts d'erreur du fragment (arbitré par Sébastien le 2026-09-29, `Must`) :
+    `400`, `401`, `403` (y compris sur la liste), `404`, `415`, `422`, `500`, corps `text/plain` et
+    schéma `HookErrorBody` ; réécrire le test « chaque opération déclare son jeu de statuts »
+    (`resource_openapi_declares_operations_responses_and_bodies`).
+  [x] Homonymes de schémas : point d'attention documentaire, aucune détection au merge (arbitré par
+    Sébastien le 2026-09-29, `Must`).
+  [x] Convertir les treize `Scenario` en au moins treize tests nommés distincts du `#[cfg(test)] mod
     tests` de ./openapi.rs — le contrat ne déborde pas du fichier —, sept tests inline existants
     conservés et six à créer, avec la correspondance exacte suivante :
     « @resource_openapi déclare les cinq routes CRUD » →
@@ -313,7 +312,7 @@ Tasks:
     « le document publié ne porte aucune extension `x-miryad-*` » →
       `resource_openapi_emits_no_x_miryad_extension` (à créer : sérialiser un fragment et une fusion,
       affirmer l'absence de toute clé `x-miryad-`).
-  [ ] Rejouer la matrice de /tooling.sdd sur le fichier : `--no-default-features` (preuve du non-gating
+  [x] Rejouer la matrice de /tooling.sdd sur le fichier : `--no-default-features` (preuve du non-gating
     de @openapi_router et du @Scenario hors feature), `--features swagger-ui` (UI, JSON et panic),
     défaut et `--all-features`, clippy `-D warnings` sur chaque combinaison — `missing_docs` et les
     `pedantic` sur les trois items publics déjà documentés ne doivent pas bouger.
@@ -328,7 +327,7 @@ Done when:
   Les clés du schéma @Paged{Model} restent identiques aux clés wire de @PagedResult (contrat relu contre
     ../query.sdd après toute évolution d'un côté ou de l'autre).
   Aucune clé `x-miryad-*` n'apparaît dans un document sérialisé, la tâche de preuve l'ayant vérifié.
-  Les quatre lignes `[?]` de `Tasks` ont été arbitrées par Sébastien et portées dans `Must`, `Handles`
+  Les quatre lignes [arbitré 2026-09-29] de `Tasks` ont été arbitrées par Sébastien et portées dans `Must`, `Handles`
     ou `Tasks`, et Sébastien a approuvé la spec — le comportement accidentel (sur-déclaration du `filter`,
     sous-déclaration des réponses d'erreur, silence de la fusion sur homonymes) ne devient contrat
     qu'à ce prix.
@@ -354,7 +353,9 @@ Scenario: paramètres `page`, `per_page` et `filter` en query, `id` en path
   Given le fragment de @recipe::@Entity
   When les paramètres de ses opérations sont inspectés
   Then l'opération `GET /api/v1/recipes` déclare exactement trois query parameters non requis : `page`
-    et `per_page` en `integer`, `filter` en `string`
+    et `per_page` en `integer`, `filter` en `string` (la fixture `recipe` déclare @filter_column)
+  And le fragment d'une entité sans @filter_column ne déclare que `page` et `per_page` (arbitré
+    2026-09-29)
   And chacune des opérations d'item déclare le path parameter `id`, `integer`, requis
   But aucun `format` (`int32`, `int64`) ni aucune borne (`1`, plafond `1000` de @query) n'est déclaré sur
     ces schémas
@@ -364,12 +365,15 @@ Scenario: chaque opération déclare son jeu de statuts et ses corps
   When les réponses et corps de ses cinq opérations sont inspectés
   Then `GET` collection répond `200` « Liste paginée » en `application/json` avec référence vers
     `PagedRecipe`, et rien d'autre
-  And `POST` collection a un corps requis `application/json` référençant `Recipe`, et répond `200` « Créé »
+  And `POST` collection a un corps requis `application/json` référençant `Recipe`, et répond `201` « Créé »
     (`Recipe`) et `403` « Refusé »
   And `GET` item répond `200` « Trouvé » (`Recipe`), `403` « Refusé » et `404` « Non trouvé »
   And `PUT` item a un corps requis référençant `Recipe` et répond `200` « Mis à jour », `403`, `404`
   And `DELETE` item répond `204` « Supprimé » sans contenu, `403` et `404`
-  But aucuns `400`, `401`, `422` ou `500` ne sont déclarés
+  And chaque opération déclare en plus les statuts d'erreur de `Must` (`400`, `401`, `403`, `500`,
+    `404` sur item, `415` sur `POST`/`PUT`, `422` sur `POST`/`PUT`/`DELETE`), avec corps `text/plain`
+    de type chaîne — sauf le `422` d'un @HookError, `application/json` référençant `HookErrorBody`
+    (arbitré 2026-09-29)
 
 Scenario: le fragment ne fixe pas Info et se versionne OpenAPI 3.1.0
   Given le fragment brut produit par @resource_openapi::<@recipe::@Entity>()

@@ -11,8 +11,8 @@ Purpose:
     publics sans aucun gating de feature, met à plat quinze items publics de ces enfants (+ un
     ré-export sous `#[cfg(test)]`), et porte ici même le parcours navigateur public du crate —
     @auth_router avec ses trois handlers `GET /auth/login`, `GET /auth/callback`,
-    `GET /auth/logout` et le cookie pending `miryad_oidc_pending` qui porte le couple
-    CSRF/nonce chiffré. Les enfants (@config, @cookie, @dual, @error, @middleware, @oidc,
+    `GET /auth/logout` et le cookie pending `miryad_oidc_pending` qui porte le triplet
+    CSRF/nonce/PKCE verifier chiffré. Les enfants (@config, @cookie, @dual, @error, @middleware, @oidc,
     @principal, @state, @token) ont chacun leur spec adjacente : la présente ne décrit ni leur
     conduite interne ni leur rendu, seulement l'agrégation, les chemins publics promis et le
     parcours qu'elle possède.
@@ -51,11 +51,16 @@ Must:
     identité `impl<T: Clone> FromRef<T> for T` (axum-core 0.5.6, src/extract/from_ref.rs) rend
     @auth_router compilable avec `S` = @MiryadAuthState comme avec tout état composé portant la
     projection ; aucun @AppState concret n'est imposé.
-  À chaque appel de @handler_login : régénérer couple CSRF/nonce aléatoire via
-    @OidcClientTrait::authorization_url, composer la valeur `csrf:nonce` (séparateur `:`), la
+  À chaque appel de @handler_login : régénérer couple CSRF/nonce et verifier PKCE aléatoires via
+    @OidcClientTrait::authorization_url, composer la valeur `csrf:nonce:pkce_verifier` (séparateurs
+    `:` ; verifier portés depuis l'arbitrage PKCE 2026-09-27 — task 15 de la feuille de mission,
+    @exchange_code exigeant le verifier exact du même couple), la
     chiffrer par @cookie::CookieJar::private_mut avec @MiryadAuthState::cookie_key sous le nom
     de cookie `miryad_oidc_pending`, et l'émettre avec les attributs littéraux
-    `HttpOnly; SameSite=Lax; Path=/; Max-Age=300`. Le nom de cookie sert d'associated-data au
+    `HttpOnly; SameSite=Lax; Path=/; Max-Age=300`, `Secure` inséré après `HttpOnly` quand
+    @MiryadAuthState::secure_cookies est `true` et omis sinon (mêmes règles que le cookie de
+    session, arbitré par Sébastien le 2026-09-29 — `SameSite=Lax` conservé, le retour de l'IdP
+    est cross-site). Le nom de cookie sert d'associated-data au
     chiffrement (source cookie 0.18.2, secure/private.rs) : @handler_callback déchiffre donc
     sous ce nom exactement.
   Dans @handler_callback : vérifier la correspondance du paramètre `state` avec le CSRF extrait
@@ -76,7 +81,9 @@ Must:
     d'échange, puis trace @tracing de niveau `info` avec le champ `subject`, puis la redirection `302` vers
     @MiryadAuthState::post_login_redirect portant deux en-têtes @SET_COOKIE ordonnés — le cookie
     de session construit par @cookie::build_set_cookie, puis la purge
-    `miryad_oidc_pending=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`.
+    `miryad_oidc_pending=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`, `Secure` inséré de même
+    selon @MiryadAuthState::secure_cookies (la purge porte les mêmes attributs que la pose,
+    arbitré 2026-09-29 — sinon le navigateur ne la substitue pas à la valeur posée en `Secure`).
   Rendre @handler_logout inconditionnel : `302` vers @MiryadAuthState::post_logout_redirect et
     @cookie::clear_cookie(), sans lire de cookie, sans toucher @MiryadAuthState::db, sans `401`
     possible. @handler_login n'utilise pas non plus le champ `db` ; seul @handler_callback le
@@ -144,8 +151,10 @@ Depends on:
     invalide, sans distinguer les causes.
   @openidconnect 4.0.1 et @oauth2 5.0.0 — @CsrfToken (oauth2, src/types.rs) et @Nonce
     (openidconnect, src/types/mod.rs) sont générés `new_random` en base64 URL-sans-rembourrage
-    de 16 octets aléatoires : alphabet sans `:` ni `=`, donc le `splitn(2, ':')` du callback est
-    sans ambiguïté sur les valeurs produites par le serveur ; @secret expose le @String clair et
+    de 16 octets aléatoires : alphabet sans `:` ni `=`, donc le `splitn(3, ':')` du callback est
+    sans ambiguïté sur les valeurs produites par le serveur (@PkceCodeVerifier, tiers segment
+    depuis l'arbitrage PKCE 2026-09-27, est du même base64 URL-sans-rembourrage) ; @secret expose
+    le @String clair et
     @Nonce::new ne revalide rien (la revalidation du nonce appartient à @exchange_code).
   @sea_orm 2 — @DatabaseConnection porté par @MiryadAuthState::db, passé aux fonctions de
     /src/users/mod.rs ; ses @DbErr entrent dans @AuthError via le `#[from]` de ./error.rs.
@@ -215,12 +224,14 @@ Returns:
     pas monté ici garde le sort du routeur englobant (par défaut `404`).
   @handler_login succès — `302` @StatusCode::FOUND, en-tête `Location` = l'URL
     d'autorisation renvoyée par @authorization_url, un en-tête @SET_COOKIE
-    `miryad_oidc_pending=<valeur chiffrée>; HttpOnly; SameSite=Lax; Path=/; Max-Age=300`,
+    `miryad_oidc_pending=<valeur chiffrée>; HttpOnly; SameSite=Lax; Path=/; Max-Age=300` avec
+    `; Secure` après `HttpOnly` si @MiryadAuthState::secure_cookies est `true` (arbitré 2026-09-29),
     corps vide.
   @handler_callback succès — `302`, `Location` = le `post_login_redirect` de l'état, deux
     @SET_COOKIE dans
     l'ordre : celui de @cookie::build_set_cookie (session `miryad_session`), puis
-    `miryad_oidc_pending=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`, corps vide.
+    `miryad_oidc_pending=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0` avec `; Secure` après
+    `HttpOnly` selon la même valeur de @MiryadAuthState::secure_cookies que la pose, corps vide.
   @handler_logout — toujours `302`, `Location` = le `post_logout_redirect` de l'état,
     @SET_COOKIE
     @cookie::clear_cookie() (nom `miryad_session`, `Max-Age=0`), corps vide.
@@ -230,17 +241,17 @@ Returns:
     chemins n'émet de @SET_COOKIE.
 
 Raises:
-  @AuthError::InvalidCallback (`MRD-AUTH-012`, `400` — variante propre depuis le 2026-09-27, plus
-    un @AuthError::Oidc à `502`) avec charge utile `missing oidc_pending cookie` — en-tête
-    `Cookie` absent, illisible en @str, ou paire `miryad_oidc_pending=<valeur>` absente du
-    découpage.
-  @AuthError::InvalidCallback avec charge utile `invalid oidc_pending cookie` — @decrypt
-    @None : base64 invalide, valeur chiffrée sous une autre clé, altérée, ou scellée sous un
-    autre nom de cookie — le nom du cookie sert de donné associé au chiffrement (AEAD).
-  @AuthError::InvalidCallback avec charge utile `malformed oidc_pending value` — valeur
-    déchiffrée sans séparateur `:` (moins de deux segments après `splitn`).
-  @AuthError::CsrfMismatch (`MRD-AUTH-013`, `400` — variante propre depuis le 2026-09-27, plus un
-    @AuthError::Oidc à `502`) avec charge utile `invalid CSRF state`, précédé du @tracing::warn
+  @AuthError::InvalidCallback (`MRD-AUTH-012`, `400` — variante PROPRE et unitaire depuis le
+    2026-09-27, plus un @AuthError::Oidc à `502` ; pas de charge utile possible, error.sdd faisant
+    autorité sur le rendu) sur trois branches indiscernables au fil (même code, même message,
+    distinction portée par le seul code source) : en-tête `Cookie` absent, illisible en @str, ou
+    paire `miryad_oidc_pending=<valeur>` absente du découpage ; @decrypt @None (base64 invalide,
+    valeur chiffrée sous une autre clé, altérée, ou scellée sous un autre nom de cookie — le nom
+    du cookie sert de donné associé au chiffrement, AEAD) ; valeur déchiffrée malformée (moins de
+    trois segments après `splitn(3, ':')` — le verifier PKCE est attendu, arbitrage PKCE 2026-09-27).
+  @AuthError::CsrfMismatch (`MRD-AUTH-013`, `400` — variante propre et unitaire depuis le
+    2026-09-27, plus un
+    @AuthError::Oidc à `502`), précédé du @tracing::warn
     `MRD-AUTH-013: CSRF state mismatch` — `state` du query différent du CSRF du pending ; c'est le
     seul point de trace d'erreur du fichier.
   @AuthError::Oidc avec charge utile = message @http::Error brut, sans code — @Response::builder
@@ -255,7 +266,8 @@ Raises:
 
 Handles:
   Trois branches distinctes de pending (absent, indéchiffrable, malformé) sous un seul code
-    `MRD-AUTH-012` ; le client ne peut pas les distinguer au code, seulement au message.
+    `MRD-AUTH-012` ; la variante étant unitaire (error.sdd), le client ne peut pas les distinguer
+    au code ni au message — seule la source les distingue.
   Chemins d'erreur sans ménage : `400` (`MRD-AUTH-012`/`013`, révisé 2026-09-27), `502` (échecs
     @Response::builder ou du fournisseur) et `500` du callback n'émettent pas de purge — le
     pending reste posé jusqu'à son expiration `300` s ou jusqu'au prochain login qui le réémet.
@@ -279,7 +291,16 @@ Handles:
     toute trace du module se limite aux deux @tracing citées en `Must`.
 
 Tasks:
-  [ ] Élargir @MockOidcClient pour rendre le callback réussi testable (arbitré par Sébastien le
+  [x] `Secure` sur le cookie pending (revue 2026-09-29) : appliquer `MiryadAuthState::secure_cookies`
+    à la pose et au retrait de `miryad_oidc_pending` (mêmes règles que la session, `SameSite=Lax`
+    conservé — retour cross-site de l'IdP). Spec amendée le 2026-09-30 : attributs littéraux de
+    `Must`/`Returns` et les deux `Scenario` portent le `Secure` conditionnel. Réalisé 2026-09-30
+    (vague B1, validator PASS) : `; Secure` inséré après `HttpOnly` à la pose (`handler_login`) et
+    à la purge (`handler_callback` succès) selon `secure_cookies`, motif identique à
+    @cookie::build_set_cookie ; un test par valeur × pose/purge, chaînes complètes affirmées.
+  [ ] Garde de montage OwnerOnly-sans-colonne : voir ./../rest/mod.sdd (`assert!` plutôt que
+    `#[allow(clippy::panic)]`) — pas de changement ici.
+  [x] Élargir @MockOidcClient pour rendre le callback réussi testable (arbitré par Sébastien le
     2026-09-27, cross-file avec ./oidc.sdd) : ajouter un mode configurable où @exchange_code rend
     un @OidcLoginResult fourni au lieu de paniquer — le mode panique reste le défaut (aucun test
     existant qui s'appuie sur l'`@unimplemented!` comme assertion d'absence ne doit changer de
@@ -288,14 +309,14 @@ Tasks:
   [x] Pending non purgé sur les chemins d'erreur : gelé comme comportement voulu (2026-09-27,
     `Handles`) — le TTL `300`s borne déjà l'exposition, purger sur chaque chemin d'erreur ajoute
     de la complexité pour un gain marginal.
-  [ ] Factoriser le parsing du cookie pending dans ./cookie.rs (arbitré 2026-09-27, `Must`,
+  [x] Factoriser le parsing du cookie pending dans ./cookie.rs (arbitré 2026-09-27, `Must`,
     cross-file avec ./cookie.sdd) : un point d'entrée partagé « trouver et déchiffrer un cookie
     nommé », paramétré par nom et clé, appelé par @extract_session (`miryad_session`) et
     @handler_callback (`miryad_oidc_pending`) — plus de découpage `;`/`=` dupliqué dans ./mod.rs.
   [x] Absence des trois routes d'OpenAPI et de l'IR : confirmée comme exclusion délibérée
     (2026-09-27) — ce sont des routes de redirection navigateur, pas la surface CRUD générique que
     ces deux artefacts documentent ; aucun changement.
-  [ ] Convertir les quinze `Scenario` en au moins quinze tests nommés et distincts : douze dans
+  [x] Convertir les quinze `Scenario` en au moins quinze tests nommés et distincts : douze dans
     le `mod tests` `#[cfg(test)]` de ./mod.rs (les quatre tests existants —
     logout_clears_cookie_and_redirects, callback_without_pending_cookie_is_rejected,
     login_redirects_and_sets_pending_cookie, callback_with_csrf_mismatch_is_rejected — sont
@@ -320,7 +341,9 @@ Scenario: login redirige vers le fournisseur et pose le pending chiffré
   Then le statut est `302`
   And l'en-tête `Location` vaut `https://issuer.example.com/authorize` — l'URL du mock
   And l'en-tête @SET_COOKIE commence par `miryad_oidc_pending=` suivi d'une valeur chiffrée et
-    se termine par `; HttpOnly; SameSite=Lax; Path=/; Max-Age=300`
+    se termine par `; HttpOnly; SameSite=Lax; Path=/; Max-Age=300`, avec `; Secure` inséré après
+    `HttpOnly` si l'état porte `secure_cookies: true` et omis si `false` (un test par valeur,
+    arbitré 2026-09-29)
   But aucun en-tête @SET_COOKIE ne porte nom `miryad_session` ou `Max-Age=0`
 
 Scenario: callback sans en-tête Cookie est rejeté avant la base
@@ -353,7 +376,7 @@ Scenario: valeur déchiffrée sans séparateur est malformée
     bonne clé
   When @handler_callback
   Then le statut est `400`
-  And le corps texte contient `MRD-AUTH-012` — le `splitn(2, ':')` n'a trouvé qu'un segment
+  And le corps texte contient `MRD-AUTH-012` — le `splitn(3, ':')` n'a trouvé qu'un segment
 
 Scenario: CSRF divergent rejette sans toucher le fournisseur ni purger le pending
   Given un pending réellement posé par un `GET /auth/login` préalable, et
@@ -392,7 +415,10 @@ Scenario: verbe non monté sous /auth renvoie 405 avec Allow
   Given le routeur monté tel que `auth_router` le produit
   When `POST /auth/login`
   Then le statut est `405` (mécanisme @MethodRouter vérifié dans le source axum 0.8.9)
-  And l'en-tête `Allow` vaut `GET`
+  And l'en-tête `Allow` vaut `GET,HEAD` — axum 0.8.9 enregistre @MethodFilter::get avec @Any
+    (source, routing/method.rs) et ajoute systématiquement @HEAD aux routes @GET ; contrat aligné
+    sur la réalité amont vérifiée, arbitré par Sébastien le 2026-09-28 (même posture que la
+    découverte OIDC)
   And `POST /auth/callback` et `POST /auth/logout` sont rejetés de la même façon
 
 Scenario: le préfixe nu n'est pas une route
@@ -408,7 +434,9 @@ Scenario: callback succès pose la session puis purge le pending
   When `GET /auth/callback?code=valide&state=<csrf du pending>`
   Then le statut est `302` et `Location` vaut le `post_login_redirect`
   And deux en-têtes @SET_COOKIE sortent dans l'ordre : d'abord nom `miryad_session`, ensuite
-    nom `miryad_oidc_pending` avec `Max-Age=0`
+    nom `miryad_oidc_pending` avec `Max-Age=0`, la purge portant `; Secure` après `HttpOnly` si
+    l'état porte `secure_cookies: true` et l'omettant sinon (mêmes attributs que la pose,
+    arbitré 2026-09-29)
   And la trace `info` du succès porte le champ `subject`
   # Devient exécutable avec le mode configurable de @MockOidcClient arbitré le 2026-09-27
   # (`Tasks`, cross-file ./oidc.sdd) — plus besoin d'un fournisseur factice réseau.

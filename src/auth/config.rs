@@ -1,15 +1,274 @@
 /// Configuration du client OIDC — fournie par l'application consommatrice, jamais lue par
 /// miryad-core depuis l'environnement ou un fichier (ça reste la responsabilité de l'app).
+///
+/// Huit champs, aucun constructeur ni validation ici : toute valeur invalide (URL, PEM, secret)
+/// n'émerge qu'à la construction du client dans [`oidc`](super::oidc), avec les codes
+/// `MRD-AUTH-004` à `MRD-AUTH-008`.
+#[derive(Clone)]
 pub struct OidcConfig {
+    /// Identifiant de l'émetteur — transmis à `IssuerUrl::new` puis interrogé par la discovery.
+    /// Seule contrainte : `url::Url::parse` (aucun schéma `https` imposé par le type).
     pub issuer_url: String,
+    /// Identifiant client — transmis sans validation à `ClientId::new`.
     pub client_id: String,
-    pub client_secret: String,
+    /// Secret client — `Some` est empaqueté `Some(ClientSecret)` et authentifie en `Basic` à
+    /// l'échange ; `None` exprime un client public, possession du code prouvée par `PKCE` `S256`
+    /// seul (`Basic` omis).
+    pub client_secret: Option<String>,
+    /// Callback `OIDC` de l'application (monté par `auth_router` sous `/auth/callback`) — pris
+    /// par `RedirectUrl::new` ; sa parse ne se révèle qu'après une discovery réussie.
     pub redirect_url: String,
+    /// Scopes demandées — le `Vec` vide est permis ; copié en snapshot à la construction du
+    /// client, sans validation ni déduplication (`openid` est imposée par `openidconnect` et
+    /// filtrée de l'URL d'autorisation pour éviter le doublon).
     pub scopes: Vec<String>,
     /// Certificat CA additionnel, contenu PEM (pas un chemin de fichier).
     pub ca_cert: Option<String>,
-    /// Où rediriger après un login réussi.
-    pub post_login_redirect: String,
-    /// Où rediriger après un logout.
-    pub post_logout_redirect: String,
+    /// Bornes de la phase de connexion (TCP+TLS) du client HTTP interne — posée sur
+    /// `reqwest::ClientBuilder::connect_timeout` (`oidc::build_http_client`). Défaut
+    /// applicatif recommandé : `5s`.
+    pub connect_timeout: std::time::Duration,
+    /// Bornes de la requête HTTP complète (discovery, JWKS, échange de code) du client HTTP
+    /// interne — posée sur `reqwest::ClientBuilder::timeout` (`oidc::build_http_client`).
+    /// Défaut applicatif recommandé : `15s`.
+    pub timeout: std::time::Duration,
+}
+
+/// `Debug` manuel arbitré le 2026-09-27 : tous les champs verbatim SAUF `client_secret`, rendu
+/// `Some("[REDACTED]")` quand présent et `None` quand absent — un `{:?}` accidentel ne doit
+/// jamais exposer le secret (`config.sdd` `Must`).
+impl std::fmt::Debug for OidcConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OidcConfig")
+            .field("issuer_url", &self.issuer_url)
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("redirect_url", &self.redirect_url)
+            .field("scopes", &self.scopes)
+            .field("ca_cert", &self.ca_cert)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fixture : les huit champs de la table de `Must` (config.sdd, révisée 2026-09-27),
+    /// `client_secret` en `Some`. Les URL finissent en `.invalid` (RFC 6761 — jamais résolu).
+    fn config_with_secret(secret: &str) -> OidcConfig {
+        OidcConfig {
+            issuer_url: "https://issuer.invalid".to_string(),
+            client_id: "cid".to_string(),
+            client_secret: Some(secret.to_string()),
+            redirect_url: "https://app.invalid/callback".to_string(),
+            scopes: vec!["email".to_string()],
+            ca_cert: None,
+            connect_timeout: std::time::Duration::from_secs(5),
+            timeout: std::time::Duration::from_secs(15),
+        }
+    }
+
+    /// `Scenario` : « construction par littéral des huit champs obligatoires » — le littéral
+    /// énumère les huit champs (tout champ manquant casse la compilation du test lui-même,
+    /// `#[derive]`-`Default`-absent étant affirmé par la construction de la fixture) et la
+    /// lecture par emprunt rend exactement la valeur déposée.
+    #[test]
+    fn literal_of_eight_fields_round_trips_every_value() {
+        let config = config_with_secret("s3cr3t");
+        assert_eq!(config.issuer_url, "https://issuer.invalid");
+        assert_eq!(config.client_id, "cid");
+        assert_eq!(config.client_secret.as_deref(), Some("s3cr3t"));
+        assert_eq!(config.redirect_url, "https://app.invalid/callback");
+        assert_eq!(config.scopes, vec!["email".to_string()]);
+        assert_eq!(config.ca_cert, None);
+        assert_eq!(config.connect_timeout, std::time::Duration::from_secs(5));
+        assert_eq!(config.timeout, std::time::Duration::from_secs(15));
+    }
+
+    /// `Scenario` : « Clone produit une copie indépendante, Debug rédige le secret » — les deux
+    /// sorties `{:?}` contiennent `client_secret: Some("[REDACTED]")` et jamais `s3cr3t`, et la
+    /// mutation d'un champ du clone ne touche pas l'original.
+    #[test]
+    fn clone_is_independent_and_debug_redacts_secret() {
+        let original = config_with_secret("s3cr3t");
+        let mut cloned = original.clone();
+        cloned.issuer_url.push_str("-mutated");
+
+        let original_out = format!("{original:?}");
+        let cloned_out = format!("{cloned:?}");
+        for rendered in [original_out.as_str(), cloned_out.as_str()] {
+            assert!(
+                rendered.contains(r#"client_secret: Some("[REDACTED]")"#),
+                "le Debug doit rédiger le secret : {rendered}"
+            );
+            assert!(
+                !rendered.contains("s3cr3t"),
+                "le secret ne doit jamais paraître dans un `{{:?}}` : {rendered}"
+            );
+        }
+        assert_eq!(
+            original.issuer_url, "https://issuer.invalid",
+            "le clone est une copie indépendante (arbitré 2026-09-27)"
+        );
+    }
+
+    /// `Scenario` : « Debug sur `client_secret` absent reste None ».
+    #[test]
+    fn debug_with_absent_client_secret_renders_none() {
+        let config = OidcConfig {
+            client_secret: None,
+            ..config_with_secret("unused")
+        };
+        let rendered = format!("{config:?}");
+        assert!(
+            rendered.contains("client_secret: None"),
+            "None doit rester rendu None, sans rédaction : {rendered}"
+        );
+    }
+
+    /// `Scenario` : « la configuration voyage entre tâches par sa nature Send et Sync » —
+    /// borne de compilation instantiée sur `OidcConfig`.
+    #[test]
+    fn oidc_config_satisfies_send_and_sync() {
+        fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+        assert_send_sync_static::<OidcConfig>();
+    }
+
+    // ——— Scenarios runtime : `OidcClient::new` sur URL `.invalid` (RFC 6761, jamais résolu) ———
+
+    /// Rendu `Display` complet du refus attendu (préfixe `MRD-AUTH-003` posé par ./error.rs),
+    /// ou `panic!` explicite si `OidcClient::new` a construit au lieu de refuser.
+    async fn display_of_new_rejection(config: &OidcConfig) -> String {
+        match crate::auth::oidc::OidcClient::new(config).await {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("un refus `AuthError::Oidc` était attendu pour cette config"),
+        }
+    }
+
+    /// `Must` de `Done when` : préfixe exact du code attendu, et exclusion explicite des autres
+    /// codes `MRD-AUTH-*` — jamais un `contains` large.
+    fn assert_display_carries_only(display: &str, prefix: &str, forbidden: &[&str]) {
+        assert!(
+            display.starts_with(prefix),
+            "préfixe attendu `{prefix}` : {display}"
+        );
+        for code in forbidden {
+            assert!(
+                !display.contains(code),
+                "le code {code} ne doit pas apparaître : {display}"
+            );
+        }
+    }
+
+    /// `Scenario` : « issuer non parseable rejette avant tout échange » — la parse de l'issuer
+    /// est la première étape de `OidcClient::new`, donc `004` seul, sans `005`/`006`/`007`/`008`.
+    #[tokio::test]
+    async fn issuer_non_parseable_rejette_004_avant_tout_echange() {
+        let config = OidcConfig {
+            issuer_url: "pas une url".to_string(),
+            client_id: "cid".to_string(),
+            client_secret: Some("secret".to_string()),
+            redirect_url: "https://app.invalid/callback".to_string(),
+            scopes: vec![],
+            ca_cert: None,
+            connect_timeout: std::time::Duration::from_secs(5),
+            timeout: std::time::Duration::from_secs(15),
+        };
+
+        let display = display_of_new_rejection(&config).await;
+        assert_display_carries_only(
+            &display,
+            "MRD-AUTH-003: OIDC error: MRD-AUTH-004:",
+            &["MRD-AUTH-005", "MRD-AUTH-006", "MRD-AUTH-007", "MRD-AUTH-008"],
+        );
+    }
+
+    /// `Scenario` : « `ca_cert` sans aucun bloc PEM refuse immédiatement en 007 » — la confusion
+    /// contenu contre chemin est nommée à la source, avant toute construction de client
+    /// (`008`) ou discovery (`005`).
+    ///
+    /// Écart spec↔code consigné dans le rapport de la tâche B1b : le `Scenario` jumeau
+    /// « bloc PEM au contenu invalide casse la construction du client HTTP » affirme `008` pour
+    /// un corps `!!!`, mais ./oidc.rs itère le PEM via `rustls_pki_types` qui décode le base64 —
+    /// un corps non décodable tombe déjà en `007` (`base64 decode error: InvalidCharacter(33)`),
+    /// et `ClientBuilder::build` n'est jamais atteint. Aucun test n'a été écrit pour ce
+    /// `Scenario` : il faut d'abord trancher la ligne de spec.
+    #[tokio::test]
+    async fn ca_cert_sans_aucun_bloc_pem_refuse_immediatement_007() {
+        let config = OidcConfig {
+            ca_cert: Some("ca-bundle.pem".to_string()),
+            ..config_with_secret("secret")
+        };
+
+        let display = display_of_new_rejection(&config).await;
+        assert_display_carries_only(
+            &display,
+            "MRD-AUTH-003: OIDC error: MRD-AUTH-007:",
+            &["MRD-AUTH-004", "MRD-AUTH-005", "MRD-AUTH-006", "MRD-AUTH-008"],
+        );
+    }
+
+    /// `Scenario` : « bloc PEM au contenu DER invalide casse la construction du client HTTP » —
+    /// corps base64 standard de `0x00 0x01 0x02` (`AAEC`) : le bloc passe le portillon `007`,
+    /// `from_pem` le stocke sans parser (`__rustls` seul) et `ClientBuilder::build` le refuse —
+    /// `008`, jamais `007`.
+    #[tokio::test]
+    async fn pem_block_with_invalid_der_body_refused_008_not_007() {
+        let config = OidcConfig {
+            ca_cert: Some("-----BEGIN CERTIFICATE-----\nAAEC\n-----END CERTIFICATE-----\n".to_string()),
+            ..config_with_secret("secret")
+        };
+
+        let display = display_of_new_rejection(&config).await;
+        assert_display_carries_only(
+            &display,
+            "MRD-AUTH-003: OIDC error: MRD-AUTH-008: failed to build OIDC HTTP client: ",
+            &["MRD-AUTH-004", "MRD-AUTH-005", "MRD-AUTH-006", "MRD-AUTH-007"],
+        );
+    }
+
+    /// `Scenario` : « `redirect_url` non parseable ne se révèle qu'après la discovery » — ordre de
+    /// sources issuer, PEM de `ca_cert`, client HTTP, discovery, redirect : sur un émetteur
+    /// injoignable c'est `005` qui tombe, et `006` reste masqué.
+    #[tokio::test]
+    async fn redirect_non_parseable_ne_se_revele_qu_apres_la_discovery_005() {
+        let config = OidcConfig {
+            redirect_url: "pas une url".to_string(),
+            ..config_with_secret("secret")
+        };
+
+        let display = display_of_new_rejection(&config).await;
+        assert_display_carries_only(
+            &display,
+            "MRD-AUTH-003: OIDC error: MRD-AUTH-005:",
+            &["MRD-AUTH-004", "MRD-AUTH-006", "MRD-AUTH-007", "MRD-AUTH-008"],
+        );
+    }
+
+    /// `Scenario` : « `client_secret` absent exprime un client public » — première moitié du
+    /// `Then`, exécutable sans fournisseur : la construction et la discovery se comportent
+    /// comme avec un secret, donc `005` sur l'émetteur `.invalid`. La seconde moitié (`/token`
+    /// sans en-tête `Authorization: Basic` sur un `IdP` fake) n'est pas exécutable dans ./config.rs
+    /// : le harnais `MockIdP` boucle-sur-`Authorization` vit en `cfg(test)` dans ./oidc.rs et
+    /// ./oidc.sdd en porte déjà le `Scenario` ; le duplicoder ici sortirait du `Owns`.
+    #[tokio::test]
+    async fn client_secret_absent_exprime_un_client_public() {
+        let config = OidcConfig {
+            client_secret: None,
+            ..config_with_secret("unused")
+        };
+
+        let display = display_of_new_rejection(&config).await;
+        assert_display_carries_only(
+            &display,
+            "MRD-AUTH-003: OIDC error: MRD-AUTH-005:",
+            &["MRD-AUTH-004", "MRD-AUTH-006", "MRD-AUTH-007", "MRD-AUTH-008"],
+        );
+    }
 }

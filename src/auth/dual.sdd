@@ -200,7 +200,7 @@ Tasks:
   [x] AJOUT REQUIS (Sébastien, 2026-09-27, voir ./principal.sdd et ./oidc.sdd) : propager
     @preferred_username depuis @OidcIdentity (résultat de @extract_session) vers @AuthPrincipal
     sur le chemin cookie de session — même traitement que @email, nouveau quatrième champ.
-  [ ] Casse du schème insensible (arbitré 2026-09-27, `Must`) : comparer les six premiers
+  [x] Casse du schème insensible (arbitré 2026-09-27, `Must`) : comparer les six premiers
     caractères de la valeur `Authorization` à `Bearer` insensible à la casse (ex.
     @str::eq_ignore_ascii_case sur la tranche), puis exiger l'espace exact et traiter le reste comme
     aujourd'hui (opaque, non trimé) — `authorization: bearer <token valide>` doit désormais
@@ -213,14 +213,14 @@ Tasks:
   [x] Ambiguïté multi-valeurs : comportement gelé — « la première valeur gagne » est le comportement
     standard de @HeaderMap::get, une lecture plus stricte n'apporterait aucun gain de sécurité (un
     second en-tête falsifié par un client est de toute façon ignoré).
-  [ ] Trace `debug` alignée sur @AuthUser (arbitré 2026-09-27, `Must`) : `auth ok` / `auth rejected`
+  [x] Trace `debug` alignée sur @AuthUser (arbitré 2026-09-27, `Must`) : `auth ok` / `auth rejected`
     sur chaque résolution, champs chemin (`token`/`session`) et code `MRD-AUTH-*` sur rejet, jamais
-    la valeur du token ni du cookie — wiring exact (macro, champs structurés) à aligner avec
-    ./middleware.sdd quand ce cluster sera traité, pour que les deux extracteurs tracent de façon
-    identique.
+    la valeur du token ni du cookie — clos par arbitrage de Sébastien du 2026-09-28 : divergence
+    des champs structurés GELÉE, ./dual.rs pose `path`, /src/auth/middleware.rs pose `subject`,
+    les deux avec les mêmes messages `auth ok` / `auth rejected`.
   [x] Parité déclarative des surfaces : gelée comme limite documentaire assumée — OpenAPI ne peut
     pas décrire nativement la sécurité GraphQL/MCP, ce n'est pas une dette de ce fichier.
-  [ ] Convertir les 19 `Scenario` (18 originaux, 1 réécrit pour la casse insensible ne change pas
+  [x] Convertir les 19 `Scenario` (18 originaux, 1 réécrit pour la casse insensible ne change pas
     le compte, plus le nouveau scenario de trace) en au moins 19 tests distincts nommés dans le mod
     @tests `#[cfg(test)]` de ./dual.rs — le contrat ne déborde pas du fichier : tout s'exerce comme
     les tests existants (sqlite en mémoire, @Router, @oneshot de @tower), aucun crate d'intégration

@@ -201,6 +201,17 @@ Tasks:
     huit tests (sept `Scenario` + verrou @le_panic_de_run_traverse_dispatch_sans_etre_converti),
     fixtures @toujours-transitoire (@retryable: true), @toujours-permanent (@retryable: false) et
     @panique-dans-run, validator PASS — dette inchangée, zéro diagnostic clippy sur ./step.rs.
+  [x] Hygiène @cargo doc (ouverte 2026-10-02, vague B5d, remontée du validator — hors gate du
+    standby : modification de doc-comment seule, aucune dépendance, aucun comportement, aucune
+    interaction avec la décision moteur @apalis) — @cargo doc @--no-default-features @--features
+    @workflow émet un avertissement @private_intra_doc_links depuis ./step.rs l.64 : @StepRegistry
+    (doc publique) lie @Self::dispatch, méthode @pub(crate). Remède attendu (patron lib.sdd
+    l.89, admis au @Raises de ../lib.sdd depuis 2026-10-02) : citation en chemin de code non lié,
+    la phrase gardant son sens. Épreuve : zéro avertissement imputable à ./step.rs sur @cargo doc
+    @workflow et @--all-features.
+    Réalisé 2026-10-02 (B5e-mini, validator consolidé PASS) : @Self::dispatch délié en chemin de
+    code (méthode @pub(crate)), phrase inchangée ; @cargo doc workflow et @all-features à zéro
+    avertissement au brut.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.

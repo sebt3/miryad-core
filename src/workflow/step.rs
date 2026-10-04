@@ -61,7 +61,7 @@ pub struct StepError {
 }
 
 /// Les kinds de step connus d'une application donnée, construits explicitement au démarrage et
-/// consultés en lecture seule par le dispatcher interne via [`Self::dispatch`].
+/// consultés en lecture seule par le dispatcher interne via `Self::dispatch`.
 ///
 /// Aucun champ public, aucune découverte automatique, aucun registre global : identique au
 /// pattern des autres registres de la crate (`IrRegistry`, `McpToolRegistry`).

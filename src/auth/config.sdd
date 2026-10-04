@@ -206,34 +206,40 @@ Handles:
     `ca_cert` fait exception depuis le 2026-09-27 (refus immédiat, ci-dessus)
 
 Tasks:
-  [ ] Valider `ca_cert` dans ./oidc.rs (arbitré 2026-09-27, `Must`, `Raises`) : compter les blocs
+  [x] Valider `ca_cert` dans ./oidc.rs (arbitré 2026-09-27, `Must`, `Raises`) : compter les blocs
     PEM décodés par l'itérateur de rustls-pki-types, `MRD-AUTH-007` si `Some` et zéro bloc — code
     réutilisé, plus jamais injoignable.
   [x] `MRD-AUTH-007` : tranché — réutilisé pour la validation `ca_cert` ci-dessus, pas fusionné ni
     laissé en jachère.
-  [ ] `Clone` + `Debug` manuel rédigé sur @OidcConfig (arbitré 2026-09-27, `Must`, `Exposes`,
+  [x] `Clone` + `Debug` manuel rédigé sur @OidcConfig (arbitré 2026-09-27, `Must`, `Exposes`,
     `Returns`) : `Debug` affiche tous les champs sauf `client_secret`, rendu `Some("[REDACTED]")`
     ou `None`.
   [x] `post_login_redirect`/`post_logout_redirect` : tranché — retirés d'@OidcConfig (`Must`,
     `Purpose`), @MiryadAuthState reste seule source de vérité pour ces deux champs ; aucun
     convertisseur à écrire, la question de duplication disparaît avec les champs.
-  [ ] Client public (arbitré 2026-09-27, `Must`, `Exposes`, `Returns`, `Handles`) : `client_secret`
+  [x] Client public (arbitré 2026-09-27, `Must`, `Exposes`, `Returns`, `Handles`) : `client_secret`
     devient `Option<String>` ; `None` omet `AuthType::BasicAuth` à l'échange dans ./oidc.rs — la
     sécurité du client public repose sur PKCE `S256` (déjà inconditionnel, ./oidc.sdd).
-  [ ] Timeouts configurables (arbitré 2026-09-27, `Must`, `Exposes`) : deux champs `Duration`
+  [x] Timeouts configurables (arbitré 2026-09-27, `Must`, `Exposes`) : deux champs `Duration`
     (`connect_timeout`, `timeout`) — cross-file avec ./oidc.sdd qui les consomme dans
     @build_http_client, défauts `5s`/`15s` à documenter au champ ou via une fonction `Default`
     séparée (pas de `#[derive(Default)]` sur la struct entière, les cinq champs obligatoires
     resteraient sans valeur par défaut sensée).
-  [ ] Convertir les `Scenario` en autant de tests distincts nommés dans un module de tests
-    `#[cfg(test)]` à créer dans ./config.rs (le fichier compte 0 test inline à ce jour) : les
+  [x] Convertir les `Scenario` en autant de tests distincts nommés dans un module de tests
+    `#[cfg(test)]` de ./config.rs (le texte « à créer… 0 test inline » était celui d'avant la
+    vague B1) : les
     scenarios runtime sous `#[tokio::test]` (@tokio est déjà dev-dependency avec `macros` et
     `rt-multi-thread`, @OidcClient::new est atteignable dans la crate), l'affirmation @Send et
     @Sync comme appel d'une fonction générique bornée `@T: @Send + @Sync` instantiée sur
     @OidcConfig ; toute URL d'émetteur des scenarios finit en `.invalid` (RFC 6761 : TLD jamais
     résolu, aucun endpoint public touché) ; chaque test runtime assertit le préfixe exact du code
     `MRD-AUTH-NNN` porté par la @Display de @AuthError et l'absence de tout autre code ; le contrat
-    ne déborde pas du fichier, aucune crate d'intégration séparée n'est nécessaire
+    ne déborde pas du fichier, aucune crate d'intégration séparée n'est nécessaire. Réalisé
+    2026-09-30 (vague B1, validator PASS) : un test nommé distinct vert par `Scenario`, dont
+    `pem_block_with_invalid_der_body_refused_008_not_007` (le `Scenario` DER corrigé en `008` sur
+    mesure empirique — @Certificate::from_pem infaillible sous @__rustls seul) ; l'assertion
+    d'absence d'@Basic du client public, impossible sans harnais réseau en ./config.rs, est
+    déportée et testée sous le `Scenario` « Client public sans secret » de ./oidc.sdd
 
 Done when:
   Les 9 `Scenario` (huit originaux révisés, un nouveau sur `Debug`/client_secret absent en plus du
@@ -270,16 +276,25 @@ Scenario: issuer non parseable rejette avant tout échange
   But elle ne contient aucun des codes `MRD-AUTH-005`, `MRD-AUTH-006`, `MRD-AUTH-007` ni
     `MRD-AUTH-008` — la parse de l'issuer est la première étape de @OidcClient::new
 
-Scenario: bloc PEM au contenu invalide casse la construction du client HTTP
-  Given une @OidcConfig à @issuer_url `https://issuer.invalid` et @ca_cert @Some d'une valeur
-    contenant les marqueurs `-----BEGIN CERTIFICATE-----` et `-----END CERTIFICATE-----` et un corps
-    `!!!` qui n'est pas du base64
+Scenario: bloc PEM au contenu DER invalide casse la construction du client HTTP
+  Given une @OidcConfig à @issuer_url `https://issuer.invalid` et @ca_cert @Some d'un bloc PEM
+    bien formé — marqueurs `-----BEGIN CERTIFICATE-----`/`-----END CERTIFICATE-----` et corps
+    base64 **valide** dont les octets ne sont pas un DER de certificat (ex. base64 de
+    `0x00 0x01 0x02`)
   When @OidcClient::new est awaited avec cette config
-  Then la @Display commence par `MRD-AUTH-003: OIDC error: MRD-AUTH-008:` : le bloc est présent et
-    reconnu (donc passe la vérification `MRD-AUTH-007` du 2026-09-27), mais son contenu DER est
-    invalide et casse au @ClientBuilder::build
-  But elle ne contient ni `MRD-AUTH-005` (la discovery n'a pas été tentée) ni `MRD-AUTH-007` (au
-    moins un bloc a bien été trouvé)
+  Then la @Display commence par `MRD-AUTH-003: OIDC error: MRD-AUTH-008:` : le bloc passe le
+    portillon @validate_ca_cert_pem (@pem_slice_iter décode le base64 sans erreur, source
+    rustls-pki-types 1.15.1), @reqwest::Certificate::from_pem est **infaillible sous le feature
+    @__rustls seul** — il stocke les octets sans les parser (source reqwest 0.12.28 tls.rs) — et
+    c'est @ClientBuilder::build qui refuse le DER à l'ancrage rustls (source async_impl/client.rs
+    → rustls 0.23.43 webpki/anchors.rs), portant `MRD-AUTH-008: failed to build OIDC HTTP
+    client: ` (ordre figé de `Must`, chemin mesuré empiriquement)
+  But elle ne contient ni `MRD-AUTH-005` (la discovery n'a pas été tentée) ni `MRD-AUTH-007`
+    (ni le portillon ni le bras défensif @from_pem n'ont émis)
+  # Le corps non-base64 (`!!!`) tombe lui au portillon @validate_ca_cert_pem en `007`, verrouillé
+  # par `invalid_ca_pem_refused_007_before_any_network` de ./oidc.rs. Le `map_err` `007` de
+  # @Certificate::from_pem reste un bras défensif sans chemin vivant sous les features actuels —
+  # le garder est consigné en `Depends on`, le code d'@error.sdd ne bouge pas.
 
 Scenario: ca_cert sans aucun bloc PEM refuse immédiatement en 007
   Given une @OidcConfig à @issuer_url `https://issuer.invalid` et @ca_cert @Some de `ca-bundle.pem`,
@@ -296,8 +311,10 @@ Scenario: client_secret absent exprime un client public
     @exchange_code est appelé
   Then la construction et la discovery se comportent comme avec un secret (`MRD-AUTH-005` sur
     l'émetteur `.invalid` dans ce test)
-  And sur l'IdP fake, la requête `/token` ne porte aucun en-tête `Authorization: Basic` (arbitré
-    2026-09-27) — le client s'appuie sur PKCE `S256` seul, jamais un client public authentifié à tort
+  And l'expression du client public à l'échange — aucune en-tête `Authorization: Basic` sur
+    `/token`, PKCE `S256` seul (arbitré 2026-09-27) — est verrouillée par le `Scenario`
+    « Client public sans secret » de ./oidc.sdd, seul endroit où le harnais @MockIdP existe
+    (privé `#[cfg(test)]` de ./oidc.rs, non réutilisable depuis ./config.rs)
 
 Scenario: redirect_url non parseable ne se révèle qu'après la discovery
   Given une @OidcConfig à @issuer_url `https://issuer.invalid` et @redirect_url `pas une url`

@@ -40,6 +40,43 @@ pub struct WorkflowConfig {
     pub deployment_url: String,
 }
 
+impl WorkflowConfig {
+    /// Vérifie les deux URL que ce fichier emprunte pour son propre compte : `admin_url` et
+    /// `ingress_url` doivent chacune se parser en URL absolue de schéma `http` ou `https`.
+    /// Pure, sans I/O : aucune connexion réseau n'est tentée ici — le contrôle est un verdict
+    /// rendu avant tout appel (`./client.sdd`, arbitré 2026-09-29). `deployment_url` n'est ni
+    /// validée ni inspectée : sa forme reste à la charge de l'application consommatrice
+    /// (décision conservée du 2026-09-23).
+    ///
+    /// # Errors
+    ///
+    /// `MRD-WORKFLOW-007` (`WorkflowError::InvalidConfig`) : `admin_url` ou `ingress_url` vide,
+    /// non parsable en URL absolue, ou de schéma hors `http`/`https` ; le message nomme le
+    /// champ fautif.
+    pub fn validate(&self) -> Result<(), WorkflowError> {
+        validate_http_url("admin_url", &self.admin_url)?;
+        validate_http_url("ingress_url", &self.ingress_url)?;
+        Ok(())
+    }
+}
+
+/// Garde d'une seule URL de service : vide, non parsable ou de schéma autre que
+/// `http`/`https` → `InvalidConfig` nommant `field`. `reqwest::Url` est le ré-export public de
+/// `url` par `reqwest` (aucune dépendance ajoutée) ; le parse est syntaxique, jamais résolutif.
+fn validate_http_url(field: &str, value: &str) -> Result<(), WorkflowError> {
+    if value.is_empty() {
+        return Err(WorkflowError::InvalidConfig(format!(
+            "{field} is empty, expected an absolute http or https URL"
+        )));
+    }
+    match reqwest::Url::parse(value) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => Ok(()),
+        _ => Err(WorkflowError::InvalidConfig(format!(
+            "{field} is not an absolute http or https URL: {value}"
+        ))),
+    }
+}
+
 /// Poignée rendue par `trigger_run` : les deux identifiants du run déclenché, à l'appelant de
 /// décider lesquels il expose (signal, statut — lectures hors du périmètre de ce fichier).
 pub struct RunHandle {
@@ -56,16 +93,22 @@ pub struct RunHandle {
 /// `content-type: application/json`. Tout statut `2xx` rend `Ok(())` sans inspecter le corps —
 /// idempotent, à appeler au démarrage de chaque réplica.
 ///
+/// La configuration est validée en tête (`WorkflowConfig::validate`), avant toute ouverture de
+/// connexion.
+///
 /// # Errors
 ///
 /// - `MRD-WORKFLOW-001` (`WorkflowError::RestateUnreachable`) : admin API injoignable
-///   (connexion refusée, DNS, timeout, URL invalide).
+///   (connexion refusée, DNS, timeout).
 /// - `MRD-WORKFLOW-002` (`WorkflowError::RestateRejected`) : l'admin API répond hors `2xx` —
 ///   `status` observé, `body` verbatim.
+/// - `MRD-WORKFLOW-007` (`WorkflowError::InvalidConfig`) : `admin_url` (ou `ingress_url`) vide,
+///   non parsable ou de schéma hors `http`/`https` — refusée avant tout appel réseau.
 pub async fn register_deployment(
     config: &WorkflowConfig,
     http: &reqwest::Client,
 ) -> Result<(), WorkflowError> {
+    config.validate()?;
     let response = http
         .post(format!("{}/deployments", config.admin_url))
         .json(&DeploymentRequest {
@@ -97,6 +140,10 @@ pub async fn register_deployment(
 /// colonne `steps`, plus un générique lié par `serde::Serialize`. ./client.rs ne valide pas le
 /// DAG, il le sérialise tel quel (sa validation relève de ./definition.rs).
 ///
+/// La configuration est validée en tête (`WorkflowConfig::validate`), avant toute ouverture de
+/// connexion — une `admin_url` invalide est donc refusée ici aussi, bien que seul l'`ingress_url`
+/// soit emprunté par cette fonction.
+///
 /// # Errors
 ///
 /// - `MRD-WORKFLOW-001` (`WorkflowError::RestateUnreachable`) : ingress injoignable.
@@ -104,11 +151,14 @@ pub async fn register_deployment(
 ///   ex. service `DagInterpreter` non enregistré, `404`) — `body` verbatim.
 /// - `MRD-WORKFLOW-003` (`WorkflowError::Serialization`) : corps `2xx` qui ne se décode pas en
 ///   la forme attendue (`invocationId` manquant par ex.).
+/// - `MRD-WORKFLOW-007` (`WorkflowError::InvalidConfig`) : `admin_url` ou `ingress_url` vide,
+///   non parsable ou de schéma hors `http`/`https` — refusée avant tout appel réseau.
 pub async fn trigger_run(
     config: &WorkflowConfig,
     http: &reqwest::Client,
     dag: &DagSteps,
 ) -> Result<RunHandle, WorkflowError> {
+    config.validate()?;
     let run_key = Uuid::new_v4().to_string();
     let response = http
         .post(format!(
@@ -611,6 +661,157 @@ mod tests {
         assert!(
             !handle.run_key.is_empty(),
             "une clé neuve est générée et rendue, elle ne passe pas par le corps"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Validation de WorkflowConfig (arbitré 2026-09-29)
+    // ---------------------------------------------------------------------------
+
+    /// Scenario « URL d'admin vide refusée avant tout appel réseau » : `admin_url` vide →
+    /// `InvalidConfig` (`MRD-WORKFLOW-007`) nommant `admin_url`. Preuve de l'absence d'appel
+    /// réseau : la seule adresse joignable de cette config (l'`ingress_url` pointant sur un
+    /// listener vivant) n'enregistre **aucune** connexion, et la variante `InvalidConfig` est
+    /// la seule que `validate` construit — le chemin HTTP n'a donc jamais été entré (il n'en
+    /// sort que `RestateUnreachable`/`Rejected`/`Serialization`, aucun `reqwest::Error` étant
+    /// impliqué ici, ./error.sdd `Raises`).
+    #[tokio::test]
+    async fn register_deployment_url_admin_vide_refusee_sans_appel_reseau() {
+        let stub = StubServer::spawn(200, "{\"deploymentId\":\"dp_unused\"}".to_string());
+        let config = WorkflowConfig {
+            admin_url: String::new(),
+            ingress_url: stub.url(),
+            deployment_url: DEPLOYMENT_URL.to_string(),
+        };
+        let Err(err) = register_deployment(&config, &test_http()).await else {
+            panic!("un admin_url vide devait rendre Err(InvalidConfig)");
+        };
+        assert!(
+            matches!(err, WorkflowError::InvalidConfig(_)),
+            "variante attendue InvalidConfig : {err:?}"
+        );
+        let rendered = err.to_string();
+        assert!(
+            rendered.starts_with("MRD-WORKFLOW-007: invalid workflow configuration: "),
+            "rendu inattendu : {rendered}"
+        );
+        assert!(
+            rendered.contains("admin_url"),
+            "le message doit nommer le champ fautif : {rendered}"
+        );
+        assert!(
+            stub.requests().is_empty(),
+            "le listener vivant sur le port n'aurait dû voir aucune connexion"
+        );
+    }
+
+    /// Scenario « URL non parsable ou de schéma inattendu refusée », second volet :
+    /// `admin_url` vaut `ftp://restate:9070` et `ingress_url` est parfaitement valide (elle
+    /// pointe un stub vivant) — `trigger_run` doit refuser la config **sans appel réseau**.
+    /// Sans validation en tête, `trigger_run` ne lit aujourd'hui que `ingress_url` et posterait
+    /// sur le stub : le test échoue dès qu'une connexion est capturée.
+    #[tokio::test]
+    async fn trigger_run_url_admin_ftp_refusee_sans_appel_reseau() {
+        let stub = StubServer::spawn(202, SEND_ACCEPTED_BODY.to_string());
+        let config = WorkflowConfig {
+            admin_url: "ftp://restate:9070".to_string(),
+            ingress_url: stub.url(),
+            deployment_url: DEPLOYMENT_URL.to_string(),
+        };
+        let Err(err) = trigger_run(&config, &test_http(), &dag_fixture()).await else {
+            panic!("un admin_url de schéma ftp devait rendre Err(InvalidConfig), ingress valide ou non");
+        };
+        assert!(
+            matches!(err, WorkflowError::InvalidConfig(_)),
+            "variante attendue InvalidConfig : {err:?}"
+        );
+        let rendered = err.to_string();
+        assert!(
+            rendered.starts_with("MRD-WORKFLOW-007: invalid workflow configuration: "),
+            "rendu inattendu : {rendered}"
+        );
+        assert!(
+            rendered.contains("admin_url"),
+            "le message doit nommer le champ fautif : {rendered}"
+        );
+        assert!(
+            stub.requests().is_empty(),
+            "aucun appel réseau : le stub ingresseur sur le port n'aurait rien dû capturer"
+        );
+    }
+
+    /// Scenario « URL non parsable ou de schéma inattendu refusée », premier volet :
+    /// `WorkflowConfig::validate` appelée sur `ingress_url` = `pas une url`, puis sur
+    /// `admin_url` = `ftp://restate:9070` — chacune rend `Err(InvalidConfig)` (`MRD-WORKFLOW-007`)
+    /// nommant le champ fautif. Aucune de ces deux configs n'est jamais jointe (`validate` est
+    /// pure, sans I/O) : les hôtes `restate-admin`/`restate-ingress` ne sont jamais résolus.
+    #[test]
+    fn validate_refuse_url_non_parsable_et_schema_ftp() {
+        let non_parsable = WorkflowConfig {
+            admin_url: "https://restate-admin:9070".to_string(),
+            ingress_url: "pas une url".to_string(),
+            deployment_url: DEPLOYMENT_URL.to_string(),
+        };
+        let Err(err) = non_parsable.validate() else {
+            panic!("`pas une url` en ingress_url devait rendre Err(InvalidConfig)");
+        };
+        assert!(
+            matches!(err, WorkflowError::InvalidConfig(_)),
+            "variante attendue InvalidConfig : {err:?}"
+        );
+        let rendered = err.to_string();
+        assert!(
+            rendered.starts_with("MRD-WORKFLOW-007: invalid workflow configuration: ")
+                && rendered.contains("ingress_url"),
+            "le message doit porter le code et nommer ingress_url : {rendered}"
+        );
+
+        let schema_ftp = WorkflowConfig {
+            admin_url: "ftp://restate:9070".to_string(),
+            ingress_url: "https://restate-ingress:9071".to_string(),
+            deployment_url: DEPLOYMENT_URL.to_string(),
+        };
+        let Err(err) = schema_ftp.validate() else {
+            panic!("`ftp://restate:9070` en admin_url devait rendre Err(InvalidConfig)");
+        };
+        assert!(
+            matches!(err, WorkflowError::InvalidConfig(_)),
+            "variante attendue InvalidConfig : {err:?}"
+        );
+        let rendered = err.to_string();
+        assert!(
+            rendered.starts_with("MRD-WORKFLOW-007: invalid workflow configuration: ")
+                && rendered.contains("admin_url"),
+            "le message doit porter le code et nommer admin_url : {rendered}"
+        );
+    }
+
+    /// Scenario « `deployment_url` n'est pas validée » : une config valide dont
+    /// `deployment_url` vaut `n'importe quoi` passe `validate` (`Ok`), et le contrat existant
+    /// de 2026-09-23 tient côté appel — l'URL absurde traverse la validation et va au réseau :
+    /// `register_deployment` atteint le stub, dont le corps capturé porte l'uri verbatim.
+    #[tokio::test]
+    async fn validate_ignore_totalement_deployment_url() {
+        let stub = StubServer::spawn(200, "{\"deploymentId\":\"dp_X\"}".to_string());
+        let config = WorkflowConfig {
+            admin_url: stub.url(),
+            ingress_url: stub.url(),
+            deployment_url: "n'importe quoi".to_string(),
+        };
+        config
+            .validate()
+            .expect("la forme de deployment_url reste à la charge de l'application");
+
+        register_deployment(&config, &test_http())
+            .await
+            .expect("une deployment_url absurde avec une config valide passe et va au réseau");
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 1, "la requête a bien été postée au stub");
+        let request = requests.first().expect("une requête capturée");
+        assert_eq!(
+            String::from_utf8_lossy(&request.body),
+            "{\"uri\":\"n'importe quoi\",\"force\":true}",
+            "le stub reçoit l'uri absurde verbatim — ./client.rs ne la restreint pas"
         );
     }
 }

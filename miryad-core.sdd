@@ -89,9 +89,14 @@ Must:
     par défaut (dépendance légère, attendue par la quasi-totalité des applications), `graphiql`
     impliquant `graphql`, `graphql` activant `sea-orm/seaography` (sans quoi
     @DeriveRelatedEntity ne génère rien et les relations disparaissent de l'API), `mcp`
-    n'embarquant `vynil-core` que en `hbs` et `crypto` (`default-features = false`).
+    n'embarquant `vynil-core` qu'en `hbs` (`default-features = false`) — la feature `crypto` en est purgée
+    (arbitré par Sébastien le 2026-09-29 : ses helpers de template ne sont pas voulus, elle retire
+    `openssl` natif du graphe des consommateurs ; à remettre si un template en a besoin).
   Livrer les tables internes préfixées `miryad_*` avec leur propre table de tracking de
-    migrations, pour coexister avec les migrations de l'application consommatrice.
+    migrations, pour coexister avec les migrations de l'application consommatrice. La table de
+    tracking elle-même se nomme `seaql_migrations_miryad_core` (préfixe `seaql_` : convention
+    sea-orm de reconnaissance par l'outillage) et n'est pas soumise au préfixe `miryad_*`
+    (arbitré par Sébastien le 2026-09-29).
   Publier une documentation utilisable sur docs.rs : le module @lib.rs porte la documentation
     de la crate, et `[package.metadata.docs.rs]` active les features documentables.
 
@@ -120,7 +125,7 @@ Depends on:
   openidconnect 4 (@openidconnect)
   Seaography 2.0.0-rc.9 et async-graphql 7, derrière les features `graphql` et `graphiql`
   utoipa 5 (@utoipa), @utoipa-swagger-ui derrière `swagger-ui`
-  vynil-core 0.7.7 (`hbs`, `crypto`), derrière les features `mcp` et `workflow`
+  vynil-core 0.7.7 (`hbs`, sans `crypto` depuis le 2026-09-29), derrière les features `mcp` et `workflow`
   ./tooling.sdd
 
 Tasks:
@@ -169,7 +174,10 @@ Tasks:
   [ ] Spec `src/migration/m20260822_000003_seed_admin_group.sdd` produite puis revue.
   [ ] Spec `src/bin/miryad.sdd` produite (spec-reverse) puis revue par Sébastien — Trancher le
     format du modèle de données, question ouverte du CLI.
-  [ ] Purger la dette du harnais module par module, selon le calendrier de `./tooling.sdd`.
+  [x] Purger la dette du harnais module par module, selon le calendrier de `./tooling.sdd`.
+    Solde 2026-09-29 (série A1–A4 + fix F, synthèse validator GO) : harnais vert sur les huit
+    combinaisons hors carve-out graphql acté (7 sites sous `graphql`, 8 avec `graphiql`, tous
+    dans `src/graphql/**`).
   [ ] Décider si le moteur de workflow (roadmap 7/9) entre dans une spec, son option
     d'implémentation étant en standby — ne pas speculer un module sans moteur choisi.
 

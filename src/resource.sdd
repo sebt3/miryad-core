@@ -41,7 +41,8 @@ References:
   /docs/architecture.md — récit cité par le bloc `//!` du fichier, non contractuel
 
 Must:
-  Compiler sans aucun gating de feature : aucune condition `#[cfg(feature = ...)]` dans le fichier ;
+  Compiler sans aucun gating de feature : aucune condition `#[cfg(feature = ...)]` dans le fichier
+    hors `#[cfg(test)]` (arbitré 2026-10-03) ;
     ses seules dépendances de typage sont @sea_orm::EntityTrait, @serde::Serialize (feature
     `derive` de la dépendance obligatoire @serde de /Cargo.toml) et @crate::auth::AuthPrincipal,
     toutes non optionnelles. La batterie de /tooling.sdd le vérifie au minimum sur
@@ -95,6 +96,15 @@ Must:
     `OwnerOnly`, `AdminOnly` et l'objet à clé unique `{"Group":"<nom>"}` dans l'IR JSON lu par le
     générateur du template `miryad` ; tout renommage ou attribut `#[serde(...)]` est une rupture
     silencieuse soumise à arbitrage.
+  Documenter que @MiryadResource::owner_column désigne une colonne de type entier `i32`
+    (`Option<i32>` accepté), comme @users::user::Model::id (arbitré par Sébastien le 2026-09-29) :
+    ./rest/mod.sdd refuse de monter l'entité dont la colonne propriétaire a un autre type (panic
+    au montage), et une ligne dont la colonne vaut `None` n'a aucun propriétaire — refusée hors
+    admin, contrat assumé (../rbac.sdd). Ce fichier ne vérifie toujours rien lui-même.
+  Documenter que @MiryadResource::label_column est un contrat du template `miryad`, pas de
+    miryad-core (arbitré par Sébastien le 2026-09-29) : la crate ne déclare que la colonne (ou
+    `None`) ; le repli sur la clé primaire quand la valeur est `None` est une exigence adressée au
+    générateur TypeScript du template, hors de ce dépôt et invérifiable ici.
   Retourner des colonnes typées et jamais des chaînes : @MiryadResource::owner_column,
     @MiryadResource::filter_column et @MiryadResource::label_column retournent l'@Option du @Column
     de @sea_orm::EntityTrait ; la conversion en nom @Iden (snake_case) est opérée par les
@@ -245,7 +255,7 @@ Handles:
     `docs/architecture.md`.
 
 Tasks:
-  [ ] Amendement du 2026-09-23 (@before_update, @before_delete) : convertir les six nouveaux
+  [?] Amendement du 2026-09-23 (@before_update, @before_delete) : convertir les six nouveaux
     `Scenario` en tests distincts nommés — statut après implémentation (validateur 2026-09-23) :
     les quatre tests directs vivent dans ../tests/resource.rs (`default_before_update_is_identity_and_ignores_existing`,
     `before_update_override_can_compare_existing_and_reject`, `default_before_delete_is_ok_and_ignores_existing`,
@@ -260,10 +270,19 @@ Tasks:
     par les deux mutations de création, vérifiée par le validateur). Arbitrage Sébastien en fin de
     cycle : harnais GraphQL neuf ou preuve par lecture consignée. `graphql_mutations_skip_before_update_and_before_delete`
     en attente de ce truchement.
+    Statut 2026-10-02 (B5b) : les cinq premiers verrous sont vérifiés existants ; le sixième est
+    verrouillé par truchement dans ./resource.rs (@graphql_mutations_skip_before_update_and_before_delete
+    — @graphql::EntityPolicy ne porte qu'un slot @before_create, espions @UPDATE/@DELETE à zéro sur
+    le seul point d'entrée du pont ; limitation consignée en doc-comment du test). Question
+    d'arbitrage : (A) harnais @graphql neuf exerçant la mutation réelle, espions à zéro à
+    l'appui ; ou (B) preuve par lecture consignée acceptée comme preuve pleine (source vendue
+    @before_active_model_save appelé uniquement par les deux mutations de création + verrou
+    observable du test inline), et le `Scenario` est alors reformulé pour rendre ce truchement
+    vérifiable.
   [ ] Convertir les vingt `Scenario` originaux en au moins vingt tests nommés distincts, un par
     scenario. État des lieux : 0 test inline dans ./resource.rs, 2 tests rattachés existants dans
     ../tests/resource.rs, 1 scenario couvert par des tests de la surface déléguée — soit 17 tests à
-    créer dans ../tests/resource.rs. Correspondance scenario → test : « construction de @HookError
+    créer, dans le `#[cfg(test)] mod tests` de ./resource.rs (arbitré 2026-10-03). Correspondance scenario → test : « construction de @HookError
     sans code » → `hook_error_new_leaves_code_none` ; « code applicatif libre porté par @HookError »
     → `hook_error_with_code_preserves_code_and_message` ; « copie et rendu @Debug de @HookError » →
     `hook_error_clone_preserves_debug_fields` ; « variantes unitaires d'@AccessPolicy en chaînes
@@ -292,6 +311,16 @@ Tasks:
     existants `before_create_hook_mutation_is_applied_at_insert` et
     `before_create_hook_error_blocks_insert_without_mrd_code` de ./rest/mod.rs — le contrat déborde
     du fichier, c'est là que ces tests vivent (surface déléguée, non owned ici).
+    Statut 2026-10-02 (B5b) : les dix-sept noms sont tous créés et verts, mais inline dans le
+    `#[cfg(test)] mod tests` de ./resource.rs — la vague B5b interdisait ./../tests/resource.rs
+    (cadrage de l'opératrice, pas de l'implementer). Verrouillage 20/20 atteint au sens du
+    `Done when` (« chaque `Scenario` vérifié par au moins un test nommé distinct ») ; le lieu dit
+    deux fois (« 17 tests à créer dans ../tests/resource.rs » ici et au `Done when`) n'est pas
+    satisfait à la lettre.
+  [x] Lieu des dix-sept tests : arbitré par Sébastien le 2026-10-03 — ils restent inline, dans le
+    `#[cfg(test)] mod tests` de ./resource.rs ; la tâche et le `Done when` sont amendés en ce
+    sens, aucun déplacement. Le `Must` de non-gating s'entend « hors `#[cfg(test)]` » : les deux
+    tests @cfg(feature) inline n'y contreviennent pas.
   [!] #19 La doc de @MiryadResource::resource_name affirme que le nom fait « le type GraphQL ». Vérifié
     dans la source `seaography-2.0.0-rc.9` (@EntityObjectBuilder::type_name) : le nom d'objet
     GraphQL et l'identifiant passé aux hooks viennent du nom de table SQL en CamelCase, jamais de
@@ -305,27 +334,31 @@ Tasks:
     est différé — ni le choix de clé de ./graphql/registry.sdd, ni le fail-closed de
     ./graphql/hooks.sdd ne sont arbitrés dans cette version mineure. Le fail-open actuel reste
     documenté tel quel dans ces deux fichiers, qui ne passent pas en `[x]`.
-  [?] @MiryadResource::label_column promet que « le générateur retombe sur la clé primaire » quand
-    la valeur est `None`. Le générateur TypeScript vit dans le template `miryad` (hors dépôt) :
-    rien dans ce dépôt ne vérifie ce fallback. Garde-t-on la promesse comme contrat de la méthode
-    alors qu'elle est invérifiable ici ?
+  [x] `label_column` : promesse conservée comme contrat du template `miryad` (arbitré par
+    Sébastien le 2026-09-29, `Must`) — reformuler le doc-comment de @MiryadResource::label_column
+    dans `./resource.rs` : « miryad-core ne déclare que la colonne ; le générateur du template
+    retombe sur la clé primaire quand elle vaut `None` ». Documentation seule, aucun test
+    (invérifiable dans ce dépôt) ; documenter aussi `owner_column` `i32` (`Must`).
+    Réalisé 2026-10-02 (B5b, validator PASS) : doc-comments de @label_column et @owner_column
+    reformulés dans ./resource.rs, aucun changement de comportement (diff non-test = doc seule).
 
 Done when:
   La spec porte exactement vingt-six `Scenario` (vingt originaux, six de l'amendement
     @before_update/@before_delete du 2026-09-23) et chaque `Scenario` est vérifié par au moins un
-    test nommé distinct au total : 17 tests rattachés créés dans ../tests/resource.rs pour les
-    scenarios originaux, 2 tests rattachés existants, 2 tests de ./rest/mod.rs pour « position du
+    test nommé distinct au total : 17 tests rattachés créés inline dans le `#[cfg(test)] mod tests`
+    de ./resource.rs pour les scenarios originaux, 2 tests rattachés existants, 2 tests de ./rest/mod.rs pour « position du
     hook dans la création », plus 6 tests rattachés pour l'amendement — 27 tests distincts pour 26
     `Scenario`.
   Les tests passent sur chaque combinaison de la matrice de /tooling.sdd, y compris
     `--no-default-features` pour la preuve de non-gating et `--features graphql` pour le seuil
     GraphQL (scenario d'absence des deux nouveaux hooks compris).
   Trois des quatre lignes `[?]`/`[!]` originales ont été arbitrées par Sébastien le 2026-09-27
+    (la quatrième, `label_column`, l'a été le 2026-09-29 — voir plus bas)
     (incohérence `OwnerOnly` sans colonne → montage REST refusé, `Must`/`Handles` ; sur-promesse de
     @filter_column → doc corrigée REST/MCP, `Must` ; bug `[!]` #19 → différé, pont GraphQL prototype
-    sans consommateur, exception `Must` de /miryad-core.sdd). Reste ouverte : la promesse de
-    fallback de @MiryadResource::label_column sur la clé primaire, invérifiable dans ce dépôt
-    (générateur hors dépôt).
+    sans consommateur, exception `Must` de /miryad-core.sdd). Le 2026-09-29, la promesse de
+    fallback de @MiryadResource::label_column sur la clé primaire devient un contrat du template
+    (générateur hors dépôt) : doc-comment à reformuler, aucun test ici.
   L'amendement @before_update/@before_delete est cohérent avec son miroir dans /src/rest/core.sdd
     (position d'appel dans @rest::core::update/@rest::core::delete) — les deux specs sont relues et
     approuvées ensemble, pas l'une sans l'autre.

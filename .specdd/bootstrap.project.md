@@ -63,6 +63,9 @@ Sébastien, pas d'implémentation avant les tests dérivés de la spec.
   décliné dans la `Raises`/`Handles` de la spec du module. Exception de fond : @HookError est
   une erreur **applicative** de l'application consommatrice — elle ne porte jamais de code
   `MRD-*` et chaque surface la restitue sans lui imposer sa taxonomie.
+  De même, un `DbErr` de passage n'est pas une erreur miryad : il traverse nu jusqu'à la surface
+  qui le traduit (`MRD-AUTH-016`, `MRD-REST-003`, …) — un module de données (`users`, `rbac`) ne
+  code pas ses `DbErr`.
 - Logging : `tracing` uniquement. Jamais `println!` / `eprintln!` / `dbg!`.
 - Gating de feature : chaque spec dit explicitement sous quelle(s) feature(s) son fichier
   compile (`static-frontend` — default, `swagger-ui`, `graphql`, `graphiql`, `mcp`) et ce que
@@ -77,6 +80,10 @@ Sébastien, pas d'implémentation avant les tests dérivés de la spec.
   `rest/core.sdd`, puis `graphql/hooks.sdd` et `docs/architecture.md`), et un validateur ne
   tient pas son absence côté GraphQL pour un décalage ; la règle par défaut reste la règle
   pour tout le reste.
+  Exemption nommée (actée par Sébastien le 2026-09-29) : les routes de compte et de plateforme
+  — `/auth/*`, `GET /api/v1/me`, `GET /api/v1/users`, `/api/v1/tokens` — ne sont pas des
+  @MiryadResource et sont **REST-only par nature** ; la règle de parité ne les vise pas (`rest/me.sdd`,
+  `rest/admin.sdd`, `rest/tokens.sdd`).
 - Frontière de dépôt : miryad-core est une bibliothèque publiée sur crates.io, pas un
   déployable. Dockerfile, chart Helm, doc de déploiement CNPG/Authentik et générateur
   frontend TypeScript vivent dans `miryad` (le template), pas dans ce dépôt.

@@ -20,11 +20,15 @@ pub enum WorkflowError {
     /// `MRD-WORKFLOW-002` — `RestateRejected` : réponse HTTP reçue hors `2xx`, construite à la
     /// main par `./client.rs` après lecture explicite du statut ; `body` verbatim, `status` le
     /// code numérique observé.
-    #[error("MRD-WORKFLOW-002: restate rejected request (status {status}): {body}")]
+    #[error(
+        "MRD-WORKFLOW-002: restate rejected request (status {status}): {}",
+        truncated_body(body)
+    )]
     RestateRejected {
         /// Code numérique observé sur la réponse hors `2xx`.
         status: u16,
-        /// Corps texte brut de la réponse, verbatim (sans troncature ni rédaction).
+        /// Corps texte brut de la réponse, verbatim (complet — seule la `Display` le tronque
+        /// à 1 KiB, ./error.sdd `Must` arbitré 2026-09-29).
         body: String,
     },
     /// `MRD-WORKFLOW-003` — `Serialization` : la réponse de Restate ne se décode pas dans le
@@ -44,6 +48,37 @@ pub enum WorkflowError {
     /// enregistré ; le premier kind reste celui du registre.
     #[error("MRD-WORKFLOW-006: step kind already registered: {0}")]
     DuplicateStepKind(String),
+    /// `MRD-WORKFLOW-007` — `InvalidConfig` : `admin_url` ou `ingress_url` de `WorkflowConfig`
+    /// vide, non parsable en URL absolue ou de schéma hors `http`/`https` ; construite
+    /// exclusivement par `WorkflowConfig::validate` (./client.rs) avant tout appel réseau,
+    /// jamais par `classify_transport_error`.
+    #[error("MRD-WORKFLOW-007: invalid workflow configuration: {0}")]
+    InvalidConfig(String),
+}
+
+/// Budget de la `Display` de `RestateRejected` : 1 KiB de corps, coupe sur une frontière de
+/// caractère, suffixe `…` quand la coupe a eu lieu (./error.sdd `Must`, arbitré 2026-09-29).
+/// Le champ `body` n'est jamais touché — seule cette fonction borne le rendu.
+fn truncated_body(body: &str) -> String {
+    const MAX_BODY_BYTES: usize = 1024;
+    if body.len() <= MAX_BODY_BYTES {
+        return body.to_string();
+    }
+    // Recul jusqu'à la frontière de caractère précédente : un caractère UTF-8 fait au plus
+    // 4 octets, la boucle s'arrête donc en trois pas au plus (body.len() > MAX garantit
+    // l'existence d'une frontière dans [MAX - 3, MAX]).
+    let mut end = MAX_BODY_BYTES;
+    while !body.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    let Some(cut) = body.get(..end) else {
+        // Inatteignable : `end` est une frontière de caractère, donc `get(..end)` vaut `Some`.
+        // Repli explicite plutôt qu'un `unreachable!` interdit par le harnais.
+        return "…".to_string();
+    };
+    let mut rendered = String::from(cut);
+    rendered.push('…');
+    rendered
 }
 
 /// Range un `reqwest::Error` nu dans l'une des deux catégories transport : `is_decode()` ou
@@ -293,5 +328,73 @@ mod tests {
                 "la cause doit figurer dans le message : {rendered}"
             );
         }
+    }
+
+    /// Scenario « Rejected tronque le corps au-delà de 1 KiB dans la Display seulement » :
+    /// un corps de 3000 caractères ASCII rend le préfixe contracté, exactement 1024
+    /// caractères de corps puis `…` — et le champ `body` conserve les 3000 caractères
+    /// (arbitré par Sébastien le 2026-09-29).
+    #[test]
+    fn rejected_tronque_le_corps_au_dela_de_1kib_dans_la_display_seulement() {
+        let prefix = "MRD-WORKFLOW-002: restate rejected request (status 500): ";
+        let err = WorkflowError::RestateRejected {
+            status: 500,
+            body: "a".repeat(3000),
+        };
+        let rendered = err.to_string();
+        assert!(
+            rendered.starts_with(prefix),
+            "le message doit commencer par le préfixe contracté : {rendered}"
+        );
+        let mut expected = String::from(prefix);
+        expected.push_str(&"a".repeat(1024));
+        expected.push('…');
+        assert_eq!(
+            rendered, expected,
+            "exactement 1024 caractères de corps suivis de `…`, rien de plus"
+        );
+        let WorkflowError::RestateRejected { body, .. } = &err else {
+            panic!("la variante construite était RestateRejected");
+        };
+        assert_eq!(
+            body.chars().count(),
+            3000,
+            "le champ `body` doit conserver le corps complet, la troncature ne vise que la Display"
+        );
+    }
+
+    /// Scenario « la troncature ne coupe jamais un caractère UTF-8 » : l'octet 1024 tombe au
+    /// milieu d'un `€` de 3 octets ; la Display recule à la frontière de caractère précédente,
+    /// se termine par `…`, sans panic (le test qui aboutit le prouve) ni U+FFFD.
+    #[test]
+    fn troncature_ne_coupe_jamais_un_caractere_utf8() {
+        // 1023 octets ASCII puis `€` (3 octets, offsets 1023..=1025) : la frontière d'octet
+        // 1024 tombe au milieu de ce caractère ; le corps dépasse 1 KiB (1036 octets).
+        let body = format!("{}€{}", "a".repeat(1023), "b".repeat(10));
+        let err = WorkflowError::RestateRejected { status: 500, body };
+        let rendered = err.to_string();
+        assert_eq!(
+            rendered,
+            format!(
+                "MRD-WORKFLOW-002: restate rejected request (status 500): {}…",
+                "a".repeat(1023)
+            ),
+            "la coupe doit reculer jusqu'à la frontière de caractère précédente (1023), jamais trancher un caractère"
+        );
+        assert!(rendered.ends_with('…'), "l'ellipsis marque la coupe : {rendered}");
+        assert!(
+            !rendered.contains('\u{FFFD}'),
+            "aucun caractère de remplacement ne doit apparaître : {rendered}"
+        );
+    }
+
+    /// Scenario « `InvalidConfig` rend le code MRD-WORKFLOW-007 » : variante tuple d'un message,
+    /// `Display` exacte `MRD-WORKFLOW-007: invalid workflow configuration: <message>`.
+    #[test]
+    fn invalid_config_rend_le_code_mrd_workflow_007() {
+        assert_eq!(
+            WorkflowError::InvalidConfig("admin_url is empty".to_string()).to_string(),
+            "MRD-WORKFLOW-007: invalid workflow configuration: admin_url is empty"
+        );
     }
 }

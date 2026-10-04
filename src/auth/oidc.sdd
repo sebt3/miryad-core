@@ -21,7 +21,7 @@ Owns:
 
 References:
   ./mod.rs — unique consommateur de production : @handler_login appelle @OidcClientTrait::authorization_url
-    et persiste `csrf:nonce` dans le cookie chiffré `miryad_oidc_pending` (@Max-Age=300) ;
+    et persiste `csrf:nonce:pkce_verifier` dans le cookie chiffré `miryad_oidc_pending` (@Max-Age=300 ;
     @handler_callback contrôle le cookie (`MRD-AUTH-012`), compare `state` au CSRF attendu
     (`MRD-AUTH-013`, @tracing::warn posé là et nulle part ici), passe le nonce lu dans le cookie à
     @OidcClientTrait::exchange_code, puis consomme @OidcLoginResult (résolution user, sync des
@@ -48,9 +48,11 @@ References:
     `0.12.28` (@default-features = `false`, features @rustls-tls et @json, racines @webpki-roots),
     @base64 `0.22`, @serde_json, @async-trait, @tracing — aucune de ces dépendances optionnelle
     ni gateée par une feature
-  /tooling.sdd — ce fichier porte de la dette stricte recensée là : @expect_used sur l'@expect de
-    la construction de @HttpResponse (littéral `MRD-AUTH-009` comme message) et @indexing_slicing
-    sur `parts[1]` de @extract_groups_claim ; la purge ne doit rien en ajouter ici
+  /tooling.sdd — dette stricte de ce fichier, purgée le 2026-09-29 (tâche A1, synthèse validator
+    PASS) : l'@expect de la construction de @HttpResponse est devenu une reconstruction infaillible
+    (@HttpResponse::new + @status_mut + @headers_mut().extend), et `parts[1]` de
+    @extract_groups_claim est lu par le motif `let [_, payload_segment, _] = parts.as_slice()` à
+    repli explicite ; la purge ne doit rien en ajouter ici
   /src/lib.rs — `pub mod auth` inconditionnel ; l'exemption @cfg(test) de la famille
     panic/unwrap/indexation portée par la racine de crate couvre @MockOidcClient et le `mod tests`
 
@@ -65,9 +67,12 @@ Must:
   Discovery par @CoreProviderMetadata::discover_async sur le client interne : `GET` de
     `{issuer}/.well-known/openid-configuration` puis `GET` du `jwks_uri` du document — le fetch
     du JWKS est partie intégrante du succès de @new, un JWKS inaccessible fait échouer la
-    construction en `MRD-AUTH-005`. La jointure est une jointure d'URL, pas une concaténation :
-    `/.well-known/openid-configuration` remplace le dernier segment d'un chemin sans slash final
-    (jointure relative, vérifiée dans la source amont d'@openidconnect). L'`issuer` du document
+    construction en `MRD-AUTH-005`. L'URL de discovery est une CONCATÉNATION, pas une jointure
+    d'URL relative : `issuer.as_str() + "/.well-known/openid-configuration"` (source vendue
+    `openidconnect 4.0.1` `types/mod.rs`, vérifiée et arbitrée par Sébastien le 2026-09-28 —
+    conforme à RFC 8414 §3.1). Un `issuer_url` avec chemin doit donc être saisi avec le sens de
+    slash final attendu par l'IdP ; un chemin sans slash final est conservé tel quel par la
+    concaténation, il n'efface aucun préfixe. L'`issuer` du document
     doit être égal (`==`) à l'issuer configuré (@DiscoveryError::Validation, absorbé en
     `MRD-AUTH-005`). Les clés vérifiant les algos à clé publique sont le snapshot de ce fetch —
     le fichier ne recharge jamais le JWKS ensuite. Conséquence rotation de clés, arbitrée par
@@ -175,8 +180,9 @@ Must not:
     `013`, ni approcher `014` à `016` : la taxonomie du fichier s'arrête à `004`..`011` en charge
     utile (`009` en traces et message de panic seulement) ; cookies et redirections de login
     sont le territoire ./mod.rs et ./cookie.rs, les tokens API celui de ./token.rs
-  Ajouter un chemin de panic en production : le seul arrêt existant est l'@expect de construction
-    de @HttpResponse (dette consignée /tooling.sdd) ; @send_http_request replie une méthode HTTP
+  Ajouter un chemin de panic en production : depuis la purge harnais du 2026-09-29 (tâche A1),
+    ./oidc.rs ne porte plus aucun arrêt par panic — la construction de @HttpResponse dans
+    @send_http_request est infaillible ; @send_http_request replie une méthode HTTP
     non parseable sur @reqwest::Method::GET par @unwrap_or — aucun nouveau @unwrap(), les lints
     @expect_used/@indexing_slicing ne doivent pas empirer
   Lire l'environnement, un fichier ou un chemin pour configurer la CA : le champ @ca_cert est un
@@ -197,7 +203,7 @@ Depends on:
     `connect_timeout`/`timeout` posés depuis @OidcConfig — arbitré 2026-09-27, plus de défaut
     `aucun timeout`) et @Certificate::from_pem ; @HttpRequest/@HttpResponse de
     @openidconnect::http (crate @http) convertis dans @send_http_request, repli @GET sur méthode
-    non parseable, @expect sur la construction de la réponse
+    non parseable, reconstruction infaillible de la réponse depuis la purge du 2026-09-29
   @std::time::Duration — type des deux nouveaux champs `connect_timeout`/`timeout` de @OidcConfig ;
     @std::sync::atomic::AtomicBool — signal de rotation JWKS exposé par @OidcClient (2026-09-27)
   `tracing-subscriber` (nouvelle dev-dependency, arbitrée 2026-09-27) — capture des événements
@@ -318,10 +324,13 @@ Raises:
     seule la cause « clé/JWKS manquante » est en outre captée pour armer le signal de rotation
     (arbitré 2026-09-27, `Must`, distinction par variant précis de @ClaimsVerificationError, pas
     par texte)
-  Panique hors contrat — l'@expect au message littéral `MRD-AUTH-009: failed to build HTTP
-    response from a valid status+headers` de @send_http_request : porteur du littéral `009` mais
-    panique, pas @AuthError ; dette @expect_used consignée /tooling.sdd, purge programmée par le
-    calendrier de /tooling.sdd sans faire disparaître `009` du message
+  Aucune panique dans ./oidc.rs depuis la purge harnais du 2026-09-29 : l'@expect de
+    @send_http_request au message littéral `MRD-AUTH-009: failed to build HTTP response from a
+    valid status+headers` a été remplacé par une reconstruction infaillible (@HttpResponse::new +
+    @status_mut + @headers_mut().extend — statut et en-têtes déjà validés en amont par @reqwest).
+    Le littéral `009` ne vit plus que sur les deux chemins d'échange, payload et traces, comme
+    `Must` et `Raises` le posent (arbitré par Sébastien le 2026-09-29 : la clause « sans faire
+    disparaître `009` du message » visait la taxonomie, pas le message de la dette)
 
 Handles:
   Discovery en deux temps (document puis JWKS via le transport privé @send_http_request) : une
@@ -357,29 +366,29 @@ Tasks:
     nom de ressource stable (namespace K8s), ce que `email` ne garantit pas (peut varier, peut
     être absent). `./token.rs` (voie ApiToken) posera `preferred_username: None` — même
     traitement que `email` sur ce chemin (aucune session OIDC vivante).
-  [ ] `MRD-AUTH-009` en tête de la charge utile des deux `@map_err` de @exchange_code, en plus des
+  [x] `MRD-AUTH-009` en tête de la charge utile des deux `@map_err` de @exchange_code, en plus des
     traces @tracing::error existantes (arbitré 2026-09-27, `Must`, `Raises`) — aligne ce fichier sur
     ce que ./error.sdd attendait déjà, aucun changement requis côté ./error.sdd.
   [x] Découpage du handshake entre specs : confirmé (2026-09-27) — cette spec reste scopée au
     client SDK (@authorization_url/@exchange_code) ; ./mod.sdd consolide le flux complet des
     endpoints (`012`/`013` devenus @AuthError::InvalidCallback/@CsrfMismatch, cookie pending,
     redirections) en la référençant.
-  [ ] @MockOidcClient gagne un mode configurable pour le succès d'échange (arbitré 2026-09-27,
+  [x] @MockOidcClient gagne un mode configurable pour le succès d'échange (arbitré 2026-09-27,
     `Must`, cross-file avec ./mod.sdd) : @exchange_code rend un @OidcLoginResult fourni à la
     construction au lieu de paniquer, quand ce mode est configuré ; le mode panique reste le
     défaut. Rend exécutable le scenario « callback succès » de ./mod.sdd sans fournisseur factice
     réseau.
-  [ ] Timeouts réseau configurables (arbitré 2026-09-27, `Must`, `Accepts`) : deux nouveaux champs
+  [x] Timeouts réseau configurables (arbitré 2026-09-27, `Must`, `Accepts`) : deux nouveaux champs
     `@Duration` sur @OidcConfig (`connect_timeout`, `timeout`), défauts `5s`/`15s` si absents,
     posés sur le @ClientBuilder dans @build_http_client — wiring exact (`Default`, builder) à
     finaliser avec ./config.sdd.
-  [ ] Signal de rotation JWKS pour readiness Kubernetes (arbitré 2026-09-27, `Must`, `Raises`,
+  [x] Signal de rotation JWKS pour readiness Kubernetes (arbitré 2026-09-27, `Must`, `Raises`,
     `Exposes`) : pas de re-fetch automatique — détecter la cause précise « clé/`kid` introuvable »
     du @ClaimsVerificationError amont (identifier le variant exact dans la source `openidconnect
     4.0.1`, pas par correspondance de texte), armer un @std::sync::atomic::AtomicBool interne à
     @OidcClient, l'exposer par une méthode publique. Charge à l'app de le câbler dans son readiness
     HTTP — hors du périmètre de ce fichier, qui ne fait qu'exposer le signal.
-  [ ] PKCE `S256` activé inconditionnellement (arbitré 2026-09-27, `Must`, `Exposes`, `Accepts`,
+  [x] PKCE `S256` activé inconditionnellement (arbitré 2026-09-27, `Must`, `Exposes`, `Accepts`,
     `Returns`) : @PkceCodeChallenge::new_random_sha256 au même appel que @CsrfToken/@Nonce,
     @set_pkce_challenge sur l'URL, @set_pkce_verifier sur l'échange — @OidcClientTrait,
     @authorization_url et @exchange_code changent de signature (quadruplet en sortie, verifier en
@@ -389,9 +398,12 @@ Tasks:
     dépendances normales de la crate depuis le poivre de ./token.sdd, pas de nouveau crate de dev
     pour ça) ; capture des traces @tracing par `tracing-subscriber` en dev-dependency, plus fiable
     qu'une lecture statique.
-  [ ] Convertir les 31 `Scenario` (24 originaux, 7 nés de l'arbitrage du 2026-09-27 : PKCE
-    divergent, deux timeouts, défauts de timeout, signal de rotation, mock configurable) en au
-    moins 31 tests nommés distincts du `mod tests` `#[cfg(test)]` de ./oidc.rs : les 3 tests inline
+  [x] Convertir les 32 `Scenario` (24 originaux, 7 nés de l'arbitrage du 2026-09-27 : PKCE
+    divergent, deux timeouts, défauts de timeout, signal de rotation, mock configurable ; 1 né le
+    2026-09-30 : client public déporté depuis ./config.sdd, verrouillé par
+    `public_client_exchanges_code_without_any_authorization_header` avec le @MockIdP étendu à la
+    capture d'en-tête) en au moins 32 tests nommés distincts du `mod tests` `#[cfg(test)]` de
+    ./oidc.rs : les 3 tests inline
     existants couvrent les `Scenario` 21 et 22 et le seul cas `not-a-jwt` du `Scenario` 23 ; restent
     donc ≥28 tests à écrire — `#[test]` purs pour 004/007, `#[tokio::test]` pour les parcours
     mock-IdP (005, 006, URL, échanges, timeouts, signal de rotation, mock en `catch_unwind` pour
@@ -448,11 +460,11 @@ Scenario: Document de discovery d'un issuer différent refusé 005
   Then la réponse est @Err dont la charge utile commence par `MRD-AUTH-005: OIDC discovery failed: `
   And jamais @Ok : la comparaison d'issuer de la librairie (@DiscoveryError::Validation absorbé) est la seule barrière, aucune trace n'est posée ici (lecture statique)
 
-Scenario: Issuer avec chemin sans slash final : la discovery tape la racine, pas le préfixe
+Scenario: Issuer avec chemin sans slash final : la concaténation conserve le préfixe
   Given un IdP fake loopback servant son document UNIQUEMENT sous `/reverse/.well-known/openid-configuration` (et son JWKS sous `/reverse/keys`), déclarant l'issuer `http://127.0.0.1:PORT/reverse`
   When @OidcClient::new est appelé avec `issuer_url` = `http://127.0.0.1:PORT/reverse`
-  Then l'IdP fake enregistre un `GET /.well-known/openid-configuration` (chemin racine) et aucun `GET /reverse/.well-known/openid-configuration` : la jointure d'URL remplace le dernier segment (vérifiée dans la source amont)
-  And la réponse est @Err `MRD-AUTH-005: OIDC discovery failed: ` (le document racine sert un issuer étranger ou un 404), preuve observable que le chemin configuré a été effacé par la jointure
+  Then l'IdP fake enregistre un `GET /reverse/.well-known/openid-configuration` (préfixe conservé) et JAMAIS de `GET /.well-known/openid-configuration` à la racine : la concaténation amont (RFC 8414 §3.1, arbitrée par Sébastien le 2026-09-28) ne remplace aucun segment
+  And la réponse est @Ok : le document servi déclare exactement l'issuer configuré, la validation d'issuer passe sur le préfixe conservé
 
 Scenario: Callback invalide : surface après discovery, signalé 006
   Given un IdP fake complet fonctionnel (document + JWKS) et un @OidcConfig valide sauf `redirect_url` = `pas une url`
@@ -490,6 +502,19 @@ Scenario: Échange de code réussi rend le jeton brut, les claims et les groups
   Then la réponse est @Ok : @identity.id_token égal à la chaîne brute du JWT servi, @subject = `user-1`, @email = @Some de `user-1@example.com`, @preferred_username = @Some(`"alice"`), @groups = exactement `["admin", "editors"]`
   And le serveur fake a reçu un `POST /token` avec en-tête `Authorization: Basic`, et un corps portant `grant_type=authorization_code`, `code`, `redirect_uri` du configuré et `code_verifier` (arbitré 2026-09-27) — le secret du client ne voyage que sur cet appel
   But l'échange réussi n'a posé aucune trace @tracing
+
+Scenario: Client public sans secret — requête /token nue d'Authorization, PKCE seul
+  Given un IdP fake dont `/token` enregistre les en-têtes reçus (harnais @MockIdP du fichier),
+    monté sur une @OidcConfig à @client_secret @None, et un couple frais d'@authorization_url
+  When @exchange_code est appelé avec le code, le @Nonce et le @PkceCodeVerifier exacts du couple
+  Then le `POST /token` reçu par l'IdP fake ne porte AUCUNE en-tête `Authorization` — pas de
+    @Basic vide : @AuthType::BasicAuth n'est posé que sur la présence d'un secret (contrat de
+    ./config.sdd « client_secret absent exprime un client public », assertion déportée ici faute
+    de harnais réseau en ./config.rs)
+  And le corps porte bien `code_verifier` — le client public s'authentifie par PKCE `S256` seul
+    (arbitré 2026-09-27)
+  # La vérification de l'`id_token` de réponse est hors du `Then` : sans secret, aucune fixture
+  # HS256 vérifiable n'existe et le rejet éventuel du vérifieur ne regarde que la réponse.
 
 Scenario: Verifier PKCE divergent rejette l'échange
   Given le même IdP fake complet et couple @authorization_url valide
@@ -599,7 +624,7 @@ Scenario: Claim groups non-array, liste vide
 Scenario: JWT hors trois segments, liste vide
   Given les trois entrées `not-a-jwt` (un segment), `a.b` (deux segments) et `a.b.c.d` (quatre segments)
   When @extract_groups_claim est appelé sur chacune
-  Then les trois réponses sont des @Vec vides : la garde `parts.len() != 3` les refuse toutes, y compris le cas quatre segments qui protège l'indexation de `parts[1]` (dette @indexing_slicing consignée /tooling.sdd)
+  Then les trois réponses sont des @Vec vides : la garde sur trois segments (motif `let [_, payload_segment, _] = parts.as_slice()` depuis la purge harnais du 2026-09-29, comportement identique à l'ancienne garde `parts.len() != 3`) les refuse toutes, y compris le cas quatre segments qui protège la lecture du payload
 
 Scenario: Mock de test sans réseau : URL statique, couples frais, échange volontairement paniquant
   Given @MockOidcClient (struct unitaire sous @cfg(test), impl @OidcClientTrait) construit par son

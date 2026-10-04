@@ -52,6 +52,11 @@ entité, sans boilerplate. Seule la UI Swagger est derrière une feature Cargo `
 (activable par miryad-core et transitivement par l'app cible). Décidé le 2026-08-22, après la
 feature 4.
 
+**À planifier (arbitré 2026-09-29, non MVP)** : fragment OpenAPI des routes de compte de la crate
+(`GET /api/v1/me`, `GET /api/v1/users`, `/api/v1/tokens`) — aujourd'hui absentes du document, le
+template `miryad` en aura besoin pour son client. Ces routes restent REST-only par nature
+(exemption de parité, `.specdd/bootstrap.project.md`) ; `/auth/*` reste hors document.
+
 ## 5. API GraphQL
 Intégration Seaography 2.0 (schéma dynamique depuis les entités SeaORM) + injection du RBAC de
 l'étape 3 dans la résolution, via `LifecycleHooksInterface` (pas le RBAC natif de Seaography/

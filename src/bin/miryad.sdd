@@ -13,6 +13,10 @@ Purpose:
 
 Owns:
   ./miryad.rs
+  ./tests/cli.rs — rattaché 2026-10-03 à sa création (règle de
+    /.specdd/bootstrap.project.md : les fichiers de /tests/ n'ont pas de spec propre et sont
+    rattachés à la spec du contrat exercé ; l'en-tête d'exemption `cfg(test)` relève du
+    `Can modify ./tests/*.rs` de /tooling.sdd, le reste du fichier de la présente autorité)
 
 Can read:
   ../lib.rs — vérification à la source : l'exemption `#![cfg_attr(test, allow(...))]` est un
@@ -40,8 +44,10 @@ Must:
     fichier, n'ouvre aucune connexion base ou réseau, ne lance aucun sous-processus et n'émet
     aucune trace @tracing. Silencieux par défaut.
   Garder clap comme seul producteur des sorties : l'aide porte en ligne d'about le commentaire
-    de documentation de @Cli, exactement — `CLI de scaffolding miryad — génère une application
-    depuis un modèle de données.` — ; le message de version est bâti par @clap_derive depuis
+    de documentation de @Cli, hors le point final consommé par @clap_derive (@remove_period sur
+    l'aide courte, pas de @verbatim_doc_comment sur cette structure vide — @clap_derive 4.6.4 de
+    /Cargo.lock) — donc `CLI de scaffolding miryad — génère une application depuis un modèle de
+    données` sans son `.` ; le message de version est bâti par @clap_derive depuis
     `CARGO_PKG_VERSION`, donc suit /Cargo.toml sans changement ici.
   N'émettre que deux codes de sortie : `0` (argv vide accepté ; demandes d'aide et de version)
     et `2` (tout argv invalide — `USAGE_CODE` de clap, valeur `2` vérifiée dans le source de
@@ -51,6 +57,15 @@ Must:
     arithmétique — les dix lignes du fichier le constatent aujourd'hui —, ce crate bin ne
     pouvant hériter d'aucune exemption `test` (vérifié : l'en-tête est dans `../lib.rs`, autre
     crate ; /src/lib.sdd l'affirme et le teste).
+  Le binaire est un squelette muet, sans comportement (arbitré par Sébastien le 2026-09-29) : le format du modèle de données, les
+    sous-commandes et le texte d'`about` (« génère une application depuis un modèle de données ») ne
+    sont pas un contrat tant que la génération vit dans le template `miryad` (roadmap) ; le premier
+    comportement réel est un contrat nouveau à faire approuver.
+  Ne jamais faire appeler @ir::IrRegistry par ce binaire (arbitré par Sébastien le 2026-09-29) : la production d'IR reste
+    exclusivement à l'application consommatrice du template, le `Must not` de /src/ir.sdd tient.
+  Les tests du binaire vivent dans `./tests/cli.rs` (test d'intégration, `CARGO_BIN_EXE_miryad`)
+    (arbitré par Sébastien le 2026-09-29) : seul moyen de lire codes de sortie et sorties d'un vrai processus ; l'en-tête d'exemption
+    de la famille stricte sous `cfg(test)` est celui que /tooling.sdd prévoit pour `./tests/*.rs`.
 
 Must not:
   Implanter le scaffolding avant son contrat : sous-commande (`init`, `generate`), lecture d'un
@@ -136,33 +151,37 @@ Handles:
     champ à remplir.
 
 Tasks:
-  [?] Format du modèle de données à trancher par Sébastien — question ouverte héritée de la
-    ligne `./src/bin/` de /miryad-core.sdd : aucun format n'est lu ni accepté par le code
-    aujourd'hui. Quel modèle d'entrée (fichier, stdin, répertoire) et sous quelle sous-commande
-    ? Le texte d'about « génère une application depuis un modèle de données » devient-il contrat
-    ou change-t-il quand le premier comportement réel arrive ?
-  [?] Frontière CLI / IR : /src/ir.sdd tient en `Must not` « Créer dans miryad-core un
-    exécutable ou une sous-commande CLI qui produit le fichier IR », alors que
-    @ir::IrRegistry::write_to_file existe dans la lib et que la crate embarque l'exécutable
-    `miryad` — squelette muet aujourd'hui, donc pas de violation. Le CLI futur devra-t-il
-    appeler @ir::IrRegistry — ce qui retournerait ce `Must not` — ou la production d'IR
-    reste-t-elle exclusivement à l'application consommatrice du template ?
-  [?] Placement des tests et exemption du harnais pour le crate bin : @Cli::parse() lit l'argv
-    courant du processus, donc un module `#[cfg(test)] mod tests` inline ne peut faire tourner
-    le vrai CLI que par @std::process::Command, et la variable `CARGO_BIN_EXE_<name>` — qui donne
-    le chemin de l'exécutable construit — n'est posée que pour les tests d'intégration et les
-    benches (vérifié dans la référence Cargo), pas dans les tests unitaires du bin. Un test
-    inline ne couvrirait que @Cli::try_parse_from, sans les codes de sortie. Faut-il la crate
-    `./tests/cli.rs` (rattachée à cette spec, en-tête `test` de /tooling.sdd) ou une exemption
-    équivalente portée par la racine de ./miryad.rs est-elle admise ?
-  [!] Le harnais ne peut pas encore prouver la propreté de ce fichier : `cargo clippy
+  [x] Format du modèle de données : hors périmètre de cette version, différé (arbitré par
+    Sébastien le 2026-09-29, `Must`) — aucun comportement, `about` non contractuel.
+  [x] Frontière CLI / IR : le `Must not` de /src/ir.sdd est conservé, le CLI n'appelle pas
+    @ir::IrRegistry (arbitré par Sébastien le 2026-09-29, `Must`).
+  [x] Tests dans `./tests/cli.rs` avec `CARGO_BIN_EXE_miryad` (arbitré par Sébastien le
+    2026-09-29, `Must`) : convertir les six `Scenario`, en-tête d'exemption `cfg(test)` de
+    /tooling.sdd ; la spec de `./tests/cli.rs` est à rattacher à cette spec.
+    Réalisé 2026-10-03 (B5h, validator PASS après revalidation ciblée) : ./tests/cli.rs créée
+    avec l'en-tête d'exemption copie exacte du patron ./tests/resource.rs, rattachement fait au
+    @Owns ci-dessus ; flake @ETXTBSY du test de renommage corrigé (copie manuelle + @sync_all
+    + fermeture du descripteur avant @exec, cause citée en commentaire) — preuve 40+60+60 runs
+    parallèles et 8 runs séquentiels sans échec après 2/25 reproduits avant.
+  [x] Le harnais ne peut pas encore prouver la propreté de ce fichier : `cargo clippy
     --all-targets` comme `cargo clippy --bin miryad` (features par défaut et
     `--no-default-features`) échouent sur les 55 erreurs `deny` et 136 warnings `missing_docs`
     de la lib — cargo compile la lib avant la cible bin, qui n'est jamais atteinte (mesure du
     jour de la spec). Le fichier est propre à l'examen — aucune forme de la famille stricte —
     mais la batterie /tooling.sdd ne le prouvera qu'après la purge module par module. À ne
     fermer qu'avec un passage `cargo clippy --all-targets -- -D warnings` atteignant la cible.
-  [ ] Convertir les six `Scenario` en au moins six tests distincts nommés, sur le pattern des
+    Critère tenu 2026-10-03 (validator B5h) : la purge de la dette lib est faite ;
+    @cargo clippy @--all-targets @-D @warnings défaut et @--no-default-features sortent à exit 0
+    en atteignant la cible ; @cargo clippy @--bin @miryad @-D @warnings passe sur les deux
+    graphes (re-vérifié sur cible fraîche au @touch). Les.graphes @graphql/@graphiql/@all-features
+    restent rouges sur les seuls sites gelés du pont (carve-out de /tooling.sdd), hors du critère.
+  [x] Écart du point final de l'about : arbitré par Sébastien le 2026-10-03, voie A. Le `Must` et
+    le `Then` du Scenario d'aide sont amendés sur ce que @clap_derive 4.6.4 produit (@remove_period
+    consomme le `.` final de l'aide courte) ; pas de @verbatim_doc_comment. Le @And « ni connexion
+    ouverte » du Scenario 1 est accepté sans preuve (« ni fichier écrit » reste prouvé par
+    répertoire temporaire vide) ; l'assertion stderr vide sur `-h` seul est entérinée comme
+    renforcement du verrou existant.
+  [x] Convertir les six `Scenario` en au moins six tests distincts nommés, sur le pattern des
     cibles bin : crate d'intégration `./tests/cli.rs`, exécutable lancé par
     @std::process::Command via `env!("CARGO_BIN_EXE_miryad")` (variable posée par cargo pour
     les tests d'intégration — vérifié), assertions sur code de sortie, stdout et stderr, en
@@ -178,6 +197,14 @@ Tasks:
     à cette spec à sa création — règle de `.specdd/bootstrap.project.md` : les fichiers de
     /tests/ n'ont pas de spec propre — et portera l'en-tête d'exemption `test` que /tooling.sdd
     réserve à ces crates.
+    Réalisé 2026-10-03 (B5h, validator PASS après revalidation ciblée) : mapping nom à nom des
+    six tests vérifié assertion par assertion au source (@first_display_flag_wins tient ses
+    trois cas dont l'égalité octet-à-octet `--help --version` vs `--help`, renommage par copie
+    réelle du @Given avec @Usage: miryad-scaffold exact et version restée `miryad`, silence du
+    lancement vide prouvé par répertoire temporaire reste vide) ; verrou du réel maintenu pour
+    l'about — le commentaire « Écart consigné » et sa mention « mesuré 2/25 » (reproduction
+    locale de l'implementer, à distinguer des 1/40 du validator) sont repointés à l'amendement
+    ci-dessus (arbitré 2026-10-03) : tâche autorisée, commentaire seul.
 
 Done when:
   La spec porte exactement six `Scenario` et au moins six tests distincts nommés vérifiant
@@ -205,7 +232,7 @@ Scenario: --help affiche l'about du squelette sur stdout
   When il est lancé avec l'argument `--help`, ou avec `-h`
   Then le code de sortie est `0`
   And stderr est vide
-  And stdout porte la ligne d'about — texte exact du commentaire de @Cli — puis une ligne
+  And stdout porte la ligne d'about — texte du commentaire de @Cli hors le point final consommé par @clap_derive (@remove_period) — puis une ligne
     commençant par `Usage:` et nommant le programme appelé
   And le bloc `Options:` liste `-h, --help` avec le texte `Print help` sans mention d'aide
     longue (`see more` absent sur structure vide) et `-V, --version` avec `Print version`

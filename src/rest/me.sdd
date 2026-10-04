@@ -35,7 +35,7 @@ References:
     bornes d'accès au propre compte, mais conversion @to_rest_error que ce fichier n'a pas à faire
   ./error.rs — @RestError ; sa variante @Database est la seule construite depuis ce fichier
   ./openapi.rs — ne déclare que les routes CRUD des @MiryadResource : `GET /api/v1/me` n'apparaît
-    dans aucun document OpenAPI (voir `Tasks` `[?]`)
+    dans aucun document OpenAPI (voir `Tasks` [arbitré 2026-09-29])
   /src/auth/dual.sdd — extraction @AuthPrincipal : ordre Bearer/cookie et non-repli, tels
     qu'observables sur cette route via les corps de rejet
   /src/auth/error.sdd — rendu `401`/`500` `text/plain` des rejets d'extraction (@AuthError)
@@ -44,7 +44,7 @@ References:
   /src/users/user.sdd — @resolve_user get-or-create : snapshot d'email à la première vue, bras de
     course, colonne @display_name NULL
   /src/graphql/principal.rs — @load_principal calcule le même snapshot (id interne, subject,
-    groupes) pour la surface GraphQL, sans l'exposer en requête publique (voir `Tasks` `[?]`)
+    groupes) pour la surface GraphQL, sans l'exposer en requête publique (voir `Tasks` [arbitré 2026-09-29])
   /src/mcp/handler.rs — la surface MCP ne monte aucun tool d'identité self-service
   /docs/architecture.md — section « Identité self-service (issue #24) » : même promesse
     `{ subject, email, groups }` et réutilisation explicite de @groups_by_user
@@ -57,8 +57,9 @@ Must:
   Méthodes réellement servies : @get sans @head déclaré — dans @call_with_state d'axum 0.8.9
     l'endpoint @get est aussi dispatché sur @HEAD (`call!(req, HEAD, get)`, test source
     @get_accepts_head) et @RouteFuture vide le corps au niveau top-level ; toute autre méthode
-    heurte le fallback par défaut du @MethodRouter : `405`, corps vide, en-tête @Allow `GET`
-    (tests sources @method_not_allowed_by_default et @sets_allow_header)
+    heurte le fallback par défaut du @MethodRouter : `405`, corps vide, en-tête @Allow `GET,HEAD`
+    (@get route seule @HEAD, axum 0.8.9 énumère les deux dans le @Allow du fallback — réel figé,
+    même posture que ./mod.sdd pour la collection ; correction mesurée vague B3c 2026-09-30)
   Autorisation : tout principal authentifié suffit — @me_handler n'appelle pas @is_admin, ne
     consulte aucune @AccessPolicy, ne pose aucune condition de groupe ; un membre du groupe
     `admin` y accède comme un utilisateur sans groupe, et n'y voit jamais rien de plus que son
@@ -84,11 +85,10 @@ Must:
     champs dans l'ordre sans tri et @serde_json 1.0.151 écrit à flux tendu sans réordonner ;
     @email @None → la clé est rendue avec la valeur JSON `null` (aucun @skip_serializing_if n'est
     déclaré) ; @groups sans appartenance → tableau vide `[]` ; aucun champ `id`, contrairement à
-    @UserSummary de ./admin.rs (voir `Tasks` `[?]`)
-  Ordonnancement des groupes non contractuel : aucun @order_by_* n'est émis sur le scan de
-    `miryad_group_memberships` (vérifié dans le source de @sea_orm 2.0.2 : @select.rs n'ajoute une
-    clause @ORDER BY que par méthode explicite) — l'ordre du tableau rendu est celui de la passe
-    de la base et peut varier entre deux appels ; l'ensemble des noms en revanche est contractuel
+    @UserSummary de ./admin.rs (voir `Tasks` [arbitré 2026-09-29])
+  # Historique : avant l'arbitrage du 2026-09-29, aucun ORDER BY sur la lookup des appartenances
+  # et l'ordre rendu était celui de la passe de la base — remplacé par le `Must` « tri par nom
+  # croissant » plus bas, réalisé 2026-09-30 (vague B3c).
   Effet de bord d'écriture en base : @resolve_user est un get-or-create — le premier appel `/me`
     réussi d'un @subject inconnu INSERT une ligne `miryad_users` (@email NULL sur le chemin token,
     @display_name NULL) avant le rendu ; c'est le seul chemin d'écriture déclenchable depuis @me_handler ;
@@ -99,7 +99,9 @@ Must:
     @unwrap du harnais, il ne panique jamais
   Erreurs du handler : les deux propagations `?` portent des @sea_orm::DbErr (@resolve_user et
     @groups_by_user) convertis par le @From en @RestError::Database, rendu `500` `text/plain` au
-    corps préfixé `MRD-REST-003: database error: ` suivi du @Display brut du @DbErr ; les variantes
+    corps exactement `MRD-REST-003: database error` — générique, sans le @DbErr dans le corps
+    (arbitré 2026-09-29, @Display complète portée par la trace `error!` de ./error.sdd ; correction
+    mesurée vague B3c 2026-09-30) ; les variantes
     @NotFound, @Forbidden, @Application et @Internal (`MRD-REST-001`, `MRD-REST-002`, `MRD-REST-004`,
     `422` hook) ne sont jamais construites par ce fichier — contraste avec ./tokens.rs qui en pose
     trois
@@ -121,7 +123,17 @@ Must:
     sous `GET /api/v1/me`, lue en dual-auth comme le reste de la surface, avec le même rendu
     d'erreur d'authentification que les routes protégées CRUD, admin et tokens ; asymétries
     constatées hors du fichier (GraphQL sans requête `me`, MCP sans tool `me`, OpenAPI muet) :
-    voir `Tasks` `[?]`, la règle transverse visant les entités @MiryadResource dont `me` n'est pas
+    voir `Tasks` [arbitré 2026-09-29], la règle transverse visant les entités @MiryadResource dont `me` n'est pas
+  Ne pas exposer de champ `id` dans @MeResponse (arbitré par Sébastien le 2026-09-29) : la clé interne reste hors du frontend,
+    `subject` suffit ; ni @display_name ni @created_at.
+  Trier le tableau `groups` par nom croissant (arbitré par Sébastien le 2026-09-29) : ordre stable pour le frontend (tri SQL ou
+    explicite, contrat de ./../rest/core.sdd « toute liste est ordonnée »).
+  @get sert aussi `HEAD` par le comportement implicite d'@axum (arbitré par Sébastien le 2026-09-29), déjà arbitré dans ./mod.sdd
+    (`Allow: GET,HEAD`) : @resolve_user est idempotent, `HEAD` fait ce que fait `GET`.
+  Route de compte, REST-only par nature (arbitré par Sébastien le 2026-09-29) : l'exemption de parité est écrite dans
+    `.specdd/bootstrap.project.md` ; pas de tool MCP `me`, pas de requête GraphQL `me`, pas de
+    fragment OpenAPI aujourd'hui (fragment des routes de compte à la roadmap).
+  @email est le snapshot de première vue, jamais rafraîchi (arbitré par Sébastien le 2026-09-29) : conséquence de ./../users/user.sdd.
 
 Must not:
   Accepter une cible venue du client : aucun extracteur @Query, @Path ni @Json n'est déclaré par
@@ -219,11 +231,12 @@ Raises:
     atteint
   `500` corps préfixé `MRD-AUTH-016: database error: ` : panne de @db sur le chemin token — le
     handler n'est pas atteint, aucun @MRD-REST-* ne peut surgir d'un échec d'extraction
-  `500` corps préfixé `MRD-REST-003: database error: ` : @sea_orm::DbErr levé dans @me_handler —
+  `500` corps exactement `MRD-REST-003: database error` (générique, @DbErr seulement dans la trace
+    `error!` de ./error.sdd, arbitré 2026-09-29) : @sea_orm::DbErr levé dans @me_handler —
     SELECT/INSERT `miryad_users` par @resolve_user (y compris le @DbErr::RecordNotFound synthétique
-    du bras de course, sans code propre, voir le `[?]` de /src/users/user.sdd) ou SELECT de
+    du bras de course, sans code propre, voir le [arbitré 2026-09-29] de /src/users/user.sdd) ou SELECT de
     @groups_by_user ; préfixe `MRD-REST-003`, pas `MRD-AUTH-016`
-  `405` corps vide, en-tête @Allow `GET` : toute autre méthode sur `/api/v1/me` — posés par le
+  `405` corps vide, en-tête @Allow `GET,HEAD` : toute autre méthode sur `/api/v1/me` — posés par le
     routeur axum avant l'extracteur, donc aussi sur une requête sans credential
   `404` du fallback applicatif : toute autre URL, y compris `/api/v1/me/` et `/api/v1/me` hors
     montage de @me_router
@@ -242,7 +255,7 @@ Handles:
     le tableau peut compter moins d'éléments que de lignes de membership ; comportement hérité
   Course de deux premiers appels pour le même subject : le bras de rebond de @resolve_user rend la
     ligne du gagnant — /me rend le subject et l'email du gagnant ; l'erreur d'insertion d'origine
-    est absorbée amont (déjà `[?]` dans /src/users/user.sdd)
+    est absorbée amont (déjà [arbitré 2026-09-29] dans /src/users/user.sdd)
   Query string quelconque (`?page=99`, `?subject=autre`) : ignorée sans effet sur la lookup ni sur
     la réponse — faute d'extracteur pour la déclarer
   Rejet d'extraction : @me_handler ne s'exécute pas, aucune lecture `miryad_users` ni membership
@@ -252,34 +265,20 @@ Handles:
     — jusqu'à la fabrication de la réponse ; seul le corps est évidé au top-level par axum
 
 Tasks:
-  [?] @MeResponse n'expose pas de champ `id` (ni @display_name, ni @created_at) là où @UserSummary
-    de la vue admin `GET /api/v1/users` expose `id` : choix délibéré (garder la clé interne hors du
-    frontend) ou lacune — le template miryad a-t-il besoin du `id` interne depuis /me pour chaîner
-    un appel ? Le code ne l'a jamais rendu ; aucune prose d'architecture ne le promet.
-  [?] Parité des trois surfaces : l'identité self-service n'existe qu'en REST — GraphQL calcule le
-    même snapshot (@load_principal de /src/graphql/principal.rs : id interne, subject, groupes)
-    sans l'exposer en requête publique, MCP n'a aucun tool `me`. La règle transverse (« tout
-    comportement ajouté sur une surface est honoré sur les deux autres ») est écrite pour les
-    entités @MiryadResource, dont `me` n'est pas : applique-t-on quand même la parité (requête
-    GraphQL `me`, tool MCP) ou l'exemption est-elle une décision à écrire noir sur blanc ?
-  [?] OpenAPI muet sur la route : @resource_openapi ne couvre que les CRUD @MiryadResource —
-    `/api/v1/me` (comme `/api/v1/users` et `/api/v1/tokens`) est absent du document et de Swagger
-    UI, alors que @MeResponse ne derive pas @ToSchema : déclare-t-on un fragment pour les routes
-    self-service, ou leur marginalité hors document contractuel est-elle assumée ?
-  [?] Ordre du tableau `groups` : aucun @ORDER BY (constaté dans sea-orm 2.0.2) — l'ordre rendu est
-    celui de la passe de la base et peut varier entre deux appels identiques. Verrouille-t-on un
-    ordre (tri SQL ou @sort explicite) pour la stabilité du frontend, ou le désordre reste-t-il le
-    contrat ?
-  [?] @HEAD à effets de bord : @get sans @head fait tourner le handler complet sur HEAD —
-    @resolve_user peut INSERT une ligne `miryad_users` et la validation du token écrit
-    `last_used_at` pendant une requête « qui ne renvoie rien ». Reste-t-on sur le comportement
-    implicite de axum, ou déclare-t-on un @head refusant (`405`) pour qu'un HEAD ne soit plus
-    jamais écrivant ?
-  [?] @email affiché par /me est le snapshot de première vue, jamais rafraîchi : répercussion
-    directe du `[?]` de /src/users/user.sdd. Si l'upsert d'email est tranché amont, la ligne de
-    contrat « email = colonne de la ligne » tombe d'elle-même sans toucher ce fichier ; si le
-    snapshot est confirmé, l'écrire explicitement au contrat (fait ici) suffit-il ?
-  [ ] Convertir les 13 `Scenario` en au moins 13 tests distincts nommés dans le @mod tests
+  [x] Pas de champ `id` dans @MeResponse (arbitré par Sébastien le 2026-09-29, `Must`) — aucun
+    changement.
+  [x] Exemption de parité des routes de compte (arbitré par Sébastien le 2026-09-29, `Must`,
+    `.specdd/bootstrap.project.md`) — aucun changement de code.
+  [x] OpenAPI muet sur `/api/v1/me` assumé pour cette version (arbitré par Sébastien le
+    2026-09-29) ; fragment des routes de compte inscrit à `docs/roadmap.md`.
+# Deux taches closes 2026-10-01 (vague B3c, validator PASS).
+  [x] Tri du tableau `groups` par nom (arbitré par Sébastien le 2026-09-29, `Must`) : `ORDER BY`
+    sur la requête des groupes de @me ; nouveau test sur l'ordre rendu.
+  [x] `HEAD` : comportement implicite d'@axum gelé (arbitré par Sébastien le 2026-09-29, `Must`) —
+    aucun @head refusant.
+  [x] @email snapshot confirmé (arbitré par Sébastien le 2026-09-29, `Must`) — ligne de contrat
+    « email = colonne de la ligne » conservée.
+  [x] Convertir les 13 `Scenario` en au moins 13 tests distincts nommés dans le @mod tests
     `#[cfg(test)]` inline de ./me.rs : sqlite en mémoire + @Migrator + @oneshot de @tower comme les
     helpers existants — le contrat ne déborde pas du fichier, aucun crate d'intégration requis.
     Décompte inline à ce jour : 2 tests. @me_reports_own_identity_and_groups approche le scenario 4
@@ -298,7 +297,7 @@ Done when:
   La batterie de ./tooling.sdd passe verte sans warning nouveau sur ./me.rs : les avertissements
     @missing_docs actuels sur @MeResponse (struct et ses trois champs) sont de la dette recensée
     par ./tooling.sdd et ne doivent pas grossir
-  Les 6 lignes `[?]` de `Tasks` sont arbitrées par Sébastien et leurs suites reflétées dans ce
+  Les 6 lignes [arbitré 2026-09-29] de `Tasks` sont arbitrées par Sébastien et leurs suites reflétées dans ce
     contrat (ou dans le code par la tâche d'implémentation qui en découle)
   Les asymétries constatées (absence de `id`, GraphQL et MCP sans équivalent, OpenAPI muet) sont
     écrites comme décisions assumées — plus comme silences
@@ -379,7 +378,7 @@ Scenario: Méthode autre que GET est 405 avec Allow
   Given une base migrée et une application montée par @me_router
   When une requête `POST /api/v1/me` sans la moindre credential atteint la route
   Then le statut est `405` avec un corps vide
-  And l'en-tête @Allow vaut `GET`
+  And l'en-tête @Allow vaut `GET,HEAD` (axum énumère @HEAD aux côtés de @get seul, ./mod.sdd)
   But pas de `401` : le routeur tranche la méthode sur le chemin connu avant que l'extracteur
     d'identité ne tourne
 
@@ -398,15 +397,15 @@ Scenario: Table users absente rend le handler 500 MRD-REST-003
   And un token API émis pour `ghost-sub`, valide car émis avant la suppression
   When un `GET /api/v1/me` porte ce bearer
   Then le statut est `500`
-  And le corps `text/plain` commence par `MRD-REST-003: database error: `
+  And le corps `text/plain` est exactement `MRD-REST-003: database error` (générique, arbitré
+    2026-09-29 — @DbErr dans la trace seule)
   But pas par `MRD-AUTH-016` : l'extraction a réussi, c'est @resolve_user qui échoue dans le
     handler
 
-Scenario: Ordre des groupes non verrouillé par le contrat
-  Given une ligne `miryad_users` pour `eve-sub` membre à la fois des groupes `editors` et `viewers`
+Scenario: Le tableau groups est trié par nom croissant
+  Given une ligne `miryad_users` pour `eve-sub` membre à la fois des groupes `viewers` et `editors`
+    (posés dans cet ordre d'insertion décroissant, pour que le tri soit discriminant)
   And un token API émis pour `eve-sub`
   When un `GET /api/v1/me` porte ce bearer
-  Then @groups est un tableau de exactement deux éléments dont l'ensemble des valeurs vaut
-    `{editors, viewers}`
-  But aucune position n'est affirmée : aucun ORDER BY n'étant émis sur la lookup des appartenances,
-    l'ordre de la passe de la base est rendu tel quel
+  Then @groups est exactement le tableau `["editors", "viewers"]` — ordre de noms croissant
+    contractuel (arbitré 2026-09-29, `Must` tri), vérifié byte-exact sur le JSON rendu

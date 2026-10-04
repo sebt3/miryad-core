@@ -45,17 +45,19 @@ Must:
     suppression d'une ligne déjà supprimée entre-temps retourne @Ok avec @DeleteResult::rows_affected à
     `0`, sans erreur (`executor/delete.rs:127-141`). C'est le correctif de l'issue #3 (double callback
     OIDC) ; l'instantané des ids courants n'est jamais rafraîchi pendant la boucle d'insertion.
-  Les écritures ne sont pas atomisées par ce fichier : générique sur @ConnectionTrait,
-    @sync_group_memberships n'ouvre aucune transaction ; passer une transaction rend suppressions et
-    insertions commitables ensemble. Les appelants actuels passent la connexion du pool (voir Tasks `[?]`).
+  # Historique : avant l'arbitrage du 2026-09-29, aucune transaction interne (générique sur
+  # @ConnectionTrait seul) — remplacé par le `Must` « transaction interne » plus bas, réalisé
+  # 2026-09-30 (vague B2).
   L'existence de `user_id` n'est pas vérifiée applicativement : le seul garde-fou est la FK `user_id` →
     `miryad_users.id` (et `group_id` → `miryad_groups.id`) de m20260822_000002, en force sur les deux
     backends utilisés — SQLite par `PRAGMA foreign_keys = ON` posé dès la connexion (source sqlx-sqlite
-    0.8.6 `options/mod.rs:185`, défaut des tests en `sqlite::memory:` ; le driver rusqlite de sea-orm le
+    0.9.0 `options/mod.rs:187` (épinglée par /Cargo.lock ; arbitré 2026-09-29), défaut des tests en `sqlite::memory:` ; le driver rusqlite de sea-orm le
     pose aussi, `driver/rusqlite.rs:271`), PostgreSQL nativement — mais un id inconnu inséré ici échoue
     en FK et non en erreur métier.
-  Les noms de groupes traversent le fichier intacts : aucun trim, aucune déduplication, aucun changement
-    de casse, aucun filtrage avant @ensure_group.
+  Les noms de groupes non vides traversent le fichier intacts : aucun trim, aucune
+    déduplication, aucun changement de casse — le seul écart est le filtrage des noms vides ou
+    blancs à l'entrée, porteur de sa trace `debug` (arbitré 2026-09-29, `Must` plus bas ;
+    @ensure_group reste non gardé en lui-même).
   Le nettoyage des lignes orphelines vient du schéma, pas du code : `on delete cascade` sur les deux FK
     (m20260822_000002). @sync_group_memberships ne code aucune purge des références pendantes.
   Parité des surfaces : @Entity n'a aucun @DeriveRelatedEntity (@Relation est un enum vide) et aucune
@@ -66,6 +68,23 @@ Must:
     de la voie login/provisioning.
   Le fichier compile sans gating : aucune `#[cfg(feature = ...)]` ; le module @users est déclaré non-gaté
     dans `/src/lib.rs` — le fichier est concerné par toutes les combinaisons de la batterie /tooling.sdd.
+  @sync_group_memberships ouvre une transaction interne et y exécute toute la réconciliation
+    (suppressions et insertions, @ensure_group compris) : tout ou rien, jamais d'utilisateur à
+    moitié réconcilié (arbitré par Sébastien le 2026-09-29). Le bound du paramètre `db` est
+    @sea_orm::ConnectionTrait + @TransactionTrait — @begin n'existe que sur @TransactionTrait
+    (source sea-orm 2.0.2), @DatabaseConnection l'implémente, les appelants en pool ne changent
+    pas (réalisé 2026-09-30, vague B2).
+  Filtrer à l'entrée les noms vides ou blancs du claim, avec une trace @tracing `debug` (arbitré par Sébastien le 2026-09-29) : le
+    claim OIDC est la frontière de confiance externe ; @ensure_group n'est pas gardé.
+  Le nom dupliqué dans le claim reste absorbé par le `ON CONFLICT DO NOTHING`, sans
+    déduplication en entrée (arbitré par Sébastien le 2026-09-29).
+  Un claim `groups` absent, malformé ou vide réconcilie l'utilisateur vers zéro appartenance —
+    `admin` compris — fail-closed (arbitré par Sébastien le 2026-09-29) : un scope mal configuré retire les droits visiblement
+    plutôt que d'en laisser de périmés en silence.
+  Émettre une trace @tracing `debug` par réconciliation effective — `added > 0 || removed > 0` (comptes ajoutés et retirés ; amendé 2026-10-03), et une
+    trace `info` quand des appartenances sont retirées (arbitré par Sébastien le 2026-09-29).
+  Les @sea_orm::DbErr sortantes restent nues, le code `MRD-*` est posé par la surface qui les
+    traduit (arbitré par Sébastien le 2026-09-29) ; règle transverse de `.specdd/bootstrap.project.md`.
 
 Must not:
   Exposer une API d'assignation d'appartenance manuelle (route REST, mutation GraphQL, tool MCP ou
@@ -78,7 +97,7 @@ Must not:
   Decoder le claim `groups` du JWT ici : l'extraction appartient à `/src/auth/oidc.rs` ; ce fichier reçoit
     des noms déjà extraits.
   Mapper @DbErr vers un type d'erreur d'une surface (REST/GraphQL/MCP) ou inventer un code maison : la
-    propagation est brute (voir Tasks `[?]` pour la frontière `MRD-*`).
+    propagation est brute (voir Tasks [arbitré 2026-09-29] pour la frontière `MRD-*`).
 
 Depends on:
   ./group.rs — @ensure_group : résolution et création à la volée des `group_id` référencés
@@ -98,13 +117,16 @@ Exposes:
   @ActiveModelBehavior — implantation nue, aucun hook
   @GroupMembership — alias public de @Entity
   @sync_group_memberships — fonction publique asynchrone
-    `async fn sync_group_memberships<C: @ConnectionTrait>(db: &C, user_id: i32, groups: &[String]) -> Result<(), @DbErr>`
+    `async fn sync_group_memberships<C: @ConnectionTrait + @TransactionTrait>(db: &C, user_id: i32, groups: &[String]) -> Result<(), @DbErr>`
+    (bound élargi à @TransactionTrait le 2026-09-30 pour la transaction interne arbitrée 2026-09-29)
   @GroupMembership et @sync_group_memberships sont réexportés par le module parent (spec voisine ./mod.rs,
     via `crate::users`)
 
 Accepts:
   @sync_group_memberships — trois arguments :
-    db — référence @ConnectionTrait : pool, connexion unique ou transaction ; rien n'est ouvert ici
+    db — référence @ConnectionTrait + @TransactionTrait : pool (implémente @TransactionTrait,
+      source sea-orm 2.0.2), connexion unique ou transaction ; une @begin interne est ouverte ici
+      (voir `Must` transaction)
     user_id — identifiant interne `i32` de `miryad_users` (jamais le claim `sub`) ; existence non vérifiée
       par la fonction, la FK seule garde-fou
     groups — `&[String]` de noms du claim `groups` d'Authentik (login) ou de la liste de
@@ -113,13 +135,17 @@ Accepts:
 
 Returns:
   `Result<(), @DbErr>` — @Ok ne charrie aucune information : ni les lignes ajoutées, ni les lignes
-    retirées, ni la trace des insertions absorbées par le skip concurrent.
+    retirées, ni la trace des insertions absorbées par le skip concurrent ; @Ok implique transaction
+    interne committée (@commit réussi, réalisé 2026-09-30).
 
 Raises:
   Aucune erreur à code `MRD-*` dans ce fichier ; toutes les pannes remontent en @DbErr brut propagé par
-    `?` :
-  @ensure_group : erreur de requête sur `miryad_groups`, ou @DbErr::RecordNotFound (message
-    `group {name} vanished`) si la ligne disparaît entre l'insertion ratée et la relecture
+    `?`, y compris les pannes de @begin, @commit et @rollback de la transaction interne — @Err
+    implique rollback (la transaction non committée est annulée à la drop, @rollback explicite sur
+    erreur, réalisé 2026-09-30) :
+  @ensure_group : erreur de requête sur `miryad_groups`, ou @DbErr de l'@INSERT d'origine propagé
+    verbatim quand la relecture est vide (arbitré 2026-09-29 — plus de @DbErr::RecordNotFound
+    « vanished » fabriqué, voir ./group.sdd)
   find/insert/delete : erreur de connexion, de contrainte non ciblée, ou d'auto-incrément inaccessible —
     les conflits ciblés sur (`user_id`, `group_id`) ne remontent pas (voir Must sur le ON CONFLICT)
   Violation de FK à l'insertion quand `user_id` n'existe pas dans `miryad_users` : enforcement SQLite par
@@ -139,42 +165,53 @@ Handles:
   Suppression d'un utilisateur ou d'un groupe : lignes d'appartenances emportées par le
     `on delete cascade` du schéma, sans aucune intervention de ce fichier
   Claim `groups` absent ou malformé en amont : @extract_groups_claim (/src/auth/oidc.rs) produit un slice
-    vide, et ce fichier y réconcilie une table vidée pour l'utilisateur (voir Tasks `[?]` — cas sensible)
+    vide, et ce fichier y réconcilie une table vidée pour l'utilisateur (voir Tasks [arbitré 2026-09-29] — cas sensible)
 
 Tasks:
-  [ ] Convertir chaque `Scenario` de cette spec en un test distinct nommé dans le `mod tests`
+  [x] Convertir chaque `Scenario` de cette spec en un test distinct nommé dans le `mod tests`
     `#[cfg(test)]` de ./membership.rs — aucun contrat ne déborde du fichier, pas de crate d'intégration
-    nécessaire : les 4 tests inline existants couvrent les scenarios d'ajout, de purge partielle,
+    nécessaire : les 4 tests inline existants couvraient les scenarios d'ajout, de purge partielle,
     d'idempotence et de concurrence (sync_adds_missing_groups_including_unknown_ones,
     second_sync_with_fewer_groups_removes_stale_memberships, sync_is_idempotent,
-    concurrent_syncs_for_the_same_user_do_not_violate_the_unique_constraint) ; 7 tests à ajouter (mapping
-    entité↔migration, purge par claim vide, nom dupliqué, FK sur `user_id` inconnu, échec de @ensure_group
-    avant suppressions, cascade de suppression d'utilisateur, cascade de suppression de groupe) — total
-    11 tests distincts pour 11 `Scenario`.
-  [?] Le token Authentik sans claim `groups` (ou malformé → slice vide chez @extract_groups_claim) vide
-    réellement toutes les appartenances de l'utilisateur à chaque login, `admin` inclus (comportement
-    actuel) : contrat voulu, ou distinguer claim manquant et claim vide ?
-  [?] Le nom dupliqué dans le claim est absorbé en silence par le ON CONFLICT : dédupliquer le claim en
-    entrée de @sync_group_memberships, ou le skip reste-t-il le contrat ?
-  [?] @sync_group_memberships doit-elle ouvrir une transaction interne ? Aujourd'hui une panne en cours de
-    boucle (suppressions passées, insertion échouée) laisse l'utilisateur partiellement réconcilié, et
-    aucun appelant (callback OIDC, @ensure_service_account) ne passe de transaction.
-  [?] Zéro trace @tracing dans ce fichier, ni sur les suppressions ni sur les insertions : ajouter un
-    `debug`/`warn` par réconciliation, conforme à l'esprit du contrat transverse `tracing` ?
-  [?] Les @DbErr sortants ne portent aucun code `MRD-*` : le contrat de codage commence-t-il aux surfaces
-    qui les traduisent, ou @users doit-il déjà coder ses erreurs ?
-  [?] Un nom vide dans le claim traverse vers @ensure_group qui crée un groupe nommé `` : le filtrage en
-    entrée est du devoir de @sync_group_memberships, de @ensure_group, ou est-il assumé absent ?
+    concurrent_syncs_for_the_same_user_do_not_violate_the_unique_constraint). Réalisé vagues B2a/B2b
+    2026-09-30, validator PASS : treize `Scenario` (recompte à la clôture — le texte initial
+    disait 11 avant les deux scenarios de panne nés de la transaction et le verrou des noms
+    vides), dix-sept tests nommés distincts, incluant les verrous transactionnels (journal
+    MockDatabase [Begin, Commit] / [Begin, Rollback], rollback réel par trigger @RAISE(ABORT)
+    avec et sans suppression préalable) et les deux traces du `Must` (le volet « traces » attend
+    l'arbitrage debug-gated, tâche `Traces` distincte).
+  [x] Claim `groups` absent ou vide : réconciliation vers zéro appartenance, fail-closed, trace
+    `info` des retraits (arbitré par Sébastien le 2026-09-29, `Must`).
+  [x] Doublons dans le claim : le `ON CONFLICT DO NOTHING` est le contrat, pas de déduplication
+    (arbitré par Sébastien le 2026-09-29, `Must`).
+  [x] Transaction interne (arbitré par Sébastien le 2026-09-29, `Must`) : @sync_group_memberships
+    ouvre une transaction (`begin`/`commit`/`rollback` explicites), toute la réconciliation s'y
+    exécute ; Scenario « échec en cours de boucle : rollback, aucune appartenance modifiée ».
+    Réalisé 2026-09-30 (vague B2, validator PASS) : bound @TransactionTrait, journal MockDatabase
+    [Begin, Commit]/[Begin, Rollback] verrouillé, rollback prouvé sur vrai SQLite par trigger
+    @RAISE(ABORT) avec suppression préalable (le verrou discriminant).
+  [x] Traces (arbitré par Sébastien le 2026-09-29, `Must`) : `debug` par réconciliation, `info`
+    quand des appartenances sont retirées, jamais de secret.
+  [x] `DbErr` nues, code posé par la surface (arbitré par Sébastien le 2026-09-29, `Must`) — règle
+    transverse ajoutée à `.specdd/bootstrap.project.md`.
+  [x] Filtre des noms vides ou blancs en entrée de @sync_group_memberships (arbitré par Sébastien
+    le 2026-09-29, `Must`), trace `debug` ; nouveau Scenario « claim contenant une chaîne vide :
+    aucun groupe créé ».
+  [x] Garde de la trace `debug` : arbitré par Sébastien le 2026-10-03, option A — le `Must` lit
+    « par réconciliation effective » (`added > 0 || removed > 0`), conforme au code. Tracer à chaque
+    appel est écarté (bruit). La tâche « Traces » ci-dessus reste `[ ]` jusqu'à validator vert ;
+    la sur-assertion `lines.len() == 1` de ../auth/mod.rs (l.790/828) n'est pas contractuelle et
+    peut être assouplie par une tâche autorisée.
 
 Done when:
   Chacun des 11 `Scenario` dispose d'au moins un test distinct qui vérifie son `Then`, les 4 tests inline
     existants compris (règle N `Scenario` ≤ N tests de /miryad-core.sdd).
   La batterie de /tooling.sdd passe verte sur toutes les combinaisons de features pour ce fichier (module
     non-gaté : toutes le compilent).
-  Chaque tâche `[?]` a une décision de Sébastien, retranscrite en ligne `Must`/`Handles` ou en `Scenario`
+  Chaque tâche [arbitré 2026-09-29] a une décision de Sébastien, retranscrite en ligne `Must`/`Handles` ou en `Scenario`
     si elle change le contrat.
   Le schéma de m20260822_000002 reste intact : cette spec ne justifie jamais une réécriture de migration
-    committée, seulement une migration suivante si un `[?]` tranche un changement de contrainte.
+    committée, seulement une migration suivante si un [arbitré 2026-09-29] tranche un changement de contrainte.
 
 Scenario: Mapping de l'entité sur sa migration
   Given une base SQLite en mémoire migrée par `Migrator::up`
@@ -231,12 +268,17 @@ Scenario: Une sync sur un utilisateur inconnu échoue en violation de FK
     `PRAGMA foreign_keys = ON` sur SQLite de test, FK native sur PostgreSQL)
   And aucune appartenance n'existe pour cet identifiant
 
-Scenario: Une panne de ensure_group interrompt avant toute suppression
-  Given un utilisateur membre de deux groupes, et la table `miryad_groups` supprimée par SQL brut
-  When @sync_group_memberships est appelé avec un claim complet
+Scenario: Une panne d'insertion en cours de réconciliation roule tout et remonte le DbErr
+  Given un utilisateur membre de deux groupes `a` et `b`, un claim `["a", "b", "c"]` dont la
+    création du groupe `c` avortée par un trigger SQLite @RAISE(ABORT) sur l'@INSERT
+    dans `miryad_groups` (moyen d'induction vérifié — l'ancienne panne par @DROP TABLE
+    @miryad_groups en cascade FK était invérifiable, corrigé 2026-09-30)
+  When @sync_group_memberships est appelé avec ce claim
   Then l'appel retourne un @DbErr propagé de @ensure_group
-  And les deux appartenances de l'utilisateur sont intactes : la boucle des noms s'exécute avant
-    suppressions et insertions
+  And rien n'est appliqué : les appartenances d'origine sont intactes et le groupe `c` ne
+    survit pas — la transaction interne a rollé la totalité (aucune fenêtre
+    « suppression commitée avant la panne », la boucle des noms étant dans la même
+    transaction que les suppressions)
 
 Scenario: La suppression d'un utilisateur cascade sur ses appartenances
   Given un utilisateur membre d'un groupe
@@ -249,3 +291,17 @@ Scenario: La suppression d'un groupe cascade sur les appartenances qui le réfé
   When la ligne du groupe `editors` est effacée de `miryad_groups` par SQL brut (le moteur ne le fait jamais)
   Then l'appartenance correspondante a disparu par le cascade de la FK `group_id`
   And @sync_group_memberships ne repose sur aucune purge applicative des références pendantes
+
+Scenario: échec en cours de réconciliation, rollback complet
+  Given un utilisateur membre des groupes `a` et `b`, et un claim `["a", "c"]` dont l'insertion de
+    `c` échoue (contrainte forcée en test)
+  When @sync_group_memberships s'exécute
+  Then le résultat est @Err
+  And l'utilisateur est toujours membre de `a` et `b`, aucune suppression n'est visible —
+    transaction annulée (arbitré 2026-09-29)
+
+Scenario: noms vides ou blancs du claim ignorés
+  Given un claim `["", "   ", "editors"]`
+  When @sync_group_memberships s'exécute
+  Then seul `editors` est réconcilié, aucun groupe de nom vide ou blanc n'est créé
+  And une trace `debug` signale les entrées ignorées (arbitré 2026-09-29)
