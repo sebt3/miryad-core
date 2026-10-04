@@ -170,11 +170,18 @@ Handles:
     `/api/v1/tokens`.
 
 Tasks:
-  [ ] #28 (2026-10-04) : modifier `up` (retirer `unique_key` de `name`, poser les deux index après la
+  [x] #28 (2026-10-04) : modifier `up` (retirer `unique_key` de `name`, poser les deux index après la
     table), convertir les quatre `Scenario` d'unicité ci-dessous en tests nommés (le test « name
     dupliqué est rejeté » existant est remplacé par celui d'un même propriétaire) ; relire en source
     `sea-query` `1.0.2` le support de l'index partiel (voir `Must`) ; batterie complète
     `--features workflow` et `--all-features`.
+    Réalisé 2026-10-04 (commit 79eb7a2, validator PASS batterie complète 17/17) : voie primaire
+    sea-query tenue — `Index::create().unique().if_not_exists()` pour les deux index, le partiel avec
+    `and_where(Expr::col(OwnerId).is_null())` ; source `sea-query` `1.0.2` vérifié (`prepare_filter`
+    émet le `WHERE` sur Postgres et SQLite), le repli `execute_unprepared` n'est pas activé — la
+    clause conditionnelle du `Must` ne s'est pas réalisée, spec inchangée. Onze tests nommés (un par
+    `Scenario`), l'ancien `duplicate_name_is_rejected` remplacé par `same_owner_duplicate_name_
+    is_rejected` ; `down` inchangé.
   [x] Convertir les `Scenario` en tests nommés distincts dans le `#[cfg(test)] mod tests` de
     ./m20260923_000001_create_workflow_definitions.rs, sur `sqlite::memory:`, sous
     `--features workflow` uniquement (fichier absent des autres combinaisons) : pattern identique à

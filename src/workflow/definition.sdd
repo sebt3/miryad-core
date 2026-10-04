@@ -238,7 +238,7 @@ Handles:
     dans ./definition.rs — le comportement vient entièrement de la déclaration `owner_column`.
 
 Tasks:
-  [ ] #28 (2026-10-04) : retirer `#[sea_orm(unique)]` de `name` dans ./definition.rs (le schéma est
+  [x] #28 (2026-10-04) : retirer `#[sea_orm(unique)]` de `name` dans ./definition.rs (le schéma est
     contractualisé par la migration, voir ci-dessus) ; vérifier à l'implémentation ce que rend le CRUD
     générique pour un doublon **dans le périmètre d'un même propriétaire** (statut et corps, sans fuite
     de contrainte brute, règle de ../rest/error.sdd) et le consigner ici — si l'existant est un `500`
