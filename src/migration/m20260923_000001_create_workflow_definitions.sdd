@@ -4,11 +4,17 @@ Purpose:
   Quatrième migration appliquée par @migration::Migrator, et la première dont l'enregistrement dans
     @Migrator::migrations est conditionnel (`#[cfg(feature = "workflow")]`, ../mod.sdd amendée le
     2026-09-23) : pose la table interne @miryad_workflow_definitions — un DAG de workflow stocké en
-    JSON (`steps`), nom unique, propriétaire optionnel (`owner_id`, sans contrainte de clé
+    JSON (`steps`), nom unique **par propriétaire** (#28, 2026-10-04), propriétaire optionnel (`owner_id`, sans contrainte de clé
     étrangère), horodatage de création. Contrat de schéma committé et immuable au même titre que les
     trois premières migrations (/miryad-core.sdd, roadmap : « on ajoute la migration suivante ») :
     @up fige la pose, @down la défait en symétrique, toute correction relève d'une migration
     suivante — jamais d'une réécriture de ce fichier une fois approuvé.
+  **Exception actée par Sébastien le 2026-10-04 (#28)** : cette migration est modifiée en place
+    (unicité du nom par propriétaire au lieu de globale), parce que la crate n'a aucun déploiement de
+    production — la règle d'immuabilité reprend dès la première mise en production. Conséquence
+    assumée : une base de développement qui a déjà joué l'ancienne version de `001`..`004` n'est pas
+    migrée (la migration est déjà enregistrée dans `seaql_migrations_miryad_core`) — elle se recrée.
+    Une exception ne vaut que pour #28 ; elle ne rouvre aucune autre migration.
   Fichier neuf, conception (pas de code existant, pas de spec-reverse). Le rendu SQL cité en `Must`
     est vérifié dans le source local de `sea-query` `1.0.2` (`src/backend/{postgres,sqlite}/table.rs`),
     même méthode que ./m20260822_000001_create_api_tokens.sdd.
@@ -37,7 +43,8 @@ Must:
   Pose cinq colonnes exactement, dans cet ordre de déclaration, via @Table::create assorti
     d'@if_not_exists :
     — `id` : @integer, @not_null, @auto_increment et @primary_key — clé primaire monocolonne ;
-    — `name` : @string, @not_null et @unique_key ;
+    — `name` : @string, @not_null, **sans** @unique_key (l'unicité est portée par les deux index
+      ci-dessous, #28) ;
     — `steps` : @json (`ColumnDef::json()`, jamais `.json_binary()`), @not_null — un DAG vide de
       contenu n'est pas représentable en NULL, `workflow::definition::validate_dag` refuse de toute
       façon une liste de steps vide (../workflow/definition.sdd) mais au niveau colonne, seule la
@@ -51,15 +58,29 @@ Must:
     — le peuplement de `created_at` incombe au consommateur (@rest::core::create ne le pose pas
     lui-même ; l'app qui implémente `IntoActiveModel` pour `WorkflowDefinition` en décide, hors
     périmètre de cette migration).
-  Ne pose que deux contraintes sur la table : la clé primaire monocolonne sur `id` et la contrainte
-    UNIQUE monocolonne sur `name` — aucun @index, aucune @foreign_key, aucune autre colonne @unique.
+  Pose, après la table, exactement deux index uniques sur `name` (#28), chacun en @Index::create()
+    avec @if_not_exists, et aucune autre contrainte que la clé primaire monocolonne sur `id` — aucune
+    @foreign_key, aucune colonne @unique :
+    — `uq_miryad_workflow_definitions_owner_name` : UNIQUE sur (`owner_id`, `name`), dans cet ordre —
+      unicité du nom par propriétaire pour les définitions possédées ;
+    — `uq_miryad_workflow_definitions_name_unowned` : UNIQUE **partiel** sur `name` `WHERE owner_id IS
+      NULL` — en SQL `NULL` n'égale pas `NULL` dans un index composite, le premier index ne
+      contraint donc pas les définitions sans propriétaire ; l'index partiel le fait (PostgreSQL et
+      SQLite le supportent). Émis par `Index::create().unique().and_where(Expr::col(OwnerId).is_null())`
+      si `sea-query` `1.0.2` l'expose — à vérifier en source avant d'écrire (même méthode que le reste
+      de cette spec) ; à défaut, `manager.get_connection().execute_unprepared(` `CREATE UNIQUE INDEX
+      IF NOT EXISTS uq_miryad_workflow_definitions_name_unowned ON miryad_workflow_definitions (name)
+      WHERE owner_id IS NULL` `)`, SQL valide à l'identique sur les deux backends, dans ce cas à
+      consigner ici.
+    Les deux index suivent la table : `down` (un seul `DROP TABLE`) les supprime avec elle, aucun
+    `DROP INDEX` explicite.
   Rendu vérifié au source de sea-query `1.0.2` : `ColumnType::Json` (`ColumnDef::json()`) produit
     `json` sur Postgres (`src/backend/postgres/table.rs`) et `json_text` sur SQLite
     (`src/backend/sqlite/table.rs`) — jamais `jsonb`/`jsonb_text` (`ColumnType::JsonBinary`, non
     utilisé ici) ; les quatre autres colonnes suivent le rendu déjà vérifié par
     ./m20260822_000001_create_api_tokens.sdd (`@string` → `varchar`, `@timestamp_with_time_zone` →
     `timestamp with time zone`/SQLite équivalent, `@integer` + `@auto_increment` + `@primary_key` →
-    identité générée, `@unique_key` → `UNIQUE` inline, `@if_not_exists` → `IF NOT EXISTS`).
+    identité générée, `@if_not_exists` → `IF NOT EXISTS`).
   Le type Rust de la colonne `steps` (`DagSteps`, ../workflow/definition.sdd) est inféré `Json` par
     `DeriveEntityModel` via son derive `FromJsonQueryResult`, sans attribut `#[sea_orm(column_type =
     "Json")]` explicite — vérifié par la fixture `tests/common/features/json_struct.rs` du crate
@@ -79,8 +100,9 @@ Must:
     en sont dépourvues).
   Laisse la trace de l'application uniquement au `tracing` @info de sea-orm-migration — aucune trace
     propre.
-  `owner_id` reste sans index (arbitré par Sébastien le 2026-09-29) : contrat assumé (table vraisemblablement petite, un DAG par
-    automatisation) ; on rouvre quand un filtre de liste par propriétaire existera réellement.
+  `owner_id` n'a pas d'index **dédié** (arbitré par Sébastien le 2026-09-29, inchangé) : le premier
+    index unique le couvre de fait comme préfixe de (`owner_id`, `name`) ; on ne rouvre que si un
+    filtre de liste par propriétaire devient un goulot réel.
   `down` strict et `IF NOT EXISTS` sans lecture de schéma : règle générale de ./mod.sdd (arbitré par Sébastien le 2026-09-29), par
     cohérence avec les migrations 001 à 003 — même comportement pour toutes les migrations
     internes, quelle que soit leur ancienneté.
@@ -88,6 +110,8 @@ Must:
 Must not:
   Réécrire, renommer, déplacer ou dupliquer le @up ou le @down une fois cette spec approuvée : même
     règle d'immuabilité que les trois migrations précédentes.
+  Remettre un @unique_key monocolonne sur `name` (#28) : ferait réapparaître la collision entre
+    propriétaires et la fuite d'existence sous `OwnerOnly`.
   Ajouter une clé étrangère depuis `owner_id` vers `miryad_users`, ni depuis `steps` vers quoi que ce
     soit : aucune FK dans ce fichier (`Must`).
   Écrire une ligne de données dans `up` : DDL pur, aucun INSERT.
@@ -146,6 +170,11 @@ Handles:
     `/api/v1/tokens`.
 
 Tasks:
+  [ ] #28 (2026-10-04) : modifier `up` (retirer `unique_key` de `name`, poser les deux index après la
+    table), convertir les quatre `Scenario` d'unicité ci-dessous en tests nommés (le test « name
+    dupliqué est rejeté » existant est remplacé par celui d'un même propriétaire) ; relire en source
+    `sea-query` `1.0.2` le support de l'index partiel (voir `Must`) ; batterie complète
+    `--features workflow` et `--all-features`.
   [x] Convertir les `Scenario` en tests nommés distincts dans le `#[cfg(test)] mod tests` de
     ./m20260923_000001_create_workflow_definitions.rs, sur `sqlite::memory:`, sous
     `--features workflow` uniquement (fichier absent des autres combinaisons) : pattern identique à
@@ -158,7 +187,7 @@ Tasks:
     générale de ./mod.sdd).
 
 Done when:
-  Les huit `Scenario` sont chacun vérifiés par un test nommé distinct, jouables via la batterie de
+  Les onze `Scenario` sont chacun vérifiés par un test nommé distinct, jouables via la batterie de
     /tooling.sdd sous `--features workflow` sans base de données externe, `up` et `down` inchangés
     depuis l'approbation, chaque [arbitré 2026-09-29] de `Tasks` tranché par Sébastien, et la spec approuvée par lui.
   ../workflow/definition.sdd est approuvée avant ou avec cette spec — les cinq colonnes doivent
@@ -180,13 +209,32 @@ Scenario: id auto-incrémente la clé primaire
   When deux lignes sont insérées, complètes de `name`, `steps`, `created_at`, `owner_id` omis
   Then les deux lignes relues portent un `id` présent, distinct et strictement croissant
 
-Scenario: name dupliqué est rejeté
+Scenario: même name pour un même propriétaire est rejeté
   Given une base SQLite en mémoire avec @up appliqué avec succès
-  When une première ligne est insérée avec `name` `"deploy-app"` complète, puis une seconde ligne
-    complète partageant ce même `name`
+  When une première ligne est insérée avec `name` `"deploy-app"` et `owner_id` `1`, puis une seconde
+    ligne complète avec le même `name` et le même `owner_id`
   Then la première insertion est `Ok(())`
   And la seconde échoue en @DbErr
-  And une seule ligne porte ce `name` après les deux tentatives
+  And une seule ligne porte ce couple (`owner_id`, `name`) après les deux tentatives
+
+Scenario: même name pour deux propriétaires différents est accepté (#28)
+  Given une base SQLite en mémoire avec @up appliqué avec succès
+  When deux lignes complètes portent `name` `"ci"`, l'une avec `owner_id` `1`, l'autre avec `owner_id` `2`
+  Then les deux insertions sont `Ok(())`
+
+Scenario: même name sans propriétaire est rejeté (#28)
+  Given une base SQLite en mémoire avec @up appliqué avec succès
+  When une première ligne est insérée avec `name` `"ci"` et `owner_id` omis, puis une seconde avec le
+    même `name` et `owner_id` omis
+  Then la première insertion est `Ok(())`
+  And la seconde échoue en @DbErr — l'index partiel `WHERE owner_id IS NULL` fait son travail là où
+    l'index composite laisse passer deux `NULL`
+
+Scenario: un name sans propriétaire et le même name possédé coexistent (#28)
+  Given une base SQLite en mémoire avec @up appliqué avec succès
+  When une ligne est insérée avec `name` `"ci"` et `owner_id` omis, puis une autre avec `name` `"ci"` et
+    `owner_id` `1`
+  Then les deux insertions sont `Ok(())`
 
 Scenario: owner_id accepte NULL
   Given une base SQLite en mémoire avec @up appliqué avec succès

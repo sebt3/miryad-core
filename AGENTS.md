@@ -103,6 +103,8 @@ la syntaxe `.sdd`, `specdd resolve <cible>` vérifie la chaîne de specs avant d
   applicative de l'application consommatrice, sans code `MRD-*`.
 - Une tâche = un périmètre de fichiers limité, défini par le `Owns`/`Can modify` de la spec.
 - Modification d'une migration committée interdite : on ajoute la migration suivante.
+  Exception actée le 2026-10-04 (aucune production à ce jour) : `m20260923_000001` est modifiée en
+  place pour #28 ; la règle reprend dès la première mise en production.
 
 ## Git
 

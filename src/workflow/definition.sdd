@@ -94,9 +94,19 @@ Must:
     5. Sinon @Ok(())
   `Entity`/`Model`/`ActiveModel` via `#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize,
     Deserialize)]` sur `Model`, `#[sea_orm(table_name = "miryad_workflow_definitions")]` : `id: @i32`
-    (`#[sea_orm(primary_key)]`), `name: @String` (`#[sea_orm(unique)]`), `steps: DagSteps`,
+    (`#[sea_orm(primary_key)]`), `name: @String` (**sans** `#[sea_orm(unique)]` depuis #28, 2026-10-04 : l'unicité du nom est
+    portée par deux index de ../migration/m20260923_000001_create_workflow_definitions.sdd, par
+    propriétaire), `steps: DagSteps`,
     `owner_id: @Option<@i32>` (sans contrainte `FOREIGN KEY`, même choix de couplage lâche que
     `ApiToken::subject`, roadmap 2b), `created_at: @DateTimeUtc`.
+  Unicité du `name` (#28, 2026-10-04) : **par propriétaire**, jamais globale — deux définitions de
+    même `owner_id` ne partagent pas de `name`, deux définitions sans propriétaire (`owner_id` NULL)
+    non plus, mais un même `name` peut exister chez deux propriétaires différents et entre un
+    propriétaire et le « sans propriétaire ». Raison : sous `OwnerOnly` (`configure_policy`), une
+    unicité globale ferait collisionner Alice et Bob et révélerait à Bob l'existence d'un nom chez
+    Alice. La contrainte vit dans le schéma (migration), pas dans un hook. Le nom n'est pas une clé
+    de référence de la crate (la clé est `id`) : `filter_column`/`label_column` opèrent dans le
+    périmètre déjà filtré par la politique, aucune résolution par nom n'est à corriger.
   `WorkflowPolicy` — struct `pub`, `#[derive(Debug, Clone, Copy)]`, deux champs `pub` : `read:
     AccessPolicy`, `write: AccessPolicy`. `impl Default` rend `WorkflowPolicy { read:
     AccessPolicy::AdminOnly, write: AccessPolicy::AdminOnly }` — le défaut documenté en `Purpose`.
@@ -228,6 +238,11 @@ Handles:
     dans ./definition.rs — le comportement vient entièrement de la déclaration `owner_column`.
 
 Tasks:
+  [ ] #28 (2026-10-04) : retirer `#[sea_orm(unique)]` de `name` dans ./definition.rs (le schéma est
+    contractualisé par la migration, voir ci-dessus) ; vérifier à l'implémentation ce que rend le CRUD
+    générique pour un doublon **dans le périmètre d'un même propriétaire** (statut et corps, sans fuite
+    de contrainte brute, règle de ../rest/error.sdd) et le consigner ici — si l'existant est un `500`
+    générique, le noter en `[?]` plutôt que d'inventer un nouveau code dans cette tâche.
   [x] `before_update`/`before_delete` sur @MiryadResource : specs de `/src/resource.sdd` et
     `/src/rest/core.sdd` amendées le 2026-09-23, implémentation livrée le même jour (commits
     145b17e hooks + appels, 1d68b79 câblage `rest::core::update`/`delete`, validator PASS).
@@ -379,3 +394,9 @@ Scenario: aller-retour d'un DAG par la colonne `steps`
   When il est inséré dans `miryad_workflow_definitions` puis relu par @Entity::find_by_id
   Then le @Model relu porte un `steps` égal au @DagSteps inséré (ids, `depends_on`, `kind`, `config`)
     — la lecture par @FromJsonQueryResult est prouvée, pas seulement l'écriture (arbitré par Sébastien le 2026-09-29)
+
+Scenario: le Model ne déclare plus d'unicité globale sur name (#28)
+  Given `Column::Name` et `Entity` de ./definition.rs
+  When l'attribut de colonne de `name` est inspecté (`ColumnTrait::def(&Column::Name)`)
+  Then la définition de colonne n'est pas marquée unique (`ColumnDef::is_unique()` faux) — l'unicité
+    par propriétaire n'existe que dans le schéma de migration
