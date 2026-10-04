@@ -15,6 +15,7 @@ pub mod error;
 pub mod interpreter;
 pub mod rhai_step;
 pub mod step;
+pub mod subworkflow;
 
 // Ré-exports à plat, par sous-module (ordre alphabétique des sous-modules, comme les déclarations
 // ci-dessus) ; à l'intérieur des accolades, rustfmt (style edition 2024) impose son tri des noms —
@@ -33,6 +34,7 @@ pub use error::WorkflowError;
 pub use interpreter::DagInterpreter;
 pub use rhai_step::RhaiStep;
 pub use step::{MiryadWorkflowStep, StepError, StepRegistry};
+pub use subworkflow::SubWorkflowStep;
 
 #[cfg(test)]
 mod tests {

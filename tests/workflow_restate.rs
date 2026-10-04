@@ -64,6 +64,11 @@ use miryad_core::workflow::durable::{MiryadDurableStep, StepContext};
 use miryad_core::workflow::recommended_options;
 use miryad_core::workflow::register_deployment;
 use miryad_core::workflow::step::RunInfo;
+// `SubWorkflowStep` est ré-exporté à plat depuis ./workflow/mod.rs (tranche minimale du lot #26) ;
+// `DEFAULT_MAX_DEPTH`, item `pub` du module sans ré-export à plat (tâche ./mod.sdd #26 en cours),
+// se lit par son chemin de module.
+use miryad_core::workflow::SubWorkflowStep;
+use miryad_core::workflow::subworkflow::DEFAULT_MAX_DEPTH;
 use miryad_core::workflow::trigger_run;
 use restate_sdk::prelude::Endpoint;
 use restate_sdk::prelude::HttpServer;
@@ -194,6 +199,13 @@ struct Stack {
 
 impl Stack {
     async fn start() -> Self {
+        Self::start_with_max_depth(DEFAULT_MAX_DEPTH).await
+    }
+
+    /// Pile complète avec le plafond de profondeur du kind `"subworkflow"` enregistré posé à
+    /// `max_depth` (`DEFAULT_MAX_DEPTH` par [`Self::start`] ; `1` pour le Scenario de garde de
+    /// profondeur).
+    async fn start_with_max_depth(max_depth: u32) -> Self {
         let (ingress, admin, node, app) = (free_port(), free_port(), free_port(), free_port());
         let name = format!("miryad-restate-test-{app}");
         let started = Command::new("podman")
@@ -226,6 +238,7 @@ impl Stack {
             .and_then(|r| r.register(Fail))
             .and_then(|r| r.register(Flaky(Arc::clone(&flaky_calls))))
             .and_then(|r| r.register_durable(DurableSleeper))
+            .and_then(|r| r.register_durable(SubWorkflowStep::new(max_depth)))
             .expect("kinds distincts");
         let endpoint = Endpoint::builder()
             .bind(DagInterpreter)
@@ -461,5 +474,122 @@ async fn un_kind_durable_dort_durablement_et_reçoit_son_run_info() {
     assert_eq!(
         body["D"]["depth"], 0,
         "un run racine est à la profondeur 0 : {body}"
+    );
+}
+
+/// Scenario (./subworkflow.sdd `Tasks` (1)) « nominal — la sortie de S contient les deux sorties
+/// enfant » : parent `A` (kind `record`, l'écho de la fixture) puis `S` (`subworkflow`,
+/// `depends_on: ["A"]`) dont le DAG enfant est deux steps `record` en chaîne (`c1` → `c2`). La
+/// sortie de `S` est la table `{c1: sortie, c2: sortie}` de l'enfant, sans enveloppe ; la chaîne
+/// interne est honorée (`c2` attend `c1`) ; les `inputs` du parent ne traversent pas (`c1`, step
+/// racine de l'enfant, reçoit un `inputs` vide — ./subworkflow.sdd `Must`).
+#[tokio::test]
+#[ignore = "exige podman et l'image restate"]
+async fn subworkflow_nominal_rend_les_sorties_enfant() {
+    let stack = Stack::start().await;
+    let dag = DagSteps(vec![
+        step("A", &[], "record", json!({ "id": "A" })),
+        step(
+            "S",
+            &["A"],
+            "subworkflow",
+            json!({
+                "dag": [
+                    step("c1", &[], "record", json!({ "id": "c1" })),
+                    step("c2", &["c1"], "record", json!({ "id": "c2" })),
+                ]
+            }),
+        ),
+    ]);
+    let (status, body) = stack.run_to_completion(&dag).await;
+    assert_eq!(status, 200, "corps : {body}");
+    let results = body.as_object().expect("table id → sortie");
+    assert_eq!(results.len(), 2, "deux sorties parent : A et S : {body}");
+    let sorties_enfant = body["S"].as_object().expect("S rend la table des sorties enfant");
+    assert_eq!(
+        sorties_enfant.len(),
+        2,
+        "les deux sorties enfant, sans enveloppe : {body}"
+    );
+    assert_eq!(body["S"]["c1"]["id"], "c1", "sortie de c1 : {body}");
+    assert_eq!(body["S"]["c2"]["id"], "c2", "sortie de c2 : {body}");
+    assert_eq!(
+        body["S"]["c1"]["inputs"],
+        json!({}),
+        "les inputs du parent ne sont pas transmis à l'enfant : {body}"
+    );
+    let journal = stack.journal();
+    assert!(
+        position(&journal, "end:A") < position(&journal, "start:c1"),
+        "S attend A : {journal:?}"
+    );
+    assert!(
+        position(&journal, "end:c1") < position(&journal, "start:c2"),
+        "la chaîne interne de l'enfant est honorée : {journal:?}"
+    );
+}
+
+/// Scenario (./subworkflow.sdd `Tasks` (2)) « échec — un step enfant non retryable fait échouer
+/// S puis le run parent, message du fils conservé » : l'enfant de `S` est un unique step `fail`
+/// (`boom:F`, `retryable: false`). Pas de branche de repli : l'échec de l'enfant fait échouer le
+/// parent, et le message du fils traverse `run_child_dag` verbatim jusqu'à l'attache du parent.
+#[tokio::test]
+#[ignore = "exige podman et l'image restate"]
+async fn subworkflow_echec_enfant_fait_échouer_le_parent_message_conservé() {
+    let stack = Stack::start().await;
+    let dag = DagSteps(vec![step(
+        "S",
+        &[],
+        "subworkflow",
+        json!({ "dag": [step("F", &[], "fail", json!({ "id": "F" }))] }),
+    )]);
+    let (status, body) = stack.run_to_completion(&dag).await;
+    assert!(
+        status >= 400,
+        "l'échec de l'enfant doit échouer le run parent : {status} {body}"
+    );
+    assert!(
+        body.to_string().contains("boom:F"),
+        "le message du fils doit être conservé verbatim : {body}"
+    );
+}
+
+/// Scenario (./subworkflow.sdd `Tasks` (3)) « profondeur — échec MRD-WORKFLOW-008 en nombre borné
+/// de niveaux, sans emballement » : `SubWorkflowStep::new(1)` et un DAG d'un seul step `S`
+/// (`subworkflow`) dont l'enfant est le même DAG — un cycle traversant les définitions, invisible
+/// à `validate_dag` qui ne voit que le DAG courant. Garde à l'exécution : le run racine (profondeur
+/// 0) lance l'enfant (profondeur 1, accepté car `1 ≤ 1`) ; le `S` de l'enfant refuse son propre
+/// enfant (`2 > 1`) **avant** de le lancer — deux niveaux de run exactement, jamais d'emballement.
+/// Le message borné `depth 2 exceeds the maximum of 1` est la preuve que la récursion s'est arrêtée
+/// au premier refus ; le seuil de temps écarte tout rebond répété.
+#[tokio::test]
+#[ignore = "exige podman et l'image restate"]
+async fn subworkflow_garde_de_profondeur_échoue_en_niveaux_bornés() {
+    let stack = Stack::start_with_max_depth(1).await;
+    let dag = DagSteps(vec![step(
+        "S",
+        &[],
+        "subworkflow",
+        // L'enfant se rappelle lui-même ; le `config` du step le plus profond est désérialisé puis
+        // refusé par la garde de profondeur — jamais validé, jamais lancé comme petit-enfant.
+        json!({
+            "dag": [step("S", &[], "subworkflow", json!({ "dag": [] }))]
+        }),
+    )]);
+    let started = Instant::now();
+    let (status, body) = stack.run_to_completion(&dag).await;
+    let elapsed = started.elapsed();
+    assert!(
+        status >= 400,
+        "le refus de profondeur doit échouer le run : {status} {body}"
+    );
+    assert!(
+        body.to_string()
+            .contains("MRD-WORKFLOW-008: sub-workflow depth 2 exceeds the maximum of 1"),
+        "refus borné à depth 2 attendu (un seul niveau enfant lancé) : {body}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "deux niveaux de run exactement, sans emballement : {elapsed:?}"
     );
 }
