@@ -2045,7 +2045,7 @@ mod tests {
         use base64::Engine;
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"groups":"admin"}"#);
         let jwt = format!("header.{payload}.sig");
-        assert!(extract_groups_claim(&jwt).is_empty());
+        assert_eq!(extract_groups_claim(&jwt), [] as [String; 0]);
     }
 
     /// `Scenario` 29 : « JWT hors trois segments, liste vide » — deux et quatre segments
@@ -2073,12 +2073,12 @@ mod tests {
         use base64::Engine;
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"sub":"u1"}"#);
         let jwt = format!("header.{payload}.sig");
-        assert!(extract_groups_claim(&jwt).is_empty());
+        assert_eq!(extract_groups_claim(&jwt), [] as [String; 0]);
     }
 
     #[test]
     fn extract_groups_claim_defaults_to_empty_when_malformed() {
-        assert!(extract_groups_claim("not-a-jwt").is_empty());
+        assert_eq!(extract_groups_claim("not-a-jwt"), [] as [String; 0]);
     }
 
     /// `Scenario` 30 : « Mock de test sans réseau : URL statique, couples frais, échange
@@ -2095,7 +2095,7 @@ mod tests {
         let first = [csrf1.secret(), nonce1.secret(), verifier1.secret()];
         let second = [csrf2.secret(), nonce2.secret(), verifier2.secret()];
         for secret in first.iter().chain(second.iter()) {
-            assert!(!secret.is_empty());
+            assert_ne!(secret.as_str(), "");
         }
         for a in first {
             for b in second {

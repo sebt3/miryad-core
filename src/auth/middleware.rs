@@ -32,6 +32,7 @@ where
 {
     type Rejection = AuthError;
 
+    #[allow(clippy::unused_async_trait_impl)] // tooling.sdd : async impose par le trait axum FromRequestParts, contrat `async fn` de src/auth/middleware.sdd, aucun .await a attendre
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let auth_state = MiryadAuthState::from_ref(state);
 

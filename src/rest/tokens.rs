@@ -451,7 +451,10 @@ mod tests {
             body["total_items"], 0,
             "le principal de session n'a encore aucun token"
         );
-        assert!(body["items"].as_array().expect("items array").is_empty());
+        assert_eq!(
+            body["items"].as_array().expect("items array").as_slice(),
+            [] as [serde_json::Value; 0]
+        );
 
         let created = app
             .clone()
@@ -775,7 +778,10 @@ mod tests {
             "@page est echoé tel quel, pas ramené à la dernière page"
         );
         assert_eq!(body["per_page"], 10);
-        assert!(body["items"].as_array().expect("items array").is_empty());
+        assert_eq!(
+            body["items"].as_array().expect("items array").as_slice(),
+            [] as [serde_json::Value; 0]
+        );
         assert_eq!(body["total_items"], 1);
         assert_eq!(body["total_pages"], 1);
     }

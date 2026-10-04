@@ -1048,7 +1048,7 @@ mod tests {
             .await
             .expect("aucune erreur hors limite");
         assert_eq!(page.page, 99, "la page demandée est conservée, pas ramenée");
-        assert!(page.items.is_empty());
+        assert_eq!(page.items, [] as [recipe::Model; 0]);
         assert_eq!(page.total_items, 3);
     }
 
@@ -1063,7 +1063,7 @@ mod tests {
             .expect("table vide n'est pas une erreur");
         assert_eq!(page.total_items, 0);
         assert_eq!(page.total_pages, 0, "division majorante : table vide fait 0 page");
-        assert!(page.items.is_empty());
+        assert_eq!(page.items, [] as [recipe::Model; 0]);
     }
 
     // -------------------------------------------------------------------- get
