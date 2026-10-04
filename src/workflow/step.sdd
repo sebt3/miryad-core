@@ -217,7 +217,7 @@ Tasks:
   [ ] #26 lot B — kinds durables (2026-10-04) : ajouter `register_durable` et `durable`, le
     deuxième magasin interne et la vérification de collision croisée ; dépend de ./durable.rs (le
     trait doit exister pour compiler) — à faire dans le même lot que ./durable.sdd.
-  [?] Identité du déclencheur dans @RunInfo (#26, point « autorisation ») : aucun identifiant
+  [ ] [reporté, approuvé 2026-10-04 : prochaine livraison, non bloquant] Identité du déclencheur dans @RunInfo (#26, point « autorisation ») : aucun identifiant
     d'utilisateur ne traverse aujourd'hui `client::trigger_run` → `DagInterpreter::run` ; l'enfant
     d'un sous-workflow ne peut donc pas « hériter des droits » du déclencheur. Recommandation : ne
     rien faire dans cette itération (le consommateur n'en a pas besoin) ; si le besoin vient, ajouter

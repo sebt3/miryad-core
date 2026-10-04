@@ -123,17 +123,17 @@ Tasks:
     `SubWorkflowStep::new(1)` et un DAG qui se rappelle lui-même : le run échoue avec
     `MRD-WORKFLOW-008` en un nombre borné de niveaux, sans emballement ; (4) un kind durable de
     fixture qui `sleep` brièvement et renvoie `run_info()` (tâche de ./durable.sdd).
-  [?] **Propager les `inputs` du parent vers l'enfant** (#26) : en v1 l'enfant ne reçoit rien du parent
+  [ ] [reporté, approuvé 2026-10-04 : prochaine livraison, non bloquant] **Propager les `inputs` du parent vers l'enfant** (#26) : en v1 l'enfant ne reçoit rien du parent
     (ses steps racine ont `inputs` vide) ; l'application fabrique le DAG enfant en y embarquant les
     valeurs utiles dans les `config`. Recommandation : ne rien ajouter tant qu'un besoin réel ne
     l'impose pas ; si besoin, passer par un champ optionnel `inputs` du `config` du step copié dans la
     `config` des steps racine enfants, pas par un nouveau canal Restate. Non bloquant pour
     l'implémentation. À arbitrer par Sébastien.
-  [?] **Branche de repli sur échec d'enfant** (#26, point « propagation d'échec ») : v1 = l'échec de
+  [ ] [reporté, approuvé 2026-10-04 : prochaine livraison, non bloquant] **Branche de repli sur échec d'enfant** (#26, point « propagation d'échec ») : v1 = l'échec de
     l'enfant fait échouer le parent. Une sortie exposant l'échec (`{"error": ...}`) pour une branche de
     repli demande un contrat d'échec dans ./interpreter.sdd (aujourd'hui : tout `Err` interrompt le
     run). Non bloquant ; à rouvrir sur besoin.
-  [?] **Autorisation / droits du déclencheur** (#26) : sans identité dans @RunInfo, l'enfant n'hérite de
+  [ ] [reporté, approuvé 2026-10-04 : prochaine livraison, non bloquant] **Autorisation / droits du déclencheur** (#26) : sans identité dans @RunInfo, l'enfant n'hérite de
     rien (voir ./step.sdd `Tasks`). Non bloquant.
 
 Done when:
