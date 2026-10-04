@@ -77,39 +77,30 @@ Implémentée le 2026-08-23, une fois le blocage amont levé (`vynil-core` v0.7.
 [sebt3/vynil-core#8](https://github.com/sebt3/vynil-core/issues/8)) — feature Cargo `mcp`
 (`vynil-core`, features `hbs` + `crypto`).
 
-## 7. Moteur de workflow — **standby (2026-08-23)**
-Intégration apalis + apalis-postgres + apalis-workflow. Step-type natif "script Rhai" (vynil-core,
-feature `rhai` — même dépendance débloquée que l'étape 6) pour les automatisations/fallbacks
-définis par un admin. Modèle de définition de DAG persisté en base (pas seulement du code Rust
-statique — un admin doit pouvoir définir un workflow).
+## 7. Moteur de workflow — **implémenté sur Restate (0.1.4)**
+Livré derrière la feature Cargo `workflow` : `restate-sdk` 0.12 (cluster Restate self-hosté, jamais géré
+par la crate), `DagInterpreter` (service `#[workflow]`, marche d'un DAG par couches), `StepDispatcher`
+(service qui exécute un step par `kind` via un `StepRegistry` fourni par l'application),
+`WorkflowDefinition` (DAG persisté en base, éditable par un admin via le CRUD générique), client
+d'enregistrement/déclenchement, et le kind natif `"rhai"` (vynil-core, feature `rhai`) pour les
+automatisations/fallbacks définis par un admin. Specs : `src/workflow/*.sdd` ; architecture et pièges :
+`docs/architecture.md`.
 
-Bloqué après une exploration comparative de plusieurs moteurs (apalis-workflow, Acts, Hatchet,
-Temporal, Prefect) : aucun n'a de DAG piloté par la donnée nativement (tous exigent un graphe
-déclaré en code SDK), et les deux candidats les plus prometteurs se sont révélés inutilisables en
-pratique. `Acts` (embarquable, YAML runtime) tronque sa table de stockage à chaque redémarrage —
-bug reproduit (le modèle déployé disparaît dès le redémarrage du process suivant), disqualifiant
-pour un usage persistant. `Hatchet` (self-hosted mono-conteneur + Postgres, licence MIT, primitives
-LLM/agent réelles) a un moteur serveur qui fonctionne correctement (fan-out, détection de worker
-mort), mais son seul binding Rust (`hatchet-sdk`, non officiel) a un bug de désérialisation REST
-qui casse `ctx.parent_output()` — le mécanisme central de passage de données entre tâches d'un DAG
-— contre toute version de Hatchet actuellement disponible en self-host. Temporal (SDK Rust officiel
-mais encore jeune) et Prefect (flows intrinsèquement Python, incompatible avec un écosystème
-100% Rust) écartés sur d'autres critères avant d'aller jusqu'au spike. Le fait-maison sur
-`apalis-postgres` reste l'option de secours mais représente ~1200-1900 lignes de code
-distribué/concurrent à fiabiliser nous-mêmes (fan-in sous course, reprise sur crash) — jugé trop
-risqué pour une brique dont la robustesse est justement l'exigence.
-
-À reprendre : soit un correctif amont sur `hatchet-rust-sdk` (bug isolé, pas un défaut de la
-plateforme Hatchet elle-même), soit une nouvelle option qui n'existait pas encore lors de cette
-exploration.
+Historique : l'option initiale (apalis + apalis-postgres + apalis-workflow) a été mise en standby le
+2026-08-23 après une exploration comparative (apalis-workflow, Acts, Hatchet, Temporal, Prefect) —
+aucun moteur n'avait de DAG piloté par la donnée nativement et les deux candidats les plus prometteurs
+(Acts : stockage tronqué à chaque redémarrage ; Hatchet : binding Rust non officiel cassé sur
+`ctx.parent_output()`) étaient inutilisables. Restate a été retenu après le spike du 2026-09-22
+(fan-out/fan-in, reprise sur crash sans rejeu des steps journalisés) ; aucune dépendance `apalis`
+n'existe dans `Cargo.toml`.
 
 ## 7b. Hooks métier CRUD
 Point d'extension par entité sur `create` (`rest/core.rs`, donc REST **et** MCP simultanément, et
 `MiryadHooks::before_active_model_save` côté GraphQL) — validation, mutation avant écriture. Scope
 limité à `Create` : Seaography ne déclenche son hook équivalent que sur un insert, et un hook qui
-ne se comporterait pas à l'identique sur les 3 surfaces a été jugé no-go. Absorbe une partie de ce
-que le moteur de workflow (7, standby) aurait couvert pour les cas simples ("à la création, fais
-aussi X"), pas les DAG multi-étapes avec reprise sur crash.
+ne se comporterait pas à l'identique sur les 3 surfaces a été jugé no-go. Couvre en synchrone les
+cas simples ("à la création, fais aussi X") sans passer par le moteur de workflow (7), qui reste
+l'outil des DAG multi-étapes avec reprise sur crash.
 
 Implémentée le 2026-08-23 — cf. `docs/architecture.md`, section "Hooks métier CRUD".
 
@@ -132,9 +123,17 @@ Ce qui reste côté miryad-core, strictement backend :
 Implémentée le 2026-08-23 — cf. `docs/architecture.md`, section "Support frontend (IR + service
 statique)".
 
-## 9. Moteur de workflow (reprise)
-Reprise de la feature 7 (standby, cf. section dédiée) une fois une solution d'implémentation saine
-identifiée — après la feature 8, priorité explicite du développeur principal (2026-08-23).
+## 9. Moteur de workflow — évolutions
+Suite de la feature 7 (implémentée). Premier lot, issu des besoins du consommateur `vanyline`
+(issues #26 et #27, 2026-10-04) :
+- `RhaiStep::with_setup` (#27) : fonctions hôte fournies par l'application aux scripts Rhai —
+  `src/workflow/rhai_step.sdd`, cible 0.1.5.
+- Contexte de run lisible par tous les kinds (`RunInfo`), puis steps « durables » avec accès au
+  contexte Restate (#26) : trait `MiryadDurableStep`, `StepContext` étroit (`sleep`, effets
+  journalisés, sous-DAG), kind natif `"subworkflow"` avec garde-fou de profondeur —
+  `src/workflow/{step,dispatcher,interpreter,durable,subworkflow}.sdd`. Le pilotage par awakeable
+  est reporté tant qu'un besoin réel ne l'impose pas (le consommateur sonde dans un step ordinaire).
+Au-delà : toute feature de workflow passe par un arbitrage ici avant de gagner une spec.
 
 ## 10. Filtrage et tri étendus — après un premier usage réel
 Le filtrage REST/GraphQL/MCP actuel (`filter_column()`) est limité à une seule colonne, égalité
@@ -157,6 +156,6 @@ donc au template `miryad` (son propre roadmap, à écrire quand son bootstrap re
 Étapes 1 (Fondations), 2a (Auth — OIDC + session cookie), 2b (tokens API + dual-auth), 2c
 (comptes de service), 3 (Utilisateurs & Groupes), 4 (API REST générique), 4b (OpenAPI + Swagger
 UI), 5 (API GraphQL), 6 (Serveur MCP), 7b (hooks métier CRUD) et 8 (support frontend : IR +
-service statique) implémentées — cf. `docs/architecture.md`. Prochaine étape : 9 (reprise du
-moteur de workflow, ex-7, si une solution saine se présente), puis 10 (filtrage/tri étendus,
+service statique) implémentées — cf. `docs/architecture.md`. Le moteur de workflow (7, sur Restate)
+est livré en 0.1.4. Prochaine étape : 9 (évolutions du moteur de workflow, #26/#27), puis 10 (filtrage/tri étendus,
 explicitement hors MVP jusqu'à un premier usage réel).

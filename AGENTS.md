@@ -10,9 +10,8 @@ SpecDD specs as source-adjacent development contracts, not optional documentatio
 Crate Rust **opinionated** (axum + SeaORM + Seaography) publiée sur crates.io, moteur générique
 derrière le template d'application `miryad`. Une application consommatrice déclare ses
 entités via le trait @MiryadResource et obtient auth OIDC, RBAC/ownership, REST, GraphQL, MCP,
-OpenAPI, IR frontend et migrations. Le moteur de workflow (apalis + step Rhai) est en standby —
-aucune dépendance `apalis` dans `Cargo.toml` tant que l'option d'implémentation n'est pas
-tranchée (`docs/roadmap.md`, items 7 et 9). BSD-3-Clause, API instable avant `1.0`.
+OpenAPI, IR frontend et migrations. Le moteur de workflow (Restate + step Rhai, feature `workflow`)
+est livré ; ses évolutions sont arbitrées dans `docs/roadmap.md` (item 9). BSD-3-Clause, API instable avant `1.0`.
 
 Le contexte durable vit ici et n'est pas à re-déduire du code :
 

@@ -178,8 +178,9 @@ Tasks:
     Solde 2026-09-29 (série A1–A4 + fix F, synthèse validator GO) : harnais vert sur les huit
     combinaisons hors carve-out graphql acté (7 sites sous `graphql`, 8 avec `graphiql`, tous
     dans `src/graphql/**`).
-  [ ] Décider si le moteur de workflow (roadmap 7/9) entre dans une spec, son option
-    d'implémentation étant en standby — ne pas speculer un module sans moteur choisi.
+  [x] Décider si le moteur de workflow (roadmap 7/9) entre dans une spec — soldé : moteur choisi
+    (Restate), `src/workflow/*.sdd` en place, livré en 0.1.4 ; roadmap et AGENTS.md corrigés
+    2026-10-04.
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec `.sdd` relue et approuvée par Sébastien, sans
