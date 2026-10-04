@@ -220,9 +220,13 @@ Tasks:
     `dispatch<'s: 'r, 'r>(…) -> Result<impl Future + use<'r>, StepError>`, contrat observable
     intégralement préservé — attend l'amendement du `Must` par Sébastien (précédent : correction
     du super-trait « à l'implémentation 2026-09-23 »). Passage `[x]` lié à cet arbitrage.
-  [ ] #26 lot B — kinds durables (2026-10-04) : ajouter `register_durable` et `durable`, le
+  [x] #26 lot B — kinds durables (2026-10-04) : ajouter `register_durable` et `durable`, le
     deuxième magasin interne et la vérification de collision croisée ; dépend de ./durable.rs (le
     trait doit exister pour compiler) — à faire dans le même lot que ./durable.sdd.
+    Réalisé 2026-10-04 (commit e521581, validator PASS) : deux magasins internes, un seul espace de
+    noms, collision croisée dans les deux sens en @Err(DuplicateStepKind) sans rien insérer (la
+    spec dit `Err`, jamais de `panic!` — vérifié) ; deux tests nommés (non-résolution par
+    `dispatch`, collision croisée deux sens + sans écraser).
   [ ] [reporté, approuvé 2026-10-04 : prochaine livraison, non bloquant] Identité du déclencheur dans @RunInfo (#26, point « autorisation ») : aucun identifiant
     d'utilisateur ne traverse aujourd'hui `client::trigger_run` → `DagInterpreter::run` ; l'enfant
     d'un sous-workflow ne peut donc pas « hériter des droits » du déclencheur. Recommandation : ne

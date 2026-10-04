@@ -145,16 +145,29 @@ Tasks:
     `run_child_dag`), `DEPTH_HEADER`, `child_run_key` ; relire en source `restate-sdk` `0.12.1` les
     bornes de `ctx.run` et la forme de `Request::header` avant d'écrire les signatures génériques ;
     rustdoc du trait (contrat de déterminisme) et de chaque méthode (règle `missing_errors_doc`).
-  [ ] Ordre de lot : après ./step.sdd lot A (`RunInfo`), avant ./step.sdd lot B (le registre
-    référence le trait).
+    Réalisé 2026-10-04 (commit e521581, validator PASS) mais tâche tenue ouverte, même traitement
+    que le lot A de ./step.sdd : la relecture source de `restate-sdk` `0.12.1` a prouvé que les
+    bornes de `ctx.run` sont les traits serde PROPRES du SDK (aucun blanket vers
+    `serde::Serialize`, impls derrière le wrapper `Json`, `RunClosure: Send + 'static`) — la
+    formulation « mêmes bornes que le SDK sur T » du `Must` est inimplementable au sens propre ;
+    la réalisation (`T: serde::Serialize + DeserializeOwned + Send + 'static`, `Json` posé/retiré
+    en interne, `T` nu observable) est la seule qui satisfait l'intention. Passage `[x]` lié à
+    l'amendement d'une ligne du `Must` par Sébastien (précédents : super-trait 2026-09-23,
+    `dispatch` lot A).
+  [x] Ordre de lot : après ./step.sdd lot A (`RunInfo`), avant ./step.sdd lot B (le registre
+    référence le trait). Tenu à l'exécution 2026-10-04 : lot A clos (c491a08) avant ./durable.rs
+    (e521581), registre du lot B dans le même commit.
   [ ] Reporté sur demande : **awakeable** (#26 — réveil par l'application via l'ingress Restate,
     sans connexion longue ni sondage). Le consommateur s'en passe pour sa première version (sondage
     dans un kind ordinaire) ; à rouvrir sur besoin réel avec une méthode dédiée de @StepContext
     (`awakeable<T>() -> (String, impl Future<Output = Result<T, StepError>>)`) et son `Scenario`
     d'intégration. Recommandation Claude 2026-10-04, à confirmer par Sébastien.
-  [ ] Test d'intégration `#[ignore]` d'un kind durable de fixture qui `sleep` puis renvoie
+  [x] Test d'intégration `#[ignore]` d'un kind durable de fixture qui `sleep` puis renvoie
     `run_info()` (`../../tests/workflow_restate.rs`) : prouve la branche durable de ./dispatcher.rs
     (aucun `ctx.run()` englobant, sinon `sleep` échoue) et la transmission de `RunInfo`.
+    Réalisé 2026-10-04 (commit e521581) : `un_kind_durable_dort_durablement_et_reçoit_son_run_info`,
+    jouée verte par l'implementer puis REJOUÉE verte par le validator contre vrai `restate-server`
+    (podman, ~10 s, `run_key`/`step_id`/`depth` assertés).
 
 Done when:
   Les `Scenario` ci-dessous ont chacun un test nommé distinct et vert, sur la feature `workflow` ; les

@@ -236,10 +236,15 @@ Tasks:
     reconstruit dans `execute` depuis le corps reçu, relayé intact à `run_invocation` puis
     `dispatch(&kind, &run_info, …)` ; test `le_run_info_atteint_le_kind_ordinaire` à égalité
     exacte ; les quatre tests préexistants adaptés sans changement d'observable.
-  [ ] #26 lot B (2026-10-04) : branche durable de `execute` (étape 1b), après ./durable.sdd ; la
+  [x] #26 lot B (2026-10-04) : branche durable de `execute` (étape 1b), après ./durable.sdd ; la
     branche n'est pas testable en unitaire (@StepContext enveloppe un `Context` non virtualisé,
     même borne que `execute` lui-même) — preuve par un test d'intégration `#[ignore]`
     (`../../tests/workflow_restate.rs`, voir ./subworkflow.sdd `Tasks`).
+    Réalisé 2026-10-04 (commit e521581, validator PASS) : `durable(&kind)` consulté avant
+    l'ordinaire, `StepContext` construit, exécution **sans** `ctx.run()` englobant, unique site de
+    traduction `step_error_to_handler_error` conservé ; test unitaire de non-résolution par
+    `run_invocation` (404 verbatim) + preuve d'intégration `#[ignore]` rejouée verte contre vrai
+    `restate-server` (1 passed, ~10 s).
   [x] À l'implémentation de ce fichier : retirer le `#[allow(dead_code)]` posé sur
     @StepRegistry::dispatch dans ./step.rs (batch du 2026-09-23, motif : ./dispatcher.rs est son
     unique appelant, pas encore écrit) — condition de ce batch, même traitement que le retrait
