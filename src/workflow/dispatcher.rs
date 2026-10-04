@@ -14,17 +14,22 @@ use restate_sdk::prelude::{Context, ContextSideEffects, HandlerError, Json, Term
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::step::{StepError, StepRegistry};
+use super::step::{RunInfo, StepError, StepRegistry};
 
 /// Corps de requête de [`StepDispatcher::execute`] — forme sérialisée échangée avec
 /// ./interpreter.rs via le protocole `restate-sdk`.
 // Champs `pub(crate)` : construit par littéral depuis ./interpreter.rs (`Must` étape 2.b de
 // ./interpreter.sdd), comme l'impliquent déjà `Exposes`/`Accepts` de ./dispatcher.sdd.
+// `run_key`/`step_id`/`depth` (#26, 2026-10-04) composent le [`RunInfo`] de ./step.rs,
+// reconstruit par ce fichier avant l'appel du kind.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct StepInvocation {
     pub(crate) kind: String,
     pub(crate) config: Value,
     pub(crate) inputs: HashMap<String, Value>,
+    pub(crate) run_key: String,
+    pub(crate) step_id: String,
+    pub(crate) depth: u32,
 }
 
 /// L'unique service Restate du module : résout un kind dans le registre de l'app et enveloppe
@@ -54,13 +59,26 @@ impl StepDispatcher {
         ctx: Context<'_>,
         req: Json<StepInvocation>,
     ) -> Result<Json<Value>, HandlerError> {
-        let Json(StepInvocation { kind, config, inputs }) = req;
+        let Json(StepInvocation {
+            kind,
+            config,
+            inputs,
+            run_key,
+            step_id,
+            depth,
+        }) = req;
+        // Étape 1 (#26, 2026-10-04) — reconstruction de l'identité du run à partir du corps reçu.
+        let run_info = RunInfo {
+            run_key,
+            step_id,
+            depth,
+        };
         // Un seul `ctx.run()` par invocation : l'exécution du kind est journalisée d'un bloc,
         // jamais rejouée après reprise sur crash. La fermeture se borne à déléguer à
         // `run_invocation` (rien d'autre ne s'y ajoute). Jamais de `.retry_policy()` ici — la
         // politique est celle posée au `bind()` du service par l'app (`recommended_options`).
         let output = ctx
-            .run(move || run_invocation(&self.registry, kind, config, inputs))
+            .run(move || run_invocation(&self.registry, kind, run_info, config, inputs))
             .await?;
         Ok(output)
     }
@@ -71,16 +89,18 @@ impl StepDispatcher {
 /// `Context`, cette fonction rend les trois branches (404 kind inconnu, transit intact du
 /// résultat, exécution exactement une fois) testables sans serveur. L'invariant « un seul
 /// `ctx.run()` par invocation » vit dans le handler, la logique ici.
+/// `run_info` (#26, 2026-10-04) est l'identité du run, relayée en `&RunInfo` au `dispatch`.
 async fn run_invocation(
     registry: &StepRegistry,
     kind: String,
+    run_info: RunInfo,
     config: Value,
     inputs: HashMap<String, Value>,
 ) -> Result<Json<Value>, HandlerError> {
     // Err de `dispatch` = kind absent du registre : erreur de configuration du DAG (4xx),
     // jamais une panne du service (5xx). Code 404 posé explicitement, et jamais par
     // `step_error_to_handler_error`, réservée aux StepError d'un run.
-    let found = registry.dispatch(&kind, config, inputs).map_err(|_| {
+    let found = registry.dispatch(&kind, &run_info, config, inputs).map_err(|_| {
         HandlerError::from(TerminalError::new_with_code(404, format!("kind inconnu: {kind}")))
     })?;
     // Enveloppe `Json` posée ici (wrapper requis pour tout type non primitif traversant le
@@ -118,7 +138,7 @@ pub fn recommended_options() -> ServiceOptions {
 #[cfg(test)]
 mod tests {
     use super::{recommended_options, run_invocation, step_error_to_handler_error};
-    use crate::workflow::step::{MiryadWorkflowStep, StepError, StepRegistry};
+    use crate::workflow::step::{MiryadWorkflowStep, RunInfo, StepError, StepRegistry};
     use restate_sdk::prelude::Json;
     use serde_json::Value;
     use serde_json::json;
@@ -141,13 +161,21 @@ mod tests {
     /// Kind dont le `run` incrémente un compteur externe `Arc<AtomicUsize>` à chaque exécution
     /// (scenario « un seul `ctx.run()` par invocation de `execute` »).
     struct Compteur(Arc<AtomicUsize>);
+    /// Kind dont le `run` rend les trois champs de la `RunInfo` reçue (scenario « le `RunInfo`
+    /// atteint le kind ordinaire », #26).
+    struct EchoRun;
 
     #[async_trait::async_trait]
     impl MiryadWorkflowStep for Transient {
         fn kind(&self) -> &'static str {
             "transitoire"
         }
-        async fn run(&self, _config: Value, _inputs: HashMap<String, Value>) -> Result<Value, StepError> {
+        async fn run(
+            &self,
+            _run: &RunInfo,
+            _config: Value,
+            _inputs: HashMap<String, Value>,
+        ) -> Result<Value, StepError> {
             Err(StepError {
                 message: "indisponible".to_string(),
                 retryable: true,
@@ -160,7 +188,12 @@ mod tests {
         fn kind(&self) -> &'static str {
             "permanent"
         }
-        async fn run(&self, _config: Value, _inputs: HashMap<String, Value>) -> Result<Value, StepError> {
+        async fn run(
+            &self,
+            _run: &RunInfo,
+            _config: Value,
+            _inputs: HashMap<String, Value>,
+        ) -> Result<Value, StepError> {
             Err(StepError {
                 message: "config invalide".to_string(),
                 retryable: false,
@@ -173,7 +206,12 @@ mod tests {
         fn kind(&self) -> &'static str {
             "echo"
         }
-        async fn run(&self, config: Value, _inputs: HashMap<String, Value>) -> Result<Value, StepError> {
+        async fn run(
+            &self,
+            _run: &RunInfo,
+            config: Value,
+            _inputs: HashMap<String, Value>,
+        ) -> Result<Value, StepError> {
             Ok(config)
         }
     }
@@ -183,9 +221,39 @@ mod tests {
         fn kind(&self) -> &'static str {
             "compteur"
         }
-        async fn run(&self, _config: Value, _inputs: HashMap<String, Value>) -> Result<Value, StepError> {
+        async fn run(
+            &self,
+            _run: &RunInfo,
+            _config: Value,
+            _inputs: HashMap<String, Value>,
+        ) -> Result<Value, StepError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(json!(null))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MiryadWorkflowStep for EchoRun {
+        fn kind(&self) -> &'static str {
+            "echo_run"
+        }
+        async fn run(
+            &self,
+            run: &RunInfo,
+            _config: Value,
+            _inputs: HashMap<String, Value>,
+        ) -> Result<Value, StepError> {
+            Ok(json!({ "run_key": run.run_key, "step_id": run.step_id, "depth": run.depth }))
+        }
+    }
+
+    /// `RunInfo` neutre pour les scenarios qui n'exercent pas son contenu (seuls les appels
+    /// relevant du Scenario #26 posent une identité précise).
+    fn run_info() -> RunInfo {
+        RunInfo {
+            run_key: "t".into(),
+            step_id: "s".into(),
+            depth: 0,
         }
     }
 
@@ -193,7 +261,7 @@ mod tests {
     /// `run` du handler — le `StepError` rendu est celui que le dispatcher devra traduire.
     async fn step_error_of(registry: &StepRegistry, kind: &str) -> StepError {
         registry
-            .dispatch(kind, json!(null), HashMap::new())
+            .dispatch(kind, &run_info(), json!(null), HashMap::new())
             .expect("le kind de fixture est enregistré")
             .await
             .expect_err("le kind de fixture rend toujours une erreur")
@@ -254,7 +322,14 @@ mod tests {
     #[tokio::test]
     async fn kind_inconnu_produit_une_erreur_404() {
         let registry = StepRegistry::new();
-        let Err(erreur) = run_invocation(&registry, "absent".to_string(), Value::Null, HashMap::new()).await
+        let Err(erreur) = run_invocation(
+            &registry,
+            "absent".to_string(),
+            run_info(),
+            Value::Null,
+            HashMap::new(),
+        )
+        .await
         else {
             panic!("un kind absent du registre doit rendre une erreur, jamais Ok");
         };
@@ -279,9 +354,15 @@ mod tests {
     async fn resultat_du_kind_trouve_transite_intact() {
         let mut registry = StepRegistry::new();
         registry.register(EchoConfig).expect("kind distinct");
-        let rendu = run_invocation(&registry, "echo".to_string(), json!({"a": 1}), HashMap::new())
-            .await
-            .expect("le kind de fixture `echo` est enregistré");
+        let rendu = run_invocation(
+            &registry,
+            "echo".to_string(),
+            run_info(),
+            json!({"a": 1}),
+            HashMap::new(),
+        )
+        .await
+        .expect("le kind de fixture `echo` est enregistré");
         // `Json` (`restate_sdk::prelude::Json`) est un `newtype` `pub(crate)`-field sur le `Value`.
         let Json(valeur_transmise) = rendu;
         assert_eq!(
@@ -304,14 +385,48 @@ mod tests {
         registry
             .register(Compteur(Arc::clone(&compteur)))
             .expect("kind distinct");
-        let _ = run_invocation(&registry, "compteur".to_string(), Value::Null, HashMap::new())
-            .await
-            .expect("le kind `compteur` est enregistré");
+        let _ = run_invocation(
+            &registry,
+            "compteur".to_string(),
+            run_info(),
+            Value::Null,
+            HashMap::new(),
+        )
+        .await
+        .expect("le kind `compteur` est enregistré");
         let n = compteur.load(Ordering::SeqCst);
         assert_eq!(
             n, 1,
             "un appel à run_invocation doit exécuter le `run` du kind exactement une fois, \
              compteur : {n}"
+        );
+    }
+
+    /// Scenario « le `RunInfo` atteint le kind ordinaire » (#26) : `run_invocation` avec
+    /// `RunInfo { run_key: "r1", step_id: "s1", depth: 3 }` et un kind qui rend ses trois champs —
+    /// le `RunInfo` traverse `dispatch` jusqu'au `run` du kind sans altération.
+    #[tokio::test]
+    async fn le_run_info_atteint_le_kind_ordinaire() {
+        let mut registry = StepRegistry::new();
+        registry.register(EchoRun).expect("kind distinct");
+        let rendu = run_invocation(
+            &registry,
+            "echo_run".to_string(),
+            RunInfo {
+                run_key: "r1".to_string(),
+                step_id: "s1".to_string(),
+                depth: 3,
+            },
+            Value::Null,
+            HashMap::new(),
+        )
+        .await
+        .expect("le kind de fixture `echo_run` est enregistré");
+        let Json(valeur) = rendu;
+        assert_eq!(
+            valeur,
+            json!({ "run_key": "r1", "step_id": "s1", "depth": 3 }),
+            "les trois champs du RunInfo doivent parvenir au kind tels qu'émis"
         );
     }
 

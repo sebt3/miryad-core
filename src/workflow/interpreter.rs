@@ -31,6 +31,20 @@ use super::dispatcher::StepInvocation;
 /// `results`) vit local au handler `run`, rejoué depuis le journal Restate à la reprise.
 pub struct DagInterpreter;
 
+/// Nom de l'en-tête de profondeur d'imbrication des sous-workflows (#26).
+/// Déclaration PROVISOIRE portée par ./interpreter.rs : la constante est déclarée par ./durable.rs
+/// au lot B (#26, ./durable.sdd `Exposes` : `DEPTH_HEADER`) et déplacée là alors, valeur inchangée
+/// `"x-miryad-depth"` — ./interpreter.sdd `Tasks` #26 lot A.
+pub(crate) const DEPTH_HEADER: &str = "x-miryad-depth";
+
+/// Profondeur du run lue depuis la valeur brute de l'en-tête [`DEPTH_HEADER`] : un `u32` valide
+/// est rendu tel quel ; en-tête absent, non numérique ou hors plage `u32` rend `0` — un run
+/// déclenché par `client::trigger_run` n'en porte pas. Ne lève jamais d'erreur, ne panique
+/// jamais (`./interpreter.sdd` `Must` étape 1b, #26).
+pub(crate) fn parse_depth(raw: Option<&str>) -> u32 {
+    raw.and_then(|raw| raw.parse::<u32>().ok()).unwrap_or(0)
+}
+
 /// L'unique workflow Restate du module : exécute un DAG de steps de sa réception à sa complétion.
 /// Nom d'enregistrement `"DagInterpreter"` (défaut du nom du struct, aucun attribut `name`) —
 /// c'est celui que ./client.rs code en dur dans `trigger_run`. Ce fichier ne construit jamais
@@ -70,6 +84,11 @@ impl DagInterpreter {
             )));
         }
 
+        // Étape 1b (#26, 2026-10-04) — lecture de la profondeur, une seule fois pour tout le run :
+        // en-tête absent, non numérique ou hors `u32` → `0` (`parse_depth`, aucune erreur levée
+        // ici). Le garde-fou de récursion vit dans ./subworkflow.rs, pas dans cette lecture.
+        let depth = parse_depth(ctx.headers().get(DEPTH_HEADER).map(String::as_str));
+
         // Étape 2 — marche topologique. `validate_dag` ayant proscrit cycle et dépendance
         // pendante, chaque itération produit au moins un step prêt tant que `completed` n'a pas
         // atteint la taille du DAG : pas de garde de couche vide ici (`Must not` revérifier ce
@@ -88,6 +107,11 @@ impl DagInterpreter {
                     kind: step.kind.clone(),
                     config: step.config.clone(),
                     inputs: build_inputs(step, &results),
+                    // #26 : identité du run — clé de workflow Restate de cette invocation, `id`
+                    // du step, profondeur lue une fois à l'étape 1b.
+                    run_key: ctx.key().to_string(),
+                    step_id: step.id.clone(),
+                    depth,
                 };
                 futures.push(
                     ctx.request::<Json<StepInvocation>, Json<serde_json::Value>>(
@@ -160,6 +184,7 @@ pub(crate) fn build_inputs(
 #[cfg(test)]
 mod tests {
     use super::build_inputs;
+    use super::parse_depth;
     use super::ready_steps;
     use crate::workflow::definition::StepDefinition;
     use serde_json::json;
@@ -271,5 +296,27 @@ mod tests {
             "exactement une entrée — `\"A\"` → `json!(1)`, jamais `\"C\"` bien que présent dans \
              `results`"
         );
+    }
+
+    /// Scenario « `parse_depth` lit un entier valide » (#26) : la valeur brute `"2"` de
+    /// l'en-tête de profondeur rend `2`.
+    #[test]
+    fn parse_depth_lit_un_entier_valide() {
+        assert_eq!(parse_depth(Some("2")), 2);
+    }
+
+    /// Scenario « `parse_depth` rend 0 pour un en-tête absent, non numérique ou hors plage »
+    /// (#26) : `None`, `"abc"`, `"-1"` et `"99999999999"` (hors `u32`) rendent tous `0` — jamais
+    /// de panic, jamais d'erreur. Un run déclenché par `client::trigger_run` n'porte pas
+    /// l'en-tête : `0` est son cas normal, pas une anomalie.
+    #[test]
+    fn parse_depth_rend_0_pour_un_en_tete_absent_non_numerique_ou_hors_plage() {
+        for raw in [None, Some("abc"), Some("-1"), Some("99999999999")] {
+            assert_eq!(
+                parse_depth(raw),
+                0,
+                "`{raw:?}` doit rendre 0, sans panic ni erreur"
+            );
+        }
     }
 }

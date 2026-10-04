@@ -54,9 +54,12 @@ use miryad_core::workflow::StepDefinition;
 use miryad_core::workflow::StepDispatcher;
 use miryad_core::workflow::StepError;
 use miryad_core::workflow::StepRegistry;
+// `RunInfo` n'est pas encore ré-exporté à plat (tâche ./mod.sdd #26, lot B) : chemin du module
+// `step`, public d'office par ./workflow/mod.rs.
 use miryad_core::workflow::WorkflowConfig;
 use miryad_core::workflow::recommended_options;
 use miryad_core::workflow::register_deployment;
+use miryad_core::workflow::step::RunInfo;
 use miryad_core::workflow::trigger_run;
 use restate_sdk::prelude::Endpoint;
 use restate_sdk::prelude::HttpServer;
@@ -100,7 +103,12 @@ impl MiryadWorkflowStep for Record {
     fn kind(&self) -> &'static str {
         "record"
     }
-    async fn run(&self, config: Value, inputs: HashMap<String, Value>) -> Result<Value, StepError> {
+    async fn run(
+        &self,
+        _run: &RunInfo,
+        config: Value,
+        inputs: HashMap<String, Value>,
+    ) -> Result<Value, StepError> {
         let id = config["id"].as_str().unwrap_or_default().to_string();
         let sleep_ms = config["sleep_ms"].as_u64().unwrap_or(0);
         self.0.lock().expect("journal").push(format!("start:{id}"));
@@ -115,7 +123,12 @@ impl MiryadWorkflowStep for Fail {
     fn kind(&self) -> &'static str {
         "fail"
     }
-    async fn run(&self, config: Value, _inputs: HashMap<String, Value>) -> Result<Value, StepError> {
+    async fn run(
+        &self,
+        _run: &RunInfo,
+        config: Value,
+        _inputs: HashMap<String, Value>,
+    ) -> Result<Value, StepError> {
         Err(StepError {
             message: format!("boom:{}", config["id"].as_str().unwrap_or_default()),
             retryable: false,
@@ -128,7 +141,12 @@ impl MiryadWorkflowStep for Flaky {
     fn kind(&self) -> &'static str {
         "flaky"
     }
-    async fn run(&self, _config: Value, _inputs: HashMap<String, Value>) -> Result<Value, StepError> {
+    async fn run(
+        &self,
+        _run: &RunInfo,
+        _config: Value,
+        _inputs: HashMap<String, Value>,
+    ) -> Result<Value, StepError> {
         if self.0.fetch_add(1, Ordering::SeqCst) < 2 {
             return Err(StepError {
                 message: "transitoire".to_string(),

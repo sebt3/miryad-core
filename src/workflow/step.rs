@@ -27,7 +27,10 @@ pub trait MiryadWorkflowStep: Send + Sync {
 
     /// Exécute le step.
     ///
-    /// `config` est le contenu opaque du champ `config` du `StepDefinition` de ce kind, reçu tel
+    /// `run` (#26, 2026-10-04, **changement cassant du trait** — API instable avant `1.0`) est
+    /// l'identité du run en lecture seule, assemblée par ./interpreter.rs et transmise par
+    /// ./dispatcher.rs ; un kind qui n'en a pas besoin l'ignore (`_run`). `config` est le contenu
+    /// opaque du champ `config` du `StepDefinition` de ce kind, reçu tel
     /// quel, jamais interprété ni validé ici. `inputs` porte une entrée par step amont déclaré
     /// dans `depends_on` (clé = id du step amont, valeur = la sortie que son propre `run` a
     /// rendue) ; un step sans dépendance reçoit un `HashMap` vide, jamais une absence. La valeur
@@ -37,9 +40,28 @@ pub trait MiryadWorkflowStep: Send + Sync {
     /// signale par un [`StepError`] `retryable: false` — jamais par un panic.
     async fn run(
         &self,
+        run: &RunInfo,
         config: serde_json::Value,
         inputs: HashMap<String, serde_json::Value>,
     ) -> Result<serde_json::Value, StepError>;
+}
+
+/// Identité du run en cours, telle que reçue par [`MiryadWorkflowStep::run`] (#26, 2026-10-04).
+///
+/// Donnée pure, sans aucune dépendance à `restate-sdk` : assemblée par ./interpreter.rs (clé de
+/// workflow Restate, `id` du `StepDefinition`, profondeur lue de l'en-tête d'invocation) et
+/// transmise telle quelle par ./dispatcher.rs. Fournie à **tous** les kinds, durables ou non ;
+/// un kind qui n'en a pas besoin l'ignore.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunInfo {
+    /// Clé du run en cours : la clé de workflow Restate de l'invocation de `DagInterpreter` qui
+    /// exécute ce step — pour un run enfant, la clé dérivée par le parent (./durable.sdd).
+    pub run_key: String,
+    /// `id` du [`crate::workflow::StepDefinition`] en cours d'exécution, unique dans son DAG.
+    pub step_id: String,
+    /// Profondeur d'imbrication des sous-workflows : `0` pour un run déclenché par
+    /// `client::trigger_run`, `+1` à chaque niveau de sous-workflow (./subworkflow.sdd).
+    pub depth: u32,
 }
 
 /// Échec d'un step tel que le rend [`MiryadWorkflowStep::run`].
@@ -99,23 +121,30 @@ impl StepRegistry {
     /// c'est le dispatcher interne qui l'`.await` — ou un [`StepError`] `retryable: false`
     /// (`kind inconnu: {kind}`) quand aucun `impl` n'enregistre ce kind : référence absente du
     /// registre = erreur de configuration du DAG, jamais transitoire, donc jamais retryable.
-    pub(crate) fn dispatch(
-        &self,
+    /// `run` (#26, 2026-10-04) est l'identité du run, relayée au `run` du kind sans être lue ici.
+    /// Capture de durée explicite (`use<'r>`, Hypothesis `'s: 'r`) : sous `#[async_trait]`, le
+    /// futur rendu par le `run` d'un `dyn MiryadWorkflowStep` emprunte `self` et `run` — sans
+    /// elle, `impl Future` ne peut pas les capturer (`E0700`, édition 2024) ; `'s: 'r` borne la
+    /// durée de l'emprunt de `self` sur celle de `run`, unique durée que le futur a besoin de
+    /// nommer.
+    pub(crate) fn dispatch<'s: 'r, 'r>(
+        &'s self,
         kind: &str,
+        run: &'r RunInfo,
         config: serde_json::Value,
         inputs: HashMap<String, serde_json::Value>,
-    ) -> Result<impl Future<Output = Result<serde_json::Value, StepError>>, StepError> {
+    ) -> Result<impl Future<Output = Result<serde_json::Value, StepError>> + use<'r>, StepError> {
         let step = self.steps.get(kind).ok_or_else(|| StepError {
             message: format!("kind inconnu: {kind}"),
             retryable: false,
         })?;
-        Ok(step.run(config, inputs))
+        Ok(step.run(run, config, inputs))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MiryadWorkflowStep, StepError, StepRegistry};
+    use super::{MiryadWorkflowStep, RunInfo, StepError, StepRegistry};
     use serde_json::{Value, json};
     use std::collections::HashMap;
 
@@ -132,6 +161,7 @@ mod tests {
     struct DupFirst;
     struct DupSecond;
     struct PanicsInRun;
+    struct RunIdentity;
 
     macro_rules! fixture_kind {
         ($ty:ty, $kind:literal, $body:expr) => {
@@ -142,41 +172,52 @@ mod tests {
                 }
                 async fn run(
                     &self,
+                    run: &RunInfo,
                     config: Value,
                     inputs: HashMap<String, Value>,
                 ) -> Result<Value, StepError> {
-                    let run_body: fn(Value, HashMap<String, Value>) -> Result<Value, StepError> = $body;
-                    run_body(config, inputs)
+                    let run_body: fn(&RunInfo, Value, HashMap<String, Value>) -> Result<Value, StepError> =
+                        $body;
+                    run_body(run, config, inputs)
                 }
             }
         };
     }
 
-    fixture_kind!(KindA, "a", |_config: Value, _inputs: HashMap<String, Value>| {
-        Ok(json!("valeur-a"))
-    });
-    fixture_kind!(KindB, "b", |_config: Value, _inputs: HashMap<String, Value>| {
-        Ok(json!("valeur-b"))
-    });
-    fixture_kind!(KindC, "c", |_config: Value, _inputs: HashMap<String, Value>| {
-        Ok(json!("valeur-c"))
-    });
+    fixture_kind!(
+        KindA,
+        "a",
+        |_run: &RunInfo, _config: Value, _inputs: HashMap<String, Value>| { Ok(json!("valeur-a")) }
+    );
+    fixture_kind!(
+        KindB,
+        "b",
+        |_run: &RunInfo, _config: Value, _inputs: HashMap<String, Value>| { Ok(json!("valeur-b")) }
+    );
+    fixture_kind!(
+        KindC,
+        "c",
+        |_run: &RunInfo, _config: Value, _inputs: HashMap<String, Value>| { Ok(json!("valeur-c")) }
+    );
     fixture_kind!(
         EchoConfig,
         "echo",
-        |config: Value, _inputs: HashMap<String, Value>| { Ok(config) }
+        |_run: &RunInfo, config: Value, _inputs: HashMap<String, Value>| { Ok(config) }
     );
     fixture_kind!(
         EchoInputs,
         "echo_inputs",
-        |_config: Value, inputs: HashMap<String, Value>| { Ok(Value::Object(inputs.into_iter().collect())) }
+        |_run: &RunInfo, _config: Value, inputs: HashMap<String, Value>| {
+            Ok(Value::Object(inputs.into_iter().collect()))
+        }
     );
     fixture_kind!(
         NoDeps,
         "no_deps",
-        |_config: Value, inputs: HashMap<String, Value>| { Ok(json!(inputs.len())) }
+        |_run: &RunInfo, _config: Value, inputs: HashMap<String, Value>| { Ok(json!(inputs.len())) }
     );
-    fixture_kind!(AlwaysTransient, "toujours-transitoire", |_config: Value,
+    fixture_kind!(AlwaysTransient, "toujours-transitoire", |_run: &RunInfo,
+                                                            _config: Value,
                                                             _inputs: HashMap<
         String,
         Value,
@@ -186,7 +227,8 @@ mod tests {
             retryable: true,
         })
     });
-    fixture_kind!(AlwaysPermanent, "toujours-permanent", |_config: Value,
+    fixture_kind!(AlwaysPermanent, "toujours-permanent", |_run: &RunInfo,
+                                                          _config: Value,
                                                           _inputs: HashMap<
         String,
         Value,
@@ -199,33 +241,43 @@ mod tests {
     fixture_kind!(
         DupFirst,
         "dupliqué",
-        |_config: Value, _inputs: HashMap<String, Value>| { Ok(json!("premier")) }
+        |_run: &RunInfo, _config: Value, _inputs: HashMap<String, Value>| { Ok(json!("premier")) }
     );
     fixture_kind!(
         DupSecond,
         "dupliqué",
-        |_config: Value, _inputs: HashMap<String, Value>| { Ok(json!(null)) }
+        |_run: &RunInfo, _config: Value, _inputs: HashMap<String, Value>| { Ok(json!(null)) }
     );
     // Kind volontairement défaillant (`Tasks` de ./step.sdd) : son `run` panique, verbatim, sans
     // `StepError`. Exemption `panic` du harnais déjà couverte par l'en-tête `cfg(test)` de
     // src/lib.rs — ici (test), et seulement ici, un panic est un outil de test.
-    fixture_kind!(PanicsInRun, "panique-dans-run", |_config: Value,
+    fixture_kind!(PanicsInRun, "panique-dans-run", |_run: &RunInfo,
+                                                    _config: Value,
                                                     _inputs: HashMap<
         String,
         Value,
     >| {
         panic!("panic délibéré du kind panique-dans-run")
     });
+    // Kind du Scenario #26 : rend les trois champs de la `RunInfo` reçue, preuve de transit intact.
+    fixture_kind!(
+        RunIdentity,
+        "echo_run",
+        |run: &RunInfo, _config: Value, _inputs: HashMap<String, Value>| {
+            Ok(json!({ "run_key": run.run_key, "step_id": run.step_id, "depth": run.depth }))
+        }
+    );
 
     /// Achemine un appel de bout en bout : `dispatch` (synchrone, qui choisit le kind ou refuse)
     /// puis exécution du futur rendu, comme le fera le dispatcher interne.
     async fn execute(
         registry: &StepRegistry,
         kind: &str,
+        run: &RunInfo,
         config: Value,
         inputs: HashMap<String, Value>,
     ) -> Result<Value, StepError> {
-        match registry.dispatch(kind, config, inputs) {
+        match registry.dispatch(kind, run, config, inputs) {
             Ok(future) => future.await,
             Err(error) => Err(error),
         }
@@ -233,6 +285,16 @@ mod tests {
 
     fn no_inputs() -> HashMap<String, Value> {
         HashMap::new()
+    }
+
+    /// `RunInfo` neutre pour les tests qui n'exercent pas son contenu (seul le Scenario #26
+    /// valide une identité précise).
+    fn run_info() -> RunInfo {
+        RunInfo {
+            run_key: "t".into(),
+            step_id: "s".into(),
+            depth: 0,
+        }
     }
 
     /// Scenario « dispatch vers le bon kind parmi plusieurs enregistrés » : avec `"a"`, `"b"` et
@@ -245,7 +307,7 @@ mod tests {
             .and_then(|r| r.register(KindB))
             .and_then(|r| r.register(KindC))
             .expect("kinds distincts");
-        let rendu = execute(&registry, "b", json!(null), no_inputs())
+        let rendu = execute(&registry, "b", &run_info(), json!(null), no_inputs())
             .await
             .expect("le kind « b » est enregistré, dispatch devait rendre un futur");
         assert_eq!(rendu, json!("valeur-b"));
@@ -263,7 +325,7 @@ mod tests {
         let mut inputs: HashMap<String, Value> = HashMap::new();
         inputs.insert("A".to_string(), json!(1));
         inputs.insert("B".to_string(), json!({ "x": true }));
-        let rendu = execute(&registry, "echo_inputs", json!(null), inputs)
+        let rendu = execute(&registry, "echo_inputs", &run_info(), json!(null), inputs)
             .await
             .expect("le kind « echo_inputs » est enregistré");
         assert_eq!(rendu, json!({ "A": 1, "B": { "x": true } }));
@@ -275,7 +337,7 @@ mod tests {
     async fn step_sans_dependance_reçoit_inputs_vide() {
         let mut registry = StepRegistry::new();
         registry.register(NoDeps).expect("kind distinct");
-        let rendu = execute(&registry, "no_deps", json!(null), no_inputs())
+        let rendu = execute(&registry, "no_deps", &run_info(), json!(null), no_inputs())
             .await
             .expect("le kind « no_deps » est enregistré");
         assert_eq!(rendu, json!(0));
@@ -288,7 +350,7 @@ mod tests {
     fn kind_inconnu_rend_steperror_non_retryable_sans_panic() {
         let mut registry = StepRegistry::new();
         registry.register(KindA).expect("kind distinct");
-        match registry.dispatch("inexistant", json!(null), no_inputs()) {
+        match registry.dispatch("inexistant", &run_info(), json!(null), no_inputs()) {
             Err(error) => {
                 assert_eq!(error.message, "kind inconnu: inexistant");
                 assert!(!error.retryable, "un kind inconnu ne doit jamais être retryable");
@@ -316,7 +378,8 @@ mod tests {
             "MRD-WORKFLOW-006: step kind already registered: dupliqué"
         );
         // Le premier kind reste celui enregistré.
-        let Ok(futur) = registry.dispatch("dupliqué", json!(null), no_inputs()) else {
+        let run = run_info();
+        let Ok(futur) = registry.dispatch("dupliqué", &run, json!(null), no_inputs()) else {
             panic!("le kind dupliqué devait rester enregistré");
         };
         assert_eq!(futur.await.ok(), Some(json!("premier")));
@@ -332,14 +395,29 @@ mod tests {
             .register(AlwaysTransient)
             .and_then(|r| r.register(AlwaysPermanent))
             .expect("kinds distincts");
-        let Err(transitoire) = execute(&registry, "toujours-transitoire", json!(null), no_inputs()).await
+        let Err(transitoire) = execute(
+            &registry,
+            "toujours-transitoire",
+            &run_info(),
+            json!(null),
+            no_inputs(),
+        )
+        .await
         else {
             panic!("le kind transitoire rend toujours une erreur");
         };
         assert_eq!(transitoire.message, "indisponible");
         assert!(transitoire.retryable);
         assert_eq!(transitoire.to_string(), "indisponible");
-        let Err(permanent) = execute(&registry, "toujours-permanent", json!(null), no_inputs()).await else {
+        let Err(permanent) = execute(
+            &registry,
+            "toujours-permanent",
+            &run_info(),
+            json!(null),
+            no_inputs(),
+        )
+        .await
+        else {
             panic!("le kind permanent rend toujours une erreur");
         };
         assert_eq!(permanent.message, "config invalide");
@@ -355,7 +433,7 @@ mod tests {
         let mut registry = StepRegistry::new();
         registry.register(EchoConfig).expect("kind distinct");
         let config = json!({ "a": 1, "b": [true, null] });
-        let rendu = execute(&registry, "echo", config.clone(), no_inputs())
+        let rendu = execute(&registry, "echo", &run_info(), config.clone(), no_inputs())
             .await
             .expect("le kind « echo » est enregistré");
         assert_eq!(rendu, config);
@@ -376,10 +454,29 @@ mod tests {
         // Étape 1 — `dispatch` lui-même ne panique pas : le kind est trouvé, le futur est rendu,
         // non exécuté. Si le registre convertissait le panic en `StepError` dès ce point,
         // `.expect` échouerait — ce serait une faute distincte, également rouge ici.
+        let run = run_info();
         let run_future = registry
-            .dispatch("panique-dans-run", json!(null), no_inputs())
+            .dispatch("panique-dans-run", &run, json!(null), no_inputs())
             .expect("le kind « panique-dans-run » est enregistré, dispatch doit rendre un futur");
         // Étape 2 — le panic éclate au poll du futur, tel que le kind l'a émis, sans conversion.
         let _ = run_future.await;
+    }
+
+    /// Scenario « `RunInfo` est transmis intact au kind » (#26) : `dispatch` avec
+    /// `RunInfo { run_key: "r1", step_id: "s1", depth: 2 }` fait rendre au kind les trois champs
+    /// exacts — le registre ne modifie, ne normalise ni ne perd aucune des trois valeurs.
+    #[tokio::test]
+    async fn run_info_transite_intacte_vers_le_kind() {
+        let mut registry = StepRegistry::new();
+        registry.register(RunIdentity).expect("kind distinct");
+        let run = RunInfo {
+            run_key: "r1".to_string(),
+            step_id: "s1".to_string(),
+            depth: 2,
+        };
+        let rendu = execute(&registry, "echo_run", &run, json!(null), no_inputs())
+            .await
+            .expect("le kind « echo_run » est enregistré");
+        assert_eq!(rendu, json!({ "run_key": "r1", "step_id": "s1", "depth": 2 }));
     }
 }

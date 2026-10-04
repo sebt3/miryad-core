@@ -54,6 +54,18 @@ pub enum WorkflowError {
     /// jamais par `classify_transport_error`.
     #[error("MRD-WORKFLOW-007: invalid workflow configuration: {0}")]
     InvalidConfig(String),
+    /// `MRD-WORKFLOW-008` — `MaxDepthExceeded` : garde-fou de récursion du kind `"subworkflow"` —
+    /// `depth` est la profondeur que le run enfant aurait eue, `max` le plafond du kind. Erreur de
+    /// **structure** du workflow (comme `InvalidDag`), déclarée ici car ce fichier est l'unique
+    /// porteur de la taxonomie `MRD-WORKFLOW-*` ; construite exclusivement par ./subworkflow.rs
+    /// (#26, 2026-10-04).
+    #[error("MRD-WORKFLOW-008: sub-workflow depth {depth} exceeds the maximum of {max}")]
+    MaxDepthExceeded {
+        /// Profondeur que le run enfant aurait eue.
+        depth: u32,
+        /// Plafond de profondeur du kind.
+        max: u32,
+    },
 }
 
 /// Budget de la `Display` de `RestateRejected` : 1 KiB de corps, coupe sur une frontière de
@@ -395,6 +407,18 @@ mod tests {
         assert_eq!(
             WorkflowError::InvalidConfig("admin_url is empty".to_string()).to_string(),
             "MRD-WORKFLOW-007: invalid workflow configuration: admin_url is empty"
+        );
+    }
+
+    /// Scenario « `MaxDepthExceeded` rend le code MRD-WORKFLOW-008 » (#26) : variante structurée
+    /// `{ depth, max }`, `Display` exacte caractère à caractère — `depth` est la profondeur que le
+    /// run enfant aurait eue, `max` le plafond du kind. Construite exclusivement par
+    /// ./subworkflow.rs (lot B) ; ce test ne verrouille que le rendu.
+    #[test]
+    fn max_depth_exceeded_rend_le_code_mrd_workflow_008() {
+        assert_eq!(
+            WorkflowError::MaxDepthExceeded { depth: 5, max: 4 }.to_string(),
+            "MRD-WORKFLOW-008: sub-workflow depth 5 exceeds the maximum of 4"
         );
     }
 }

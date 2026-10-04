@@ -29,7 +29,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use vynil_core::engine::Script;
 
-use super::step::{MiryadWorkflowStep, StepError};
+use super::step::{MiryadWorkflowStep, RunInfo, StepError};
 
 /// Plafond d'opérations Rhai par exécution : `spawn_blocking` isole le thread de travail mais ne
 /// peut pas interrompre une tâche bloquante — sans ce plafond, un `loop {}` occuperait un thread
@@ -138,7 +138,12 @@ impl MiryadWorkflowStep for RhaiStep {
         "rhai"
     }
 
-    async fn run(&self, config: Value, inputs: HashMap<String, Value>) -> Result<Value, StepError> {
+    async fn run(
+        &self,
+        _run: &RunInfo,
+        config: Value,
+        inputs: HashMap<String, Value>,
+    ) -> Result<Value, StepError> {
         // Étape 1 — le `config` doit porter `script` ; un config mal formé ne se corrige pas en
         // rejouant (déterministe vis-à-vis de l'entrée).
         let rhai_config = serde_json::from_value::<RhaiConfig>(config.clone()).map_err(|e| StepError {
@@ -191,12 +196,23 @@ impl MiryadWorkflowStep for RhaiStep {
 #[cfg(test)]
 mod tests {
     use super::super::step::MiryadWorkflowStep;
+    use super::super::step::RunInfo;
     use super::RhaiStep;
     use serde_json::{Value, json};
     use std::collections::HashMap;
 
     fn no_inputs() -> HashMap<String, Value> {
         HashMap::new()
+    }
+
+    /// `RunInfo` neutre (#26 lot A) : le kind `"rhai"` l'ignore (`_run`), le script ne voit
+    /// toujours que `inputs` et `config` — aucun changement de comportement attendu.
+    fn run_info() -> RunInfo {
+        RunInfo {
+            run_key: "t".into(),
+            step_id: "s".into(),
+            depth: 0,
+        }
     }
 
     /// Chemin des fixtures de résolution de modules Rhai, ancré sur la racine du dépôt via
@@ -214,6 +230,7 @@ mod tests {
         inputs.insert("name".to_string(), json!("Ada"));
         let rendu = step
             .run(
+                &run_info(),
                 json!({ "script": "#{ greeting: \"hello \" + inputs.name }" }),
                 inputs,
             )
@@ -230,7 +247,10 @@ mod tests {
     #[tokio::test]
     async fn config_sans_script_est_rejete_avant_toute_evaluation() {
         let step = RhaiStep::default();
-        let Err(erreur) = step.run(json!({ "not_a_script": 1 }), no_inputs()).await else {
+        let Err(erreur) = step
+            .run(&run_info(), json!({ "not_a_script": 1 }), no_inputs())
+            .await
+        else {
             panic!("une config sans `script` devait être refusée avant toute évaluation");
         };
         assert!(!erreur.retryable, "config invalide : jamais retryable");
@@ -256,7 +276,10 @@ mod tests {
     #[tokio::test]
     async fn script_qui_echoue_rend_une_erreur_non_retryable() {
         let step = RhaiStep::default();
-        let Err(erreur) = step.run(json!({ "script": "throw \"boom\"" }), no_inputs()).await else {
+        let Err(erreur) = step
+            .run(&run_info(), json!({ "script": "throw \"boom\"" }), no_inputs())
+            .await
+        else {
             panic!("`throw \"boom\"` devait rendre un Err");
         };
         assert!(!erreur.retryable, "script échoué : jamais retryable");
@@ -273,7 +296,9 @@ mod tests {
     #[tokio::test]
     async fn script_qui_ne_rend_pas_une_map_echoue_proprement() {
         let step = RhaiStep::default();
-        let rendu = step.run(json!({ "script": "42" }), no_inputs()).await;
+        let rendu = step
+            .run(&run_info(), json!({ "script": "42" }), no_inputs())
+            .await;
         match rendu {
             Ok(valeur) => panic!("`42` ne devait jamais rendre un Ok, rendu : {valeur}"),
             Err(erreur) => {
@@ -294,6 +319,7 @@ mod tests {
         let step = RhaiStep::default();
         let rendu = step
             .run(
+                &run_info(),
                 json!({ "script": "#{ x: config.extra }", "extra": 7 }),
                 no_inputs(),
             )
@@ -310,7 +336,7 @@ mod tests {
         let step = RhaiStep::default();
         let rendu = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            step.run(json!({ "script": "loop {}; #{}" }), no_inputs()),
+            step.run(&run_info(), json!({ "script": "loop {}; #{}" }), no_inputs()),
         )
         .await
         .expect("le plafond d'opérations devait interrompre la boucle avant 30 s");
@@ -343,6 +369,7 @@ mod tests {
         inputs_a.insert("dep".to_string(), json!("Ada"));
         let rendu_a = step
             .run(
+                &run_info(),
                 json!({ "script": "let contamination = \"fuite\"; #{ a: contamination }" }),
                 inputs_a,
             )
@@ -352,7 +379,11 @@ mod tests {
         // Appel B : référence cette variable — elle ne doit pas exister (nouveau `Script`,
         // nouveau `Scope`). Un `Ok` ici prouverait un `Script` partagé.
         let rendu_b: Result<Value, _> = step
-            .run(json!({ "script": "#{ b: contamination }" }), no_inputs())
+            .run(
+                &run_info(),
+                json!({ "script": "#{ b: contamination }" }),
+                no_inputs(),
+            )
             .await;
         match rendu_b {
             Ok(valeur) => {
@@ -369,7 +400,11 @@ mod tests {
         }
         // Appel C : le moteur est intact, ses helpers enregistrés par `new_bare` répondent.
         let rendu_c = step
-            .run(json!({ "script": "#{ c: base64_encode(\"x\") }" }), no_inputs())
+            .run(
+                &run_info(),
+                json!({ "script": "#{ c: base64_encode(\"x\") }" }),
+                no_inputs(),
+            )
             .await
             .expect("l'appel C, script valide, devait rendre un Ok");
         assert_eq!(rendu_c, json!({ "c": "eA==" }));
@@ -389,7 +424,10 @@ mod tests {
         let script = "import \"lib\" as m;\n#{ x: m::value() }";
         // default() : aucun chemin de résolution → module introuvable, erreur catégorisée.
         let par_defaut = RhaiStep::default();
-        let Err(erreur) = par_defaut.run(json!({ "script": script }), no_inputs()).await else {
+        let Err(erreur) = par_defaut
+            .run(&run_info(), json!({ "script": script }), no_inputs())
+            .await
+        else {
             panic!("sans chemin de résolution, `import \"lib\"` devait échouer");
         };
         assert!(!erreur.retryable, "module introuvable : jamais retryable");
@@ -401,7 +439,7 @@ mod tests {
         // new(vec![chemin]) : le même script réussit et rend la valeur du module importé.
         let avec_chemin = RhaiStep::new(vec![fixture_resolver_path()]);
         let rendu = avec_chemin
-            .run(json!({ "script": script }), no_inputs())
+            .run(&run_info(), json!({ "script": script }), no_inputs())
             .await
             .expect("avec le chemin de fixture, l'import doit résoudre");
         assert_eq!(rendu, json!({ "x": 41 }));
@@ -415,7 +453,11 @@ mod tests {
             s.engine.register_fn("double", |x: i64| x * 2);
         });
         let rendu = step
-            .run(json!({ "script": "#{ v: double(21) }" }), no_inputs())
+            .run(
+                &run_info(),
+                json!({ "script": "#{ v: double(21) }" }),
+                no_inputs(),
+            )
             .await
             .expect("la fonction hôte `double` enregistrée par `with_setup` doit répondre");
         assert_eq!(rendu, json!({ "v": 42 }));
@@ -440,6 +482,7 @@ mod tests {
         inputs.insert("name".to_string(), json!("Ada"));
         let rendu = step
             .run(
+                &run_info(),
                 json!({ "script": "#{ a: ctx_name(), b: ctx_extra() }", "extra": 7 }),
                 inputs,
             )
@@ -464,7 +507,11 @@ mod tests {
                 s.engine.register_fn("g", || 20_i64);
             });
         let rendu = step
-            .run(json!({ "script": "#{ f: f(), h: h(), g: g() }" }), no_inputs())
+            .run(
+                &run_info(),
+                json!({ "script": "#{ f: f(), h: h(), g: g() }" }),
+                no_inputs(),
+            )
             .await
             .expect("les deux closures cumulées devaient être effectives");
         assert_eq!(rendu, json!({ "f": 1, "h": 2, "g": 20 }));
@@ -487,12 +534,20 @@ mod tests {
                 .register_fn("apparitions", move || i64::try_from(numero).unwrap_or(i64::MAX));
         });
         let premier = step
-            .run(json!({ "script": "#{ v: apparitions() }" }), no_inputs())
+            .run(
+                &run_info(),
+                json!({ "script": "#{ v: apparitions() }" }),
+                no_inputs(),
+            )
             .await
             .expect("la closure doit s'exécuter au premier run");
         assert_eq!(premier, json!({ "v": 1 }));
         let second = step
-            .run(json!({ "script": "#{ v: apparitions() }" }), no_inputs())
+            .run(
+                &run_info(),
+                json!({ "script": "#{ v: apparitions() }" }),
+                no_inputs(),
+            )
             .await
             .expect("la closure doit être rappelée au second run, pas seulement au premier");
         assert_eq!(second, json!({ "v": 2 }));
@@ -517,7 +572,7 @@ mod tests {
                 .register_fn("slow", move || handle.block_on(std::future::ready(5_i64)));
         });
         let rendu = step
-            .run(json!({ "script": "#{ v: slow() }" }), no_inputs())
+            .run(&run_info(), json!({ "script": "#{ v: slow() }" }), no_inputs())
             .await
             .expect("block_on sur le Handle capturé doit rendre 5, sans deadlock");
         assert_eq!(rendu, json!({ "v": 5 }));
@@ -543,7 +598,10 @@ mod tests {
             });
         // Script valide : s'il avait été évalué, `run` rendrait un Ok — l'Err attendu prouve
         // l'interruption avant l'évaluation, la sonde à 0 qu'aucune closure suivante n'a tourné.
-        let Err(erreur) = step.run(json!({ "script": "#{ v: 1 }" }), no_inputs()).await else {
+        let Err(erreur) = step
+            .run(&run_info(), json!({ "script": "#{ v: 1 }" }), no_inputs())
+            .await
+        else {
             panic!("une closure qui panique ne devait jamais rendre un Ok");
         };
         assert!(!erreur.retryable, "panic de closure : jamais retryable");
@@ -572,6 +630,7 @@ mod tests {
             inputs.insert("name".to_string(), json!("Ada"));
             let rendu = step
                 .run(
+                    &run_info(),
                     json!({ "script": "#{ greeting: \"hello \" + inputs.name }" }),
                     inputs,
                 )
@@ -580,7 +639,7 @@ mod tests {
             assert_eq!(rendu, json!({ "greeting": "hello Ada" }));
 
             let Err(erreur) = step
-                .run(json!({ "script": "#{ v: double(1) }" }), no_inputs())
+                .run(&run_info(), json!({ "script": "#{ v: double(1) }" }), no_inputs())
                 .await
             else {
                 panic!("`double` n'est enregistrée par aucune closure : le script devait échouer");
