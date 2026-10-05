@@ -505,6 +505,158 @@ désérialisation échouerait systématiquement. `registry.rs` désérialise don
 étant de toute façon écrasée par `core::update` (même convention que le REST : la PK vient du
 chemin, pas du corps).
 
+## Moteur de workflow
+
+Quatrième surface, à forme différente : la feature Cargo `workflow` ne monte **aucune** route sur le
+`axum::Router` de l'app — ses deux services (`DagInterpreter`, `StepDispatcher`) parlent le protocole
+`restate-sdk` (0.12), et l'app construit et lie elle-même son `Endpoint` dans son `main()`
+(`src/workflow/mod.sdd`). Le DAG est une donnée : stocké dans `miryad_workflow_definitions`, éditable
+par un admin via le CRUD générique (`WorkflowDefinition` est une `MiryadResource` comme une autre,
+politique `AdminOnly` configurable), exécuté par un **cluster Restate self-hosté que la crate ne gère
+jamais**. Le comparatif des moteurs écartés (apalis-workflow, Acts, Hatchet, Temporal, Prefect) et
+l'historique du choix sont écrits dans `docs/roadmap.md` (feature 7) — on y renvoie, on ne les
+re-écrit pas ici. Specs : `src/workflow/*.sdd` (neuf enfants sous `mod.sdd`).
+
+**Le spike (2026-09-22/23) a tranché, et ses contraintes sont restées.** Le spike du 2026-09-22
+(conteneur `restate-server` local, process du service tué et relancé mi-exécution) a validé
+fan-out/fan-in et reprise sur crash sans rejeu des steps journalisés ; le DAG est passé ensuite à la
+forme réelle de la crate (DAG chargé depuis la donnée validée, dispatch par kind via un registre),
+qui n'a pas la même preuve empirique directe. Deux découvertes du spike vivent comme des contraintes
+dures dans `src/workflow/interpreter.rs`, pas comme des options : le fan-out d'une couche ne peut
+passer que par `ctx.request(...).call()` poussé dans un `DurableFuturesUnordered` — jamais
+`futures::future::join_all`, qui compile mais bloque chaque couche jusqu'à l'expiration d'un délai
+interne du serveur (~60 s observés, invisible sans instrumentation) ; et la validation structurelle
+du DAG est la seule fonction `validate_dag` de `src/workflow/definition.rs`, appelée une fois en tête
+de `run` — pas de détection de cycle réimplémentée dans la boucle d'exécution.
+
+**Architecture : deux services Restate, la dynamique en Rust pur.** `DagInterpreter` (service
+`#[workflow]`, handler `run`) marche le DAG par couches topologiques ; `StepDispatcher` (service
+`#[service]`, handler `execute`) exécute un step quelconque à partir d'un `StepRegistry` fourni par
+l'app. Pourquoi un seul service pour tous les kinds : `restate-sdk` lie ses services à la compilation
+(`Endpoint::builder().bind(...)`), aucun enregistrement dynamique par kind n'est possible — la
+dynamique vit donc entièrement dans le registre en Rust pur, et un kind de step
+(`MiryadWorkflowStep`) s'écrit et se teste comme une fonction async ordinaire, sans jamais instancier
+`restate-sdk` (`src/workflow/step.sdd`). La porte sortante HTTP (admin API et ingress, `reqwest`) est
+bornée à `src/workflow/client.rs` ; tout le reste de la crate ne parle à Restate que par le protocole
+du SDK.
+
+**Schéma de déploiement : une instance Restate par cluster Kubernetes.** Pas d'opérateur, un
+StatefulSet trivial packagé en vynil box — hors dépôt, cohérent avec la frontière « miryad-core est
+une bibliothèque, pas un déployable ». Le statut d'un run n'est **jamais dupliqué en base** par
+miryad-core : il se lit en proxy direct de Restate (aucune fonction de lecture de statut n'existe
+encore dans la crate — `client.rs` n'enregistre et ne déclenche que ; la lecture est un fichier à
+spécifier si le besoin se confirme). `client::register_deployment` est appelé par l'app à son
+démarrage, idempotent : plusieurs réplicas qui l'appellent en parallèle sur la même
+`deployment_url` répondent tous `2xx`, aucun état partagé nécessaire. `client::trigger_run` ne bloque
+jamais sur la complétion d'un run (suffixe `/send`, jamais la forme bloquante) — un DAG peut durer
+arbitrairement longtemps.
+
+**Recommandation `deployment_url` : un `Service` Kubernetes stable, pas une IP de pod.** La crate ne
+valide ni n'inspecte la forme de `deployment_url` (décision Sébastien 2026-09-23 : c'est à l'app de
+savoir ce qu'elle expose et comment Restate doit la joindre) — mais une IP de pod éphémère enregistrée
+comme URL de déploiement devient invisible au premier re-scheduling. La recommandation vit ici,
+jamais imposée en code.
+
+**Risque de rollout : `force: true` casse les invocations en cours.** `register_deployment` pose
+`"force": true` à chaque appel, et ce n'est pas décoratif : le spike ciblé du 2026-09-23 a observé
+qu'un `POST /deployments` sans ce champ sur une URI déjà enregistrée répond `200` mais **ne redécouvre
+pas le schéma** — le nouveau handler reste invisible sans erreur visible (le défaut `true` documenté
+dans l'OpenAPI de l'admin API ne vaut pas quand le champ est absent du corps ; la crate ne se fie à
+aucun défaut serveur non vérifié). Mais le schéma OpenAPI dit aussi, sur `force` lui-même : « can lead
+inflight invocations to an unrecoverable error state ». Un rolling update qui change le schéma exposé
+pendant que des invocations tournent sur l'ancien (anciens/nouveaux pods derrière le même `Service`)
+peut les casser irréversiblement. C'est un risque opérationnel du self-host — une stratégie de rollout
+(drain avant enregistrement, ou versionnement) est une décision d'exploitation, pas quelque chose que
+la crate peut détecter depuis un seul appel HTTP synchrone.
+
+**Déduplication de double déclenchement : hors périmètre de la crate, volontairement.** Chaque
+`trigger_run` génère un `run_key` UUID v4 neuve et ne pose jamais d'`Idempotency-Key` ; une clé fournie
+par l'appelant est refusée (Restate garantit un seul `run` par clé — réutiliser une clé risquerait une
+résolution silencieuse vers un run déjà terminé). Fusionner deux soumissions équivalentes est à la
+charge de l'appelant de haut niveau, avant d'appeler `trigger_run` (ex. en réutilisant délibérément une
+clé). Choix de périmètre explicite de Sébastien (2026-09-23), pas un oubli.
+
+**Retry : la politique est posée au `bind()`, par l'app — sinon le serveur retry indésiniment.**
+`dispatcher.rs` ne fixe aucune politique et ne peut pas (il ne possède pas l'appel `.bind()`). Sans
+`ServiceOptions` au bind de `StepDispatcher`, le défaut serveur est un retry exponentiel **indéfini**
+(spike 2026-09-23 : un kind qui panique boucle sans jamais s'arrêter ni passer en `paused`) — ignorer
+`recommended_options()` (5 tentatives puis `pause`) ou n'en poser aucune est un choix de l'app, pas une
+lacune de la crate. Avec la politique recommandée (`retry_policy_pause_on_max_attempts`), l'invocation
+arrive en statut `paused` — pas `failed` — et sa
+relance est une **action manuelle de l'opérateur** (CLI/UI Restate, hors crate) — c'est le choix acté
+le 2026-09-23 : pas de retry permanent, relancer un run bloqué doit être délibéré. Conséquence pour
+l'auteur d'un kind : un `run` qui se déclare `retryable: true` est rejoué **entier** depuis le début à
+chaque tentative — il doit être idempotent. Les panics suivent la même politique : vérifié au spike du
+2026-09-23 qu'un panic dans un `ctx.run()` n'interrompt que l'invocation en cours (isolation par tâche
+tokio du serveur HTTP du SDK), le processus `StepDispatcher` reste debout et sert les autres
+invocations — aucun code d'isolation dédié n'était à écrire, et aucun n'a été écrit.
+
+**Note d'exploitation — reprise sur crash du processus service.** La garantie qui a fait choisir
+Restate n'est testée nulle part de façon automatisable dans le processus de test (le test
+d'intégration rejoue un *step* transitoire, pas un crash) : elle repose sur la méthode du spike du
+2026-09-22 — tuer le process du service mi-couche, le relancer, vérifier qu'**aucun step journalisé
+n'est rejoué** et que le fan-in reste correct. À consigner comme ce qu'elle est : une preuve par spike
+à refaire en cas d'évolution majeure du `restate-sdk`, pas un contrat verrouillé par la CI.
+
+**Contexte de run et kinds durables (#26, 2026-10-04).** Chaque kind reçoit un `RunInfo`
+(`run_key`/`step_id`/`depth`) en lecture seule, sans dépendance `restate-sdk`. La profondeur
+d'imbrication voyage dans l'en-tête d'invocation `x-miryad-depth` (lu par `DagInterpreter::run`,
+absent/malformé → `0`) plutôt que dans le corps du DAG, figé par `client.rs`. Les kinds qui pilotent
+le moteur — dormir durablement, journaliser leurs effets, lancer un sous-DAG — ne peuvent pas vivre
+dans le moule ordinaire : une fermeture `ctx.run()` (le seul endroit où un kind ordinaire s'exécute)
+interdit `ctx.request`/`ctx.sleep`, limite du SDK. D'où un second trait `MiryadDurableStep`, exécuté
+par le dispatcher **sans** `ctx.run()` englobant, avec un `StepContext` volontairement étroit (`sleep`,
+`run_effect`, `run_child_dag`) plutôt que le `Context` complet — l'API publique ne doit pas être
+couplée à la version de `restate-sdk`. L'idempotence au rejeu du sous-DAG vient d'une clé d'enfant
+déterministe `{run_key}:{step_id}` (une invocation parente rejouée recalcule la même clé, Restate
+rattache l'appel au run enfant déjà démarré) — effet secondaire utile : l'arbre des runs se relit par
+préfixe de clé dans l'UI Restate, sans canal d'observabilité supplémentaire.
+
+**Sous-workflow (`kind: "subworkflow"`) : garde d'exécution, pas détection statique.** Le DAG enfant
+est **en ligne dans le `config` du step** — la crate ne charge jamais une définition en base depuis le
+moteur (déterminisme du rejeu, même règle que `DagInterpreter`). Un cycle A → B → A traverse plusieurs
+définitions et n'est pas détectable statiquement (et les DAG fabriqués par run échapperaient de toute
+façon à une telle détection) : le garde-fou est une profondeur maximale **à l'exécution**
+(`DEFAULT_MAX_DEPTH = 4`, surchargeable via `SubWorkflowStep::new` ; `0` désactive le kind), qui rend
+un `MRD-WORKFLOW-008` non retryable — la récursion ne se résorbe pas en rejouant. En v1 l'enfant
+n'hérite d'aucune donnée du parent (ni `inputs`, ni identité du déclencheur) et son échec fait échouer
+le parent.
+
+**Rhai et fonctions hôte (#27) : la crate ne donne aucun superpouvoir, l'app oui.** `RhaiStep`
+(exécuté dans un `tokio::task::spawn_blocking` — l'évaluation Rhai est synchrone et un script lent ne
+doit pas monopoliser le thread de travail d'autres kinds du même processus) part d'un moteur **neuf à
+chaque exécution** : aucun état de script ne fuite entre deux invocations. `RhaiStep::new(resolver_path)`
+seul ouvre les `import` — miryad-core n'embarque aucun chemin de résolution par défaut, la portée de
+fichiers exposée aux scripts reste la responsabilité de l'app. `RhaiStep::with_setup` (#27,
+2026-10-04) empile des closures **fournies par l'app**, appelées pour enregistrer des fonctions hôte
+sur le moteur —
+cumulatives, dans l'ordre, rappelées à chaque exécution. Le plafond anti-boucle infinie est interne au
+moteur (`MAX_OPERATIONS = 10_000_000`, surchargeable par une closure `with_setup`), jamais un timeout
+externe : une tâche bloquante ne s'annule pas, un plafond d'opérations est la seule reprise possible.
+Tout échec de script est non retryable par nature (déterministe vis-à-vis de l'entrée).
+
+**Unicité des définitions par propriétaire (#28, 2026-10-04).** `name` n'est plus unique globalement :
+deux index uniques portent l'unicité **par propriétaire** — composite (`owner_id`, `name`) pour les
+définitions possédées, partiel sur `name` `WHERE owner_id IS NULL` pour les sans-proprio (NULL n'égale
+pas NULL dans un index composite). La migration `m20260923_000001` a été modifiée **en place** à cette
+occasion — exception actée par Sébastien le 2026-10-04 parce qu'aucune production n'existe à ce jour ;
+la règle « une migration committée est immuable » reprend dès la première mise en production.
+
+**Asymétrie GraphQL de `before_update`/`before_delete` — actée, et ce qu'elle change pour le
+workflow.** La revalidation du DAG à la mise à jour d'une `WorkflowDefinition` repose sur
+`MiryadResource::before_update` (amendement `/src/resource.sdd` du 2026-09-23, motivé par
+`src/workflow/definition.sdd` : une définition doit être revalidée à l'édition, pas seulement à la
+création). Seaography `2.0.0-rc.9` ne pilote son hook équivalent (`before_active_model_save`) qu'à
+l'insertion : `before_update`/`before_delete` ne se déclenchent donc que sur REST et MCP, **jamais sur
+GraphQL** — exception nommée à la règle de parité, tracée (`/src/resource.sdd`,
+`/src/graphql/hooks.sdd`), pour cette paire de hooks seulement. Conséquence workflow : l'édition d'une
+définition par GraphQL bypasserait la validation du hook — rattrapée à l'exécution par
+`DagInterpreter::run`, qui revalide systématiquement en tête (TerminalError `400`, message
+`MRD-WORKFLOW-004`, aucun step exécuté) : un DAG cassé n'est jamais exécuté, il est rejeté au premier
+déclenchement au lieu d'être refusé à l'écriture. À replacer dans son contexte : le pont GraphQL
+lui-même reste un prototype sans consommateur en production (statut du 2026-09-27,
+`/src/graphql/hooks.sdd`).
+
 ## Hooks métier CRUD
 
 Point d'extension optionnel par entité sur `create` — validation ou mutation de l'`ActiveModel`
