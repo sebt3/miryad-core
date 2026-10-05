@@ -181,6 +181,31 @@ Tasks:
   [x] Décider si le moteur de workflow (roadmap 7/9) entre dans une spec — soldé : moteur choisi
     (Restate), `src/workflow/*.sdd` en place, livré en 0.1.4 ; roadmap et AGENTS.md corrigés
     2026-10-04.
+  [x] Spec `src/workflow/mod.sdd` produite puis revue par Sébastien (approuvée 2026-10-04,
+    commits 9a56ed6/cddefd7 — module agrégé du moteur Restate, #26 clos c8b4e4f).
+  [x] Spec `src/workflow/client.sdd` produite puis revue par Sébastien (approuvée en session,
+    livrée 2026-10-03 vague B6a, validator PASS).
+  [x] Spec `src/workflow/definition.sdd` produite puis revue par Sébastien (approuvée 2026-09-23,
+    amendée #28 2026-10-04, validator PASS).
+  [x] Spec `src/workflow/dispatcher.sdd` produite puis revue par Sébastien (approuvée 2026-10-04,
+    #26 lots A/B clos, validator PASS).
+  [x] Spec `src/workflow/durable.sdd` produite puis revue par Sébastien (neuve #26, approuvée
+    2026-10-04 ; tâche « Implémenter » tenue ouverte dans la spec, amendement `Must` `run_effect`
+    en attente de Sébastien).
+  [x] Spec `src/workflow/error.sdd` produite puis revue par Sébastien (approuvée 2026-10-04,
+    variante `MRD-WORKFLOW-008` en place, validator PASS).
+  [x] Spec `src/workflow/interpreter.sdd` produite puis revue par Sébastien (approuvée 2026-10-04,
+    #26 lot A clos, validator PASS).
+  [x] Spec `src/workflow/rhai_step.sdd` produite puis revue par Sébastien (approuvée 2026-10-04,
+    #27 clos db86685 + lot A clos, validator PASS).
+  [x] Spec `src/workflow/step.sdd` produite puis revue par Sébastien (approuvée 2026-10-04,
+    #26 lots A/B — la tâche lot A est tenue ouverte, amendement `Must` `dispatch` en attente de
+    Sébastien).
+  [x] Spec `src/workflow/subworkflow.sdd` produite puis revue par Sébastien (neuve #26, approuvée
+    2026-10-04, livrée 01bf9ba, validator PASS).
+  [x] Amendement `/src/resource.sdd` + `/src/rest/core.sdd` pour @before_update/@before_delete —
+    acté par Sébastien 2026-09-23 (exception nommée GraphQL, miroir dans `/miryad-core.sdd`
+    `Must`), implémentation livrée le même jour (commits 145b17e/1d68b79, validator PASS).
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec `.sdd` relue et approuvée par Sébastien, sans

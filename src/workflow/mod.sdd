@@ -133,10 +133,18 @@ Handles:
     autre module gated de la crate (`/src/lib.sdd`, `Handles`) — aucun squelette d'API résiduel.
 
 Tasks:
-  [ ] #26 (2026-10-04) : déclarer `durable` et `subworkflow`, ajouter les quatre ré-exports
+  [x] #26 (2026-10-04) : déclarer `durable` et `subworkflow`, ajouter les quatre ré-exports
     (`MiryadDurableStep`, `StepContext`, `SubWorkflowStep`, `RunInfo`) et étendre le test de chemins
     plats (`../../tests/workflow_flat_paths.rs` et `mod tests`) à ces quatre chemins — dernier
     fichier du lot #26, après ./durable.rs et ./subworkflow.rs.
+    Réalisé 2026-10-04 (déclarations et trois ré-exports pris aux commits e521581/01bf9ba avec
+    l'accord du validator ; clôture c8b4e4f, validator PASS) : @RunInfo ré-exporté, ré-exports
+    recomptés = exactement les vingt-quatre chemins de l'@Exposes (sans glob ni @pub(crate)) ;
+    les deux surfaces des chemins plats étendues aux quatre chemins neufs (treize exercées : douze
+    en position de type + @configure_policy en valeur), rouge @E0425 sur @RunInfo avant ré-export ;
+    commentaires obsolètes de ../../tests/workflow_restate.rs corrigés à cette occasion (autorisé
+    par les `Can modify` de ./interpreter.sdd et ./subworkflow.sdd — ratification formelle à
+    Sébastien, question ouverte).
   [x] Mécanique Cargo de `tokio` : Sébastien (2026-09-23, relecture du lot) — `tokio` entre dans
     `[dependencies]` en `optional = true`, activé par `workflow` seule via `dep:tokio` ;
     l'entrée `[dev-dependencies]` existante est conservée inchangée (les tests existants restent
