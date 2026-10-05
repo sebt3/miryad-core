@@ -679,4 +679,126 @@ mod tests {
             .await
             .expect("le même `name` chez un autre propriétaire est accepté par le CRUD (#28)");
     }
+
+    /// Scenario « aller-retour d'un DAG par la colonne `steps` » (arbitré par Sébastien le
+    /// 2026-09-29, batch de clôture du moteur) : un `DagSteps` valide de trois steps dont deux
+    /// dépendances, inséré par `SeaORM` sur le schéma migré (`base_migreee`, vraie migration), est
+    /// relu par `Entity::find_by_id` **égal** à ce qui a été écrit — `ids`, `depends_on`, `kind`
+    /// et `config` compris. L'égalité porte sur l'objet complet reconstruit par
+    /// `FromJsonQueryResult`, pas sur le JSON brut : c'est la lecture que seule l'écriture était
+    /// prouvée jusque-là.
+    ///
+    /// Test de scellement (pas de rouge) : l'écriture de la colonne était déjà éprouvée par
+    /// `crud_doublon_…` et la migration (`steps_accepts_arbitrary_json`) ; la lecture est
+    /// supposée fonctionner. La non-trivialité de l'assertion est prouvée par mutation en
+    /// dernière partie : une seconde ligne inscrite avec un `config` modifié d'un seul champ
+    /// imbriqué ressort inégale à la première à la relecture — l'`assert_eq!` central dépend
+    /// donc bien de chaque champ traversant la colonne JSON dans les deux sens.
+    #[tokio::test]
+    async fn aller_retour_d_un_dag_par_la_colonne_steps() {
+        use sea_orm::ActiveModelTrait as _;
+        use sea_orm::EntityTrait as _;
+
+        let db = base_migreee().await;
+
+        // DAG de fixture : `"A"` sans dépendance, `"B"` dépendant de `"A"`, `"C"` dépendant de
+        // `"A"` et `"B"` — trois steps, deux porteurs de dépendances. `kind` distincts et
+        // `config` hétérogènes (chaîne+entier, tableau+flottant+booléen, objet imbriqué avec
+        // tableau) : toute sortie plausible de step, jamais interprétée ici (`Must not`).
+        let dag_inser = DagSteps(vec![
+            StepDefinition {
+                id: "A".to_string(),
+                depends_on: vec![],
+                kind: "entree".to_string(),
+                config: serde_json::json!({ "sortie": "brut", "lignes": 12 }),
+            },
+            StepDefinition {
+                id: "B".to_string(),
+                depends_on: vec!["A".to_string()],
+                kind: "transform".to_string(),
+                config: serde_json::json!({ "sorties": ["net", "reduit"], "seuil": 0.5, "strict": true }),
+            },
+            StepDefinition {
+                id: "C".to_string(),
+                depends_on: vec!["A".to_string(), "B".to_string()],
+                kind: "rapport".to_string(),
+                config: serde_json::json!({
+                    "sortie": { "destinataire": "admin", "formats": ["pdf", "csv"] }
+                }),
+            },
+        ]);
+
+        let insere = ActiveModel {
+            id: NotSet,
+            name: Set("aller-retour".to_string()),
+            steps: Set(dag_inser.clone()),
+            owner_id: Set(None),
+            created_at: Set(Utc::now()),
+        }
+        .insert(&db)
+        .await
+        .expect("l'insertion d'un `DagSteps` par SeaORM sur le schéma migré réussit");
+
+        let relu = Entity::find_by_id(insere.id)
+            .one(&db)
+            .await
+            .expect("la relecture par `Entity::find_by_id` réussit")
+            .expect("la ligne insérée se relit");
+
+        // Then du Scenario : le `steps` du `Model` relu EST le `DagSteps` inséré, égalité
+        // structurelle sur l'objet reconstruit (ids, depends_on, kind, config), ordre compris —
+        // `PartialEq` dérivé de `StepDefinition`/`DagSteps`, pas comparaison de JSON brut.
+        assert_eq!(
+            relu.steps, dag_inser,
+            "l'aller-retour écriture→lecture par `FromJsonQueryResult` doit restituer le DAG \
+             step à step, champ à champ"
+        );
+        assert_eq!(
+            relu.steps.0.len(),
+            3,
+            "les trois steps sont relus, dans l'ordre d'origine"
+        );
+
+        // ── Preuve de discrimination : la colonne JSON n'est pas un canal opaque qui rendrait
+        // l'égalité ci-dessus trivialement vraie. Seconde ligne inscrite avec le `config` du
+        // troisième step modifié d'un seul champ imbriqué (`destinataire` « admin » → « ops ») :
+        // elle se relit égale à sa propre écriture (la mutation traverse la colonne) mais
+        // inégale au `dag_inser` du `Then` — l'assertion centrale dépend donc bien de chaque
+        // valeur profonde de chaque `config`, lue comme elle est écrite.
+        let dag_modifie = DagSteps({
+            let mut etapes = dag_inser.0.clone();
+            let troisieme = etapes
+                .get_mut(2)
+                .expect("la fixture porte bien un troisième step");
+            troisieme.config = serde_json::json!({
+                "sortie": { "destinataire": "ops", "formats": ["pdf", "csv"] }
+            });
+            etapes
+        });
+        let insere_modifie = ActiveModel {
+            id: NotSet,
+            name: Set("aller-retour-modifie".to_string()),
+            steps: Set(dag_modifie.clone()),
+            owner_id: Set(None),
+            created_at: Set(Utc::now()),
+        }
+        .insert(&db)
+        .await
+        .expect("la ligne mutée s'insère par le même chemin");
+        let relu_modifie = Entity::find_by_id(insere_modifie.id)
+            .one(&db)
+            .await
+            .expect("la relecture de la ligne mutée réussit")
+            .expect("la ligne mutée se relit");
+
+        assert_eq!(
+            relu_modifie.steps, dag_modifie,
+            "la mutation du `config` traverse la colonne JSON à l'écriture puis à la lecture"
+        );
+        assert_ne!(
+            relu_modifie.steps, dag_inser,
+            "un seul champ imbriqué modifié en écriture doit rendre la relecture inégale à \
+             l'original : l'égalité du `Then` n'est pas triviale"
+        );
+    }
 }
