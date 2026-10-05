@@ -659,13 +659,21 @@ lui-même reste un prototype sans consommateur en production (statut du 2026-09-
 
 ## Hooks métier CRUD
 
-Point d'extension optionnel par entité sur `create` — validation ou mutation de l'`ActiveModel`
-avant insertion, honoré à l'identique par REST, GraphQL et MCP. Scope volontairement limité à
-`Create` : `before_active_model_save` (Seaography, section GraphQL ci-dessus) ne se déclenche
-aujourd'hui que sur un insert ("only insert for now", commentaire du source de `seaography`) —
-principe retenu pour cette feature : un hook qui ne se comporterait pas à l'identique sur les 3
-surfaces n'a pas sa place ici. Pas de hook sur `update`/`delete`/lecture, pas d'"after" — à
-étendre si Seaography couvre un jour ces cas.
+Point d'extension optionnel par entité sur `create`, `update` et `delete` — validation ou
+mutation de l'`ActiveModel` avant insertion ou mise à jour, refus d'une suppression avant toute
+émission de `DELETE`. `before_update` et `before_delete` reçoivent `existing` en lecture seule :
+le `Model` relu avant la modification (celui sur lequel le RBAC a statué), pour que comparer
+avant/après — valider une transition d'état par exemple — ne demande pas de relire la base
+soi-même. Les trois s'exécutent après la décision RBAC, avant les invariants qui restent les
+derniers mots (clé primaire, propriétaire) — la séquence d'appel est tenue par
+`/src/rest/core.sdd`. Couvre REST **et** MCP simultanément (MCP délègue aux mêmes fonctions de
+`rest::core`). Seul `before_create` fait le pont côté GraphQL : Seaography `2.0.0-rc.9` ne
+pilote son équivalent (`before_active_model_save`) qu'à l'insertion, `before_update` et
+`before_delete` ne s'y déclenchent jamais — une mutation que le hook aurait rejetée sur REST y
+réussit silencieusement. Exception nommée à la règle de parité, actée par Sébastien le
+2026-09-23, décrite par le bloc ci-dessus et tracée dans `/src/resource.sdd` et
+`/src/graphql/hooks.sdd` ; la parité reste la règle par défaut pour tout le reste du trait.
+Pas de hook sur la lecture, pas d'"after".
 
 ```rust
 // src/resource.rs
@@ -675,6 +683,10 @@ pub trait MiryadResource: EntityTrait {
     // ...
     fn before_create(active: Self::ActiveModel, principal: &AuthPrincipal)
         -> Result<Self::ActiveModel, HookError> { Ok(active) }  // défaut : no-op
+    fn before_update(active: Self::ActiveModel, existing: &Self::Model, principal: &AuthPrincipal)
+        -> Result<Self::ActiveModel, HookError> { Ok(active) }  // défaut : identité
+    fn before_delete(existing: &Self::Model, principal: &AuthPrincipal)
+        -> Result<(), HookError> { Ok(()) }  // défaut : autorise
 }
 ```
 
