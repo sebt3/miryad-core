@@ -151,21 +151,34 @@ Tasks:
     servis sans `workflow`). Une promotion en dépendance normale non optionnelle est écartée :
     elle ferait peser tokio sur les sept combinaisons sans `workflow`, et `dep:tokio` serait de
     toute façon refusé par Cargo sur une dépendance non optionnelle. Décision reflétée dans `Must`.
-  [ ] Rédiger `docs/architecture.md`, section "Moteur de workflow" (à la clôture de la feature,
+  [x] Rédiger `docs/architecture.md`, section "Moteur de workflow" (à la clôture de la feature,
     convention `.specdd/bootstrap.project.md`) : le récit du spike Restate (2026-09-22/23), le choix
     Restate vs les options écartées (roadmap 7, déjà écrit), le schéma de déploiement (une instance
     Restate par cluster, StatefulSet trivial, vynil box hors dépôt), les risques opérationnels déjà
     identifiés par ./client.sdd (rollout avec `force: true`, `Service` Kubernetes stable) et
     ./dispatcher.sdd (isolation des panics, `RunRetryPolicy`), l'asymétrie GraphQL de
     `before_update`/`before_delete` (/src/resource.sdd, amendement 2026-09-23).
+    Réalisé 2026-10-04/05 (commits 9ccb677 + 46edf02, validator PASS ×2) : douze blocs, toutes les
+    notes « Reste ouvert : documenter dans docs/architecture.md » des tâches `[x]` de ./client.sdd,
+    ./dispatcher.sdd et ./interpreter.sdd absorbées (le `Done when` de ./client.sdd est satisfait
+    au passage) ; renvoi à roadmap 7 sans re-recopiage ; 14 affirmations re-vérifiées au source.
+    Le 46edf02 corrige au passage la section voisine « Hooks métier CRUD » restée caduque depuis
+    l'amendement 2026-09-23 (acquittement à effet différé du `Handles` de /src/resource.sdd —
+    correction recommandée par le validator, le document s'auto-contradictait). Reste dû hors de
+    cette tâche : le versant « à documenter dans ./graphql/hooks.sdd » de ce même `Handles`.
   [x] Mettre à jour `docs/roadmap.md`, feature 9 (fait 2026-10-04, standby levé et lot #26/#27 décrit) : passer de "reprise du moteur de workflow, si une
     solution saine se présente" à un état reflétant les sept specs de ce module approuvées (ou en
     cours d'implémentation), une fois cette relecture faite.
-  [ ] Mettre à jour `miryad-core.sdd`, Tasks : la ligne 153-154 ("Décider si le moteur de workflow
+  [x] Mettre à jour `miryad-core.sdd`, Tasks : la ligne 153-154 ("Décider si le moteur de workflow
     entre dans une spec... ne pas spéculer un module sans moteur choisi") est résolue par ce module —
     à remplacer par les lignes `[ ] Spec src/workflow/*.sdd produite puis revue par Sébastien` (une
     par fichier, même convention que les modules existants), et par une ligne équivalente pour
     l'amendement de `/src/resource.sdd`/`/src/rest/core.sdd`.
+    Réalisé 2026-10-05 (commit 5bfb6e0) : dix lignes `Spec src/workflow/*.sdd produite puis revue`
+    ajoutées (une par fichier, statut `[x]` — specs produites et approuvées 2026-09-23 et
+    2026-10-04, commits 620bb2e/9a56ed6/cddefd7) plus une ligne pour l'amendement
+    `/src/resource.sdd`/`/src/rest/core.sdd` (acté 2026-09-23, livré 145b17e/1d68b79). L'ancienne
+    ligne `[x]` « Décider si le moteur… » est conservée comme trace de la décision Restate.
   [x] Convertir le `Scenario` en test nommé dans `mod tests` de ./mod.rs (compilation seule, pas de
     comportement à tester au-delà de la résolution des chemins). Réalisé 2026-09-23 :
     @chemins_plats_resolvent_sans_structure_interne sous forme @crate:: (résolution @miryad_core::
