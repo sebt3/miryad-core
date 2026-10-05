@@ -59,8 +59,12 @@ Must:
       @StepError { retryable: false, message: e.to_string() }.
     `async fn run_effect<T, F, Fut>(&self, f: F) -> Result<T, StepError>` — effet de bord journalisé :
       délègue à `ctx.run(...)` de `restate-sdk` (résultat mémoïsé dans le journal, jamais rejoué après
-      reprise) ; mêmes bornes que le SDK sur `T` (`Serialize + Deserialize`, enveloppe `Json` gérée en
-      interne — l'appelant manipule `T` nu) ; un @StepError `retryable: true` de la fermeture est laissé à
+      reprise) ; bornes sur `T` : @serde::Serialize + @serde::de::DeserializeOwned + `Send + 'static`
+      (amendé par Sébastien le 2026-10-05 — relecture source `restate-sdk` `0.12.1` : le SDK borne sur
+      ses propres traits serde sans blanket vers `serde::Serialize`, impls composites derrière le
+      wrapper `Json` ; la formulation d'origine « mêmes bornes que le SDK » était inimplementable ;
+      l'enveloppe `Json` est posée/retirée en interne — l'appelant manipule `T` nu, observable
+      préservé) ; un @StepError `retryable: true` de la fermeture est laissé à
       la politique de retry du `bind()` (comme ./dispatcher.sdd), un `retryable: false` devient une
       @TerminalError ; l'échec final est rendu en @StepError `retryable: false` avec le message de
       l'erreur terminale. **Un seul appel concurrent par @StepContext n'est pas imposé** mais
@@ -172,7 +176,10 @@ Tasks:
 Done when:
   Les `Scenario` ci-dessous ont chacun un test nommé distinct et vert, sur la feature `workflow` ; les
     méthodes de @StepContext non testables en unitaire (aucun `Context` virtualisé par `restate-sdk`
-    `0.12.1`) sont couvertes par le test d'intégration de `Tasks`.
+    `0.12.1`) sont couvertes par le test d'intégration de `Tasks` — périmètre restreint par Sébastien
+    le 2026-10-05 : `sleep` et `run_info` par le test d'intégration de cette spec, `run_child_dag` par
+    les intégrations de ./subworkflow.sdd, `run_effect` couverte-par-lecture jusqu'à l'existence d'un
+    consommateur réel (aucun `Scenario` sur cette méthode ; la borne est consignée dans `Tasks`).
   ./step.sdd (lot A et B) est approuvée avant ou avec cette spec.
 
 Scenario: child_run_key est déterministe et lisible

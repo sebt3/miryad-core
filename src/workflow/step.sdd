@@ -100,9 +100,9 @@ Must:
     `pub(crate) fn durable(&self, kind: &str) -> Option<&dyn MiryadDurableStep>` (#26) — le kind
       durable enregistré sous `kind`, ou @None ; seul point d'entrée de ./dispatcher.rs pour les kinds
       durables, consulté **avant** `dispatch`.
-    `pub(crate) fn dispatch(&self, kind: &str, run: &RunInfo, config: @serde_json::Value, inputs:
-      @HashMap<@String, @serde_json::Value>) -> Result<impl Future<Output =
-      Result<@serde_json::Value, StepError>>, StepError>` — retourne le futur de `run` du kind trouvé
+    `pub(crate) fn dispatch<'s: 'r, 'r>(&'s self, kind: &str, run: &'r @RunInfo, config: @serde_json::Value,
+      inputs: @HashMap<@String, @serde_json::Value>) -> Result<impl Future<Output =
+      Result<@serde_json::Value, StepError>> + use<'r>, StepError>` — retourne le futur de `run` du kind trouvé
       (jamais exécuté par ce fichier), ou @Err(StepError { message: format!("kind inconnu: {kind}"),
       retryable: false }) si `kind` n'est enregistré par aucun `impl` **ordinaire** (un kind durable ne se
       résout pas ici : `dispatch` ne regarde que les kinds ordinaires, `durable` les autres) — seul point d'entrée que

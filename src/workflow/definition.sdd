@@ -254,7 +254,9 @@ Tasks:
     utilisateurs qui créent leur « mon-workflow ») rend donc un `500` générique — la mapper en `409`
     (@RestError::Conflict existe depuis 2026-10-03 mais n'a @AuthError::TokenHashConflict pour seul
     émetteur) ou en `422` demande de distinguer la violation d'unicité dans la masse des `DbErr` ;
-    arbitrage de Sébastien à trancher, pas de code neuf inventé ici.
+    émetteurs — arbitré par Sébastien le 2026-10-05 : le `500` `MRD-REST-003` est **assumé pour
+    l'instant**, aucune mapping `409`/`422` dans cette version ; à rouvrir quand un consommateur réel
+    tombe sur la collision.
   [x] `before_update`/`before_delete` sur @MiryadResource : specs de `/src/resource.sdd` et
     `/src/rest/core.sdd` amendées le 2026-09-23, implémentation livrée le même jour (commits
     145b17e hooks + appels, 1d68b79 câblage `rest::core::update`/`delete`, validator PASS).
