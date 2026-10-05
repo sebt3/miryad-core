@@ -39,7 +39,9 @@ Sébastien, pas d'implémentation avant les tests dérivés de la spec.
 - Les tests inline `#[cfg(test)] mod tests` vivent dans le fichier source et sont régis par sa
   spec. Un fichier de `tests/` (crate d'intégration séparée) n'a pas de spec propre : il est
   rattaché par `Owns` ou `Can modify` à la spec du contrat inter-surface qu'il exerce
-  (`tests/resource.rs` est rattaché à `./src/resource.sdd`).
+  (`tests/resource.rs` est rattaché à `./src/resource.sdd`). **Un fichier de `tests/` a un seul
+  propriétaire** (`Owns` ou `Can modify`, jamais deux specs) ; les autres specs qui y logent des
+  tests le citent en `References`, sans autorité d'édition.
 - Hors `src/` : spec racine `miryad-core.sdd`, harnais de toolchain `tooling.sdd` (rustfmt +
   `[lints]`), CI `.github/workflows/workflows.sdd`. Une spec sans fichier source
   correspondant est légitime pour ces artefacts de configuration ; l'inverse (source sans

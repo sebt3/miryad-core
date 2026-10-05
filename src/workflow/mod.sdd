@@ -142,9 +142,9 @@ Tasks:
     recomptés = exactement les vingt-quatre chemins de l'@Exposes (sans glob ni @pub(crate)) ;
     les deux surfaces des chemins plats étendues aux quatre chemins neufs (treize exercées : douze
     en position de type + @configure_policy en valeur), rouge @E0425 sur @RunInfo avant ré-export ;
-    commentaires obsolètes de ../../tests/workflow_restate.rs corrigés à cette occasion (autorisé
-    par les `Can modify` de ./interpreter.sdd et ./subworkflow.sdd — ratification formelle à
-    Sébastien, question ouverte).
+    commentaires obsolètes de ../../tests/workflow_restate.rs corrigés à cette occasion (autorité :
+    le `Can modify` de ./interpreter.sdd, seul propriétaire du fichier ; retouche ratifiée par
+    Sébastien le 2026-10-05, sans précédent — ./subworkflow.sdd ne le porte plus que en `References`).
   [x] Mécanique Cargo de `tokio` : Sébastien (2026-09-23, relecture du lot) — `tokio` entre dans
     `[dependencies]` en `optional = true`, activé par `workflow` seule via `dep:tokio` ;
     l'entrée `[dev-dependencies]` existante est conservée inchangée (les tests existants restent

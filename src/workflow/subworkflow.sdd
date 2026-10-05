@@ -19,11 +19,10 @@ Purpose:
 Owns:
   ./subworkflow.rs
 
-Can modify:
-  ../../tests/workflow_restate.rs — tests d'intégration `#[ignore]` contre un vrai `restate-server`
-    (même fichier que ./interpreter.sdd)
-
 References:
+  ../../tests/workflow_restate.rs — tests d'intégration `#[ignore]` contre un vrai `restate-server` ;
+    fichier détenu par ./interpreter.sdd (seul `Can modify`, un fichier n'a qu'un propriétaire) —
+    les tests de ce contrat y vivent, sans autorité d'édition propre
   ./durable.sdd — @MiryadDurableStep, @StepContext (`run_info`, `run_child_dag`)
   ./step.sdd — @RunInfo, @StepError, @StepRegistry (`register_durable`)
   ./definition.sdd — @DagSteps, `validate_dag` (`pub(crate)`)
