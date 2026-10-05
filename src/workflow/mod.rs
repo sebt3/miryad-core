@@ -33,7 +33,7 @@ pub use durable::{MiryadDurableStep, StepContext};
 pub use error::WorkflowError;
 pub use interpreter::DagInterpreter;
 pub use rhai_step::RhaiStep;
-pub use step::{MiryadWorkflowStep, StepError, StepRegistry};
+pub use step::{MiryadWorkflowStep, RunInfo, StepError, StepRegistry};
 pub use subworkflow::SubWorkflowStep;
 
 #[cfg(test)]
@@ -44,13 +44,15 @@ mod tests {
     /// Forme tranchée à l'implémentation : le nom propre de la crate (`miryad_core::workflow::…`,
     /// celui du scénario) ne résout pas dans la cible unitaire d'une lib — `E0433`, cargo ne passe
     /// pas le self-`--extern` à la cible `--test`. La convention des tests inline de la crate est
-    /// `crate::`/`super::` ; elle vérifie la résolution des neuf mêmes chemins plats. La résolution
-    /// depuis l'extérieur par un consommateur est exercée par les crates de `tests/`
-    /// (`use miryad_core::workflow::…`). Aucun des neuf chemins ci-dessous ne nomme `client`,
-    /// `dispatcher`, `interpreter`, `step`, `rhai_step`, `error` ou `definition`.
+    /// `crate::`/`super::` ; elle vérifie la résolution des neuf mêmes chemins plats, étendus depuis
+    /// #26 aux quatre chemins neufs (`MiryadDurableStep`, `StepContext`, `SubWorkflowStep`,
+    /// `RunInfo`). La résolution depuis l'extérieur par un consommateur est exercée par les crates
+    /// de `tests/` (`use miryad_core::workflow::…`). Aucun des treize chemins ci-dessous ne nomme
+    /// `client`, `dispatcher`, `durable`, `interpreter`, `step`, `rhai_step`, `error`, `definition`
+    /// ni `subworkflow`.
     #[test]
     fn chemins_plats_resolvent_sans_structure_interne() {
-        // Deux témoins locaux de quatre paramètres : chaque type est référencé en position de
+        // Trois témoins locaux de quatre paramètres : chaque type est référencé en position de
         // type, rien n'est instancié, appelé ni lié (les liaisons `_…` sous harnais pedantic sont
         // proscrites — `no_effect_underscore_binding`, `type_complexity`).
         fn witness_execution(
@@ -67,8 +69,16 @@ mod tests {
             _: Option<crate::workflow::WorkflowDefinition>,
         ) {
         }
+        fn witness_lot_26(
+            _: Option<Box<dyn crate::workflow::MiryadDurableStep>>,
+            _: Option<crate::workflow::StepContext<'_>>,
+            _: Option<crate::workflow::SubWorkflowStep>,
+            _: Option<crate::workflow::RunInfo>,
+        ) {
+        }
         witness_execution(None, None, None, None);
         witness_definition(None, None, None, None);
+        witness_lot_26(None, None, None, None);
         // Neuvième chemin : `configure_policy`, référencé en valeur sans être appelé — sa sémantique
         // `OnceLock` est prouvée par `tests/workflow_policy.rs`, hors de ce scénario.
         std::hint::black_box(crate::workflow::configure_policy);

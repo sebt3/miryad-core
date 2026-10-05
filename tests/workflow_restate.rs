@@ -49,25 +49,22 @@ use std::time::Instant;
 
 use miryad_core::workflow::DagInterpreter;
 use miryad_core::workflow::DagSteps;
-// `MiryadDurableStep` et `StepContext` ne sont pas encore ré-exportés à plat (tâche ./mod.sdd
-// #26, dernier fichier du lot) : chemin du module `durable`, public d'office par
-// ./workflow/mod.rs — même précédent que `RunInfo` ci-dessous.
+use miryad_core::workflow::MiryadDurableStep;
 use miryad_core::workflow::MiryadWorkflowStep;
+use miryad_core::workflow::RunInfo;
+use miryad_core::workflow::StepContext;
 use miryad_core::workflow::StepDefinition;
 use miryad_core::workflow::StepDispatcher;
 use miryad_core::workflow::StepError;
 use miryad_core::workflow::StepRegistry;
-// `RunInfo` n'est pas encore ré-exporté à plat (tâche ./mod.sdd #26, lot B) : chemin du module
-// `step`, public d'office par ./workflow/mod.rs.
+use miryad_core::workflow::SubWorkflowStep;
 use miryad_core::workflow::WorkflowConfig;
-use miryad_core::workflow::durable::{MiryadDurableStep, StepContext};
+// `DEFAULT_MAX_DEPTH`, item `pub` du module `subworkflow`, n'a pas de ré-export à plat dans
+// ./workflow/mod.rs : l'`Exposes` de ./mod.sdd compte vingt-quatre chemins plats et le seul
+// concernant `subworkflow` est `SubWorkflowStep`. Il se lit par son chemin de module, public
+// d'office par la déclaration `pub mod subworkflow` de ./workflow/mod.rs.
 use miryad_core::workflow::recommended_options;
 use miryad_core::workflow::register_deployment;
-use miryad_core::workflow::step::RunInfo;
-// `SubWorkflowStep` est ré-exporté à plat depuis ./workflow/mod.rs (tranche minimale du lot #26) ;
-// `DEFAULT_MAX_DEPTH`, item `pub` du module sans ré-export à plat (tâche ./mod.sdd #26 en cours),
-// se lit par son chemin de module.
-use miryad_core::workflow::SubWorkflowStep;
 use miryad_core::workflow::subworkflow::DEFAULT_MAX_DEPTH;
 use miryad_core::workflow::trigger_run;
 use restate_sdk::prelude::Endpoint;
