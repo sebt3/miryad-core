@@ -113,9 +113,15 @@ Handles:
     préfixe de clé dans l'UI Restate.
 
 Tasks:
-  [ ] Implémenter ./subworkflow.rs (`prepare` d'abord, tests rouges ensuite verts, puis `run`) ; ajouter
+  [x] Implémenter ./subworkflow.rs (`prepare` d'abord, tests rouges ensuite verts, puis `run`) ; ajouter
     la variante `MaxDepthExceeded` en amont (./error.sdd) ; ordre de lot : après ./durable.sdd.
-  [ ] Tests d'intégration `#[ignore]` (`../../tests/workflow_restate.rs`, exigent `podman` + image
+    Réalisé 2026-10-04 (commit 01bf9ba, validator PASS) : `prepare` pur à l'ordre exact du `Must`
+    (@from_value → garde @saturating_add(1) `> max_depth` en @WorkflowError::MaxDepthExceeded →
+    @validate_dag), `run` = prepare + @StepContext::run_child_dag, sortie en `Value::Object` des
+    sorties enfant sans enveloppe, `inputs` non transmis, `retryable: false` partout, zéro
+    `restate_sdk` dans le fichier ; la variante `MaxDepthExceeded` était en place depuis le lot B
+    (clos). Huit tests unitaires (un par `Scenario`, rouge stub d'abord).
+  [x] Tests d'intégration `#[ignore]` (`../../tests/workflow_restate.rs`, exigent `podman` + image
     `restate`, lancement `--ignored`, même mécanique que ./interpreter.sdd) : (1) nominal — un parent
     `A` (kind d'écho) puis `S` (`subworkflow`, `depends_on: ["A"]`) dont le DAG enfant est deux steps
     d'écho en chaîne ; la sortie de `S` contient les deux sorties enfant ; (2) échec — un step enfant
@@ -123,6 +129,15 @@ Tasks:
     `SubWorkflowStep::new(1)` et un DAG qui se rappelle lui-même : le run échoue avec
     `MRD-WORKFLOW-008` en un nombre borné de niveaux, sans emballement ; (4) un kind durable de
     fixture qui `sleep` brièvement et renvoie `run_info()` (tâche de ./durable.sdd).
+    Réalisé 2026-10-04 (commit 01bf9ba, validator PASS) : les trois intégrations écrites et jouées
+    vertes par l'implementer puis REJOUÉES vertes par le validator (`--ignored` : 8/8 dont les 5
+    préexistantes, ~28 s, aucun conteneur résiduel) ; (1) verrouille la shape de sortie sans
+    enveloppe et l'`inputs` enfant vide, (2) le `boom:F` conservé (en `contains` — la spec dit
+    « message conservé », pas le format d'attaché Restate), (3) le message exact `depth 2 … maximum
+    de 1` en deux niveaux, seuil 30 s. Le point (4) est clos sous ./durable.sdd. Lecture retenue du
+    (3) (validée par le validator, à confirmer à Sébastien) : « DAG qui se rappelle lui-même » ≈
+    nesting fini d'approximation, la garde d'exécution coupant avant toute lecture plus loin — le
+    cycle inter-définitions littéral n'est pas représentable en JSON fini.
   [ ] [reporté, approuvé 2026-10-04 : prochaine livraison, non bloquant] **Propager les `inputs` du parent vers l'enfant** (#26) : en v1 l'enfant ne reçoit rien du parent
     (ses steps racine ont `inputs` vide) ; l'application fabrique le DAG enfant en y embarquant les
     valeurs utiles dans les `config`. Recommandation : ne rien ajouter tant qu'un besoin réel ne
