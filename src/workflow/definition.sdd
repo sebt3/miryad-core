@@ -279,10 +279,17 @@ Tasks:
   [x] `steps` `NotSet` : no-op défensif confirmé, non-contrat (arbitré par Sébastien le 2026-09-29) (`Must`) — aucun changement de code.
   [x] Repli `catch-all` : défensif confirmé, avec sa condition de ré-arbitrage (arbitré par Sébastien le 2026-09-29) (`Must`) —
     aucun changement de code.
-  [ ] Test round-trip de la colonne `steps` (arbitré par Sébastien le 2026-09-29) : insérer un @DagSteps par SeaORM sur un schéma
+  [x] Test round-trip de la colonne `steps` (arbitré par Sébastien le 2026-09-29) : insérer un @DagSteps par SeaORM sur un schéma
     migré, relire le @Model, comparer — prouve la lecture par @FromJsonQueryResult que seule
     l'écriture prouvait. À faire au batch de clôture du moteur (levée du standby) ; nouveau
     Scenario « aller-retour d'un DAG par la colonne `steps` ».
+    Réalisé 2026-10-05 (commit 6d94131, validator GO batterie finale 17/17 + intégrations 8/8
+    rejouées) : test inline @aller_retour_d_un_dag_par_la_colonne_steps, @DagSteps de trois steps
+    dont deux dépendances, configs hétérogènes avec sorties, @assert_eq! sur l'objet complet
+    reconstruit (ids, @depends_on, @kind, @config) — pas de JSON brut ; pas de rouge possible
+    (scellement, consigné), discrimination prouvée par mutation locale (@#[serde(skip)] reverté) ET
+    scellée en dur par une seconde ligne à un champ imbriqué modifié, relu égal à soi et
+    @assert_ne! de l'original.
   [x] Hygiène @cargo doc (ouverte 2026-10-02, vague B5d, remontée du validator — hors gate du
     standby : modification de doc-comment seule, aucune dépendance, aucun comportement, aucune
     interaction avec la décision moteur @apalis) — @cargo doc @--no-default-features @--features

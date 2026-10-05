@@ -145,19 +145,18 @@ Handles:
     itération, cohérent avec ./interpreter.sdd, « pas d'annulation des frères »).
 
 Tasks:
-  [ ] Implémenter ./durable.rs : le trait, @StepContext (`run_info`, `sleep`, `run_effect`,
+  [x] Implémenter ./durable.rs : le trait, @StepContext (`run_info`, `sleep`, `run_effect`,
     `run_child_dag`), `DEPTH_HEADER`, `child_run_key` ; relire en source `restate-sdk` `0.12.1` les
     bornes de `ctx.run` et la forme de `Request::header` avant d'écrire les signatures génériques ;
     rustdoc du trait (contrat de déterminisme) et de chaque méthode (règle `missing_errors_doc`).
-    Réalisé 2026-10-04 (commit e521581, validator PASS) mais tâche tenue ouverte, même traitement
-    que le lot A de ./step.sdd : la relecture source de `restate-sdk` `0.12.1` a prouvé que les
-    bornes de `ctx.run` sont les traits serde PROPRES du SDK (aucun blanket vers
-    `serde::Serialize`, impls derrière le wrapper `Json`, `RunClosure: Send + 'static`) — la
-    formulation « mêmes bornes que le SDK sur T » du `Must` est inimplementable au sens propre ;
-    la réalisation (`T: serde::Serialize + DeserializeOwned + Send + 'static`, `Json` posé/retiré
-    en interne, `T` nu observable) est la seule qui satisfait l'intention. Passage `[x]` lié à
-    l'amendement d'une ligne du `Must` par Sébastien (précédents : super-trait 2026-09-23,
-    `dispatch` lot A).
+    Réalisé 2026-10-04 (commit e521581, validator PASS + intégration `#[ignore]` rejouée verte), clos
+    2026-10-05 : la relecture source de `restate-sdk` `0.12.1` a prouvé que les bornes de `ctx.run`
+    sont les traits serde PROPRES du SDK (aucun blanket vers `serde::Serialize`, impls derrière le
+    wrapper `Json`, `RunClosure: Send + 'static`) — la formulation « mêmes bornes que le SDK sur T »
+    était inimplementable ; l'amendement du `Must` (`T: serde::Serialize + DeserializeOwned +
+    Send + 'static`, `Json` posé/retiré en interne, `T` nu observable) a été approuvé par Sébastien
+    le 2026-10-05 et posé (commit a5e61d7). Le `Done when` a été restreint le même jour (run_effect
+    couverte-par-lecture, borne consignée). Code inchangé depuis e521581.
   [x] Ordre de lot : après ./step.sdd lot A (`RunInfo`), avant ./step.sdd lot B (le registre
     référence le trait). Tenu à l'exécution 2026-10-04 : lot A clos (c491a08) avant ./durable.rs
     (e521581), registre du lot B dans le même commit.
