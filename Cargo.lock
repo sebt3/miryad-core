@@ -2571,7 +2571,7 @@ dependencies = [
  "clap",
  "cookie",
  "hex",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "openidconnect",
  "rand 0.8.7",
  "reqwest",
