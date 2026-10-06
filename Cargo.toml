@@ -1,6 +1,6 @@
 [package]
 name = "miryad-core"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 description = "Moteur générique (auth OIDC, RBAC, REST/GraphQL/MCP, workflow) derrière le template d'application miryad — une ligne de trait par entité, tout le reste est fourni"
 license = "BSD-3-Clause"
