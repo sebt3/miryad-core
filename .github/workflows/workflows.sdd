@@ -11,6 +11,7 @@ Purpose:
 Owns:
   ./ci.yml
   ./publish.yml
+  ../dependabot.yml
 
 Can read:
   ../../tooling.sdd
@@ -41,6 +42,8 @@ Must:
   Lancer les tests avant `cargo publish` dans le job de publication.
   Créer la release GitHub uniquement après la réussite du job de publication (`needs: publish`).
   Publier avec `CARGO_REGISTRY_TOKEN` lu depuis les secrets, jamais en clair dans le workflow.
+  Faire surveiller chaque semaine par Dependabot (`../dependabot.yml`) les écosystèmes `cargo` et
+    `github-actions` ; ses PR passent par la même CI que les autres, aucun auto-merge.
 
 Must not:
   Publier alors que les tests ou le harnais ont échoué.
