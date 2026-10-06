@@ -23,7 +23,7 @@ Le contexte durable vit ici et n'est pas à re-déduire du code :
 - `.github/workflows/workflows.sdd` : ce que la CI doit prouver
 - `docs/architecture.md` : le récit d'architecture et les décisions (le *pourquoi*, les pièges
   constatés dans le source des dépendances amont)
-- `docs/roadmap.md` : la priorisation grosse maille — une feature n'y entre pas sans arbitrage
+- `docs/roadmap.md` : ce qui reste à arbitrer ou à faire — une feature n'y entre pas sans arbitrage
 
 ## Flux de travail : SpecDD + test-first (TTD)
 
@@ -115,5 +115,5 @@ la syntaxe `.sdd`, `specdd resolve <cible>` vérifie la chaîne de specs avant d
 ## Doc détaillée
 
 - `.specdd/bootstrap.project.md` — le flux, la règle une-spec-par-fichier, les contrats transverses
-- `docs/roadmap.md` — priorisation grosse maille
+- `docs/roadmap.md` — reste à faire et arbitrages (le livré vit dans `architecture.md`)
 - `docs/architecture.md` — architecture par module, décisions et pièges

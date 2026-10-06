@@ -513,9 +513,14 @@ Quatrième surface, à forme différente : la feature Cargo `workflow` ne monte 
 (`src/workflow/mod.sdd`). Le DAG est une donnée : stocké dans `miryad_workflow_definitions`, éditable
 par un admin via le CRUD générique (`WorkflowDefinition` est une `MiryadResource` comme une autre,
 politique `AdminOnly` configurable), exécuté par un **cluster Restate self-hosté que la crate ne gère
-jamais**. Le comparatif des moteurs écartés (apalis-workflow, Acts, Hatchet, Temporal, Prefect) et
-l'historique du choix sont écrits dans `docs/roadmap.md` (feature 7) — on y renvoie, on ne les
-re-écrit pas ici. Specs : `src/workflow/*.sdd` (neuf enfants sous `mod.sdd`).
+jamais**. Specs : `src/workflow/*.sdd` (neuf enfants sous `mod.sdd`).
+
+**Moteurs écartés.** L'option initiale (apalis + apalis-postgres + apalis-workflow) a été mise en
+standby le 2026-08-23 après une exploration comparative (apalis-workflow, Acts, Hatchet, Temporal,
+Prefect) : aucun moteur n'avait de DAG piloté par la donnée nativement, et les deux candidats les plus
+prometteurs étaient inutilisables — Acts (stockage tronqué à chaque redémarrage), Hatchet (binding
+Rust non officiel cassé sur `ctx.parent_output()`). Restate a été retenu après le spike du
+2026-09-22 ; aucune dépendance `apalis` n'existe dans `Cargo.toml`.
 
 **Le spike (2026-09-22/23) a tranché, et ses contraintes sont restées.** Le spike du 2026-09-22
 (conteneur `restate-server` local, process du service tué et relancé mi-exécution) a validé
@@ -716,7 +721,7 @@ injecte donc les deux dans les données de requête (`req.data(snapshot).data(pr
 
 miryad-core reste strictement backend : la génération du frontend lui-même (composants Vue,
 écrans CRUD, générateur TypeScript) vit dans le template `miryad`, pas ici — décision du
-2026-08-23 (cf. `docs/roadmap.md`, feature 8). Deux briques seulement de ce côté-ci :
+2026-08-23 (cf. `docs/roadmap.md`, item 8, livré). Deux briques seulement de ce côté-ci :
 
 ```rust
 // src/ir.rs
