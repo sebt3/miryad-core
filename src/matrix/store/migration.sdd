@@ -1,0 +1,82 @@
+Spec: migration — migrations SeaORM du store de chiffrement
+
+Purpose:
+  Livrer le schéma du store sous forme de migrations que **l'hôte assemble** (le store ne les applique
+    jamais lui-même) : `migrations() -> Vec<Box<dyn MigrationTrait>>`. Pour que le module reste
+    extractible, ses migrations vivent ici et non dans `src/migration/` ; ../../migration/mod.sdd les
+    ajoute à la fin de @Migrator::migrations sous `matrix` (en respectant l'ordre : jamais insérées
+    avant une entrée existante). Chaque migration committée est immuable (règle de la crate) : un
+    changement de schéma ajoute une `Migration` suivante dans ce fichier. Fichier neuf, conception.
+
+Owns:
+  ./migration.rs
+
+References:
+  ./mod.sdd — `TABLE_PREFIX`
+  ../../migration/m20260923_000001_create_workflow_definitions.sdd — précédent de forme (spec de migration,
+    sonde `has_table`/`has_column` en test, SQLite en mémoire)
+  ./crypto_account.sdd, ./crypto_sessions.sdd, ./crypto_devices.sdd, ./kv.sdd — consommateurs des tables
+
+Must:
+  `pub fn migrations() -> Vec<Box<dyn sea_orm_migration::MigrationTrait>>` rend, dans cet ordre,
+    `[Box::new(m20261006_000001_create_matrix_store::Migration)]`. Nom de migration SeaORM :
+    `m20261006_000001_create_matrix_store` (cohérent avec le motif `mYYYYMMDD_NNNNNN_<nom>` de la crate).
+  `up` crée les tables suivantes (nom = `TABLE_PREFIX` + suffixe ; **toutes** portent `account_key
+    TEXT NOT NULL` en tête de clé primaire) ; `down` les supprime toutes, ordre inverse. Types portables
+    SQLite/Postgres (SeaORM `ColumnDef`), jamais de SQL brut spécifique à un backend :
+    `kv` — PK(`account_key`, `key`), `value` BLOB : cipher exporté (`cipher`), compte (`account`), identité
+      privée, clés de sauvegarde, clé de déshydratation, valeurs personnalisées (`custom:` + clé)
+    `olm_sessions` — PK(`account_key`, `session_id`), `sender_key`, `payload` BLOB ; index (`account_key`, `sender_key`)
+    `inbound_group_sessions` — PK(`account_key`, `room_id`, `session_id`), `sender_key`, `sender_data_type`
+      SMALLINT, `backed_up` BOOLEAN NOT NULL DEFAULT false, `payload` BLOB ; index (`account_key`, `backed_up`),
+      (`account_key`, `sender_key`, `sender_data_type`, `session_id`), (`account_key`, `room_id`)
+    `outbound_group_sessions` — PK(`account_key`, `room_id`), `payload` BLOB
+    `withheld_sessions` — PK(`account_key`, `room_id`, `session_id`), `payload` BLOB
+    `devices` — PK(`account_key`, `user_id`, `device_id`), `payload` BLOB ; index (`account_key`, `user_id`)
+    `identities` — PK(`account_key`, `user_id`), `payload` BLOB
+    `tracked_users` — PK(`account_key`, `user_id`), `dirty` BOOLEAN NOT NULL
+    `message_hashes` — PK(`account_key`, `hash`)
+    `secret_requests` — PK(`account_key`, `request_id`), `info_key` TEXT NOT NULL, `sent_out` BOOLEAN NOT NULL,
+      `payload` BLOB ; index (`account_key`, `info_key`), (`account_key`, `sent_out`)
+    `secrets_inbox` — PK(`account_key`, `secret_name`, `seq` BIGINT auto), `payload` BLOB
+    `room_settings` — PK(`account_key`, `room_id`), `payload` BLOB
+    `room_key_bundles` — PK(`account_key`, `room_id`, `sender_user_id`), `payload` BLOB, `pending` BOOLEAN NOT NULL
+    `room_keys_downloaded` — PK(`account_key`, `room_id`)
+    `leases` — PK(`account_key`, `key`), `holder` TEXT NOT NULL, `expiration_ms` BIGINT NOT NULL,
+      `generation` BIGINT NOT NULL
+  Les colonnes de **recherche** (`room_id`, `session_id`, `sender_key`, `user_id`, `device_id`, `hash`,
+    `secret_name`, `request_id`, `info_key`) contiennent la valeur hachée par @StoreCipher::hash_key
+    (déterministe, ./kv.sdd), jamais la valeur en clair : voir ./crypto_*.sdd. Les `payload` sont
+    des blobs chiffrés.
+  Idempotence : `up` sur une base où une table existe déjà est une erreur SeaORM (comportement standard
+    de `create_table` sans `if_not_exists`) ; `down` utilise `if_exists`.
+  Compiler sous `#[cfg(feature = "matrix")]`.
+
+Must not:
+  Poser une contrainte `FOREIGN KEY` vers une table hôte (aucune table hôte n'est connue ici).
+  Modifier la migration `m20261006_000001` une fois committée : un ajout passe par une nouvelle `Migration`.
+
+Exposes:
+  `migrations`
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire, motif `has_table`/`has_column`), puis ./migration.rs.
+  [ ] Amender ../../migration/mod.sdd et mod.rs (ajout conditionnel `matrix`) dans le même lot.
+
+Done when:
+  Les `Scenario` sont verts ; la spec est relue et approuvée avant ./migration.rs.
+
+Scenario: up crée les quinze tables avec le préfixe
+  Given une base SQLite en mémoire
+  When le @Migrator d'un test exécute `up` avec `migrations()`
+  Then les quinze tables `miryad_matrix_*` existent et chacune a une colonne `account_key`
+
+Scenario: down les supprime toutes
+  Given les migrations appliquées
+  When `down` est exécuté
+  Then plus aucune table `miryad_matrix_*` n'existe
+
+Scenario: les index de recherche existent
+  Given les migrations appliquées
+  When on sonde les index de `miryad_matrix_inbound_group_sessions`
+  Then les trois index déclarés existent

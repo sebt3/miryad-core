@@ -28,6 +28,16 @@ Must:
     respecter le gating du graphe `[features]` de `/Cargo.toml` : @frontend gated par
     `static-frontend` (feature par défaut), @graphql gated par `graphql`, @mcp gated par `mcp`,
     @workflow gated par `workflow`.
+  **Amendement 2026-10-06 (`systemone`, `matrix`)** — complète `Must` sans le réécrire ; en cas de contradiction
+    de comptage (« exactement douze `pub mod` », « six features »), cet amendement prévaut : la racine déclare
+    **quatorze** `pub mod`, dont deux nouveaux gated : `#[cfg(feature = "systemone")] pub mod systemone;`
+    (./systemone/mod.sdd) et `#[cfg(feature = "matrix")] pub mod matrix;` (./matrix/mod.sdd) — six modules gated
+    au total ; le tableau de la doc racine passe à **huit** features (`systemone` : client HTTP System One,
+    aucune dépendance lourde, hors défaut ; `matrix` : client Matrix de bot sur `matrix-sdk` 0.18, E2EE, store
+    SeaORM, hors défaut) ; la doc nomme aussi les deux croisements `workflow` + `systemone` (kind `systemone`) et
+    `workflow` + `matrix` (kind `matrix_send`), sans les présenter comme des features. Dépendances optionnelles
+    à ajouter à la liste « Déclarer hors de son `#[cfg]` protecteur » : `matrix-sdk`, `matrix-sdk-crypto`,
+    `matrix-sdk-store-encryption` via `./matrix/mod.rs` ; `systemone` n'ajoute aucune dépendance.
   Ne poser aucun gating de feature au niveau racine pour `swagger-ui` et `graphiql` : ces
     deux features ne changent rien à la surface racine ; leur `#[cfg(feature = ...)]` vit
     dans `./rest/openapi.rs` et `./graphql/handler.rs`.
@@ -256,6 +266,9 @@ Tasks:
     count @broken_intra_doc_links 1 → 0 sous @no-default-features, zéro sur les six combinaisons
     sans @workflow ; sous @workflow subsiste un autre lien cassé, imputable à
     `src/workflow/dispatcher.rs` et hors de cette spec (tâche ouverte dans sa spec fille).
+  [ ] Amendement 2026-10-06 : déclarer `systemone` et `matrix` avec leur `cfg`, étendre le tableau de features et
+    le test des chemins plats (`Scenario` ci-dessous) ; zéro lien rustdoc cassé sous chaque combinaison.
+    Dernier fichier du lot (après ./systemone/mod.rs et ./matrix/mod.rs).
 
 Done when:
   La spec porte exactement treize `Scenario` (douze originaux, un pour l'amendement @workflow du
@@ -355,3 +368,8 @@ Scenario: l'exécutable miryad reste hors de l'exemption racine
   When `cargo clippy --all-targets` tourne
   Then son code reste soumis aux `deny` de la famille stricte, l'exemption `test` de la
     racine ne l'atteignant pas
+
+Scenario: les modules systemone et matrix suivent leur feature (2026-10-06)
+  Given la crate compilée sans `systemone` ni `matrix`, puis avec chacune
+  When un test importe `miryad_core::systemone` et `miryad_core::matrix`
+  Then chaque module n'existe que sous sa feature (le test est lui-même gated par `cfg`) et `--all-features` compile les deux

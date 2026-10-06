@@ -1,0 +1,59 @@
+Spec: error — @SystemOneError, erreurs du client System One
+
+Purpose:
+  Porter le type d'erreur du client `systemone` : quatre variantes, un code `MRD-SYSTEMONE-NNN` par
+    variante (contrat transverse `.specdd/bootstrap.project.md`), et la décision de retryabilité
+    unique que le step de workflow consulte (../workflow/systemone_step.sdd). Fichier neuf, conception.
+
+Owns:
+  ./error.rs
+
+References:
+  ./client.sdd — seul producteur de ces variantes
+  ../workflow/systemone_step.sdd — consomme `retryable()` pour construire un @StepError
+  ../workflow/error.sdd — précédent de forme (`thiserror`, préfixe de code dans le `Display`)
+
+Must:
+  @SystemOneError — `pub enum`, `#[derive(Debug, thiserror::Error)]`, `#[non_exhaustive]` :
+    `Config(String)` → `MRD-SYSTEMONE-001` → Display `MRD-SYSTEMONE-001: invalid configuration: {0}`
+    `Transport(reqwest::Error)` → `MRD-SYSTEMONE-002` → Display `MRD-SYSTEMONE-002: transport error: {0}`
+    `Status { status: u16, body: String }` → `MRD-SYSTEMONE-003` → Display
+      `MRD-SYSTEMONE-003: system one rejected request (status {status}): {body}` ; `body` est tronqué
+      à 512 caractères à la construction (par le client), jamais ici
+    `InvalidResponse(String)` → `MRD-SYSTEMONE-004` → Display `MRD-SYSTEMONE-004: invalid response: {0}`
+  `pub fn retryable(&self) -> bool` (`#[must_use]`) :
+    `Config` → `false` ; `InvalidResponse` → `false` ;
+    `Transport(e)` → `true` si `e.is_timeout() || e.is_connect()`, `false` sinon (corps illisible,
+      redirection, construction de requête : déterministes) ;
+    `Status { status, .. }` → `true` pour `429`, `529` et tout `status >= 500` ; `false` pour le reste
+      (`401`, `422` et toute autre `4xx` : rejouer ne change rien).
+  Pas de `impl From<reqwest::Error>` : le client choisit la variante explicitement (une erreur de
+    corps de réponse est `InvalidResponse`, pas `Transport`).
+  Compiler sous `#[cfg(feature = "systemone")]` (porté par ./mod.rs via la racine).
+
+Must not:
+  Embarquer la clé d'API ou l'en-tête `Authorization` dans un message d'erreur ou un `Debug`.
+
+Exposes:
+  `SystemOneError` — enum `pub`, quatre variantes, `retryable`.
+
+Tasks:
+  [ ] Tests d'abord depuis les `Scenario`, puis `./error.rs`.
+
+Done when:
+  Les `Scenario` ont chacun un test nommé vert sous `systemone` ; la spec est relue et approuvée avant ./error.rs.
+
+Scenario: les codes et messages sont stables
+  Given une variante de chaque sorte
+  When `to_string()` est appelé
+  Then chaque message commence par son code `MRD-SYSTEMONE-001` à `-004`
+
+Scenario: la retryabilité suit le statut
+  Given des `Status` de code `429`, `529`, `500`, `503`, `401`, `422`, `404`
+  When `retryable()` est appelé
+  Then le résultat est `true` pour `429`, `529`, `500`, `503` et `false` pour `401`, `422`, `404`
+
+Scenario: config et réponse invalides ne se rejouent pas
+  Given `Config("x")` et `InvalidResponse("y")`
+  When `retryable()` est appelé
+  Then le résultat est `false` dans les deux cas

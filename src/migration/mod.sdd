@@ -41,6 +41,12 @@ Must:
     @m20260930_000001_index_api_tokens_subject::Migration (inconditionnelle). Toute migration
     ultérieure s'ajoute en fin de liste. Amendement arbitré par Sébastien le 2026-10-03 (Q5) : le
     texte d'origine « trois, pas un de plus » était gelé avant la migration d'index.
+  **Amendement 2026-10-06 (`matrix`)** : sous `#[cfg(feature = "matrix")]`, @migrations **ajoute en fin de liste**
+    (après `m20260930_000001_index_api_tokens_subject`, jamais avant une entrée existante) les migrations du
+    module extractible `matrix::store`, rendues par `crate::matrix::store::migrations()`
+    (`../matrix/store/migration.sdd`) : le store garde ses migrations hors de `src/migration/` pour rester
+    déplaçable, l'hôte les assemble ici. Le suivi reste la table `seaql_migrations_miryad_core`. `down` les défait
+    en tête (ordre inverse, règle ci-dessous inchangée).
   Ordre d'application = ordre du @Vec écrit ici, vérifié au source de sea-orm-migration 2.0.2 :
     @get_migration_files préserve l'ordre de @migrations, @exec_up_with itère les pending dans cet
     ordre, aucun tri ni graphe de dépendance n'existe (@MigrationOrder a disparu en 2.x) — toute
@@ -248,6 +254,9 @@ Tasks:
     spec : une tâche autorisée retire ces commentaires et repointe les noms de tests (« trois »
     → « les enregistrements »). Facultatif repris : un @assert!(@has_table) explicite sur
     @seaql_migrations dans le Scenario de coexistence — accepté, une ligne.
+  [ ] Amendement 2026-10-06 : étendre @migrations (ajout conditionnel `matrix`) et le test inline : sous
+    `matrix`, `up` complet crée aussi les quinze tables `miryad_matrix_*` et `down` les supprime.
+    **Après** ../matrix/store/migration.rs.
 
 Done when:
   Les dix `Scenario` (neuf originaux, un pour l'amendement 2026-09-23) sont chacun vérifiés par au
@@ -339,3 +348,8 @@ Scenario: la quatrième migration n'existe que sous la feature workflow
   And avec `workflow`, cinq entrées apparaissent, la quatrième après les trois premières et
     avant l'index, et
     `miryad_workflow_definitions` existe
+
+Scenario: sous matrix, le Migrator applique aussi les tables du store (2026-10-06)
+  Given une base SQLite en mémoire et la feature `matrix`
+  When `Migrator::up(&db, None)` est exécuté
+  Then les tables `miryad_matrix_*` existent après les tables historiques, puis `down` les retire en premier

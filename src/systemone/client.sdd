@@ -1,0 +1,138 @@
+Spec: client — @SystemOneClient, appel `POST /v1/systemone`
+
+Purpose:
+  Porter le client HTTP de l'API System One : une requête typée en entrée (`model`, `state`,
+    `questions`), la réponse JSON en sortie, authentification Bearer, aucun état hors le pool
+    `reqwest`. Le client ne connaît pas les types de questions : `questions` et `answers` sont des
+    cartes de @serde_json::Value (le proxy est transparent, l'API évolue — nouveaux types de
+    question — sans toucher la crate). Fichier neuf, conception.
+  Forme de l'API (doc TypeSafe du 2026-10-06) : requête `{"model": "...", "state": <string|object|array>,
+    "questions": {"<id>": {"type": "noul"|"choice"|"score", "instructions": ..., "criteria": ...}}}` ;
+    réponse `{"model": "...", "answers": {"<id>": {...}}, "usage": {"input_tokens": n, "output_tokens": n}}`.
+    Réponse d'une question `noul` : `{"type":"noul","noul":0.95}` (0 = non, 1 = oui) ; `choice` :
+    `{"type":"choice","choice":"billing","probabilities":{..},"confidence":0.81}` ; `score` :
+    `{"type":"score","score":1.05,"legend":{..},"probabilities":{..},"confidence":0.92}`.
+
+Owns:
+  ./client.rs
+
+Can modify:
+  ../../tests/systemone_client.rs — crate d'intégration rattachée à ce contrat : serveur HTTP local
+    (axum, port éphémère `127.0.0.1:0`) jouant le rôle du proxy, aucun réseau externe
+
+References:
+  ./error.sdd — @SystemOneError
+  ../workflow/systemone_step.sdd — consommateur
+  issue kydah/kydah-ai-proxy#111 — le proxy expose le même `POST /v1/systemone`
+
+Must:
+  @SystemOneConfig — struct `pub`, champs `pub` : `base_url: String` (ex. `https://ai.kydah.example`,
+    sans le chemin `/v1/systemone`), `api_key: Option<String>`, `timeout_secs: u64`.
+    `SystemOneConfig::new(base_url: impl Into<String>) -> Self` met `api_key: None`, `timeout_secs: 30`.
+    `impl Debug` **manuel** qui remplace `api_key` par `"<redacted>"` si présente.
+  @SystemOneRequest — struct `pub`, `#[derive(Debug, Clone, Serialize)]`, champs `pub` : `model: String`,
+    `state: Value`, `questions: Map<String, Value>`. Sérialisé tel quel (aucun renommage).
+  @SystemOneResponse — struct `pub`, `#[derive(Debug, Clone, Deserialize)]`, champs `pub` :
+    `model: String`, `answers: Map<String, Value>`, `usage: Option<Value>` (`#[serde(default)]`).
+    Les champs inconnus de la réponse sont ignorés.
+  @SystemOneClient — struct `pub`, `#[derive(Clone)]`, champs privés : un `reqwest::Client` et l'URL
+    complète `{base_url sans '/' final}/v1/systemone`. Pas de `Default`.
+    `pub fn new(config: SystemOneConfig) -> Result<Self, SystemOneError>` : `reqwest::Url::parse` de
+    l'URL complète ; schéma `http` ou `https` exigé ; `timeout_secs == 0` refusé ; le `reqwest::Client`
+    est construit avec `timeout(Duration::from_secs(timeout_secs))` ; tout échec → `SystemOneError::Config`.
+    `pub async fn ask(&self, request: &SystemOneRequest) -> Result<SystemOneResponse, SystemOneError>` :
+    `POST` JSON ; si `api_key` est présente, en-tête `Authorization: Bearer {clé}` ; statut non `2xx` →
+    `SystemOneError::Status { status, body }` avec `body` = début du corps tronqué à 512 caractères
+    (lecture du corps échouée → `body` vide, jamais une erreur de plus) ; réponse `2xx` non
+    désérialisable en @SystemOneResponse → `InvalidResponse(<message serde>)` ; échec réseau ou délai →
+    `Transport`. Aucune nouvelle tentative interne : la politique de retry appartient à l'appelant
+    (le step laisse Restate rejouer sur `retryable()`).
+  `ask` ne valide pas `questions` (la validation `422` est faite par l'API) et ne modifie jamais la requête.
+  Traces `tracing::debug!` autorisées : URL, statut, durée ; jamais la clé, jamais `state`.
+  Compiler sous `#[cfg(feature = "systemone")]`.
+
+Must not:
+  Réessayer, mettre en cache, ou suivre une redirection vers un autre hôte que `base_url`
+    (`redirect::Policy::none()`) : la clé Bearer ne doit jamais partir ailleurs.
+  Exposer `reqwest::Client` ou `reqwest::Error` dans la signature `pub` hors la variante `Transport`.
+  Typer les questions ou les réponses (énumération `noul`/`choice`/`score`) : la forme est opaque ici.
+
+Forbids:
+  `restate_sdk::*`, `axum::*` dans ./client.rs (axum n'est autorisé que dans le test d'intégration)
+
+Depends on:
+  @reqwest (feature `json`, déjà directe), @serde, @serde_json, @tokio::time (via reqwest)
+  ./error.rs — @SystemOneError
+
+Exposes:
+  `SystemOneConfig`, `SystemOneRequest`, `SystemOneResponse`, `SystemOneClient::{new, ask}`
+
+Accepts:
+  `new` : toute @SystemOneConfig ; `ask` : tout @SystemOneRequest sérialisable.
+
+Returns:
+  `ask` : @SystemOneResponse ou @SystemOneError.
+
+Raises:
+  `MRD-SYSTEMONE-001` (config) à `-004` (réponse) — table de ./error.sdd.
+
+Handles:
+  `base_url` avec ou sans `/` final : même URL complète.
+  Corps d'erreur non UTF-8 : lu en perte (`String::from_utf8_lossy`), tronqué comme le reste.
+
+Tasks:
+  [ ] Tests d'abord : unitaires pour `new` (URL, schéma, timeout) et `Debug` ; intégration
+    `../../tests/systemone_client.rs` avec un serveur axum local pour `ask` (succès, 401, 422, 429,
+    500, corps invalide, redirection, délai). Puis `./client.rs`.
+  [ ] Aucun accès réseau externe dans la batterie.
+
+Done when:
+  Les `Scenario` ont chacun un test nommé vert, sous `systemone` seul et sous `--all-features` ;
+    la spec est relue et approuvée avant ./client.rs.
+
+Scenario: ask envoie le corps et l'en-tête attendus
+  Given un serveur local qui enregistre la requête et répond `200` `{"model":"m","answers":{"q":{"type":"noul","noul":0.9}},"usage":{"input_tokens":3,"output_tokens":1}}`,
+    un client avec `api_key = Some("k")`
+  When `ask` est appelé avec `model = "m"`, `state = "hello"` et une question `q`
+  Then le serveur a reçu `POST /v1/systemone`, `Authorization: Bearer k`, un corps JSON
+    `{"model":"m","state":"hello","questions":{"q":..}}` ; le résultat porte `answers["q"]["noul"] == 0.9` et `usage`
+
+Scenario: sans clé, aucun en-tête Authorization
+  Given un client sans `api_key`
+  When `ask` est appelé
+  Then la requête reçue ne porte pas d'en-tête `Authorization`
+
+Scenario: un statut d'erreur devient Status avec le corps tronqué
+  Given un serveur qui répond `422` avec un corps de 2000 caractères
+  When `ask` est appelé
+  Then le résultat est @Err(SystemOneError::Status { status: 422, body }) où `body` fait 512 caractères, et `retryable()` est `false`
+
+Scenario: 429 et 529 sont retryables
+  Given un serveur qui répond `429`, puis `529`
+  When `ask` est appelé pour chacun
+  Then les deux résultats sont `Status` avec `retryable() == true`
+
+Scenario: une réponse 2xx illisible est InvalidResponse
+  Given un serveur qui répond `200` avec `{"answers": 3}`
+  When `ask` est appelé
+  Then le résultat est @Err(SystemOneError::InvalidResponse(_)), `retryable() == false`
+
+Scenario: une redirection n'est pas suivie
+  Given un serveur qui répond `307` vers un autre hôte
+  When `ask` est appelé
+  Then le résultat est @Err(SystemOneError::Status { status: 307, .. }) et aucune requête n'est partie vers l'autre hôte
+
+Scenario: un délai dépassé est une erreur de transport retryable
+  Given un serveur qui ne répond pas avant `timeout_secs = 1`
+  When `ask` est appelé
+  Then le résultat est @Err(SystemOneError::Transport(_)) avec `retryable() == true`
+
+Scenario: la configuration invalide est refusée à la construction
+  Given `base_url = "ftp://x"`, puis `"pas une url"`, puis `timeout_secs = 0`
+  When `SystemOneClient::new` est appelé
+  Then chaque résultat est @Err(SystemOneError::Config(_))
+
+Scenario: la clé n'apparaît jamais dans Debug
+  Given `SystemOneConfig { api_key: Some("secret"), .. }`
+  When `format!("{config:?}")` est évalué
+  Then la chaîne ne contient pas `secret` mais contient `<redacted>`

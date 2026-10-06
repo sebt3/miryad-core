@@ -1,0 +1,200 @@
+Spec: template — rendu Handlebars central de la `config` d'un step
+
+Purpose:
+  Porter le seul endroit de la crate où la `config` d'un step est rendue par Handlebars avant d'être
+    remise à son kind : chaque `string` de la `config` peut référencer les sorties des steps amont
+    (`inputs`) et l'identité du run (`run`), sans qu'aucun kind ait à implémenter ce rendu lui-même.
+    Le rendu est **central** (appelé par ./dispatcher.rs avant `run`) pour qu'un kind ajouté par une
+    application hérite du templating sans y penser — même rôle de « tout le reste est fourni » que le
+    reste de la crate.
+  Le moteur est `vynil_core::hbs::HandleBars` (déjà dépendance non optionnelle, `hbs` toujours
+    compilé, décision de Sébastien 2026-10-06 : pas de feature `hbs`), durci : mode strict, aucun
+    échappement HTML (la sortie alimente du JSON, pas du HTML) et helpers d'accès à l'hôte retirés.
+    Les données d'un run peuvent provenir d'un tiers non fiable (message Matrix, requête API) et une
+    politique `OwnerOnly` (./definition.sdd) fait de chaque utilisateur l'auteur de ses templates :
+    `read_to_str`/`env_var` ne doivent jamais être joignables depuis un template de workflow.
+  Fichier neuf, conception. API de `vynil-core` `0.7.7` vérifiée dans son source local :
+    `HandleBars::new()`, `HandleBars::render(&mut self, template: &str, data: &Value) -> Result<String>`,
+    `HandleBars::engine_mut() -> &mut handlebars::Handlebars` (accès à `set_strict_mode`,
+    `register_escape_fn`, `unregister_helper`). Le retrait par liste noire ci-dessous est transitoire :
+    issue sebt3/vynil-core#13 demande un moteur « sans effet de bord sur l'hôte » à la construction ;
+    quand elle est livrée, `engine()` s'y branche et la liste noire disparaît (`Tasks`).
+
+Owns:
+  ./template.rs
+
+References:
+  ./step.sdd — @RunInfo, @StepError, `raw_fields` (champs de `config` jamais rendus)
+  ./dispatcher.sdd — seul appelant de @render_config (avant l'appel du kind, branches ordinaire et durable)
+  ./rhai_step.sdd — appelant de @render_str (fonction `render` exposée aux scripts) ; déclare `script` en champ brut
+  ./subworkflow.sdd — déclare `dag` en champ brut : les templates des steps enfants sont rendus par le run enfant
+  ../mcp/format.sdd — précédent d'usage de @vynil_core::hbs::HandleBars dans la crate (moteur frais par appel)
+  issue sebt3/vynil-core#13 — exclusion des helpers d'accès fichiers/environnement à la source
+
+Must:
+  Contexte de rendu : un objet JSON `{"inputs": <inputs>, "run": {"run_key": .., "step_id": .., "depth": ..}}`,
+    construit par `fn context(run: &RunInfo, inputs: &HashMap<String, Value>) -> Value` (privée,
+    pure). `inputs` est l'objet des sorties amont tel que reçu par le kind (clé = id du step amont,
+    ./step.sdd) ; aucun autre canal (un template ne voit jamais la sortie d'un step dont son step ne
+    dépend pas, même décision que ./step.sdd).
+  `pub(crate) fn render_config(config: &Value, run: &RunInfo, inputs: &HashMap<String, Value>,
+    raw_fields: &[&str]) -> Result<Value, StepError>` — rend récursivement la `config` :
+    1. `String` → rendue par le moteur ; une chaîne sans la sous-chaîne `{{` est rendue telle quelle
+      sans appeler le moteur (chemin rapide) ;
+    2. `Array` → chaque élément rendu ; `Object` → chaque **valeur** rendue, jamais les clés ;
+    3. `Number`, `Bool`, `Null` → inchangés ;
+    4. si `config` est un `Object`, ses clés de premier niveau listées dans `raw_fields` sont
+      recopiées sans rendu (le sous-arbre entier) ; si `config` n'est pas un objet, `raw_fields` est ignoré ;
+    5. objet à **une seule clé** `"$raw"` : rendu par sa valeur recopiée telle quelle, sans rendu
+      (échappatoire pour embarquer des templates destinés à un autre rendu, ex. un sous-DAG) ;
+    6. objet à **une seule clé** `"$json"` dont la valeur est une `String` : la chaîne est rendue puis
+      analysée par `serde_json::from_str` ; la valeur obtenue remplace l'objet (moyen explicite
+      d'obtenir un nombre, un booléen, un objet ou un tableau depuis un template ; une chaîne rendue
+      reste toujours une chaîne partout ailleurs). `"$json"` dont la valeur n'est pas une chaîne, ou
+      rendu non analysable → erreur.
+    Un seul passage : la sortie d'un rendu n'est jamais re-rendue.
+  `pub(crate) fn render_str(template: &str, run: &RunInfo, inputs: &HashMap<String, Value>) ->
+    Result<String, StepError>` — rend une seule chaîne avec le même moteur durci et le même contexte
+    (utilisé par la fonction Rhai `render`, ./rhai_step.sdd).
+  Moteur (`fn engine() -> HandleBars<'static>`, privée) : un moteur **neuf par appel** de
+    @render_config / @render_str (jamais partagé ni réutilisé entre deux steps, même règle que le
+    `Script` de ./rhai_step.sdd) ; `HandleBars::new()` puis, via `engine_mut()` :
+    `set_strict_mode(true)` (une variable absente est une erreur, jamais une chaîne vide — un
+    workflow qui rend « bonjour  » sans nom est un bug à voir, pas à masquer) ;
+    `register_escape_fn(|s| s.to_owned())` (aucun échappement HTML) ;
+    retrait (`unregister_helper`) de chaque nom de @DENIED_HELPERS, constante privée :
+    `read_to_str`, `env_var`, `canonicalize`, `parent`, `file_name`, `extension`, `jsonnet`.
+    Un template qui les appelle échoue au rendu (helper inconnu en mode strict).
+  Erreurs : toujours @StepError { retryable: false, .. } — un template invalide ou une variable
+    absente est déterministe vis-à-vis de ses entrées, rejouer ne change rien. Le message est
+    `format!("template invalide à {pointer}: {e}")` où `pointer` est le pointeur JSON (RFC 6901,
+    `""` pour la racine, `/a/0/b` sinon) de la valeur en cause ; pour @render_str, `pointer` vaut `""`.
+    Le message ne contient jamais le contenu de `inputs`.
+  Plafond de sortie : chaque rendu de chaîne est borné à @MAX_RENDERED_BYTES (constante privée,
+    `1_048_576`) ; au-delà → @StepError non retryable « rendu trop long à {pointer} ». Le plafond
+    borne un template qui boucle sur une donnée volumineuse, pas un usage légitime.
+  Compiler uniquement sous `#[cfg(feature = "workflow")]` (le module n'a pas de sens sans le moteur).
+
+Must not:
+  Rendre une clé d'objet, ou rendre deux fois une même sortie : un template ne fabrique pas de noms de
+    champ, et un double rendu ferait d'une donnée tierce un template (injection).
+  Enregistrer un helper ou un partial supplémentaire (`register_helper_dir`, `register_partial_dir`,
+    `register_template`) : le moteur durci n'a que les helpers de `HandleBars::new()` moins la liste
+    noire — une application qui a besoin d'un helper l'obtient par un kind, pas par le moteur central.
+  Journaliser (`tracing`) un contexte, une sortie rendue ou une valeur d'`inputs` : ils peuvent
+    porter des secrets ou des données personnelles ; aucune trace dans ce fichier.
+  Appeler Restate : ce fichier est de la logique pure, testable sans serveur ni `restate-sdk`.
+
+Forbids:
+  `restate_sdk::*`, `reqwest::*`, `std::fs::*`, `std::env::*` dans ./template.rs
+
+Depends on:
+  @vynil_core::hbs::HandleBars — moteur (dépendance déjà présente, feature `hbs` de `vynil-core`)
+  ./step.rs — @RunInfo, @StepError
+  @serde_json — `Value`, `from_str`
+
+Exposes:
+  `render_config`, `render_str` — `pub(crate)` ; aucune surface publique : l'application n'appelle
+    jamais le rendu, elle déclare seulement les champs bruts de ses kinds (`raw_fields`, ./step.sdd).
+
+Raises:
+  Aucun code `MRD-*` : uniquement @StepError (même règle que ./step.sdd).
+
+Handles:
+  `config` à la racine non-objet (une chaîne seule, un tableau) : rendue selon les règles 1-3,
+    `raw_fields` ignoré.
+  Chaîne contenant `\{{` : l'échappement natif de Handlebars produit un `{{` littéral ; le chemin
+    rapide ne s'applique pas (la sous-chaîne `{{` est présente) et le moteur rend le littéral.
+  `inputs` vide (step sans dépendance) : le contexte porte `"inputs": {}` ; un template qui y
+    référence une clé échoue en mode strict.
+
+Tasks:
+  [ ] Écrire les tests d'abord depuis les `Scenario`, puis `./template.rs` ; aucune dépendance Restate
+    ni base : tests unitaires purs, un test nommé par `Scenario`.
+  [ ] Après livraison de sebt3/vynil-core#13 : remplacer @DENIED_HELPERS et les `unregister_helper`
+    par le constructeur restreint de `vynil-core`, supprimer la liste noire, bumper `vynil-core`
+    (spec et `Cargo.toml` ensemble). Ne pas le faire avant : la liste noire est le contrat actuel.
+  [x] Typage des rendus : `"$json"` explicite, pas d'inférence (arbitré par Sébastien le 2026-10-06) — une
+    inférence « la chaîne ressemble à un nombre » casserait des données légitimes (`"007"`, `"01200"`, `"true"`).
+    Du sucre (helper dédié) reste un ajout futur sans changer ce défaut.
+
+Done when:
+  Les `Scenario` ont chacun un test nommé distinct et vert, sur `workflow`, `--all-features` et la
+    batterie de ./../../tooling.sdd.
+  ./step.sdd et ./dispatcher.sdd sont approuvées avant ou avec cette spec.
+  La spec est relue et approuvée par Sébastien avant qu'une ligne de ./template.rs soit écrite.
+
+Scenario: une chaîne est rendue avec les sorties amont
+  Given `inputs = {"fetch": {"user": "ada"}}` et `config = {"msg": "bonjour {{inputs.fetch.user}}"}`
+  When `render_config` est appelé avec `raw_fields = []`
+  Then le résultat est `{"msg": "bonjour ada"}`
+
+Scenario: les valeurs non-chaînes et les clés sont inchangées
+  Given `config = {"{{k}}": 1, "b": true, "n": null, "l": ["x{{inputs.a}}", 2]}` et `inputs = {"a": "Z"}`
+  When `render_config` est appelé
+  Then le résultat est `{"{{k}}": 1, "b": true, "n": null, "l": ["xZ", 2]}` — la clé `{{k}}` n'est pas rendue
+
+Scenario: un champ brut de premier niveau n'est pas rendu
+  Given `config = {"script": "#{ a: \"{{inputs.x}}\" }", "to": "{{inputs.x}}"}`, `inputs = {"x": "v"}`
+  When `render_config` est appelé avec `raw_fields = ["script"]`
+  Then `script` est recopié tel quel et `to` vaut `"v"`
+
+Scenario: $raw protège un sous-arbre
+  Given `config = {"dag": {"$raw": [{"id": "a", "config": {"m": "{{inputs.q}}"}}]}}`
+  When `render_config` est appelé
+  Then le résultat est `{"dag": [{"id": "a", "config": {"m": "{{inputs.q}}"}}]}` — l'enveloppe `$raw` disparaît, le contenu est intact
+
+Scenario: $json produit une valeur typée
+  Given `config = {"n": {"$json": "{{inputs.count}}"}, "o": {"$json": "{\"a\": {{inputs.count}} }"}}`, `inputs = {"count": 3}`
+  When `render_config` est appelé
+  Then le résultat est `{"n": 3, "o": {"a": 3}}`
+
+Scenario: $json non analysable est une erreur non retryable
+  Given `config = {"n": {"$json": "pas du json {{inputs.count}}"}}`, `inputs = {"count": 3}`
+  When `render_config` est appelé
+  Then le résultat est @Err(StepError { retryable: false, message }), `message` commence par `template invalide à /n:`
+
+Scenario: une chaîne rendue reste une chaîne
+  Given `config = {"n": "{{inputs.count}}"}`, `inputs = {"count": 3}`
+  When `render_config` est appelé
+  Then le résultat est `{"n": "3"}`
+
+Scenario: une variable absente échoue en mode strict
+  Given `config = {"a": {"b": "{{inputs.absent.champ}}"}}` et `inputs` vide
+  When `render_config` est appelé
+  Then le résultat est @Err(StepError { retryable: false, message }), `message` commence par `template invalide à /a/b:`
+
+Scenario: aucun échappement HTML
+  Given `inputs = {"m": "<b>a & b</b>"}` et `config = {"x": "{{inputs.m}}"}`
+  When `render_config` est appelé
+  Then le résultat est `{"x": "<b>a & b</b>"}`
+
+Scenario: les helpers d'accès à l'hôte sont refusés
+  Given `config = {"x": "{{read_to_str \"/etc/hostname\"}}", "y": "{{env_var \"HOME\"}}"}`
+  When `render_config` est appelé pour chacune des deux chaînes
+  Then chacun rend @Err(StepError { retryable: false, .. }) — aucun fichier lu, aucune variable d'environnement exposée
+
+Scenario: les helpers utiles restent disponibles
+  Given `inputs = {"a": {"k": 1}}` et `config = {"x": "{{to_json inputs.a}}", "y": "{{uuid_new_v4}}"}`
+  When `render_config` est appelé
+  Then `x` vaut `{"k":1}` (rendu du helper `to_json` de `vynil-core`) et `y` est un UUID de 36 caractères
+
+Scenario: un échappement natif produit un littéral
+  Given `config = {"x": "\\{{inputs.a}}"}` (la chaîne JSON contient `\{{inputs.a}}`)
+  When `render_config` est appelé
+  Then `x` vaut `{{inputs.a}}` littéral
+
+Scenario: l'identité du run est disponible
+  Given `run = RunInfo { run_key: "r1", step_id: "s1", depth: 2 }` et `config = {"x": "{{run.run_key}}/{{run.step_id}}/{{run.depth}}"}`
+  When `render_config` est appelé
+  Then `x` vaut `"r1/s1/2"`
+
+Scenario: un rendu trop long est refusé
+  Given un `inputs` portant une chaîne de 2 Mio et `config = {"x": "{{inputs.big}}"}`
+  When `render_config` est appelé
+  Then le résultat est @Err(StepError { retryable: false, message }), `message` commence par `rendu trop long à /x`
+
+Scenario: render_str utilise le même moteur et le même contexte
+  Given `inputs = {"a": "Z"}`
+  When `render_str("v={{inputs.a}}", ..)` est appelé
+  Then le résultat est `Ok("v=Z")` ; avec `{{inputs.nope}}` il rend @Err(StepError { retryable: false, .. })

@@ -1,0 +1,76 @@
+Spec: session — persistance de la session Matrix du bot
+
+Purpose:
+  Porter la persistance de la session du bot (jetons d'accès et de rafraîchissement, identité de
+    l'appareil, identifiant de client OAuth) dans le store de chiffrement de l'application : la session
+    survit au redémarrage et à un changement de réplica, sans second stockage. Deux formes existent
+    (décision 2026-10-06) : la session OAuth 2.0 obtenue par device code (./device_code.sdd, nominale) et
+    la session « Matrix » à jeton importé (`SessionImport`, ./client.sdd, repli : jeton de compatibilité
+    émis par MAS ou par l'administrateur). Fichier neuf, conception.
+  Les jetons de rafraîchissement **tournent** : `matrix-sdk` publie chaque rotation
+    (`Client::subscribe_to_session_changes`), et ./client.sdd réécrit la session ici à chaque rotation ;
+    une session non réécrite devient invalide au prochain redémarrage.
+
+Owns:
+  ./session.rs
+
+References:
+  ./store/crypto_account.sdd — `set_custom_value`/`get_custom_value`/`remove_custom_value` : stockage scellé
+    (la session est chiffrée par le `StoreCipher` du compte, jamais écrite en clair)
+  ./client.sdd — seul appelant ; ./device_code.sdd — produit les jetons d'une session OAuth
+  matrix-sdk `0.18.0` — `authentication::matrix::MatrixSession` et `authentication::oauth::OAuthSession`
+    (tous deux `Serialize`/`Deserialize`, conçus pour être persistés) — chemins à confirmer en source
+
+Must:
+  `pub(crate) enum StoredSession` — `#[derive(Serialize, Deserialize)]`, `#[serde(tag = "kind")]` :
+    `Matrix(MatrixSession)`, `OAuth(OAuthSession)`. `Debug` manuel sans jeton.
+  `pub(crate) const SESSION_KEY: &str = "miryad.matrix.session"` — clé de valeur personnalisée du store.
+  `pub(crate) async fn load(store: &SeaOrmCryptoStore) -> Result<Option<StoredSession>, MatrixError>` :
+    `CryptoStore::get_custom_value(SESSION_KEY)` ; absent → `Ok(None)` ; JSON illisible →
+    `MatrixError::Store(StoreError::Corrupt)` (jamais `Ok(None)` silencieux : une session illisible
+    n'est pas une absence de session).
+  `pub(crate) async fn save(store, session: &StoredSession) -> Result<(), MatrixError>` — sérialise en JSON
+    puis `set_custom_value` ; remplace l'existante.
+  `pub(crate) async fn clear(store) -> Result<(), MatrixError>` — `remove_custom_value`.
+  Compiler sous `#[cfg(feature = "matrix")]`.
+
+Must not:
+  Écrire une session ailleurs que par le store (pas de fichier, pas de variable d'environnement) ;
+    journaliser un jeton.
+
+Depends on:
+  ./store/mod.rs (@SeaOrmCryptoStore), ./error.rs, @matrix_sdk, @serde_json
+
+Exposes:
+  `StoredSession`, `SESSION_KEY`, `load`, `save`, `clear` — tous `pub(crate)`.
+
+Tasks:
+  [ ] Tests d'abord (store SQLite mémoire du lot store, sessions fabriquées à la main), puis ./session.rs.
+
+Done when:
+  Les `Scenario` sont verts ; la spec est relue et approuvée avant ./session.rs.
+
+Scenario: une session OAuth fait l'aller-retour
+  Given un store neuf et une `StoredSession::OAuth(..)`
+  When `save` puis `load`
+  Then le résultat est `Some` égal à la session enregistrée (mêmes jetons, même `device_id`)
+
+Scenario: une session Matrix fait l'aller-retour
+  Given une `StoredSession::Matrix(..)`
+  When `save` puis `load`
+  Then le résultat est `Some` égal
+
+Scenario: save remplace, clear efface
+  Given une session enregistrée
+  When `save` d'une seconde session puis `clear`
+  Then `load` rend la seconde entre-temps, puis `None`
+
+Scenario: une valeur illisible est une erreur
+  Given `set_custom_value(SESSION_KEY, b"pas du json")`
+  When `load` est appelé
+  Then le résultat est @Err(MatrixError::Store(_)) et pas `Ok(None)`
+
+Scenario: la session n'est pas en clair en base
+  Given une session enregistrée avec le jeton `tok-123`
+  When on lit les octets bruts de la ligne `kv` correspondante
+  Then la sous-chaîne `tok-123` n'y figure pas

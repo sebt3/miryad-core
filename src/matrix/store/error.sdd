@@ -1,0 +1,48 @@
+Spec: error — @StoreError, erreurs du store de chiffrement
+
+Purpose:
+  Porter le type d'erreur propre du store (extractible : aucun type de l'hôte). Un seul type, converti
+    vers @matrix_sdk_crypto::store::CryptoStoreError, seule erreur que le trait @CryptoStore sait
+    transporter. Codes `MRD-MXSTORE-NNN`. Fichier neuf, conception.
+
+Owns:
+  ./error.rs
+
+References:
+  ./crypto.sdd — implémentation du trait, convertit @StoreError via `From`
+  matrix-sdk-crypto `0.18.0`, `CryptoStoreError` — variantes cibles (`Backend(Box<dyn Error + Send + Sync>)`
+    pour tout échec de base, et les variantes de sérialisation) à relire en source
+
+Must:
+  @StoreError — `pub enum`, `#[derive(Debug, thiserror::Error)]`, `#[non_exhaustive]` :
+    `Db(sea_orm::DbErr)` → `MRD-MXSTORE-001` (Display `MRD-MXSTORE-001: database error: {0}`)
+    `Cipher(String)` → `MRD-MXSTORE-002` (Display `MRD-MXSTORE-002: store cipher error: {0}`) — mauvaise
+      passphrase, export corrompu, échec de chiffrement
+    `Serialization(String)` → `MRD-MXSTORE-003` (Display `MRD-MXSTORE-003: serialization error: {0}`)
+    `Corrupt(String)` → `MRD-MXSTORE-004` (Display `MRD-MXSTORE-004: corrupt store data: {0}`) — une ligne
+      attendue absente ou un `payload` indéchiffrable alors que la clé de chiffrement est la bonne
+  `impl From<sea_orm::DbErr> for StoreError` (variante `Db`) ; `impl From<StoreError> for CryptoStoreError`
+    qui range toute variante dans le `Backend` de `CryptoStoreError` (message `Display` conservé).
+  Un `DbErr` n'est pas recodé : il traverse nu dans `Db` (règle de la crate, `.specdd/bootstrap.project.md`).
+
+Must not:
+  Inclure un `payload`, une clé ou un identifiant d'appareil dans un message d'erreur.
+
+Exposes:
+  `StoreError`
+
+Tasks:
+  [ ] Tests d'abord (codes, conversion vers `CryptoStoreError`), puis ./error.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `matrix` ; la spec est relue et approuvée avant ./error.rs.
+
+Scenario: les codes sont stables
+  Given une variante de chaque sorte
+  When `to_string()` est appelé
+  Then chaque message commence par `MRD-MXSTORE-001` à `-004`
+
+Scenario: la conversion vers CryptoStoreError conserve le message
+  Given `StoreError::Cipher("x")`
+  When elle est convertie en `CryptoStoreError`
+  Then le `Display` du résultat contient `MRD-MXSTORE-002`

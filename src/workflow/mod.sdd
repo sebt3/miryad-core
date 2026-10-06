@@ -56,6 +56,22 @@ Must:
     (à la différence de `resource.rs`/`Must not` qui refuse tout ré-export racine : ce module a
     plusieurs fichiers internes et une app doit en toucher la plupart pour intégrer le moteur, contexte
     différent d'un seul trait central).
+  **Amendement 2026-10-06 (templating central, `systemone`, `matrix`)** — complète `Must` ci-dessus sans le
+    réécrire ; en cas de contradiction de comptage (« neuf sous-modules », « vingt-quatre chemins »), cet
+    amendement prévaut :
+    `mod template;` — **privé** (aucune surface : ./template.sdd, appelé par ./dispatcher.rs et ./rhai_step.rs
+    seulement), gated par `workflow` comme tout le module ; dixième sous-module.
+    `#[cfg(all(feature = "workflow", feature = "systemone"))] pub mod systemone_step;` et
+    `#[cfg(all(feature = "workflow", feature = "matrix"))] pub mod matrix_step;` — onzième et douzième, **gated par
+    le croisement** des deux features (décision de Sébastien 2026-10-06 : le step n'existe que si le moteur et le
+    client sont tous deux compilés). Ré-exports correspondants, sous le même `cfg` : `systemone_step::SystemOneStep`
+    et `matrix_step::MatrixSendStep` (vingt-sixième chemin au plus, vingt-quatre sans ces features).
+    `systemone` et `matrix` ne sont **pas** des dépendances de `workflow` (ni l'inverse) : `/Cargo.toml` n'ajoute
+    aucune ligne à `workflow` ; les deux modules de step compilent par croisement de `cfg`, sans feature
+    intermédiaire. Aucune dépendance Cargo nouvelle dans ce fichier (`sha2`, `hex` — pour `matrix_step`,
+    ./matrix_step.sdd — sont déjà directes).
+    L'application enregistre elle-même ces kinds (`StepRegistry::register(SystemOneStep::new(..))`,
+    `register(MatrixSendStep::new(..))`), comme `RhaiStep` ; la rustdoc du module le documente.
   `definition::validate_dag` reste `pub(crate)` (./definition.sdd) : non ré-exporté, jamais atteint
     depuis l'extérieur de la crate — seul `WorkflowDefinition::before_create`/`before_update`
     l'utilise en interne.
@@ -188,6 +204,11 @@ Tasks:
   [x] Preuve « depuis l'extérieur » du `Scenario` (revue 2026-09-24) : le test unitaire de ./mod.rs
     ne prouvait que `crate::` ; `tests/workflow_flat_paths.rs` exerce les neuf mêmes chemins en
     `miryad_core::workflow::…`.
+  [ ] Templating, `systemone`, `matrix` (2026-10-06) : déclarer `template`, `systemone_step`, `matrix_step` avec leur
+    `cfg`, ajouter les deux ré-exports conditionnels et étendre le test de chemins plats
+    (`../../tests/workflow_flat_paths.rs` et `mod tests`) sous les croisements de features ; documenter dans
+    le bloc `//!` l'enregistrement par l'application. Dernier fichier du lot, après ./template.rs,
+    ./systemone_step.rs et ./matrix_step.rs.
 
 Done when:
   Les neuf specs enfants (`error`, `client`, `step`, `dispatcher`, `definition`, `interpreter`,
@@ -209,3 +230,8 @@ Scenario: chemins plats résolvent sans connaître la structure interne du modul
     `miryad_core::workflow::WorkflowDefinition` et `miryad_core::workflow::configure_policy`
   Then les neuf chemins compilent sans qu'aucun n'ait eu besoin de nommer `client`, `dispatcher`,
     `interpreter`, `step`, `rhai_step`, `error` ou `definition` explicitement
+
+Scenario: les steps croisés n'existent que sous leur croisement de features (2026-10-06)
+  Given la feature `workflow` seule, puis `workflow` + `systemone`, puis `workflow` + `matrix`
+  When un test tente d'importer `crate::workflow::{SystemOneStep, MatrixSendStep}`
+  Then `SystemOneStep` n'est importable que sous `workflow` + `systemone`, `MatrixSendStep` que sous `workflow` + `matrix` (le test est lui-même gated par `cfg`)

@@ -1,0 +1,158 @@
+Spec: systemone_step — kind natif `"systemone"`, question à un modèle de décision avec seuils (gates)
+
+Purpose:
+  Porter le `impl MiryadWorkflowStep` (./step.sdd) qui pose des questions typées à un modèle de
+    décision (../systemone/client.sdd) et peut **barrer** l'exécution selon les probabilités
+    répondues. Une réponse System One est une probabilité calibrée, pas un texte : le cas d'usage
+    est le routage, le triage, la modération — « continue seulement si P(urgent) ≥ 0.8 ». Le step
+    porte donc des seuils (`gates`) : par défaut un seuil non franchi arrête le workflow (échec non
+    retryable) ; `on_fail: "continue"` rend plutôt `passed: false` et laisse l'aval décider.
+  Disponible seulement sous `workflow` **et** `systemone` (décision de Sébastien 2026-10-06) ; comme
+    `RhaiStep`, l'application l'enregistre elle-même (`StepRegistry::register(SystemOneStep::new(client))`,
+    ./step.sdd, aucune découverte automatique) — à documenter dans la rustdoc et `docs/architecture.md`.
+    Fichier neuf, conception.
+  La `config` du step est rendue par ./template.sdd avant `run` : `state`, `instructions` et
+    `criteria` peuvent donc référencer `inputs` (`{{inputs.fetch.body}}`) sans code dans ce fichier.
+
+Owns:
+  ./systemone_step.rs
+
+References:
+  ./step.sdd — @MiryadWorkflowStep, @StepError, @RunInfo
+  ./template.sdd — rendu de `config` avant `run` (aucun champ brut déclaré par ce kind)
+  ../systemone/client.sdd — @SystemOneClient, @SystemOneRequest, @SystemOneResponse
+  ../systemone/error.sdd — @SystemOneError::retryable
+  ./rhai_step.sdd — précédent de forme d'un kind natif enregistré par l'application
+
+Must:
+  `SystemOneStep` — struct `pub`, un champ privé `client: SystemOneClient`. `pub fn new(client:
+    SystemOneClient) -> Self`. `impl MiryadWorkflowStep` : `kind()` rend `"systemone"`.
+    `raw_fields()` garde son défaut (`&[]`) : toute la config est rendue.
+  `SystemOneStepConfig` — struct privée, `#[derive(Deserialize)]`, `#[serde(deny_unknown_fields)]` :
+    `model: String`, `state: Value`, `questions: Map<String, Value>`, `gates: Vec<Gate>`
+    (`#[serde(default)]`), `on_fail: OnFail` (`#[serde(default)]`).
+    `OnFail` — enum privé, `#[serde(rename_all = "lowercase")]` : `Fail` (défaut), `Continue`.
+    `Gate` — struct privée : `question: String`, `option: Option<String>`, `min: Option<f64>`,
+    `max: Option<f64>`.
+  `run(&self, _run, config, _inputs)` dans cet ordre exact :
+    1. `serde_json::from_value::<SystemOneStepConfig>(config)` — @Err → @StepError { retryable: false,
+      message: format!("config systemone invalide: {e}") }.
+    2. Validation des gates (`fn validate(cfg: &SystemOneStepConfig) -> Result<(), StepError>`, pure,
+      avant tout appel réseau), message `config systemone invalide: ..` non retryable :
+      `questions` non vide ; chaque `Gate.question` existe dans `questions` ; au moins un de `min`
+      ou `max` ; `min` et `max` finis (ni NaN ni infini) ; `min <= max` si les deux ; le `type` de la
+      question (champ `"type"` de la valeur de `questions`) est `"noul"`, `"choice"` ou `"score"` pour
+      toute question portée par un gate (sinon erreur « type de question non supporté par un gate »),
+      `option` **requise** si le type est `choice` et **interdite** sinon.
+    3. `client.ask(&SystemOneRequest { model, state, questions })` — @Err(e) → @StepError {
+      retryable: e.retryable(), message: e.to_string() }.
+    4. Pour chaque gate, dans l'ordre : `value = extract(answer, gate)` (`fn extract(answers:
+      &Map<String, Value>, gate: &Gate, kind: &str) -> Result<f64, StepError>`, pure) :
+      `noul` → `answer["noul"]` ; `choice` → `answer["probabilities"][option]` ; `score` →
+      `answer["score"]`. Réponse absente, champ absent ou non numérique ou non fini → @StepError
+      { retryable: false, message: "réponse systemone inattendue pour {question}" }.
+      `passed_gate = value >= min.unwrap_or(-inf) && value <= max.unwrap_or(+inf)` (bornes inclusives).
+    5. `passed = tous les gates passés` (vrai si `gates` est vide). Si `!passed` et `on_fail == Fail` →
+      @StepError { retryable: false, message } où `message` = `"gate systemone non franchi: "` suivi,
+      pour chaque gate échoué, de `"{question}={value} (min {min}, max {max})"` (borne absente omise),
+      joints par `"; "`.
+    6. Sinon @Ok(sortie) :
+      `{"passed": bool, "model": <réponse.model>, "answers": <réponse.answers>, "gates": [
+      {"question", "option", "value", "min", "max", "passed"}, ..], "usage": <réponse.usage ou null>}` —
+      `option`, `min`, `max` valent `null` si absents. `answers` est transmis sans réécriture.
+  Le step ne fait aucune nouvelle tentative : une erreur retryable est laissée au retry Restate
+    (@StepError { retryable: true }, ./dispatcher.sdd).
+  Compiler uniquement sous `#[cfg(all(feature = "workflow", feature = "systemone"))]`.
+
+Must not:
+  Interpréter `instructions` ou `criteria` (opaques, transmis tels quels) ni réécrire `answers`.
+  Appeler le client avant la validation de l'étape 2 : une config de gate fausse ne consomme pas de requête.
+  Rendre `retryable: true` pour un gate non franchi : une probabilité calibrée n'est pas une panne.
+  Journaliser `state` ou `answers` (données potentiellement personnelles).
+
+Forbids:
+  `restate_sdk::*` dans ./systemone_step.rs (kind ordinaire, ./step.sdd)
+
+Depends on:
+  ./step.rs, ../systemone/client.rs, ../systemone/error.rs, @serde, @serde_json
+
+Exposes:
+  `SystemOneStep` — struct `pub`, `new` ; ré-exporté `miryad_core::workflow::SystemOneStep` sous
+    `all(workflow, systemone)` (./mod.sdd).
+
+Accepts:
+  `config` : `{"model", "state", "questions", "gates"?, "on_fail"?}` après rendu.
+
+Returns:
+  La sortie de l'étape 6, ou @StepError.
+
+Handles:
+  Question `choice` dont `option` n'est pas dans `probabilities` : `extract` échoue (étape 4), non retryable.
+  `gates` vide : un simple appel au modèle, `passed: true`, les réponses sont dans la sortie.
+  Plusieurs gates sur la même question : permis (ex. `min` puis `max` séparés), évalués indépendamment.
+
+Tasks:
+  [ ] Tests d'abord depuis les `Scenario` avec un serveur axum local (réutiliser le motif de
+    ../../tests/systemone_client.rs ; le test du step vit dans `mod tests` du fichier, serveur démarré
+    par un helper local) ; `validate` et `extract` testés en pur sans réseau. Puis ./systemone_step.rs.
+  [ ] Ré-export dans ./mod.rs et amendement de ./mod.sdd (même lot).
+
+Done when:
+  Les `Scenario` ont chacun un test nommé vert sous `all(workflow, systemone)` et `--all-features` ;
+    ./step.sdd, ./template.sdd et ../systemone/client.sdd sont approuvées avant ou avec cette spec ;
+    la spec est relue et approuvée par Sébastien avant ./systemone_step.rs.
+
+Scenario: un gate noul franchi rend passed true
+  Given une API qui répond `answers.q = {"type":"noul","noul":0.9}` et `gates = [{"question":"q","min":0.8}]`
+  When `run` est appelé
+  Then le résultat est @Ok avec `passed == true`, `gates[0] == {"question":"q","option":null,"value":0.9,"min":0.8,"max":null,"passed":true}` et `answers` intact
+
+Scenario: un gate non franchi échoue par défaut
+  Given `answers.q.noul = 0.31` et `gates = [{"question":"q","min":0.8}]`, `on_fail` absent
+  When `run` est appelé
+  Then le résultat est @Err(StepError { retryable: false, message }), `message` contient `q=0.31` et `min 0.8`
+
+Scenario: on_fail continue rend passed false
+  Given la même réponse et `on_fail = "continue"`
+  When `run` est appelé
+  Then le résultat est @Ok avec `passed == false` et `gates[0].passed == false`
+
+Scenario: un gate choice lit la probabilité de l'option
+  Given `answers.c = {"type":"choice","choice":"billing","probabilities":{"billing":0.88,"sales":0.12}}`, `questions.c.type = "choice"` et `gates = [{"question":"c","option":"billing","min":0.8}]`
+  When `run` est appelé
+  Then le gate vaut `0.88` et passe
+
+Scenario: un gate score lit le score
+  Given `answers.s = {"type":"score","score":1.05}` et `gates = [{"question":"s","max":1.0}]`
+  When `run` est appelé
+  Then le gate vaut `1.05`, échoue (`max` dépassé) et, par défaut, le step échoue
+
+Scenario: une config de gate invalide ne fait aucun appel réseau
+  Given des `gates` qui référencent une question absente, ou sans `min` ni `max`, ou `option` sur un `noul`, ou `min > max`, ou `choice` sans `option`
+  When `run` est appelé pour chacune
+  Then chaque résultat est @Err(StepError { retryable: false, message }) avec `message` commençant par `config systemone invalide:` et le serveur n'a reçu aucune requête
+
+Scenario: un champ inconnu dans la config est refusé
+  Given `config` avec une clé `gate` (faute de frappe pour `gates`)
+  When `run` est appelé
+  Then le résultat est @Err(StepError { retryable: false, .. }) `config systemone invalide:`
+
+Scenario: les erreurs du client suivent leur retryabilité
+  Given une API qui répond `529`, puis une autre `422`
+  When `run` est appelé pour chacune
+  Then le premier résultat est @Err(StepError { retryable: true, .. }) et le second @Err(StepError { retryable: false, .. })
+
+Scenario: une réponse sans le champ attendu échoue proprement
+  Given `answers.q = {"type":"noul"}` (sans `noul`) et un gate sur `q`
+  When `run` est appelé
+  Then le résultat est @Err(StepError { retryable: false, message }) contenant `réponse systemone inattendue pour q`
+
+Scenario: sans gates, le step est un simple appel
+  Given `gates` absent
+  When `run` est appelé
+  Then le résultat est @Ok avec `passed == true`, `gates == []` et les `answers` du modèle
+
+Scenario: la config est rendue avant run
+  Given un DAG dont un step amont sort `{"text": "panne"}` et `config.state = "{{inputs.fetch.text}}"`
+  When le step est exécuté via ./dispatcher.sdd
+  Then la requête reçue par le serveur porte `"state": "panne"` — preuve de l'intégration avec ./template.sdd, sans code de rendu dans ce fichier

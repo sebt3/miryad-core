@@ -1,0 +1,141 @@
+Spec: sync — boucle de synchronisation, remise des messages, auto-join
+
+Purpose:
+  Porter la lecture « en direct » : `MatrixClient::run_sync` synchronise le compte avec le homeserver
+    et remet chaque nouveau message texte à un @MatrixEventHandler fourni par l'application. C'est le
+    point d'entrée du futur harnais de chatbot (hors de cette spec) : le harnais implémente
+    @MatrixEventHandler, ce fichier ne contient aucune logique de conversation. Fichier neuf, conception.
+  Contraintes de conception (décidées au 2026-10-06) :
+    (1) **un seul synchronisateur par compte à la fois** : plusieurs réplicas peuvent appeler `run_sync`,
+      un seul tient le bail `miryad.matrix.sync` (verrou à bail du store) et synchronise ; les autres
+      attendent et reprennent si le bail expire. Raison : deux processus qui déchiffrent en parallèle
+      avec le même appareil corrompent les sessions Olm.
+    (2) **livraison au moins une fois, sans rattrapage** : le sync démarre par un sync initial sans jeton
+      dont les événements ne sont pas remis au handler (pas de rejeu de l'historique au démarrage) ;
+      les messages reçus pendant une coupure ne sont pas rattrapés (`./mod.sdd`, `Tasks`). Un même
+      message peut être remis deux fois (bascule de bail, reprise) : **le handler doit être idempotent** —
+      la clé naturelle est l'`event_id`, par exemple clé de workflow Restate (`trigger_run`) pour qu'un
+      doublon soit absorbé.
+    (3) le handler est attendu **dans** la boucle de sync : un handler lent retarde la synchronisation ;
+      il doit enregistrer le travail (ex. déclencher un workflow) et rendre la main.
+
+Owns:
+  ./sync.rs
+
+References:
+  ./client.sdd — @MatrixClient, `inner` (`pub(crate)`) ; ./config.sdd — `sync_timeout_ms`, `auto_join_from`,
+    `holder_name` ; ./error.sdd ; ./store/crypto_account.sdd — `try_take_leased_lock`
+  matrix-sdk `0.18.0` — `Client::{sync_once, sync_with_callback, add_event_handler, remove_event_handler}`,
+    `SyncSettings`, `LoopCtrl`, `OriginalSyncRoomMessageEvent`, `StrippedRoomMemberEvent`,
+    `OriginalSyncRoomEncryptedEvent`, `Room::join` — à relire en source
+
+Must:
+  @MatrixMessage — struct `pub`, `#[derive(Debug, Clone, PartialEq)]`, champs `pub` : `room_id: String`,
+    `event_id: String`, `sender: String`, `body: String`, `formatted_body: Option<String>`,
+    `msgtype: String` (`"m.text"` ou `"m.emote"`), `timestamp_ms: u64`, `encrypted: bool`.
+  @MatrixEventHandler — trait `pub`, `#[async_trait::async_trait]`, `Send + Sync + 'static` :
+    `async fn on_message(&self, message: MatrixMessage);`. Aucune erreur remontée (le handler gère les
+    siennes) ; un panic du handler est capturé (`tokio::task::spawn` + `JoinHandle`) et journalisé
+    (`tracing::error!` avec salle et `event_id`), la boucle continue.
+  `impl MatrixClient { pub async fn run_sync<F>(&self, handler: Arc<dyn MatrixEventHandler>, shutdown: F) ->
+    Result<(), MatrixError> where F: Future<Output = ()> + Send }` — étapes :
+    1. **Bail** : `store.try_take_leased_lock(lease_ms, "miryad.matrix.sync", holder_name)` avec
+      `lease_ms = fn lease_ms(sync_timeout_ms) -> u32 = 2 * sync_timeout_ms + 15_000` ; `None` → attendre 5 s
+      puis réessayer ; `shutdown` observé pendant l'attente → `Ok(())`.
+    2. **Sync initial** : une trace `tracing::info!` annonce que les messages reçus pendant l'arrêt ne sont
+      pas rattrapés (jamais de perte silencieuse) ; puis `sync_once` sans jeton, `timeout` nul ; les invitations qu'il rapporte sont
+      traitées (auto-join, étape 4) ; **aucun** événement de message n'est remis au handler.
+    3. **Enregistrement** des handlers d'événements (messages, invitations, indéchiffrables) **après** le
+      sync initial, retirés en sortie (`remove_event_handler`).
+    4. **Boucle** : `sync_with_callback` avec `SyncSettings` (jeton courant, `timeout = sync_timeout_ms`) ;
+      le callback **renouvelle le bail** à chaque réponse (`try_take_leased_lock`) et rend
+      `LoopCtrl::Break` si le renouvellement rend `None` (bail perdu : on retourne à l'étape 1) ;
+      `shutdown` interrompt la boucle (`tokio::select!`) → `Ok(())`.
+    4b. **Libération du bail** (arbitré par Sébastien le 2026-10-06) : à toute sortie de `run_sync` par `shutdown`
+      ou par erreur, le détenteur appelle au mieux `try_take_leased_lock(1, "miryad.matrix.sync", holder_name)`
+      (bail d'une milliseconde : il expire aussitôt) afin qu'un autre réplica reprenne sans attendre les
+      `lease_ms` complets ; un échec de cette libération est journalisé (`tracing::warn!`), jamais propagé.
+      Après un arrêt brutal (crash), le bail expire seul.
+    5. **Erreurs** : une erreur retryable (`MatrixError::retryable()`) → reprise après
+      `fn backoff(attempt: u32) -> Duration` (1 s doublant, plafonnée à 60 s, `attempt` remis à 0 après
+      une réponse réussie) ; une erreur d'authentification (jeton inconnu) → `Err(MatrixError::NotLoggedIn)` ;
+      toute autre erreur non retryable → `Err` immédiat.
+  Remise d'un message (`fn should_deliver(own_user: &str, sender: &str, msgtype: &str, is_replacement: bool)
+    -> bool`, pure) : vrai seulement si `sender != own_user`, `msgtype ∈ {"m.text","m.emote"}` et le message
+    n'est pas un remplacement (édition, `rel_type = m.replace`) ; les `m.notice` ne sont **jamais** remis
+    (convention anti-boucle entre bots). Conversion par `fn to_message(..) -> MatrixMessage` (pure, mêmes
+    entrées sous forme de champs simples, testable sans `matrix-sdk`) ; `pub(crate)`, réutilisée par
+    `recent_messages` (./client.sdd).
+  Invitations (`fn invite_allowed(auto_join_from: &[String], inviter: &str) -> bool`, pure) : une invitation
+    adressée au bot est acceptée (`Room::join`, jusqu'à 3 tentatives espacées de 1 s, 2 s, 4 s : un serveur
+    peut rejeter une jonction trop rapide) seulement si l'inviteur figure dans `auto_join_from` ; sinon
+    ignorée, journalisée au niveau `info` avec l'inviteur et sans contenu.
+  Événements indéchiffrables : jamais remis ; `tracing::warn!` avec salle et `event_id` seulement.
+  Compiler sous `#[cfg(feature = "matrix")]`.
+
+Must not:
+  Remettre un message envoyé par le bot lui-même (boucle infinie assurée) ; journaliser le contenu d'un
+    message ; démarrer une seconde boucle de sync sur le même `MatrixClient` dans le même processus
+    (détecté par un drapeau atomique dans `Inner` → @MatrixError::Config « sync déjà démarré »).
+  Persister un jeton de sync : le sync repart sans jeton à chaque démarrage (`Purpose` 2).
+
+Depends on:
+  ./client.rs, ./config.rs, ./error.rs, ./store/mod.rs, @matrix_sdk, @tokio (`time`, `select!`, `sync`),
+    @async_trait (déjà direct)
+
+Exposes:
+  `MatrixMessage`, `MatrixEventHandler`, `MatrixClient::run_sync`, `to_message` (`pub(crate)`).
+
+Handles:
+  Bail perdu en cours de route : la boucle s'arrête proprement et retourne à l'attente du bail.
+  Invitation d'un inviteur non autorisé : ignorée sans erreur.
+
+Tasks:
+  [ ] Tests unitaires d'abord pour les fonctions pures (`should_deliver`, `to_message`, `invite_allowed`,
+    `lease_ms`, `backoff`), puis ./sync.rs. La boucle elle-même est couverte par `../../tests/matrix_live.rs`
+    (`#[ignore]`, ./client.sdd) : message envoyé par un second compte → remis une fois ; message du bot →
+    jamais remis ; `shutdown` → retour `Ok(())`.
+
+Done when:
+  Les `Scenario` unitaires sont verts ; le test live a tourné au moins une fois pour la boucle (résultat
+    consigné dans `Tasks`) ; la spec est relue et approuvée avant ./sync.rs.
+
+Scenario: should_deliver filtre soi-même, les notices et les éditions
+  Given `own = "@bot:x"`
+  When `should_deliver` est appelé avec (`@bot:x`, `m.text`, faux), (`@a:x`, `m.notice`, faux), (`@a:x`, `m.text`, vrai), (`@a:x`, `m.text`, faux), (`@a:x`, `m.emote`, faux)
+  Then les résultats sont `false`, `false`, `false`, `true`, `true`
+
+Scenario: invite_allowed n'accepte que les inviteurs listés
+  Given `auto_join_from = ["@xavier:x"]`
+  When `invite_allowed` est appelé avec `@xavier:x` puis `@inconnu:x` puis avec une liste vide
+  Then les résultats sont `true`, `false`, `false`
+
+Scenario: le bail couvre un cycle de sync complet
+  Given `sync_timeout_ms = 30_000`
+  When `lease_ms` est appelé
+  Then le résultat est `75_000`
+
+Scenario: le backoff double et plafonne
+  Given `attempt = 0, 1, 2, 6, 20`
+  When `backoff` est appelé
+  Then les durées sont 1 s, 2 s, 4 s, 60 s, 60 s
+
+Scenario: to_message reprend tous les champs
+  Given un événement de salle `!r:x`, `event_id = "$e"`, expéditeur `@a:x`, corps `salut`, HTML `<b>salut</b>`, horodatage 1700000000000, salle chiffrée
+  When `to_message` est appelé
+  Then le `MatrixMessage` porte exactement ces valeurs, `msgtype = "m.text"`, `encrypted = true`
+
+Scenario: un seul synchronisateur par compte (test live)
+  Given deux processus appelant `run_sync` avec le même compte et deux `holder_name`
+  When un message est envoyé par un second compte
+  Then un seul des deux handlers le reçoit
+
+Scenario: un message du bot n'est jamais remis (test live)
+  Given `run_sync` actif
+  When le bot envoie lui-même un message dans la salle
+  Then le handler n'est pas appelé
+
+Scenario: un arrêt propre libère le bail (test live)
+  Given deux processus, l'un détenant le bail de sync
+  When le détenteur reçoit `shutdown` puis rend `Ok(())`
+  Then l'autre processus obtient le bail en moins de 10 secondes, sans attendre l'expiration complète

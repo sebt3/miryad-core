@@ -1,0 +1,59 @@
+Spec: config — @MatrixConfig, configuration du client Matrix
+
+Purpose:
+  Porter la configuration que l'application fournit pour construire un @MatrixClient : où est le
+    homeserver, comment protéger l'état de chiffrement, comment s'identifier auprès de ses réplicas,
+    qui peut inviter le bot. Fichier neuf, conception ; donnée pure, aucune E/S.
+
+Owns:
+  ./config.rs
+
+References:
+  ./client.sdd — consommateur ; ./store/mod.sdd — `account_key` et passphrase transmis au store
+
+Must:
+  @MatrixConfig — struct `pub`, `#[derive(Clone)]`, champs `pub` :
+    `homeserver_url: String` (URL de base du serveur client-serveur, ex. `https://matrix.example.org`),
+    `store_passphrase: String` (protège le `StoreCipher` du compte, ./store/kv.sdd ; **secret**),
+    `holder_name: String` (identifiant **stable et unique par réplica** — typiquement le nom du pod —
+      utilisé comme détenteur de verrou à bail entre processus, ./store/crypto_account.sdd),
+    `account_key: String` (clé de compte dans les tables du store, défaut `"default"`),
+    `device_display_name: String` (défaut `"miryad"`),
+    `auto_join_from: Vec<String>` (défaut vide ; identifiants Matrix `@user:server` dont les invitations
+      sont acceptées automatiquement ; vide = n'accepte jamais d'invitation, ./sync.sdd),
+    `sync_timeout_ms: u64` (défaut `30_000`).
+    `MatrixConfig::new(homeserver_url: impl Into<String>, store_passphrase: impl Into<String>,
+    holder_name: impl Into<String>) -> Self` pose les défauts ci-dessus.
+  `pub fn validate(&self) -> Result<(), MatrixError>` : `homeserver_url` parsable en URL `http`/`https` ;
+    `store_passphrase`, `holder_name`, `account_key` non vides (après trim) ; chaque entrée de
+    `auto_join_from` de la forme `@local:domaine` (commence par `@`, contient un `:` avec un domaine non
+    vide) ; `sync_timeout_ms` entre `1_000` et `120_000` ; échec → @MatrixError::Config avec le nom du champ.
+  `impl Debug` **manuel** : `store_passphrase` imprimé `<redacted>`.
+  Compiler sous `#[cfg(feature = "matrix")]`.
+
+Must not:
+  Lire l'environnement ou un fichier : l'application construit la config, ce fichier ne lit rien.
+
+Exposes:
+  `MatrixConfig`, `MatrixConfig::{new, validate}`
+
+Tasks:
+  [ ] Tests d'abord depuis les `Scenario`, puis ./config.rs.
+
+Done when:
+  Les `Scenario` sont verts ; la spec est relue et approuvée avant ./config.rs.
+
+Scenario: les défauts sont posés par new
+  Given `MatrixConfig::new("https://m.example", "p", "pod-1")`
+  When les champs sont lus
+  Then `account_key == "default"`, `device_display_name == "miryad"`, `auto_join_from` est vide, `sync_timeout_ms == 30000`
+
+Scenario: validate refuse les valeurs invalides
+  Given une URL `"ftp://x"`, puis `holder_name = " "`, puis `auto_join_from = ["alice"]`, puis `sync_timeout_ms = 10`
+  When `validate` est appelé pour chacune
+  Then chaque résultat est @Err(MatrixError::Config(m)) où `m` nomme le champ fautif
+
+Scenario: la passphrase n'apparaît jamais dans Debug
+  Given `store_passphrase = "secret"`
+  When `format!("{config:?}")` est évalué
+  Then la chaîne ne contient pas `secret` mais contient `<redacted>`

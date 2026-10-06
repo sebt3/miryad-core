@@ -1,0 +1,65 @@
+Spec: mod — agrégation du module `systemone`, gating, graphe Cargo
+
+Purpose:
+  Contrat d'agrégation de `src/systemone/` : un client HTTP mince vers une API « System One »
+    (modèles de décision, `POST /v1/systemone`, format TypeSafe — questions typées `noul`, `choice`,
+    `score` sur un `state`, réponses en probabilités calibrées). Contexte : les décision models ne
+    génèrent pas de texte, ils répondent à des questions typées en une passe ; Kydah les expose via
+    `kydah-ai-proxy` (issue kydah/kydah-ai-proxy#111, transparent : le proxy ne réinterprète ni le
+    corps ni la réponse). Aucune bibliothèque Rust n'existe pour cette API ; ce n'est qu'un `POST`,
+    donc la crate le porte elle-même derrière une feature **désactivée par défaut**.
+  La feature `systemone` seule ne compile que le client. Le step de workflow qui l'utilise vit dans
+    ../workflow/systemone_step.sdd et n'existe que sous `workflow` **et** `systemone` : le client
+    ne dépend pas du moteur de workflow, un consommateur qui n'a pas Restate peut l'appeler.
+  Doc de l'API lue le 2026-10-06 (https://docs.typesafe.ai/api) : `POST /v1/systemone`, en-tête
+    `Authorization: Bearer <clé>`, corps `{model, state, questions}`, réponse `{model, answers, usage}`,
+    erreurs `401`, `422`, `429`, `529`.
+
+Owns:
+  ./mod.rs
+
+References:
+  ./error.sdd, ./client.sdd — les deux enfants
+  ../workflow/systemone_step.sdd — seul consommateur interne du client, sous `workflow` + `systemone`
+  /src/lib.sdd — amendée : `#[cfg(feature = "systemone")] pub mod systemone;`
+  /miryad-core.sdd — `Owns: ./Cargo.toml` ; ce fichier documente le diff attendu sans le posséder
+  issue kydah/kydah-ai-proxy#111 — endpoint proxy et capability `decision`, hors de ce dépôt
+
+Must:
+  `mod.rs` déclare `pub mod error;` et `pub mod client;` et ré-exporte à plat, `pub use`, exactement :
+    `client::{SystemOneClient, SystemOneConfig, SystemOneRequest, SystemOneResponse}` et
+    `error::SystemOneError`. Chemins consommés : `miryad_core::systemone::SystemOneClient`.
+  Compiler sous `#[cfg(feature = "systemone")]` posé dans `/src/lib.rs`, pas dans `mod.rs`.
+  Documenter dans le bloc `//!` : la promesse du module, qu'il ne monte aucune route, qu'il n'ouvre
+    aucun état (le client est sans état hors son pool HTTP), et le renvoi vers `docs/architecture.md`.
+  Documenter dans `/Cargo.toml` (hors `Owns`, diff imposé) exactement : `systemone = []` — **aucune**
+    dépendance nouvelle : `reqwest` (features `rustls-tls`, `json`), `serde`, `serde_json`, `thiserror`
+    sont déjà des dépendances directes non optionnelles. La feature n'est **pas** dans `default`
+    (décision de Sébastien 2026-10-06). `[package.metadata.docs.rs].features` y ajoute `systemone`.
+
+Must not:
+  Dépendre de `workflow`, de `restate-sdk`, d'`axum` ou de la base de données.
+  Interpréter la réponse au-delà de sa forme JSON : l'extraction typée d'une réponse (probabilité d'un
+    `noul`, etc.) est du ressort du step (../workflow/systemone_step.sdd), pas du client — le proxy
+    est transparent, le client l'est aussi.
+
+Depends on:
+  ./client.rs, ./error.rs
+
+Exposes:
+  `SystemOneClient`, `SystemOneConfig`, `SystemOneRequest`, `SystemOneResponse`, `SystemOneError` —
+    chemins plats `miryad_core::systemone::*`.
+
+Tasks:
+  [ ] Écrire `mod.rs` après ./error.rs et ./client.rs ; test de chemins plats dans `mod tests`.
+  [ ] Amender /src/lib.rs, /Cargo.toml (feature `systemone`, `docs.rs`) et la batterie de /tooling.sdd.
+
+Done when:
+  Les ré-exports sont exactement ceux de `Must`, `cargo build --no-default-features --features systemone`
+    et `--all-features` compilent sans avertissement, les `Scenario` sont verts.
+  La spec est relue et approuvée par Sébastien avant qu'une ligne de ./mod.rs soit écrite.
+
+Scenario: les chemins plats existent
+  Given la feature `systemone` activée
+  When un test importe `crate::systemone::{SystemOneClient, SystemOneConfig, SystemOneRequest, SystemOneResponse, SystemOneError}`
+  Then le test compile — aucun chemin `crate::systemone::client::..` n'est requis

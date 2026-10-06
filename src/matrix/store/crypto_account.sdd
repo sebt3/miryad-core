@@ -1,0 +1,92 @@
+Spec: crypto_account — compte, identité, sauvegarde, valeurs personnalisées, verrou à bail
+
+Purpose:
+  Porter la partie « compte local » du trait @CryptoStore : le compte Olm, l'identité de
+    cross-signing privée, les clés de sauvegarde et de déshydratation, les valeurs personnalisées,
+    le jeton `next_batch` des requêtes to-device, le **verrou à bail** (`try_take_leased_lock`) qui
+    arbitre plusieurs processus sur le même compte (réplicas Kubernetes), et les méthodes de cycle de
+    vie (`close`, `reopen`, `get_size`). Fichier neuf, conception ; ne contient pas l'`impl` du trait
+    (c'est ./crypto.sdd), seulement des fonctions inhérentes que celle-ci délègue.
+
+Owns:
+  ./crypto_account.rs
+
+References:
+  ./kv.sdd — @Kv ; ./crypto.sdd — délégation et transaction de `save_changes`
+  matrix-sdk-crypto `0.18.0`, `src/store/traits.rs` — signatures et sémantique de chaque méthode ;
+    `Changes`/`PendingChanges` de `src/store/types.rs`
+  matrix-sdk-sqlite `0.18.0`, `src/crypto_store.rs` — implémentation de référence de la sémantique (contenu
+    des payloads, requêtes) — consultée, non recopiée (./crypto_sessions.sdd, `Tasks` licence)
+
+Must:
+  Méthodes inhérentes de `impl SeaOrmCryptoStore` (`pub(super)`, `async`), une par méthode du trait, mêmes
+    paramètres, `Result<_, StoreError>` : `load_account`, `load_identity`, `save_account(txn, account)`
+    (appelée par `save_pending_changes`), `load_backup_keys`, `load_dehydrated_device_pickle_key`,
+    `delete_dehydrated_device_pickle_key`, `get_custom_value`, `set_custom_value`, `remove_custom_value`,
+    `try_take_leased_lock`, `next_batch_token`, `close`, `reopen`, `get_size`.
+  `pub(super) async fn apply(&self, txn: &DatabaseTransaction, changes: &Changes) -> Result<(), StoreError>` —
+    applique les champs de `Changes` qui relèvent de ce fichier : `private_identity`, `backup_version`,
+    `backup_decryption_key`, `dehydrated_device_pickle_key`, `next_batch_token`. Dans la **transaction
+    reçue**, jamais sur la connexion directe.
+  Stockage : tout dans `kv` (clés `account`, `identity`, `backup_version`, `backup_decryption_key`,
+    `dehydrated_pickle_key`, `next_batch`, `custom:{key}`), valeurs scellées (`Kv::seal`). Les valeurs
+    personnalisées sont des octets opaques, scellés tels quels.
+  `try_take_leased_lock(lease_duration_ms, key, holder) -> Result<Option<CrossProcessLockGeneration>, StoreError>` :
+    sémantique du trait — acquise (ou prolongée) si aucun bail n'existe, si le bail est expiré, ou si
+    `holder` le détient déjà ; sinon `Ok(None)`. **Atomique** entre processus : insertion conditionnelle
+    puis `UPDATE ... WHERE account_key = ? AND key = ? AND (holder = ? OR expiration_ms <= now_ms)` ; le
+    nombre de lignes affectées décide, jamais une lecture-puis-écriture non protégée. `generation` s'incrémente
+    quand le détenteur change (et reste stable sur une prolongation par le même `holder`). `now_ms` est
+    l'horloge du **processus** (arbitré par Sébastien le 2026-10-06) ; hypothèse à documenter dans la rustdoc :
+    horloges des réplicas synchronisées à ±1 s, très en deçà d'un bail de plusieurs dizaines de secondes.
+  `get_size` rend `Ok(None)` (non supporté, autorisé par le trait) ; `close` et `reopen` sont des no-op
+    `Ok(())` (la connexion appartient à l'hôte, ./mod.sdd).
+  Compiler sous `#[cfg(feature = "matrix")]`.
+
+Must not:
+  Écrire un secret en clair ; modifier le bail d'un autre détenteur non expiré.
+
+Depends on:
+  ./kv.rs, ./error.rs, @sea_orm, @matrix_sdk_crypto
+
+Exposes:
+  Fonctions inhérentes `pub(super)` de `SeaOrmCryptoStore` listées ci-dessus.
+
+Handles:
+  `load_*` sur un store neuf : `Ok(None)` / valeurs par défaut du trait, jamais une erreur.
+  Deux `try_take_leased_lock` concurrents sur la même clé avec deux `holder` : exactement un obtient `Some`.
+
+Tasks:
+  [ ] Écrire les `Scenario` locaux en tests unitaires (SQLite mémoire), puis ./crypto_account.rs ; la
+    couverture des méthodes de compte par la suite officielle est prouvée dans ./crypto.sdd.
+  [x] Horloge du bail : horloge du processus (arbitré par Sébastien le 2026-10-06) ; l'horloge de la base ne
+    sera envisagée que si un double synchronisateur est observé en exploitation.
+
+Done when:
+  Les `Scenario` sont verts ; la suite officielle (./crypto.sdd) passe pour les méthodes de ce fichier ;
+    la spec est relue et approuvée avant ./crypto_account.rs.
+
+Scenario: un bail concurrent n'est accordé qu'à un détenteur
+  Given deux tâches appelant `try_take_leased_lock(30_000, "k", "a")` et `("k", "b")` en même temps
+  When les deux appels terminent
+  Then exactement un résultat est `Some(_)`
+
+Scenario: un bail expiré est repris, avec une génération supérieure
+  Given `a` détient le bail avec une durée de 1 ms et on attend son expiration
+  When `b` appelle `try_take_leased_lock`
+  Then le résultat est `Some(g)` avec `g` supérieure à la génération de `a`
+
+Scenario: le détenteur prolonge sans changer de génération
+  Given `a` détient le bail
+  When `a` rappelle `try_take_leased_lock`
+  Then le résultat est `Some(g)` avec la même génération
+
+Scenario: les valeurs personnalisées font l'aller-retour
+  Given un store neuf
+  When `set_custom_value("x", vec![1,2,3])` puis `get_custom_value("x")` puis `remove_custom_value("x")`
+  Then la lecture rend `Some(vec![1,2,3])`, puis `None` après suppression
+
+Scenario: un store neuf n'a ni compte ni identité
+  Given un store neuf
+  When `load_account` et `load_identity` sont appelés
+  Then les deux rendent `Ok(None)`

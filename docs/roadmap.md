@@ -18,9 +18,38 @@ Premier lot issu des besoins du consommateur `vanyline` (issues #26 et #27, 2026
   journalisés, sous-DAG), kind natif `"subworkflow"` avec garde-fou de profondeur —
   `src/workflow/{step,dispatcher,interpreter,durable,subworkflow}.sdd`.
 
+Second lot (arbitré le 2026-10-06) — **templating Handlebars central** : la `config` de tout step est rendue
+par `vynil_core::hbs` (toujours compilé) avant l'appel du kind, avec pour contexte les sorties des steps amont
+(`inputs`) et l'identité du run (`run`). Mode strict, aucun échappement HTML, helpers d'accès fichiers/
+environnement retirés (transitoire : sebt3/vynil-core#13). Le texte d'un script Rhai n'est jamais rendu ;
+un kind déclare ses champs bruts (`raw_fields`) ; `{"$raw": ..}` et `{"$json": ".."}` pour embarquer un
+template ou obtenir une valeur typée — `src/workflow/template.sdd`, amendements de `step`, `durable`,
+`dispatcher`, `rhai_step`, `subworkflow`, `mod`.
+
 Reporté : le pilotage par awakeable, tant qu'un besoin réel ne l'impose pas (le consommateur sonde
 dans un step ordinaire). Au-delà de ce lot, toute feature de workflow passe par un arbitrage ici
 avant de gagner une spec.
+
+## 11. Client System One (feature `systemone`, hors défaut) — arbitré le 2026-10-06
+Client HTTP mince vers `POST /v1/systemone` (modèles de décision : questions `noul`/`choice`/`score`, réponses
+en probabilités ; proxy `kydah-ai-proxy`, issue kydah/kydah-ai-proxy#111) et kind de workflow `systemone`
+(sous `workflow` + `systemone`) avec seuils de succès (`gates`) sur les probabilités répondues —
+`src/systemone/{mod,error,client}.sdd`, `src/workflow/systemone_step.sdd`.
+
+## 12. Client Matrix pour bots (feature `matrix`, hors défaut) — arbitré le 2026-10-06
+Primitives pour bâtir des chatbots Matrix : connexion (OAuth device code contre MAS, ou import de session),
+envoi (identifiant de transaction idempotent), jonction, lecture d'historique et flux de messages
+(`MatrixEventHandler`), chiffrement de bout en bout sur `matrix-sdk` 0.18 avec un **store de chiffrement dans
+la base SeaORM de l'application** (module `matrix::store`, conçu pour être extrait en crate dédiée) et un
+kind de workflow `matrix_send` (sous `workflow` + `matrix`) — `src/matrix/**/*.sdd`,
+`src/workflow/matrix_step.sdd`. Contexte : piloter l'application fille `vanyline` depuis un client Matrix,
+et servir de base à un nouveau `kydah-monitoring-agents` bâti sur miryad-core.
+Points ouverts tracés dans les specs : spike device code contre un MAS réel (`device_code.sdd`),
+rattrapage des messages reçus pendant une coupure (`matrix/mod.sdd`), envoi chiffré depuis un réplica qui ne
+synchronise pas (`client.sdd`), licence du code porté depuis `matrix-sdk-sqlite` (`crypto_sessions.sdd`).
+Hors périmètre, **à venir** : le harnais de chatbot (outillage standardisé issu de vanyline), dont la remontée de
+code et de spec n'est pas prête — il consommera `MatrixEventHandler` ; l'identité Matrix → utilisateur miryad
+(RBAC) y sera tranchée.
 
 ## 10. Filtrage et tri étendus — après un premier usage réel
 Le filtrage REST/GraphQL/MCP (`filter_column()`) est limité à une seule colonne, égalité exacte.

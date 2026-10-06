@@ -1,0 +1,94 @@
+Spec: crypto_devices — appareils, identités, requêtes de secrets, paramètres de salon, bundles de clés
+
+Purpose:
+  Porter la partie « annuaire et coordination » du trait @CryptoStore : appareils et identités
+    d'utilisateurs, utilisateurs suivis (`tracked_users`), empreintes de messages déjà vus, requêtes de
+    secrets sortantes et boîte de réception des secrets, paramètres de chiffrement par salon,
+    bundles de clés de salon reçus ou en attente, indicateur « toutes les clés de salon téléchargées ».
+    Fichier neuf, conception ; fonctions inhérentes déléguées par ./crypto.sdd.
+
+Owns:
+  ./crypto_devices.rs
+
+References:
+  ./kv.sdd — @Kv ; ./migration.sdd — tables `devices`, `identities`, `tracked_users`, `message_hashes`,
+    `secret_requests`, `secrets_inbox`, `room_settings`, `room_key_bundles`, `room_keys_downloaded`
+  matrix-sdk-crypto `0.18.0` — trait @CryptoStore, `store::types::{Changes, DeviceChanges, IdentityChanges}`,
+    `GossipRequest`, `SecretInfo`, `RoomSettings`, `StoredRoomKeyBundleData`, `RoomPendingKeyBundleDetails`
+  matrix-sdk-sqlite `0.18.0`, `src/crypto_store.rs` — référence de sémantique, consultée et non recopiée
+
+Must:
+  Méthodes inhérentes `pub(super)` de `impl SeaOrmCryptoStore`, mêmes signatures que le trait,
+    `Result<_, StoreError>` : `load_tracked_users`, `save_tracked_users`, `get_device`, `get_user_devices`,
+    `get_user_identity`, `is_message_known`, `get_outgoing_secret_requests`, `get_secret_request_by_info`,
+    `get_unsent_secret_requests`, `delete_outgoing_secret_requests`, `get_secrets_from_inbox`,
+    `delete_secrets_from_inbox`, `get_room_settings`, `get_received_room_key_bundle_data`,
+    `get_pending_key_bundle_details_for_room`, `get_all_rooms_pending_key_bundles`,
+    `has_downloaded_all_room_keys`. `get_own_device` n'est **pas** ici : elle nécessite le compte
+    (./crypto_account.sdd) et vit dans ./crypto.sdd, qui compose `load_account` et `get_device`.
+  `pub(super) async fn apply(&self, txn: &DatabaseTransaction, changes: &Changes) -> Result<(), StoreError>` —
+    applique, dans la transaction reçue, `message_hashes`, `key_requests`, `identities`
+    (`new`, `changed`, `unchanged`), `devices` (`new`, `changed`, `deleted`), `room_settings`, `secrets`,
+    `received_room_key_bundles`, `room_key_backups_fully_downloaded`, `rooms_pending_key_bundle`
+    (`Some(details)` → upsert avec `pending = true`, `None` → suppression de la ligne en attente).
+  Les colonnes de recherche (`user_id`, `device_id`, `hash`, `request_id`, `info_key`, `secret_name`,
+    `room_id`) sont hachées par `Kv::hash(<table>, <valeur>)` ; `payload` scellé par `Kv::seal`.
+    `info_key` est la sérialisation canonique de `SecretInfo` (celle de `matrix-sdk-sqlite`).
+  `get_user_devices(user)` rend tous les appareils du hachage de `user_id` (index (`account_key`, `user_id`)) ;
+    `get_unsent_secret_requests` filtre `sent_out = false` en SQL ; `get_secrets_from_inbox` rend les secrets
+    d'un nom dans l'ordre d'insertion (`seq`), emballés en `Zeroizing<String>` ; une suppression de boîte
+    efface toutes les lignes du nom.
+  `delete_outgoing_secret_requests(id)` supprime la ligne ; une requête envoyée (`sent_out`) reste
+    interrogeable par `get_outgoing_secret_requests` jusqu'à suppression explicite.
+  Compiler sous `#[cfg(feature = "matrix")]`.
+
+Must not:
+  Charger toute la table `devices` pour répondre à `get_user_devices` d'un seul utilisateur.
+  Laisser un secret reçu autrement qu'en `Zeroizing<String>` en mémoire après lecture.
+
+Depends on:
+  ./kv.rs, ./error.rs, @sea_orm, @matrix_sdk_crypto, @zeroize (via les types de matrix-sdk-crypto)
+
+Exposes:
+  Fonctions inhérentes `pub(super)` listées ci-dessus.
+
+Handles:
+  Appareil supprimé (`DeviceChanges.deleted`) : ligne supprimée ; `get_device` rend ensuite `None`.
+
+Tasks:
+  [ ] Tests unitaires locaux depuis les `Scenario`, puis ./crypto_devices.rs ; la conformité complète
+    est prouvée par ./crypto.sdd.
+
+Done when:
+  Les `Scenario` sont verts ; la suite officielle passe pour les méthodes de ce fichier ; la spec est
+    relue et approuvée avant ./crypto_devices.rs.
+
+Scenario: un appareil enregistré est retrouvé, puis supprimé
+  Given un `DeviceData` pour `@u:x` / `D1` appliqué par `apply`
+  When `get_device(@u:x, D1)` puis, après un `apply` avec ce device en `deleted`, `get_device` de nouveau
+  Then le premier appel rend `Some`, le second `None`
+
+Scenario: get_user_devices ne rend que les appareils de l'utilisateur
+  Given deux appareils de `@a:x` et un de `@b:x`
+  When `get_user_devices(@a:x)` est appelé
+  Then la carte contient exactement les deux appareils de `@a:x`
+
+Scenario: les empreintes de messages se retrouvent
+  Given un `OlmMessageHash` appliqué par `apply`
+  When `is_message_known` est appelé avec ce hash puis avec un autre
+  Then les résultats sont `true` puis `false`
+
+Scenario: les requêtes de secrets non envoyées sont filtrées
+  Given deux `GossipRequest`, une marquée envoyée
+  When `get_unsent_secret_requests` est appelé
+  Then seule la non envoyée est rendue
+
+Scenario: la boîte de secrets rend dans l'ordre et se vide
+  Given deux secrets de même nom reçus l'un après l'autre
+  When `get_secrets_from_inbox(name)` puis `delete_secrets_from_inbox(name)` puis `get_secrets_from_inbox(name)`
+  Then le premier appel rend les deux dans l'ordre d'arrivée, le dernier rend un vecteur vide
+
+Scenario: un bundle en attente apparaît puis disparaît
+  Given `rooms_pending_key_bundle = {room: Some(details)}` appliqué, puis `{room: None}`
+  When `get_pending_key_bundle_details_for_room(room)` est appelé après chaque étape
+  Then le résultat est `Some(details)` puis `None`
