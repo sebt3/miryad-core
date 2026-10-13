@@ -71,6 +71,8 @@ let app = axum::Router::new()
 | `graphql` | GraphQL dynamique (Seaography) | `seaography`, `async-graphql` |
 | `graphiql` | IDE GraphiQL (implique `graphql`) | `async-graphql/graphiql` |
 | `mcp` | Serveur MCP JSON-RPC | `vynil-core` |
+| `workflow` | Moteur de workflow (DAG, Restate, steps Rhai, templating Handlebars central) | `restate-sdk`, `vynil-core`, `tokio`, `uuid` |
+| `systemone` | Client System One (`POST /v1/systemone`) ; kind de workflow `systemone` avec `workflow` | aucune |
 
 ```bash
 cargo doc --open --features graphql,mcp,swagger-ui

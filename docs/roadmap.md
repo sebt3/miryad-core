@@ -5,7 +5,7 @@ les décisions) et dans les `src/**/*.sdd` (le contrat) — pas ici. Une feature
 sans passer par cette page.
 
 La numérotation est historique et conservée : des specs y renvoient (« roadmap 2c », « roadmap 7/9 »…).
-Les items 1 à 8 sont livrés — fondations, auth (2a OIDC/cookie, 2b tokens API, 2c comptes de service),
+Les items 1 à 8 et 11 sont livrés — fondations, auth (2a OIDC/cookie, 2b tokens API, 2c comptes de service),
 utilisateurs/groupes, REST, OpenAPI (4b), GraphQL, MCP, moteur de workflow Restate (7), hooks CRUD
 (7b), support frontend (8).
 
@@ -18,23 +18,16 @@ Premier lot issu des besoins du consommateur `vanyline` (issues #26 et #27, 2026
   journalisés, sous-DAG), kind natif `"subworkflow"` avec garde-fou de profondeur —
   `src/workflow/{step,dispatcher,interpreter,durable,subworkflow}.sdd`.
 
-Second lot (arbitré le 2026-10-06) — **templating Handlebars central** : la `config` de tout step est rendue
-par `vynil_core::hbs` (toujours compilé) avant l'appel du kind, avec pour contexte les sorties des steps amont
-(`inputs`) et l'identité du run (`run`). Mode strict, aucun échappement HTML, helpers d'accès fichiers/
-environnement retirés (transitoire : sebt3/vynil-core#13). Le texte d'un script Rhai n'est jamais rendu ;
-un kind déclare ses champs bruts (`raw_fields`) ; `{"$raw": ..}` et `{"$json": ".."}` pour embarquer un
-template ou obtenir une valeur typée — `src/workflow/template.sdd`, amendements de `step`, `durable`,
-`dispatcher`, `rhai_step`, `subworkflow`, `mod`.
+Second lot (arbitré le 2026-10-06) — **templating Handlebars central** : livré le 2026-10-13, voir
+`docs/architecture.md` (« Templating central »). Reste ouvert : retirer la liste noire de helpers quand
+`sebt3/vynil-core#13` sera livrée (`src/workflow/template.sdd`).
 
 Reporté : le pilotage par awakeable, tant qu'un besoin réel ne l'impose pas (le consommateur sonde
 dans un step ordinaire). Au-delà de ce lot, toute feature de workflow passe par un arbitrage ici
 avant de gagner une spec.
 
-## 11. Client System One (feature `systemone`, hors défaut) — arbitré le 2026-10-06
-Client HTTP mince vers `POST /v1/systemone` (modèles de décision : questions `noul`/`choice`/`score`, réponses
-en probabilités ; proxy `kydah-ai-proxy`, issue kydah/kydah-ai-proxy#111) et kind de workflow `systemone`
-(sous `workflow` + `systemone`) avec seuils de succès (`gates`) sur les probabilités répondues —
-`src/systemone/{mod,error,client}.sdd`, `src/workflow/systemone_step.sdd`.
+## 11. Client System One — livré le 2026-10-13
+Voir `docs/architecture.md` (« Client System One »). Rien de ce lot n'est resté ouvert.
 
 ## 12. Client Matrix pour bots (feature `matrix`, hors défaut) — arbitré le 2026-10-06
 Primitives pour bâtir des chatbots Matrix : connexion (OAuth device code contre MAS, ou import de session),

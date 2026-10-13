@@ -662,6 +662,76 @@ déclenchement au lieu d'être refusé à l'écriture. À replacer dans son cont
 lui-même reste un prototype sans consommateur en production (statut du 2026-09-27,
 `/src/graphql/hooks.sdd`).
 
+### Templating central de la `config` d'un step
+
+Chaque `string` de la `config` d'un step est rendue par `vynil_core::hbs` **avant** l'appel du kind
+(`src/workflow/template.rs`, appelé par le seul dispatcher), avec pour contexte `{"inputs": <sorties
+amont>, "run": {"run_key", "step_id", "depth"}}`. Un kind hérite du templating sans y penser ; il ne
+déclare que ses champs bruts (`raw_fields`, par défaut aucun) : `rhai` garde son `script`,
+`subworkflow` son `dag` (rendu plus tard, step par step, par le run enfant).
+
+Règles : moteur **neuf à chaque appel**, mode strict (une variable absente est une erreur, jamais une
+chaîne vide), aucun échappement HTML (la sortie alimente du JSON), un seul passage (la sortie d'un rendu
+n'est jamais re-rendue), les clés d'objet ne sont jamais rendues. Une chaîne rendue reste une chaîne :
+`{"$json": "{{inputs.n}}"}` produit une valeur typée, `{"$raw": ..}` protège un sous-arbre. Toute erreur
+est un `StepError` non retryable (`template invalide à {pointeur JSON}: ..`) qui ne contient jamais le
+contenu de `inputs`. Un kind inconnu rend `404` **avant** tout rendu.
+
+**Modèle de menace.** Les templates sont écrits par les auteurs de workflows (avec `OwnerOnly`, chaque
+utilisateur écrit les siens) et les `inputs` peuvent venir d'un tiers (message Matrix, requête API).
+Deux conséquences : la sortie d'un rendu n'est jamais interprétée comme template (pas d'injection de
+template par une donnée), et les helpers d'accès à l'hôte de `vynil-core` (`read_to_str`, `env_var`,
+`canonicalize`, `parent`, `file_name`, `extension`, `jsonnet`) sont retirés du moteur.
+
+**La liste noire est transitoire et fail-open** (arbitrage du développeur principal, option « liste noire
+telle que spécifiée »). Elle vit dans `DENIED_HELPERS` en attendant `sebt3/vynil-core#13` (moteur sans
+effet de bord à la construction). Tant qu'elle tient, un helper dangereux ajouté par un futur
+`vynil-core` serait exposé sans que rien ne casse : **relire `CORE_HBS_HELPERS` de `vynil-core` à chaque
+montée de version**. Sortie de transition : remplacer la liste par le constructeur restreint, bumper
+`vynil-core` (tâche ouverte dans `src/workflow/template.sdd`).
+
+**Pièges constatés.**
+- `to_json` de `vynil-core` est un helper de **bloc** : en forme inline (`{{to_json inputs.a}}`) il rend
+  une chaîne vide, sans erreur. Pour un objet en JSON compact dans un template, utiliser `json_to_str`.
+- Le plafond de 1 Mio par rendu est contrôlé **après** le rendu : il borne la sortie, pas la mémoire ni
+  le CPU d'un template qui itère sur une donnée volumineuse. Acceptable en v1, à reprendre si un
+  consommateur expose des templates à des tiers non fiables.
+- Un kind durable est rendu dans un `ctx.run()` dédié : le résultat du rendu est journalisé, donc un
+  helper non déterministe (`uuid_new_v4`) ne change pas de valeur au rejeu. Un kind ordinaire est rendu
+  dans la fermeture `ctx.run` qui l'exécute (`run_invocation`).
+- Le kind `rhai` reçoit en plus la variable `run` et une fonction `render(template)` sur le même contexte ;
+  son script, déclaré champ brut, n'est jamais rendu.
+
+La branche durable n'est pas testable en unitaire (aucun `Context` Restate virtualisé par
+`restate-sdk` 0.12.1) : elle est prouvée par un test d'intégration `#[ignore]` contre un vrai
+`restate-server` (`tests/workflow_restate.rs`).
+
+## Client System One (feature `systemone`)
+
+Client HTTP mince vers `POST /v1/systemone` (modèles de décision : questions typées `noul`, `choice`,
+`score`, réponses en **probabilités calibrées**, pas du texte), exposé par `kydah-ai-proxy` (issue
+`kydah/kydah-ai-proxy#111`, proxy transparent). Aucune bibliothèque Rust n'existe pour cette API ;
+c'est un `POST`, donc la crate le porte elle-même, derrière une feature **hors défaut** et **sans
+dépendance nouvelle** (`reqwest`, `serde`, `thiserror` sont déjà directes). Specs : `src/systemone/*.sdd`
+et `src/workflow/systemone_step.sdd`.
+
+- **Client** (`SystemOneClient`) : sans état hors son pool HTTP, ne dépend ni de `workflow` ni d'axum ni
+  de la base. Questions et réponses sont des `serde_json::Value` opaques — un nouveau type de question
+  de l'API n'impose aucun changement de la crate. La clé Bearer est posée en en-tête par défaut marqué
+  sensible ; les redirections sont désactivées (la clé ne part jamais vers un autre hôte) ; le corps
+  d'une erreur est tronqué à 512 caractères ; aucune nouvelle tentative interne (la politique de retry
+  appartient à l'appelant). `Debug` de la configuration masque la clé.
+- **Erreurs** : `MRD-SYSTEMONE-001` (configuration), `-002` (transport), `-003` (statut rejeté), `-004`
+  (réponse invalide). `retryable()` : délai ou connexion, `429`, `529` et `5xx` sont rejouables ; le reste
+  non.
+- **Kind de workflow `systemone`** (sous `workflow` **et** `systemone`) : comme `RhaiStep`, l'application
+  l'enregistre elle-même (`registry.register(SystemOneStep::new(client))`). Il pose les questions puis
+  évalue des **gates** (seuils inclusifs sur la probabilité d'une question `noul`, d'une option de
+  `choice` ou d'un `score`). Par défaut un gate non franchi arrête le workflow (échec non retryable :
+  une probabilité calibrée n'est pas une panne) ; `on_fail: "continue"` rend `passed: false` et laisse
+  l'aval décider. La configuration des gates est validée **avant** tout appel réseau, et un gate refuse
+  les clés inconnues (une borne mal orthographiée ne doit pas disparaître en silence).
+
 ## Hooks métier CRUD
 
 Point d'extension optionnel par entité sur `create`, `update` et `delete` — validation ou
