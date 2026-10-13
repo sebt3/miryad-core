@@ -45,6 +45,15 @@ pub trait MiryadWorkflowStep: Send + Sync {
         config: serde_json::Value,
         inputs: HashMap<String, serde_json::Value>,
     ) -> Result<serde_json::Value, StepError>;
+
+    /// Clés de premier niveau de `config` que le rendu de template central ne doit jamais toucher
+    /// (./template.sdd) : le sous-arbre correspondant est remis tel quel au kind. Défaut : aucune
+    /// clé, toute la `config` est rendue. Contrat statique : la liste ne dépend ni de la `config`
+    /// ni de l'état du kind. Un kind qui porte du code, ou un contenu qui est lui-même un template
+    /// destiné à un autre rendu, le déclare (`"rhai"` → `["script"]`, `"subworkflow"` → `["dag"]`).
+    fn raw_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 /// Identité du run en cours, telle que reçue par [`MiryadWorkflowStep::run`] (#26, 2026-10-04).
@@ -150,6 +159,18 @@ impl StepRegistry {
     /// clés est partagé (#26, ./durable.sdd).
     pub(crate) fn durable(&self, kind: &str) -> Option<&dyn MiryadDurableStep> {
         self.durables.get(kind).map(|boîte| &**boîte)
+    }
+
+    /// `raw_fields` du kind enregistré sous `kind`, ordinaire **ou** durable ; `None` si aucun kind
+    /// n'est enregistré sous ce nom (./template.sdd). Seul point d'accès de ./dispatcher.rs aux
+    /// `raw_fields` : le `404` « kind inconnu » est rendu avant tout rendu de template.
+    // ./step.sdd : consommé par ./dispatcher.rs (tâche suivante du lot templating)
+    #[allow(dead_code)]
+    pub(crate) fn raw_fields(&self, kind: &str) -> Option<&'static [&'static str]> {
+        self.steps
+            .get(kind)
+            .map(|step| step.raw_fields())
+            .or_else(|| self.durables.get(kind).map(|durable| durable.raw_fields()))
     }
 
     /// Retourne le futur de [`MiryadWorkflowStep::run`] du kind **ordinaire** trouvé — jamais
@@ -626,6 +647,58 @@ mod tests {
                 .is_err(),
             "l'ordinaire refusé ne doit rien avoir inséré"
         );
+    }
+
+    // Fixtures « raw_fields » (2026-10-06) : un kind sans redéfinition, un kind qui redéfinit.
+    struct RawDefaut;
+    struct RawScript;
+
+    #[async_trait::async_trait]
+    impl MiryadWorkflowStep for RawScript {
+        fn kind(&self) -> &'static str {
+            "raw-script"
+        }
+        fn raw_fields(&self) -> &'static [&'static str] {
+            &["script"]
+        }
+        async fn run(
+            &self,
+            _run: &RunInfo,
+            _config: Value,
+            _inputs: HashMap<String, Value>,
+        ) -> Result<Value, StepError> {
+            Ok(json!(null))
+        }
+    }
+
+    fixture_kind!(
+        RawDefaut,
+        "raw-defaut",
+        |_run: &RunInfo, _config: Value, _inputs: HashMap<String, Value>| { Ok(json!(null)) }
+    );
+
+    /// Scenario « `raw_fields` vaut vide par défaut et se redéfinit par kind » (2026-10-06) : le kind
+    /// sans redéfinition rend `Some(&[])`, le kind qui redéfinit rend `Some(&["script"])`.
+    #[test]
+    fn raw_fields_vide_par_defaut_et_redefini_par_kind() {
+        let mut registry = StepRegistry::new();
+        registry
+            .register(RawDefaut)
+            .and_then(|r| r.register(RawScript))
+            .expect("kinds distincts");
+        let vide: &[&str] = &[];
+        let script: &[&str] = &["script"];
+        assert_eq!(registry.raw_fields("raw-defaut"), Some(vide));
+        assert_eq!(registry.raw_fields("raw-script"), Some(script));
+    }
+
+    /// Scenario « `raw_fields` d'un kind inconnu est `None` » (2026-10-06) : un registre sans kind
+    /// `"x"` rend `None` pour `raw_fields("x")`, jamais un tableau vide.
+    #[test]
+    fn raw_fields_d_un_kind_inconnu_rend_none() {
+        let mut registry = StepRegistry::new();
+        registry.register(KindA).expect("kind distinct");
+        assert_eq!(registry.raw_fields("x"), None);
     }
 
     /// Scenario « `RunInfo` est transmis intact au kind » (#26) : `dispatch` avec

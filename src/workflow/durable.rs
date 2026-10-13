@@ -77,6 +77,15 @@ pub trait MiryadDurableStep: Send + Sync {
         config: serde_json::Value,
         inputs: HashMap<String, serde_json::Value>,
     ) -> Result<serde_json::Value, StepError>;
+
+    /// Clés de premier niveau de `config` que le rendu de template central ne doit jamais toucher
+    /// (./template.sdd), même sémantique et même contrat que
+    /// [`crate::workflow::step::MiryadWorkflowStep::raw_fields`]. Défaut : aucune clé. Le rendu d'un
+    /// kind durable est journalisé avant `run` (./dispatcher.sdd) : `run` reçoit une `config` déjà
+    /// rendue.
+    fn raw_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 /// Façade étroite du `Context` Restate, remise à [`MiryadDurableStep::run`] par le dispatcher
@@ -266,5 +275,17 @@ mod tests {
         assert_eq!(trouvé.kind(), "d");
         // Le témoin explicite de la dyn-compatibilité demandée par le Scenario.
         let _: Box<dyn MiryadDurableStep> = Box::new(DurableD);
+    }
+
+    /// Scenario « `raw_fields` d'un kind durable vaut vide par défaut » (2026-10-06) : `DurableD`
+    /// ne redéfinit pas `raw_fields`, `StepRegistry::raw_fields("d")` rend `Some(&[])`.
+    #[test]
+    fn raw_fields_d_un_kind_durable_vaut_vide_par_defaut() {
+        let mut registry = StepRegistry::new();
+        registry
+            .register_durable(DurableD)
+            .expect("un kind durable neuf doit s'enregistrer");
+        let vide: &[&str] = &[];
+        assert_eq!(registry.raw_fields("d"), Some(vide));
     }
 }

@@ -270,10 +270,12 @@ Tasks:
     Réalisé 2026-10-02 (B5e-mini, validator consolidé PASS) : @Self::dispatch délié en chemin de
     code (méthode @pub(crate)), phrase inchangée ; @cargo doc workflow et @all-features à zéro
     avertissement au brut.
-  [ ] Templating central (2026-10-06, ./template.sdd) : ajouter `MiryadWorkflowStep::raw_fields` (méthode
+  [x] Templating central (2026-10-06, ./template.sdd) : ajouter `MiryadWorkflowStep::raw_fields` (méthode
     par défaut, aucun `impl` existant à modifier) et `StepRegistry::raw_fields` ; tests nommés des deux
     `Scenario` ci-dessous dans `mod tests` ; aucun changement de comportement pour les kinds existants.
     **Avant** ./dispatcher.rs (qui consomme `StepRegistry::raw_fields`).
+    Validé 2026-10-13 (validator) : trois tests nommés verts (step.rs ×2, durable.rs ×1), clippy workflow sans écart.
+    `StepRegistry::raw_fields` porte un `#[allow(dead_code)]` jusqu'à la tâche dispatcher du même lot.
 
 Done when:
   Les `Scenario` ajoutés par #26 (marqués `(#26)`) ont chacun un test nommé distinct et vert.
