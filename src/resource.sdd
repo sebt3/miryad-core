@@ -279,7 +279,7 @@ Tasks:
     @before_active_model_save appelé uniquement par les deux mutations de création + verrou
     observable du test inline), et le `Scenario` est alors reformulé pour rendre ce truchement
     vérifiable.
-  [ ] Convertir les vingt `Scenario` originaux en au moins vingt tests nommés distincts, un par
+  [x] Convertir les vingt `Scenario` originaux en au moins vingt tests nommés distincts, un par
     scenario. État des lieux : 0 test inline dans ./resource.rs, 2 tests rattachés existants dans
     ../tests/resource.rs, 1 scenario couvert par des tests de la surface déléguée — soit 17 tests à
     créer, dans le `#[cfg(test)] mod tests` de ./resource.rs (arbitré 2026-10-03). Correspondance scenario → test : « construction de @HookError
@@ -317,6 +317,8 @@ Tasks:
     `Done when` (« chaque `Scenario` vérifié par au moins un test nommé distinct ») ; le lieu dit
     deux fois (« 17 tests à créer dans ../tests/resource.rs » ici et au `Done when`) n'est pas
     satisfait à la lettre.
+    Validé 2026-10-13 (validator) : 19 noms cités présents et verts dans ./resource.rs et ../tests/resource.rs,
+    les deux derniers vivent dans ./rest/mod.rs (surface déléguée) ; lieu arbitré ci-dessous.
   [x] Lieu des dix-sept tests : arbitré par Sébastien le 2026-10-03 — ils restent inline, dans le
     `#[cfg(test)] mod tests` de ./resource.rs ; la tâche et le `Done when` sont amendés en ce
     sens, aucun déplacement. Le `Must` de non-gating s'entend « hors `#[cfg(test)]` » : les deux

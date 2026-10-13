@@ -329,7 +329,7 @@ Handles:
     ./../rest/core.rs.
 
 Tasks:
-  [ ] Convertir les dix-neuf `Scenario` en au moins dix-neuf tests Rust nommés et distincts —
+  [x] Convertir les dix-neuf `Scenario` en au moins dix-neuf tests Rust nommés et distincts —
     deux tests inline existent, dix-sept à créer dans le `mod tests` `#[cfg(test)]` de
     ./registry.rs (fixtures `recipe`/`alice`/`test_db` existantes à réutiliser, fixtures
     additionnelles à porter ici ; les tests ne compilent que sous `--features mcp` et
