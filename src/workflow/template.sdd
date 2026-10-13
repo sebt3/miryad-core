@@ -109,8 +109,11 @@ Handles:
     référence une clé échoue en mode strict.
 
 Tasks:
-  [ ] Écrire les tests d'abord depuis les `Scenario`, puis `./template.rs` ; aucune dépendance Restate
+  [x] Écrire les tests d'abord depuis les `Scenario`, puis `./template.rs` ; aucune dépendance Restate
     ni base : tests unitaires purs, un test nommé par `Scenario`.
+    Validé 2026-10-13 (validator) : 15 tests nommés verts, clippy `workflow` et `--no-default-features` sans écart ;
+    `#[allow(dead_code)]` sur `render_config`/`render_str` jusqu'à la tâche dispatcher. Scenario « helpers utiles »
+    amendé (arbitré par Sébastien) : `to_json` de vynil-core est un helper de bloc, `json_to_str` le remplace.
   [ ] Après livraison de sebt3/vynil-core#13 : remplacer @DENIED_HELPERS et les `unregister_helper`
     par le constructeur restreint de `vynil-core`, supprimer la liste noire, bumper `vynil-core`
     (spec et `Cargo.toml` ensemble). Ne pas le faire avant : la liste noire est le contrat actuel.
@@ -175,9 +178,9 @@ Scenario: les helpers d'accès à l'hôte sont refusés
   Then chacun rend @Err(StepError { retryable: false, .. }) — aucun fichier lu, aucune variable d'environnement exposée
 
 Scenario: les helpers utiles restent disponibles
-  Given `inputs = {"a": {"k": 1}}` et `config = {"x": "{{to_json inputs.a}}", "y": "{{uuid_new_v4}}"}`
+  Given `inputs = {"a": {"k": 1}}` et `config = {"x": "{{json_to_str inputs.a}}", "y": "{{uuid_new_v4}}"}`
   When `render_config` est appelé
-  Then `x` vaut `{"k":1}` (rendu du helper `to_json` de `vynil-core`) et `y` est un UUID de 36 caractères
+  Then `x` vaut `{"k":1}` (rendu du helper `json_to_str` de `vynil-core` ; `to_json` est un helper de bloc, vide en forme inline) et `y` est un UUID de 36 caractères
 
 Scenario: un échappement natif produit un littéral
   Given `config = {"x": "\\{{inputs.a}}"}` (la chaîne JSON contient `\{{inputs.a}}`)

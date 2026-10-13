@@ -16,6 +16,7 @@ pub mod interpreter;
 pub mod rhai_step;
 pub mod step;
 pub mod subworkflow;
+mod template;
 
 // Ré-exports à plat, par sous-module (ordre alphabétique des sous-modules, comme les déclarations
 // ci-dessus) ; à l'intérieur des accolades, rustfmt (style edition 2024) impose son tri des noms —
