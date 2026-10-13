@@ -164,8 +164,6 @@ impl StepRegistry {
     /// `raw_fields` du kind enregistré sous `kind`, ordinaire **ou** durable ; `None` si aucun kind
     /// n'est enregistré sous ce nom (./template.sdd). Seul point d'accès de ./dispatcher.rs aux
     /// `raw_fields` : le `404` « kind inconnu » est rendu avant tout rendu de template.
-    // ./step.sdd : consommé par ./dispatcher.rs (tâche suivante du lot templating)
-    #[allow(dead_code)]
     pub(crate) fn raw_fields(&self, kind: &str) -> Option<&'static [&'static str]> {
         self.steps
             .get(kind)

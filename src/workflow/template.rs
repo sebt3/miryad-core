@@ -120,8 +120,6 @@ fn render_value(hbs: &mut HandleBars, value: &Value, ctx: &Value, pointer: &str)
 
 /// Rend récursivement la `config` d'un step ; `raw_fields` (premier niveau seulement) sont
 /// recopiés sans rendu.
-// ./template.sdd : appelé par ./dispatcher.rs (tâche suivante du lot templating)
-#[allow(dead_code)]
 pub(crate) fn render_config(
     config: &Value,
     run: &RunInfo,
