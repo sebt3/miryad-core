@@ -244,9 +244,12 @@ Tasks:
     une invariance) mais porte un observable nouveau (aucune fonction hôte par défaut).
     Correction cosmétique relevée par le validator : la ligne `[x]` du 2026-09-23 comptait « sept
     tests » préexistants — ils sont huit (huit `Scenario` préexistants).
-  [ ] Templating central (2026-10-06, ./template.sdd) : implémenter `raw_fields` (`["script"]`), passer `run` au
+  [x] Templating central (2026-10-06, ./template.sdd) : implémenter `raw_fields` (`["script"]`), passer `run` au
     script (variable `run`) et enregistrer `render` avant les closures de `setups` (une closure de l'app peut
     la surcharger) ; tests nommés des `Scenario` ci-dessous. Même lot que ./template.rs, après ./step.sdd.
+    Validé 2026-10-13 (validator) : cinq tests nommés verts (20 dans le module), clippy `workflow` sans écart.
+    Le premier test simule le rendu du dispatcher par `render_config` ; la preuve côté dispatcher est portée par
+    la tâche de ./dispatcher.sdd.
 
 Done when:
   Les `Scenario` (ceux de #27 compris) ont chacun un test nommé distinct et vert, sur la combinaison de features

@@ -148,8 +148,6 @@ pub(crate) fn render_config(
 }
 
 /// Rend une seule chaîne avec le même moteur et le même contexte.
-// ./template.sdd : appelé par ./dispatcher.rs (tâche suivante du lot templating)
-#[allow(dead_code)]
 pub(crate) fn render_str(
     template: &str,
     run: &RunInfo,

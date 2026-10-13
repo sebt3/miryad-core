@@ -1,9 +1,10 @@
 //! Kind natif `"rhai"` (feature `workflow`) : exécution d'un script Rhai via
 //! [`vynil_core::engine::Script`], seul `impl` de [`MiryadWorkflowStep`] fourni par la crate.
 //!
-//! Le script reçoit deux variables — `inputs` (les sorties des steps amont déclarés, telles que
-//! livrées par le trait) et `config` (le `config` complet du step, `script` compris) — et doit se
-//! réduire à une `Map` Rhai, rendue telle quelle en JSON. Tout échec (config mal formé, erreur
+//! Le script reçoit trois variables — `inputs` (les sorties des steps amont déclarés, telles que
+//! livrées par le trait), `config` (le `config` complet du step, `script` compris) et `run`
+//! (l'identité du run) — ainsi que la fonction `render` (rendu Handlebars du même contexte que
+//! `./template.sdd`). Le script doit se réduire à une `Map` Rhai, rendue telle quelle en JSON. Tout échec (config mal formé, erreur
 //! d'exécution Rhai, panic interne) est un [`StepError`] `retryable: false` : rejouer un script
 //! qui a échoué rendrait le même résultat.
 //!
@@ -14,7 +15,7 @@
 //! l'autre.
 //!
 //! Ce fichier ne connaît ni accès DB, ni appel HTTP, ni client MCP, et n'enregistre lui-même
-//! aucune fonction Rhai au-delà de ce que `Script::new_bare` fournit. Le point d'extension est
+//! aucune fonction Rhai au-delà de ce que `Script::new_bare` fournit et de `render`. Le point d'extension est
 //! [`RhaiStep::with_setup`] (issue sebt3/miryad-core#27) : l'application empile des closures
 //! qui, à chaque exécution, enregistrent leurs fonctions hôte sur le moteur neuf — jamais un
 //! besoin additionnel codé en dur ici.
@@ -28,8 +29,10 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::Value;
 use vynil_core::engine::Script;
+use vynil_core::{RhaiRes, rhai_err_str};
 
 use super::step::{MiryadWorkflowStep, RunInfo, StepError};
+use super::template::render_str;
 
 /// Plafond d'opérations Rhai par exécution : `spawn_blocking` isole le thread de travail mais ne
 /// peut pas interrompre une tâche bloquante — sans ce plafond, un `loop {}` occuperait un thread
@@ -138,9 +141,13 @@ impl MiryadWorkflowStep for RhaiStep {
         "rhai"
     }
 
+    fn raw_fields(&self) -> &'static [&'static str] {
+        &["script"]
+    }
+
     async fn run(
         &self,
-        _run: &RunInfo,
+        run: &RunInfo,
         config: Value,
         inputs: HashMap<String, Value>,
     ) -> Result<Value, StepError> {
@@ -155,6 +162,7 @@ impl MiryadWorkflowStep for RhaiStep {
         // exécution — aucun état ne survit d'un `run` à l'autre.
         let resolver_path = self.resolver_path.clone();
         let setups = self.setups.clone();
+        let run = run.clone();
         // Étape 2 — évaluation hors du thread de travail tokio (le script, fourni par un admin,
         // peut boucler) ; un panic éventuel — y compris une closure de `setups` qui panique — y
         // est confiné et capturé en `JoinError` à l'étape 4.
@@ -164,7 +172,27 @@ impl MiryadWorkflowStep for RhaiStep {
             // Conversion infaillible HashMap→Map (pas de `serde_json::to_value` : aucun Result
             // ici). `config` est exposé en entier, `script` compris.
             script.set_dynamic("inputs", &Value::Object(inputs.clone().into_iter().collect()));
+            // Identité du run (2026-10-06, `./rhai_step.sdd` étape 2) : même objet que `run` dans
+            // le contexte de `./template.sdd`.
+            script.set_dynamic(
+                "run",
+                &serde_json::json!({
+                    "run_key": run.run_key,
+                    "step_id": run.step_id,
+                    "depth": run.depth,
+                }),
+            );
             script.set_dynamic("config", &config);
+            // Fonction `render` (2026-10-06) : enregistrée AVANT les closures de `setups`, pour
+            // qu'une closure de l'app puisse la surcharger. Clones de `run` et `inputs` capturés ;
+            // erreur de rendu → erreur Rhai d'exécution (non retryable à l'étape 3).
+            let render_run = run.clone();
+            let render_inputs = inputs.clone();
+            script
+                .engine
+                .register_fn("render", move |template: String| -> RhaiRes<String> {
+                    render_str(&template, &render_run, &render_inputs).map_err(|e| rhai_err_str(e.message))
+                });
             // Closures d'extension (`with_setup`, #27) : après les `set_dynamic`, avant
             // l'évaluation — elles voient `inputs`/`config` posés et peuvent enregistrer des
             // fonctions hôte sur `script.engine`. Ordre d'enregistrement ; la première qui
@@ -197,7 +225,9 @@ impl MiryadWorkflowStep for RhaiStep {
 mod tests {
     use super::super::step::MiryadWorkflowStep;
     use super::super::step::RunInfo;
+    use super::super::step::StepRegistry;
     use super::RhaiStep;
+    use crate::workflow::template::render_config;
     use serde_json::{Value, json};
     use std::collections::HashMap;
 
@@ -651,5 +681,97 @@ mod tests {
                 erreur.message
             );
         }
+    }
+
+    /// Scenario « le script n'est jamais rendu mais les autres champs de config le sont »
+    /// (2026-10-06) : le rendu central (`render_config`, ./template.sdd, sous le contrat de
+    /// ./dispatcher.sdd) précède `run`. `script` doit être recopié intact (`raw_fields` du kind),
+    /// `nom` rendu ; le script lit `config.nom` déjà rendu.
+    #[tokio::test]
+    async fn le_script_n_est_jamais_rendu_mais_les_autres_champs_de_config_le_sont() {
+        let mut inputs: HashMap<String, Value> = HashMap::new();
+        inputs.insert("a".to_string(), json!("Ada"));
+        let config = json!({
+            "script": r#"#{ s: "{{inputs.a}}", v: config.nom }"#,
+            "nom": "{{inputs.a}}"
+        });
+        let config_rendue = render_config(&config, &run_info(), &inputs, RhaiStep::default().raw_fields())
+            .expect("le rendu central de la config ne doit pas échouer");
+        let rendu = RhaiStep::default()
+            .run(&run_info(), config_rendue, inputs)
+            .await
+            .expect("le script se réduit à une Map, run devait rendre un Ok");
+        assert_eq!(rendu, json!({ "s": "{{inputs.a}}", "v": "Ada" }));
+    }
+
+    /// Scenario « le script lit l'identité du run » (2026-10-06) : la variable `run` expose
+    /// `run_key` et `depth` du `RunInfo` reçu par `run`.
+    #[tokio::test]
+    async fn le_script_lit_l_identite_du_run() {
+        let run = RunInfo {
+            run_key: "r1".into(),
+            step_id: "s1".into(),
+            depth: 2,
+        };
+        let rendu = RhaiStep::default()
+            .run(
+                &run,
+                json!({ "script": "#{ k: run.run_key, d: run.depth }" }),
+                no_inputs(),
+            )
+            .await
+            .expect("la variable `run` doit être disponible au script");
+        assert_eq!(rendu, json!({ "k": "r1", "d": 2 }));
+    }
+
+    /// Scenario « la fonction render utilise le contexte du run » (2026-10-06) : `render` rend
+    /// une chaîne avec les `inputs` du step, comme la config d'un autre kind.
+    #[tokio::test]
+    async fn la_fonction_render_utilise_le_contexte_du_run() {
+        let mut inputs: HashMap<String, Value> = HashMap::new();
+        inputs.insert("a".to_string(), json!("Ada"));
+        let rendu = RhaiStep::default()
+            .run(
+                &run_info(),
+                json!({ "script": r#"#{ m: render("salut {{inputs.a}}") }"# }),
+                inputs,
+            )
+            .await
+            .expect("render doit rendre la chaîne avec le contexte du step");
+        assert_eq!(rendu, json!({ "m": "salut Ada" }));
+    }
+
+    /// Scenario « render échoue en erreur de script non retryable » (2026-10-06) : une variable
+    /// absente en mode strict fait échouer le script, non retryable, message porteur de
+    /// `template invalide`.
+    #[tokio::test]
+    async fn render_echoue_en_erreur_de_script_non_retryable() {
+        let Err(erreur) = RhaiStep::default()
+            .run(
+                &run_info(),
+                json!({ "script": r#"#{ m: render("{{inputs.absent}}") }"# }),
+                no_inputs(),
+            )
+            .await
+        else {
+            panic!("une variable absente dans `render` devait faire échouer le script");
+        };
+        assert!(!erreur.retryable, "erreur de rendu : jamais retryable");
+        assert!(
+            erreur.message.contains("template invalide"),
+            "message attendu porteur de « template invalide » : {:#?}",
+            erreur.message
+        );
+    }
+
+    /// Scenario « `raw_fields` du kind rhai » (2026-10-06) : le registre expose `&["script"]` pour
+    /// le kind `"rhai"`.
+    #[test]
+    fn raw_fields_du_kind_rhai_vaut_script() {
+        let mut registre = StepRegistry::new();
+        registre
+            .register(RhaiStep::default())
+            .expect("l'enregistrement d'un kind neuf ne doit pas échouer");
+        assert_eq!(registre.raw_fields("rhai"), Some(&["script"][..]));
     }
 }
