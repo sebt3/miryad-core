@@ -92,10 +92,13 @@ Handles:
   Plusieurs gates sur la même question : permis (ex. `min` puis `max` séparés), évalués indépendamment.
 
 Tasks:
-  [ ] Tests d'abord depuis les `Scenario` avec un serveur axum local (réutiliser le motif de
+  [x] Tests d'abord depuis les `Scenario` avec un serveur axum local (réutiliser le motif de
     ../../tests/systemone_client.rs ; le test du step vit dans `mod tests` du fichier, serveur démarré
     par un helper local) ; `validate` et `extract` testés en pur sans réseau. Puis ./systemone_step.rs.
-  [ ] Ré-export dans ./mod.rs et amendement de ./mod.sdd (même lot).
+  [x] Ré-export dans ./mod.rs et amendement de ./mod.sdd (même lot).
+    Validé 2026-10-13 (validator) : quatorze tests nommés verts (onze Scenario + `validate`/`extract` purs + gates
+    multiples sur une question), clippy `workflow,systemone` sans écart. Ré-export et déclaration sous
+    `all(workflow, systemone)` en place ; le test de chemins plats reste à la tâche de ./mod.sdd (lot suivant).
 
 Done when:
   Les `Scenario` ont chacun un test nommé vert sous `all(workflow, systemone)` et `--all-features` ;

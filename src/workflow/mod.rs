@@ -16,6 +16,8 @@ pub mod interpreter;
 pub mod rhai_step;
 pub mod step;
 pub mod subworkflow;
+#[cfg(all(feature = "workflow", feature = "systemone"))]
+pub mod systemone_step;
 mod template;
 
 // Ré-exports à plat, par sous-module (ordre alphabétique des sous-modules, comme les déclarations
@@ -36,6 +38,8 @@ pub use interpreter::DagInterpreter;
 pub use rhai_step::RhaiStep;
 pub use step::{MiryadWorkflowStep, RunInfo, StepError, StepRegistry};
 pub use subworkflow::SubWorkflowStep;
+#[cfg(all(feature = "workflow", feature = "systemone"))]
+pub use systemone_step::SystemOneStep;
 
 #[cfg(test)]
 mod tests {
