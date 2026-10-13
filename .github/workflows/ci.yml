@@ -31,6 +31,10 @@ jobs:
             args: "--no-default-features --features mcp"
           - name: workflow
             args: "--no-default-features --features workflow"
+          - name: systemone
+            args: "--no-default-features --features systemone"
+          - name: workflow-systemone
+            args: "--no-default-features --features workflow,systemone"
           - name: all-features
             args: "--all-features"
     steps:
@@ -81,6 +85,10 @@ jobs:
             args: "--no-default-features --features mcp"
           - name: workflow
             args: "--no-default-features --features workflow"
+          - name: systemone
+            args: "--no-default-features --features systemone"
+          - name: workflow-systemone
+            args: "--no-default-features --features workflow,systemone"
     steps:
       - uses: actions/checkout@v7
 

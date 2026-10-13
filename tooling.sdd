@@ -128,6 +128,9 @@ Tasks:
     modifiés par le lot d'implémentation, **avec** l'accord explicite du développeur principal — pas par cette
     spec. Les quatre combinaisons supplémentaires exigent `cargo test --no-default-features --features matrix`,
     qui compile `matrix-sdk` : prévoir le temps de compilation (cache CI).
+    Avancement 2026-10-13 (accord du développeur principal) : `systemone` et `workflow,systemone` sont dans
+    `./AGENTS.md`, `./.github/workflows/ci.yml` (test et clippy) et `workflows.sdd` ; `matrix` et `workflow,matrix`
+    restent à ajouter avec le lot Matrix — la tâche reste ouverte jusque-là.
 
 Done when:
   `cargo clippy --all-targets -- -D warnings`, la même commande sur chacune des combinaisons de

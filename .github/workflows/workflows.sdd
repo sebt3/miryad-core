@@ -22,12 +22,14 @@ References:
 
 Must:
   Déclencher les tests sur `push` et `pull_request` vers `main`.
-  Lancer `cargo test` sur les huit combinaisons de la batterie de `../../tooling.sdd`
+  Lancer `cargo test` sur les combinaisons de la batterie de `../../tooling.sdd`
     (`--no-default-features`, défaut `static-frontend`, `swagger-ui`, `graphql`, `graphiql`,
-    `mcp`, `workflow`, `--all-features`) : les tests sont verts partout, y compris sur le pont
-    GraphQL.
+    `mcp`, `workflow`, `--all-features`, plus `systemone` et `workflow,systemone` depuis
+    l'amendement 2026-10-06 ; `matrix` et `workflow,matrix` s'y ajoutent avec leur lot) : les tests
+    sont verts partout, y compris sur le pont GraphQL.
   Rejouer le harnais clippy sur chaque combinaison de features **hors pont GraphQL**
-    (`--no-default-features`, défaut, `swagger-ui`, `mcp`, `workflow`, avec `--all-targets`), le
+    (`--no-default-features`, défaut, `swagger-ui`, `mcp`, `workflow`, `systemone`,
+    `workflow,systemone`, avec `--all-targets`), le
     `-D warnings` escaladant tout avertissement résiduel hors `[lints]` : ce que
     `../../tooling.sdd` déclare interdit doit casser la CI, pas seulement le poste de travail.
   Le pont GraphQL (`src/graphql/**`, features `graphql`, `graphiql`, et `--all-features` qui les
