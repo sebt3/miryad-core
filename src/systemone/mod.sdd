@@ -51,7 +51,8 @@ Exposes:
     chemins plats `miryad_core::systemone::*`.
 
 Tasks:
-  [ ] Écrire `mod.rs` après ./error.rs et ./client.rs ; test de chemins plats dans `mod tests`.
+  [x] Écrire `mod.rs` après ./error.rs et ./client.rs ; test de chemins plats dans `mod tests`.
+    Validé 2026-10-13 (validator) : cinq ré-exports exacts, test `les_chemins_plats_existent` vert.
   [ ] Amender /src/lib.rs, /Cargo.toml (feature `systemone`, `docs.rs`) et la batterie de /tooling.sdd.
 
 Done when:

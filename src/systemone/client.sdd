@@ -81,10 +81,13 @@ Handles:
   Corps d'erreur non UTF-8 : lu en perte (`String::from_utf8_lossy`), tronqué comme le reste.
 
 Tasks:
-  [ ] Tests d'abord : unitaires pour `new` (URL, schéma, timeout) et `Debug` ; intégration
+  [x] Tests d'abord : unitaires pour `new` (URL, schéma, timeout) et `Debug` ; intégration
     `../../tests/systemone_client.rs` avec un serveur axum local pour `ask` (succès, 401, 422, 429,
     500, corps invalide, redirection, délai). Puis `./client.rs`.
-  [ ] Aucun accès réseau externe dans la batterie.
+  [x] Aucun accès réseau externe dans la batterie.
+    Validé 2026-10-13 (validator) : neuf `Scenario` verts (2 unitaires, 7 intégration sur 127.0.0.1:0), plus `401`/`500`
+    et l'URL avec/sans `/` final ; clippy `systemone` sans écart. La clé Bearer vit dans les en-têtes par défaut du
+    `reqwest::Client` (marqués sensibles), pas dans un champ du struct : observable identique, aucune clé dans `Debug`.
 
 Done when:
   Les `Scenario` ont chacun un test nommé vert, sous `systemone` seul et sous `--all-features` ;
