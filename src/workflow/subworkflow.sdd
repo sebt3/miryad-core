@@ -153,7 +153,8 @@ Tasks:
     run). Non bloquant ; à rouvrir sur besoin.
   [ ] [reporté, approuvé 2026-10-04 : prochaine livraison, non bloquant] **Autorisation / droits du déclencheur** (#26) : sans identité dans @RunInfo, l'enfant n'hérite de
     rien (voir ./step.sdd `Tasks`). Non bloquant.
-  [ ] Templating central (2026-10-06) : implémenter `raw_fields` ci-dessus ; test nommé du `Scenario` ci-dessous.
+  [x] Templating central (2026-10-06) : implémenter `raw_fields` ci-dessus ; test nommé du `Scenario` ci-dessous.
+    Validé 2026-10-13 (validator) : `les_templates_d_un_dag_enfant_ne_sont_pas_rendus_par_le_parent` vert.
 
 Done when:
   Les `Scenario` ci-dessous ont chacun un test nommé distinct et vert (`prepare` et `kind`/`Default`,
