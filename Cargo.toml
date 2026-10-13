@@ -92,6 +92,8 @@ mcp = ["dep:vynil-core"]
 # gating (src/auth/oidc.rs, src/migration/*) ; la rendre optionnelle casserait tout build sans
 # workflow — contrat tranché dans src/workflow/mod.sdd `Must` (implémentation 2026-09-23).
 workflow = ["dep:restate-sdk", "dep:uuid", "dep:vynil-core", "vynil-core?/rhai", "dep:tokio"]
+# Client System One (src/systemone/mod.sdd) : aucune dépendance nouvelle, hors `default` (décision 2026-10-06).
+systemone = []
 
 [dev-dependencies]
 sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "mock"] }
@@ -110,5 +112,5 @@ tracing-subscriber = { version = "0.3", features = ["registry"] }
 
 [package.metadata.docs.rs]
 all-features = false
-features = ["static-frontend", "swagger-ui", "graphql", "graphiql", "mcp", "workflow"]
+features = ["static-frontend", "swagger-ui", "graphql", "graphiql", "mcp", "workflow", "systemone"]
 rustdoc-args = ["--cfg", "docsrs"]

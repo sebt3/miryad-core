@@ -92,6 +92,7 @@
 //! | `graphiql` | IDE `GraphiQL` sur `/api/graphiql` (implique `graphql`) | `async-graphql/graphiql` |
 //! | `mcp` | Serveur MCP JSON-RPC sur `/mcp` | `vynil-core` (Handlebars) |
 //! | `workflow` | Moteur de workflow DAG sur Restate — **aucune** route sur le `axum::Router` de l'app (services liés par l'app elle-même, `Endpoint::builder()` ; voir `docs/architecture.md`) | `restate-sdk`, `uuid`, `tokio`, `vynil-core` (`rhai`) |
+//! | `systemone` | Client HTTP vers l'API System One (`POST /v1/systemone`) — **aucune** route, aucun état | aucune (`reqwest` déjà présent) |
 //!
 //! Voir aussi [`docs/architecture.md`](https://github.com/sebt3/miryad-core/blob/main/docs/architecture.md)
 //! et [`docs/roadmap.md`](https://github.com/sebt3/miryad-core/blob/main/docs/roadmap.md).
@@ -168,6 +169,11 @@ pub mod resource;
 
 /// API REST générique — routeur CRUD + OpenAPI.
 pub mod rest;
+
+/// Client HTTP vers l'API System One (feature `systemone`, désactivée par défaut) : `POST
+/// /v1/systemone`, aucune route montée, aucun état hors le pool `reqwest`.
+#[cfg(feature = "systemone")]
+pub mod systemone;
 
 /// Gestion utilisateurs/groupes (résolution, synchronisation OIDC, comptes de service).
 pub mod users;

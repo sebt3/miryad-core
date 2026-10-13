@@ -38,7 +38,9 @@ Exposes:
   `SystemOneError` — enum `pub`, quatre variantes, `retryable`.
 
 Tasks:
-  [ ] Tests d'abord depuis les `Scenario`, puis `./error.rs`.
+  [x] Tests d'abord depuis les `Scenario`, puis `./error.rs`.
+    Validé 2026-10-13 (validator) : trois tests nommés verts, clippy `systemone` sans écart, rustdoc sans lien cassé.
+    Non couvert par un `Scenario` : `Transport` retryable sur délai/connexion (règle du `Must`, vérifiée à la lecture).
 
 Done when:
   Les `Scenario` ont chacun un test nommé vert sous `systemone` ; la spec est relue et approuvée avant ./error.rs.
