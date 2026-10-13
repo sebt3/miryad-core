@@ -65,8 +65,10 @@ enum OnFail {
     Continue,
 }
 
-/// Seuil sur la réponse à une question : bornes inclusives sur la valeur extraite.
+/// Seuil sur la réponse à une question : bornes inclusives sur la valeur extraite. Clés
+/// inconnues refusées : une borne mal orthographiée ne doit pas disparaître en silence.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Gate {
     question: String,
     option: Option<String>,
@@ -467,6 +469,26 @@ mod tests {
             "state": "hello",
             "questions": {"q": {"type": "noul"}},
             "gate": [{"question": "q", "min": 0.8}],
+        });
+        let err = run_with(&base, config).await.unwrap_err();
+        assert!(!err.retryable);
+        assert!(
+            err.message.starts_with("config systemone invalide:"),
+            "message : {}",
+            err.message
+        );
+        assert!(received.lock().unwrap().is_empty());
+    }
+
+    /// Scenario « une clé inconnue dans un gate est refusée » (2026-10-13) : `mxa` pour `max`.
+    #[tokio::test]
+    async fn une_cle_inconnue_dans_un_gate_est_refusee() {
+        let (base, received) = serve(StatusCode::OK, NOUL_09).await;
+        let config = json!({
+            "model": "m",
+            "state": "hello",
+            "questions": {"q": {"type": "noul"}},
+            "gates": [{"question": "q", "min": 0.8, "mxa": 0.9}],
         });
         let err = run_with(&base, config).await.unwrap_err();
         assert!(!err.retryable);

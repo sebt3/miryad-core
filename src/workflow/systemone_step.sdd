@@ -34,6 +34,8 @@ Must:
     `OnFail` — enum privé, `#[serde(rename_all = "lowercase")]` : `Fail` (défaut), `Continue`.
     `Gate` — struct privée : `question: String`, `option: Option<String>`, `min: Option<f64>`,
     `max: Option<f64>`.
+    `Gate` porte aussi `#[serde(deny_unknown_fields)]` (amendement 2026-10-13, arbitré par le développeur principal) :
+    une faute de frappe sur une borne (`mxa`) ne doit pas retirer silencieusement ce seuil.
   `run(&self, _run, config, _inputs)` dans cet ordre exact :
     1. `serde_json::from_value::<SystemOneStepConfig>(config)` — @Err → @StepError { retryable: false,
       message: format!("config systemone invalide: {e}") }.
@@ -139,6 +141,11 @@ Scenario: un champ inconnu dans la config est refusé
   Given `config` avec une clé `gate` (faute de frappe pour `gates`)
   When `run` est appelé
   Then le résultat est @Err(StepError { retryable: false, .. }) `config systemone invalide:`
+
+Scenario: une clé inconnue dans un gate est refusée (2026-10-13)
+  Given `gates = [{"question": "q", "min": 0.8, "mxa": 0.9}]` (faute de frappe pour `max`)
+  When `run` est appelé
+  Then le résultat est @Err(StepError { retryable: false, .. }) `config systemone invalide:` et aucune requête n'est partie
 
 Scenario: les erreurs du client suivent leur retryabilité
   Given une API qui répond `529`, puis une autre `422`
