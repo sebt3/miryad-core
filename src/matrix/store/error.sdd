@@ -32,7 +32,8 @@ Exposes:
   `StoreError`
 
 Tasks:
-  [ ] Tests d'abord (codes, conversion vers `CryptoStoreError`), puis ./error.rs.
+  [x] Tests d'abord (codes, conversion vers `CryptoStoreError`), puis ./error.rs.
+    Validé 2026-10-14 (Claude) : deux tests nommés verts, clippy `matrix` sans écart, fmt et `specdd lint` OK.
 
 Done when:
   Les `Scenario` sont verts sous `matrix` ; la spec est relue et approuvée avant ./error.rs.

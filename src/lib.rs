@@ -175,6 +175,11 @@ pub mod rest;
 #[cfg(feature = "systemone")]
 pub mod systemone;
 
+/// Client Matrix de bot (feature `matrix`, désactivée par défaut) : E2EE sur `matrix-sdk` 0.18, store
+/// de chiffrement dans la base de l'application.
+#[cfg(feature = "matrix")]
+pub mod matrix;
+
 /// Gestion utilisateurs/groupes (résolution, synchronisation OIDC, comptes de service).
 pub mod users;
 

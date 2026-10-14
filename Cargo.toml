@@ -79,7 +79,12 @@ vynil-core = { version = "0.7.7", default-features = false, features = ["hbs"], 
 tower-http = { version = "0.6", default-features = false, features = ["fs"], optional = true }
 restate-sdk = { version = "0.12", features = ["http_server"], optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"], optional = true }
+# Client Matrix (src/matrix/mod.sdd) : épinglé en 0.18 (>= 0.19 impose libsqlite3-sys 0.38, en conflit avec
+# le sqlx-sqlite de SeaORM) ; la feature `sqlite` de matrix-sdk n'est jamais activée.
+matrix-sdk = { version = "0.18", default-features = false, features = ["e2e-encryption"], optional = true }
+matrix-sdk-crypto = { version = "0.18", optional = true }
+matrix-sdk-store-encryption = { version = "0.18", optional = true }
 
 [features]
 default = ["static-frontend"]
@@ -94,6 +99,8 @@ mcp = ["dep:vynil-core"]
 workflow = ["dep:restate-sdk", "dep:uuid", "dep:vynil-core", "vynil-core?/rhai", "dep:tokio"]
 # Client System One (src/systemone/mod.sdd) : aucune dépendance nouvelle, hors `default` (décision 2026-10-06).
 systemone = []
+# Client Matrix de bot (src/matrix/mod.sdd), hors `default` (arbitrage 2026-10-06).
+matrix = ["dep:matrix-sdk", "dep:matrix-sdk-crypto", "dep:matrix-sdk-store-encryption", "dep:tokio"]
 
 [dev-dependencies]
 sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "mock"] }
@@ -112,5 +119,5 @@ tracing-subscriber = { version = "0.3", features = ["registry"] }
 
 [package.metadata.docs.rs]
 all-features = false
-features = ["static-frontend", "swagger-ui", "graphql", "graphiql", "mcp", "workflow", "systemone"]
+features = ["static-frontend", "swagger-ui", "graphql", "graphiql", "mcp", "workflow", "systemone", "matrix"]
 rustdoc-args = ["--cfg", "docsrs"]
