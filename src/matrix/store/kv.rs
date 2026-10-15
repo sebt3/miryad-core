@@ -56,6 +56,11 @@ impl Kv {
         })
     }
 
+    /// Clé de compte (`account_key`) de ce store : filtre des tables partagées (ex. `leases`).
+    pub(super) fn account_key(&self) -> &str {
+        &self.account_key
+    }
+
     /// Hachage hexadécimal déterministe de `value` dans `table`.
     pub(super) fn hash(&self, table: &str, value: &str) -> String {
         hex::encode(self.cipher.hash_key(table, value.as_bytes()))

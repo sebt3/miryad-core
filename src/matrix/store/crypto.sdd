@@ -83,6 +83,7 @@ Tasks:
     écrire `open`, `save_changes`, `get_own_device`, la délégation des 46 méthodes, puis brancher la suite
     officielle. **Cette tâche est le critère de réussite du lot store** : on ne déclare pas le store livré
     tant que la suite officielle n'est pas entièrement verte.
+    Note : squelette (struct + `open`) posé en avance par ./crypto_account.sdd, 2026-10-15.
   [ ] Tests d'atomicité propres : `save_changes` dont la seconde partie échoue (table supprimée en cours de test)
     laisse la première partie non écrite.
 

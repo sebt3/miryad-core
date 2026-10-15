@@ -57,8 +57,12 @@ Handles:
   Deux `try_take_leased_lock` concurrents sur la même clé avec deux `holder` : exactement un obtient `Some`.
 
 Tasks:
-  [ ] Écrire les `Scenario` locaux en tests unitaires (SQLite mémoire), puis ./crypto_account.rs ; la
+  [x] Écrire les `Scenario` locaux en tests unitaires (SQLite mémoire), puis ./crypto_account.rs ; la
     couverture des méthodes de compte par la suite officielle est prouvée dans ./crypto.sdd.
+    Validé 2026-10-15 (Claude) : huit tests verts (bail concurrent/expiré/prolongé, valeurs, store neuf, `apply`),
+    clippy `matrix` et `workflow,matrix` sans écart. `save_pending_changes`, `save_account` et la branche identité
+    de `apply` seront exercés par la suite officielle de ./crypto.rs. Décisions : génération initiale 1, repli
+    horloge à 0 avant l'époque, `generation` en `u64`.
   [x] Horloge du bail : horloge du processus (arbitré par Sébastien le 2026-10-06) ; l'horloge de la base ne
     sera envisagée que si un double synchronisateur est observé en exploitation.
 

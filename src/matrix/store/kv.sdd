@@ -51,7 +51,8 @@ Depends on:
   ./error.rs, @sea_orm, @matrix_sdk_store_encryption, @serde, @serde_json, @hex (déjà direct)
 
 Exposes:
-  `Kv` (`pub(super)`), `Kv::{open, hash, seal, open_sealed, get, put, delete}`
+  `Kv` (`pub(super)`), `Kv::{open, hash, seal, open_sealed, get, put, delete}`, et l'accesseur `Kv::account_key(&self) -> &str`
+    (`pub(super)`, ajouté le 2026-10-15 : le bail de ./crypto_account.sdd filtre `leases` par `account_key`)
 
 Raises:
   `MRD-MXSTORE-001` (`DbErr`), `-002` (cipher), `-003` (sérialisation), `-004` (payload corrompu)
