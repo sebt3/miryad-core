@@ -38,7 +38,9 @@ Must:
     `message_hashes` — PK(`account_key`, `hash`)
     `secret_requests` — PK(`account_key`, `request_id`), `info_key` TEXT NOT NULL, `sent_out` BOOLEAN NOT NULL,
       `payload` BLOB ; index (`account_key`, `info_key`), (`account_key`, `sent_out`)
-    `secrets_inbox` — PK(`account_key`, `secret_name`, `seq` BIGINT auto), `payload` BLOB
+    `secrets_inbox` — PK(`account_key`, `secret_name`, `seq` BIGINT NOT NULL), `payload` BLOB
+      (arbitré par Sébastien le 2026-10-14 : `seq` n'est pas auto-incrémenté — `AUTOINCREMENT` est impossible
+      sur une PK composite SQLite ; `crypto_devices.rs` attribue `max(seq)+1` dans la transaction d'insertion)
     `room_settings` — PK(`account_key`, `room_id`), `payload` BLOB
     `room_key_bundles` — PK(`account_key`, `room_id`, `sender_user_id`), `payload` BLOB, `pending` BOOLEAN NOT NULL
     `room_keys_downloaded` — PK(`account_key`, `room_id`)
@@ -49,7 +51,9 @@ Must:
     (déterministe, ./kv.sdd), jamais la valeur en clair : voir ./crypto_*.sdd. Les `payload` sont
     des blobs chiffrés.
   Idempotence : `up` sur une base où une table existe déjà est une erreur SeaORM (comportement standard
-    de `create_table` sans `if_not_exists`) ; `down` utilise `if_exists`.
+    de `create_table` sans `if_not_exists`) ; `down` est strict, non idempotent (règle générale
+    de `../../migration/mod.sdd`, arbitrée le 2026-09-29 et confirmée le 2026-10-14) : `drop_table` sans
+    `if_exists`, tables supprimées dans l'ordre inverse de `up`.
   Compiler sous `#[cfg(feature = "matrix")]`.
 
 Must not:
@@ -60,8 +64,13 @@ Exposes:
   `migrations`
 
 Tasks:
-  [ ] Tests d'abord (SQLite mémoire, motif `has_table`/`has_column`), puis ./migration.rs.
-  [ ] Amender ../../migration/mod.sdd et mod.rs (ajout conditionnel `matrix`) dans le même lot.
+  [x] Tests d'abord (SQLite mémoire, motif `has_table`/`has_column`), puis ./migration.rs.
+    Validé 2026-10-15 (Claude) : trois tests nommés verts, quinze tables et sept index, `down` strict ; clippy
+    `matrix` et `workflow,matrix` sans écart, fmt et `specdd lint` OK.
+  [x] Amender ../../migration/mod.sdd et mod.rs (ajout conditionnel `matrix`) dans le même lot.
+    Validé 2026-10-15 (Claude) : `migrations()` ajoute la migration du store en fin de liste sous `matrix` ; test
+    `matrix_store_tables_are_applied_last_and_removed_first` vert ; test de l'index 0930 couvre les combinaisons.
+    Nota : appel par `crate::matrix::store::migration::migrations()` tant que `store/mod.rs` n'est pas finalisé.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./migration.rs.

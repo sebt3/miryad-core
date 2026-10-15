@@ -36,7 +36,7 @@ Must:
     `info_key` est la sérialisation canonique de `SecretInfo` (celle de `matrix-sdk-sqlite`).
   `get_user_devices(user)` rend tous les appareils du hachage de `user_id` (index (`account_key`, `user_id`)) ;
     `get_unsent_secret_requests` filtre `sent_out = false` en SQL ; `get_secrets_from_inbox` rend les secrets
-    d'un nom dans l'ordre d'insertion (`seq`), emballés en `Zeroizing<String>` ; une suppression de boîte
+    d'un nom dans l'ordre d'insertion (`seq`, attribué `max(seq)+1` par l'insertion, dans sa transaction), emballés en `Zeroizing<String>` ; une suppression de boîte
     efface toutes les lignes du nom.
   `delete_outgoing_secret_requests(id)` supprime la ligne ; une requête envoyée (`sent_out`) reste
     interrogeable par `get_outgoing_secret_requests` jusqu'à suppression explicite.

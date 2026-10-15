@@ -2,3 +2,4 @@
 //! (`src/matrix/store/mod.sdd`).
 
 pub mod error;
+pub mod migration;
