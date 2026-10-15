@@ -101,7 +101,11 @@ impl SeaOrmCryptoStore {
     }
 
     /// Applique les champs de `Changes` relevant de ce fichier, dans la transaction reçue.
-    pub(super) async fn apply(&self, txn: &DatabaseTransaction, changes: &Changes) -> Result<(), StoreError> {
+    pub(super) async fn apply_account(
+        &self,
+        txn: &DatabaseTransaction,
+        changes: &Changes,
+    ) -> Result<(), StoreError> {
         if let Some(identity) = &changes.private_identity {
             self.put_sealed(txn, KEY_IDENTITY, &identity.pickle().await)
                 .await?;
@@ -396,7 +400,7 @@ mod tests {
         );
     }
 
-    // Handles : `apply` n'écrit que dans la transaction reçue ; sans commit, rien n'est visible
+    // Handles : `apply_account` n'écrit que dans la transaction reçue ; sans commit, rien n'est visible
     #[tokio::test]
     async fn apply_writes_only_inside_the_given_transaction() {
         let store = fresh_store("acc").await;
@@ -406,7 +410,7 @@ mod tests {
         };
         let txn = store.db.begin().await.expect("begin");
         store
-            .apply(&txn, &changes)
+            .apply_account(&txn, &changes)
             .await
             .expect("apply inside the transaction");
         txn.rollback().await.expect("rollback");
@@ -419,7 +423,7 @@ mod tests {
             "rollback : rien d'écrit"
         );
         let txn = store.db.begin().await.expect("begin");
-        store.apply(&txn, &changes).await.expect("apply");
+        store.apply_account(&txn, &changes).await.expect("apply");
         txn.commit().await.expect("commit");
         assert_eq!(
             store.next_batch_token().await.expect("read after commit"),

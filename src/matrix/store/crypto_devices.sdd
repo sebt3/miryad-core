@@ -26,7 +26,7 @@ Must:
     `get_pending_key_bundle_details_for_room`, `get_all_rooms_pending_key_bundles`,
     `has_downloaded_all_room_keys`. `get_own_device` n'est **pas** ici : elle nécessite le compte
     (./crypto_account.sdd) et vit dans ./crypto.sdd, qui compose `load_account` et `get_device`.
-  `pub(super) async fn apply(&self, txn: &DatabaseTransaction, changes: &Changes) -> Result<(), StoreError>` —
+  `pub(super) async fn apply_devices(&self, txn: &DatabaseTransaction, changes: &Changes) -> Result<(), StoreError>` —
     applique, dans la transaction reçue, `message_hashes`, `key_requests`, `identities`
     (`new`, `changed`, `unchanged`), `devices` (`new`, `changed`, `deleted`), `room_settings`, `secrets`,
     `received_room_key_bundles`, `room_key_backups_fully_downloaded`, `rooms_pending_key_bundle`
@@ -64,8 +64,8 @@ Done when:
     relue et approuvée avant ./crypto_devices.rs.
 
 Scenario: un appareil enregistré est retrouvé, puis supprimé
-  Given un `DeviceData` pour `@u:x` / `D1` appliqué par `apply`
-  When `get_device(@u:x, D1)` puis, après un `apply` avec ce device en `deleted`, `get_device` de nouveau
+  Given un `DeviceData` pour `@u:x` / `D1` appliqué par `apply_devices`
+  When `get_device(@u:x, D1)` puis, après un `apply_devices` avec ce device en `deleted`, `get_device` de nouveau
   Then le premier appel rend `Some`, le second `None`
 
 Scenario: get_user_devices ne rend que les appareils de l'utilisateur
@@ -74,7 +74,7 @@ Scenario: get_user_devices ne rend que les appareils de l'utilisateur
   Then la carte contient exactement les deux appareils de `@a:x`
 
 Scenario: les empreintes de messages se retrouvent
-  Given un `OlmMessageHash` appliqué par `apply`
+  Given un `OlmMessageHash` appliqué par `apply_devices`
   When `is_message_known` est appelé avec ce hash puis avec un autre
   Then les résultats sont `true` puis `false`
 

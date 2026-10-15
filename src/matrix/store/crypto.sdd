@@ -45,7 +45,7 @@ Must:
     ce fichier → `save_changes`, `get_own_device` (2)
     Total : 46. Si le trait de la version épinglée a une méthode de plus ou de moins, l'implémenteur
     lève un `[?]` et met à jour cette spec avant de coder : le trait fait autorité.
-  `save_changes(changes)` : ouvre **une** `DatabaseTransaction`, appelle `apply` des trois fichiers dans
+  `save_changes(changes)` : ouvre **une** `DatabaseTransaction`, appelle `apply_account`, `apply_sessions`, `apply_devices` (un nom par fichier, arbitré le 2026-10-15) dans
     l'ordre compte → sessions → appareils, puis `commit` ; toute erreur → `rollback` implicite (la
     transaction est abandonnée), aucun effet partiel visible. `Changes` vide : succès sans écriture.
   `get_own_device()` : `load_account` puis `Device` de l'identité du compte (`account.device_keys()` →

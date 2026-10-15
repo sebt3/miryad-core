@@ -25,7 +25,7 @@ Must:
     `inbound_group_session_counts`, `get_inbound_group_sessions_by_room_id`,
     `get_inbound_group_sessions_for_device_batch`, `inbound_group_sessions_for_backup`,
     `mark_inbound_group_sessions_as_backed_up`, `reset_backup_state`, `get_outbound_group_session`.
-  `pub(super) async fn apply(&self, txn: &DatabaseTransaction, changes: &Changes) -> Result<(), StoreError>` —
+  `pub(super) async fn apply_sessions(&self, txn: &DatabaseTransaction, changes: &Changes) -> Result<(), StoreError>` —
     applique `changes.sessions` (Olm), `changes.inbound_group_sessions`, `changes.outbound_group_sessions`,
     `changes.withheld_session_info` ; insertion ou remplacement par clé primaire (upsert) ; dans la
     transaction reçue.
@@ -49,10 +49,18 @@ Must:
 
 Must not:
   Charger toute une table en mémoire pour filtrer (`get_inbound_group_sessions` sans filtre est le seul
-    chemin « tout lire », exigé par le trait) ; écrire hors de la transaction reçue dans `apply`.
+    chemin « tout lire », exigé par le trait) ; écrire hors de la transaction reçue dans `apply_sessions`.
+
+  Décisions d'implémentation (arbitrées le 2026-10-15) : `get_inbound_group_sessions_for_device_batch` trie sur
+    la colonne `session_id` hachée (ordre déterministe, le trait n'en impose aucun) ; `backed_up` de la colonne
+    est la source de vérité de la recherche — `save_inbound_group_sessions(Some(version))` l'écrit à `true`,
+    `None` à `false`, `apply_sessions` reprend `session.backed_up()` ; `mark_inbound_group_sessions_as_backed_up`
+    et `reset_backup_state` mettent à jour la colonne ET le drapeau pickle-é de la session (re-scellé), pour que
+    la session relue soit cohérente.
 
 Depends on:
-  ./kv.rs, ./error.rs, @sea_orm, @matrix_sdk_crypto
+  ./kv.rs, ./error.rs, @sea_orm, @matrix_sdk_crypto, `matrix_sdk::ruma` (ré-export de `ruma` : `RoomId` et
+    consorts, `matrix_sdk_crypto` ne les ré-exporte pas ; aucune dépendance `ruma` directe)
 
 Exposes:
   Fonctions inhérentes `pub(super)` listées ci-dessus.
@@ -62,9 +70,12 @@ Handles:
     `backed_up = 0`.
 
 Tasks:
-  [ ] Tests unitaires locaux depuis les `Scenario` (SQLite mémoire, sessions fabriquées avec l'API de test
+  [x] Tests unitaires locaux depuis les `Scenario` (SQLite mémoire, sessions fabriquées avec l'API de test
     de `matrix-sdk-crypto` ou `Account::new`/`InboundGroupSession` selon ce qui est public), puis
     ./crypto_sessions.rs ; la conformité complète est prouvée par ./crypto.sdd.
+    Validé 2026-10-15 (Claude) : sept tests verts (six Scenario/Handles + cohérence du drapeau après mark/reset),
+    clippy `matrix` et `workflow,matrix` sans écart. `get_withheld_*`, `get_outbound_group_session` et les écritures
+    withheld/sortantes de `apply_sessions` seront exercés par la suite officielle de ./crypto.rs.
   [x] Licence (arbitré par Sébastien le 2026-10-06) : le store est une implémentation du trait @CryptoStore,
     code écrit pour ce dépôt, sous la licence du dépôt (BSD-3) — rien à relicencier à l'extraction pour le
     code propre. `matrix-sdk-sqlite` (Apache-2.0) est une **référence de sémantique**, pas une source à

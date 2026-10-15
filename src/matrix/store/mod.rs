@@ -11,4 +11,7 @@ mod crypto;
 // Provisoire : rien n'appelle encore `crypto_account` tant que `crypto` n'implémente pas le trait ; retiré à la finalisation (src/matrix/store/mod.sdd).
 #[allow(dead_code)]
 mod crypto_account;
+// Provisoire : rien n'appelle encore `crypto_sessions` tant que `crypto` n'implémente pas le trait ; retiré à la finalisation (src/matrix/store/mod.sdd).
+#[allow(dead_code)]
+mod crypto_sessions;
 pub mod migration;
