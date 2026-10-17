@@ -3653,6 +3653,7 @@ dependencies = [
  "utoipa-swagger-ui",
  "uuid",
  "vynil-core",
+ "zeroize",
 ]
 
 [[package]]

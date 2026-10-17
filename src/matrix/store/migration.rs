@@ -148,7 +148,12 @@ fn state_table_specs() -> Vec<TableSpec> {
     vec![
         TableSpec {
             suffix: "tracked_users",
-            columns: vec![text("account_key"), text("user_id"), flag("dirty")],
+            columns: vec![
+                text("account_key"),
+                text("user_id"),
+                flag("dirty"),
+                blob("payload"),
+            ],
             primary_key: &["account_key", "user_id"],
         },
         TableSpec {
@@ -189,9 +194,13 @@ fn state_table_specs() -> Vec<TableSpec> {
                 text("room_id"),
                 text("sender_user_id"),
                 blob("payload"),
-                flag("pending"),
             ],
             primary_key: &["account_key", "room_id", "sender_user_id"],
+        },
+        TableSpec {
+            suffix: "rooms_pending_key_bundle",
+            columns: vec![text("account_key"), text("room_id"), blob("payload")],
+            primary_key: &["account_key", "room_id"],
         },
         TableSpec {
             suffix: "room_keys_downloaded",
@@ -305,8 +314,8 @@ mod tests {
     use sea_orm::Database;
     use sea_orm_migration::prelude::*;
 
-    /// Les quinze tables du `Must`, sans préfixe.
-    const TABLES: [&str; 15] = [
+    /// Les seize tables du `Must`, sans préfixe.
+    const TABLES: [&str; 16] = [
         "kv",
         "olm_sessions",
         "inbound_group_sessions",
@@ -320,6 +329,7 @@ mod tests {
         "secrets_inbox",
         "room_settings",
         "room_key_bundles",
+        "rooms_pending_key_bundle",
         "room_keys_downloaded",
         "leases",
     ];
@@ -350,9 +360,9 @@ mod tests {
             .expect("in-memory sqlite connects")
     }
 
-    /// Scenario : « up crée les quinze tables avec le préfixe ».
+    /// Scenario : « up crée les seize tables avec le préfixe ».
     #[tokio::test]
-    async fn up_creates_the_fifteen_prefixed_tables_each_with_account_key() {
+    async fn up_creates_the_sixteen_prefixed_tables_each_with_account_key() {
         let db = fresh_db().await;
         StoreMigrator::up(&db, None)
             .await

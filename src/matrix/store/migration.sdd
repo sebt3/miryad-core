@@ -34,7 +34,8 @@ Must:
     `withheld_sessions` — PK(`account_key`, `room_id`, `session_id`), `payload` BLOB
     `devices` — PK(`account_key`, `user_id`, `device_id`), `payload` BLOB ; index (`account_key`, `user_id`)
     `identities` — PK(`account_key`, `user_id`), `payload` BLOB
-    `tracked_users` — PK(`account_key`, `user_id`), `dirty` BOOLEAN NOT NULL
+    `tracked_users` — PK(`account_key`, `user_id`), `dirty` BOOLEAN NOT NULL, `payload` BLOB (le `TrackedUser`
+      scellé : `user_id` haché ne se réinverse pas, `load_tracked_users` le relit du `payload`)
     `message_hashes` — PK(`account_key`, `hash`)
     `secret_requests` — PK(`account_key`, `request_id`), `info_key` TEXT NOT NULL, `sent_out` BOOLEAN NOT NULL,
       `payload` BLOB ; index (`account_key`, `info_key`), (`account_key`, `sent_out`)
@@ -42,7 +43,9 @@ Must:
       (arbitré par Sébastien le 2026-10-14 : `seq` n'est pas auto-incrémenté — `AUTOINCREMENT` est impossible
       sur une PK composite SQLite ; `crypto_devices.rs` attribue `max(seq)+1` dans la transaction d'insertion)
     `room_settings` — PK(`account_key`, `room_id`), `payload` BLOB
-    `room_key_bundles` — PK(`account_key`, `room_id`, `sender_user_id`), `payload` BLOB, `pending` BOOLEAN NOT NULL
+    `room_key_bundles` — PK(`account_key`, `room_id`, `sender_user_id`), `payload` BLOB
+    `rooms_pending_key_bundle` — PK(`account_key`, `room_id`), `payload` BLOB (les `RoomPendingKeyBundleDetails`,
+      calqué sur `matrix-sdk-sqlite` ; une ligne par salon en attente)
     `room_keys_downloaded` — PK(`account_key`, `room_id`)
     `leases` — PK(`account_key`, `key`), `holder` TEXT NOT NULL, `expiration_ms` BIGINT NOT NULL,
       `generation` BIGINT NOT NULL
@@ -50,6 +53,9 @@ Must:
     `secret_name`, `request_id`, `info_key`) contiennent la valeur hachée par @StoreCipher::hash_key
     (déterministe, ./kv.sdd), jamais la valeur en clair : voir ./crypto_*.sdd. Les `payload` sont
     des blobs chiffrés.
+  Amendement 2026-10-17 (arbitré par Sébastien) : `m20261006_000001` est modifiée **en place** (jamais déployée,
+    exception à la règle d'immutabilité tracée dans `/AGENTS.md`) pour : `payload` sur `tracked_users`, retrait de
+    `pending` de `room_key_bundles`, nouvelle table `rooms_pending_key_bundle` (15 → 16 tables).
   Idempotence : `up` sur une base où une table existe déjà est une erreur SeaORM (comportement standard
     de `create_table` sans `if_not_exists`) ; `down` est strict, non idempotent (règle générale
     de `../../migration/mod.sdd`, arbitrée le 2026-09-29 et confirmée le 2026-10-14) : `drop_table` sans
@@ -75,10 +81,10 @@ Tasks:
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./migration.rs.
 
-Scenario: up crée les quinze tables avec le préfixe
+Scenario: up crée les seize tables avec le préfixe
   Given une base SQLite en mémoire
   When le @Migrator d'un test exécute `up` avec `migrations()`
-  Then les quinze tables `miryad_matrix_*` existent et chacune a une colonne `account_key`
+  Then les seize tables `miryad_matrix_*` existent et chacune a une colonne `account_key`
 
 Scenario: down les supprime toutes
   Given les migrations appliquées

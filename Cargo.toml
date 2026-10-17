@@ -85,6 +85,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 matrix-sdk = { version = "0.18", default-features = false, features = ["e2e-encryption"], optional = true }
 matrix-sdk-crypto = { version = "0.18", optional = true }
 matrix-sdk-store-encryption = { version = "0.18", optional = true }
+# `Zeroizing<String>` apparaît dans la signature du trait CryptoStore (secrets de la boîte) ; déjà dans le graphe.
+zeroize = { version = "1", optional = true }
 
 [features]
 default = ["static-frontend"]
@@ -100,7 +102,7 @@ workflow = ["dep:restate-sdk", "dep:uuid", "dep:vynil-core", "vynil-core?/rhai",
 # Client System One (src/systemone/mod.sdd) : aucune dépendance nouvelle, hors `default` (décision 2026-10-06).
 systemone = []
 # Client Matrix de bot (src/matrix/mod.sdd), hors `default` (arbitrage 2026-10-06).
-matrix = ["dep:matrix-sdk", "dep:matrix-sdk-crypto", "dep:matrix-sdk-store-encryption", "dep:tokio"]
+matrix = ["dep:matrix-sdk", "dep:matrix-sdk-crypto", "dep:matrix-sdk-store-encryption", "dep:zeroize", "dep:tokio"]
 
 [dev-dependencies]
 sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "mock"] }

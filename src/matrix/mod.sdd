@@ -45,6 +45,8 @@ Must:
     `["rt-multi-thread", "macros", "time", "sync"]`) ;
     `matrix-sdk = { version = "0.18", default-features = false, features = ["e2e-encryption"], optional = true }` ;
     `matrix-sdk-crypto = { version = "0.18", optional = true }` ;
+    `zeroize = { version = "1", optional = true }` (ajoutée à la feature : `dep:zeroize`, amendement 2026-10-17 —
+    `Zeroizing<String>` figure dans la signature du trait, voir ./store/crypto_devices.sdd ; déjà dans le graphe) ;
     `matrix-sdk-store-encryption = { version = "0.18", optional = true }` — noms et features à confirmer à
     l'implémentation (l'implémenteur lève un `[?]` si un type requis n'est pas atteignable) ;
     dev-dependencies : `matrix-sdk-crypto = { version = "0.18", features = ["testing"] }`, `matrix-sdk-test`,

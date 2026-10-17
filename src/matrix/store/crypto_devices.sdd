@@ -12,7 +12,8 @@ Owns:
 
 References:
   ./kv.sdd — @Kv ; ./migration.sdd — tables `devices`, `identities`, `tracked_users`, `message_hashes`,
-    `secret_requests`, `secrets_inbox`, `room_settings`, `room_key_bundles`, `room_keys_downloaded`
+    `secret_requests`, `secrets_inbox`, `room_settings`, `room_key_bundles`, `rooms_pending_key_bundle`,
+    `room_keys_downloaded`
   matrix-sdk-crypto `0.18.0` — trait @CryptoStore, `store::types::{Changes, DeviceChanges, IdentityChanges}`,
     `GossipRequest`, `SecretInfo`, `RoomSettings`, `StoredRoomKeyBundleData`, `RoomPendingKeyBundleDetails`
   matrix-sdk-sqlite `0.18.0`, `src/crypto_store.rs` — référence de sémantique, consultée et non recopiée
@@ -30,7 +31,9 @@ Must:
     applique, dans la transaction reçue, `message_hashes`, `key_requests`, `identities`
     (`new`, `changed`, `unchanged`), `devices` (`new`, `changed`, `deleted`), `room_settings`, `secrets`,
     `received_room_key_bundles`, `room_key_backups_fully_downloaded`, `rooms_pending_key_bundle`
-    (`Some(details)` → upsert avec `pending = true`, `None` → suppression de la ligne en attente).
+    (`Some(details)` → upsert dans `rooms_pending_key_bundle`, `None` → suppression de la ligne du salon) ;
+    `tracked_users` : `save_tracked_users` écrit `dirty` et le `TrackedUser` scellé dans `payload`, et
+    `load_tracked_users` relit les `TrackedUser` depuis `payload` (amendement 2026-10-17, ./migration.sdd).
   Les colonnes de recherche (`user_id`, `device_id`, `hash`, `request_id`, `info_key`, `secret_name`,
     `room_id`) sont hachées par `Kv::hash(<table>, <valeur>)` ; `payload` scellé par `Kv::seal`.
     `info_key` est la sérialisation canonique de `SecretInfo` (celle de `matrix-sdk-sqlite`).
@@ -87,6 +90,12 @@ Scenario: la boîte de secrets rend dans l'ordre et se vide
   Given deux secrets de même nom reçus l'un après l'autre
   When `get_secrets_from_inbox(name)` puis `delete_secrets_from_inbox(name)` puis `get_secrets_from_inbox(name)`
   Then le premier appel rend les deux dans l'ordre d'arrivée, le dernier rend un vecteur vide
+
+Scenario: les utilisateurs suivis font l'aller-retour
+  Given `save_tracked_users` appelé avec `@u:x` (dirty = true) puis `@v:x` (dirty = false)
+  When `load_tracked_users()` est appelé
+  Then les deux `TrackedUser` sont rendus avec leur `user_id` en clair et leur `dirty`, et la colonne `user_id`
+    en base est le hachage, jamais `@u:x`
 
 Scenario: un bundle en attente apparaît puis disparaît
   Given `rooms_pending_key_bundle = {room: Some(details)}` appliqué, puis `{room: None}`
