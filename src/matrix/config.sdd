@@ -24,10 +24,10 @@ Must:
     `sync_timeout_ms: u64` (défaut `30_000`).
     `MatrixConfig::new(homeserver_url: impl Into<String>, store_passphrase: impl Into<String>,
     holder_name: impl Into<String>) -> Self` pose les défauts ci-dessus.
-  `pub fn validate(&self) -> Result<(), MatrixError>` : `homeserver_url` parsable en URL `http`/`https` ;
+  `pub fn validate(&self) -> Result<(), MatrixError>` : `homeserver_url` parsable en URL `http`/`https` (l'hôte non vide est garanti par le parseur `reqwest::Url` : `https:` et `http://` sont refusés) ;
     `store_passphrase`, `holder_name`, `account_key` non vides (après trim) ; chaque entrée de
-    `auto_join_from` de la forme `@local:domaine` (commence par `@`, contient un `:` avec un domaine non
-    vide) ; `sync_timeout_ms` entre `1_000` et `120_000` ; échec → @MatrixError::Config avec le nom du champ.
+    `auto_join_from` de la forme `@local:domaine` (commence par `@`, partie locale non vide, contient un `:`
+    suivi d'un domaine non vide) (précisions du 2026-10-17) ; `sync_timeout_ms` entre `1_000` et `120_000` ; échec → @MatrixError::Config avec le nom du champ.
   `impl Debug` **manuel** : `store_passphrase` imprimé `<redacted>`.
   Compiler sous `#[cfg(feature = "matrix")]`.
 
@@ -38,7 +38,9 @@ Exposes:
   `MatrixConfig`, `MatrixConfig::{new, validate}`
 
 Tasks:
-  [ ] Tests d'abord depuis les `Scenario`, puis ./config.rs.
+  [x] Tests d'abord depuis les `Scenario`, puis ./config.rs.
+    Validé 2026-10-17 (Claude) : dix-sept tests verts (trois Scenario, chaque règle de `validate`, bornes incluses),
+    clippy `matrix` et `workflow,matrix` sans écart. Messages d'erreur sans la valeur fautive.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./config.rs.
