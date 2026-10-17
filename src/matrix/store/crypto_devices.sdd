@@ -59,8 +59,11 @@ Handles:
   Appareil supprimé (`DeviceChanges.deleted`) : ligne supprimée ; `get_device` rend ensuite `None`.
 
 Tasks:
-  [ ] Tests unitaires locaux depuis les `Scenario`, puis ./crypto_devices.rs ; la conformité complète
+  [x] Tests unitaires locaux depuis les `Scenario`, puis ./crypto_devices.rs ; la conformité complète
     est prouvée par ./crypto.sdd.
+    Validé 2026-10-17 (Claude) : sept tests verts (un par Scenario, dont l'aller-retour des utilisateurs suivis avec
+    `user_id` haché en base), clippy `matrix` et `workflow,matrix` sans écart. `seq` de la boîte démarre à 0 ;
+    `identities.unchanged` est upserté comme `new`/`changed`. La conformité complète reste jugée par ./crypto.sdd.
 
 Done when:
   Les `Scenario` sont verts ; la suite officielle passe pour les méthodes de ce fichier ; la spec est
