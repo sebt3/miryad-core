@@ -44,8 +44,12 @@ Exposes:
   `MatrixError`, `retryable`.
 
 Tasks:
-  [ ] Tests d'abord (codes, retryabilité, `from_sdk` sur des erreurs `matrix-sdk` construites en test),
+  [x] Tests d'abord (codes, retryabilité, `from_sdk` sur des erreurs `matrix-sdk` construites en test),
     puis ./error.rs.
+    Validé 2026-10-17 (Claude) : six tests verts (codes, retryabilité, `from_sdk` sur 429/502/403/404 construits par
+    `RumaApiError::from_http_response`), clippy `matrix` et `workflow,matrix` sans écart. Lectures retenues :
+    `matrix_sdk::Error::Io` → `Sdk` (non retryable) ; transport coupé = timeout, connect ou request ; les erreurs
+    non-HTTP gardent `to_string()` du SDK. `allow(dead_code)` de `from_sdk` à retirer avec ./client.rs.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./error.rs.
