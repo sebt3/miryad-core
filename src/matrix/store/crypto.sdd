@@ -79,11 +79,23 @@ Handles:
   Deux `SeaOrmCryptoStore` ouverts sur la même base avec deux `account_key` : indépendants.
 
 Tasks:
-  [ ] Après les trois fichiers de domaine (./crypto_account.rs, ./crypto_sessions.rs, ./crypto_devices.rs) :
+  [x] Après les trois fichiers de domaine (./crypto_account.rs, ./crypto_sessions.rs, ./crypto_devices.rs) :
     écrire `open`, `save_changes`, `get_own_device`, la délégation des 46 méthodes, puis brancher la suite
     officielle. **Cette tâche est le critère de réussite du lot store** : on ne déclare pas le store livré
     tant que la suite officielle n'est pas entièrement verte.
     Note : squelette (struct + `open`) posé en avance par ./crypto_account.sdd, 2026-10-15.
+    Validé 2026-10-17 (Claude) : suite officielle branchée (`cryptostore_integration_tests!` et `_time!`, 36 tests) :
+    35 verts, 1 `#[ignore]` posé par l'amont. Deux dérogations tracées ci-dessous.
+    [?] `test_save_inbound_group_session_from_old_backup` reste `#[ignore]` (macro amont, intégration_tests.rs,
+      « only works on the MemoryStore, the other stores are waiting for more work »). Le store est volontairement
+      **aveugle à la version de sauvegarde** (un booléen `backed_up`, comme ./crypto_sessions.sdd le fixe) : une
+      session sauvegardée sous une version est exclue pour une autre. Conséquence assumée : après rotation de la
+      version de sauvegarde, la reprise exigerait un `reset_backup_state`. À rouvrir si le harnais de chatbot a besoin de
+      l'état par version (colonne `backup_version` : migration en place, spec ./crypto_sessions.sdd).
+    Dérogation de harnais : la macro appelle `get_static_account()` (synchrone) sur le type de `get_store` ; le module
+      `conformance` fournit donc un type de **test** `ProbeStore` qui délègue à `SeaOrmCryptoStore` et met en cache le
+      `StaticAccountData`. Aucune conséquence en production. Correctif découvert : `Changes::is_empty` (0.18) oublie
+      `room_key_backups_fully_downloaded` et `rooms_pending_key_bundle` ; `save_changes` les teste en plus.
   [x] Tests d'atomicité propres : `save_changes` dont la seconde partie échoue (table supprimée en cours de test)
     laisse la première partie non écrite.
     Validé 2026-10-17 (Claude) : `save_changes_is_atomic` vert (table `devices` supprimée, session Olm absente après

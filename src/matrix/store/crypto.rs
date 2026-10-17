@@ -80,7 +80,12 @@ impl CryptoStore for SeaOrmCryptoStore {
     /// Une seule `DatabaseTransaction` : compte, puis sessions, puis appareils, puis `commit`.
     /// Une erreur abandonne la transaction (rollback implicite de `SeaORM`) : aucun effet partiel.
     async fn save_changes(&self, changes: Changes) -> Result<(), StoreError> {
-        if changes.is_empty() {
+        // `Changes::is_empty` de matrix-sdk-crypto 0.18 ignore `room_key_backups_fully_downloaded`
+        // et `rooms_pending_key_bundle` : on les teste explicitement, sinon ces écritures seraient perdues.
+        if changes.is_empty()
+            && changes.room_key_backups_fully_downloaded.is_empty()
+            && changes.rooms_pending_key_bundle.is_empty()
+        {
             return Ok(());
         }
         let txn: DatabaseTransaction = self.db.begin().await?;
@@ -519,4 +524,377 @@ mod tests {
             "variante inattendue : {err:?}"
         );
     }
+}
+
+/// Suite de conformité officielle `matrix-sdk-crypto` 0.18 (`./crypto.sdd`, Must « Suite de conformité »).
+#[cfg(test)]
+mod conformance {
+    // Les `#[cfg(feature = "experimental-…")]` de la macro officielle sont évalués contre les features de cette crate (crypto.sdd).
+    #![allow(unexpected_cfgs)]
+    // Le `#[ignore]` de `test_save_inbound_group_session_from_old_backup` est celui de la macro amont, sans raison écrite : on ne le modifie pas (crypto.sdd, Must « Suite de conformité »).
+    #![allow(clippy::ignore_without_reason)]
+
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+
+    use matrix_sdk_crypto::olm::StaticAccountData;
+    use sea_orm::{ConnectOptions, Database, DatabaseConnection};
+    use sea_orm_migration::MigratorTrait;
+
+    use super::*;
+
+    const DEFAULT_PASSPHRASE: &str = "passphrase-suite";
+
+    struct StoreMigrator;
+
+    impl MigratorTrait for StoreMigrator {
+        fn migrations() -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
+            super::super::migration::migrations()
+        }
+    }
+
+    /// Bases nommées : `clear_data = false` rouvre la base existante (persistance), `true` en crée une neuve.
+    static DATABASES: OnceLock<Mutex<HashMap<String, DatabaseConnection>>> = OnceLock::new();
+
+    async fn database_for(name: &str, clear_data: bool) -> DatabaseConnection {
+        let registry = DATABASES.get_or_init(|| Mutex::new(HashMap::new()));
+        if !clear_data {
+            let existing = registry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(name)
+                .cloned();
+            if let Some(db) = existing {
+                return db;
+            }
+        }
+        // Une seule connexion : sans elle, chaque connexion du pool verrait sa propre base mémoire.
+        let mut opts = ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1).min_connections(1);
+        let db = Database::connect(opts).await.expect("in-memory sqlite connects");
+        StoreMigrator::up(&db, None)
+            .await
+            .expect("store migrations apply over an empty base");
+        registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(name.to_owned(), db.clone());
+        db
+    }
+
+    /// Store fourni à la suite : `SeaOrmCryptoStore` délégué, plus le `StaticAccountData` du compte
+    /// pour `get_static_account` (méthode synchrone exigée par la suite, absente du store de production).
+    #[derive(Clone, Debug)]
+    struct ProbeStore {
+        inner: SeaOrmCryptoStore,
+        static_account: Arc<Mutex<Option<StaticAccountData>>>,
+    }
+
+    impl ProbeStore {
+        fn get_static_account(&self) -> Option<StaticAccountData> {
+            self.static_account
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    /// Fournit à la macro officielle un store neuf (`clear_data`) ou rouvert (`!clear_data`).
+    async fn get_store(name: &str, passphrase: Option<&str>, clear_data: bool) -> ProbeStore {
+        let db = database_for(name, clear_data).await;
+        let inner = SeaOrmCryptoStore::open(db, name, passphrase.unwrap_or(DEFAULT_PASSPHRASE))
+            .await
+            .expect("store opens");
+        let static_account = inner
+            .load_account()
+            .await
+            .expect("load account")
+            .map(|account| account.static_data().clone());
+        ProbeStore {
+            inner,
+            static_account: Arc::new(Mutex::new(static_account)),
+        }
+    }
+
+    #[async_trait]
+    impl CryptoStore for ProbeStore {
+        type Error = StoreError;
+
+        async fn save_pending_changes(&self, changes: PendingChanges) -> Result<(), StoreError> {
+            let static_account = changes
+                .account
+                .as_ref()
+                .map(|account| account.static_data().clone());
+            CryptoStore::save_pending_changes(&self.inner, changes).await?;
+            if let Some(data) = static_account {
+                *self.static_account.lock().unwrap_or_else(PoisonError::into_inner) = Some(data);
+            }
+            Ok(())
+        }
+
+        async fn load_account(&self) -> Result<Option<Account>, StoreError> {
+            CryptoStore::load_account(&self.inner).await
+        }
+
+        async fn load_identity(&self) -> Result<Option<PrivateCrossSigningIdentity>, StoreError> {
+            CryptoStore::load_identity(&self.inner).await
+        }
+
+        async fn save_changes(&self, changes: Changes) -> Result<(), StoreError> {
+            CryptoStore::save_changes(&self.inner, changes).await
+        }
+
+        async fn save_inbound_group_sessions(
+            &self,
+            sessions: Vec<InboundGroupSession>,
+            backed_up_to_version: Option<&str>,
+        ) -> Result<(), StoreError> {
+            CryptoStore::save_inbound_group_sessions(&self.inner, sessions, backed_up_to_version).await
+        }
+
+        async fn get_sessions(&self, sender_key: &str) -> Result<Option<Vec<Session>>, StoreError> {
+            CryptoStore::get_sessions(&self.inner, sender_key).await
+        }
+
+        async fn get_inbound_group_session(
+            &self,
+            room_id: &RoomId,
+            session_id: &str,
+        ) -> Result<Option<InboundGroupSession>, StoreError> {
+            CryptoStore::get_inbound_group_session(&self.inner, room_id, session_id).await
+        }
+
+        async fn get_withheld_info(
+            &self,
+            room_id: &RoomId,
+            session_id: &str,
+        ) -> Result<Option<RoomKeyWithheldEntry>, StoreError> {
+            CryptoStore::get_withheld_info(&self.inner, room_id, session_id).await
+        }
+
+        async fn get_withheld_sessions_by_room_id(
+            &self,
+            room_id: &RoomId,
+        ) -> Result<Vec<RoomKeyWithheldEntry>, StoreError> {
+            CryptoStore::get_withheld_sessions_by_room_id(&self.inner, room_id).await
+        }
+
+        async fn get_inbound_group_sessions(&self) -> Result<Vec<InboundGroupSession>, StoreError> {
+            CryptoStore::get_inbound_group_sessions(&self.inner).await
+        }
+
+        async fn inbound_group_session_counts(
+            &self,
+            backup_version: Option<&str>,
+        ) -> Result<RoomKeyCounts, StoreError> {
+            CryptoStore::inbound_group_session_counts(&self.inner, backup_version).await
+        }
+
+        async fn get_inbound_group_sessions_by_room_id(
+            &self,
+            room_id: &RoomId,
+        ) -> Result<Vec<InboundGroupSession>, StoreError> {
+            CryptoStore::get_inbound_group_sessions_by_room_id(&self.inner, room_id).await
+        }
+
+        async fn get_inbound_group_sessions_for_device_batch(
+            &self,
+            curve_key: Curve25519PublicKey,
+            sender_data_type: SenderDataType,
+            after_session_id: Option<String>,
+            limit: usize,
+        ) -> Result<Vec<InboundGroupSession>, StoreError> {
+            CryptoStore::get_inbound_group_sessions_for_device_batch(
+                &self.inner,
+                curve_key,
+                sender_data_type,
+                after_session_id,
+                limit,
+            )
+            .await
+        }
+
+        async fn inbound_group_sessions_for_backup(
+            &self,
+            backup_version: &str,
+            limit: usize,
+        ) -> Result<Vec<InboundGroupSession>, StoreError> {
+            CryptoStore::inbound_group_sessions_for_backup(&self.inner, backup_version, limit).await
+        }
+
+        async fn mark_inbound_group_sessions_as_backed_up(
+            &self,
+            backup_version: &str,
+            room_and_session_ids: &[(&RoomId, &str)],
+        ) -> Result<(), StoreError> {
+            CryptoStore::mark_inbound_group_sessions_as_backed_up(
+                &self.inner,
+                backup_version,
+                room_and_session_ids,
+            )
+            .await
+        }
+
+        async fn reset_backup_state(&self) -> Result<(), StoreError> {
+            CryptoStore::reset_backup_state(&self.inner).await
+        }
+
+        async fn load_backup_keys(&self) -> Result<BackupKeys, StoreError> {
+            CryptoStore::load_backup_keys(&self.inner).await
+        }
+
+        async fn load_dehydrated_device_pickle_key(&self) -> Result<Option<DehydratedDeviceKey>, StoreError> {
+            CryptoStore::load_dehydrated_device_pickle_key(&self.inner).await
+        }
+
+        async fn delete_dehydrated_device_pickle_key(&self) -> Result<(), StoreError> {
+            CryptoStore::delete_dehydrated_device_pickle_key(&self.inner).await
+        }
+
+        async fn get_outbound_group_session(
+            &self,
+            room_id: &RoomId,
+        ) -> Result<Option<OutboundGroupSession>, StoreError> {
+            CryptoStore::get_outbound_group_session(&self.inner, room_id).await
+        }
+
+        async fn load_tracked_users(&self) -> Result<Vec<TrackedUser>, StoreError> {
+            CryptoStore::load_tracked_users(&self.inner).await
+        }
+
+        async fn save_tracked_users(&self, users: &[(&UserId, bool)]) -> Result<(), StoreError> {
+            CryptoStore::save_tracked_users(&self.inner, users).await
+        }
+
+        async fn get_device(
+            &self,
+            user_id: &UserId,
+            device_id: &DeviceId,
+        ) -> Result<Option<DeviceData>, StoreError> {
+            CryptoStore::get_device(&self.inner, user_id, device_id).await
+        }
+
+        async fn get_user_devices(
+            &self,
+            user_id: &UserId,
+        ) -> Result<HashMap<OwnedDeviceId, DeviceData>, StoreError> {
+            CryptoStore::get_user_devices(&self.inner, user_id).await
+        }
+
+        async fn get_own_device(&self) -> Result<DeviceData, StoreError> {
+            CryptoStore::get_own_device(&self.inner).await
+        }
+
+        async fn get_user_identity(&self, user_id: &UserId) -> Result<Option<UserIdentityData>, StoreError> {
+            CryptoStore::get_user_identity(&self.inner, user_id).await
+        }
+
+        async fn is_message_known(&self, message_hash: &OlmMessageHash) -> Result<bool, StoreError> {
+            CryptoStore::is_message_known(&self.inner, message_hash).await
+        }
+
+        async fn get_outgoing_secret_requests(
+            &self,
+            request_id: &TransactionId,
+        ) -> Result<Option<GossipRequest>, StoreError> {
+            CryptoStore::get_outgoing_secret_requests(&self.inner, request_id).await
+        }
+
+        async fn get_secret_request_by_info(
+            &self,
+            secret_info: &SecretInfo,
+        ) -> Result<Option<GossipRequest>, StoreError> {
+            CryptoStore::get_secret_request_by_info(&self.inner, secret_info).await
+        }
+
+        async fn get_unsent_secret_requests(&self) -> Result<Vec<GossipRequest>, StoreError> {
+            CryptoStore::get_unsent_secret_requests(&self.inner).await
+        }
+
+        async fn delete_outgoing_secret_requests(
+            &self,
+            request_id: &TransactionId,
+        ) -> Result<(), StoreError> {
+            CryptoStore::delete_outgoing_secret_requests(&self.inner, request_id).await
+        }
+
+        async fn get_secrets_from_inbox(
+            &self,
+            secret_name: &SecretName,
+        ) -> Result<Vec<Zeroizing<String>>, StoreError> {
+            CryptoStore::get_secrets_from_inbox(&self.inner, secret_name).await
+        }
+
+        async fn delete_secrets_from_inbox(&self, secret_name: &SecretName) -> Result<(), StoreError> {
+            CryptoStore::delete_secrets_from_inbox(&self.inner, secret_name).await
+        }
+
+        async fn get_room_settings(&self, room_id: &RoomId) -> Result<Option<RoomSettings>, StoreError> {
+            CryptoStore::get_room_settings(&self.inner, room_id).await
+        }
+
+        async fn get_received_room_key_bundle_data(
+            &self,
+            room_id: &RoomId,
+            user_id: &UserId,
+        ) -> Result<Option<StoredRoomKeyBundleData>, StoreError> {
+            CryptoStore::get_received_room_key_bundle_data(&self.inner, room_id, user_id).await
+        }
+
+        async fn get_pending_key_bundle_details_for_room(
+            &self,
+            room_id: &RoomId,
+        ) -> Result<Option<RoomPendingKeyBundleDetails>, StoreError> {
+            CryptoStore::get_pending_key_bundle_details_for_room(&self.inner, room_id).await
+        }
+
+        async fn get_all_rooms_pending_key_bundles(
+            &self,
+        ) -> Result<Vec<RoomPendingKeyBundleDetails>, StoreError> {
+            CryptoStore::get_all_rooms_pending_key_bundles(&self.inner).await
+        }
+
+        async fn has_downloaded_all_room_keys(&self, room_id: &RoomId) -> Result<bool, StoreError> {
+            CryptoStore::has_downloaded_all_room_keys(&self.inner, room_id).await
+        }
+
+        async fn get_custom_value(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
+            CryptoStore::get_custom_value(&self.inner, key).await
+        }
+
+        async fn set_custom_value(&self, key: &str, value: Vec<u8>) -> Result<(), StoreError> {
+            CryptoStore::set_custom_value(&self.inner, key, value).await
+        }
+
+        async fn remove_custom_value(&self, key: &str) -> Result<(), StoreError> {
+            CryptoStore::remove_custom_value(&self.inner, key).await
+        }
+
+        async fn try_take_leased_lock(
+            &self,
+            lease_duration_ms: u32,
+            key: &str,
+            holder: &str,
+        ) -> Result<Option<CrossProcessLockGeneration>, StoreError> {
+            CryptoStore::try_take_leased_lock(&self.inner, lease_duration_ms, key, holder).await
+        }
+
+        async fn next_batch_token(&self) -> Result<Option<String>, StoreError> {
+            CryptoStore::next_batch_token(&self.inner).await
+        }
+
+        async fn close(&self) -> Result<(), StoreError> {
+            CryptoStore::close(&self.inner).await
+        }
+
+        async fn reopen(&self) -> Result<(), StoreError> {
+            CryptoStore::reopen(&self.inner).await
+        }
+
+        async fn get_size(&self) -> Result<Option<usize>, StoreError> {
+            CryptoStore::get_size(&self.inner).await
+        }
+    }
+
+    matrix_sdk_crypto::cryptostore_integration_tests!();
+    matrix_sdk_crypto::cryptostore_integration_tests_time!();
 }
