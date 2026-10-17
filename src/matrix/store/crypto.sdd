@@ -84,8 +84,11 @@ Tasks:
     officielle. **Cette tâche est le critère de réussite du lot store** : on ne déclare pas le store livré
     tant que la suite officielle n'est pas entièrement verte.
     Note : squelette (struct + `open`) posé en avance par ./crypto_account.sdd, 2026-10-15.
-  [ ] Tests d'atomicité propres : `save_changes` dont la seconde partie échoue (table supprimée en cours de test)
+  [x] Tests d'atomicité propres : `save_changes` dont la seconde partie échoue (table supprimée en cours de test)
     laisse la première partie non écrite.
+    Validé 2026-10-17 (Claude) : `save_changes_is_atomic` vert (table `devices` supprimée, session Olm absente après
+    l'échec) ; rollback par abandon de la `DatabaseTransaction`. Passe A de la 1re Task faite (46 méthodes, `save_changes`,
+    `get_own_device`, `store_config`) ; reste le branchement de la suite officielle (passe B).
 
 Done when:
   La suite officielle `cryptostore_integration_tests!` et `cryptostore_integration_tests_time!` est
