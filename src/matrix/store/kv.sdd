@@ -20,8 +20,9 @@ References:
     relire en source, noms exacts à confirmer à l'implémentation
 
 Must:
-  `pub(super) struct Kv` — `Clone`, champs : `db: DatabaseConnection`, `account_key: String`,
-    `cipher: Arc<StoreCipher>`. Constructeur `pub(super) async fn open(db, account_key: &str, passphrase: &str)
+  `pub(super) struct Kv` — `Clone`, champs : `account_key: String`,
+    `cipher: Arc<StoreCipher>` (la connexion n'est **pas** portée : chaque opération reçoit sa `conn`,
+    amendement 2026-10-17). Constructeur `pub(super) async fn open(db, account_key: &str, passphrase: &str)
     -> Result<Kv, StoreError>` :
     1. lit la ligne `kv(account_key, key = "cipher")` ; absente → crée `StoreCipher::new()`, l'exporte avec
       `passphrase` et insère la ligne (insertion conditionnelle : en concurrence deux `open`, un seul

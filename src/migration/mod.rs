@@ -38,7 +38,7 @@ impl sea_orm_migration::MigratorTrait for Migrator {
         #[cfg(feature = "matrix")]
         let migrations = migrations
             .into_iter()
-            .chain(crate::matrix::store::migration::migrations())
+            .chain(crate::matrix::store::migrations())
             .collect();
         migrations
     }

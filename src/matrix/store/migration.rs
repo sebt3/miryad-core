@@ -4,8 +4,7 @@
 
 use sea_orm_migration::prelude::*;
 
-/// Préfixe unique des tables du store (`src/matrix/store/mod.sdd`, `TABLE_PREFIX`).
-const TABLE_PREFIX: &str = "miryad_matrix_";
+use super::TABLE_PREFIX;
 
 /// Nom de migration `SeaORM` (`src/matrix/store/migration.sdd` `Must`), explicite : le
 /// `DeriveMigrationName` donnerait le stem du fichier (`migration`).

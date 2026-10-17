@@ -19,7 +19,6 @@ const CIPHER_KEY: &str = "cipher";
 /// Accès aux primitives du store pour un compte (`account_key`).
 #[derive(Clone)]
 pub(super) struct Kv {
-    db: DatabaseConnection,
     account_key: String,
     cipher: Arc<StoreCipher>,
 }
@@ -50,7 +49,6 @@ impl Kv {
             import_cipher(passphrase, &winner)?
         };
         Ok(Kv {
-            db,
             account_key: account_key.to_owned(),
             cipher: Arc::new(cipher),
         })

@@ -76,7 +76,10 @@ Exposes:
   `SeaOrmCryptoStore`, `StoreError`, `migrations`, `TABLE_PREFIX`.
 
 Tasks:
-  [ ] Écrire `mod.rs` en dernier du lot store (après tous les enfants), plus le test d'isolation.
+  [x] Écrire `mod.rs` en dernier du lot store (après tous les enfants), plus le test d'isolation.
+    Validé 2026-10-17 (Claude) : ré-exports exacts, `TABLE_PREFIX` partagé avec la migration, test d'isolation (4 tests,
+    dont détecteur négatif et positif) vert, `cargo tree -i matrix-sdk-sqlite` vide, clippy `matrix` et
+    `workflow,matrix` à zéro. `Kv::db` retiré (champ mort).
   [ ] Documenter dans `docs/architecture.md`, à la clôture de la feature, la contrainte `matrix-sdk` 0.18 /
     `sqlx` et le plan d'extraction (critère de sortie : relever le plafond `sqlx` ou `matrix-sdk-sqlite`).
 
@@ -87,7 +90,8 @@ Done when:
 Scenario: aucun import hors du module
   Given les fichiers `src/matrix/store/*.rs`
   When le test d'isolation les parcourt
-  Then aucune ligne ne référence `crate::` hors `crate::matrix::store` (ni `super::super`)
+  Then aucune ligne ne référence `crate::` hors `crate::matrix::store` (ni `super::` qui sorte de `store` ; un `super::super` interne au module, par exemple depuis un
+    `mod tests` d'un enfant, reste dans `store` et est admis — lecture actée le 2026-10-17)
 
 Scenario: les ré-exports sont exactement ceux de Must
   Given la feature `matrix`
