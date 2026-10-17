@@ -19,11 +19,15 @@ References:
     (la session est chiffrée par le `StoreCipher` du compte, jamais écrite en clair)
   ./client.sdd — seul appelant ; ./device_code.sdd — produit les jetons d'une session OAuth
   matrix-sdk `0.18.0` — `authentication::matrix::MatrixSession` et `authentication::oauth::OAuthSession`
-    (tous deux `Serialize`/`Deserialize`, conçus pour être persistés) — chemins à confirmer en source
+    — `MatrixSession` est `Serialize`/`Deserialize`/`PartialEq` ; `OAuthSession` ne l'est **pas** (vérifié en source
+    0.18.0, aucune feature ne l'ajoute) mais ses parties le sont : `UserSession` (`Serialize`/`Deserialize`) et
+    `oauth2::ClientId` (correction du 2026-10-17)
 
 Must:
   `pub(crate) enum StoredSession` — `#[derive(Serialize, Deserialize)]`, `#[serde(tag = "kind")]` :
-    `Matrix(MatrixSession)`, `OAuth(OAuthSession)`. `Debug` manuel sans jeton.
+    `Matrix(MatrixSession)`, `OAuth { client_id: String, user: UserSession }` (amendement 2026-10-17 : `OAuthSession`
+    n'est pas sérialisable) avec des conversions `From<&OAuthSession>`/`TryFrom` vers `OAuthSession`. `Debug` manuel sans
+    jeton (ne délègue pas au `Debug` de `UserSession` sans l'avoir vérifié).
   `pub(crate) const SESSION_KEY: &str = "miryad.matrix.session"` — clé de valeur personnalisée du store.
   `pub(crate) async fn load(store: &SeaOrmCryptoStore) -> Result<Option<StoredSession>, MatrixError>` :
     `CryptoStore::get_custom_value(SESSION_KEY)` ; absent → `Ok(None)` ; JSON illisible →
