@@ -78,6 +78,8 @@ cargo test --no-default-features --features mcp
 cargo test --no-default-features --features workflow
 cargo test --no-default-features --features systemone
 cargo test --no-default-features --features workflow,systemone
+cargo test --no-default-features --features matrix
+cargo test --no-default-features --features workflow,matrix
 cargo test --all-features
 cargo clippy --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
@@ -88,6 +90,8 @@ cargo clippy --no-default-features --features mcp --all-targets -- -D warnings
 cargo clippy --no-default-features --features workflow --all-targets -- -D warnings
 cargo clippy --no-default-features --features systemone --all-targets -- -D warnings
 cargo clippy --no-default-features --features workflow,systemone --all-targets -- -D warnings
+cargo clippy --no-default-features --features matrix --all-targets -- -D warnings
+cargo clippy --no-default-features --features workflow,matrix --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo fmt --check
 ```
