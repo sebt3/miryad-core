@@ -78,7 +78,7 @@ Forbids:
   `matrix_sdk::*`, `restate_sdk::*` dans ./device_code.rs
 
 Depends on:
-  @reqwest (feature `json`, déjà direct), @serde_json, @rand, @tokio::time, ./error.rs
+  @reqwest (feature `json`, déjà direct), @serde_json, @rand, @tokio::time (et, en dev-dependency, la feature `test-util` de `tokio` pour `pause`/`start_paused`, ajoutée le 2026-10-18), ./error.rs
 
 Exposes:
   `DeviceCodePrompt` (`pub`, ré-exporté par ./mod.rs) ; `login`, `DeviceCodeTokens` (`pub(crate)`).
