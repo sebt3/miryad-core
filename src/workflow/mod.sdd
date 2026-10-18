@@ -204,11 +204,14 @@ Tasks:
   [x] Preuve « depuis l'extérieur » du `Scenario` (revue 2026-09-24) : le test unitaire de ./mod.rs
     ne prouvait que `crate::` ; `tests/workflow_flat_paths.rs` exerce les neuf mêmes chemins en
     `miryad_core::workflow::…`.
-  [ ] Templating, `systemone`, `matrix` (2026-10-06) : déclarer `template`, `systemone_step`, `matrix_step` avec leur
+  [x] Templating, `systemone`, `matrix` (2026-10-06) : déclarer `template`, `systemone_step`, `matrix_step` avec leur
     `cfg`, ajouter les deux ré-exports conditionnels et étendre le test de chemins plats
     (`../../tests/workflow_flat_paths.rs` et `mod tests`) sous les croisements de features ; documenter dans
     le bloc `//!` l'enregistrement par l'application. Dernier fichier du lot, après ./template.rs,
     ./systemone_step.rs et ./matrix_step.rs.
+    Validé 2026-10-18 (Claude) : déclarations et ré-exports posés (`matrix_step` avec le lot de ./matrix_step.sdd) ; deux
+    tests gated par `cfg` dans `mod tests` et dans `tests/workflow_flat_paths.rs` (verts sous `workflow`, `workflow,systemone`,
+    `workflow,matrix`) ; rustdoc du module sur l'enregistrement par l'application ; clippy des trois combinaisons sans écart.
 
 Done when:
   Les neuf specs enfants (`error`, `client`, `step`, `dispatcher`, `definition`, `interpreter`,

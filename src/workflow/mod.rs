@@ -6,6 +6,10 @@
 //! protocole `restate-sdk`, servis par un `HttpServer`/`Endpoint` que l'app construit et lie
 //! elle-même dans son propre `main()`. Schéma de déploiement (StatefulSet Restate, vynil box)
 //! dans `docs/architecture.md`.
+//!
+//! Les kinds natifs à dépendance externe ne sont **pas** enregistrés par le moteur : l'application les
+//! enregistre elle-même dans son `StepRegistry`, comme `RhaiStep` — `register(SystemOneStep::new(client))`
+//! sous `workflow` + `systemone`, `register(MatrixSendStep::new(client))` sous `workflow` + `matrix`.
 
 pub mod client;
 pub mod definition;
@@ -91,5 +95,22 @@ mod tests {
         // Neuvième chemin : `configure_policy`, référencé en valeur sans être appelé — sa sémantique
         // `OnceLock` est prouvée par `tests/workflow_policy.rs`, hors de ce scénario.
         std::hint::black_box(crate::workflow::configure_policy);
+    }
+
+    /// Scenario « les steps croisés n'existent que sous leur croisement de features » : ces deux tests
+    /// n'existent que sous leur `cfg` — leur compilation est la preuve ; sous `workflow` seul, aucun
+    /// des deux chemins ne résout (`E0432`).
+    #[cfg(all(feature = "workflow", feature = "systemone"))]
+    #[test]
+    fn systemone_step_est_importable_sous_son_croisement() {
+        fn witness(_: Option<crate::workflow::SystemOneStep>) {}
+        witness(None);
+    }
+
+    #[cfg(all(feature = "workflow", feature = "matrix"))]
+    #[test]
+    fn matrix_send_step_est_importable_sous_son_croisement() {
+        fn witness(_: Option<crate::workflow::MatrixSendStep>) {}
+        witness(None);
     }
 }
