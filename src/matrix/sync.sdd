@@ -101,9 +101,17 @@ Tasks:
     Validé 2026-10-18 (Claude) : huit tests verts (cinq Scenario unitaires + gardes de saturation et `formatted_body` absent),
     clippy `matrix` et `workflow,matrix` sans écart, fmt et `specdd lint` OK. Lectures retenues : `lease_ms(u64) -> u32`
     saturé ; `MessageParts` dérive `Clone, Copy` (sinon `needless_pass_by_value` imposerait un `#[allow]`).
-  [ ] `run_sync` (après ./client.rs) : boucle, bail, auto-join, libération. La boucle elle-même est couverte par `../../tests/matrix_live.rs`
+  [x] `run_sync` (après ./client.rs) : boucle, bail, auto-join, libération. La boucle elle-même est couverte par `../../tests/matrix_live.rs`
     (`#[ignore]`, ./client.sdd) : message envoyé par un second compte → remis une fois ; message du bot →
     jamais remis ; `shutdown` → retour `Ok(())`.
+    Validé 2026-10-18 (Claude) : quatre tests unitaires (drapeau « sync déjà démarré », classement des erreurs), 118 tests
+    matrix verts sous `workflow,matrix`, clippy `matrix` et `workflow,matrix` sans écart, fmt et `specdd lint` OK. La boucle
+    n'est prouvée que par le test live (tâche D de ./client.sdd), qui reste à exécuter. Lectures retenues :
+    auto-join = un essai puis trois reprises après 1 s, 2 s, 4 s (quatre appels au plus) ; l'invitation est attendue dans
+    le handler de sync (jusqu'à ~7 s de retard par invitation en échec) ; erreur du store sur le bail → `MatrixError::Sdk`
+    (fin en `Err`), erreur de renouvellement dans la boucle → perte de bail ; sync initial refait à chaque prise de bail ;
+    événements remis avant la vérification du bail (au moins une fois) ; bot sans identifiant → `NotLoggedIn` ; annulation
+    brutale de la future : pas de libération du bail (il expire seul), drapeau relâché.
 
 Done when:
   Les `Scenario` unitaires sont verts ; le test live a tourné au moins une fois pour la boucle (résultat
