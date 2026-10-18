@@ -82,7 +82,7 @@ pub(crate) async fn login(
     http: &reqwest::Client,
 ) -> Result<DeviceCodeTokens, MatrixError> {
     let base = homeserver_url.trim_end_matches('/');
-    let meta = discover(http, base).await?;
+    let meta = with_retry(|| discover(http, base)).await?;
     let device_endpoint = meta
         .device_authorization
         .as_deref()
@@ -94,11 +94,11 @@ pub(crate) async fn login(
         let endpoint = meta.registration.as_deref().ok_or_else(|| {
             MatrixError::Login("le serveur n'annonce pas l'enregistrement dynamique".into())
         })?;
-        register(http, endpoint, display_name, base).await?
+        with_retry(|| register(http, endpoint, display_name, base)).await?
     };
 
     let device_id = new_device_id();
-    let auth = request_device_code(http, device_endpoint, &client_id, &device_id).await?;
+    let auth = with_retry(|| request_device_code(http, device_endpoint, &client_id, &device_id)).await?;
     on_prompt(DeviceCodePrompt {
         verification_uri: auth.verification_uri,
         verification_uri_complete: auth.verification_uri_complete,
@@ -115,9 +115,8 @@ pub(crate) async fn login(
     })
     .await?;
 
-    let whoami_url = format!("{base}/_matrix/client/v3/account/whoami");
-    let req = http.get(&whoami_url).bearer_auth(&granted.access_token);
-    let me: Whoami = json_ok(send(req, &whoami_url).await?).await?;
+    // Les jetons sont déjà émis et le `device_code` consommé : cette dernière étape est retentée pour ne pas les perdre.
+    let me = with_retry(|| whoami(http, base, &granted.access_token)).await?;
     if me.device_id.as_deref() != Some(device_id.as_str()) {
         return Err(MatrixError::Login("appareil inattendu".into()));
     }
@@ -255,6 +254,29 @@ fn invalid_response() -> MatrixError {
     MatrixError::Login("réponse invalide du serveur".into())
 }
 
+/// Nombre total de tentatives d'une requête hors interrogation (`src/matrix/device_code.sdd`, « Résilience »).
+const RETRY_ATTEMPTS: u32 = 3;
+
+/// Retente `attempt` après une erreur `retryable()` : 3 tentatives au total, espacées de 1 s puis 2 s.
+async fn with_retry<T, F, Fut>(mut attempt: F) -> Result<T, MatrixError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, MatrixError>>,
+{
+    let mut delay = Duration::from_secs(1);
+    let mut tried: u32 = 1;
+    loop {
+        match attempt().await {
+            Err(err) if err.retryable() && tried < RETRY_ATTEMPTS => {
+                sleep(delay).await;
+                delay = delay.saturating_mul(2);
+                tried = tried.saturating_add(1);
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Envoie une requête et refuse toute redirection vers une autre origine que celle appelée.
 async fn send(req: reqwest::RequestBuilder, url: &str) -> Result<reqwest::Response, MatrixError> {
     let expected = reqwest::Url::parse(url).map_err(|_| invalid_response())?;
@@ -284,6 +306,13 @@ fn form_body(pairs: &[(&str, &str)]) -> Result<String, MatrixError> {
 fn new_device_id() -> String {
     let mut rng = rand::thread_rng();
     (0..DEVICE_ID_LEN).map(|_| rng.gen_range('A'..='Z')).collect()
+}
+
+/// Identité du jeton (étape 7).
+async fn whoami(http: &reqwest::Client, base: &str, access_token: &str) -> Result<Whoami, MatrixError> {
+    let url = format!("{base}/_matrix/client/v3/account/whoami");
+    let req = http.get(&url).bearer_auth(access_token);
+    json_ok(send(req, &url).await?).await
 }
 
 async fn discover(http: &reqwest::Client, base: &str) -> Result<AuthMetadata, MatrixError> {
@@ -445,6 +474,7 @@ mod tests {
         v1_404: bool,
         expires_in: u64,
         script: Vec<(u16, Value)>,
+        whoami_failures: usize,
     }
 
     impl Setup {
@@ -455,6 +485,7 @@ mod tests {
                 v1_404: false,
                 expires_in: 1200,
                 script,
+                whoami_failures: 0,
             }
         }
     }
@@ -472,6 +503,8 @@ mod tests {
         device_client_ids: Vec<String>,
         device_id: Option<String>,
         discovery_hits: Vec<&'static str>,
+        whoami_failures: usize,
+        whoami_calls: usize,
     }
 
     impl Mas {
@@ -545,7 +578,11 @@ mod tests {
     }
 
     async fn whoami(State(state): State<Shared>, headers: HeaderMap) -> Response {
-        let mas = lock(&state);
+        let mut mas = lock(&state);
+        mas.whoami_calls = mas.whoami_calls.saturating_add(1);
+        if mas.whoami_calls <= mas.whoami_failures {
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
         let expected = format!("Bearer {ACCESS}");
         if headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok()) != Some(expected.as_str()) {
             return StatusCode::UNAUTHORIZED.into_response();
@@ -576,6 +613,7 @@ mod tests {
                 v1_404: setup.v1_404,
                 expires_in: setup.expires_in,
                 script: setup.script.into(),
+                whoami_failures: setup.whoami_failures,
                 ..Mas::default()
             }));
             let app = Router::new()
@@ -804,5 +842,82 @@ mod tests {
         for secret in [DEVICE_CODE, USER_CODE, ACCESS, REFRESH] {
             assert!(!logs.contains(secret), "secret journalisé : {secret}\n{logs}");
         }
+    }
+
+    // Garde hors scénario : la résilience (amendement 2026-10-18) — un échec passager est retenté.
+    #[tokio::test(start_paused = true)]
+    async fn with_retry_retries_transient_errors_then_succeeds() {
+        let calls = Arc::new(Mutex::new(0_u32));
+        let counter = Arc::clone(&calls);
+        let started = Instant::now();
+        let result = with_retry(|| {
+            let counter = Arc::clone(&counter);
+            async move {
+                let mut n = counter.lock().unwrap_or_else(PoisonError::into_inner);
+                *n += 1;
+                if *n < 3 { Err(transport()) } else { Ok(7_u8) }
+            }
+        })
+        .await;
+        assert!(matches!(result, Ok(7)), "obtenu : {result:?}");
+        assert_eq!(*calls.lock().unwrap_or_else(PoisonError::into_inner), 3);
+        assert_eq!(
+            started.elapsed(),
+            Duration::from_secs(3),
+            "1 s puis 2 s d'attente"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn with_retry_never_retries_a_non_retryable_error() {
+        let calls = Arc::new(Mutex::new(0_u32));
+        let counter = Arc::clone(&calls);
+        let result: Result<(), MatrixError> = with_retry(|| {
+            let counter = Arc::clone(&counter);
+            async move {
+                *counter.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+                Err(MatrixError::Login("HTTP 403".into()))
+            }
+        })
+        .await;
+        assert!(
+            matches!(result, Err(MatrixError::Login(_))),
+            "obtenu : {result:?}"
+        );
+        assert_eq!(*calls.lock().unwrap_or_else(PoisonError::into_inner), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn with_retry_gives_up_after_three_attempts() {
+        let calls = Arc::new(Mutex::new(0_u32));
+        let counter = Arc::clone(&calls);
+        let result: Result<(), MatrixError> = with_retry(|| {
+            let counter = Arc::clone(&counter);
+            async move {
+                *counter.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+                Err(transport())
+            }
+        })
+        .await;
+        assert!(
+            matches!(result, Err(MatrixError::Network { retryable: true, .. })),
+            "obtenu : {result:?}"
+        );
+        assert_eq!(*calls.lock().unwrap_or_else(PoisonError::into_inner), 3);
+    }
+
+    // Garde hors scénario : un `whoami` en échec passager après l'approbation ne perd pas les jetons.
+    #[tokio::test(start_paused = true)]
+    async fn whoami_failing_once_does_not_lose_the_tokens() {
+        let mut setup = Setup::ok(vec![success()]);
+        setup.whoami_failures = 1;
+        let fake = Fake::start(setup).await;
+        let prompts = new_prompts();
+        let tokens = run(&fake, None, &prompts).await;
+        assert!(
+            tokens.is_ok(),
+            "le login doit survivre à un whoami passager : {tokens:?}"
+        );
+        assert_eq!(lock(&fake.state).whoami_calls, 2, "un échec puis un succès");
     }
 }

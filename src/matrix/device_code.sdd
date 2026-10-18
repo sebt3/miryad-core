@@ -98,9 +98,13 @@ Handles:
   Interruption (le futur est abandonné) : aucun état local à nettoyer ; le code côté serveur expire seul.
 
 Tasks:
-  [ ] Résilience (amendement 2026-10-18, voir `Must`) : retenter 3 fois (1 s, 2 s) les requêtes hors interrogation sur erreur de transport,
+  [x] Résilience (amendement 2026-10-18, voir `Must`) : retenter 3 fois (1 s, 2 s) les requêtes hors interrogation sur erreur de transport,
     `429` ou `5xx`, pour qu'un `whoami` en échec passager ne perde pas des jetons déjà émis — tests d'abord (faux MAS : 502 puis succès ;
     4xx jamais retenté ; échec après trois tentatives), puis ./device_code.rs. Constaté une fois au banc live (login perdu après approbation).
+    Validé 2026-10-18 (Claude) : rouge constaté (trois tests de reprise en échec, la garde « jamais retenté » déjà verte), puis quatre tests
+    verts (reprise puis succès en 3 s simulées, aucune reprise d'une erreur non retryable, abandon après trois tentatives, `whoami` en
+    502 une fois dans le faux MAS), 12 tests `device_code` verts, clippy `matrix` et `workflow,matrix` sans écart, fmt OK. Limite connue :
+    `register` n'est pas idempotent — un `POST` dont la réponse est perdue puis retenté peut laisser un client dynamique orphelin côté MAS.
   [x] **Spike obligatoire avant l'implémentation** contre un MAS réel (déploiement `box/messaging/palpo`,
     compte de service Authentik) : (a) MAS autorise-t-il l'enregistrement dynamique avec ces métadonnées
     (sinon : client statique configuré, ajouter `client_id` à `MatrixConfig`) ? (b) la portée
