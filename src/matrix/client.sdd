@@ -55,6 +55,10 @@ Must:
       restaure comme `connect`.
     `import_session(db, config, session: SessionImport)` — construit la `StoredSession::Matrix`, la
       sauvegarde, restaure.
+  Rafraîchissement automatique (amendement 2026-10-18, constaté par le banc de persistance) : le `matrix_sdk::Client` est construit
+    avec `ClientBuilder::handle_refresh_tokens()`. `matrix-sdk` ne rafraîchit **pas** de lui-même, y compris en OAuth : sans cette
+    option, le premier appel après l'expiration du jeton d'accès (300 s chez MAS) rend `M_UNKNOWN_TOKEN` et la session est perdue
+    alors que son jeton de rafraîchissement est valide. Prouvé par `persisted_session_survives_token_expiry` (`../../tests/matrix_live.rs`).
   Persistance des rotations : une tâche de fond, **abonnée avant** la restauration (un `TokensRefreshed` émis pendant
     celle-ci ne doit pas être manqué ; la tâche n'écrit qu'une fois la restauration réussie), écoute
     `Client::subscribe_to_session_changes()` ; sur `TokensRefreshed` elle réécrit la session courante
@@ -154,6 +158,11 @@ Tasks:
     idempotent, ordre de `recent_messages`, `run_sync` ne remet pas les messages du bot puis s'arrête proprement) ;
     compile, listés ignorés, échoue explicitement sans les variables. **La case reste `[ ]` jusqu'à une exécution réelle** ;
     les scénarios à deux comptes ou deux processus de ./sync.sdd restent à écrire (liste en tête du fichier).
+    **Persistance sur PostgreSQL, exécutée le 2026-10-18** (`persisted_session_survives_token_expiry`, schéma `miryad_live` d'un CNPG
+    jetable, trois temps) : login par device code, puis `connect` plus de 5 minutes après → `NotLoggedIn` (**bug réel** : `matrix-sdk`
+    ne rafraîchit pas sans `handle_refresh_tokens()`), correctif posé dans `build_client`, puis `connect` → session rafraîchie et
+    synchronisation `Ok(())`, puis relance immédiate → `Ok(())` : **la rotation du jeton est persistée dans PostgreSQL**. Non encore
+    prouvé : une seconde expiration enchaînée (deuxième rotation), le multi-réplica.
     Ajout 2026-10-18 : `device_code_login_then_echo` (`#[ignore]`, interactif) — login par device code, auto-join de
     l'inviteur, réponse écho au premier de ses messages, arrêt propre ; variables `MIRYAD_MATRIX_HOMESERVER`,
     `MIRYAD_MATRIX_PASSPHRASE`, `MIRYAD_MATRIX_INVITER`, `MIRYAD_MATRIX_CA` (contenu PEM, optionnelle). Limite connue :

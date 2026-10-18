@@ -335,9 +335,12 @@ async fn build_client(
     let ca_roots = config.ca_cert.as_deref().map(sdk_ca_certificates).transpose()?;
     let store = SeaOrmCryptoStore::open(db, &config.account_key, &config.store_passphrase).await?;
     let lock = CrossProcessLockConfig::multi_process(config.holder_name.clone());
+    // `handle_refresh_tokens` : sans lui `matrix-sdk` ne rafraîchit jamais le jeton d'accès (300 s chez
+    // MAS) et la session meurt à la première expiration (`src/matrix/client.sdd`, « Rafraîchissement automatique »).
     let mut builder = matrix_sdk::Client::builder()
         .homeserver_url(&config.homeserver_url)
-        .store_config(store.store_config(lock));
+        .store_config(store.store_config(lock))
+        .handle_refresh_tokens();
     if let Some(roots) = ca_roots {
         builder = builder.add_root_certificates(roots);
     }

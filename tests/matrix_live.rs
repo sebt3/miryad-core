@@ -504,3 +504,109 @@ async fn device_code_login_then_echo() {
     sync_outcome.expect("run_sync doit rendre Ok(()) après shutdown");
     println!("ECHO_OK event_id={event_id}");
 }
+
+/// Banc de persistance sur PostgreSQL : une session de bot doit survivre à un redémarrage **et** à
+/// l'expiration du jeton d'accès (300 s côté MAS), c'est-à-dire que la rotation du jeton de
+/// rafraîchissement est écrite dans la base de l'application. Se lance en trois temps, sans état
+/// local (tout vit dans le schéma PostgreSQL, `MIRYAD_MATRIX_PG_SCHEMA`, défaut `miryad_live`) :
+/// 1. `MIRYAD_MATRIX_LOGIN=1` : login par device code (invite `DEVICE_CODE_PROMPT`), puis synchronisation ;
+/// 2. plus de 5 minutes plus tard, sans `MIRYAD_MATRIX_LOGIN` : `connect` restaure la session, le jeton
+///    d'accès a expiré, le client doit le rafraîchir tout seul ;
+/// 3. relancer une troisième fois : ne réussit que si la rotation du 2 a été persistée.
+///
+/// Variables : `MIRYAD_MATRIX_HOMESERVER`, `MIRYAD_MATRIX_PASSPHRASE`, `MIRYAD_MATRIX_INVITER`,
+/// `MIRYAD_MATRIX_PG_URL` (porte un mot de passe, jamais affichée), `MIRYAD_MATRIX_CA` (PEM, optionnelle),
+/// `MIRYAD_MATRIX_SYNC_SECS` (durée de la synchronisation, défaut 20).
+#[ignore = "interactif : nécessite un homeserver Matrix réel et un PostgreSQL (MIRYAD_MATRIX_PG_URL)"]
+#[tokio::test]
+async fn persisted_session_survives_token_expiry() {
+    const NEEDED: [&str; 4] = [
+        "MIRYAD_MATRIX_HOMESERVER",
+        "MIRYAD_MATRIX_PASSPHRASE",
+        "MIRYAD_MATRIX_INVITER",
+        "MIRYAD_MATRIX_PG_URL",
+    ];
+    let missing: Vec<&str> = NEEDED
+        .iter()
+        .copied()
+        .filter(|name| !std::env::var(name).is_ok_and(|value| !value.is_empty()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "variables d'environnement absentes : {}. Variables requises pour persisted_session_survives_token_expiry : {}",
+        missing.join(", "),
+        NEEDED.join(", ")
+    );
+    let env = |name: &str| std::env::var(name).unwrap_or_default();
+    let schema = std::env::var("MIRYAD_MATRIX_PG_SCHEMA")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "miryad_live".to_owned());
+    assert!(
+        schema.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+        "MIRYAD_MATRIX_PG_SCHEMA : lettres, chiffres et _ seulement"
+    );
+    let sync_secs: u64 = std::env::var("MIRYAD_MATRIX_SYNC_SECS")
+        .ok()
+        .and_then(|raw| raw.trim().parse().ok())
+        .unwrap_or(20);
+
+    // Base persistante : schéma créé une fois, migrations idempotentes (les appliquées sont sautées).
+    let url = env("MIRYAD_MATRIX_PG_URL");
+    let boot = Database::connect(url.as_str())
+        .await
+        .map_err(|err| err.to_string().replace(url.as_str(), "<url>"))
+        .expect("connexion PostgreSQL d'amorçage");
+    sea_orm::ConnectionTrait::execute_unprepared(&boot, &format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
+        .await
+        .expect("création du schéma de persistance");
+    boot.close().await.expect("fermeture de l'amorçage");
+    let mut opts = ConnectOptions::new(url.clone());
+    opts.set_schema_search_path(schema);
+    let db = Database::connect(opts)
+        .await
+        .map_err(|err| err.to_string().replace(url.as_str(), "<url>"))
+        .expect("pool PostgreSQL sur le schéma de persistance");
+    StoreMigrator::up(&db, None)
+        .await
+        .expect("migrations du store Matrix appliquées");
+
+    let mut config = MatrixConfig::new(
+        env("MIRYAD_MATRIX_HOMESERVER"),
+        env("MIRYAD_MATRIX_PASSPHRASE"),
+        "live-persist",
+    );
+    config.auto_join_from = vec![env("MIRYAD_MATRIX_INVITER")];
+    config.ca_cert = std::env::var("MIRYAD_MATRIX_CA")
+        .ok()
+        .filter(|pem| !pem.trim().is_empty());
+
+    let client = match MatrixClient::connect(db.clone(), config.clone()).await {
+        Ok(client) => {
+            println!("SESSION_RESTORED");
+            client
+        }
+        Err(miryad_core::matrix::MatrixError::NotLoggedIn) if env("MIRYAD_MATRIX_LOGIN") == "1" => {
+            MatrixClient::login_with_device_code(db, config, |prompt| {
+                println!(
+                    "DEVICE_CODE_PROMPT url={} code={}",
+                    prompt.verification_uri, prompt.user_code
+                );
+                std::io::stdout().flush().expect("flush stdout");
+            })
+            .await
+            .expect("login par device code")
+        }
+        Err(err) => panic!("connect a échoué : {err} (première fois : relancer avec MIRYAD_MATRIX_LOGIN=1)"),
+    };
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler: Arc<dyn MatrixEventHandler> = Arc::new(Recorder {
+        calls: Arc::clone(&calls),
+    });
+    client
+        .run_sync(handler, tokio::time::sleep(Duration::from_secs(sync_secs)))
+        .await
+        .expect("run_sync doit rendre Ok(()) : la session restaurée doit rester valide");
+    println!("RECONNECT_OK user_id={}", client.user_id());
+}

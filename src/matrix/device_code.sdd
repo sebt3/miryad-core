@@ -62,6 +62,12 @@ Must:
       réessayée tant que le délai total n'est pas dépassé. **Les erreurs OAuth se lisent dans le champ `error` du
       corps JSON, jamais dans le statut HTTP** : MAS répond `authorization_pending` en `403` (la RFC 8628 prévoit
       `400`), constaté au spike du 2026-10-18. Un corps non JSON avec un statut `5xx` reste une erreur réessayée.
+    **Résilience** (amendement 2026-10-18, constaté au banc de persistance : un `whoami` en échec passager après l'approbation a
+      perdu des jetons déjà émis, le `device_code` étant consommé) : chaque requête hors interrogation (découverte, enregistrement,
+      demande de code, `whoami`) est **retentée** après une erreur de transport, un `429` ou un `5xx`, jusqu'à 3 tentatives au total
+      espacées de 1 s puis 2 s (`tokio::time::sleep`, testable sous `pause`), avant d'échouer en `Network` retryable ; une erreur
+      de configuration ou un `4xx` autre que `429` n'est jamais retenté. Une fois les jetons reçus, seule l'étape 7 reste à faire :
+      sa nouvelle tentative est la garantie de ne pas les perdre.
     7. **Identité** : `GET {homeserver}/_matrix/client/v3/account/whoami` avec `Authorization: Bearer
       {access_token}` ; `user_id` en vient ; `device_id` doit valoir celui de l'étape 3 (sinon
       @Login « appareil inattendu »).
@@ -92,6 +98,9 @@ Handles:
   Interruption (le futur est abandonné) : aucun état local à nettoyer ; le code côté serveur expire seul.
 
 Tasks:
+  [ ] Résilience (amendement 2026-10-18, voir `Must`) : retenter 3 fois (1 s, 2 s) les requêtes hors interrogation sur erreur de transport,
+    `429` ou `5xx`, pour qu'un `whoami` en échec passager ne perde pas des jetons déjà émis — tests d'abord (faux MAS : 502 puis succès ;
+    4xx jamais retenté ; échec après trois tentatives), puis ./device_code.rs. Constaté une fois au banc live (login perdu après approbation).
   [x] **Spike obligatoire avant l'implémentation** contre un MAS réel (déploiement `box/messaging/palpo`,
     compte de service Authentik) : (a) MAS autorise-t-il l'enregistrement dynamique avec ces métadonnées
     (sinon : client statique configuré, ajouter `client_id` à `MatrixConfig`) ? (b) la portée
