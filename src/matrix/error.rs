@@ -52,8 +52,6 @@ impl MatrixError {
 
 /// Traduit une erreur `matrix-sdk` en [`MatrixError`] (`src/matrix/error.sdd`). La décision se
 /// fait par le statut HTTP et le type de transport, jamais par sous-chaîne de message.
-// allow: `from_sdk` est consommé par client.rs, non encore écrit (src/matrix/error.sdd) ; à retirer à son arrivée.
-#[allow(dead_code)]
 pub(crate) fn from_sdk(e: &matrix_sdk::Error) -> MatrixError {
     match e {
         matrix_sdk::Error::Http(http) => from_http(http),

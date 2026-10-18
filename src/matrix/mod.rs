@@ -12,3 +12,7 @@ mod session;
 // allow: `sync` est consommé par client.rs, non encore écrit (src/matrix/sync.sdd) ; à retirer à son arrivée.
 #[allow(dead_code)]
 mod sync;
+
+// allow: `client` est ré-exporté par `mod.rs` en fin de lot (src/matrix/mod.sdd) ; à retirer à son arrivée.
+#[allow(dead_code)]
+mod client;

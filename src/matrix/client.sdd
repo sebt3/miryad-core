@@ -33,11 +33,14 @@ Must:
   @MessageKind — `pub enum`, `#[derive(Debug, Clone, Copy, PartialEq, Eq)]` : `Text` (`m.text`), `Notice`
     (`m.notice`, convention des bots : les autres bots ne répondent pas aux notices).
   @SessionImport — struct `pub`, `#[derive(Clone)]`, champs `pub` : `user_id: String`, `device_id: String`,
-    `access_token: String`, `refresh_token: Option<String>`. `Debug` manuel qui masque les deux jetons.
+    `access_token: String`, `refresh_token: Option<String>`. `Debug` manuel qui masque les deux jetons : il n'affiche que `user_id` et `device_id`
+    (`finish_non_exhaustive`) — les noms de champs `access_token`/`refresh_token` contiennent eux-mêmes les
+    sous-chaînes que le Scenario interdit (amendement 2026-10-18).
     Repli quand le device code n'est pas possible : jeton de compatibilité émis par MAS ou par
     l'administrateur du homeserver.
   @MatrixClient — struct `pub`, `#[derive(Clone)]`, un seul champ `pub(crate) inner: Arc<Inner>` ; `Inner`
-    (privé) porte `client: matrix_sdk::Client`, `store: SeaOrmCryptoStore`, `config: MatrixConfig` et les
+    (`pub(crate)` : un champ `pub(crate)` d'un type privé déclenche `private_interfaces`, et ./sync.rs lit ses champs ;
+    amendement 2026-10-18) porte `client: matrix_sdk::Client`, `store: SeaOrmCryptoStore`, `config: MatrixConfig` et les
     `JoinHandle` des tâches de fond (annulées au `Drop` de `Inner`).
   Constructeurs, chacun `async`, `Result<MatrixClient, MatrixError>`, qui commencent par `config.validate()` :
     `connect(db: DatabaseConnection, config: MatrixConfig)` — ouvre le store (`SeaOrmCryptoStore::open`),
@@ -52,11 +55,18 @@ Must:
       restaure comme `connect`.
     `import_session(db, config, session: SessionImport)` — construit la `StoredSession::Matrix`, la
       sauvegarde, restaure.
-  Persistance des rotations : après toute restauration, une tâche de fond écoute
+  Persistance des rotations : une tâche de fond, **abonnée avant** la restauration (un `TokensRefreshed` émis pendant
+    celle-ci ne doit pas être manqué ; la tâche n'écrit qu'une fois la restauration réussie), écoute
     `Client::subscribe_to_session_changes()` ; sur `TokensRefreshed` elle réécrit la session courante
     (`client.session()` converti en @StoredSession) par `session::save` ; sur `UnknownToken` elle
     journalise (`tracing::error!`, sans jeton) — le client rendra @MatrixError::NotLoggedIn aux appels
-    suivants. Une erreur de sauvegarde est journalisée, jamais avalée en silence ni fatale.
+    suivants. Une erreur de sauvegarde est journalisée, jamais avalée en silence ni fatale. Sur
+    `RecvError::Lagged`, elle réécrit la session courante par sécurité.
+  Erreurs d'`import_session` (amendement 2026-10-18) : `user_id` mal formé → @MatrixError::InvalidId ; échec de
+    `ClientBuilder::build` → @MatrixError::Sdk (message sans jeton). La session est sauvegardée **avant** la
+    restauration (« sauvegarde puis restaure ») : si la restauration échoue, elle reste en base jusqu'au prochain
+    `import_session`/`login_with_device_code` qui la remplace. La restauration passe par `Client::restore_session`
+    (les deux variantes d'`AuthSession`), équivalent de `OAuth::`/`MatrixAuth::restore_session`.
   `pub fn user_id(&self) -> String` — identifiant Matrix du bot.
   `pub async fn send(&self, room_id: &str, body: &str, html: Option<&str>, kind: MessageKind, txn_id: Option<&str>)
     -> Result<String, MatrixError>` — rend l'`event_id`. `room_id` est un identifiant de salle `!x:y`
@@ -97,11 +107,20 @@ Handles:
     de chiffrement et les appareils à la demande ; non garanti sans test live — voir `Tasks`.
 
 Tasks:
-  [ ] Tests unitaires d'abord (fonctions pures : `build_content`, validation d'identifiants, bornes de
-    `limit`, `SessionImport::Debug`), puis ./client.rs. Les chemins réseau/E2EE sont couverts par
-    `../../tests/matrix_live.rs` (`#[ignore]`, lancement explicite) ; le coût d'un faux homeserver
-    complet pour `matrix-sdk` est élevé — un faux minimal (versions, join, send) n'est écrit que s'il tient
-    en moins d'une centaine de lignes, sinon on s'en tient au test live.
+  [x] Tâche A (découpage du 2026-10-18) : `MessageKind`, `SessionImport` (+ `Debug`), `build_content`, `MatrixClient`/`Inner`
+    (champs requis par ./sync.sdd : drapeau atomique « sync démarré »), `connect`, `import_session`, tâche de
+    persistance des rotations, `user_id` — tests unitaires d'abord (Scenario `build_content`, `SessionImport`,
+    `connect` sans session), puis ./client.rs. Pas de `login_with_device_code` (attend le spike de ./device_code.sdd).
+    Validé 2026-10-18 (Claude) : trois tests verts (build_content, `SessionImport`, `connect` sans session), 111 tests
+    matrix verts sous `workflow,matrix`, clippy `matrix` et `workflow,matrix` sans écart, fmt et `specdd lint` OK ;
+    `allow(dead_code)` de `from_sdk` retiré. Non couvert, par design : persistance réelle, `Lagged`, `UnknownToken`
+    (chemins réseau, tâche D).
+  [ ] Tâche B : `send`, `join_room`, `recent_messages` (+ validation d'identifiants et bornes de `limit`) — tests
+    d'abord (Scenario alias refusé, `limit` hors bornes), puis ./client.rs. Après la tâche A.
+  [ ] Tâche C : `login_with_device_code`, après le spike et ./device_code.rs.
+  [ ] Tâche D : `../../tests/matrix_live.rs` (`#[ignore]`) ; les chemins réseau/E2EE ne sont couverts que par lui. Le
+    coût d'un faux homeserver complet pour `matrix-sdk` est élevé — un faux minimal (versions, join, send) n'est
+    écrit que s'il tient en moins d'une centaine de lignes, sinon on s'en tient au test live.
   [x] Envoi depuis un réplica qui ne tient pas le bail de sync sur une salle chiffrée : hypothèse retenue
     (arbitré par Sébastien le 2026-10-06) — `matrix-sdk` récupère appareils et clés à la demande, le verrou à
     bail arbitre la cryptographie. À l'épreuve du test live (deux processus) ; si elle ne tient pas, `send`
