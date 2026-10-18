@@ -134,51 +134,53 @@ Depends on:
   ./tooling.sdd
 
 Tasks:
-  [ ] Spec `src/lib.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/resource.sdd` produite (spec-reverse), revue, et rattachant `tests/resource.rs`.
-  [ ] Spec `src/query.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/rbac.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/ir.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/frontend.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/auth/mod.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/auth/config.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/auth/oidc.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/auth/cookie.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/auth/token.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/auth/dual.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/auth/middleware.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/auth/principal.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/auth/state.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/auth/error.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/users/mod.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/users/user.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/users/group.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/users/membership.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/users/service_account.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/rest/mod.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/rest/core.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/rest/admin.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/rest/me.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/rest/tokens.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/rest/error.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/rest/openapi.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/graphql/mod.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/graphql/registry.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/graphql/handler.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/graphql/hooks.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/graphql/principal.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/mcp/mod.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/mcp/registry.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/mcp/handler.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/mcp/protocol.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/mcp/format.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/mcp/error.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/migration/mod.sdd` produite (spec-reverse) puis revue par Sébastien.
-  [ ] Spec `src/migration/m20260822_000001_create_api_tokens.sdd` produite puis revue.
-  [ ] Spec `src/migration/m20260822_000002_create_users_groups.sdd` produite puis revue.
-  [ ] Spec `src/migration/m20260822_000003_seed_admin_group.sdd` produite puis revue.
-  [ ] Spec `src/bin/miryad.sdd` produite (spec-reverse) puis revue par Sébastien — Trancher le
-    format du modèle de données, question ouverte du CLI.
+  [x] Spec `src/lib.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/resource.sdd` produite (spec-reverse), revue, et rattachant `tests/resource.rs` (revue par Sébastien, decision 2026-10-17).
+  [x] Spec `src/query.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/rbac.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/ir.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/frontend.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/auth/mod.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/auth/config.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/auth/oidc.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/auth/cookie.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/auth/token.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/auth/dual.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/auth/middleware.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/auth/principal.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/auth/state.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/auth/error.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/users/mod.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/users/user.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/users/group.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/users/membership.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/users/service_account.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/rest/mod.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/rest/core.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/rest/admin.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/rest/me.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/rest/tokens.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/rest/error.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/rest/openapi.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/graphql/mod.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/graphql/registry.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/graphql/handler.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/graphql/hooks.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/graphql/principal.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/mcp/mod.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/mcp/registry.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/mcp/handler.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/mcp/protocol.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/mcp/format.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/mcp/error.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/migration/mod.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
+  [x] Spec `src/migration/m20260822_000001_create_api_tokens.sdd` produite puis revue (revue par Sébastien, decision 2026-10-17).
+  [x] Spec `src/migration/m20260822_000002_create_users_groups.sdd` produite puis revue (revue par Sébastien, decision 2026-10-17).
+  [x] Spec `src/migration/m20260822_000003_seed_admin_group.sdd` produite puis revue (revue par Sébastien, decision 2026-10-17).
+  [x] Spec `src/bin/miryad.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17
+    — format du modèle de données (question ouverte du CLI) : différé hors périmètre de cette version,
+    arbitré par Sébastien le 2026-09-29 dans ./src/bin/miryad.sdd (`Must` squelette silencieux, `about`
+    non contractuel, ligne `Tasks` `[x]`) ; question déjà résolue dans la spec elle-même.
   [x] Purger la dette du harnais module par module, selon le calendrier de `./tooling.sdd`.
     Solde 2026-09-29 (série A1–A4 + fix F, synthèse validator GO) : harnais vert sur les huit
     combinaisons hors carve-out graphql acté (7 sites sous `graphql`, 8 avec `graphiql`, tous
@@ -211,11 +213,15 @@ Tasks:
   [x] Amendement `/src/resource.sdd` + `/src/rest/core.sdd` pour @before_update/@before_delete —
     acté par Sébastien 2026-09-23 (exception nommée GraphQL, miroir dans `/miryad-core.sdd`
     `Must`), implémentation livrée le même jour (commits 145b17e/1d68b79, validator PASS).
-  [ ] Amendement 2026-10-06 : appliquer le diff de `./Cargo.toml` (features `systemone`, `matrix`, dépendances
+  [x] Amendement 2026-10-06 : appliquer le diff de `./Cargo.toml` (features `systemone`, `matrix`, dépendances
     optionnelles, features `tokio`, dev-dependencies de la suite de conformité, `docs.rs`), mettre à jour
     `./README.md` et, à la clôture de la feature, `./docs/architecture.md` (templating central et son modèle de
     menace, `systemone`, `matrix` : épinglage 0.18, store sur SeaORM, plan d'extraction, limites du sync) et
     `./docs/roadmap.md`. Fait par le lot d'implémentation, jamais avant les specs enfants approuvées.
+    Clos 2026-10-17, vérifié : `./Cargo.toml` déclare `systemone = []` et `matrix` avec leurs
+    dépendances optionnelles (`matrix-sdk`, `matrix-sdk-crypto`, `matrix-sdk-store-encryption` épinglées
+    en `0.18`, `zeroize`, `tokio`), les dev-dependencies de la suite de conformité officielle et les
+    huit features de `[package.metadata.docs.rs]`.
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec `.sdd` relue et approuvée par Sébastien, sans

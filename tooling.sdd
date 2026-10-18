@@ -117,9 +117,10 @@ Tasks:
     160 en `--all-features` au point de départ.
   [x] Basculer `missing_docs` en `deny` quand la crate est à zéro avertissement, en gardant
     l'exemption `cfg(test)`.
-  [ ] Décider (Sébastien) si `cargo audit` entre dans la CI : l'`AGENTS.md` de l'ancien workflow
-    le listait dans les commandes de validation, alors qu'aucun job de CI ne le lance et qu'il
-    n'est pas installé sur ce poste.
+  [ ] `cargo audit` en CI — arbitré par Sébastien le 2026-10-17 : OUI, `cargo audit` entre dans la CI ;
+    tâche pour l'`implementer` (job ajouté dans `./.github/workflows/`). Contexte d'origine :
+    l'`AGENTS.md` de l'ancien workflow le listait parmi les commandes de validation, alors qu'aucun job
+    de CI ne le lance et qu'il n'est pas installé sur ce poste.
   [ ] Décider (Sébastien) si `./rustfmt.toml` adopte les options instables
     (`imports_granularity`, `comment_width`, `group_imports`), ce qui impose nightly en CI et
     reformate tout le dépôt.

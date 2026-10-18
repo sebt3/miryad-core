@@ -202,11 +202,14 @@ Handles:
     ./m20260822_000001_create_api_tokens.sdd)
 
 Tasks:
-  [ ] Migration suivante : index sur `miryad_api_tokens.subject` (arbitré par Sébastien le
+  [x] Migration suivante : index sur `miryad_api_tokens.subject` (arbitré par Sébastien le
     2026-09-29 dans ../rest/tokens.sdd ; la migration 001 est immuable) — écrire la spec de cette
     migration (nom `mYYYYMMDD_NNNNNN_…`, `Must` : `CREATE INDEX IF NOT EXISTS`, `down` strict),
     l'implémenter et l'enregistrer dans @migrations ; le Scenario « @migrations enregistre exactement
     les trois internes » passe à quatre (cinq avec la feature `workflow`).
+    Clos le 2026-10-17, vérifié : tâche close par la migration `m20260930_000001_index_api_tokens_subject`
+    (./m20260930_000001_index_api_tokens_subject.sdd + .rs existante, enregistrée dans ./mod.rs :
+    `mod` privé et `Box::new` en fin de @migrations ; quatre entrées dans @migrations, cinq sous `workflow`).
   [x] Amendement du 2026-09-23 (migration 004 gated `workflow`) : une app qui active `workflow`,
     applique 004, puis reconstruit sans `workflow` se retrouve avec une entrée de tracking
     (`seaql_migrations_miryad_core`) que le @Migrator reconstruit ne connaît plus — même
