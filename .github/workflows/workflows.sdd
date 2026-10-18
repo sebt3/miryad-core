@@ -100,9 +100,11 @@ Scenario: advisory RustSec sur une dépendance
   And les jobs de `./ci.yml` et `./publish.yml` ne sont ni retardés ni rougis par lui
 
 Tasks:
-  [ ] Ajouter ./audit.yml (job `cargo audit` informatif, déclencheurs `pull_request`/`push` vers `main` +
+  [x] Ajouter ./audit.yml (job `cargo audit` informatif, déclencheurs `pull_request`/`push` vers `main` +
     `schedule` hebdomadaire) selon les `Must` ci-dessus. Une tâche par fichier : ./audit.yml seul, ni ./ci.yml
     ni ./publish.yml. Clôt la ligne `cargo audit` de ../../tooling.sdd (à cocher en même temps).
+    Validé 2026-10-18 (Claude) : job unique `continue-on-error`, `rustsec/audit-check@v2.0.0`, cron lundi 06:00 UTC,
+    permissions `contents: read`, `checks: write`, `issues: write` (README de l'action) ; YAML valide, lint OK.
   [ ] Allonger les jobs de test (huit combinaisons) et de clippy (cinq combinaisons hors pont :
     `--no-default-features`, défaut, `swagger-ui`, `mcp`, `workflow`) dans ./ci.yml ; retirer le
     pas `cargo clippy --all-features` actuel, rouge durablement sur les sites gelés du pont et qui
