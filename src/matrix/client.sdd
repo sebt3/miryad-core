@@ -158,6 +158,11 @@ Tasks:
     l'inviteur, réponse écho au premier de ses messages, arrêt propre ; variables `MIRYAD_MATRIX_HOMESERVER`,
     `MIRYAD_MATRIX_PASSPHRASE`, `MIRYAD_MATRIX_INVITER`, `MIRYAD_MATRIX_CA` (contenu PEM, optionnelle). Limite connue :
     le sync initial ne rattrape pas ; un message écrit avant `ECHO_READY` n'est pas remis.
+    **Exécuté le 2026-10-18** contre Palpo 0.4.0 + MAS 1.26.0 (tenant `media-test`) : `1 passed` en 104 s. Prouvés en réel :
+    login par device code (approuvé par le compte de service Authentik, voir kydah/box#454), restauration de la session
+    OAuth par `matrix-sdk`, CA interne (`ca_cert`), auto-join de l'inviteur, remise d'un message par `run_sync`, réponse
+    par `send` avec `txn_id` (écho affiché dans Element). Non prouvés : les quatre autres tests live (ils exigent une
+    session importée), l'E2EE avec vérification croisée, le multi-réplica, les scénarios à deux processus.
   [x] Envoi depuis un réplica qui ne tient pas le bail de sync sur une salle chiffrée : hypothèse retenue
     (arbitré par Sébastien le 2026-10-06) — `matrix-sdk` récupère appareils et clés à la demande, le verrou à
     bail arbitre la cryptographie. À l'épreuve du test live (deux processus) ; si elle ne tient pas, `send`
