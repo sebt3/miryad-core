@@ -80,7 +80,7 @@ Tasks:
     Validé 2026-10-17 (Claude) : ré-exports exacts, `TABLE_PREFIX` partagé avec la migration, test d'isolation (4 tests,
     dont détecteur négatif et positif) vert, `cargo tree -i matrix-sdk-sqlite` vide, clippy `matrix` et
     `workflow,matrix` à zéro. `Kv::db` retiré (champ mort).
-  [ ] Documenter dans `docs/architecture.md`, à la clôture de la feature, la contrainte `matrix-sdk` 0.18 /
+  [x] Documenter dans `docs/architecture.md`, à la clôture de la feature, la contrainte `matrix-sdk` 0.18 /
     `sqlx` et le plan d'extraction (critère de sortie : relever le plafond `sqlx` ou `matrix-sdk-sqlite`).
 
 Done when:

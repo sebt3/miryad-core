@@ -37,9 +37,12 @@ la base SeaORM de l'application** (module `matrix::store`, conçu pour être ext
 kind de workflow `matrix_send` (sous `workflow` + `matrix`) — `src/matrix/**/*.sdd`,
 `src/workflow/matrix_step.sdd`. Contexte : piloter l'application fille `vanyline` depuis un client Matrix,
 et servir de base à un nouveau `kydah-monitoring-agents` bâti sur miryad-core.
-Points ouverts tracés dans les specs : spike device code contre un MAS réel (`device_code.sdd`),
-rattrapage des messages reçus pendant une coupure (`matrix/mod.sdd`), envoi chiffré depuis un réplica qui ne
-synchronise pas (`client.sdd`), licence du code porté depuis `matrix-sdk-sqlite` (`crypto_sessions.sdd`).
+Livré et validé en réel le 2026-10-18 (login device code, auto-join, écho, voir `docs/architecture.md`, « Client
+Matrix de bot »). Reste ouvert : store éprouvé sur **PostgreSQL** (aujourd'hui SQLite mémoire seulement),
+persistance des rotations de session contre un MAS réel, cross-signing du bot, provisionnement automatisé du compte
+et de la session de bot (`kydah/box#454`), envoi chiffré depuis un réplica qui ne synchronise pas, rattrapage des
+messages reçus pendant une coupure (`matrix/mod.sdd`), licence du code porté depuis `matrix-sdk-sqlite`
+(`crypto_sessions.sdd`).
 Hors périmètre, **à venir** : le harnais de chatbot (outillage standardisé issu de vanyline), dont la remontée de
 code et de spec n'est pas prête — il consommera `MatrixEventHandler` ; l'identité Matrix → utilisateur miryad
 (RBAC) y sera tranchée.

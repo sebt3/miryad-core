@@ -732,6 +732,62 @@ et `src/workflow/systemone_step.sdd`.
   l'aval décider. La configuration des gates est validée **avant** tout appel réseau, et un gate refuse
   les clés inconnues (une borne mal orthographiée ne doit pas disparaître en silence).
 
+## Client Matrix de bot (feature `matrix`)
+
+Primitives pour bâtir des bots Matrix : se connecter, envoyer, lire (historique et flux), rejoindre une
+salle, avec chiffrement de bout en bout. Aucune logique de conversation : le futur harnais de chatbot
+consommera `MatrixEventHandler`. Specs : `src/matrix/**/*.sdd`, `src/workflow/matrix_step.sdd`. Le homeserver
+visé est Palpo derrière MAS (authentification déléguée à Authentik, mots de passe désactivés).
+
+- **`matrix-sdk` épinglé en `0.18`.** `matrix-sdk` ≥ 0.19 impose `libsqlite3-sys` 0.38 et casse le graphe avec le
+  `sqlx-sqlite` de SeaORM (`links = "sqlite3"`). Aucune feature `sqlite` de `matrix-sdk` n'est activée.
+  Critère de sortie : relever le plafond `sqlx` ou `matrix-sdk-sqlite`. L'API publique n'expose aucun type de
+  `matrix-sdk` ni de `ruma` (identifiants en `String`), donc la montée de version ne casse pas les applications.
+- **Store de chiffrement dans la base de l'application** (`matrix::store`). Il implémente `CryptoStore` sur
+  SeaORM : quinze tables préfixées `miryad_matrix_` (`TABLE_PREFIX`), une clé de compte dans chacune, les
+  valeurs sensibles scellées par le `StoreCipher` du compte (protégé par la passphrase de la config). La
+  suite de conformité officielle de `matrix-sdk-crypto` est branchée (35 verts, 1 `#[ignore]` posé par
+  l'amont). Le module est **conçu pour être extrait** en crate dédiée (test d'isolation : aucun accès à
+  `matrix-sdk-sqlite`, ses seules dépendances sont SeaORM et `matrix-sdk-crypto`) ; le code porté depuis
+  `matrix-sdk-sqlite` garde son en-tête Apache-2.0. **Limite non levée** : la suite de conformité et les tests
+  tournent sur SQLite mémoire ; le chemin PostgreSQL du store (migration, requêtes) n'a pas été éprouvé.
+- **Session** : stockée dans le store, scellée, jamais en clair, jamais dans un fichier. Les jetons de
+  rafraîchissement **tournent** (le jeton d'accès de MAS vit 300 s) : le client écoute
+  `subscribe_to_session_changes` et réécrit la session à chaque rotation ; une session non réécrite devient
+  invalide au redémarrage. La persistance réelle des rotations n'est pas encore éprouvée contre un MAS.
+- **Connexion** : `login_with_device_code` (RFC 8628, nominal, un opérateur approuve une fois) et
+  `import_session` (jeton importé, repli et voie automatisable). `matrix-sdk` 0.18 n'expose pas le device code à
+  l'appelant : `device_code.rs` implémente le protocole en HTTP puis remet les jetons à `matrix-sdk`
+  (`restore_session`), fichier isolé pour le remplacer par un appel natif ≥ 0.19. Spike du 2026-10-18 contre
+  Palpo 0.4.0 + MAS 1.26.0 : enregistrement dynamique accepté, portée MSC2967 `device:{id}` honorée,
+  introspection par Palpo, approbation possible par un compte de service Authentik (jeton `app_password`).
+  Pièges constatés : MAS répond `authorization_pending` en **HTTP 403** (les erreurs OAuth se lisent dans le
+  corps JSON, pas dans le statut) ; pas de `verification_uri_complete`. Le consentement et la création de
+  compte de MAS sont des pages humaines : l'automatisation passe par l'API d'administration de MAS
+  (`kydah/box#454`), jamais par du scraping HTML.
+- **CA interne** : le `reqwest` direct de la crate n'a que les racines webpki ; `MatrixConfig::ca_cert` (contenu
+  PEM, comme `OidcConfig::ca_cert`) **s'ajoute** aux racines des deux clients HTTP (device code et
+  `matrix-sdk`). Le client du device code désactive les redirections.
+- **Synchronisation** (`run_sync`) : **un seul synchronisateur par compte à la fois**, arbitré par un bail dans
+  le store (`miryad.matrix.sync`, `2 × sync_timeout + 15 s`, renouvelé à chaque réponse, libéré à l'arrêt) ;
+  les autres réplicas attendent. Deux appareils qui déchiffrent en parallèle corrompraient les sessions Olm.
+  Livraison **au moins une fois, sans rattrapage** : le sync initial est sans jeton et ses messages ne sont
+  pas remis ; un message reçu pendant une coupure est perdu (trace `info` au démarrage). Un message peut être
+  remis deux fois (bascule de bail) : le handler doit être idempotent, clé naturelle `event_id`. Les messages
+  du bot, les `m.notice` et les éditions ne sont jamais remis (anti-boucle). Auto-join seulement pour les
+  inviteurs listés dans `auto_join_from`.
+- **Envoi** : `send` accepte un `txn_id` ; un rejeu avec le même identifiant est dédupliqué par le serveur. Le
+  kind de workflow `matrix_send` (sous `workflow` **et** `matrix`, enregistré par l'application) en dérive un
+  `txn_id` déterministe de `(run_key, step_id)` : un retry Restate ne produit pas de doublon. Une erreur
+  retryable du client le reste, `RoomUnavailable` et les erreurs de configuration ne le sont pas.
+- **Erreurs** : `MRD-MATRIX-*` pour le client, `MRD-MXSTORE-*` pour le store.
+- **Pas encore fait** : cross-signing du bot (Element affiche « chiffré par un appareil non vérifié par son
+  propriétaire »), envoi chiffré depuis un réplica qui ne synchronise pas (hypothèse retenue, à éprouver
+  avec deux processus), store sur PostgreSQL, rattrapage des messages manqués (voie retenue : `/messages`
+  depuis le dernier `event_id` traité, persisté en base).
+- **Banc d'essai live** : `tests/matrix_live.rs` (`#[ignore]`, variables `MIRYAD_MATRIX_*`), dont le test
+  interactif `device_code_login_then_echo` exécuté le 2026-10-18.
+
 ## Hooks métier CRUD
 
 Point d'extension optionnel par entité sur `create`, `update` et `delete` — validation ou

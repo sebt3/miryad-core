@@ -73,11 +73,12 @@ Tasks:
     déploiement, limite, épinglage) sans lien cassé sous `matrix` et `workflow,matrix` (`-D warnings`), test de chemins
     plats vert, 135 tests matrix verts sous `workflow,matrix`, clippy des deux combinaisons sans écart. `allow(dead_code)`
     restant : `mod session` (`session::clear` n'a pas d'appelant de production).
-  [ ] Amender /src/lib.rs, /Cargo.toml, ../migration/mod.rs, /tooling.sdd (batterie) dans le même lot.
+  [x] Amender /src/lib.rs, /Cargo.toml, ../migration/mod.rs, /tooling.sdd (batterie) dans le même lot.
     État au 2026-10-18 : `/src/lib.rs`, `/Cargo.toml` (dont `test-util` et `net` en dev) et `../migration/mod.rs` sont faits.
     Reste la batterie : `./AGENTS.md` et `./.github/workflows/ci.yml` n'ont pas encore `matrix` ni `workflow,matrix`
-    (amendement soumis à Sébastien : fichiers hors périmètre d'une tâche).
-  [ ] Documenter dans `docs/architecture.md` à la clôture : épinglage 0.18, store sur SeaORM, extraction.
+    (amendement soumis à Sébastien : fichiers hors périmètre d'une tâche). **Fait le 2026-10-18** avec son accord explicite : les deux
+    fichiers portent désormais les deux combinaisons ; case cochée ci-dessous.
+  [x] Documenter dans `docs/architecture.md` à la clôture : épinglage 0.18, store sur SeaORM, extraction.
   [x] Rattrapage après coupure (arbitré par Sébastien le 2026-10-06) : **pas en v1**. Un bot qui redémarre ne
     revoit pas les messages reçus pendant l'arrêt (sync initial sans jeton, ./sync.sdd) ; la perte n'est
     jamais silencieuse (trace `info` au démarrage, ./sync.sdd). Si le besoin se confirme (harnais), la voie
