@@ -8,6 +8,7 @@
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use matrix_sdk::AuthSession;
 use matrix_sdk::Room;
@@ -15,22 +16,28 @@ use matrix_sdk::SessionChange;
 use matrix_sdk::SessionMeta;
 use matrix_sdk::SessionTokens;
 use matrix_sdk::authentication::matrix::MatrixSession;
-use matrix_sdk::authentication::oauth::{ClientId, OAuthSession};
+use matrix_sdk::authentication::oauth::{ClientId, OAuthSession, UserSession};
 use matrix_sdk::cross_process_lock::CrossProcessLockConfig;
 use matrix_sdk::deserialized_responses::TimelineEvent;
 use matrix_sdk::room::MessagesOptions;
 use matrix_sdk::ruma::events::room::message::{MessageType, RoomMessageEventContent};
 use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent};
 use matrix_sdk::ruma::{OwnedDeviceId, OwnedRoomId, OwnedTransactionId, RoomId, RoomOrAliasId, UInt, UserId};
+use matrix_sdk_crypto::store::CryptoStore;
 use sea_orm::DatabaseConnection;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
 
 use crate::matrix::config::MatrixConfig;
+use crate::matrix::device_code::{self, DeviceCodePrompt, DeviceCodeTokens};
 use crate::matrix::error::{MatrixError, from_sdk};
 use crate::matrix::session::{self, StoredSession};
-use crate::matrix::store::SeaOrmCryptoStore;
+use crate::matrix::store::{SeaOrmCryptoStore, StoreError};
 use crate::matrix::sync::{self, MatrixMessage, MessageParts};
+
+/// Délai global des requêtes du device code (`src/matrix/client.sdd`). Les attentes entre deux
+/// interrogations sont gérées par `device_code`, pas par ce délai.
+const DEVICE_CODE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Type de message envoyé par le bot (`src/matrix/client.sdd`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +119,40 @@ impl MatrixClient {
         config.validate()?;
         let (store, client) = build_client(db, &config).await?;
         let stored = session::load(&store).await?.ok_or(MatrixError::NotLoggedIn)?;
+        Self::start(client, store, config, stored).await
+    }
+
+    /// Connecte le bot par device code (RFC 8628, `src/matrix/device_code.sdd`), puis enregistre la
+    /// session OAuth obtenue (en remplaçant l'existante) et la restaure. `on_prompt` reçoit le code
+    /// à montrer à l'opérateur, une seule fois.
+    ///
+    /// # Errors
+    ///
+    /// `MatrixError::Config` si la configuration est invalide, `MatrixError::Login` si le serveur
+    /// n'annonce pas le device code, si le code expire ou est refusé, `MatrixError::InvalidId` si
+    /// l'identifiant du compte est mal formé, `MatrixError::Store` ou `MatrixError::Sdk` à
+    /// l'enregistrement ou à la restauration, `MatrixError::Network` pour les échecs réseau.
+    pub async fn login_with_device_code(
+        db: DatabaseConnection,
+        config: MatrixConfig,
+        on_prompt: impl FnOnce(DeviceCodePrompt) + Send,
+    ) -> Result<Self, MatrixError> {
+        config.validate()?;
+        let (store, client) = build_client(db, &config).await?;
+        let existing = load_client_id(&store).await?;
+        let http = device_code_http_client()?;
+        let tokens = device_code::login(
+            &config.homeserver_url,
+            &config.device_display_name,
+            existing.as_deref(),
+            on_prompt,
+            &http,
+        )
+        .await?;
+        let client_id = tokens.client_id.clone();
+        let stored = oauth_session(tokens)?;
+        CryptoStore::set_custom_value(&store, OAUTH_CLIENT_KEY, encode_client_id(&client_id)).await?;
+        session::save(&store, &stored).await?;
         Self::start(client, store, config, stored).await
     }
 
@@ -355,6 +396,66 @@ fn to_auth_session(stored: StoredSession) -> AuthSession {
     }
 }
 
+/// Clé de la valeur personnalisée qui porte l'identifiant de client OAuth (`src/matrix/client.sdd`).
+pub(crate) const OAUTH_CLIENT_KEY: &str = "miryad.matrix.oauth_client";
+
+/// Session OAuth persistable depuis les jetons du device code (`src/matrix/client.sdd`). Rend
+/// `InvalidId` si `user_id` est mal formé, comme `import_session`.
+fn oauth_session(tokens: DeviceCodeTokens) -> Result<StoredSession, MatrixError> {
+    let user_id =
+        UserId::parse(&tokens.user_id).map_err(|_| MatrixError::InvalidId(tokens.user_id.clone()))?;
+    Ok(StoredSession::OAuth {
+        client_id: tokens.client_id,
+        user: UserSession {
+            meta: SessionMeta {
+                user_id,
+                device_id: OwnedDeviceId::from(tokens.device_id),
+            },
+            tokens: SessionTokens {
+                access_token: tokens.access_token,
+                refresh_token: tokens.refresh_token,
+            },
+        },
+    })
+}
+
+/// Valeur persistée de l'identifiant de client : ses octets UTF-8 (`src/matrix/client.sdd`).
+fn encode_client_id(client_id: &str) -> Vec<u8> {
+    client_id.as_bytes().to_vec()
+}
+
+/// Décode la valeur persistée de l'identifiant de client. Des octets non UTF-8 sont
+/// `StoreError::Corrupt`, sans contenu affiché (`src/matrix/client.sdd`).
+fn decode_client_id(bytes: &[u8]) -> Result<String, MatrixError> {
+    std::str::from_utf8(bytes).map(str::to_owned).map_err(|_| {
+        MatrixError::Store(StoreError::Corrupt(
+            "identifiant de client OAuth non UTF-8".into(),
+        ))
+    })
+}
+
+/// Lit l'identifiant de client enregistré dans le store, `None` s'il n'y en a pas
+/// (`src/matrix/client.sdd`).
+async fn load_client_id(store: &SeaOrmCryptoStore) -> Result<Option<String>, MatrixError> {
+    let Some(bytes) = CryptoStore::get_custom_value(store, OAUTH_CLIENT_KEY).await? else {
+        return Ok(None);
+    };
+    decode_client_id(&bytes).map(Some)
+}
+
+/// Client HTTP du device code : aucune redirection suivie (`src/matrix/device_code.sdd`, `Must not`)
+/// et délai global borné.
+fn device_code_http_client() -> Result<reqwest::Client, MatrixError> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(DEVICE_CODE_HTTP_TIMEOUT)
+        .build()
+        .map_err(|err| MatrixError::Network {
+            message: format!("client HTTP du device code : {err}"),
+            retryable: false,
+        })
+}
+
 /// Réécrit la session courante du client dans le store (`src/matrix/client.sdd`). Une erreur est
 /// journalisée sans jeton, jamais remontée.
 async fn persist_current_session(client: &matrix_sdk::Client, store: &SeaOrmCryptoStore) {
@@ -402,10 +503,17 @@ fn spawn_session_persistence(
 
 #[cfg(test)]
 mod tests {
-    use super::{MatrixClient, MessageKind, SessionImport, build_content};
+    use super::{
+        MatrixClient, MessageKind, OAUTH_CLIENT_KEY, SessionImport, build_content, decode_client_id,
+        encode_client_id, load_client_id, oauth_session,
+    };
     use crate::matrix::config::MatrixConfig;
+    use crate::matrix::device_code::DeviceCodeTokens;
     use crate::matrix::error::MatrixError;
+    use crate::matrix::session::StoredSession;
+    use crate::matrix::store::{SeaOrmCryptoStore, StoreError};
     use matrix_sdk::ruma::events::room::message::{MessageType, RoomMessageEventContent};
+    use matrix_sdk_crypto::store::CryptoStore;
     use sea_orm::{ConnectOptions, Database, DatabaseConnection};
     use sea_orm_migration::MigratorTrait;
 
@@ -537,6 +645,125 @@ mod tests {
         let result = client.join_room("salon sans forme").await;
         assert!(
             matches!(result, Err(MatrixError::InvalidId(_))),
+            "obtenu : {result:?}"
+        );
+    }
+
+    /// Jetons du device code. Les secrets ont des sous-chaînes distinctes de l'identité affichée.
+    fn device_tokens(user_id: &str, refresh: Option<&str>) -> DeviceCodeTokens {
+        DeviceCodeTokens {
+            client_id: "client-7".into(),
+            user_id: user_id.into(),
+            device_id: "DEVICE7".into(),
+            access_token: "tok-acc-secret".into(),
+            refresh_token: refresh.map(str::to_owned),
+            expires_in_secs: Some(300),
+        }
+    }
+
+    // Garde hors scénario (Tâche C, aucun Scenario dédié dans client.sdd) : la session OAuth porte
+    // client_id, device_id, jetons et user_id issus des jetons du device code.
+    #[test]
+    fn oauth_session_carries_client_device_and_tokens() {
+        let stored = oauth_session(device_tokens("@bot:example.org", Some("tok-ref-secret")))
+            .expect("session OAuth construite");
+        let StoredSession::OAuth { client_id, user } = stored else {
+            panic!("variante OAuth attendue");
+        };
+        assert_eq!(client_id, "client-7");
+        assert_eq!(user.meta.user_id.as_str(), "@bot:example.org");
+        assert_eq!(user.meta.device_id.as_str(), "DEVICE7");
+        assert_eq!(user.tokens.access_token, "tok-acc-secret");
+        assert_eq!(user.tokens.refresh_token.as_deref(), Some("tok-ref-secret"));
+    }
+
+    // Garde hors scénario : un refresh_token absent reste absent (session OAuth valide sans refresh).
+    #[test]
+    fn oauth_session_accepts_absent_refresh_token() {
+        let stored =
+            oauth_session(device_tokens("@bot:example.org", None)).expect("session OAuth construite");
+        let StoredSession::OAuth { user, .. } = stored else {
+            panic!("variante OAuth attendue");
+        };
+        assert!(user.tokens.refresh_token.is_none(), "refresh_token inattendu");
+    }
+
+    // Garde hors scénario : user_id mal formé → InvalidId, comme import_session.
+    #[test]
+    fn oauth_session_refuses_malformed_user_id() {
+        let result = oauth_session(device_tokens("pas un identifiant", None));
+        assert!(
+            matches!(result, Err(MatrixError::InvalidId(_))),
+            "obtenu : {result:?}"
+        );
+    }
+
+    // Garde hors scénario : ni la session ni les jetons bruts ne montrent un jeton en `Debug`.
+    #[test]
+    fn oauth_session_and_tokens_debug_hide_secrets() {
+        let tokens = device_tokens("@bot:example.org", Some("tok-ref-secret"));
+        let shown_tokens = format!("{tokens:?}");
+        let stored = oauth_session(device_tokens("@bot:example.org", Some("tok-ref-secret")))
+            .expect("session OAuth construite");
+        let shown_session = format!("{stored:?}");
+        for shown in [shown_tokens, shown_session] {
+            assert!(
+                !shown.contains("tok-acc-secret") && !shown.contains("tok-ref-secret"),
+                "jeton affiché : {shown}"
+            );
+        }
+    }
+
+    // Garde hors scénario : la valeur `miryad.matrix.oauth_client` fait l'aller-retour en UTF-8.
+    #[test]
+    fn client_id_value_round_trips() {
+        let bytes = encode_client_id("client-7");
+        assert_eq!(
+            decode_client_id(&bytes).expect("UTF-8 décodé").as_str(),
+            "client-7"
+        );
+    }
+
+    // Garde hors scénario : des octets non UTF-8 sont une erreur de store, pas un identifiant.
+    #[test]
+    fn client_id_value_rejects_non_utf8() {
+        let result = decode_client_id(&[0xff, 0xfe]);
+        assert!(
+            matches!(result, Err(MatrixError::Store(StoreError::Corrupt(_)))),
+            "obtenu : {result:?}"
+        );
+    }
+
+    async fn fresh_store() -> SeaOrmCryptoStore {
+        let db = fresh_db().await;
+        SeaOrmCryptoStore::open(db, "acc-oauth", "passphrase-1")
+            .await
+            .expect("store opens")
+    }
+
+    // Garde hors scénario : valeur absente → None ; après écriture, l'identifiant est relu.
+    #[tokio::test]
+    async fn existing_client_id_is_absent_then_round_trips() {
+        let store = fresh_store().await;
+        let before = load_client_id(&store).await.expect("lecture sur store vide");
+        assert_eq!(before, None);
+        CryptoStore::set_custom_value(&store, OAUTH_CLIENT_KEY, encode_client_id("client-7"))
+            .await
+            .expect("valeur écrite");
+        let after = load_client_id(&store).await.expect("lecture après écriture");
+        assert_eq!(after, Some("client-7".to_owned()));
+    }
+
+    // Garde hors scénario : une valeur non UTF-8 en base est StoreError::Corrupt.
+    #[tokio::test]
+    async fn non_utf8_stored_client_id_is_store_corrupt() {
+        let store = fresh_store().await;
+        CryptoStore::set_custom_value(&store, OAUTH_CLIENT_KEY, vec![0xff, 0xfe])
+            .await
+            .expect("valeur brute écrite");
+        let result = load_client_id(&store).await;
+        assert!(
+            matches!(result, Err(MatrixError::Store(StoreError::Corrupt(_)))),
             "obtenu : {result:?}"
         );
     }

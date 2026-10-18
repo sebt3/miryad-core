@@ -1,11 +1,11 @@
 //! Kind natif `"matrix_send"` (features `workflow` **et** `matrix`) : envoi d'un message dans une
-//! salle Matrix via [`MatrixClient`](crate::matrix::MatrixClient).
+//! salle Matrix via [`MatrixClient`].
 //!
 //! Le step dérive un `txn_id` déterministe de l'identité du run (`run_key`, `step_id`) : un
 //! rejeu Restate envoie le même identifiant de transaction, et le homeserver dédoublonne.
 //! Une erreur de configuration est non retryable et ne fait aucun appel réseau.
 //!
-//! L'application enregistre elle-même le kind, comme [`SystemOneStep`](super::systemone_step) :
+//! L'application enregistre elle-même le kind, comme `RhaiStep` :
 //! `registry.register(MatrixSendStep::new(client))`. Le step ne journalise jamais `body` ni `html`.
 
 use std::collections::HashMap;

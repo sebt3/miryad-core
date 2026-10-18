@@ -424,9 +424,6 @@ mod tests {
     fn pending() -> (u16, Value) {
         (403, json!({"error": "authorization_pending"}))
     }
-    fn slow_down() -> (u16, Value) {
-        (400, json!({"error": "slow_down"}))
-    }
     fn expired() -> (u16, Value) {
         (400, json!({"error": "expired_token"}))
     }

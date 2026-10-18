@@ -49,7 +49,7 @@ Must:
       (./session.sdd) ; absente → @MatrixError::NotLoggedIn ; présente → la restaure
       (`OAuth::restore_session` ou `MatrixAuth::restore_session` selon la variante). **Aucune** requête réseau
       n'est émise par `connect` hors celles de la restauration.
-    `login_with_device_code(db, config, on_prompt: impl FnOnce(DeviceCodePrompt))` — appelle
+    `login_with_device_code(db, config, on_prompt: impl FnOnce(DeviceCodePrompt) + Send)` (`Send` : le login se lance depuis une tâche, amendement 2026-10-18) — appelle
       ./device_code.sdd (`existing_client_id` lu dans la valeur personnalisée `miryad.matrix.oauth_client`,
       écrite après un enregistrement réussi), construit la `StoredSession::OAuth`, la **sauvegarde** puis
       restaure comme `connect`.
@@ -126,8 +126,13 @@ Tasks:
     Validé 2026-10-18 (Claude) : trois tests verts (alias refusé, `limit` hors bornes, `join_room` mal formé), 114 tests
     matrix verts sous `workflow,matrix`, clippy `matrix` et `workflow,matrix` sans écart, fmt et `specdd lint` OK.
     Correctif de relecture : une erreur de jonction retryable est conservée (voir `Must`, `send`).
-  [ ] Tâche C : `login_with_device_code`, après le spike (fait le 2026-10-18) et ./device_code.rs (fait). Le client `reqwest` passé
+  [x] Tâche C : `login_with_device_code`, après le spike (fait le 2026-10-18) et ./device_code.rs (fait). Le client `reqwest` passé
     à `device_code::login` est construit ici avec `redirect::Policy::none()` (garantie du `Must not` de ./device_code.sdd).
+    Validé 2026-10-18 (Claude) : huit gardes unitaires sur les parties pures (session OAuth depuis les jetons, `InvalidId`, `Debug`
+    sans jeton, aller-retour de `miryad.matrix.oauth_client`), 14 tests `client` verts, clippy `matrix` et `workflow,matrix` sans écart.
+    Le chemin réseau n'est prouvé que par le test live. Limites connues : un `client_id` persisté illisible bloque le login
+    (`Store(Corrupt)`) sans chemin de nettoyage ; un login refusé ou expiré laisse un client dynamique orphelin côté MAS (le
+    `client_id` n'est persisté qu'après succès) ; timeout global HTTP de 30 s (choix non spécifié).
   [ ] Tâche D : `../../tests/matrix_live.rs` (`#[ignore]`) ; les chemins réseau/E2EE ne sont couverts que par lui. Le
     coût d'un faux homeserver complet pour `matrix-sdk` est élevé — un faux minimal (versions, join, send) n'est
     écrit que s'il tient en moins d'une centaine de lignes, sinon on s'en tient au test live.
