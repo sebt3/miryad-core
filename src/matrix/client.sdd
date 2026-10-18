@@ -130,6 +130,10 @@ Tasks:
   [ ] Tâche D : `../../tests/matrix_live.rs` (`#[ignore]`) ; les chemins réseau/E2EE ne sont couverts que par lui. Le
     coût d'un faux homeserver complet pour `matrix-sdk` est élevé — un faux minimal (versions, join, send) n'est
     écrit que s'il tient en moins d'une centaine de lignes, sinon on s'en tient au test live.
+    Écrit le 2026-10-18 (fichier posé, jamais exécuté faute de homeserver) : quatre tests `#[ignore]` (connexion, envoi
+    idempotent, ordre de `recent_messages`, `run_sync` ne remet pas les messages du bot puis s'arrête proprement) ;
+    compile, listés ignorés, échoue explicitement sans les variables. **La case reste `[ ]` jusqu'à une exécution réelle** ;
+    les scénarios à deux comptes ou deux processus de ./sync.sdd restent à écrire (liste en tête du fichier).
   [x] Envoi depuis un réplica qui ne tient pas le bail de sync sur une salle chiffrée : hypothèse retenue
     (arbitré par Sébastien le 2026-10-06) — `matrix-sdk` récupère appareils et clés à la demande, le verrou à
     bail arbitre la cryptographie. À l'épreuve du test live (deux processus) ; si elle ne tient pas, `send`
