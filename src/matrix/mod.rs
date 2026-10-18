@@ -8,3 +8,7 @@ pub mod store;
 // allow: `session` est consommé par client.rs, non encore écrit (src/matrix/session.sdd) ; à retirer à son arrivée.
 #[allow(dead_code)]
 mod session;
+
+// allow: `sync` est consommé par client.rs, non encore écrit (src/matrix/sync.sdd) ; à retirer à son arrivée.
+#[allow(dead_code)]
+mod sync;

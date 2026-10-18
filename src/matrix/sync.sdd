@@ -63,9 +63,13 @@ Must:
   Remise d'un message (`fn should_deliver(own_user: &str, sender: &str, msgtype: &str, is_replacement: bool)
     -> bool`, pure) : vrai seulement si `sender != own_user`, `msgtype ∈ {"m.text","m.emote"}` et le message
     n'est pas un remplacement (édition, `rel_type = m.replace`) ; les `m.notice` ne sont **jamais** remis
-    (convention anti-boucle entre bots). Conversion par `fn to_message(..) -> MatrixMessage` (pure, mêmes
-    entrées sous forme de champs simples, testable sans `matrix-sdk`) ; `pub(crate)`, réutilisée par
-    `recent_messages` (./client.sdd).
+    (convention anti-boucle entre bots). Conversion par `fn to_message(parts: MessageParts<'_>) -> MatrixMessage`
+    (pure, testable sans `matrix-sdk`) ; `pub(crate) struct MessageParts<'a>` (champs `pub(crate)` :
+    `room_id`, `event_id`, `sender`, `msgtype`, `body: &'a str`, `formatted_body: Option<&'a str>`,
+    `timestamp_ms: u64`, `encrypted: bool`) porte les entrées en un seul argument (huit paramètres
+    nus dépasseraient `clippy::too_many_arguments`, amendement 2026-10-18) ; `pub(crate)`, réutilisée par
+    `recent_messages` (./client.sdd). `MatrixMessage.msgtype` vaut `m.text` ou `m.emote` en remise
+    en direct ; `recent_messages` y ajoute `m.notice` (la remise l'exclut, l'historique non).
   Invitations (`fn invite_allowed(auto_join_from: &[String], inviter: &str) -> bool`, pure) : une invitation
     adressée au bot est acceptée (`Room::join`, jusqu'à 3 tentatives espacées de 1 s, 2 s, 4 s : un serveur
     peut rejeter une jonction trop rapide) seulement si l'inviteur figure dans `auto_join_from` ; sinon
@@ -91,8 +95,13 @@ Handles:
   Invitation d'un inviteur non autorisé : ignorée sans erreur.
 
 Tasks:
-  [ ] Tests unitaires d'abord pour les fonctions pures (`should_deliver`, `to_message`, `invite_allowed`,
-    `lease_ms`, `backoff`), puis ./sync.rs. La boucle elle-même est couverte par `../../tests/matrix_live.rs`
+  [x] Partie pure d'abord (amendement 2026-10-18 : `client.rs` et `run_sync` se dépendent mutuellement ; ordre
+    sync pur → client → run_sync) : `MatrixMessage`, `MatrixEventHandler`, `MessageParts`, `should_deliver`,
+    `to_message`, `invite_allowed`, `lease_ms`, `backoff` — tests unitaires d'abord, puis ./sync.rs.
+    Validé 2026-10-18 (Claude) : huit tests verts (cinq Scenario unitaires + gardes de saturation et `formatted_body` absent),
+    clippy `matrix` et `workflow,matrix` sans écart, fmt et `specdd lint` OK. Lectures retenues : `lease_ms(u64) -> u32`
+    saturé ; `MessageParts` dérive `Clone, Copy` (sinon `needless_pass_by_value` imposerait un `#[allow]`).
+  [ ] `run_sync` (après ./client.rs) : boucle, bail, auto-join, libération. La boucle elle-même est couverte par `../../tests/matrix_live.rs`
     (`#[ignore]`, ./client.sdd) : message envoyé par un second compte → remis une fois ; message du bot →
     jamais remis ; `shutdown` → retour `Ok(())`.
 
