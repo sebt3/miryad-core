@@ -282,7 +282,7 @@ impl SeaOrmCryptoStore {
 mod tests {
     use super::super::crypto::SeaOrmCryptoStore;
     use matrix_sdk_crypto::store::types::Changes;
-    use sea_orm::{ConnectOptions, Database, TransactionTrait};
+    use sea_orm::TransactionTrait;
     use sea_orm_migration::MigratorTrait;
     use std::time::Duration;
 
@@ -299,9 +299,7 @@ mod tests {
     /// Store neuf sur SQLite mémoire migrée. Une seule connexion : sans elle, chaque
     /// connexion du pool verrait sa propre base mémoire.
     async fn fresh_store(name: &str) -> SeaOrmCryptoStore {
-        let mut opts = ConnectOptions::new("sqlite::memory:");
-        opts.max_connections(1).min_connections(1);
-        let db = Database::connect(opts).await.expect("in-memory sqlite connects");
+        let db = super::super::test_support::test_db().await;
         StoreMigrator::up(&db, None)
             .await
             .expect("store migrations apply over an empty base");

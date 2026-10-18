@@ -310,7 +310,6 @@ impl MigrationTrait for Migration {
 #[cfg(test)]
 mod tests {
     use super::{TABLE_PREFIX, migrations};
-    use sea_orm::Database;
     use sea_orm_migration::prelude::*;
 
     /// Les seize tables du `Must`, sans préfixe.
@@ -354,9 +353,7 @@ mod tests {
     }
 
     async fn fresh_db() -> sea_orm::DatabaseConnection {
-        Database::connect("sqlite::memory:")
-            .await
-            .expect("in-memory sqlite connects")
+        super::super::test_support::test_db().await
     }
 
     /// Scenario : « up crée les seize tables avec le préfixe ».

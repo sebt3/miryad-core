@@ -38,7 +38,7 @@ kind de workflow `matrix_send` (sous `workflow` + `matrix`) — `src/matrix/**/*
 `src/workflow/matrix_step.sdd`. Contexte : piloter l'application fille `vanyline` depuis un client Matrix,
 et servir de base à un nouveau `kydah-monitoring-agents` bâti sur miryad-core.
 Livré et validé en réel le 2026-10-18 (login device code, auto-join, écho, voir `docs/architecture.md`, « Client
-Matrix de bot »). Reste ouvert : store éprouvé sur **PostgreSQL** (aujourd'hui SQLite mémoire seulement),
+Matrix de bot »). Store éprouvé sur PostgreSQL (suite entière verte). Reste ouvert :
 persistance des rotations de session contre un MAS réel, cross-signing du bot, provisionnement automatisé du compte
 et de la session de bot (`kydah/box#454`), envoi chiffré depuis un réplica qui ne synchronise pas, rattrapage des
 messages reçus pendant une coupure (`matrix/mod.sdd`), licence du code porté depuis `matrix-sdk-sqlite`

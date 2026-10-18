@@ -45,10 +45,17 @@ Exposes:
   `test_db`, `is_postgres` — `pub(crate)`, `cfg(test)`.
 
 Tasks:
-  [ ] Tests d'abord (sans variable : base SQLite utilisable, deux appels isolés l'un de l'autre), puis ./test_support.rs ;
+  [x] Tests d'abord (sans variable : base SQLite utilisable, deux appels isolés l'un de l'autre), puis ./test_support.rs ;
     brancher ensuite les `fresh_db`/`database_for` de test des six fichiers du store listés en `References`
     (la ligne de connexion seulement, pas leurs assertions). Le chemin PostgreSQL est prouvé en lançant la suite
     du store avec `MIRYAD_TEST_PG_URL` (voir ./mod.sdd).
+    Validé 2026-10-18 (Claude) : deux tests verts sans variable ; **suite `matrix::store` entière jouée sur PostgreSQL 17.10
+    (CNPG jetable, `miryad-pgtest`) : 73 verts, 1 ignoré (celui de l'amont), identique à SQLite**, conformité officielle,
+    `save_changes` atomique, bail et migration `up`/`down` strict compris. Seuls écarts : deux tests écrivaient du SQL brut
+    avec le placeholder `?` de SQLite (`kv::first_open_creates_cipher…` et `crypto_devices::tracked_users_round_trip…`) —
+    corrigés par un placeholder propre au dialecte, aucun code de production touché. Message d'échec du helper : erreur
+    d'origine conservée, URL remplacée par `<url>`. Constat d'exploitation : un `kubectl port-forward` casse sous charge
+    (`Connection reset`, `SSLRequest` corrompu) ; depuis un pod du cluster, le Service est joignable directement.
 
 Done when:
   Sans variable, la suite du store est inchangée et verte ; avec la variable, elle tourne sur PostgreSQL et ses

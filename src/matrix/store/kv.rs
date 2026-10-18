@@ -182,7 +182,7 @@ async fn insert_row(
 #[cfg(test)]
 mod tests {
     use super::{Kv, StoreError};
-    use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
+    use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
     use sea_orm_migration::MigratorTrait;
 
     const ACC: &str = "acc-1";
@@ -198,9 +198,7 @@ mod tests {
 
     /// Base SQLite mémoire migrée (tables du store posées).
     async fn fresh_db() -> DatabaseConnection {
-        let db = Database::connect("sqlite::memory:")
-            .await
-            .expect("in-memory sqlite connects");
+        let db = super::super::test_support::test_db().await;
         StoreMigrator::up(&db, None)
             .await
             .expect("store migrations apply over an empty base");
@@ -209,10 +207,15 @@ mod tests {
 
     /// Nombre de lignes `cipher` du compte.
     async fn cipher_rows(db: &DatabaseConnection, account_key: &str) -> i64 {
+        let backend = db.get_database_backend();
+        // Placeholder propre au dialecte : `?` (SQLite) ou `$1` (PostgreSQL).
+        let placeholder = if backend == DbBackend::Postgres { "$1" } else { "?" };
         let row = db
             .query_one_raw(Statement::from_sql_and_values(
-                DbBackend::Sqlite,
-                "SELECT COUNT(*) AS n FROM miryad_matrix_kv WHERE account_key = ? AND key = 'cipher'",
+                backend,
+                format!(
+                    "SELECT COUNT(*) AS n FROM miryad_matrix_kv WHERE account_key = {placeholder} AND key = 'cipher'"
+                ),
                 [account_key.into()],
             ))
             .await

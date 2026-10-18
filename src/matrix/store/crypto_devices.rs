@@ -632,7 +632,7 @@ mod tests {
         Changes, DeviceChanges, RoomPendingKeyBundleDetails, SecretsInboxItem,
     };
     use matrix_sdk_crypto::{Account, DeviceData, GossipRequest, SecretInfo};
-    use sea_orm::{ConnectOptions, ConnectionTrait, Database, DbBackend, Statement, TransactionTrait};
+    use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionTrait};
     use sea_orm_migration::MigratorTrait;
     use std::collections::HashMap;
     use zeroize::Zeroizing;
@@ -651,9 +651,7 @@ mod tests {
     /// Store neuf sur SQLite mémoire migrée. Une seule connexion : sans elle, chaque
     /// connexion du pool verrait sa propre base mémoire.
     async fn fresh_store() -> SeaOrmCryptoStore {
-        let mut opts = ConnectOptions::new("sqlite::memory:");
-        opts.max_connections(1).min_connections(1);
-        let db = Database::connect(opts).await.expect("in-memory sqlite connects");
+        let db = super::super::test_support::test_db().await;
         StoreMigrator::up(&db, None)
             .await
             .expect("store migrations apply over an empty base");
@@ -854,11 +852,14 @@ mod tests {
         let found_v = loaded.iter().find(|t| t.user_id == v).expect("v is loaded");
         assert!(found_u.dirty, "dirty de @u:x");
         assert!(!found_v.dirty, "dirty de @v:x");
+        let backend = store.db.get_database_backend();
+        // Placeholder propre au dialecte : `?` (SQLite) ou `$1` (PostgreSQL).
+        let placeholder = if backend == DbBackend::Postgres { "$1" } else { "?" };
         let rows = store
             .db
             .query_all_raw(Statement::from_sql_and_values(
-                DbBackend::Sqlite,
-                "SELECT user_id FROM miryad_matrix_tracked_users WHERE account_key = ?",
+                backend,
+                format!("SELECT user_id FROM miryad_matrix_tracked_users WHERE account_key = {placeholder}"),
                 ["acc".into()],
             ))
             .await

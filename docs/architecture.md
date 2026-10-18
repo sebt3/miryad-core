@@ -749,8 +749,9 @@ visé est Palpo derrière MAS (authentification déléguée à Authentik, mots d
   suite de conformité officielle de `matrix-sdk-crypto` est branchée (35 verts, 1 `#[ignore]` posé par
   l'amont). Le module est **conçu pour être extrait** en crate dédiée (test d'isolation : aucun accès à
   `matrix-sdk-sqlite`, ses seules dépendances sont SeaORM et `matrix-sdk-crypto`) ; le code porté depuis
-  `matrix-sdk-sqlite` garde son en-tête Apache-2.0. **Limite non levée** : la suite de conformité et les tests
-  tournent sur SQLite mémoire ; le chemin PostgreSQL du store (migration, requêtes) n'a pas été éprouvé.
+  `matrix-sdk-sqlite` garde son en-tête Apache-2.0. **PostgreSQL éprouvé** (2026-10-18) : la suite entière du store, conformité officielle
+  comprise, passe sur PostgreSQL 17 comme sur SQLite (73 verts) ; `MIRYAD_TEST_PG_URL` bascule les tests sur une base réelle,
+  un schéma neuf par test (`src/matrix/store/test_support.sdd`).
 - **Session** : stockée dans le store, scellée, jamais en clair, jamais dans un fichier. Les jetons de
   rafraîchissement **tournent** (le jeton d'accès de MAS vit 300 s) : le client écoute
   `subscribe_to_session_changes` et réécrit la session à chaque rotation ; une session non réécrite devient
@@ -783,7 +784,7 @@ visé est Palpo derrière MAS (authentification déléguée à Authentik, mots d
 - **Erreurs** : `MRD-MATRIX-*` pour le client, `MRD-MXSTORE-*` pour le store.
 - **Pas encore fait** : cross-signing du bot (Element affiche « chiffré par un appareil non vérifié par son
   propriétaire »), envoi chiffré depuis un réplica qui ne synchronise pas (hypothèse retenue, à éprouver
-  avec deux processus), store sur PostgreSQL, rattrapage des messages manqués (voie retenue : `/messages`
+  avec deux processus), rattrapage des messages manqués (voie retenue : `/messages`
   depuis le dernier `event_id` traité, persisté en base).
 - **Banc d'essai live** : `tests/matrix_live.rs` (`#[ignore]`, variables `MIRYAD_MATRIX_*`), dont le test
   interactif `device_code_login_then_echo` exécuté le 2026-10-18.

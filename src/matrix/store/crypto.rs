@@ -355,7 +355,7 @@ mod tests {
     use matrix_sdk_crypto::store::CryptoStore;
     use matrix_sdk_crypto::store::types::{Changes, DeviceChanges, PendingChanges};
     use matrix_sdk_crypto::{Account, DeviceData};
-    use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseConnection};
+    use sea_orm::{ConnectionTrait, DatabaseConnection};
     use sea_orm_migration::MigratorTrait;
 
     const PASS: &str = "passphrase-1";
@@ -371,9 +371,7 @@ mod tests {
     /// Base SQLite mémoire migrée. Une seule connexion : sans elle, chaque connexion
     /// du pool verrait sa propre base mémoire.
     async fn fresh_db() -> DatabaseConnection {
-        let mut opts = ConnectOptions::new("sqlite::memory:");
-        opts.max_connections(1).min_connections(1);
-        let db = Database::connect(opts).await.expect("in-memory sqlite connects");
+        let db = super::super::test_support::test_db().await;
         StoreMigrator::up(&db, None)
             .await
             .expect("store migrations apply over an empty base");
@@ -537,7 +535,7 @@ mod conformance {
     use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
     use matrix_sdk_crypto::olm::StaticAccountData;
-    use sea_orm::{ConnectOptions, Database, DatabaseConnection};
+    use sea_orm::DatabaseConnection;
     use sea_orm_migration::MigratorTrait;
 
     use super::*;
@@ -568,9 +566,7 @@ mod conformance {
             }
         }
         // Une seule connexion : sans elle, chaque connexion du pool verrait sa propre base mémoire.
-        let mut opts = ConnectOptions::new("sqlite::memory:");
-        opts.max_connections(1).min_connections(1);
-        let db = Database::connect(opts).await.expect("in-memory sqlite connects");
+        let db = super::super::test_support::test_db().await;
         StoreMigrator::up(&db, None)
             .await
             .expect("store migrations apply over an empty base");

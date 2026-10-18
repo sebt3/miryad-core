@@ -44,6 +44,9 @@ mod crypto_devices;
 mod crypto_sessions;
 mod kv;
 
+#[cfg(test)]
+mod test_support;
+
 pub use crypto::SeaOrmCryptoStore;
 pub use error::StoreError;
 pub use migration::migrations;

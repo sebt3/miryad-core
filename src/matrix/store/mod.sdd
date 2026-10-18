@@ -76,7 +76,7 @@ Exposes:
   `SeaOrmCryptoStore`, `StoreError`, `migrations`, `TABLE_PREFIX`.
 
 Tasks:
-  [ ] Amendement 2026-10-18 : déclarer `#[cfg(test)] mod test_support;` (./test_support.sdd, base de test SQLite mémoire
+  [x] Amendement 2026-10-18 : déclarer `#[cfg(test)] mod test_support;` (./test_support.sdd, base de test SQLite mémoire
     ou PostgreSQL réel selon `MIRYAD_TEST_PG_URL`). Preuve PostgreSQL : `MIRYAD_TEST_PG_URL=postgres://… cargo test
     --no-default-features --features matrix --lib matrix::store`. Cette case se clôt avec celle de ./test_support.sdd.
   [x] Écrire `mod.rs` en dernier du lot store (après tous les enfants), plus le test d'isolation.
