@@ -28,7 +28,7 @@ use sea_orm::DatabaseConnection;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
 
-use crate::matrix::config::MatrixConfig;
+use crate::matrix::config::{MatrixConfig, validate_ca_cert_pem};
 use crate::matrix::device_code::{self, DeviceCodePrompt, DeviceCodeTokens};
 use crate::matrix::error::{MatrixError, from_sdk};
 use crate::matrix::session::{self, StoredSession};
@@ -140,7 +140,7 @@ impl MatrixClient {
         config.validate()?;
         let (store, client) = build_client(db, &config).await?;
         let existing = load_client_id(&store).await?;
-        let http = device_code_http_client()?;
+        let http = device_code_http_client(config.ca_cert.as_deref())?;
         let tokens = device_code::login(
             &config.homeserver_url,
             &config.device_display_name,
@@ -332,11 +332,16 @@ async fn build_client(
     db: DatabaseConnection,
     config: &MatrixConfig,
 ) -> Result<(SeaOrmCryptoStore, matrix_sdk::Client), MatrixError> {
+    let ca_roots = config.ca_cert.as_deref().map(sdk_ca_certificates).transpose()?;
     let store = SeaOrmCryptoStore::open(db, &config.account_key, &config.store_passphrase).await?;
     let lock = CrossProcessLockConfig::multi_process(config.holder_name.clone());
-    let client = matrix_sdk::Client::builder()
+    let mut builder = matrix_sdk::Client::builder()
         .homeserver_url(&config.homeserver_url)
-        .store_config(store.store_config(lock))
+        .store_config(store.store_config(lock));
+    if let Some(roots) = ca_roots {
+        builder = builder.add_root_certificates(roots);
+    }
+    let client = builder
         .build()
         .await
         .map_err(|err| MatrixError::Sdk(err.to_string()))?;
@@ -445,15 +450,39 @@ async fn load_client_id(store: &SeaOrmCryptoStore) -> Result<Option<String>, Mat
 
 /// Client HTTP du device code : aucune redirection suivie (`src/matrix/device_code.sdd`, `Must not`)
 /// et délai global borné.
-fn device_code_http_client() -> Result<reqwest::Client, MatrixError> {
-    reqwest::Client::builder()
+/// `ca_cert` ajouté aux racines de confiance (`src/matrix/client.sdd`, « CA interne »), sans
+/// remplacer les racines publiques.
+fn device_code_http_client(ca_cert: Option<&str>) -> Result<reqwest::Client, MatrixError> {
+    let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(DEVICE_CODE_HTTP_TIMEOUT)
-        .build()
-        .map_err(|err| MatrixError::Network {
-            message: format!("client HTTP du device code : {err}"),
-            retryable: false,
-        })
+        .timeout(DEVICE_CODE_HTTP_TIMEOUT);
+    if let Some(ca_pem) = ca_cert {
+        builder = builder.add_root_certificate(device_code_ca_certificate(ca_pem)?);
+    }
+    builder.build().map_err(|err| MatrixError::Network {
+        message: format!("client HTTP du device code : {err}"),
+        retryable: false,
+    })
+}
+
+/// Certificat de `config.ca_cert` pour le client HTTP du device code (`reqwest` 0.12 de la crate).
+/// Le PEM est validé d'abord ; `from_pem` ne fait que stocker le contenu (rustls le lit au `build`).
+fn device_code_ca_certificate(ca_pem: &str) -> Result<reqwest::Certificate, MatrixError> {
+    validate_ca_cert_pem(ca_pem)?;
+    reqwest::Certificate::from_pem(ca_pem.as_bytes())
+        .map_err(|_| MatrixError::Config("ca_cert: invalid PEM certificate".into()))
+}
+
+/// Certificats de `config.ca_cert` pour `matrix-sdk` : le `reqwest` 0.13 ré-exporté par `matrix_sdk`,
+/// distinct de celui de la crate (`src/matrix/client.sdd`).
+fn sdk_ca_certificates(ca_pem: &str) -> Result<Vec<matrix_sdk::reqwest::Certificate>, MatrixError> {
+    validate_ca_cert_pem(ca_pem)?;
+    let certs = matrix_sdk::reqwest::Certificate::from_pem_bundle(ca_pem.as_bytes())
+        .map_err(|_| MatrixError::Config("ca_cert: invalid PEM certificate".into()))?;
+    if certs.is_empty() {
+        return Err(MatrixError::Config("ca_cert: no PEM certificate found".into()));
+    }
+    Ok(certs)
 }
 
 /// Réécrit la session courante du client dans le store (`src/matrix/client.sdd`). Une erreur est
@@ -504,10 +533,11 @@ fn spawn_session_persistence(
 #[cfg(test)]
 mod tests {
     use super::{
-        MatrixClient, MessageKind, OAUTH_CLIENT_KEY, SessionImport, build_content, decode_client_id,
-        encode_client_id, load_client_id, oauth_session,
+        MatrixClient, MessageKind, OAUTH_CLIENT_KEY, SessionImport, build_client, build_content,
+        decode_client_id, device_code_ca_certificate, device_code_http_client, encode_client_id,
+        load_client_id, oauth_session, sdk_ca_certificates,
     };
-    use crate::matrix::config::MatrixConfig;
+    use crate::matrix::config::{MatrixConfig, TEST_CA_PEM};
     use crate::matrix::device_code::DeviceCodeTokens;
     use crate::matrix::error::MatrixError;
     use crate::matrix::session::StoredSession;
@@ -766,5 +796,76 @@ mod tests {
             matches!(result, Err(MatrixError::Store(StoreError::Corrupt(_)))),
             "obtenu : {result:?}"
         );
+    }
+
+    /// Extrait le message d'une erreur `MatrixError::Config` ; toute autre issue fait échouer le test.
+    fn config_message<T>(result: Result<T, MatrixError>) -> String {
+        match result {
+            Err(MatrixError::Config(message)) => message,
+            Ok(_) => panic!("attendu Err(Config), obtenu Ok"),
+            Err(other) => panic!("attendu Err(Config), obtenu : {other}"),
+        }
+    }
+
+    // Must « CA interne » (client.sdd) : un PEM valide est accepté par chacun des deux clients HTTP.
+    #[test]
+    fn device_code_ca_certificate_accepts_valid_pem() {
+        assert!(device_code_ca_certificate(TEST_CA_PEM).is_ok());
+    }
+
+    #[test]
+    fn device_code_ca_certificate_refuses_non_pem_naming_field() {
+        let message = config_message(device_code_ca_certificate("ca-bundle.pem"));
+        assert!(message.contains("ca_cert"), "champ absent : {message}");
+        assert!(!message.contains("ca-bundle.pem"), "valeur reprise : {message}");
+    }
+
+    #[test]
+    fn sdk_ca_certificates_accepts_valid_pem() {
+        assert_eq!(
+            sdk_ca_certificates(TEST_CA_PEM).map(|certs| certs.len()).ok(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn sdk_ca_certificates_refuses_non_pem_naming_field() {
+        let message = config_message(sdk_ca_certificates("ca-bundle.pem"));
+        assert!(message.contains("ca_cert"), "champ absent : {message}");
+        assert!(!message.contains("ca-bundle.pem"), "valeur reprise : {message}");
+    }
+
+    #[test]
+    fn device_code_http_client_builds_with_and_without_ca() {
+        assert!(device_code_http_client(None).is_ok());
+        assert!(device_code_http_client(Some(TEST_CA_PEM)).is_ok());
+    }
+
+    #[test]
+    fn device_code_http_client_refuses_non_pem_naming_field() {
+        let message = config_message(device_code_http_client(Some("ca-bundle.pem")));
+        assert!(message.contains("ca_cert"), "champ absent : {message}");
+    }
+
+    // Construction du `matrix_sdk::Client` avec la CA interne : sans requête réseau.
+    #[tokio::test]
+    async fn build_client_applies_valid_ca_cert() {
+        let db = fresh_db().await;
+        let mut config = MatrixConfig::new("https://m.example", "passphrase-1", "pod-1");
+        config.ca_cert = Some(TEST_CA_PEM.into());
+        assert!(build_client(db, &config).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn build_client_refuses_non_pem_ca_cert_naming_field() {
+        let db = fresh_db().await;
+        let mut config = MatrixConfig::new("https://m.example", "passphrase-1", "pod-1");
+        config.ca_cert = Some("ca-bundle.pem".into());
+        let message = match build_client(db, &config).await {
+            Err(MatrixError::Config(message)) => message,
+            Ok(_) => panic!("attendu Err(Config), obtenu Ok"),
+            Err(other) => panic!("attendu Err(Config), obtenu : {other}"),
+        };
+        assert!(message.contains("ca_cert"), "champ absent : {message}");
     }
 }

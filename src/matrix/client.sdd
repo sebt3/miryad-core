@@ -140,9 +140,13 @@ Tasks:
     Le chemin réseau n'est prouvé que par le test live. Limites connues : un `client_id` persisté illisible bloque le login
     (`Store(Corrupt)`) sans chemin de nettoyage ; un login refusé ou expiré laisse un client dynamique orphelin côté MAS (le
     `client_id` n'est persisté qu'après succès) ; timeout global HTTP de 30 s (choix non spécifié).
-  [ ] Tâche E (2026-10-18) : appliquer `config.ca_cert` aux deux clients HTTP (voir `Must`, « CA interne »), après la tâche
+  [x] Tâche E (2026-10-18) : appliquer `config.ca_cert` aux deux clients HTTP (voir `Must`, « CA interne »), après la tâche
     `ca_cert` de ./config.sdd — tests d'abord (construction des deux clients avec un PEM valide réussit, avec un PEM
     refusé rend `Config`), puis ./client.rs. La confiance TLS réelle n'est prouvée que par le test live.
+    Validé 2026-10-18 (Claude) : sept tests verts (PEM valide/refusé pour chaque fonction pure, `device_code_http_client`,
+    `build_client` sur SQLite mémoire sans réseau), 146 tests matrix verts sous `workflow,matrix`, clippy des deux combinaisons
+    et rustdoc `-D warnings` sans écart. Côté `matrix-sdk` : `from_pem_bundle` (donne le `Vec` attendu) avec garde « aucun
+    certificat » → `Config` ; côté device code : `from_pem` du `reqwest` de la crate.
   [ ] Tâche D : `../../tests/matrix_live.rs` (`#[ignore]`) ; les chemins réseau/E2EE ne sont couverts que par lui. Le
     coût d'un faux homeserver complet pour `matrix-sdk` est élevé — un faux minimal (versions, join, send) n'est
     écrit que s'il tient en moins d'une centaine de lignes, sinon on s'en tient au test live.

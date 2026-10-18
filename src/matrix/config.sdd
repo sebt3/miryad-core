@@ -44,8 +44,12 @@ Exposes:
   `MatrixConfig`, `MatrixConfig::{new, validate}`
 
 Tasks:
-  [ ] Amendement 2026-10-18 : champ `ca_cert` (défaut `None` dans `new`), règle de `validate`, Scenario ci-dessus — tests
+  [x] Amendement 2026-10-18 : champ `ca_cert` (défaut `None` dans `new`), règle de `validate`, Scenario ci-dessus — tests
     d'abord, puis ./config.rs.
+    Validé 2026-10-18 (Claude) : trois tests verts (défaut `None`, `ca-bundle.pem` refusé en nommant `ca_cert` sans écho, PEM
+    valide accepté), clippy `matrix` et `workflow,matrix` sans écart. Limite connue (identique à `validate_ca_cert_pem` de
+    ../auth/oidc.rs) : un bloc base64 valide mais dont le contenu n'est pas du DER passe `validate` ; reqwest ne le refuse
+    qu'à la construction du client (erreur `Network` ou `Sdk`, sans nommer `ca_cert`).
   [x] Tests d'abord depuis les `Scenario`, puis ./config.rs.
     Validé 2026-10-17 (Claude) : dix-sept tests verts (trois Scenario, chaque règle de `validate`, bornes incluses),
     clippy `matrix` et `workflow,matrix` sans écart. Messages d'erreur sans la valeur fautive.

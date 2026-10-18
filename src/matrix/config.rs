@@ -21,6 +21,9 @@ pub struct MatrixConfig {
     pub auto_join_from: Vec<String>,
     /// Délai de long-poll de la synchronisation, en millisecondes. Défaut `30_000`.
     pub sync_timeout_ms: u64,
+    /// Certificat CA interne, **contenu PEM** (jamais un chemin de fichier), ajouté aux racines de
+    /// confiance des clients HTTP. Défaut `None` : racines publiques seules.
+    pub ca_cert: Option<String>,
 }
 
 impl MatrixConfig {
@@ -39,6 +42,7 @@ impl MatrixConfig {
             device_display_name: "miryad".into(),
             auto_join_from: Vec::new(),
             sync_timeout_ms: 30_000,
+            ca_cert: None,
         }
     }
 
@@ -61,6 +65,9 @@ impl MatrixConfig {
                 "must be between 1000 and 120000 milliseconds (inclusive)",
             ));
         }
+        if let Some(ca_pem) = &self.ca_cert {
+            validate_ca_cert_pem(ca_pem)?;
+        }
         Ok(())
     }
 }
@@ -75,6 +82,7 @@ impl fmt::Debug for MatrixConfig {
             .field("device_display_name", &self.device_display_name)
             .field("auto_join_from", &self.auto_join_from)
             .field("sync_timeout_ms", &self.sync_timeout_ms)
+            .field("ca_cert", &self.ca_cert)
             .finish()
     }
 }
@@ -103,6 +111,24 @@ fn require_non_blank(field: &str, value: &str) -> Result<(), MatrixError> {
     Ok(())
 }
 
+/// `ca_cert` est un contenu PEM : au moins un bloc `CERTIFICATE` décodable, itéré via
+/// `rustls_pki_types::pem::PemObject` comme `validate_ca_cert_pem` de `src/auth/oidc.rs`. Le contenu
+/// n'est jamais repris dans l'erreur (un certificat est public, mais la valeur peut être un chemin).
+pub(crate) fn validate_ca_cert_pem(ca_pem: &str) -> Result<(), MatrixError> {
+    use rustls_pki_types::pem::PemObject as _;
+
+    let decodable =
+        rustls_pki_types::CertificateDer::pem_slice_iter(ca_pem.as_bytes()).any(|item| item.is_ok());
+    if decodable {
+        Ok(())
+    } else {
+        Err(config_error(
+            "ca_cert",
+            "must contain at least one decodable PEM CERTIFICATE block",
+        ))
+    }
+}
+
 fn validate_user_id(entry: &str) -> Result<(), MatrixError> {
     let malformed = || config_error("auto_join_from", "each entry must have the form @local:domain");
     let rest = entry.strip_prefix('@').ok_or_else(malformed)?;
@@ -111,6 +137,22 @@ fn validate_user_id(entry: &str) -> Result<(), MatrixError> {
         _ => Err(malformed()),
     }
 }
+
+/// Certificat autosigné de test (CA, EC P-256, CN `miryad-test-ca`), généré avec
+/// `openssl req -x509 -newkey ec ... -addext basicConstraints=critical,CA:TRUE`.
+#[cfg(test)]
+pub(crate) const TEST_CA_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIIBmTCCAT+gAwIBAgIUS/jl044BjfBujZFzZ76XwAsH+DkwCgYIKoZIzj0EAwIw
+GTEXMBUGA1UEAwwObWlyeWFkLXRlc3QtY2EwIBcNMjYxMDE4MTIxNDI2WhgPMjEy
+NjA5MjQxMjE0MjZaMBkxFzAVBgNVBAMMDm1pcnlhZC10ZXN0LWNhMFkwEwYHKoZI
+zj0CAQYIKoZIzj0DAQcDQgAEae1t/Sqgs155dyLxhCJWC+hkbgXirG7YqszIiDAr
+rArolfVlV4otkuF1WUjL8LBdY51iwvOiLUA5PUNS6vXENaNjMGEwHQYDVR0OBBYE
+FN/ZPIw0iPGz0W9sAwlW8R8x+tBuMB8GA1UdIwQYMBaAFN/ZPIw0iPGz0W9sAwlW
+8R8x+tBuMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMAoGCCqGSM49
+BAMCA0gAMEUCIDbvmK7iTdQfhDzlq5+SniME+tGHl3hmbU9TB/TSazRtAiEAu1f8
+c2WibRwU9Vt/oNbETA2Rt65qENDqarM+eeO7JuU=
+-----END CERTIFICATE-----
+";
 
 #[cfg(test)]
 mod tests {
@@ -269,5 +311,29 @@ mod tests {
         let shown = format!("{c:?}");
         assert!(!shown.contains("secret"), "fuite de passphrase : {shown}");
         assert!(shown.contains("<redacted>"), "absence de <redacted> : {shown}");
+    }
+
+    // Scenario: ca_cert est validé comme un contenu PEM (amendement 2026-10-18)
+    #[test]
+    fn ca_cert_none_passes_validate() {
+        let c = valid();
+        assert_eq!(c.ca_cert, None);
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn ca_cert_file_name_refused_naming_field_without_echoing_value() {
+        let mut c = valid();
+        c.ca_cert = Some("ca-bundle.pem".into());
+        let message = config_error(c.validate());
+        assert!(message.contains("ca_cert"), "champ absent : {message}");
+        assert!(!message.contains("ca-bundle.pem"), "valeur reprise : {message}");
+    }
+
+    #[test]
+    fn ca_cert_valid_pem_passes_validate() {
+        let mut c = valid();
+        c.ca_cert = Some(TEST_CA_PEM.into());
+        assert!(c.validate().is_ok());
     }
 }
