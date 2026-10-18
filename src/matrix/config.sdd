@@ -21,13 +21,19 @@ Must:
     `device_display_name: String` (défaut `"miryad"`),
     `auto_join_from: Vec<String>` (défaut vide ; identifiants Matrix `@user:server` dont les invitations
       sont acceptées automatiquement ; vide = n'accepte jamais d'invitation, ./sync.sdd),
-    `sync_timeout_ms: u64` (défaut `30_000`).
+    `sync_timeout_ms: u64` (défaut `30_000`),
+    `ca_cert: Option<String>` (défaut `None` ; **contenu PEM**, jamais un chemin de fichier — précédent de
+      `OidcConfig::ca_cert`, ../auth/config.sdd ; amendement 2026-10-18 : un tenant Kydah est en CA interne et le
+      `reqwest` direct de la crate n'a que les racines webpki, donc la CA se configure par client, elle s'**ajoute**
+      aux racines publiques sans les remplacer ; voir ./client.sdd).
     `MatrixConfig::new(homeserver_url: impl Into<String>, store_passphrase: impl Into<String>,
     holder_name: impl Into<String>) -> Self` pose les défauts ci-dessus.
   `pub fn validate(&self) -> Result<(), MatrixError>` : `homeserver_url` parsable en URL `http`/`https` (l'hôte non vide est garanti par le parseur `reqwest::Url` : `https:` et `http://` sont refusés) ;
     `store_passphrase`, `holder_name`, `account_key` non vides (après trim) ; chaque entrée de
     `auto_join_from` de la forme `@local:domaine` (commence par `@`, partie locale non vide, contient un `:`
-    suivi d'un domaine non vide) (précisions du 2026-10-17) ; `sync_timeout_ms` entre `1_000` et `120_000` ; échec → @MatrixError::Config avec le nom du champ.
+    suivi d'un domaine non vide) (précisions du 2026-10-17) ; `sync_timeout_ms` entre `1_000` et `120_000` ; `ca_cert`, s'il est `Some`, porte au moins un bloc PEM `CERTIFICATE`
+    décodable (itérateur `rustls_pki_types::pem::PemObject`, comme `validate_ca_cert_pem` de ../auth/oidc.rs) —
+    un contenu sans bloc valide, par exemple un nom de fichier, échoue en `Config` nommant `ca_cert` ; échec → @MatrixError::Config avec le nom du champ.
   `impl Debug` **manuel** : `store_passphrase` imprimé `<redacted>`.
   Compiler sous `#[cfg(feature = "matrix")]`.
 
@@ -38,6 +44,8 @@ Exposes:
   `MatrixConfig`, `MatrixConfig::{new, validate}`
 
 Tasks:
+  [ ] Amendement 2026-10-18 : champ `ca_cert` (défaut `None` dans `new`), règle de `validate`, Scenario ci-dessus — tests
+    d'abord, puis ./config.rs.
   [x] Tests d'abord depuis les `Scenario`, puis ./config.rs.
     Validé 2026-10-17 (Claude) : dix-sept tests verts (trois Scenario, chaque règle de `validate`, bornes incluses),
     clippy `matrix` et `workflow,matrix` sans écart. Messages d'erreur sans la valeur fautive.
@@ -54,6 +62,11 @@ Scenario: validate refuse les valeurs invalides
   Given une URL `"ftp://x"`, puis `holder_name = " "`, puis `auto_join_from = ["alice"]`, puis `sync_timeout_ms = 10`
   When `validate` est appelé pour chacune
   Then chaque résultat est @Err(MatrixError::Config(m)) où `m` nomme le champ fautif
+
+Scenario: ca_cert est validé comme un contenu PEM (amendement 2026-10-18)
+  Given `ca_cert = None`, puis `Some("ca-bundle.pem")`, puis `Some(<un certificat PEM valide>)`
+  When `validate` est appelé pour chacun
+  Then le premier et le troisième réussissent, le deuxième est @Err(MatrixError::Config(m)) dont `m` nomme `ca_cert`
 
 Scenario: la passphrase n'apparaît jamais dans Debug
   Given `store_passphrase = "secret"`

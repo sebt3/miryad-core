@@ -90,6 +90,13 @@ Must:
     est brut — éditions (`m.replace`) et messages du bot lui-même ne sont pas filtrés ; `join_room` sur un alias
     n'indique aucun `server_names`. Le Scenario « sans requête réseau » prouve que `send` valide avant tout appel ;
     la tâche d'initialisation de `matrix-sdk` lancée par la restauration peut, elle, joindre le homeserver.
+  CA interne (amendement 2026-10-18) : si `config.ca_cert` est `Some`, la CA **s'ajoute** aux racines de confiance des
+    deux clients HTTP, sans remplacer les publiques : (1) le `reqwest::Client` passé à `device_code::login` (racines
+    webpki seules par défaut, donc sans CA interne le login échoue en TLS) par `add_root_certificate` ; (2) le
+    `matrix_sdk::Client` par `ClientBuilder::add_root_certificates` (le `reqwest` de `matrix-sdk` est un autre
+    `reqwest`, 0.13 : utiliser le ré-export `matrix_sdk::reqwest`). `Certificate::from_pem` qui refuse un PEM déjà
+    validé par `MatrixConfig::validate` → `MatrixError::Config` nommant `ca_cert`. Jamais de chemin de fichier ni
+    de variable d'environnement.
   Toute erreur `matrix-sdk` passe par `MatrixError::from_sdk` (./error.sdd).
   Compiler sous `#[cfg(feature = "matrix")]`.
 
@@ -133,6 +140,9 @@ Tasks:
     Le chemin réseau n'est prouvé que par le test live. Limites connues : un `client_id` persisté illisible bloque le login
     (`Store(Corrupt)`) sans chemin de nettoyage ; un login refusé ou expiré laisse un client dynamique orphelin côté MAS (le
     `client_id` n'est persisté qu'après succès) ; timeout global HTTP de 30 s (choix non spécifié).
+  [ ] Tâche E (2026-10-18) : appliquer `config.ca_cert` aux deux clients HTTP (voir `Must`, « CA interne »), après la tâche
+    `ca_cert` de ./config.sdd — tests d'abord (construction des deux clients avec un PEM valide réussit, avec un PEM
+    refusé rend `Config`), puis ./client.rs. La confiance TLS réelle n'est prouvée que par le test live.
   [ ] Tâche D : `../../tests/matrix_live.rs` (`#[ignore]`) ; les chemins réseau/E2EE ne sont couverts que par lui. Le
     coût d'un faux homeserver complet pour `matrix-sdk` est élevé — un faux minimal (versions, join, send) n'est
     écrit que s'il tient en moins d'une centaine de lignes, sinon on s'en tient au test live.
