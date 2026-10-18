@@ -71,9 +71,14 @@ Handles:
     fenêtre de déduplication est celle du homeserver).
 
 Tasks:
-  [ ] Tests unitaires d'abord pour `txn_id`, la désérialisation et la validation (fonctions pures) ; le
+  [x] Tests unitaires d'abord pour `txn_id`, la désérialisation et la validation (fonctions pures) ; le
     chemin d'envoi réel est couvert par `../../tests/matrix_live.rs` (../matrix/client.sdd). Puis
     ./matrix_step.rs ; ré-export dans ./mod.rs et amendement de ./mod.sdd (même lot).
+    Validé 2026-10-18 (Claude) : six tests verts (un par Scenario) sous `workflow,matrix` et `--all-features`, clippy
+    `workflow,matrix`, `workflow` et `matrix` sans écart, fmt et `specdd lint` OK. Déclaration et ré-export posés dans
+    ./mod.rs ; le test de chemins plats et l'amendement de ./mod.sdd restent à la case de ./mod.sdd. Lectures
+    retenues : `html` « non vide » = chaîne vide stricte (sans `trim`, à la différence de `body`) ; le message d'erreur
+    sur `room_id` ne reprend pas la valeur ; un `kind` inconnu est refusé par serde sous le même préfixe.
 
 Done when:
   Les `Scenario` unitaires sont verts sous `all(workflow, matrix)` et `--all-features` ; ./step.sdd,

@@ -13,6 +13,8 @@ pub mod dispatcher;
 pub mod durable;
 pub mod error;
 pub mod interpreter;
+#[cfg(all(feature = "workflow", feature = "matrix"))]
+pub mod matrix_step;
 pub mod rhai_step;
 pub mod step;
 pub mod subworkflow;
@@ -35,6 +37,8 @@ pub use dispatcher::{StepDispatcher, recommended_options};
 pub use durable::{MiryadDurableStep, StepContext};
 pub use error::WorkflowError;
 pub use interpreter::DagInterpreter;
+#[cfg(all(feature = "workflow", feature = "matrix"))]
+pub use matrix_step::MatrixSendStep;
 pub use rhai_step::RhaiStep;
 pub use step::{MiryadWorkflowStep, RunInfo, StepError, StepRegistry};
 pub use subworkflow::SubWorkflowStep;
