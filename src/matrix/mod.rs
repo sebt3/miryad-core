@@ -7,6 +7,10 @@ pub mod error;
 pub mod store;
 pub mod sync;
 
+// allow: `device_code` est consommé par client.rs (Tâche C, src/matrix/client.sdd) ; à retirer à son arrivée.
+#[allow(dead_code)]
+mod device_code;
+
 // allow: `session::clear` n'a pas encore d'appelant de production (src/matrix/session.sdd) ; à retirer à son arrivée.
 #[allow(dead_code)]
 mod session;

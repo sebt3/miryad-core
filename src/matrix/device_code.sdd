@@ -66,6 +66,10 @@ Must:
       {access_token}` ; `user_id` en vient ; `device_id` doit valoir celui de l'étape 3 (sinon
       @Login « appareil inattendu »).
   L'attente entre deux interrogations utilise `tokio::time::sleep` (testable avec `tokio::time::pause`).
+    La boucle d'interrogation (intervalle, `slow_down`, borne `expires_in`) est une fonction privée **indépendante
+    du transport** : elle reçoit l'interrogation sous forme de fermeture asynchrone et ne connaît pas `reqwest`.
+    Raison (amendement 2026-10-18) : sous `tokio::time::pause`, attendre une E/S réelle compte comme inactivité et
+    l'horloge saute ; les Scenario de temps se prouvent donc sur cette fonction, sans réseau, en temps simulé.
   Compiler sous `#[cfg(feature = "matrix")]`.
 
 Must not:
@@ -110,7 +114,14 @@ Tasks:
     `verification_uri` est `…/link` **sans** `verification_uri_complete` (l'opérateur saisit le code) ;
     `interval = 5`, `expires_in = 1200` ; le jeton d'accès vit **300 s** et un `refresh_token` est rendu, d'où
     l'importance de la persistance des rotations (./client.sdd) ; `authorization_pending` arrive en `403`.
-  [ ] Tests d'abord contre un faux MAS (`../../tests/matrix_device_code.rs`), puis ./device_code.rs.
+  [x] Tests d'abord contre un faux MAS (`../../tests/matrix_device_code.rs`), puis ./device_code.rs.
+    Validé 2026-10-18 (Claude) : huit tests verts sous `matrix` et `workflow,matrix`, clippy des deux sans écart, fmt et
+    `specdd lint` OK. Écarts à la lettre de la tâche, tous actés : les tests vivent en **inline** (`login` est
+    `pub(crate)`, une crate d'intégration ne le voit pas, donc pas de `tests/matrix_device_code.rs`) ; les deux
+    Scenario de temps portent sur la boucle `poll_until_done` seule, sous `start_paused` (un faux MAS réel fait sauter
+    l'horloge simulée) ; la vérification d'origine après envoi est gardée, la garantie réelle contre les redirections
+    (client `reqwest` en `redirect::Policy::none()`) relève de ./client.sdd, Tâche C ; la garde de délai tronque à la
+    seconde (le dernier sondage peut être sauté de moins d'une seconde avant `expires_in`).
 
 Done when:
   Les `Scenario` sont verts ; le spike est consigné (ci-dessus) ; la spec est relue et approuvée avant

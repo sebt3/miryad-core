@@ -113,7 +113,7 @@ sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "m
 # `SchemaManager::has_table`/`has_column`, acquis partagé avec m20260822_000001_create_api_tokens.sdd
 # et m20260822_000002_create_users_groups.sdd).
 sea-orm-migration = { version = "2", features = ["sqlx-sqlite"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util", "net"] }
 tower = { version = "0.5", features = ["util"] }
 # Suite de conformité officielle du store de chiffrement (src/matrix/store/crypto.sdd), versions alignées sur 0.18.
 matrix-sdk-crypto = { version = "0.18", features = ["testing"] }
