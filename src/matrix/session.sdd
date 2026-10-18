@@ -49,7 +49,10 @@ Exposes:
   `StoredSession`, `SESSION_KEY`, `load`, `save`, `clear` — tous `pub(crate)`.
 
 Tasks:
-  [ ] Tests d'abord (store SQLite mémoire du lot store, sessions fabriquées à la main), puis ./session.rs.
+  [x] Tests d'abord (store SQLite mémoire du lot store, sessions fabriquées à la main), puis ./session.rs.
+    Validé 2026-10-18 (Claude) : six tests verts (cinq Scenario + garde `Debug` sans jeton), clippy `matrix` et
+    `workflow,matrix` sans écart, fmt et `specdd lint` OK. Lectures retenues : échec de `set`/`get` propagé avec sa
+    variante d'origine ; `Corrupt("session illisible : …")` ne reprend que la position serde, jamais le contenu.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./session.rs.
