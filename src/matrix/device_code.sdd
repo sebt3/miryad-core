@@ -59,7 +59,9 @@ Must:
       `slow_down` → `interval += 5` ; `expired_token` ou délai total `expires_in` dépassé → @Login
       « code expiré » ; `access_denied` → @Login « refusé » ; succès → `access_token`, `refresh_token?`,
       `expires_in?`. Une réponse HTTP d'erreur autre (`5xx`, coupure) pendant l'interrogation est
-      réessayée tant que le délai total n'est pas dépassé.
+      réessayée tant que le délai total n'est pas dépassé. **Les erreurs OAuth se lisent dans le champ `error` du
+      corps JSON, jamais dans le statut HTTP** : MAS répond `authorization_pending` en `403` (la RFC 8628 prévoit
+      `400`), constaté au spike du 2026-10-18. Un corps non JSON avec un statut `5xx` reste une erreur réessayée.
     7. **Identité** : `GET {homeserver}/_matrix/client/v3/account/whoami` avec `Authorization: Bearer
       {access_token}` ; `user_id` en vient ; `device_id` doit valoir celui de l'étape 3 (sinon
       @Login « appareil inattendu »).
@@ -86,13 +88,28 @@ Handles:
   Interruption (le futur est abandonné) : aucun état local à nettoyer ; le code côté serveur expire seul.
 
 Tasks:
-  [?] **Spike obligatoire avant l'implémentation** contre un MAS réel (déploiement `box/messaging/palpo`,
+  [x] **Spike obligatoire avant l'implémentation** contre un MAS réel (déploiement `box/messaging/palpo`,
     compte de service Authentik) : (a) MAS autorise-t-il l'enregistrement dynamique avec ces métadonnées
     (sinon : client statique configuré, ajouter `client_id` à `MatrixConfig`) ? (b) la portée
     `urn:matrix:org.matrix.msc2967.client:device:{id}` est-elle acceptée ? (c) Palpo accepte-t-il le jeton
     en introspection ? (d) un compte de service peut-il approuver (flux device côté Authentik) ? Les
     réponses amendent cette spec. En cas d'échec, la voie de repli est `SessionImport` (./client.sdd) et
     cette spec passe en `[-]`.
+    **Résultat du spike, 2026-10-18** (MAS 0.x derrière Palpo 0.4.0, tenant `media-test`, Authentik 2026.2) — **(a) OUI** :
+    `POST /oauth2/registration` avec exactement les métadonnées de l'étape 2 rend `201` et un `client_id` ; pas de
+    client statique, `MatrixConfig` ne change pas. **(b) OUI** : `POST /oauth2/device` accepte la portée
+    `openid urn:matrix:org.matrix.msc2967.client:api:* urn:matrix:org.matrix.msc2967.client:device:{id}` et le
+    `device_id` demandé est celui du jeton (`whoami` rend `SPIKEBOT01`). **(c) OUI** : Palpo accepte le jeton
+    (`whoami` → `@media-test-matrix-bot:media.rennes.home`). **(d) OUI** : un utilisateur Authentik de type
+    `service_account` avec un jeton d'intention `app_password` s'authentifie dans `default-authentication-flow`
+    (stages identification puis mot de passe, API `flows/executor`) ; MAS affiche ensuite une page « Create
+    Account » (première fois seulement, le localpart vient de `preferred_username`) puis « Give access to your
+    account? » (case `confirm_device` + `action=consent`). Constats utiles à l'implémentation : la découverte
+    `GET /_matrix/client/v1/auth_metadata` de Palpo et son chemin `unstable` répondent tous deux `200` et portent
+    `issuer` (avec `/` final), `token_endpoint`, `device_authorization_endpoint`, `registration_endpoint` ;
+    `verification_uri` est `…/link` **sans** `verification_uri_complete` (l'opérateur saisit le code) ;
+    `interval = 5`, `expires_in = 1200` ; le jeton d'accès vit **300 s** et un `refresh_token` est rendu, d'où
+    l'importance de la persistance des rotations (./client.sdd) ; `authorization_pending` arrive en `403`.
   [ ] Tests d'abord contre un faux MAS (`../../tests/matrix_device_code.rs`), puis ./device_code.rs.
 
 Done when:
