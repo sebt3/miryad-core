@@ -1,18 +1,17 @@
 //! Client Matrix de bot (feature `matrix`) — squelette provisoire, finalisé en dernier du lot
-//! (`src/matrix/mod.sdd`).
+//! (`src/matrix/mod.sdd`) : il manque `device_code` et son ré-export `DeviceCodePrompt`.
 
+pub mod client;
 pub mod config;
 pub mod error;
 pub mod store;
+pub mod sync;
 
-// allow: `session` est consommé par client.rs, non encore écrit (src/matrix/session.sdd) ; à retirer à son arrivée.
+// allow: `session::clear` n'a pas encore d'appelant de production (src/matrix/session.sdd) ; à retirer à son arrivée.
 #[allow(dead_code)]
 mod session;
 
-// allow: `sync` est consommé par client.rs, non encore écrit (src/matrix/sync.sdd) ; à retirer à son arrivée.
-#[allow(dead_code)]
-mod sync;
-
-// allow: `client` est ré-exporté par `mod.rs` en fin de lot (src/matrix/mod.sdd) ; à retirer à son arrivée.
-#[allow(dead_code)]
-mod client;
+pub use client::{MatrixClient, MessageKind, SessionImport};
+pub use config::MatrixConfig;
+pub use error::MatrixError;
+pub use sync::{MatrixEventHandler, MatrixMessage};
