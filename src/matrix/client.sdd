@@ -161,8 +161,9 @@ Tasks:
     **Persistance sur PostgreSQL, exécutée le 2026-10-18** (`persisted_session_survives_token_expiry`, schéma `miryad_live` d'un CNPG
     jetable, trois temps) : login par device code, puis `connect` plus de 5 minutes après → `NotLoggedIn` (**bug réel** : `matrix-sdk`
     ne rafraîchit pas sans `handle_refresh_tokens()`), correctif posé dans `build_client`, puis `connect` → session rafraîchie et
-    synchronisation `Ok(())`, puis relance immédiate → `Ok(())` : **la rotation du jeton est persistée dans PostgreSQL**. Non encore
-    prouvé : une seconde expiration enchaînée (deuxième rotation), le multi-réplica.
+    synchronisation `Ok(())`, puis relance immédiate → `Ok(())` : **la rotation du jeton est persistée dans PostgreSQL**. Seconde expiration enchaînée
+    prouvée le même jour (relance 40 minutes après la première rotation : la session se rafraîchit avec le jeton déjà persisté,
+    `Ok(())`). Non encore prouvé : le multi-réplica.
     Ajout 2026-10-18 : `device_code_login_then_echo` (`#[ignore]`, interactif) — login par device code, auto-join de
     l'inviteur, réponse écho au premier de ses messages, arrêt propre ; variables `MIRYAD_MATRIX_HOMESERVER`,
     `MIRYAD_MATRIX_PASSPHRASE`, `MIRYAD_MATRIX_INVITER`, `MIRYAD_MATRIX_CA` (contenu PEM, optionnelle). Limite connue :
