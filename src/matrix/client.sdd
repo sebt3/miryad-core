@@ -74,7 +74,9 @@ Must:
     HTML) ; `html` ajoute `formatted_body` au format `org.matrix.custom.html`. Contenu construit par la
     fonction pure `build_content(body, html, kind) -> RoomMessageEventContent` (`pub(crate)`). Salle :
     `client.get_room(id)` ; absente (réplica qui ne synchronise pas, ou avant le sync initial) →
-    `join_room_by_id(id)` (idempotent pour une salle déjà rejointe) ; échec → @MatrixError::RoomUnavailable.
+    `join_room_by_id(id)` (idempotent pour une salle déjà rejointe) ; échec → @MatrixError::RoomUnavailable, sauf une erreur
+    retryable (429, 5xx, réseau) qui est conservée telle quelle pour que le retry du step fonctionne (amendement
+    2026-10-18).
     `txn_id = Some(t)` → envoyé avec `with_transaction_id(t)` : un rejeu avec le même `t` est dédupliqué par le
     serveur (retry Restate sans doublon) ; `None` → identifiant généré par `matrix-sdk`.
   `pub async fn join_room(&self, id_or_alias: &str) -> Result<String, MatrixError>` — rend l'identifiant de salle ;
@@ -84,6 +86,10 @@ Must:
     chronologique croissant**, via `Room::messages` en arrière ; ne rend que les messages textes/notices/
     emotes déchiffrés (les événements indéchiffrables sont omis, journalisés par `tracing::warn!` avec
     salle et `event_id` seulement), au même format que ./sync.sdd (`to_message`).
+  Précisions (2026-10-18) : `recent_messages` ne rejoint pas une salle absente du cache (`RoomUnavailable`) ; l'historique
+    est brut — éditions (`m.replace`) et messages du bot lui-même ne sont pas filtrés ; `join_room` sur un alias
+    n'indique aucun `server_names`. Le Scenario « sans requête réseau » prouve que `send` valide avant tout appel ;
+    la tâche d'initialisation de `matrix-sdk` lancée par la restauration peut, elle, joindre le homeserver.
   Toute erreur `matrix-sdk` passe par `MatrixError::from_sdk` (./error.sdd).
   Compiler sous `#[cfg(feature = "matrix")]`.
 
@@ -115,8 +121,11 @@ Tasks:
     matrix verts sous `workflow,matrix`, clippy `matrix` et `workflow,matrix` sans écart, fmt et `specdd lint` OK ;
     `allow(dead_code)` de `from_sdk` retiré. Non couvert, par design : persistance réelle, `Lagged`, `UnknownToken`
     (chemins réseau, tâche D).
-  [ ] Tâche B : `send`, `join_room`, `recent_messages` (+ validation d'identifiants et bornes de `limit`) — tests
+  [x] Tâche B : `send`, `join_room`, `recent_messages` (+ validation d'identifiants et bornes de `limit`) — tests
     d'abord (Scenario alias refusé, `limit` hors bornes), puis ./client.rs. Après la tâche A.
+    Validé 2026-10-18 (Claude) : trois tests verts (alias refusé, `limit` hors bornes, `join_room` mal formé), 114 tests
+    matrix verts sous `workflow,matrix`, clippy `matrix` et `workflow,matrix` sans écart, fmt et `specdd lint` OK.
+    Correctif de relecture : une erreur de jonction retryable est conservée (voir `Must`, `send`).
   [ ] Tâche C : `login_with_device_code`, après le spike et ./device_code.rs.
   [ ] Tâche D : `../../tests/matrix_live.rs` (`#[ignore]`) ; les chemins réseau/E2EE ne sont couverts que par lui. Le
     coût d'un faux homeserver complet pour `matrix-sdk` est élevé — un faux minimal (versions, join, send) n'est

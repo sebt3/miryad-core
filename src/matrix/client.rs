@@ -10,14 +10,18 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use matrix_sdk::AuthSession;
+use matrix_sdk::Room;
 use matrix_sdk::SessionChange;
 use matrix_sdk::SessionMeta;
 use matrix_sdk::SessionTokens;
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::authentication::oauth::{ClientId, OAuthSession};
 use matrix_sdk::cross_process_lock::CrossProcessLockConfig;
-use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
-use matrix_sdk::ruma::{OwnedDeviceId, UserId};
+use matrix_sdk::deserialized_responses::TimelineEvent;
+use matrix_sdk::room::MessagesOptions;
+use matrix_sdk::ruma::events::room::message::{MessageType, RoomMessageEventContent};
+use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent};
+use matrix_sdk::ruma::{OwnedDeviceId, OwnedRoomId, OwnedTransactionId, RoomId, RoomOrAliasId, UInt, UserId};
 use sea_orm::DatabaseConnection;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
@@ -26,6 +30,7 @@ use crate::matrix::config::MatrixConfig;
 use crate::matrix::error::{MatrixError, from_sdk};
 use crate::matrix::session::{self, StoredSession};
 use crate::matrix::store::SeaOrmCryptoStore;
+use crate::matrix::sync::{self, MatrixMessage, MessageParts};
 
 /// Type de message envoyé par le bot (`src/matrix/client.sdd`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +156,109 @@ impl MatrixClient {
             .unwrap_or_default()
     }
 
+    /// Envoie un message dans une salle (`src/matrix/client.sdd`). Rend l'identifiant de l'événement.
+    ///
+    /// # Errors
+    ///
+    /// `MatrixError::InvalidId` si `room_id` n'est pas un identifiant de salle `!x:y`,
+    /// `MatrixError::RoomUnavailable` si la salle est inaccessible, `MatrixError::Sdk` ou
+    /// `MatrixError::Network` pour les autres échecs.
+    pub async fn send(
+        &self,
+        room_id: &str,
+        body: &str,
+        html: Option<&str>,
+        kind: MessageKind,
+        txn_id: Option<&str>,
+    ) -> Result<String, MatrixError> {
+        let room_id = parse_room_id(room_id)?;
+        let content = build_content(body, html, kind);
+        let room = self.joined_room(&room_id).await?;
+        let event_id = match txn_id {
+            Some(txn) => {
+                room.send(content)
+                    .with_transaction_id(OwnedTransactionId::from(txn))
+                    .await
+            }
+            None => room.send(content).await,
+        }
+        .map_err(|err| from_sdk(&err))?
+        .response
+        .event_id;
+        Ok(event_id.to_string())
+    }
+
+    /// Salle à laquelle envoyer : celle du cache du client, sinon jonction par identifiant.
+    async fn joined_room(&self, room_id: &RoomId) -> Result<Room, MatrixError> {
+        if let Some(room) = self.inner.client.get_room(room_id) {
+            return Ok(room);
+        }
+        self.inner.client.join_room_by_id(room_id).await.map_err(|err| {
+            let translated = from_sdk(&err);
+            tracing::warn!(room_id = %room_id, error = %translated, "jonction à la salle échouée");
+            // Une erreur transitoire reste retryable (retry du step) ; le reste est une salle inaccessible.
+            if translated.retryable() {
+                translated
+            } else {
+                MatrixError::RoomUnavailable(room_id.to_string())
+            }
+        })
+    }
+
+    /// Rejoint une salle par identifiant ou par alias et rend son identifiant (`src/matrix/client.sdd`).
+    ///
+    /// # Errors
+    ///
+    /// `MatrixError::InvalidId` si `id_or_alias` est mal formé, `MatrixError::RoomUnavailable` si la
+    /// jonction est refusée, `MatrixError::Sdk` ou `MatrixError::Network` pour les autres échecs.
+    pub async fn join_room(&self, id_or_alias: &str) -> Result<String, MatrixError> {
+        let joined = if let Ok(room_id) = RoomId::parse(id_or_alias) {
+            self.inner.client.join_room_by_id(&room_id).await
+        } else {
+            let alias = RoomOrAliasId::parse(id_or_alias)
+                .map_err(|_| MatrixError::InvalidId(id_or_alias.to_owned()))?;
+            self.inner.client.join_room_by_id_or_alias(&alias, &[]).await
+        };
+        let room = joined.map_err(|err| from_sdk(&err))?;
+        Ok(room.room_id().to_string())
+    }
+
+    /// Lit les `limit` derniers messages d'une salle, par ordre chronologique croissant
+    /// (`src/matrix/client.sdd`). `limit` doit être compris entre 1 et 100.
+    ///
+    /// # Errors
+    ///
+    /// `MatrixError::Config` si `limit` est hors bornes, `MatrixError::InvalidId` si `room_id` n'est
+    /// pas un identifiant de salle `!x:y`, `MatrixError::RoomUnavailable` ou `MatrixError::Sdk` /
+    /// `MatrixError::Network` pour les échecs de lecture.
+    pub async fn recent_messages(
+        &self,
+        room_id: &str,
+        limit: u16,
+    ) -> Result<Vec<MatrixMessage>, MatrixError> {
+        if !(1..=100).contains(&limit) {
+            return Err(MatrixError::Config(format!(
+                "limit doit être compris entre 1 et 100 (reçu {limit})"
+            )));
+        }
+        let room_id = parse_room_id(room_id)?;
+        let room = self
+            .inner
+            .client
+            .get_room(&room_id)
+            .ok_or_else(|| MatrixError::RoomUnavailable(room_id.to_string()))?;
+        let mut options = MessagesOptions::backward();
+        options.limit = UInt::from(limit);
+        let page = room.messages(options).await.map_err(|err| from_sdk(&err))?;
+        // Pagination en arrière : le plus récent d'abord, d'où l'inversion pour l'ordre croissant.
+        Ok(page
+            .chunk
+            .iter()
+            .rev()
+            .filter_map(|event| text_message(room_id.as_str(), event))
+            .collect())
+    }
+
     /// Abonne la persistance des rotations, restaure la session, puis lance la tâche de fond.
     /// L'abonnement précède la restauration pour ne pas manquer un `TokensRefreshed` émis pendant
     /// celle-ci ; la tâche n'écrit qu'une fois la restauration réussie.
@@ -192,6 +300,48 @@ async fn build_client(
         .await
         .map_err(|err| MatrixError::Sdk(err.to_string()))?;
     Ok((store, client))
+}
+
+/// Identifiant de salle `!x:y`. Un alias (`#x:y`) ou une forme invalide est `InvalidId`.
+fn parse_room_id(room_id: &str) -> Result<OwnedRoomId, MatrixError> {
+    RoomId::parse(room_id).map_err(|_| MatrixError::InvalidId(room_id.to_owned()))
+}
+
+/// Message texte, notice ou emote d'un événement de l'historique (`src/matrix/client.sdd`). Rend
+/// `None` pour les autres types, et pour les événements indéchiffrables (journalisés sans contenu).
+fn text_message(room_id: &str, event: &TimelineEvent) -> Option<MatrixMessage> {
+    if event.kind.is_utd() {
+        let event_id = event
+            .event_id()
+            .map_or_else(|| "inconnu".to_owned(), |id| id.to_string());
+        tracing::warn!(room_id, event_id, "événement indéchiffrable omis de l'historique");
+        return None;
+    }
+    let Ok(any) = event.raw().deserialize() else {
+        return None;
+    };
+    let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+        SyncMessageLikeEvent::Original(original),
+    )) = any
+    else {
+        return None;
+    };
+    let (msgtype, body, formatted) = match &original.content.msgtype {
+        MessageType::Text(text) => ("m.text", text.body.as_str(), text.formatted.as_ref()),
+        MessageType::Notice(notice) => ("m.notice", notice.body.as_str(), notice.formatted.as_ref()),
+        MessageType::Emote(emote) => ("m.emote", emote.body.as_str(), emote.formatted.as_ref()),
+        _ => return None,
+    };
+    Some(sync::to_message(MessageParts {
+        room_id,
+        event_id: original.event_id.as_str(),
+        sender: original.sender.as_str(),
+        msgtype,
+        body,
+        formatted_body: formatted.map(|f| f.body.as_str()),
+        timestamp_ms: u64::from(original.origin_server_ts.0),
+        encrypted: event.encryption_info().is_some(),
+    }))
 }
 
 /// Forme persistée → session d'authentification `matrix-sdk`, dans la variante correspondante.
@@ -336,5 +486,58 @@ mod tests {
             panic!("connect sans session doit échouer");
         };
         assert!(matches!(err, MatrixError::NotLoggedIn), "obtenu : {err}");
+    }
+
+    /// Client construit par `import_session` sur base mémoire. Aucun appel de `send`, `join_room` ou
+    /// `recent_messages` n'a lieu avant les validations testées ici : elles rendent leur erreur sans
+    /// toucher au réseau.
+    async fn imported_client() -> MatrixClient {
+        let db = fresh_db().await;
+        let config = MatrixConfig::new("https://m.example", "passphrase-1", "pod-1");
+        let session = SessionImport {
+            user_id: "@bot:example.org".into(),
+            device_id: "DEVICE1".into(),
+            access_token: "tok".into(),
+            refresh_token: None,
+        };
+        MatrixClient::import_session(db, config, session)
+            .await
+            .expect("import_session sur base mémoire")
+    }
+
+    // Scenario: un alias est refusé à l'envoi
+    #[tokio::test]
+    async fn send_refuses_room_alias() {
+        let client = imported_client().await;
+        let result = client
+            .send("#salon:example.org", "salut", None, MessageKind::Text, None)
+            .await;
+        assert!(
+            matches!(result, Err(MatrixError::InvalidId(_))),
+            "obtenu : {result:?}"
+        );
+    }
+
+    // Scenario: limit hors bornes est refusée
+    #[tokio::test]
+    async fn recent_messages_refuses_limit_out_of_bounds() {
+        let client = imported_client().await;
+        for limit in [0_u16, 101] {
+            let result = client.recent_messages("!salon:example.org", limit).await;
+            assert!(
+                matches!(result, Err(MatrixError::Config(_))),
+                "limit {limit} : obtenu {result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn join_room_refuses_malformed_id() {
+        let client = imported_client().await;
+        let result = client.join_room("salon sans forme").await;
+        assert!(
+            matches!(result, Err(MatrixError::InvalidId(_))),
+            "obtenu : {result:?}"
+        );
     }
 }
