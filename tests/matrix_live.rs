@@ -22,6 +22,14 @@
 //!   au handler, avec son corps (aucun test ne prouve encore la boucle de remise positive).
 //! - envoi depuis un réplica qui ne tient pas le bail, salle chiffrée (`client.sdd`, hypothèse
 //!   retenue le 2026-10-06 : à éprouver avec deux processus).
+//!
+//! Banc interactif `device_code_login_then_echo` (`#[ignore]`, un humain est requis) : variables
+//! `MIRYAD_MATRIX_HOMESERVER`, `MIRYAD_MATRIX_PASSPHRASE`, `MIRYAD_MATRIX_INVITER` (identifiant
+//! `@user:server` autorisé à écrire au bot), optionnelles `MIRYAD_MATRIX_CA` (**contenu** PEM, jamais
+//! un chemin) et `MIRYAD_MATRIX_ECHO_TIMEOUT_SECS` (défaut 600). Le test affiche
+//! `DEVICE_CODE_PROMPT url=… code=…` puis `ECHO_READY user_id=…` ; il répond au premier message de
+//! l'invité par `écho de <invité> : <corps>`. Lancement :
+//! `cargo test --no-default-features --features matrix --test matrix_live device_code_login_then_echo -- --ignored --nocapture`.
 
 // Famille panic/unwrap/indexation tolérée dans cette crate de test : en-tête d'exemption
 // équivalent à celui de `src/lib.rs`, posé d'après le `Must` de `tooling.sdd` — une crate
@@ -47,7 +55,9 @@
 )]
 #![cfg(feature = "matrix")]
 
+use std::io::Write;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -56,6 +66,7 @@ use miryad_core::matrix::{
 };
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use sea_orm_migration::MigratorTrait;
+use tokio::sync::oneshot;
 
 /// Variables requises par les tests live, listées dans chaque message d'erreur.
 const REQUIRED_ENV: [&str; 4] = [
@@ -315,4 +326,181 @@ async fn run_sync_never_delivers_own_messages_and_stops_cleanly() {
     let _ = stop_tx.send(());
     let result = task.await.expect("tâche run_sync jointe");
     result.expect("run_sync doit rendre Ok(()) après shutdown");
+}
+
+/// Variables du banc interactif, listées dans le message d'erreur si l'une manque.
+const INTERACTIVE_REQUIRED_ENV: [&str; 3] = [
+    "MIRYAD_MATRIX_HOMESERVER",
+    "MIRYAD_MATRIX_PASSPHRASE",
+    "MIRYAD_MATRIX_INVITER",
+];
+
+/// Délai d'attente de l'écho par défaut, en secondes.
+const DEFAULT_ECHO_TIMEOUT_SECS: u64 = 600;
+
+/// Délai laissé à `run_sync` pour démarrer (sync initial) avant d'annoncer `ECHO_READY`.
+const SYNC_STARTUP_DELAY: Duration = Duration::from_secs(3);
+
+/// Paramètres du banc interactif. `Debug` absent : la passphrase y figure.
+struct Interactive {
+    homeserver: String,
+    passphrase: String,
+    inviter: String,
+    ca_cert: Option<String>,
+    timeout: Duration,
+}
+
+/// Lit les variables du banc interactif ; échoue en nommant celles qui manquent.
+fn interactive_env() -> Interactive {
+    let missing: Vec<&str> = INTERACTIVE_REQUIRED_ENV
+        .iter()
+        .copied()
+        .filter(|name| !std::env::var(name).is_ok_and(|value| !value.is_empty()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "variables d'environnement absentes : {}. Variables requises pour device_code_login_then_echo : {}",
+        missing.join(", "),
+        INTERACTIVE_REQUIRED_ENV.join(", ")
+    );
+    // Contenu PEM attendu : un chemin de fichier est refusé sans écho de sa valeur.
+    let ca_cert = match std::env::var("MIRYAD_MATRIX_CA") {
+        Ok(pem) if !pem.trim().is_empty() => {
+            assert!(
+                pem.contains("-----BEGIN CERTIFICATE-----"),
+                "MIRYAD_MATRIX_CA : contenu PEM attendu (le certificat lui-même, pas un chemin de fichier)"
+            );
+            Some(pem)
+        }
+        _ => None,
+    };
+    let timeout_secs = match std::env::var("MIRYAD_MATRIX_ECHO_TIMEOUT_SECS") {
+        Ok(raw) if !raw.trim().is_empty() => raw.trim().parse::<u64>().unwrap_or_else(|_| {
+            panic!("MIRYAD_MATRIX_ECHO_TIMEOUT_SECS : nombre entier de secondes attendu")
+        }),
+        _ => DEFAULT_ECHO_TIMEOUT_SECS,
+    };
+    Interactive {
+        homeserver: std::env::var("MIRYAD_MATRIX_HOMESERVER").unwrap_or_default(),
+        passphrase: std::env::var("MIRYAD_MATRIX_PASSPHRASE").unwrap_or_default(),
+        inviter: std::env::var("MIRYAD_MATRIX_INVITER").unwrap_or_default(),
+        ca_cert,
+        timeout: Duration::from_secs(timeout_secs),
+    }
+}
+
+/// Répond `écho de <invité> : <corps>` au premier message de l'invité, puis signale au test
+/// l'identifiant de l'écho (ou l'erreur d'envoi). Les messages suivants sont ignorés.
+struct EchoOnce {
+    inviter: String,
+    client: MatrixClient,
+    signal: Mutex<Option<oneshot::Sender<Result<String, String>>>>,
+}
+
+#[async_trait::async_trait]
+impl MatrixEventHandler for EchoOnce {
+    async fn on_message(&self, message: MatrixMessage) {
+        if message.sender != self.inviter {
+            return;
+        }
+        // Le signal est pris avant l'envoi : une seule réponse, même si la boucle remet deux fois.
+        let taken = match self.signal.lock() {
+            Ok(mut slot) => slot.take(),
+            Err(_) => None,
+        };
+        let Some(tx) = taken else {
+            return;
+        };
+        let body = format!("écho de {} : {}", self.inviter, message.body);
+        let outcome = self
+            .client
+            .send(
+                &message.room_id,
+                &body,
+                None,
+                MessageKind::Text,
+                Some(&message.event_id),
+            )
+            .await
+            .map_err(|err| format!("envoi de l'écho échoué : {err}"));
+        let _ = tx.send(outcome);
+    }
+}
+
+#[ignore = "interactif : exige un humain (device code) et un homeserver Matrix, voir MIRYAD_MATRIX_*"]
+#[tokio::test]
+async fn device_code_login_then_echo() {
+    let env = interactive_env();
+    let suffix = unique_suffix();
+    let db = fresh_db().await;
+    let mut config = MatrixConfig::new(&env.homeserver, &env.passphrase, format!("echo-test-{suffix}"));
+    config.auto_join_from = vec![env.inviter.clone()];
+    config.ca_cert = env.ca_cert.clone();
+
+    let client = MatrixClient::login_with_device_code(db, config, |prompt| {
+        println!(
+            "DEVICE_CODE_PROMPT url={} code={}",
+            prompt.verification_uri, prompt.user_code
+        );
+        let _ = std::io::stdout().flush();
+    })
+    .await
+    .expect("login_with_device_code : connexion du bot par device code");
+    let bot_id = client.user_id();
+
+    let (echo_tx, mut echo_rx) = oneshot::channel::<Result<String, String>>();
+    let handler: Arc<dyn MatrixEventHandler> = Arc::new(EchoOnce {
+        inviter: env.inviter.clone(),
+        client: client.clone(),
+        signal: Mutex::new(Some(echo_tx)),
+    });
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    let runner = client.clone();
+    let mut task = tokio::spawn(async move {
+        runner
+            .run_sync(handler, async move {
+                let _ = stop_rx.await;
+            })
+            .await
+    });
+
+    // Si run_sync meurt pendant le démarrage, l'échec est explicite plutôt qu'un ECHO_READY trompeur.
+    tokio::select! {
+        done = &mut task => panic!("run_sync terminé au démarrage : {done:?}"),
+        () = tokio::time::sleep(SYNC_STARTUP_DELAY) => {}
+    }
+    println!("ECHO_READY user_id={bot_id}");
+    let _ = std::io::stdout().flush();
+
+    let mut early = None;
+    let echo: Result<String, String> = tokio::select! {
+        waited = tokio::time::timeout(env.timeout, &mut echo_rx) => match waited {
+            Err(_elapsed) => Err(format!(
+                "aucun message de {} reçu dans les {} s",
+                env.inviter,
+                env.timeout.as_secs()
+            )),
+            Ok(Err(_closed)) => Err("handler abandonné sans signal".to_owned()),
+            Ok(Ok(outcome)) => outcome,
+        },
+        done = &mut task => {
+            early = Some(done);
+            Err(format!("run_sync terminé avant l'écho de {}", env.inviter))
+        }
+    };
+
+    // Dans tous les cas, run_sync est arrêté proprement avant de juger le résultat.
+    let sync_outcome = if let Some(done) = early {
+        done.expect("tâche run_sync jointe")
+    } else {
+        let _ = stop_tx.send(());
+        task.await.expect("tâche run_sync jointe")
+    };
+    let event_id = match echo {
+        Ok(event_id) => event_id,
+        Err(reason) => panic!("{reason} ; run_sync a rendu : {sync_outcome:?}"),
+    };
+    assert!(!event_id.is_empty(), "identifiant de l'écho vide");
+    sync_outcome.expect("run_sync doit rendre Ok(()) après shutdown");
+    println!("ECHO_OK event_id={event_id}");
 }

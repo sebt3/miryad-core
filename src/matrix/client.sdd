@@ -154,6 +154,10 @@ Tasks:
     idempotent, ordre de `recent_messages`, `run_sync` ne remet pas les messages du bot puis s'arrête proprement) ;
     compile, listés ignorés, échoue explicitement sans les variables. **La case reste `[ ]` jusqu'à une exécution réelle** ;
     les scénarios à deux comptes ou deux processus de ./sync.sdd restent à écrire (liste en tête du fichier).
+    Ajout 2026-10-18 : `device_code_login_then_echo` (`#[ignore]`, interactif) — login par device code, auto-join de
+    l'inviteur, réponse écho au premier de ses messages, arrêt propre ; variables `MIRYAD_MATRIX_HOMESERVER`,
+    `MIRYAD_MATRIX_PASSPHRASE`, `MIRYAD_MATRIX_INVITER`, `MIRYAD_MATRIX_CA` (contenu PEM, optionnelle). Limite connue :
+    le sync initial ne rattrape pas ; un message écrit avant `ECHO_READY` n'est pas remis.
   [x] Envoi depuis un réplica qui ne tient pas le bail de sync sur une salle chiffrée : hypothèse retenue
     (arbitré par Sébastien le 2026-10-06) — `matrix-sdk` récupère appareils et clés à la demande, le verrou à
     bail arbitre la cryptographie. À l'épreuve du test live (deux processus) ; si elle ne tient pas, `send`
