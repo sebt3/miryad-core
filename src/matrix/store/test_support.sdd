@@ -1,0 +1,65 @@
+Spec: test_support — base de test du store, SQLite mémoire ou PostgreSQL réel
+
+Purpose:
+  Fournir aux tests du store (`#[cfg(test)]` uniquement) une base neuve, **pilotée par l'environnement** : SQLite
+    mémoire par défaut (aucune dépendance externe, comportement actuel), PostgreSQL réel quand
+    `MIRYAD_TEST_PG_URL` est posée. Raison (2026-10-18) : le store s'exécute en production sur PostgreSQL et
+    n'avait été éprouvé que sur SQLite mémoire ; la suite de conformité officielle et les tests de migration
+    doivent pouvoir tourner, inchangés, sur le chemin productif. Fichier neuf, `cfg(test)`, absent du graphe
+    public.
+
+Owns:
+  ./test_support.rs
+
+References:
+  ./mod.sdd — déclare `#[cfg(test)] mod test_support;`
+  ./kv.sdd, ./migration.sdd, ./crypto.sdd, ./crypto_account.sdd, ./crypto_sessions.sdd, ./crypto_devices.sdd —
+    leurs `fresh_db`/`database_for` de test délèguent ici (ligne de connexion seulement)
+  /Cargo.toml — dev-dependencies `sea-orm` et `sea-orm-migration` avec la feature `sqlx-postgres`
+
+Must:
+  Compilé sous `#[cfg(test)]` seulement (déclaré ainsi dans ./mod.rs).
+  `pub(crate) async fn test_db() -> sea_orm::DatabaseConnection` — **ne migre pas** (l'appelant applique ses
+    migrations, comme avant) :
+    sans `MIRYAD_TEST_PG_URL` (ou vide) : SQLite `sqlite::memory:` avec **une seule connexion**
+      (`max_connections(1).min_connections(1)`, sinon chaque connexion du pool verrait sa propre base mémoire),
+      strictement le comportement des `fresh_db` actuels ;
+    avec `MIRYAD_TEST_PG_URL` : une connexion d'amorçage crée un schéma neuf `t_<16 hexadécimaux aléatoires>`
+      (`rand`, déjà direct) puis rend un pool dont le `search_path` est ce schéma
+      (`ConnectOptions::set_schema_search_path`) — chaque appel isole donc ses tables **et** sa table de
+      suivi des migrations des autres tests, qui peuvent tourner en parallèle sur la même base.
+  `pub(crate) fn is_postgres() -> bool` — vrai si `MIRYAD_TEST_PG_URL` est posée et non vide.
+  Un échec de connexion ou de création de schéma fait échouer le test avec un message explicite qui **ne
+    contient pas l'URL** (elle porte un mot de passe).
+
+Must not:
+  Afficher, journaliser ou inclure dans un message d'échec la valeur de `MIRYAD_TEST_PG_URL`.
+  Supprimer ou modifier un schéma qui n'est pas le sien. Les schémas `t_*` créés restent après les tests : la base
+    PostgreSQL de test est jetable (on la détruit, on ne la nettoie pas).
+  Être compilé hors `cfg(test)`.
+
+Depends on:
+  @sea_orm, @rand
+
+Exposes:
+  `test_db`, `is_postgres` — `pub(crate)`, `cfg(test)`.
+
+Tasks:
+  [ ] Tests d'abord (sans variable : base SQLite utilisable, deux appels isolés l'un de l'autre), puis ./test_support.rs ;
+    brancher ensuite les `fresh_db`/`database_for` de test des six fichiers du store listés en `References`
+    (la ligne de connexion seulement, pas leurs assertions). Le chemin PostgreSQL est prouvé en lançant la suite
+    du store avec `MIRYAD_TEST_PG_URL` (voir ./mod.sdd).
+
+Done when:
+  Sans variable, la suite du store est inchangée et verte ; avec la variable, elle tourne sur PostgreSQL et ses
+    écarts éventuels sont consignés dans `Tasks` de la spec du fichier fautif.
+
+Scenario: sans variable, le helper rend une base SQLite mémoire utilisable
+  Given `MIRYAD_TEST_PG_URL` absente
+  When `test_db()` est appelé puis une requête triviale est exécutée
+  Then la requête réussit et `is_postgres()` vaut `false`
+
+Scenario: deux appels rendent deux bases isolées
+  Given `MIRYAD_TEST_PG_URL` absente
+  When une table est créée sur la première base
+  Then elle n'existe pas sur la seconde

@@ -105,14 +105,15 @@ systemone = []
 matrix = ["dep:matrix-sdk", "dep:matrix-sdk-crypto", "dep:matrix-sdk-store-encryption", "dep:zeroize", "dep:tokio"]
 
 [dev-dependencies]
-sea-orm = { version = "2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "mock"] }
+sea-orm = { version = "2", features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "macros", "mock"] }
 # Sonde `has_table`/`has_column` contractuelle des tests de migration — la dispatch de
 # `SchemaManager` est compilée sous la feature `sqlx-sqlite` de sea-orm-migration (défaut `cli` seul
 # sinon → `BackendNotSupported` à l'exécution). Graphe de test uniquement, graphe public intact.
 # Ordonné par src/migration/m20260923_000001_create_workflow_definitions.sdd `Tasks` (pattern
 # `SchemaManager::has_table`/`has_column`, acquis partagé avec m20260822_000001_create_api_tokens.sdd
 # et m20260822_000002_create_users_groups.sdd).
-sea-orm-migration = { version = "2", features = ["sqlx-sqlite"] }
+# `sqlx-postgres` : tests du store de chiffrement Matrix contre un PostgreSQL réel (`MIRYAD_TEST_PG_URL`, src/matrix/store/test_support.sdd).
+sea-orm-migration = { version = "2", features = ["sqlx-sqlite", "sqlx-postgres"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util", "net"] }
 tower = { version = "0.5", features = ["util"] }
 # Suite de conformité officielle du store de chiffrement (src/matrix/store/crypto.sdd), versions alignées sur 0.18.

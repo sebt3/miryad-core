@@ -744,7 +744,7 @@ visé est Palpo derrière MAS (authentification déléguée à Authentik, mots d
   Critère de sortie : relever le plafond `sqlx` ou `matrix-sdk-sqlite`. L'API publique n'expose aucun type de
   `matrix-sdk` ni de `ruma` (identifiants en `String`), donc la montée de version ne casse pas les applications.
 - **Store de chiffrement dans la base de l'application** (`matrix::store`). Il implémente `CryptoStore` sur
-  SeaORM : quinze tables préfixées `miryad_matrix_` (`TABLE_PREFIX`), une clé de compte dans chacune, les
+  SeaORM : seize tables préfixées `miryad_matrix_` (`TABLE_PREFIX`), une clé de compte dans chacune, les
   valeurs sensibles scellées par le `StoreCipher` du compte (protégé par la passphrase de la config). La
   suite de conformité officielle de `matrix-sdk-crypto` est branchée (35 verts, 1 `#[ignore]` posé par
   l'amont). Le module est **conçu pour être extrait** en crate dédiée (test d'isolation : aucun accès à
