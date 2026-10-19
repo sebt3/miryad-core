@@ -238,7 +238,7 @@ Tasks:
     Validé 2026-10-19 (validator Sonnet, puis clippy rejoué par Claude après correction de `users/group.rs`) : batterie à dix
     combinaisons verte (tests, clippy `-D warnings` dont `--all-features`, `cargo doc`, `fmt`, `specdd lint`).
   [ ] D0 — mode sans base et validation Bearer (décision 2026-10-19 ; specs amendées, code à suivre) : livrés quand D1 à D8 sont `[x]` et que la batterie de
-    `./tooling.sdd` (treize combinaisons) est verte. Ordre d'exécution : un fichier ou un petit groupe par tâche, validator entre chaque ; tant que D7 n'est pas
+    `./tooling.sdd` (treize combinaisons) est verte. Ordre d'exécution (D4 d'abord : un `cfg(feature = "db")` exige la feature déclarée, puis D1, D2, D3, D5, D6, D7, D8, D9) : un fichier ou un petit groupe par tâche, validator entre chaque ; tant que D7 n'est pas
     faite, seules les combinaisons AVEC `db` compilent — c'est attendu.
   [ ] D1 — `./src/auth/error.rs` et `./src/auth/principal.rs` : variantes `InvalidBearer`/`BearerExpired`, `PrincipalSource::Bearer`, `cfg(db)` sur `AuthError::Database`
     (tâches d'amendement de `./src/auth/error.sdd` et `./src/auth/principal.sdd`).
