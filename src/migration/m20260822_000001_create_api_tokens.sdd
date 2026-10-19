@@ -141,7 +141,7 @@ Handles:
     @Migrator inversant l'ordre d'application ; les contraintes posées ici sont autonomes (aucune
     FK entrante) et @down reste symétrique de @up sans no-op ni oubli d'objet à défaire
   La parité des surfaces : `miryad_api_tokens` n'est pas une @MiryadResource et n'est lue par
-    aucune surface générique — ni collection/item REST, ni @graphql, ni @mcp, ni @ir ; seule
+    aucune surface générique — ni collection/item REST, ni @mcp, ni @ir ; seule
     `/api/v1/tokens` de `../rest/tokens.rs` l'expose, asymétrie self-service factuelle que ce
     fichier consigne sans trancher
 

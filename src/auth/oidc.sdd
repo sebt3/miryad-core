@@ -40,7 +40,7 @@ References:
     consommateurs en aval de @subject, @email et @groups ; ./mod.rs est le point de jonction, ce
     fichier ne touche ni la base ni ces fonctions
   /src/rest/mod.rs, /src/rest/me.rs, /src/rest/admin.rs, /src/rest/tokens.rs,
-    /src/graphql/handler.rs, ./dual.rs, ./middleware.rs — tests `#[cfg(test)]` qui injectent
+    ./dual.rs, ./middleware.rs — tests `#[cfg(test)]` qui injectent
     @MockOidcClient dans @MiryadAuthState : @MockOidcClient::exchange_code n'y est jamais appelé
     avec succès (les scénarios testés s'arrêtent avant l'échange), et
     @MockOidcClient::authorization_url est exercé par les tests de ./mod.rs
@@ -159,7 +159,7 @@ Must:
   @MockOidcClient (présent sous @cfg(test) seulement) est le contrat de test des appelants : URL
     d'émission statique sans E/S, @CsrfToken::new_random/@Nonce::new_random/@PkceCodeVerifier frais
     par appel, @exchange_code volontairement @unimplemented! (panique nommée) par défaut —
-    ./mod.rs, ./dual.rs, ./middleware.rs, /src/rest/*.rs et /src/graphql/handler.rs s'appuient sur
+    ./mod.rs, ./dual.rs, ./middleware.rs, et /src/rest/*.rs s'appuient sur
     cette panique comme assertion d'absence, ce comportement par défaut ne change pas. Arbitré par
     Sébastien le 2026-09-27 (cross-file avec ./mod.sdd, `Tasks`) : @MockOidcClient gagne un mode
     configurable où @exchange_code rend un @OidcLoginResult fourni à la construction au lieu de
@@ -170,6 +170,24 @@ Must:
     `#[cfg(feature = ...)]` dans ./oidc.rs, @openidconnect/@reqwest/@base64/@async-trait/@tracing
     non optionnels dans /Cargo.toml — la batterie de /tooling.sdd exerce ce fichier sur
     `--no-default-features` comme sur `--all-features` ; @cfg(test) est le seul gating présent
+  **Amendement 2026-10-19 (validation du JWT Bearer, indépendante de `db`)** — complète `Must` sans le réécrire.
+    @OidcClientTrait gagne `fn verify_bearer(&self, jwt: &str) -> Result<OidcIdentity, AuthError>`, **synchrone** (le JWKS est le
+    snapshot de la discovery : aucune E/S) et sans nonce. Règle d'acceptation figée, déléguée à `openidconnect` (vérifiée dans
+    la source vendue `openidconnect-4.0.1`) : le JWT se parse en @CoreIdToken par `FromStr` ; ses claims se vérifient par
+    `IdToken::claims(&self.inner.id_token_verifier(), nonce_neutre)` où `nonce_neutre` est une fermeture
+    `|_: Option<&Nonce>| Ok(())` (`NonceVerifier` est implémenté pour toute fermeture, `verification/mod.rs`) — donc signature
+    contre les clés du snapshot, `iss` égal à l'issuer découvert, `aud` contenant le `client_id` de ce client, `exp` vérifié
+    (`iat` n'est pas contraint : `openidconnect` 4.0.1 pose par défaut un `iat_verifier_fn` qui accepte tout, `verification/mod.rs`). Aucune audience supplémentaire n'est configurable : `OidcConfig` ne change pas (`Must not`).
+  Rendre, sur succès, un @OidcIdentity dont @id_token vaut le JWT reçu verbatim et dont @subject, @email, @preferred_username
+    viennent des claims vérifiés (mêmes extracteurs qu'@exchange_code) ; le claim `groups` n'est pas lu ici.
+  Mapper les rejets sans fuite : `ClaimsVerificationError::Expired` → @AuthError::BearerExpired (`MRD-AUTH-020`) ;
+    `ClaimsVerificationError::SignatureVerification(SignatureVerificationError::NoMatchingKey)` → arme le signal
+    @jwks_rotation_needed (même discipline que @exchange_code, variant précis jamais un texte) ET rend
+    @AuthError::InvalidBearer (`MRD-AUTH-019`) ; tout autre rejet, ou une chaîne qui n'est pas un JWT, → @AuthError::InvalidBearer.
+    Ni le JWT ni un fragment de claim n'entrent dans l'erreur ni dans une trace.
+  @MockOidcClient (sous `cfg(test)`) gagne un mode configurable pour cette méthode : `with_bearer_result(Result<OidcIdentity,
+    AuthError>)` rend ce résultat verbatim ; par défaut @verify_bearer est `unimplemented!` (panique nommée = assertion
+    d'absence, même discipline qu'@exchange_code : les tests d'un chemin Bearer API-token ne doivent jamais l'appeler).
 
 Must not:
   Persister, même brièvement, un state, un nonce, un cookie ou une session : ni
@@ -192,6 +210,9 @@ Must not:
     librairie (nonce maison, comparaison locale du `sub`, exigence du claim `groups`, contournement
     de signature sous un flag) : @claims est appelé tel quel, tout motif de rejet se confond en
     `MRD-AUTH-011`
+  Ajouter à @OidcConfig un champ d'audiences supplémentaires, un délai de grâce d'horloge ou un re-fetch automatique du JWKS
+    pour la validation Bearer (amendement 2026-10-19) : tout se décide par la règle d'acceptation figée de `Must`, un
+    jeton émis pour une autre audience est rejeté. Un besoin réel s'instruit en roadmap, pas ici.
 
 Depends on:
   @openidconnect `4.0.1` — @CoreClient/@CoreProviderMetadata/@AuthorizationRequest, @CsrfToken,
@@ -410,6 +431,11 @@ Tasks:
     l'@unimplemented!), fixture mock IdP + HMAC au runtime + `tracing-subscriber` (ci-dessus) ; le
     contrat ne déborde pas du fichier — si un mock HTTP en crate d'intégration est préféré,
     rattacher ./tests par un `Can modify` de cette spec.
+  [x] Amendement 2026-10-19 (validation Bearer) : dans `./oidc.rs`, ajouter @verify_bearer au trait, son implémentation pour
+    @OidcClient (règle et mappage d'erreur de `Must`) et le mode configurable de @MockOidcClient ; les tests de la
+    validation utilisent le banc HS256 déjà employé pour @exchange_code (clé symétrique signée au runtime). Dépend de
+    ./error.sdd (variantes 019/020) et de ./principal.sdd. Les `Scenario` ci-dessous sont convertis en tests nommés
+    `verify_bearer_*`.
 
 Done when:
   Chaque `Scenario` a au moins un test nommé distinct et vert dans le `mod tests` de ./oidc.rs,
@@ -640,3 +666,45 @@ Scenario: Mock configuré pour un échange réussi rend le résultat fourni
   When @exchange_code est appelé avec n'importe quel code, nonce et verifier
   Then l'appel rend @Ok de l'@OidcLoginResult fourni, verbatim, sans panique — ./mod.sdd s'appuie
     sur ce mode pour son scenario « callback succès »
+
+Scenario: JWT Bearer valide rend l'identité (2026-10-19)
+  Given un @OidcClient dont le JWKS contient la clé de signature, et un JWT signé par elle avec `iss` égal à l'issuer, `aud`
+    contenant le `client_id`, `exp` futur, `sub` `user-1`, `email` `user-1@example.com`
+  When @verify_bearer est appelé avec ce JWT
+  Then le résultat est @Ok(@OidcIdentity) dont @id_token égale le JWT reçu, @subject `user-1`, @email `user-1@example.com`
+  And le signal @jwks_rotation_needed reste `false`
+
+Scenario: JWT Bearer échu rend BearerExpired (2026-10-19)
+  Given un JWT correctement signé dont `exp` est passé
+  When @verify_bearer est appelé
+  Then le résultat est @Err(@AuthError::BearerExpired) (`MRD-AUTH-020`) et le signal de rotation reste `false`
+
+Scenario: JWT Bearer à signature altérée rend InvalidBearer (2026-10-19)
+  Given un JWT dont la signature a été modifiée d'un octet
+  When @verify_bearer est appelé
+  Then le résultat est @Err(@AuthError::InvalidBearer) (`MRD-AUTH-019`)
+
+Scenario: JWT Bearer d'une autre audience rend InvalidBearer (2026-10-19)
+  Given un JWT correctement signé dont `aud` ne contient pas le `client_id`
+  When @verify_bearer est appelé
+  Then le résultat est @Err(@AuthError::InvalidBearer)
+
+Scenario: JWT Bearer d'un autre issuer rend InvalidBearer (2026-10-19)
+  Given un JWT correctement signé dont `iss` diffère de l'issuer découvert
+  When @verify_bearer est appelé
+  Then le résultat est @Err(@AuthError::InvalidBearer)
+
+Scenario: kid inconnu arme le signal de rotation (2026-10-19)
+  Given un JWT dont le `kid` ne figure pas dans le JWKS du snapshot
+  When @verify_bearer est appelé
+  Then le résultat est @Err(@AuthError::InvalidBearer) ET @jwks_rotation_needed vaut `true`
+
+Scenario: une chaîne qui n'est pas un JWT rend InvalidBearer (2026-10-19)
+  Given les chaînes `""`, `abc`, `a.b.c` (segments non décodables)
+  When @verify_bearer est appelé sur chacune
+  Then chaque appel rend @Err(@AuthError::InvalidBearer), sans panique
+
+Scenario: l'erreur ne contient pas le JWT (2026-10-19)
+  Given un JWT rejeté pour chacun des motifs ci-dessus
+  When l'erreur est formatée par @Display et @Debug
+  Then ni le JWT ni aucun de ses segments n'apparaît dans le texte

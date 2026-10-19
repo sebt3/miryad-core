@@ -96,9 +96,9 @@ fichiers définissent le flux, la règle une-spec-par-fichier, les contrats tran
 - Un `Scenario` par comportement observable, y compris les cas d'erreur : c'est la matière
   première des tests de l'`implementer`. Un comportement sans `Scenario` n'est pas vérifiable.
 - Gating de features explicite : une spec dit sous quelles features son fichier compile
-  (`static-frontend`, `swagger-ui`, `graphql`, `graphiql`, `mcp`) et ce que ça impose à la batterie.
+  (`static-frontend`, `swagger-ui`, `mcp`, `workflow`, `systemone`, `matrix`) et ce que ça impose à la batterie.
 - Parité des surfaces : tout ce qui touche @MiryadResource ou un comportement exposé doit être
-  honoré à l'identique en REST, GraphQL et MCP. Un écart de surface est une erreur de contrat, pas
+  honoré à l'identique en REST et MCP. Un écart de surface est une erreur de contrat, pas
   une dette.
 - Ne transforme jamais un comportement accidentel du code existant en contrat sans décision
   explicite de Sébastien : marque-le `[?]` ou `[!]` dans `Tasks`.

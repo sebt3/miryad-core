@@ -2,8 +2,8 @@ Spec: registry — @McpToolRegistry : tools CRUD générés par entité @MiryadR
 
 Purpose:
   Porter le dispatch des cinq tools CRUD de la surface MCP : chaque entité @MiryadResource montée
-    par @McpToolRegistry::register est atteignable par nom à l'exécution (dispatch par chaîne comme
-    en GraphQL — @tools/call arrive avec un nom, pas un type Rust), et chacun des cinq bras de
+    par @McpToolRegistry::register est atteignable par nom à l'exécution (dispatch par chaîne
+    — @tools/call arrive avec un nom, pas un type Rust), et chacun des cinq bras de
     @McpOp délègue ligne à ligne à @rest::core::list, @rest::core::get, @rest::core::create,
     @rest::core::update et @rest::core::delete. Aucune autorisation, aucune pagination, aucun
     invariant de clé primaire ou de colonne propriétaire n'est décidé ou réévalué ici : la parité
@@ -13,9 +13,7 @@ Purpose:
     @RestError → @McpError par le @From de ./error.rs, et le registre @BTreeMap<@'static str,
     @Box<@dyn @McpEntity>> (trié par clé, arbitré 2026-09-29) qui ne retient que la clé nommée et le dispatcheur monomorphisé. Rien
     de @MiryadResource n'est copié au registre — ni politique, ni colonne, ni hook ;
-    @graphql::EntityPolicy snapshotte ses @AccessPolicy et efface son hook @before_create en
-    pointeur sur `dyn` @std::any::Any à l'enregistrement (./../graphql/registry.rs). Ici chaque
-    politique, colonne et hook est relu en direct sur le trait, par la chaîne déléguée, à chaque
+    chaque politique, colonne et hook est relu en direct sur le trait, par la chaîne déléguée, à chaque
     appel.
   Aucun `#[cfg(feature = ...)]` dans le source : le fichier ne compile que sous les combinaisons
     portant la feature `mcp`, via `#[cfg(feature = "mcp")] pub mod mcp` de ./../lib.rs
@@ -35,7 +33,7 @@ Owns:
 
 References:
   /miryad-core.sdd — contrat hérité : un code `MRD-*` par erreur interne, @HookError hors
-    taxonomie, lecture à l'identique par REST/GraphQL/MCP, au moins un test distinct par `Scenario`
+    taxonomie, lecture à l'identique par REST/MCP, au moins un test distinct par `Scenario`
   /.specdd/bootstrap.project.md — contrats transverses : @tracing seul, gating de features
     déclaré par la spec, une spec par fichier, tests rattachés au contrat exercé
   /tooling.sdd — matrice de batteries : ./registry.rs n'est compilé que sous `--features mcp` et
@@ -114,8 +112,7 @@ Must:
   Ne rien retenir de @MiryadResource hors la clé : aucun @AccessPolicy, @Column, copie de
     politique ou pointeur de hook n'existe dans @McpToolRegistry ni dans @McpEntityImpl —
     @rbac et @rest::core relisent le trait en direct à chaque appel délégué ; le trait étant
-    statique, aucun snapshot ne peut dériver : la différence d'effacement avec
-    @graphql::EntityPolicy est une divergence de forme, pas de verdict.
+    statique, aucun snapshot ne peut dériver.
   N'exposer que le registre hors-module : @McpToolRegistry @pub (chemin
     @miryad_core::mcp::McpToolRegistry, ré-export ./mod.rs), ses deux champs @pub(crate) (@format,
     @entities) lus par ./handler.rs seul ; hors crate, seuls @new et @register sont utilisables —
@@ -150,9 +147,8 @@ Must not:
   Poser @#[serde(deny_unknown_fields)] sur @IdParams : @McpOp::Update relit le corps complet
     avec l'@id dans la même envelope — l'intolérance aux clés inconnues casserait structurellement
     toute update ; la tolérance est un choix de conception, consignée, pas un oubli.
-  Snapshotter politiques, colonnes ou hook dans le registre, effacés ou non : l'effacement à
-    l'enregistrement est le choix de ./../graphql/registry.rs ; y importer un @EntityPolicy
-    MCP ferait vieillir une métadonnée hors du trait et romprait la promesse de lecture unique.
+  Snapshotter politiques, colonnes ou hook dans le registre, effacés ou non : cela
+    ferait vieillir une métadonnée hors du trait et romprait la promesse de lecture unique.
   Promettre un ordre d'insertion : @entities est un @std::collections::BTreeMap, l'ordre d'exposition
     est l'ordre croissant des clés (`resource_name`) (arbitré par Sébastien le 2026-09-29) ; ./handler.rs itère @values() dans cet ordre
     pour `tools/list`, sans le retrier.
@@ -288,8 +284,7 @@ Raises:
     asymétrie signalée de responsabilité, pas un trou.
   Aucun panic : aucun @unwrap/@expect/@panic!/@unreachable!/indexation non gardée en production ;
     @async_trait ne peut propaguer qu'une @Err typée ; le @Box<@dyn @McpEntity> ne sera jamais
-    downcasté donc jamais de panique de type (comparer : @graphql::call_before_create, son
-    pendant GraphQL, @expect sur un downcast — ./../graphql/registry.sdd).
+    downcasté donc jamais de panique de type.
 
 Handles:
   Base non migrée ou table d'entité absente : @McpError::Database dès @users::resolve_user ou la
@@ -406,6 +401,7 @@ Tasks:
     sous-chaîne `expected struct`, sans verrouiller le nom de structure (détail interne de serde) ;
     l'exemple de @Raises est lu comme illustratif. Les commentaires « Écart consigné » de
     ./registry.rs deviennent obsolètes : une tâche autorisée les retire.
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./registry.rs`, doc (ligne ~20) : retirer « comme en GraphQL — cf. `graphql::PolicyRegistry` » (dispatch par nom d'entité à l'exécution). Aucun changement de comportement.
 
 Done when:
   La spec porte exactement dix-neuf `Scenario` et chacun est vérifié par au moins un test nommé
@@ -458,9 +454,8 @@ Scenario: enregistrement : rien de @MiryadResource n'est retenu, les politiques 
     @rest::core::get
   Then le compteur a STRICTEMENT crû entre les deux appels : la politique est relue sur le trait à
     chaque appel délégué, en direct
-  And @McpToolRegistry ne possède structurellement aucun champ politique, colonne ou hook — à
-    comparer au @EntityPolicy de ./../graphql/registry.rs qui snapshotte et efface le hook en
-    pointeur `dyn` @std::any::Any : la clé MCP ne porte que le nom et le type effacé
+  And @McpToolRegistry ne possède structurellement aucun champ politique, colonne ou hook —
+    la clé MCP ne porte que le nom et le type effacé
 
 Scenario: `_list` sans arguments : trois @None transmis tels quels à @rest::core::list
   Given une base migrée avec la table `recipes` pleine de deux lignes et un appel

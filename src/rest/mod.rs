@@ -1,29 +1,50 @@
-//! API REST générique — routeur CRUD axum construit depuis [`crate::resource::MiryadResource`].
+//! API REST générique — routeur CRUD axum construit depuis `crate::resource::MiryadResource`.
 //!
 //! `resource_router::<E, S>()` monte `GET/POST /api/v1/{resource}` et
 //! `GET/PUT/DELETE /api/v1/{resource}/{id}` avec RBAC et pagination automatiques.
+//!
+//! Le routeur CRUD (`resource_router`, trait `RestEntity`) et les sous-modules qui en dépendent
+//! (`admin`, `core`, `error`, `me`, `tokens`) ne sont compilés que sous la feature `db`
+//! (amendement 2026-10-19). Sans elle, ce module n'expose que `openapi`.
 
+#[cfg(feature = "db")]
 pub mod admin;
+#[cfg(feature = "db")]
 pub(crate) mod core;
+#[cfg(feature = "db")]
 pub mod error;
+#[cfg(feature = "db")]
 pub mod me;
 pub mod openapi;
+#[cfg(feature = "db")]
 pub mod tokens;
 
+#[cfg(feature = "db")]
 use axum::extract::{FromRef, Path, Query, State};
+#[cfg(feature = "db")]
 use axum::http::StatusCode;
+#[cfg(feature = "db")]
 use axum::routing::get;
+#[cfg(feature = "db")]
 use axum::{Json, Router};
+#[cfg(feature = "db")]
 use sea_orm::sea_query::ColumnType;
+#[cfg(feature = "db")]
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, PrimaryKeyToColumn, PrimaryKeyTrait,
 };
+#[cfg(feature = "db")]
 use serde::Serialize;
+#[cfg(feature = "db")]
 use serde::de::DeserializeOwned;
 
+#[cfg(feature = "db")]
 use crate::auth::{AuthPrincipal, MiryadAuthState};
+#[cfg(feature = "db")]
 use crate::query::PagedResult;
+#[cfg(feature = "db")]
 use crate::resource::{AccessPolicy, MiryadResource};
+#[cfg(feature = "db")]
 use error::RestError;
 
 /// Entités éligibles au routeur CRUD générique — en plus de `MiryadResource`, il faut pouvoir
@@ -76,6 +97,7 @@ use error::RestError;
 ///
 /// let _router = resource_router::<Entity, MiryadAuthState>();
 /// ```
+#[cfg(feature = "db")]
 pub trait RestEntity:
     MiryadResource<
         Model: Serialize + DeserializeOwned + IntoActiveModel<<Self as EntityTrait>::ActiveModel> + Sync,
@@ -86,6 +108,7 @@ pub trait RestEntity:
 {
 }
 
+#[cfg(feature = "db")]
 impl<E> RestEntity for E where
     E: MiryadResource<
             Model: Serialize + DeserializeOwned + IntoActiveModel<<E as EntityTrait>::ActiveModel> + Sync,
@@ -96,6 +119,7 @@ impl<E> RestEntity for E where
 {
 }
 
+#[cfg(feature = "db")]
 #[derive(serde::Deserialize)]
 struct ListParams {
     page: Option<u64>,
@@ -116,6 +140,7 @@ struct ListParams {
 /// textuelle, ou `owner_column` désignant une colonne de type autre que `ColumnType::Integer`.
 /// Le message cite l'entité et la règle violée ; une entité mal déclarée ne monte jamais et ne
 /// répond jamais à une requête.
+#[cfg(feature = "db")]
 pub fn resource_router<E, S>() -> Router<S>
 where
     E: RestEntity,
@@ -176,6 +201,7 @@ where
     )
 }
 
+#[cfg(feature = "db")]
 async fn list_handler<E: RestEntity>(
     State(auth): State<MiryadAuthState>,
     principal: AuthPrincipal,
@@ -192,6 +218,7 @@ async fn list_handler<E: RestEntity>(
     Ok(Json(page))
 }
 
+#[cfg(feature = "db")]
 async fn get_handler<E: RestEntity>(
     State(auth): State<MiryadAuthState>,
     principal: AuthPrincipal,
@@ -200,6 +227,7 @@ async fn get_handler<E: RestEntity>(
     Ok(Json(core::get::<E>(&auth.db, &principal, id).await?))
 }
 
+#[cfg(feature = "db")]
 async fn create_handler<E: RestEntity>(
     State(auth): State<MiryadAuthState>,
     principal: AuthPrincipal,
@@ -211,6 +239,7 @@ async fn create_handler<E: RestEntity>(
     ))
 }
 
+#[cfg(feature = "db")]
 async fn update_handler<E: RestEntity>(
     State(auth): State<MiryadAuthState>,
     principal: AuthPrincipal,
@@ -220,6 +249,7 @@ async fn update_handler<E: RestEntity>(
     Ok(Json(core::update::<E>(&auth.db, &principal, id, body).await?))
 }
 
+#[cfg(feature = "db")]
 async fn delete_handler<E: RestEntity>(
     State(auth): State<MiryadAuthState>,
     principal: AuthPrincipal,
@@ -229,6 +259,7 @@ async fn delete_handler<E: RestEntity>(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[cfg(feature = "db")]
 #[cfg(test)]
 mod tests {
     // Le `Scenario` « Surface disponible sans aucune feature » de `./mod.sdd` n'a pas de test

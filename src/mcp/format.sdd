@@ -192,9 +192,9 @@ Handles:
     et `--all-features`.
   Parité des surfaces : ce que l'agent MCP lit provient des mêmes @rest::core que le REST
     (../../.specdd/bootstrap.project.md) ; le CHOIX du format de rendu n'existe sur aucune
-    autre surface (REST et GraphQL rendent leur JSON propre) — asymétrie assumée par
-    l'en-tête du fichier (« pas reconfigurable par appel, cohérent avec REST/GraphQL » : aucune
-    negotiation par appel, fixée au montage) ; ./format.rs ne garantit donc rien sur REST/GraphQL
+    autre surface (REST rend leur JSON propre) — asymétrie assumée par
+    l'en-tête du fichier (« pas reconfigurable par appel, cohérent avec REST » : aucune
+    negotiation par appel, fixée au montage) ; ./format.rs ne garantit donc rien sur REST
     et n'y a pas de compte à rendre.
 
 Must:
@@ -304,6 +304,7 @@ Tasks:
     l'agent MCP, donc un cycle spec-first séparé. Les commentaires « Écart consigné » de
     ./format.rs deviennent obsolètes : une tâche autorisée les retire, les égalités exactes des
     tests restent.
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./format.rs`, en-tête `///` (ligne ~6) : « cohérent avec REST » (retirer `/GraphQL`). Aucun changement de comportement.
 
 Done when:
   Chaque `Scenario` dispose d'au moins un test nommé distinct vérifiant son `Then` dans le

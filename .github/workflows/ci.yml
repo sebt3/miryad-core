@@ -21,12 +21,14 @@ jobs:
             args: ""
           - name: no-default
             args: "--no-default-features"
+          - name: db
+            args: "--no-default-features --features db"
           - name: swagger-ui
             args: "--no-default-features --features swagger-ui"
-          - name: graphql
-            args: "--no-default-features --features graphql"
-          - name: graphiql
-            args: "--no-default-features --features graphiql"
+          - name: swagger-ui-db
+            args: "--no-default-features --features swagger-ui,db"
+          - name: frontend-swagger-ui
+            args: "--no-default-features --features static-frontend,swagger-ui"
           - name: mcp
             args: "--no-default-features --features mcp"
           - name: workflow
@@ -76,15 +78,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Pas de graphe contenant graphql ni --all-features : carve-out du pont gele
-        # (./workflows.sdd, arbitre par Sebastien le 2026-10-03, option A).
         include:
-          - name: no-default
-            args: "--no-default-features"
           - name: default
             args: ""
+          - name: no-default
+            args: "--no-default-features"
+          - name: db
+            args: "--no-default-features --features db"
           - name: swagger-ui
             args: "--no-default-features --features swagger-ui"
+          - name: swagger-ui-db
+            args: "--no-default-features --features swagger-ui,db"
+          - name: frontend-swagger-ui
+            args: "--no-default-features --features static-frontend,swagger-ui"
           - name: mcp
             args: "--no-default-features --features mcp"
           - name: workflow
@@ -97,6 +103,8 @@ jobs:
             args: "--no-default-features --features matrix"
           - name: workflow-matrix
             args: "--no-default-features --features workflow,matrix"
+          - name: all-features
+            args: "--all-features"
     steps:
       - uses: actions/checkout@v7
 
@@ -110,3 +118,23 @@ jobs:
 
       - name: cargo clippy (${{ matrix.name }})
         run: cargo clippy --all-targets ${{ matrix.args }} -- -D warnings
+
+  no-db-graph:
+    name: sea-orm absent sans db
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo tree -i sea-orm doit être vide sans db
+        shell: bash
+        run: |
+          for args in "--no-default-features" "--no-default-features --features swagger-ui" "--no-default-features --features static-frontend,swagger-ui"; do
+            echo "cargo tree $args -e normal -i sea-orm"
+            out=$(cargo tree $args -e normal -i sea-orm) ; status=$? ; if [ "$status" -ne 0 ] || [ -n "$out" ]; then echo "sea-orm est dans le graphe sans db :" ; echo "$out" ; exit 1 ; fi
+          done

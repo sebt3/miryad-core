@@ -4,7 +4,7 @@
 Spec: dual — extracteur dual-auth axum de @AuthPrincipal : Bearer token API résolu d'abord, cookie de session en repli, aucun repli silencieux sur un Bearer reconnu
 
 Purpose:
-  Unifier le point d'entrée d'authentification des trois surfaces du moteur (REST, GraphQL, MCP) :
+  Unifier le point d'entrée d'authentification des deux surfaces du moteur (REST, MCP) :
     une seule implémentation de @FromRequestParts produit @AuthPrincipal à partir d'un token API
     (`Authorization: Bearer`) ou du cookie de session chiffré, et fixe l'ordre de résolution (Bearer
     d'abord, cookie ensuite), la priorité quand les deux sont présents, et l'irréversibilité du
@@ -27,8 +27,8 @@ References:
     confusion entre les deux extracteurs est l'erreur de frontière locale la plus plausible
   /src/rest/mod.rs, /src/rest/admin.rs, /src/rest/me.rs, /src/rest/tokens.rs — handlers REST
     consommant @AuthPrincipal comme extracteur
-  /src/graphql/handler.rs, /src/mcp/handler.rs — handlers GraphQL et MCP consommant @AuthPrincipal
-    comme extracteur : les trois surfaces résolvent avec le présent fichier
+  /src/mcp/handler.rs — handler MCP consommant @AuthPrincipal
+    comme extracteur : les deux surfaces résolvent avec le présent fichier
   /src/rest/openapi.rs — ne déclare que le schéma de sécurité `bearer_auth` côté OpenAPI, le cookie
     HttpOnly étant écarté de l'`Authorize` pour une raison documentée chez lui
   /docs/architecture.md — formule l'ordre « Bearer d'abord, pas de repli sur le cookie » ; la
@@ -94,12 +94,28 @@ Must:
     pas extracteur) — l'asymétrie qui subsistait entre les deux extracteurs (@AuthUser et cet
     impl) est celle qui est corrigée ici, pas la couche moteur en dessous.
   Parité des surfaces : la même implémentation fournit @AuthPrincipal aux handlers REST (CRUD
-    `/api/v1`, admin, `me`, `tokens`), à `POST /api/graphql` et à `POST /mcp` — ordre, priorité et
-    codes sont identiques sur les trois surfaces. Asymétries constatées, hors du périmètre de ce
-    fichier : le rejet rend en `text/plain` hors enveloppe GraphQL/MCP (./error.sdd et sa tâche
+    `/api/v1`, admin, `me`, `tokens`) et à `POST /mcp` — ordre, priorité et
+    codes sont identiques sur les deux surfaces. Asymétries constatées, hors du périmètre de ce
+    fichier : le rejet rend en `text/plain` hors enveloppe MCP (./error.sdd et sa tâche
     `[?]`) et les déclarations de sécurité des surfaces sont déséquilibrées — gelé comme limite
     documentaire assumée le 2026-09-27 (`Tasks`) : OpenAPI ne peut de toute façon pas décrire
-    nativement la sécurité GraphQL/MCP, ce n'est pas une dette de ce fichier
+    nativement la sécurité MCP, ce n'est pas une dette de ce fichier
+  **Amendement 2026-10-19 (JWT OIDC Bearer, feature `db`)** — prévaut sur toute mention contraire de ce fichier. Un en-tête
+    `Authorization: Bearer <matériau>` reconnu reste un choix définitif : aucun repli sur le cookie, quel que soit le résultat.
+    Le matériau est **JWT-shaped** ssi il contient exactement deux caractères `.` (règle déterministe, aucun parse). Dispatch :
+    (1) matériau JWT-shaped, sur toute combinaison → @OidcClientTrait::verify_bearer (./oidc.sdd) sur
+    `auth_state.oidc_client` ; succès → @AuthPrincipal { subject, email, preferred_username } de l'identité vérifiée, source
+    @PrincipalSource::Bearer { jwt } ; échec → l'@AuthError de @verify_bearer propagée telle quelle (`MRD-AUTH-019`/`020`).
+    (2) matériau non JWT-shaped, **sous `db`** → chemin API-token inchangé (@validate_token, `MRD-AUTH-014`/`015`/`016`).
+    (3) matériau non JWT-shaped, **sans `db`** → @AuthError::InvalidBearer (`MRD-AUTH-019`) sans aucune E/S : il n'existe pas
+    de token API sans base. Sous `db`, un jeton `mrd_…` n'est jamais JWT-shaped (base64url sans `.`), donc le chemin (1) ne le
+    capte pas ; un JWT n'atteint jamais @validate_token et ne touche donc pas la base.
+  Sans `db`, l'extracteur ne lit ni `auth_state.db` ni `auth_state.token_pepper` (champs absents) et n'importe pas
+    `crate::auth::token` ; l'`use` de @validate_token et le chemin (2) sont sous `#[cfg(feature = "db")]`.
+  Sur le chemin (1), aucune résolution d'utilisateur ni synchronisation de groupes : le claim `groups` n'est lu qu'au callback
+    de login (./mod.sdd). Conséquence assumée sous `db` : un sujet qui ne s'est jamais connecté par le navigateur n'a aucune
+    appartenance en base, donc aucune politique `Group` ni `AdminOnly` ne lui est favorable — limite consignée, pas un défaut
+    de ce fichier.
 
 Must not:
   Réimplémenter ici une partie de l'analyse, du déchiffrement, du contrôle d'`exp`, du hachage ou
@@ -219,7 +235,7 @@ Tasks:
     des champs structurés GELÉE, ./dual.rs pose `path`, /src/auth/middleware.rs pose `subject`,
     les deux avec les mêmes messages `auth ok` / `auth rejected`.
   [x] Parité déclarative des surfaces : gelée comme limite documentaire assumée — OpenAPI ne peut
-    pas décrire nativement la sécurité GraphQL/MCP, ce n'est pas une dette de ce fichier.
+    pas décrire nativement la sécurité MCP, ce n'est pas une dette de ce fichier.
   [x] Convertir les 19 `Scenario` (18 originaux, 1 réécrit pour la casse insensible ne change pas
     le compte, plus le nouveau scenario de trace) en au moins 19 tests distincts nommés dans le mod
     @tests `#[cfg(test)]` de ./dual.rs — le contrat ne déborde pas du fichier : tout s'exerce comme
@@ -234,6 +250,10 @@ Tasks:
       et écrire 14 tests neufs pour les scenarios 6 à 19, dont
       @lowercase_bearer_scheme_now_authenticates (remplace l'ancien test de repli) et
       @successful_and_rejected_resolutions_emit_debug_traces_without_leaking_credentials
+  [x] Amendement 2026-10-19 (JWT Bearer) : dans `./dual.rs`, implémenter le dispatch de `Must` (règle « exactement deux `.` »,
+    chemins (1) à (3)), poser `#[cfg(feature = "db")]` sur l'`use` de @validate_token et sur le chemin (2), et gater sous `db` les
+    tests qui émettent un token API ou construisent une base (fixtures `state_around`, `sqlite::memory:`) ; les `Scenario` ci-dessous
+    sont convertis en tests nommés `bearer_jwt_*` / `bearer_*_without_db`. Dépend de ./oidc.sdd, ./principal.sdd, ./error.sdd.
 
 Done when:
   Chacun des 19 `Scenario` a au moins un test nommé distinct et vert, sur les features par défaut
@@ -245,7 +265,7 @@ Done when:
   Les cinq lignes `[?]` de `Tasks` sont toutes arbitrées par Sébastien le 2026-09-27 et reflétées
     dans le contrat : deux changent le comportement (casse insensible du schème, trace `debug`),
     trois confirment l'état actuel sans y toucher (repli sur schème non-Bearer, première valeur
-    gagne sur en-têtes multi-valués, parité déclarative OpenAPI/GraphQL/MCP)
+    gagne sur en-têtes multi-valués, parité déclarative OpenAPI/MCP)
 
 Scenario: Bearer token valide seul
   Given un token émis par @issue_token pour le subject `token-user`, et aucune en-tête `Cookie`
@@ -379,3 +399,37 @@ Scenario: Les traces de résolution ne portent jamais de credential
     rejected` avec le champ chemin `token` et le code `MRD-AUTH-014`
   And aucun des deux événements ne porte le secret du token, une valeur de cookie ou l'`id_token` —
     seuls le chemin et, sur rejet, le code `MRD-AUTH-*` apparaissent dans les champs structurés
+
+Scenario: JWT Bearer valide authentifie sans toucher la base (2026-10-19)
+  Given un @MockOidcClient configuré pour rendre une identité `user-1` à @verify_bearer, et une requête
+    `Authorization: Bearer aaa.bbb.ccc` sans cookie
+  When l'extracteur @AuthPrincipal tourne (sous `db`, la base fournie est une @MockDatabase sans requête préparée)
+  Then le principal rendu a @subject `user-1` et @source @PrincipalSource::Bearer { jwt: "aaa.bbb.ccc" }
+  And aucune requête n'a atteint la base
+
+Scenario: JWT Bearer invalide est définitif, sans repli cookie (2026-10-19)
+  Given un @MockOidcClient dont @verify_bearer rend @Err(@AuthError::InvalidBearer), et une requête portant `Bearer aaa.bbb.ccc`
+    ET un cookie de session valide
+  When l'extracteur tourne
+  Then la rejection est @AuthError::InvalidBearer (`401`, `MRD-AUTH-019`) et le cookie n'est pas lu
+
+Scenario: JWT Bearer échu rend 020 (2026-10-19)
+  Given un @MockOidcClient dont @verify_bearer rend @Err(@AuthError::BearerExpired) et une requête `Bearer aaa.bbb.ccc`
+  When l'extracteur tourne
+  Then la rejection est @AuthError::BearerExpired (`401`, `MRD-AUTH-020`)
+
+Scenario: Bearer non JWT sans db est rejeté 019 sans E/S (2026-10-19)
+  Given un build sans `db`, un @MockOidcClient par défaut (@verify_bearer panique s'il est appelé) et une requête `Bearer mrd_abc`
+  When l'extracteur tourne
+  Then la rejection est @AuthError::InvalidBearer et @verify_bearer n'a pas été appelé (un seul point : le matériau n'est pas
+    JWT-shaped, la règle se tranche avant tout appel)
+
+Scenario: Bearer API token reste un chemin base sous db (2026-10-19)
+  Given un build `db`, un token API valide `mrd_…` émis par @issue_token et une requête `Bearer mrd_…`
+  When l'extracteur tourne
+  Then le principal rendu a la source @PrincipalSource::ApiToken (chemin inchangé) et @verify_bearer n'a pas été appelé
+
+Scenario: cookie seul reste le chemin de session sans db (2026-10-19)
+  Given un build sans `db` et une requête portant seulement un cookie de session valide
+  When l'extracteur tourne
+  Then le principal rendu a la source @PrincipalSource::Session avec l'@id_token du cookie

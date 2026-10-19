@@ -7,34 +7,50 @@
 //! l'IR frontend est l'artefact interne, aucune extension `x-miryad-*` n'entre ici. Le
 //! fichier ne décide aucune autorisation et n'accède à aucune base — il décrit des routes
 //! montées ailleurs et sert un document JSON déjà construit.
+//!
+//! `resource_openapi` et `OpenApiEntity` ne sont compilés que sous la feature `db` (amendement
+//! 2026-10-19) : sans elle, le fichier ne sert que des documents fournis par l'application.
 
+use utoipa::openapi::OpenApi;
+#[cfg(feature = "db")]
 use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterBuilder, ParameterIn};
+#[cfg(feature = "db")]
 use utoipa::openapi::request_body::RequestBodyBuilder;
+#[cfg(feature = "db")]
 use utoipa::openapi::response::{Response, ResponseBuilder};
+#[cfg(feature = "db")]
 use utoipa::openapi::schema::SchemaType;
+#[cfg(feature = "db")]
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme};
+#[cfg(feature = "db")]
 use utoipa::openapi::{
-    ArrayBuilder, ComponentsBuilder, Content, ContentBuilder, Object, OpenApi, OpenApiBuilder, Paths, Ref,
-    RefOr, Required, Schema, Type,
+    ArrayBuilder, ComponentsBuilder, Content, ContentBuilder, Object, OpenApiBuilder, Paths, Ref, RefOr,
+    Required, Schema, Type,
 };
+#[cfg(feature = "db")]
 use utoipa::{PartialSchema, ToSchema};
 
+#[cfg(feature = "db")]
 use crate::rest::RestEntity;
 
 /// Nom du `SecurityScheme` déclaré par `resource_openapi` — le dual-auth de miryad-core accepte
 /// aussi un cookie de session OIDC, mais celui-ci est `HttpOnly`/chiffré et n'a rien d'utilisable
 /// depuis le champ "Authorize" de Swagger UI ; seul le token API (`issue_token`) est actionnable
 /// depuis cette interface.
+#[cfg(feature = "db")]
 const BEARER_SECURITY_SCHEME: &str = "bearer_auth";
 
 /// Nom du schéma de corps du rejet métier — référencé par les `422` des opérations qui en
 /// portent (`openapi.sdd` `Must`, arbitré 2026-09-29) : comme `BEARER_SECURITY_SCHEME`, son
 /// littéral est une clé du JSON publié.
+#[cfg(feature = "db")]
 const HOOK_ERROR_BODY_SCHEMA: &str = "HookErrorBody";
 
 /// Entités éligibles à la génération `OpenAPI` — en plus de `RestEntity`, `Model` doit dériver
 /// `utoipa::ToSchema` pour que sa forme JSON soit décrite dans le document généré.
+#[cfg(feature = "db")]
 pub trait OpenApiEntity: RestEntity<Model: ToSchema> {}
+#[cfg(feature = "db")]
 impl<E> OpenApiEntity for E where E: RestEntity<Model: ToSchema> {}
 
 /// Fragment `OpenAPI` pour les 5 routes CRUD d'une entité (`GET/POST /api/v1/{resource_name}`,
@@ -46,6 +62,7 @@ impl<E> OpenApiEntity for E where E: RestEntity<Model: ToSchema> {}
 /// "Authorize" de Swagger UI fonctionne sans configuration côté app — `OpenApi::merge` dédoublonne
 /// le schéma et l'exigence de sécurité par nom/égalité entre fragments d'entités.
 #[must_use]
+#[cfg(feature = "db")]
 pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
     let resource = E::resource_name();
     let schema_name = E::Model::name().into_owned();
@@ -135,6 +152,7 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
 /// compte à `Exposes` et elle n'a pas bougé. `has_filter` vient de `E::filter_column()` ;
 /// chaque opération porte les statuts et corps d'erreur de `openapi.sdd` `Must` (arbitré
 /// 2026-09-29).
+#[cfg(feature = "db")]
 fn crud_paths(resource: &str, model_ref: &RefOr<Schema>, paged_schema_name: &str, has_filter: bool) -> Paths {
     let query_param = |name: &str, schema_type: Type| {
         ParameterBuilder::new()
@@ -244,12 +262,14 @@ fn crud_paths(resource: &str, model_ref: &RefOr<Schema>, paged_schema_name: &str
 }
 
 /// Contenu `application/json` portant ou référençant le schéma donné.
+#[cfg(feature = "db")]
 fn json_content(schema: RefOr<Schema>) -> Content {
     ContentBuilder::new().schema(Some(schema)).build()
 }
 
 /// Contenu `text/plain` de type chaîne — forme déclarée de tout corps d'erreur texte
 /// (`openapi.sdd` `Must`).
+#[cfg(feature = "db")]
 fn text_content() -> Content {
     ContentBuilder::new()
         .schema(Some(RefOr::T(Schema::Object(Object::with_type(Type::String)))))
@@ -257,6 +277,7 @@ fn text_content() -> Content {
 }
 
 /// Réponse d'erreur texte : description littérale + unique corps `text/plain` de type chaîne.
+#[cfg(feature = "db")]
 fn text_error(description: &str) -> Response {
     ResponseBuilder::new()
         .description(description)
@@ -267,6 +288,7 @@ fn text_error(description: &str) -> Response {
 /// `422` « Corps non traitable ou rejet métier » (arbitré 2026-09-29) — les deux saveurs du
 /// `422` partagé de `rest/error.sdd` : texte pour la désérialisation `axum` et `MRD-REST-005`,
 /// JSON `{code, message}` (`HookErrorBody`, `code` nullable) pour un `HookError`.
+#[cfg(feature = "db")]
 fn hook_error_response() -> Response {
     ResponseBuilder::new()
         .description("Corps non traitable ou rejet métier")
@@ -280,6 +302,7 @@ fn hook_error_response() -> Response {
 
 /// Les statuts d'erreur communs aux cinq opérations (`Must` : `400` « Requête invalide »,
 /// `401` « Non authentifié », `403` « Refusé », `500` « Erreur interne »), corps texte.
+#[cfg(feature = "db")]
 fn with_common_errors(op: OperationBuilder) -> OperationBuilder {
     op.response("400", text_error("Requête invalide"))
         .response("401", text_error("Non authentifié"))
@@ -288,17 +311,20 @@ fn with_common_errors(op: OperationBuilder) -> OperationBuilder {
 }
 
 /// + `404` « Non trouvé » (`MRD-REST-001`) — propre aux trois opérations d'item.
+#[cfg(feature = "db")]
 fn with_not_found(op: OperationBuilder) -> OperationBuilder {
     op.response("404", text_error("Non trouvé"))
 }
 
 /// + `415` « Content-Type non supporté » — propre aux opérations à corps (`POST`/`PUT`).
+#[cfg(feature = "db")]
 fn with_unsupported_media(op: OperationBuilder) -> OperationBuilder {
     op.response("415", text_error("Content-Type non supporté"))
 }
 
 /// `422` en plus — propre à `POST`/`PUT`/`DELETE` (rejet métier `HookError`, désérialisation
 /// d'axum et `MRD-REST-005`).
+#[cfg(feature = "db")]
 fn with_unprocessable(op: OperationBuilder) -> OperationBuilder {
     op.response("422", hook_error_response())
 }
@@ -340,6 +366,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
+    #[cfg(feature = "db")]
     mod recipe {
         use crate::resource::{AccessPolicy, MiryadResource};
         use sea_orm::entity::prelude::*;
@@ -383,6 +410,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "db")]
     mod ingredient {
         use crate::resource::{AccessPolicy, MiryadResource};
         use sea_orm::entity::prelude::*;
@@ -424,17 +452,20 @@ mod tests {
     // jamais par `contains` lâche sur la chaîne brute.
 
     /// Le fragment sérialisé en JSON — base des sélecteurs.
+    #[cfg(feature = "db")]
     fn spec_json(spec: &OpenApi) -> serde_json::Value {
         serde_json::to_value(spec).expect("fragment serializes")
     }
 
     /// Sélectionne l'opération d'une méthode sur un chemin du document sérialisé.
+    #[cfg(feature = "db")]
     fn operation<'a>(json: &'a serde_json::Value, path: &str, method: &str) -> &'a serde_json::Value {
         &json["paths"][path][method]
     }
 
     /// Codes de réponse d'une opération, triés (utoipa 5.5 : `Responses` est une
     /// `BTreeMap<String, _>`).
+    #[cfg(feature = "db")]
     fn response_codes(op: &serde_json::Value) -> Vec<String> {
         op["responses"]
             .as_object()
@@ -446,6 +477,7 @@ mod tests {
 
     /// `(nom, type du schéma, requis)` de chaque paramètre d'une opération pour un emplacement
     /// (`query`/`path`) donnés.
+    #[cfg(feature = "db")]
     fn parameters(op: &serde_json::Value, parameter_in: &str) -> Vec<(String, String, bool)> {
         let mut params: Vec<(String, String, bool)> = op["parameters"]
             .as_array()
@@ -468,6 +500,7 @@ mod tests {
     }
 
     /// Clés triées du contenu d'une réponse sérialisée.
+    #[cfg(feature = "db")]
     fn content_types(response: &serde_json::Value) -> Vec<String> {
         response["content"]
             .as_object()
@@ -480,6 +513,7 @@ mod tests {
     /// Vérifie un statut d'erreur texte : description littérale, unique corps `text/plain`
     /// de type chaîne (`Must` : « Les corps d'erreur texte sont déclarés `text/plain` de type
     /// chaîne »).
+    #[cfg(feature = "db")]
     fn text_error(op: &serde_json::Value, code: &str, description: &str) {
         let response = &op["responses"][code];
         assert_eq!(response["description"], description);
@@ -489,6 +523,7 @@ mod tests {
 
     /// Vérifie le `422` bilatéral (arbitré 2026-09-29) : texte pour la désérialisation `axum`
     /// et `MRD-REST-005`, JSON référençant `HookErrorBody` pour un `HookError`.
+    #[cfg(feature = "db")]
     fn unprocessable(op: &serde_json::Value) {
         let response = &op["responses"]["422"];
         assert_eq!(response["description"], "Corps non traitable ou rejet métier");
@@ -515,6 +550,7 @@ mod tests {
 
     /// Descend récursivement le JSON sérialisé et échoue sur toute clé `x-miryad-*`
     /// (interdiction héritée de `miryad-core.sdd`).
+    #[cfg(feature = "db")]
     fn assert_no_x_miryad_keys(value: &serde_json::Value, doc: &str) {
         match value {
             serde_json::Value::Object(entries) => {
@@ -536,6 +572,7 @@ mod tests {
     }
 
     /// `Scenario` : « `@resource_openapi déclare les cinq routes CRUD` ».
+    #[cfg(feature = "db")]
     #[test]
     fn resource_openapi_declares_expected_paths_and_methods() {
         let spec = resource_openapi::<recipe::Entity>();
@@ -561,6 +598,7 @@ mod tests {
 
     /// `Scenario` : « `l'enveloppe Paged{Model} broche les cinq clés de @PagedResult` » — les
     /// cinq clés wire, les cinq marques `required`, ` items` en tableau de références `Recipe`.
+    #[cfg(feature = "db")]
     #[test]
     fn resource_openapi_declares_model_and_paged_schemas() {
         let spec = resource_openapi::<recipe::Entity>();
@@ -603,6 +641,7 @@ mod tests {
     /// `filter` déclaré par la fixture qui a une `filter_column`, absent de celle qui n'en a
     /// pas (arbitré 2026-09-29), `id` requis sur les trois opérations d'item, ni `format`
     /// ni bornes nulle part.
+    #[cfg(feature = "db")]
     #[test]
     fn resource_openapi_declares_query_and_path_parameters() {
         let spec = resource_openapi::<recipe::Entity>();
@@ -671,6 +710,7 @@ mod tests {
     /// `Scenario` : « chaque opération déclare son jeu de statuts et ses corps » — succès,
     /// corps requis, jeu d'erreurs exact par opération (`Must`, arbitré 2026-09-29), corps
     /// `text/plain` chaîne, et `422` JSON vers `HookErrorBody`.
+    #[cfg(feature = "db")]
     #[test]
     fn resource_openapi_declares_operations_responses_and_bodies() {
         let spec = resource_openapi::<recipe::Entity>();
@@ -781,6 +821,7 @@ mod tests {
     }
 
     /// `Scenario` : « `le fragment ne fixe pas Info et se versionne OpenAPI 3.1.0` ».
+    #[cfg(feature = "db")]
     #[test]
     fn resource_openapi_fragment_leaves_info_unset_and_versions_3_1_0() {
         let spec = resource_openapi::<recipe::Entity>();
@@ -794,6 +835,7 @@ mod tests {
     /// `Bearer`, description mentionnant « bearer » à n'importe quelle casse (fix #21/#23 :
     /// préfixe collé deux fois, l'auth échoue en `MRD-AUTH-014`), exigence globale unique,
     /// et rien pour le cookie de session.
+    #[cfg(feature = "db")]
     #[test]
     fn resource_openapi_declares_bearer_security_scheme() {
         let spec = resource_openapi::<recipe::Entity>();
@@ -834,6 +876,7 @@ mod tests {
     }
 
     /// `Scenario` : « fusionner deux fragments d'entités expose toutes les routes ».
+    #[cfg(feature = "db")]
     #[test]
     fn merged_fragments_expose_all_paths_without_collision() {
         let mut spec = resource_openapi::<recipe::Entity>();
@@ -847,6 +890,7 @@ mod tests {
 
     /// Régression / `Scenario` : « la fusion garde un schéma de sécurité et une exigence
     /// uniques » — `OpenApi::merge` dédoublonne `security_schemes`/`security` par nom/égalité.
+    #[cfg(feature = "db")]
     #[test]
     fn merging_fragments_does_not_duplicate_the_security_scheme() {
         let mut spec = resource_openapi::<recipe::Entity>();
@@ -868,6 +912,7 @@ mod tests {
     /// requête ci-dessous n'envoie aucun en-tête `Authorization`, et le routeur monté sur
     /// `axum::Router` (état `()`) prouve qu'aucun état applicatif ni `MiryadAuthState` n'est
     /// requis.
+    #[cfg(feature = "db")]
     #[tokio::test]
     async fn openapi_router_serves_the_spec_as_json() {
         let spec = resource_openapi::<recipe::Entity>();
@@ -883,10 +928,32 @@ mod tests {
         assert!(parsed.paths.get_path_item("/api/v1/recipes").is_some());
     }
 
+    /// `Scenario` (amendement 2026-10-19) : une application sans entités sert son document
+    /// écrit à la main. Sans `db`, `openapi_router` prend n'importe quel `OpenApi` et ne dépend
+    /// d'aucun `RestEntity` ; le test s'exécute sur toutes les combinaisons.
+    #[tokio::test]
+    async fn openapi_router_serves_handwritten_document_without_db() {
+        let mut spec = OpenApi::default();
+        spec.info.title = "Handwritten".to_owned();
+        spec.info.version = "1.0.0".to_owned();
+        let expected = serde_json::to_value(&spec).expect("handwritten spec serializes");
+        let app: axum::Router = openapi_router(spec);
+
+        let resp = get(&app, "/api/openapi.json").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("readable body");
+        let served: serde_json::Value = serde_json::from_slice(&bytes).expect("valid OpenApi JSON");
+        assert_eq!(served, expected);
+    }
+
     /// `Scenario` : « `swagger_ui_router sert l'UI et son propre JSON sous la feature` » —
     /// `GET /api/swagger-ui` redirection `303 See Other` vers `/api/swagger-ui/`
     /// (`utoipa-swagger-ui-9.0.2`), l'UI en `200` sur cette voie, et le même document JSON
     /// servi par `.url(...)` lui-même.
+    #[cfg(feature = "db")]
     #[cfg(feature = "swagger-ui")]
     #[tokio::test]
     async fn swagger_ui_router_serves_the_ui() {
@@ -915,13 +982,30 @@ mod tests {
         assert!(parsed.paths.get_path_item("/api/v1/recipes").is_some());
     }
 
+    /// Jumeau sans entité de `swagger_ui_router_serves_the_ui` (amendement 2026-10-19) : l'UI et
+    /// son JSON servent un document écrit à la main, sans `db`.
+    #[cfg(feature = "swagger-ui")]
+    #[tokio::test]
+    async fn swagger_ui_router_serves_handwritten_document() {
+        let app: axum::Router = swagger_ui_router(OpenApi::default());
+
+        let resp = get(&app, "/api/swagger-ui").await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+        let resp = get(&app, "/api/swagger-ui/").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = get(&app, "/api/openapi.json").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
     /// `Scenario` : « hors feature swagger-ui la route de l'UI répond 404 » — s'exécute sur
     /// les runs sans `swagger-ui` de la batterie `tooling.sdd` : `swagger_ui_router` n'existe
     /// pas à la compilation, `openapi_router` seul sert toujours son document.
     #[cfg(not(feature = "swagger-ui"))]
     #[tokio::test]
     async fn swagger_ui_route_absent_without_feature() {
-        let app: axum::Router = openapi_router(resource_openapi::<recipe::Entity>());
+        let app: axum::Router = openapi_router(OpenApi::default());
 
         let resp = get(&app, "/api/swagger-ui").await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -934,6 +1018,7 @@ mod tests {
     /// `Router::merge` (source `axum-0.8.9`, `panic_on_err!`). Les monter l'un ou l'autre ne
     /// panique jamais : c'est déjà ce que prouvent `openapi_router_serves_the_spec_as_json`
     /// et `swagger_ui_router_serves_the_ui`, chacun monté seul.
+    #[cfg(feature = "db")]
     #[cfg(feature = "swagger-ui")]
     #[test]
     #[should_panic(expected = "Overlapping method route")]
@@ -947,6 +1032,7 @@ mod tests {
 
     /// `Scenario` : « le document publié ne porte aucune extension x-miryad » — fragment
     /// seul et fusion sérialisés, aucune clé `x-miryad-*` nulle part.
+    #[cfg(feature = "db")]
     #[test]
     fn resource_openapi_emits_no_x_miryad_extension() {
         let fragment = resource_openapi::<recipe::Entity>();

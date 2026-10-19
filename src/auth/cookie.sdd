@@ -36,7 +36,7 @@ References:
   ./middleware.rs — @AuthUser (extracteur REST cookie-only) appelle @extract_session et porte la
     trace debug `auth rejected` sur le rejet
   ./dual.rs — @AuthPrincipal (cookie ou `Bearer`) appelle @extract_session : c’est par lui que le
-    cookie authentifie les surfaces REST, GraphQL et MCP
+    cookie authentifie les surfaces REST et MCP
   ./state.rs — @MiryadAuthState.cookie_key : source et propriété du @cookie::Key, hors du périmètre
     de ce contrat (construction, dérivation, rotation)
   /docs/architecture.md — récit : payload chiffré sans séparateur `|`, pending cookie `Max-Age=300`,
@@ -118,8 +118,8 @@ Must:
     `--no-default-features` inclus, doit compiler et exercer ce contrat comme sur `--all-features`
   Parité des surfaces par fonction de lecture unique : @extract_session est le seul chemin de
     lecture de `miryad_session` pour les trois surfaces — @AuthUser (./middleware.rs, REST) et
-    @AuthPrincipal (./dual.rs, partagé REST/GraphQL/MCP) s’appuient dessus, donc le cookie
-    authentifie pareillement, à `401` près, les trois surfaces ; asymétrie constatée et assumée hors
+    @AuthPrincipal (./dual.rs, partagé REST/MCP) s’appuient dessus, donc le cookie
+    authentifie pareillement, à `401` près, les deux surfaces ; asymétrie constatée et assumée hors
     de ce fichier : /src/rest/openapi.rs ne déclare que le schéma `bearer_auth`, le cookie n’a pas
     de schéma OpenAPI (/docs/architecture.md)
   Mutisme total : aucune trace @tracing, @println, @eprintln, @dbg ici — les traces du rejet
@@ -143,7 +143,7 @@ Must not:
     celle du cookie pending `miryad_oidc_pending`, propriété de ./mod.rs, jamais de ce fichier
   Émettre la moindre trace depuis ce fichier, sous quelque niveau que ce soit
   Introduire un second chemin de lecture de `miryad_session` contournant @extract_session — la
-    parité REST/GraphQL/MCP tient à l’unicité de cette fonction
+    parité REST/MCP tient à l’unicité de cette fonction
   Faire grossir la dette suivie par /tooling.sdd : les quatre items publics n’ont aucun commentaire
     de documentation (`missing_docs`) — le `indexing_slicing` de @extract_exp_claim a disparu avec
     le passage à @serde_json (arbitré 2026-09-27)
@@ -311,6 +311,7 @@ Tasks:
     grossièrement 4 Scenarios mais n’affirment les attributs posés que par `contains` — resserrer
     en assertions de chaîne complète avant comptage, et les adapter à la nouvelle signature
     (`secure: bool`) des deux fonctions
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./cookie.rs` (doc ligne ~67), remplacer « les trois surfaces via `AuthUser` (REST) et `AuthPrincipal` (REST/GraphQL/MCP) » par « les deux surfaces … `AuthPrincipal` (REST/MCP) ».
 
 Done when:
   24 tests nommés distincts verts, un par `Scenario`, sur features par défaut comme sur

@@ -108,6 +108,10 @@ Must:
   @subject n'est relié à `miryad_users` par aucune FK et nulle part vérifié contre elle (hérité du
     contrat de la migration 001) : un token survit à la disparition de sa ligne utilisateur et
     @validate_token ne joint jamais aucune table de comptes.
+  **Amendement 2026-10-19 (feature `db`)** — le module entier, comme les dépendances `sea-orm`, `hmac`, `sha2`, `rand`, `hex` et `chrono` qu'il
+    est seul à consommer parmi les fichiers hors `db`, n'existe que sous `#[cfg(feature = "db")]` : le `cfg` est posé par la
+    déclaration `pub mod token;` de ./mod.rs, ce fichier ne porte aucun `cfg` propre. Sans `db` aucun token API n'est émis,
+    validé ni révoqué, et l'extracteur @AuthPrincipal répond `MRD-AUTH-019` à tout `Bearer` non JWT (./dual.sdd).
 
 Must not:
   Dépendre de @crate::users, @crate::auth::oidc ou @crate::auth::cookie : le moteur de tokens est
@@ -164,7 +168,7 @@ Exposes:
     l'empreinte ; @hash_token(secret : &@str, pepper : &@str) -> @Result<@String, @AuthError>
     (signature changée le 2026-09-27, mise à @Result le 2026-09-30 — arbitrage option a, `Tasks`)
   ./mod.rs ré-exporte les quatre fonctions et les deux types sur @crate::auth ; le fichier n'est
-    pas @MiryadResource : hors des surfaces génériques REST/GraphQL/MCP par entité, il n'est lu
+    pas @MiryadResource : hors des surfaces génériques REST/MCP par entité, il n'est lu
     que par @tokens_router (self-service), par l'extracteur @AuthPrincipal de ./dual.rs (schéma
     `Bearer`) et par @ensure_service_account des comptes de service
 
@@ -252,7 +256,7 @@ Handles:
     propriétaire d'une collision sans que le second en soit informé
   Parité des surfaces — consigné, non tranché : l'émission et la révocation ne vivent qu'en REST
     self-service `/api/v1/tokens` (`../rest/tokens.rs`, avec la garde d'appartenance `subject` au
-    handler) et en Rust (@ensure_service_account) ; ni GraphQL ni MCP n'exposent d'opération de
+    handler) et en Rust (@ensure_service_account) ; MCP n'expose d'opération de
     gestion de token ; l'@AuthPrincipal issu d'un token rend @email @None alors que le principal de
     session en porte un — asymétrie architecturale gelée le 2026-09-27 : un token n'a jamais connu
     d'email (non demandé, non stocké à l'émission), et le chemin session ne l'obtient pas non plus
@@ -325,6 +329,8 @@ Tasks:
     n'a jamais connu d'email (non demandé, non stocké à l'émission) ; le chemin session ne joint
     pas non plus `users`, il lit le cookie posé au login OIDC. Une vraie parité demanderait une
     colonne `email` optionnelle à l'émission, hors de cette spec.
+  [x] Amendement 2026-10-19 (`db`) : aucun changement de `./token.rs` (le `cfg` est posé par `./mod.rs`) ; vérifier seulement par la batterie
+    `--no-default-features` qu'il n'est plus compilé et que ses dépendances ont quitté le graphe.
 
 Done when:
   Les `20` `Scenario` sont chacun vérifiés par un test nommé distinct de la liste `Tasks`, joués

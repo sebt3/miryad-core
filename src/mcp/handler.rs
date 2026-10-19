@@ -29,7 +29,7 @@ const OPERATIONS: &[(&str, McpOp)] = &[
 ];
 
 /// Monte `POST /mcp` — dispatch JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`).
-/// Réutilise `MiryadAuthState` (dual-auth, db) comme REST/GraphQL.
+/// Réutilise `MiryadAuthState` (dual-auth, db) comme REST.
 pub fn mcp_router<S>(registry: McpToolRegistry) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,

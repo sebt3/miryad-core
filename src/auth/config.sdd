@@ -89,12 +89,12 @@ Must:
     doit satisfaire ces deux bornes
   Compilation sans aucun gating de feature : zéro `#[cfg(feature = ...)]` dans le fichier,
     `pub mod auth` non gateé dans /src/lib.rs, @openidconnect et @reqwest non optionnels dans
-    /Cargo.toml — `static-frontend`, `swagger-ui`, `graphql`, `graphiql` et `mcp` ne changent rien
+    /Cargo.toml — `static-frontend`, `swagger-ui` et `mcp` ne changent rien
     au contrat ; la batterie de /tooling.sdd exerce le fichier de `--no-default-features` à
     `--all-features`
-  Parité des surfaces : aucun champ par surface (REST, GraphQL, MCP) — un @ca_cert fautif dégrade
+  Parité des surfaces : aucun champ par surface (REST, MCP) — un @ca_cert fautif dégrade
     pareil l'authentification derrière @AuthUser (./middleware.rs), @AuthPrincipal (./dual.rs),
-    @graphql_handler (/src/graphql/handler.rs) et @mcp_handler (/src/mcp/handler.rs), tous justiciables
+    @mcp_handler (/src/mcp/handler.rs), tous justiciables
     du même @AuthError : la config ne peut introduire d'asymétrie entre surfaces
   Cinq champs sur huit n'ont pas de doc-comment de champ (dette préexistante) : @issuer_url,
     @client_id, @client_secret, @redirect_url et @scopes portent chacun un warning `missing

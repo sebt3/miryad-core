@@ -14,9 +14,8 @@ Purpose:
     @sync_group_memberships ; la persistance des appartenances d'un utilisateur entre deux logins
     tient à ce que le même @subject retrouve toujours le même @id et une seule ligne.
   Borner le rôle de surface de l'entité : @User n'est pas une @MiryadResource — aucune des routes
-    CRUD générériques REST, GraphQL et MCP ne lit `miryad_users`. Les trois surfaces ne rencontrent
-    ce fichier que par @resolve_user : REST directement, GraphQL dans
-    @crate::graphql::load_principal, MCP par délégation aux fonctions de @crate::rest::core.
+    CRUD générériques REST et MCP ne lit `miryad_users`. Les deux surfaces ne rencontrent
+    ce fichier que par @resolve_user : REST directement, MCP par délégation aux fonctions de @crate::rest::core.
 
 Owns:
   ./user.rs
@@ -59,7 +58,7 @@ Must:
     @resolve_user (arbitré 2026-09-29, `Must` « trace `debug` au rebond » — qui prime sur la
     rédaction d'avant l'arbitrage).
   Compiler sous toutes les combinaisons de features du `Cargo.toml` (`static-frontend`,
-    `swagger-ui`, `graphql`, `graphiql`, `mcp`) : le module @crate::users n'est porté par aucun
+    `swagger-ui`, `mcp`) : le module @crate::users n'est porté par aucun
     #[cfg(feature = ...)], @sea_orm et @chrono sont des dépendances non optionnelles ; la batterie
     de /tooling.sdd doit passer pour ce fichier sur chaque combinaison.
   Sur échec de l'`INSERT`, relire par `subject` (rebond de course) ; si la relecture est vide,
@@ -79,7 +78,7 @@ Must:
 Must not:
   Modifier @users::user::Relation pour naviguer vers @users::membership::Entity sans arbitrage de
     Sébastien : l'enum est vide à ce jour, la clé étrangère entrante de la migration n'est résolue
-    que par jointures explicites chez les consommateurs, et Seaography ne monte jamais
+    que par jointures explicites chez les consommateurs, et aucune surface ne monte
     `miryad_users`.
   Écrire dans @miryad_groups, @miryad_group_memberships ou @miryad_api_tokens : les appartenances
     appartiennent à @users::sync_group_memberships, dans le fichier d'à côté.
@@ -125,7 +124,7 @@ Accepts:
   db — n'importe quelle @sea_orm::ConnectionTrait : connexion ou transaction ; le générique
     @C: @ConnectionTrait est plus large que le @DatabaseConnection que lui passent tous les
     appelants actuels (callback @crate::auth, handlers de /src/rest,
-    @crate::graphql::load_principal, @users::ensure_service_account)
+    @users::ensure_service_account)
   subject — chaîne du claim `sub` reçue verbatim : aucune validation de format, aucune garde
     contre la chaîne vide dans ./user.rs (la non-vacuité du `sub` relève de @crate::auth, cf. [arbitré 2026-09-29]
     en Tasks)
@@ -150,7 +149,7 @@ Raises:
   Aucun code `MRD-*` n'est porté par ./user.rs : les deux lectures propagent le @sea_orm::DbErr
     brut par `?`. La décoration en code `MRD-*` est un contrat des appelants — @AuthError::Database
     (`MRD-AUTH-016`, /src/auth/mod.sdd) côté callback, @RestError::Database (`MRD-REST-003`,
-    ../rest/error.rs) côté REST, mapping propre au module GraphQL.
+    ../rest/error.rs) côté REST.
   Quand l'insertion échoue et que la relecture de rebond ne trouve toujours aucune ligne,
     l'@sea_orm::DbErr de l'`INSERT` d'origine est propagée telle quelle, sans code `MRD-*` — plus
     aucun @DbErr::RecordNotFound synthétisé « vanished » (arbitré 2026-09-29, `Must`).
@@ -181,7 +180,7 @@ Tasks:
     par les tests MockDatabase. Décompte historique : 8 `Scenario` → au moins 8
     tests ; un test inline y vivait à la rédaction de la spec (@resolve_user_creates_then_reuses_same_row,
     qui couvre le scenario « re-login »), deux autres posés par la vague « rebond d'INSERT » —
-    recompte synchronisé 2026-09-30). Les tests d'usage des surfaces (REST, GraphQL, MCP via la
+    recompte synchronisé 2026-09-30). Les tests d'usage des surfaces (REST, MCP via la
     délégation de @crate::rest::core) restent dans les specs des surfaces qui les exercent.
   [x] @email : snapshot verrouillé, pas d'upsert (arbitré par Sébastien le 2026-09-29, `Must`) —
     aucun changement de code.
@@ -199,6 +198,9 @@ Tasks:
     (B2) : doc-comment posé reprenant le contrat du `Must`.
   [x] @users::user::Relation vide durablement (arbitré par Sébastien le 2026-09-29) : le `Must
     not` est le verrou explicite.
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./user.rs`, retirer la mention de `GraphQL` de l'en-tête `//!` (ligne ~3 : les surfaces
+    `REST` et `MCP` seulement) et celle de `Seaography` de la doc de `Relation` (ligne ~36 : « le graphe d'entités `SeaORM` n'en
+    voit aucune »). Aucun changement de comportement.
 
 Done when:
   Chacun des 8 `Scenario` dispose d'au moins un test distinct nommé exerçant son `Then`, le nombre

@@ -76,6 +76,8 @@ mod tests {
     /// Contrat `text/plain` du rendu d'erreur (./error.sdd), vérifié sur les rejets.
     const TEXT_PLAIN: &str = "text/plain; charset=utf-8";
 
+    /// Base `MockDatabase` nue : n'existe que sous `db` (champ `MiryadAuthState::db`).
+    #[cfg(feature = "db")]
     fn mock_db() -> sea_orm::DatabaseConnection {
         sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Sqlite).into_connection()
     }
@@ -86,8 +88,10 @@ mod tests {
             cookie_key: Key::from(&[0u8; 64]),
             post_login_redirect: "/".to_string(),
             post_logout_redirect: "/".to_string(),
+            #[cfg(feature = "db")]
             db: mock_db(),
             secure_cookies: false,
+            #[cfg(feature = "db")]
             token_pepper: String::new(),
         }
     }
@@ -317,6 +321,7 @@ mod tests {
     /// `Scenario` : « mock db nu — aucune requête exécutée sur une extraction valide » — la
     /// base partagée est un `MockDatabase` nu (toute requête y échouerait) et son journal de
     /// transactions reste vide : @subject arrive par le seul chemin du cookie.
+    #[cfg(feature = "db")]
     #[tokio::test]
     async fn mock_db_nu_aucune_requete_nest_executee_sur_extraction_valide() {
         let db = mock_db();

@@ -17,7 +17,7 @@ Owns:
 
 References:
   /miryad-core.sdd — contrat hérité : codes `MRD-<DOMAINE>-NNN` (ici 001/002 seulement), parité
-    REST/GraphQL/MCP lue à l'identique (voir `Must`)
+    REST/MCP lue à l'identique (voir `Must`)
   ./error.sdd — @AuthError comme @Rejection de @AuthUser : c'est @into_response de ./error.rs que
     le client voit ; ce fichier pose la trace de rejet, ./error.rs reste muet
   ./cookie.rs — @extract_session, seul validateur : il émet @AuthError::@NotAuthenticated et
@@ -32,7 +32,7 @@ References:
     repli interdit ; ./middleware.rs ne lit jamais `Authorization` — confirmé comme la raison d'être
     de cet extracteur, pas une asymétrie accidentelle (2026-09-27, `Tasks`)
   /src/rest/mod.rs, /src/rest/me.rs, /src/rest/admin.rs, /src/rest/tokens.rs,
-    /src/graphql/handler.rs, /src/mcp/handler.rs — surfaces vérifiées : toutes extraient
+    /src/mcp/handler.rs — surface vérifiée : toutes extraient
     @AuthPrincipal, aucune n'extrait @AuthUser — confirmé comme contrat voulu, pas une surface
     résiduelle (2026-09-27, `Tasks`)
   /docs/architecture.md — récit non contractuel : dual-auth cookie/token et extractor navigateur
@@ -44,7 +44,7 @@ Must:
     `--no-default-features` à `--all-features`, tests inline compris.
   Rester opt-in par signature de handler : ./middleware.rs ne définit ni @tower @Service ni
     @axum::@middleware ; l'unique point d'entrée est la présence de @AuthUser dans la signature.
-    Nulle route exemptée à connaître : @auth_router de ./mod.rs, GraphQL et MCP ne prennent pas
+    Nulle route exemptée à connaître : @auth_router de ./mod.rs et MCP ne prennent pas
     @AuthUser et ne lui sont donc jamais soumis ; une route qui l'omet tourne sans auth via ce
     fichier, protégée le cas échéant par @AuthPrincipal.
   Ne lire de @MiryadAuthState que @cookie_key, par @FromRef::@from_ref : @oidc_client, @db,
@@ -70,15 +70,14 @@ Must:
     expirée, pas de rotation de clé : la pose du cookie vit dans @handler_callback (./mod.rs), sa
     purge dans @handler_logout (./mod.rs).
   Porter la parité des surfaces par sa restriction même : ./middleware.rs ne sert que les routes
-    (REST de la crate et routes de l'app) qui le demandent ; GraphQL (`/src/graphql/handler.rs`)
-    et MCP (`/src/mcp/handler.rs`) vérifiés extraient @AuthPrincipal et non @AuthUser, parce que
+    (REST de la crate et routes de l'app) qui le demandent ; MCP (`/src/mcp/handler.rs`) vérifié extrait @AuthPrincipal et non @AuthUser, parce que
     @AuthUser ne peut pas valider un token `Bearer` — le contrat transverse « lue à l'identique
-    par les trois surfaces » est porté par @AuthPrincipal, pas par ce fichier ; le rendu `401`
+    par les deux surfaces » est porté par @AuthPrincipal, pas par ce fichier ; le rendu `401`
     texte reste commun quel que soit l'extracteur rejeteur car @Rejection = @AuthError chez les
     deux (./error.sdd).
 
 Must not:
-  Évaluer rôles, groupes, ownership ou ligne @users : @rbac et @graphql::@load_principal relisent
+  Évaluer rôles, groupes, ownership ou ligne @users : @rbac relit
     l'appartenance en base à partir d'un principal ; l'en-tête doc du fichier le nomme
     explicitement (« pas d'évaluation RBAC ici ») et aucune route du crate ne combine @AuthUser
     avec une décision d'autorisation.
@@ -88,9 +87,8 @@ Must not:
   Consigner ou réécrire @id_token : pas de vérification de signature, de réémission, de
     rafraîchissement silencieux d'un cookie expiré — un rejet est un rejet (`401`), le client
     repasse par le login.
-  Écrire dans @parts : @AuthUser n'est jamais @Extension ni donné à @ctx.data d'@async_graphql —
-    l'injection de principal dans @extensions/@data est le mécanisme de /src/graphql/handler.rs
-    pour @AuthPrincipal, pas celui d'ici.
+  Écrire dans @parts : @AuthUser n'est jamais @Extension ni injecté dans les extensions de requête —
+    pas de mécanisme d'injection de principal ici.
   Embarquer une notion de cookie : ./middleware.rs ne connaît @SESSION_COOKIE_NAME que via
     @extract_session ; il ne construit, ne déchiffre, ne purge aucun cookie lui-même.
 

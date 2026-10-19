@@ -35,15 +35,16 @@ Must:
     **que** cet en-tête d'exemption : le `Owns` de la spec du fichier (`./src/lib.sdd`, une fois
     écrite) reste l'autorité sur tout le reste de ces fichiers.
   Lancer le harnais et les tests sur **chaque** combinaison de features : défaut
-    (`static-frontend`), `--no-default-features`, `swagger-ui`, `graphql`, `graphiql`, `mcp`,
+    (`static-frontend`), `--no-default-features`, `swagger-ui`, `mcp`,
     `workflow` (amendement 2026-09-23, moteur de workflow — roadmap 9), `--all-features`. **Amendement 2026-10-06** : s'y ajoutent `systemone`, `matrix`, et les deux croisements `workflow,systemone` et
-    `workflow,matrix` (les steps croisés ne compilent que sous le croisement, ./src/workflow/mod.sdd) — soit
-    **douze** combinaisons de tests et douze de clippy (les huit précédentes plus quatre), toutes en
+    `workflow,matrix` (les steps croisés ne compilent que sous le croisement, ./src/workflow/mod.sdd).
+    **Amendement 2026-10-19** : `graphql` et `graphiql` sortent de la batterie avec la suppression de la
+    surface GraphQL — soit **dix** combinaisons de tests et dix de clippy, toutes en
     `--no-default-features --features <liste>` hors défaut et `--all-features`. Les
     analyses `pedantic` (`must_use_candidate`, `missing_errors_doc`) dépendent du graphe de
     features : une combinaison non rejouée laisse passer des avertissements.
   Tolérer `multiple_crate_versions` en `allow` : ses doublons sont imposés par les dépendances
-    amont (mer de versions derrière SeaORM, axum, openidconnect et seaography), `cargo update`
+    amont (mer de versions derrière SeaORM, axum et openidconnect), `cargo update`
     ne les déduplique pas, et ce n'est pas un signal d'implémentation.
   Formatter avec `cargo fmt --check` à la toolchain stable : `./rustfmt.toml` ne contient
     aucune option instable, aucun toolchain nightly n'est nécessaire.
@@ -54,6 +55,15 @@ Must:
     le contrat impose le code signalé (ex. `unused_async_trait_impl` apparu en clippy 1.99 sur
     @FromRequestParts::from_request_parts, dont l'`async` est imposé par le trait axum) — jamais
     par l'épinglage de la toolchain.
+  **Amendement 2026-10-19 (feature `db`)** — prévaut sur la liste de combinaisons ci-dessus. La batterie compte **treize** combinaisons de tests et
+    treize de clippy, `--all-features` comprise : défaut (`static-frontend` + `db`) ; `--no-default-features` ; `--no-default-features --features db` ;
+    `--no-default-features --features swagger-ui` ; `--no-default-features --features swagger-ui,db` ; `--no-default-features --features
+    static-frontend,swagger-ui` (profil sans base d'une API écrite à la main avec son frontend) ; `--no-default-features --features mcp` ;
+    `workflow` ; `systemone` ; `workflow,systemone` ; `matrix` ; `workflow,matrix` ; `--all-features`. Chaque combinaison sans `db`
+    prouve que `sea-orm` n'est plus dans le graphe : en plus de `cargo test`/`cargo clippy`, `cargo tree --no-default-features -e normal
+    -i sea-orm` (et la même commande avec `--features swagger-ui` et `static-frontend,swagger-ui`) doit ne rien imprimer sur stdout (cargo rend
+    « warning: nothing to print » sur stderr avec le code 0 : le test est la SORTIE vide, pas le code de sortie — mesuré 2026-10-19) — les dev-dependencies de test gardent `sea-orm`, d'où l'option `-e normal`. Les doc builds (`cargo doc --no-deps`) couvrent défaut,
+    `--no-default-features` et `--all-features`.
 
 Must not:
   Accepter un `#[allow(...)]` d'un lint du harnais dans du code de production sans commentaire
@@ -137,10 +147,11 @@ Tasks:
     restent à ajouter avec le lot Matrix — la tâche reste ouverte jusque-là.
     Clos le 2026-10-18 (accord explicite du développeur principal) : `matrix` et `workflow,matrix` sont dans la batterie de
     `./AGENTS.md` et dans les matrices test et clippy de `./.github/workflows/ci.yml`.
+  [x] Amendement 2026-10-19 (`db`) : la batterie de `./AGENTS.md`, de `./.github/workflows/ci.yml` (matrices test et clippy) et de l'agent
+    `validator` est portée de dix à treize combinaisons (tâche D8 de `./miryad-core.sdd`).
 
 Done when:
   `cargo clippy --all-targets -- -D warnings`, la même commande sur chacune des combinaisons de
-    features listées plus haut, et `cargo fmt --check` sortent sans un seul avertissement, carve-out
-    acté (2026-09-29) : les combinaisons incluant `graphql` peuvent échouer sur les seuls sites
-    gelés de `src/graphql/**` (exception du pont sans consommateur, /miryad-core.sdd 2026-09-27),
+    features listées plus haut, et `cargo fmt --check` sortent sans un seul avertissement — plus aucun
+    carve-out depuis la suppression de `src/graphql/**` (2026-10-19) —
     et `./miryad-core.sdd` ne porte plus de tâche ouverte de dette harnais.

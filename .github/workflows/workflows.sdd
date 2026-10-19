@@ -24,19 +24,17 @@ References:
 Must:
   Déclencher les tests sur `push` et `pull_request` vers `main`.
   Lancer `cargo test` sur les combinaisons de la batterie de `../../tooling.sdd`
-    (`--no-default-features`, défaut `static-frontend`, `swagger-ui`, `graphql`, `graphiql`,
-    `mcp`, `workflow`, `--all-features`, plus `systemone` et `workflow,systemone` depuis
-    l'amendement 2026-10-06 ; `matrix` et `workflow,matrix` s'y ajoutent avec leur lot) : les tests
-    sont verts partout, y compris sur le pont GraphQL.
-  Rejouer le harnais clippy sur chaque combinaison de features **hors pont GraphQL**
+    (`--no-default-features`, défaut `static-frontend`, `swagger-ui`,
+    `mcp`, `workflow`, `--all-features`, plus `systemone`, `workflow,systemone`, `matrix` et
+    `workflow,matrix`) : les tests sont verts partout.
+  Rejouer le harnais clippy sur chaque combinaison de features, `--all-features` comprise
     (`--no-default-features`, défaut, `swagger-ui`, `mcp`, `workflow`, `systemone`,
-    `workflow,systemone`, avec `--all-targets`), le
+    `workflow,systemone`, `matrix`, `workflow,matrix`, `--all-features`, avec `--all-targets`), le
     `-D warnings` escaladant tout avertissement résiduel hors `[lints]` : ce que
     `../../tooling.sdd` déclare interdit doit casser la CI, pas seulement le poste de travail.
-  Le pont GraphQL (`src/graphql/**`, features `graphql`, `graphiql`, et `--all-features` qui les
-    inclut) est un prototype sans consommateur (arbitré par Sébastien le 2026-10-03) : il ne
-    bloque jamais une release. Aucun job clippy bloquant ne cible un graphe contenant `graphql`
-    tant que le carve-out de `../../tooling.sdd` tient ; ses tests, eux, restent bloquants.
+  Aucun carve-out : le pont GraphQL, dont les sites clippy gelés justifiaient l'exclusion de
+    `--all-features` du job clippy (arbitré 2026-10-03, option A), est supprimé (2026-10-19) ; tout
+    job clippy est bloquant.
   Vérifier le formatage avec `cargo fmt -- --check` sur la toolchain stable (aucune option
     instable dans `../../rustfmt.toml`).
   Mettre en cache lesArtifacts Cargo entre les steps (`Swatinem/rust-cache`).
@@ -54,6 +52,11 @@ Must:
     tag explicite, avec les seules permissions qu'elle exige.
   Faire surveiller chaque semaine par Dependabot (`../dependabot.yml`) les écosystèmes `cargo` et
     `github-actions` ; ses PR passent par la même CI que les autres, aucun auto-merge.
+  **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute liste de combinaisons ci-dessus : les matrices de test et de clippy de
+    `./ci.yml` portent les treize combinaisons de `../../tooling.sdd` (dont `--all-features`), toutes bloquantes ; un job ou un pas
+    supplémentaire exécute `cargo tree --no-default-features -e normal -i sea-orm` et exige que sa sortie standard soit vide (cargo imprime « nothing to print » sur stderr et rend le code 0 ; preuve que `sea-orm` n'est
+    plus dans le graphe sans `db`), chaque commande en `--no-default-features`, `--no-default-features --features swagger-ui` et
+    `--no-default-features --features static-frontend,swagger-ui`.
 
 Must not:
   Publier alors que les tests ou le harnais ont échoué.
@@ -73,13 +76,11 @@ Scenario: régression sur une feature isolée
   Then cette combinaison échoue et bloque le merge
   And les autres combinaisons continuent de s'exécuter, pour que chaque écart soit visible
 
-Scenario: dette du pont GraphQL
-  Given les sites clippy gelés de `src/graphql/**` (carve-out de `../../tooling.sdd`)
+Scenario: clippy sur toutes les features
+  Given la suppression de `src/graphql/**` (2026-10-19), plus aucun site clippy gelé
   When la CI tourne sur un push vers `main` ou sur un tag `v*`
-  Then aucun job clippy ne cible un graphe contenant `graphql`, donc la dette du pont ne rougit
-    ni le merge ni la publication
-  And les tests des huit combinaisons, `graphql`, `graphiql` et `--all-features` compris, restent
-    bloquants
+  Then un job clippy cible `--all-features` en plus des neuf autres combinaisons et bloque le merge
+    en cas d'avertissement
 
 Scenario: tag désaligné
   Given un tag `v0.2.0` est poussé alors que `Cargo.toml` porte la version `0.1.3`
@@ -126,7 +127,20 @@ Tasks:
     A — matrice des tests étendue, clippy sans graphe `graphql`. Le pont est un prototype qui ne
     doit en aucun cas gêner une release. `publish.yml` ne lance que `cargo test` (défaut) avant
     `cargo publish` : aucun changement requis côté publication pour cette décision.
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./ci.yml`, retirer les entrées de test `graphql` et `graphiql`, ajouter
+    au job clippy l'entrée `all-features` (`--all-features`) et supprimer le commentaire « Pas de graphe contenant graphql ni
+    --all-features : carve-out du pont gele ». Une tâche par fichier : ./ci.yml seul.
+  [x] Amendement 2026-10-19 (`db`) : dans `./ci.yml`, passer chaque matrice à treize entrées nommées (default, no-default, db, swagger-ui,
+    swagger-ui-db, frontend-swagger-ui, mcp, workflow, systemone, workflow-systemone, matrix, workflow-matrix, all-features) et ajouter le
+    job `no-db-graph` (trois commandes `cargo tree … -i sea-orm` dont la sortie standard doit être vide ; le pas échoue si `cargo tree` imprime une ligne ou si cargo
+    lui-même échoue ; par exemple `out=$(cargo tree … -i sea-orm) && test -z "$out"`, sans `|| true`).
 
 Done when:
   La CI prouve les tests, le harnais et le formatage sur chaque combinaison de features, et un
     tag dont la version ne correspond pas à `Cargo.toml` ne publie rien.
+
+Scenario: sea-orm absent du graphe sans db (2026-10-19)
+  Given le job `no-db-graph`
+  When il exécute `cargo tree --no-default-features -e normal -i sea-orm`
+  Then sa sortie standard est vide (stderr : « nothing to print », code de sortie 0) et le job réussit
+  And si la sortie contenait une ligne `sea-orm v…` (sea-orm présent), le job échouerait et bloquerait le merge

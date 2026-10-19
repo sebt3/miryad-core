@@ -1,13 +1,13 @@
 Spec: miryad-core
 
-Platform: Rust edition 2024, toolchain stable (1.97.1 à l'adoption du harnais), axum 0.8, SeaORM 2, Seaography 2.0.0-rc.9
+Platform: Rust edition 2024, toolchain stable (1.97.1 à l'adoption du harnais), axum 0.8, SeaORM 2
 
 Purpose:
   Moteur générique derrière le template d'application **miryad** : auth OIDC + cookies de
-    session + tokens API, RBAC/ownership par entité, API REST, GraphQL et MCP lues depuis la
+    session + tokens API, RBAC/ownership par entité, API REST et MCP lues depuis la
     même métadonnée, OpenAPI, IR pour le scaffolding frontend et migrations internes. La
     promesse (« 80 % de l'application vient gratuitement ») tient parce que le modèle est
-    opinionated : axum, SeaORM et Seaography sont imposés, et une application déclarant ses
+    opinionated : axum et SeaORM sont imposés, et une application déclarant ses
     entités n'écrit qu'une implémentation de @MiryadResource par entité. Crate publiée sur
     crates.io et GitHub, API instable avant `1.0`, licence BSD-3-Clause.
 
@@ -16,7 +16,6 @@ Structure:
     même répertoire (`src/auth/oidc.rs` ↔ `src/auth/oidc.sdd`)
   ./src/auth/: OIDC, cookies, tokens API, dual-auth, extracteurs axum
   ./src/rest/: routeur CRUD générique, endpoints d'admin/self-service, OpenAPI
-  ./src/graphql/: montage Seaography dynamique, principal, hooks
   ./src/mcp/: serveur JSON-RPC, tools CRUD générés, mise en forme des sorties
   ./src/users/: utilisateurs, groupes, appartenances, comptes de service
   ./src/migration/: migrations SeaORM internes `miryad_*`, une spec par migration
@@ -51,29 +50,17 @@ Must:
     spec → test → implémentation, `.specdd/bootstrap.project.md`).
   Exiger la batterie complète de `./tooling.sdd` (tests et harnais sur chaque combinaison de
     features, `cargo fmt --check`) avant qu'une ligne de `Tasks` passe à `[x]`.
-  Lire les trois surfaces — REST, GraphQL, MCP — depuis la seule métadonnée déclarée par
+  Lire les deux surfaces — REST et MCP — depuis la seule métadonnée déclarée par
     @MiryadResource (@resource_name, @read_policy, @write_policy, @owner_column,
     @label_column, @before_create, @before_update, @before_delete) : ajouter une entité =
-    implémenter ce trait, rien de plus. Exception nommée (actée par Sébastien, 2026-09-23) :
-    @before_update et @before_delete ne se déclenchent que sur REST et MCP — Seaography
-    `2.0.0-rc.9` ne pilote son hook équivalent qu'à l'insertion ; cette asymétrie est
-    documentée dans ./src/resource.sdd et n'est pas tenue pour un décalage à vérifier côté
-    GraphQL. La règle de parité reste la règle par défaut pour tout le reste de ce que le trait
-    déclare.
-  Exception nommée supplémentaire (actée par Sébastien, 2026-09-27) : le pont GraphQL
-    (@graphql::hooks, @graphql::registry) reste un prototype sans consommateur en production.
-    Le bug de désalignement de clé (@MiryadResource::resource_name contre l'identifiant
-    `CamelCase(table)` que Seaography passe réellement à ses hooks, fail-open documenté par le
-    `[!]` #19 de ./src/resource.sdd) n'est pas corrigé dans cette version mineure : la parité
-    REST/GraphQL/MCP ne s'applique pas à cette surface tant qu'un consommateur réel n'existe pas.
-    Une partie du fossé (owner passthrough à l'update/delete GraphQL) tient à une limite
-    constatée de Seaography `2.0.0-rc.9` elle-même (@LifecycleHooksInterface::before_active_model_save
-    n'est jamais invoqué hors création) et demanderait une évolution amont, pas seulement un choix
-    interne. ./src/graphql/hooks.sdd et ./src/graphql/registry.sdd continuent de documenter l'état
-    actuel du code (fail-open compris) sans être poussées vers `[x]` tant que ce chantier n'est pas
-    rouvert. Le chantier prioritaire de cette version mineure est le durcissement de la surface
-    REST (./src/rest/core.sdd, ./src/rbac.sdd, ./src/query.sdd, ./src/rest/mod.sdd), indépendant de
-    ce pont.
+    implémenter ce trait, rien de plus. Aucune exception de parité : les trois hooks de cycle de
+    vie se déclenchent à l'identique sur REST et MCP (la surface GraphQL, seule source des
+    exceptions nommées 2026-09-23 et 2026-09-27, est retirée — décision 2026-10-19).
+  Ne proposer aucune surface GraphQL : la crate n'embarque ni module `graphql`, ni feature
+    `graphql`/`graphiql`, ni dépendance `seaography`/`async-graphql`/`async-graphql-axum`, ni
+    feature Cargo `sea-orm/seaography` (décision 2026-10-19 : prototype sans consommateur en
+    production, dette sans valeur, et rc.9 de Seaography figeait le graphe SeaORM). La retirer
+    est un changement cassant de l'API instable avant `1.0`, à annoncer dans le changelog.
   Porter un code d'erreur unique `MRD-<DOMAINE>-NNN` sur toute erreur interne de la crate.
   Exiger la relation une-spec-par-fichier et la bijectivité décrite dans
     `.specdd/bootstrap.project.md` : chaque fichier de `src/` possède sa spec adjacente du même
@@ -91,9 +78,7 @@ Must:
     Le diff de `./Cargo.toml` est documenté par `./src/systemone/mod.sdd` et `./src/matrix/mod.sdd`,
     `[package.metadata.docs.rs].features` y ajoute `systemone` et `matrix`, `./README.md` nomme les huit features.
   Garder les gating de features tels que déclarés dans `Cargo.toml` : `static-frontend` activée
-    par défaut (dépendance légère, attendue par la quasi-totalité des applications), `graphiql`
-    impliquant `graphql`, `graphql` activant `sea-orm/seaography` (sans quoi
-    @DeriveRelatedEntity ne génère rien et les relations disparaissent de l'API), `mcp`
+    par défaut (dépendance légère, attendue par la quasi-totalité des applications), `mcp`
     n'embarquant `vynil-core` qu'en `hbs` (`default-features = false`) — la feature `crypto` en est purgée
     (arbitré par Sébastien le 2026-09-29 : ses helpers de template ne sont pas voulus, elle retire
     `openssl` natif du graphe des consommateurs ; à remettre si un template en a besoin).
@@ -104,6 +89,18 @@ Must:
     (arbitré par Sébastien le 2026-09-29).
   Publier une documentation utilisable sur docs.rs : le module @lib.rs porte la documentation
     de la crate, et `[package.metadata.docs.rs]` active les features documentables.
+  **Amendement 2026-10-19 (feature `db`, validation Bearer)** — prévaut sur toute mention contraire. Le graphe `[features]` gagne `db`
+    (activée par défaut avec `static-frontend`) : `db = ["dep:sea-orm", "dep:sea-orm-migration", "dep:hmac", "dep:sha2",
+    "dep:rand", "dep:chrono", "dep:hex"]` ; `mcp`, `workflow` et `matrix` l'impliquent ; `sea-orm`, `sea-orm-migration`, `hmac`, `sha2`, `rand`, `hex` et `chrono`
+    deviennent des dépendances optionnelles (les dev-dependencies de test restent). Sans `db`, la crate est un socle d'authentification
+    et de publication d'API sans entités ni comptes locaux : OIDC navigateur (cookie), validation d'un JWT OIDC en `Authorization: Bearer`,
+    extracteurs, OpenAPI/Swagger fournis par l'application, routeur frontend — cas d'usage : la reprise de gramophone (API de manipulation
+    de ressources Kubernetes, qui transmet l'`id_token` de l'utilisateur à l'API server) et une interface Kubernetes générique. Le détail
+    du contrat vit dans ./src/lib.sdd et les specs `auth/*`, `rest/*`. Les `Must` ci-dessus qui supposent SeaORM, RBAC ou les tables
+    `miryad_*` s'entendent « sous `db` ».
+  Valider un JWT OIDC en Bearer sans base (./src/auth/oidc.sdd, ./src/auth/dual.sdd) : signature par le JWKS de la discovery, `iss`,
+    `aud` ∋ `client_id`, `exp` ; aucune audience supplémentaire, aucun re-fetch automatique du JWKS (limite héritée du signal
+    `jwks_rotation_needed`, à traiter en roadmap).
 
 Must not:
   Écrire ou maintenir du code par entité dans la crate, ni exiger un boilerplate par entité de
@@ -128,7 +125,6 @@ Depends on:
   SeaORM 2 (@sea_orm, @sea_orm_migration)
   axum 0.8 (@axum) et @tower, @tower-http derrière `static-frontend`
   openidconnect 4 (@openidconnect)
-  Seaography 2.0.0-rc.9 et async-graphql 7, derrière les features `graphql` et `graphiql`
   utoipa 5 (@utoipa), @utoipa-swagger-ui derrière `swagger-ui`
   vynil-core 0.7.7 (`hbs`, sans `crypto` depuis le 2026-09-29), derrière les features `mcp` et `workflow`
   ./tooling.sdd
@@ -162,11 +158,6 @@ Tasks:
   [x] Spec `src/rest/tokens.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
   [x] Spec `src/rest/error.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
   [x] Spec `src/rest/openapi.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
-  [x] Spec `src/graphql/mod.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
-  [x] Spec `src/graphql/registry.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
-  [x] Spec `src/graphql/handler.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
-  [x] Spec `src/graphql/hooks.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
-  [x] Spec `src/graphql/principal.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
   [x] Spec `src/mcp/mod.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
   [x] Spec `src/mcp/registry.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
   [x] Spec `src/mcp/handler.sdd` produite (spec-reverse) puis revue par Sébastien, decision 2026-10-17.
@@ -183,8 +174,7 @@ Tasks:
     non contractuel, ligne `Tasks` `[x]`) ; question déjà résolue dans la spec elle-même.
   [x] Purger la dette du harnais module par module, selon le calendrier de `./tooling.sdd`.
     Solde 2026-09-29 (série A1–A4 + fix F, synthèse validator GO) : harnais vert sur les huit
-    combinaisons hors carve-out graphql acté (7 sites sous `graphql`, 8 avec `graphiql`, tous
-    dans `src/graphql/**`).
+    combinaisons hors carve-out graphql (carve-out soldé par la suppression du module, 2026-10-19).
   [x] Décider si le moteur de workflow (roadmap 7/9) entre dans une spec — soldé : moteur choisi
     (Restate), `src/workflow/*.sdd` en place, livré en 0.1.4 ; roadmap et AGENTS.md corrigés
     2026-10-04.
@@ -211,8 +201,7 @@ Tasks:
   [x] Spec `src/workflow/subworkflow.sdd` produite puis revue par Sébastien (neuve #26, approuvée
     2026-10-04, livrée 01bf9ba, validator PASS).
   [x] Amendement `/src/resource.sdd` + `/src/rest/core.sdd` pour @before_update/@before_delete —
-    acté par Sébastien 2026-09-23 (exception nommée GraphQL, miroir dans `/miryad-core.sdd`
-    `Must`), implémentation livrée le même jour (commits 145b17e/1d68b79, validator PASS).
+    acté par Sébastien 2026-09-23 (exception nommée GraphQL, retirée avec la surface le 2026-10-19), implémentation livrée le même jour (commits 145b17e/1d68b79, validator PASS).
   [x] Amendement 2026-10-06 : appliquer le diff de `./Cargo.toml` (features `systemone`, `matrix`, dépendances
     optionnelles, features `tokio`, dev-dependencies de la suite de conformité, `docs.rs`), mettre à jour
     `./README.md` et, à la clôture de la feature, `./docs/architecture.md` (templating central et son modèle de
@@ -222,6 +211,62 @@ Tasks:
     dépendances optionnelles (`matrix-sdk`, `matrix-sdk-crypto`, `matrix-sdk-store-encryption` épinglées
     en `0.18`, `zeroize`, `tokio`), les dev-dependencies de la suite de conformité officielle et les
     huit features de `[package.metadata.docs.rs]`.
+  [x] G0 — suppression de la surface GraphQL (décision 2026-10-19 ; specs amendées le même jour, code à suivre) : les
+    tâches G1 à G7 ci-dessous se jouent dans l'ordre, une par fichier ou par petit groupe, validator entre chaque.
+  [x] G1 — `src/resource.rs`, `src/mcp/mod.rs`, `src/lib.rs` : retirer tests et références à `crate::graphql` (tâches
+    d'amendement 2026-10-19 de `./src/resource.sdd`, `./src/mcp/mod.sdd`, `./src/lib.sdd`), de sorte que plus aucun code hors
+    `src/graphql/` ne nomme ce module.
+  [x] G2 — supprimer le répertoire `src/graphql/` (les cinq `.rs` ; les `.sdd` sont déjà retirés) et la ligne `pub mod graphql` de `./src/lib.rs`.
+  [x] G3 — `./Cargo.toml` : retirer les features `graphql` et `graphiql`, les dépendances `seaography`, `async-graphql`,
+    `async-graphql-axum`, `graphql`/`graphiql` de `[package.metadata.docs.rs].features`, le commentaire du carve-out `seaography`
+    (ligne ~48), et mettre la `description` à « REST/MCP » ; régénérer `./Cargo.lock` (`cargo update -w` minimal : aucune montée
+    de version hors départ de `seaography`/`async-graphql*` et de leurs satellites).
+    Validé 2026-10-19 (validator Sonnet GO) : 22 paquets retirés de `Cargo.lock`, aucune version changée, `--locked` stable ; batterie à dix
+    combinaisons (tests et clippy, `--all-features` comprise sans carve-out), `cargo doc` et `specdd lint` verts.
+  [x] G4 — doc-comments sans changement de comportement, par groupes de trois fichiers au plus : (a) `./src/auth/cookie.rs`,
+    `./src/auth/error.rs`, `./src/auth/principal.rs` ; (b) `./src/auth/state.rs`, `./src/query.rs`, `./src/ir.rs` ;
+    (c) `./src/users/group.rs`, `./src/users/user.rs`, `./src/users/mod.rs` ; (d) `./src/mcp/format.rs`, `./src/mcp/handler.rs`,
+    `./src/mcp/registry.rs` ; (e) `./src/rest/admin.rs`, `./src/workflow/definition.rs` — chacun selon la tâche d'amendement de la
+    spec adjacente.
+  [x] G5 — `./.github/workflows/ci.yml` (tâche d'amendement de `./.github/workflows/workflows.sdd`) et `./README.md` (retirer GraphQL
+    de la promesse, de l'exemple `features`, de la liste des routes, du tableau des features et de la commande `cargo doc`).
+  [x] G6 — `./docs/architecture.md` : supprimer la section « API GraphQL » et retirer toute mention de GraphQL/Seaography/`graphql`
+    du récit (parité REST/MCP, exception des hooks update/delete, `sea-orm/seaography`, épinglement `async-graphql`) ; conserver
+    une ligne d'historique « GraphQL supprimé le 2026-10-19 » dans la section des décisions.
+  [x] G7 — batterie complète de `./tooling.sdd` (dix combinaisons de tests et de clippy, `fmt`, `cargo doc`, `npx specdd lint`) ;
+    `grep -ril 'graphql\|seaography'` ne renvoie plus que des lignes d'historique (`[x]`, amendements datés), la clause de suppression et la puce de `docs/architecture.md`.
+    Validé 2026-10-19 (validator Sonnet, puis clippy rejoué par Claude après correction de `users/group.rs`) : batterie à dix
+    combinaisons verte (tests, clippy `-D warnings` dont `--all-features`, `cargo doc`, `fmt`, `specdd lint`).
+  [x] D0 — mode sans base et validation Bearer (décision 2026-10-19 ; specs amendées, code à suivre) : livrés quand D1 à D8 sont `[x]` et que la batterie de
+    `./tooling.sdd` (treize combinaisons) est verte. Ordre d'exécution (D4 d'abord : un `cfg(feature = "db")` exige la feature déclarée, puis D1, D2, D3, D5, D6, D7, D8, D9) : un fichier ou un petit groupe par tâche, validator entre chaque ; tant que D7 n'est pas
+    faite, seules les combinaisons AVEC `db` compilent — c'est attendu.
+  [x] D1 — `./src/auth/error.rs` et `./src/auth/principal.rs` : variantes `InvalidBearer`/`BearerExpired`, `PrincipalSource::Bearer`, `cfg(db)` sur `AuthError::Database`
+    (tâches d'amendement de `./src/auth/error.sdd` et `./src/auth/principal.sdd`).
+  [x] D2 — `./src/auth/oidc.rs` : `verify_bearer` au trait, implémentation, mode du mock (tâche d'amendement de `./src/auth/oidc.sdd`).
+  [x] D3 — `./src/auth/dual.rs` : dispatch JWT/API-token (tâche d'amendement de `./src/auth/dual.sdd`).
+  [x] D4 — `./Cargo.toml` : feature `db`, dépendances optionnelles, implications de `mcp`/`workflow`/`matrix`, `default = ["static-frontend", "db"]`, `docs.rs.features`
+    (`Cargo.lock` régénéré sans montée de version ; rien ne se compile encore sans `db`).
+    Validé 2026-10-19 (D1–D4, validator Sonnet GO, aucune faille de sécurité trouvée) : neuf combinaisons avec `db` vertes en tests et clippy, `cargo doc` propre. Dette reportée à D6 :
+    dégater les tests de `dual.rs` qui ne dépendent que de l'état (constructeur d'état sans base, voir `src/auth/dual.sdd`). Constats consignés : `aud ∋ client_id` (pas d'égalité, `azp` non contrôlé) ;
+    `iat` non contraint par la bibliothèque ; un `sub` vide est accepté tel quel (comme au login) ; `OidcIdentity` dérive `Debug` et porte le JWT en clair (à instruire).
+  [x] D5 — `./src/lib.rs` : gating des cinq modules (tâche d'amendement de `./src/lib.sdd`).
+  [x] D6 — `./src/auth/state.rs`, `./src/auth/mod.rs` : `cfg(db)` des champs, de `token`, du callback (tâches d'amendement de `./src/auth/state.sdd` et `./src/auth/mod.sdd`).
+  [x] D6b — tests sans `db` (aucun code de production ne change) : `cargo test` sans `db` doit compiler et passer sur les quatre combinaisons sans base
+    (`--no-default-features`, `swagger-ui`, `static-frontend,swagger-ui`, `systemone`). `./Cargo.toml` : `hmac` et `sha2` (versions identiques) rejoignent
+    `[dev-dependencies]` — les tests de `src/auth/oidc.rs` et `src/auth/middleware.rs` signent des JWT HS256 de fixture, alors que ces crates sont optionnelles
+    sous `db` ; `./tests/resource.rs` : `#![cfg(feature = "db")]` en tête ; `./src/lib.rs` : le test `static_frontend_absent_surface` ne cite plus `rest::error`
+    sans `db` ; `./src/auth/dual.rs` et `./src/auth/middleware.rs` : constructeur d'état sans base dans `mod tests`, dégatage de tous les tests qui n'ont besoin
+    que de l'état (dont les scenarios `bearer_jwt_*` et `session_cookie_alone_*` de `./src/auth/dual.sdd`, qui doivent exister sans `db`).
+  [x] D7 — `./src/rest/mod.rs`, `./src/rest/openapi.rs` : gating (tâches d'amendement de `./src/rest/mod.sdd` et `./src/rest/openapi.sdd`) ; les tests de tous les modules touchés
+    sont gatés ou adaptés pour que `cargo test --no-default-features` compile.
+  [x] D8 — `./.github/workflows/ci.yml`, `./AGENTS.md`, `./README.md`, `./docs/architecture.md` : treize combinaisons, présentation de la feature `db` et du profil sans base ;
+    puis batterie complète de `./tooling.sdd` (tests et clippy `-D warnings` sur les treize combinaisons, `cargo doc`, `fmt`, `specdd lint`).
+  [x] D9 — après D8 : consigner dans `docs/architecture.md` (section auth) le contrat du Bearer OIDC et ses limites assumées (pas de re-fetch automatique du JWKS ;
+    pas de groupes pour un sujet jamais passé par le login navigateur) ; les inscrire à `docs/roadmap.md` n'est possible qu'avec la décision explicite du développeur principal.
+    Validé 2026-10-19 (D5–D9, validator Sonnet, un bloquant corrigé : lien rustdoc de `src/rest/mod.rs:1`, rejoué par Claude) : treize combinaisons vertes en tests et clippy
+    (de 190 à 1 017 tests selon la combinaison, 0 échec), `cargo doc -D warnings` vert sur défaut, sans `db`, `swagger-ui`, `static-frontend,swagger-ui`, `systemone`, `--all-features` ;
+    `sea-orm`, `sea-orm-migration` et `hex` absents du graphe `normal` sans `db` (`hmac`, `sha2`, `rand`, `chrono` y restent tirés par `openidconnect`/`cookie`, pas par la crate) ;
+    job CI `no-db-graph` rejoué localement. Dette mineure : les tests de dispatch Bearer de `dual.rs` qui passent par le chemin token API ne tournent que sous `db`.
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec `.sdd` relue et approuvée par Sébastien, sans

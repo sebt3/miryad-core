@@ -8,8 +8,11 @@ pas l'historique de comment on y est arrivé.
 
 ## Modèle de ressources — `MiryadResource`
 
-Contrat central (`src/resource.rs`) sur lequel REST, GraphQL, MCP et le frontend générique se
-greffent — une seule implémentation par entité SeaORM, lue telle quelle par les trois couches API
+Sous feature `db` (défaut ; absente du profil sans base, cf. « Profil sans base de données » dans
+la section Authentification).
+
+Contrat central (`src/resource.rs`) sur lequel REST, MCP et le frontend générique se
+greffent — une seule implémentation par entité SeaORM, lue telle quelle par les deux couches API
 (pas de déclaration de politique dupliquée entre elles).
 
 ```rust
@@ -44,11 +47,13 @@ pub enum AccessPolicy { Public, OwnerOnly, Group(&'static str), AdminOnly }
 
 ## Migrations
 
-Schéma interne géré par un `Migrator` (`sea-orm-migration`) embarqué dans le crate (`src/
-migration/`), séparé des migrations métier de l'app consommatrice — elle l'appelle explicitement
-au démarrage : `miryad_core::migration::Migrator::up(&db, None).await`. Toutes les tables internes
-sont préfixées `miryad_` (`miryad_api_tokens`, `miryad_users`, `miryad_groups`,
-`miryad_group_memberships`) pour ne jamais collisionner avec le schéma applicatif.
+Sous feature `db` uniquement. Schéma interne géré par un `Migrator` (`sea-orm-migration`) embarqué
+dans le crate (`src/migration/`), séparé des migrations métier de l'app consommatrice — elle l'appelle
+explicitement au démarrage : `miryad_core::migration::Migrator::up(&db, None).await`. Toutes les tables
+internes sont préfixées `miryad_` (`miryad_api_tokens`, `miryad_users`, `miryad_groups`,
+`miryad_group_memberships`) pour ne jamais collisionner avec le schéma applicatif. Les features
+`workflow` (`miryad_workflow_*`) et `matrix` (`miryad_matrix_*`) suivent la même convention ; elles
+impliquent `db`.
 
 Ajouter une table interne = ajouter un fichier `m<date>_<numéro>_<nom>.rs` et l'enregistrer dans
 `Migrator::migrations()` — rien d'autre à changer côté app (elle rejoue simplement `Migrator::up`).
@@ -70,7 +75,9 @@ pub struct MiryadAuthState {
     pub cookie_key: cookie::Key,
     pub post_login_redirect: String,
     pub post_logout_redirect: String,
-    pub db: DatabaseConnection,   // requis pour valider un token API et résoudre un User
+    pub secure_cookies: bool,
+    #[cfg(feature = "db")] pub db: DatabaseConnection,  // valider un token API, résoudre un User
+    #[cfg(feature = "db")] pub token_pepper: String,    // clé HMAC-SHA256 de hachage des tokens API
 }
 
 pub fn auth_router<S>() -> Router<S>
@@ -95,33 +102,94 @@ chiffré, `Max-Age=300`).
 navigateur — cf. section suivante pour `AuthPrincipal`, le type réellement consommé par les API.
 
 Erreurs : `AuthError` (`src/auth/error.rs`), préfixe `MRD-AUTH-XXX`, implémente `IntoResponse`
-(401 non-authentifié/session invalide, 502 erreur OIDC amont, 401 token invalide/expiré, 500
-erreur base).
+(401 non-authentifié/session invalide, 502 erreur OIDC amont, 401 token API invalide/expiré et 500
+erreur base sous `db`, 401 JWT Bearer invalide `MRD-AUTH-019` ou échu `MRD-AUTH-020`).
+
+### Feature `db` et profil sans base
+
+La feature `db` est la valeur par défaut ; `mcp`, `workflow` et `matrix` l'impliquent. Elle gate
+tout ce qui touche à la base :
+
+- les modules `ir`, `migration`, `rbac`, `resource`, `users`, `auth::token` (tokens API), et tout
+  `rest` sauf `rest::openapi` (`admin`, `core`, `error`, `me`, `tokens`, `resource_router`) ;
+- dans `MiryadAuthState`, les champs `db` et `token_pepper` ;
+- dans le callback de login, la lecture de `login_result.groups` et la synchronisation des comptes
+  (`resolve_user` puis `sync_group_memberships`). Sans `db`, le callback vérifie le `state`, échange
+  le code, pose le cookie de session et redirige, sans aucune écriture : le cookie est alors le seul
+  chemin. Les routes `/auth/login`, `/auth/callback` et `/auth/logout` sont identiques dans les deux
+  profils.
+
+**Validation d'un JWT OIDC en `Authorization: Bearer`** (sans `db` comme avec). Un en-tête
+`Authorization: Bearer <matériau>` reconnu est un choix définitif : aucun repli sur le cookie, quel
+que soit le résultat. Le matériau est traité comme JWT si et seulement s'il contient exactement deux
+caractères `.` (règle sans parse : un token API `mrd_…`, en base64url, n'en contient jamais).
+
+- JWT : `OidcClientTrait::verify_bearer` (`src/auth/oidc.rs`, synchrone, sans E/S). Vérifie la
+  signature contre le JWKS du snapshot de discovery, `iss` égal à l'issuer découvert, `aud` contenant
+  le `client_id`, et `exp`. `iat` n'est pas contraint : la bibliothèque `openidconnect` 4 n'applique
+  aucune borne sur `iat` par défaut, et `oidc.rs` ne la configure pas. Aucun nonce (un JWT Bearer
+  n'appartient à aucun flux de connexion). Succès : `AuthPrincipal` avec `PrincipalSource::Bearer { jwt }`.
+  Échec : `MRD-AUTH-020` (`AuthError::BearerExpired`) si le JWT est par ailleurs valide mais échu,
+  `MRD-AUTH-019` (`AuthError::InvalidBearer`) pour tout autre rejet. Le JWT n'entre jamais dans l'erreur.
+- Autre matériau, sous `db` : token API (`validate_token`, codes `MRD-AUTH-014`/`015`/`016` inchangés).
+- Autre matériau, sans `db` : `MRD-AUTH-019` immédiat, sans aucune E/S.
+
+**Limites assumées**, telles quelles :
+
+- Pas de rafraîchissement automatique du JWKS. Une rotation de clés côté fournisseur impose un
+  redémarrage de l'application. Une signature sans clé correspondante arme le signal
+  `OidcClient::jwks_rotation_needed()` et la requête est rejetée en `MRD-AUTH-019`, sans re-fetch.
+- Pas de groupes pour un sujet qui ne s'est jamais connecté par le navigateur : le claim `groups`
+  n'est lu qu'au callback, et `PrincipalSource::Bearer` ne porte aucun groupe.
+- L'`aud` est testé par « contient » (pas d'égalité). `azp` n'est pas contrôlé : la vérification
+  `azp` d'`openidconnect` est commentée dans sa source (`verification/mod.rs`).
+- Un `sub` vide est accepté, comme au login.
+- `OidcIdentity` dérive `Debug` et porte le `id_token` en clair : ne jamais le formater avec `{:?}`.
+- Un `id_token` volé reste valable jusqu'à son `exp`.
+
+**Profil sans base de données.** Cas d'usage : une API écrite à la main qui transmet l'`id_token` de
+l'utilisateur à l'API server Kubernetes (cas de gramophone), ou une UI Kubernetes générique. L'application
+n'a alors ni comptes, ni tables, ni RBAC de la crate à porter. Elle monte `auth_router`, les extracteurs
+et `rest::openapi::openapi_router` (ou `swagger_ui_router`), et ses propres routes.
+
+**Preuves attendues.** La batterie de `tooling.sdd` compte treize combinaisons de tests et de clippy
+(défaut ; `--no-default-features` ; `db` seul ; `swagger-ui` avec et sans `db` ; `static-frontend,swagger-ui` ;
+`mcp` ; `workflow` ; `systemone` ; `workflow,systemone` ; `matrix` ; `workflow,matrix` ; `--all-features`).
+Chaque combinaison sans `db` doit prouver que `sea-orm` est absent du graphe :
+`cargo tree --no-default-features -e normal -i sea-orm` ne doit rien imprimer sur stdout (cargo écrit
+« warning: nothing to print » sur stderr, code de sortie 0). La même vérification vaut avec
+`--features swagger-ui` et `--features static-frontend,swagger-ui`. Les dev-dependencies gardent
+`sea-orm` pour les tests, d'où `-e normal`.
+
+`MiryadAuthState` compte cinq champs sans `db` et sept avec `db`.
 
 ## Tokens API + dual-auth
 
+Tokens API sous `db` (module `auth::token`). Le dispatch `Authorization: Bearer` est commun aux deux
+profils, cf. section précédente.
+
 ```rust
-// src/auth/token.rs
+// src/auth/token.rs (sous db)
 pub type ApiToken = Entity;
 pub struct Model {
     pub id: i32,
     pub subject: String,           // pas de FK vers User — résolu par requête, cf. section RBAC
     pub name: String,
-    pub token_hash: String,        // SHA-256 hex — jamais le token en clair
+    pub token_hash: String,        // HMAC-SHA256 hex (poivre) — jamais le token en clair
     pub created_at: DateTimeUtc,
     pub expires_at: Option<DateTimeUtc>,
     pub last_used_at: Option<DateTimeUtc>,
 }
 
-pub async fn issue_token(db, subject, name, expires_at) -> Result<IssuedToken, AuthError>;
-pub async fn validate_token(db, token) -> Result<AuthPrincipal, AuthError>;
+pub async fn issue_token(db, subject, name, expires_at, pepper) -> Result<IssuedToken, AuthError>;
+pub async fn validate_token(db, token, pepper) -> Result<AuthPrincipal, AuthError>;
 pub async fn revoke_token(db, id) -> Result<(), AuthError>;
-pub async fn ensure_token(db, subject, name, token, expires_at) -> Result<(), AuthError>;
+pub async fn ensure_token(db, subject, name, token, expires_at, pepper) -> Result<(), AuthError>;
 ```
 
 Format du token émis par `issue_token` : `mrd_<43 car. base64url>` (32 octets aléatoires, préfixe
-façon GitHub/Stripe), haché en SHA-256 avant stockage (pas un KDF lent : le secret est déjà
-haute-entropie, pas un mot de passe humain).
+façon GitHub/Stripe), haché en HMAC-SHA256 avec le poivre `token_pepper` de `MiryadAuthState` avant stockage (pas un KDF
+lent : le secret est déjà haute-entropie, pas un mot de passe humain).
 
 `ensure_token` diffère d'`issue_token` : la valeur du token est **fournie par l'appelant** (pas
 générée), et l'opération est idempotente (aucun doublon si un token avec ce hash existe déjà pour
@@ -134,13 +202,17 @@ elle-même si et quand appeler cette fonction, miryad-core n'automatise rien). S
 côté app, l'appel suivant **ajoute** un nouveau token sans supprimer l'ancien, qui reste valide
 jusqu'à révocation explicite (`revoke_token`).
 
-`AuthPrincipal` (`src/auth/principal.rs`) est le type unifié que REST/GraphQL/MCP consomment,
-produit soit par le cookie de session soit par un token API :
+`AuthPrincipal` (`src/auth/principal.rs`) est le type unifié que REST/MCP consomment,
+produit par le cookie de session, par un token API (sous `db`) ou par un JWT Bearer :
 
 ```rust
 pub struct AuthPrincipal { pub subject: String, pub email: Option<String>, pub preferred_username: Option<String>, pub source: PrincipalSource }
-pub enum PrincipalSource { Session { id_token: String }, ApiToken { token_id: i32 } }
+pub enum PrincipalSource { Session { id_token: String }, ApiToken { token_id: i32 }, Bearer { jwt: String } }
 ```
+
+Pour `PrincipalSource::Bearer`, `subject`, `email` et `preferred_username` sont lus dans les claims du
+JWT vérifié par `verify_bearer`, comme pour la session. Le `Debug` manuel de `Session` et de `Bearer`
+rédige l'`id_token` ou le JWT en `"[REDACTED]"`.
 
 **Décision (Sébastien, 2026-09-27) — `preferred_username`.** Le claim OIDC standard
 `preferred_username` est propagé de l'`id_token` jusqu'à `AuthPrincipal` (session) car `email`
@@ -151,9 +223,9 @@ posés avant le déploiement (payload à trois clés) se relisent `preferred_use
 invalidation de session — pas de migration de cookie, le claim regagne le payload au re-login.
 
 L'extracteur dual-auth (`src/auth/dual.rs`) résout dans cet ordre : `Authorization: Bearer
-<token>` d'abord, cookie de session en repli. Un header `Bearer` présent mais invalide ne retombe
-**pas** sur le cookie — c'est le choix explicite du client, son échec est final (pas de repli
-silencieux vers un mode plus faible).
+<matériau>` d'abord (JWT ou token API, selon la règle de la section précédente), cookie de session en
+repli. Un header `Bearer` présent mais invalide ne retombe **pas** sur le cookie — c'est le choix
+explicite du client, son échec est final (pas de repli silencieux vers un mode plus faible).
 
 **Self-service des tokens (issue #5)** : `issue_token`/`revoke_token` existaient déjà comme
 fonctions Rust mais n'étaient montées derrière aucune route HTTP. `src/rest/tokens.rs` monte
@@ -166,10 +238,12 @@ aucune vérification de propriétaire, c'est au routeur de la faire.
 
 ## Utilisateurs & Groupes / RBAC
 
+Sous feature `db` (modules `users` et `rbac`).
+
 **Décision structurante : synchronisation, pas gestion.** Authentik est la seule source de vérité
 pour l'appartenance aux groupes (`admin` compris) — miryad-core ne fournit **aucune API
 d'assignation manuelle**. À chaque login OIDC réussi, `handler_callback` enchaîne `resolve_user`
-(get-or-create par `subject`) puis `sync_groups_from_oidc`, qui réconcilie **entièrement** les
+(get-or-create par `subject`) puis `sync_group_memberships`, qui réconcilie **entièrement** les
 `GroupMembership` locales depuis le claim `groups` : ajout des groupes présents (création à la
 volée d'un `Group` jamais vu — pas de registre préalable), retrait de ceux qui ne le sont plus. Le
 groupe `admin` est *seedé* par migration (toujours présent, vide au départ), sans rien de spécial
@@ -184,7 +258,7 @@ la prochaine connexion navigateur de la personne concernée.
 // src/users/{user,group,membership}.rs — génériques sur C: ConnectionTrait (pas &DatabaseConnection
 // en dur : le seed de migration les appelle via manager.get_connection(), qui satisfait le même trait)
 pub async fn resolve_user<C>(db: &C, subject: &str, email: Option<&str>) -> Result<user::Model, DbErr>;
-pub async fn sync_groups_from_oidc<C>(db: &C, user_id: i32, groups: &[String]) -> Result<(), DbErr>;
+pub async fn sync_group_memberships<C: ConnectionTrait + TransactionTrait>(db: &C, user_id: i32, groups: &[String]) -> Result<(), DbErr>;
 pub async fn is_admin<C>(db: &C, user_id: i32) -> Result<bool, DbErr>;
 pub async fn is_member<C>(db: &C, user_id: i32, group_name: &str) -> Result<bool, DbErr>;
 
@@ -209,7 +283,7 @@ pub enum ListAccess { Unrestricted, FilterByOwner(Condition), Forbidden }
 
 **Liste admin des utilisateurs (issue #4)** : `User`/`Group`/`GroupMembership` sont des entités
 SeaORM publiques mais n'implémentent pas `MiryadResource` (pas d'owner, jamais de write) — donc
-aucune route REST/GraphQL/MCP générique ne les expose. `src/rest/admin.rs` monte `GET
+aucune route REST/MCP générique ne les expose. `src/rest/admin.rs` monte `GET
 /api/v1/users` (routeur dédié, `AdminOnly`, dans l'esprit d'`auth_router`) — liste paginée
 `{ id, subject, email, groups }`, deux requêtes (memberships puis groupes) plutôt qu'une par
 utilisateur pour éviter le N+1 sur une page de résultats. Lecture seule, cohérent avec la décision
@@ -223,6 +297,9 @@ tables internes. Réutilise `groups_by_user` (`rest::admin`, rendue `pub(crate)`
 même logique que la liste admin, pas de second mécanisme de résolution de groupes à maintenir.
 
 ## API REST générique
+
+Sous feature `db` (`rest::resource_router`, `rest::core`, `rest::admin`, `rest::me`, `rest::tokens`).
+`rest::openapi` reste disponible sans `db`.
 
 ```rust
 // src/rest/mod.rs
@@ -269,7 +346,7 @@ envelopper le résultat en `Json<...>`. Pensé pour être réutilisé tel quel p
 d'API sur les mêmes entités (ex. MCP), sans dupliquer les règles RBAC/pagination.
 
 Pagination et filtre de liste (`src/query.rs`, partagé — pas spécifique REST, réutilisable par
-GraphQL/MCP) :
+MCP) :
 
 ```rust
 pub struct Pagination { pub page: u64, pub per_page: u64 }  // page 1-indexée, per_page défaut 100, plafond 1000
@@ -289,9 +366,11 @@ Pas de pagination par curseur, pas de tri, pas de filtre multi-champs, pas de ma
 
 ### OpenAPI + Swagger UI
 
-`utoipa` est une dépendance normale (pas optionnelle) — la génération `/api/openapi.json` est
-toujours disponible. Seule la UI Swagger (`utoipa-swagger-ui`) est optionnelle, derrière la
-feature Cargo `swagger-ui`. Les chemins générés par `resource_openapi` (`/api/v1/{resource}`,
+`utoipa` est une dépendance normale (pas optionnelle). Le trait `OpenApiEntity` et la fonction
+`resource_openapi` sont sous feature `db` ; `openapi_router` et `swagger_ui_router` restent compilés
+sans `db` et servent le document fourni par l'application. `openapi_router` sert `GET /api/openapi.json`
+sans `swagger-ui`. La UI Swagger (`utoipa-swagger-ui`) est optionnelle, derrière la feature Cargo
+`swagger-ui`. Les chemins générés par `resource_openapi` (`/api/v1/{resource}`,
 `/api/v1/{resource}/{id}`) suivent le préfixe figé de `resource_router` (feature 6) — toujours
 à jour vis-à-vis des routes REST réellement montées.
 
@@ -337,120 +416,13 @@ garderait silencieusement le premier en ignorant le second. Toute entité qui d�
 donc aussi porter `#[schema(as = NomUnique)]` (ex. `#[schema(as = Recipe)]`) — pas optionnel,
 contrairement à ce qu'un `#[derive(ToSchema)]` nu laisserait penser.
 
-## API GraphQL
-
-Schéma généré dynamiquement par Seaography 2.0 (pas de codegen) depuis les entités `MiryadResource`
-montées par l'app, RBAC réellement appliqué via un pont maison vers `rbac.rs` — pas le RBAC natif
-de Seaography/SeaORM (`db.load_rbac()`/`RestrictedConnection`). Deux features Cargo distinctes :
-`graphql` (le cœur) et `graphiql` (le client interactif, dépend de `graphql`).
-
-**Décision : pas le RBAC natif de Seaography/SeaORM.** Il est table-level (grants
-`select`/`insert`/`update`/`delete` par rôle par table entière, pas de notion de ligne) et
-suppose un seul rôle par utilisateur (`RbacUserId` → un rôle, avec hiérarchie DAG) — deux
-incompatibilités de fond avec ce qu'on a déjà : `AccessPolicy::OwnerOnly` (row-level) et le
-multi-groupe synchronisé depuis Authentik (feature 3). L'adopter aurait fait vivre deux modèles
-RBAC parallèles, incohérents entre REST et GraphQL sur la même entité. Vérifié en lisant le
-billet SeaORM 2.0 RBAC (pas seulement le nom de la feature Cargo `rbac`).
-
-**Pont via `LifecycleHooksInterface`** (`seaography`, trait synchrone sauf `entity_watch`) :
-
-```rust
-pub trait LifecycleHooksInterface: Send + Sync {
-    fn entity_guard(&self, ctx: &ResolverContext, entity: &str, action: OperationType) -> GuardAction;
-    fn entity_filter(&self, ctx: &ResolverContext, entity: &str, action: OperationType) -> Option<Condition>;
-    // field_guard / entity_watch / before_active_model_save : défauts (Allow / no-op), non utilisés
-}
-// OperationType: Read | Create | Update | Delete — GuardAction: Allow | Block(Option<String>)
-```
-
-`entity_guard` bloque un accès entier (`AdminOnly`/`Group` sans appartenance) ; `entity_filter`
-ajoute une `Condition` de requête pour `OwnerOnly` — l'équivalent GraphQL de
-`rbac::ListAccess::FilterByOwner`, construite par **nom de colonne** (`sea_query::Expr::col(Alias::
-new(nom)).eq(user_id)`, via le trait `ExprTrait`) plutôt que par `Column` typé : Seaography
-identifie une entité par son nom (`&str`) à l'exécution, pas par son type.
-
-**Contrainte structurante : hooks synchrones, précalcul obligatoire.** `entity_guard`/
-`entity_filter` ne peuvent pas faire de requête DB (`is_admin`/`is_member` sont `async`). Le
-principal (statut admin + ensemble des groupes) est donc résolu **une fois par requête HTTP**,
-avant `schema.execute(...)`, puis injecté comme donnée de requête (`req.data(...)`, mécanisme
-standard async-graphql) :
-
-```rust
-// src/graphql/{registry,principal,hooks,handler}.rs
-pub struct EntityPolicy { pub read: AccessPolicy, pub write: AccessPolicy, pub owner_column: Option<String> }
-pub struct PolicyRegistry { .. }
-impl PolicyRegistry { pub fn register<E: MiryadResource>(&mut self) -> &mut Self; }
-
-pub struct GraphQlPrincipal { pub user_id: i32, pub is_admin: bool, pub groups: HashSet<String> }
-pub async fn load_principal(db: &DatabaseConnection, principal: &AuthPrincipal) -> Result<GraphQlPrincipal, DbErr>;
-
-pub struct MiryadHooks(/* PolicyRegistry */);   // impl LifecycleHooksInterface
-
-pub fn graphql_router<S>(schema: Schema) -> axum::Router<S>
-where S: Clone + Send + Sync + 'static, MiryadAuthState: FromRef<S>;
-// monte POST /api/graphql, + GET /api/graphiql sous la feature "graphiql" (préfixe /api figé,
-// feature 6 — graphiql_handler embarque /api/graphql comme URL de fetch dans le HTML servi)
-```
-
-L'app construit son `BuilderContext` avec `hooks: LifecycleHooks::new(MiryadHooks::new(registry))`,
-appelle `register_entity::<E>()` (Seaography) et `registry.register::<E>()` (le nôtre) pour chaque
-entité — deux registres en parallèle, même geste répétitif qu'un `resource_router::<E>()` par
-entité en REST.
-
-**Rendre une entité traversable (relations)** : `register_entity::<E>()` (Seaography) exige un
-`impl seaography::RelationBuilder for E::RelatedEntity`. Ne pas l'écrire à la main — déclarer de
-vraies relations SeaORM sur `Relation` (`belongs_to`/`has_many`, cf. doc `sea_orm::EntityTrait`),
-puis `#[derive(DeriveRelatedEntity)]` sur `RelatedEntity` (import déjà dans
-`sea_orm::entity::prelude::*`) :
-
-```rust
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
-    #[sea_orm(belongs_to = "super::recipe::Entity", from = "Column::RecipeId", to = "super::recipe::Column::Id")]
-    Recipe,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {
-    #[sea_orm(entity = "super::recipe::Entity")]
-    Recipe,
-}
-```
-
-**Point d'attention — feature Cargo requise.** `DeriveRelatedEntity` (macro standard de `sea-orm`,
-`sea-orm-macros/src/derives/related_entity.rs`) est entièrement `#[cfg(feature = "seaography")]`
-côté `sea-orm` — une feature Cargo de `sea-orm` lui-même, distincte de la crate `seaography`. La
-feature `graphql` de miryad-core l'active (`sea-orm/seaography`, unifiée par Cargo dans le graphe
-de dépendances de l'app) : rien à ajouter côté app. Sans elle, `RelatedEntity` doit être écrit à la
-main (`match *self {}` sur un type inhabité si `Relation` est vide) — aucune traversée possible,
-échec silencieux à la compilation du schéma plutôt qu'à l'exécution.
-
-`resource_ir::<E>()` (section IR ci-dessous) lit la même déclaration `E::Relation` pour peupler
-`FieldIr::references` — une seule source de vérité pour GraphQL et l'IR frontend.
-
-**Authentification depuis GraphiQL (feature 2)** : GraphiQL v4 (`async_graphql::http::GraphiQLSource`)
-expose nativement son panneau "Headers" (`defaultEditorToolsVisibility: true`, HTML généré par la
-dépendance) — un développeur y colle `Authorization: Bearer <token>` pour authentifier ses requêtes
-depuis l'UI. Rien à configurer côté miryad-core pour ce chemin.
-
-**Point d'attention — versions** : `seaography 2.0.0-rc.9` dépend d'`async-graphql 7.0.19` en
-interne. `async-graphql-axum` a une branche `8.x` sur crates.io, mais l'utiliser casserait la
-compatibilité de types avec le `Schema` de Seaography — épingler `async-graphql`/
-`async-graphql-axum` à `"7"`, jamais `"8"`. `seaography` est encore une release candidate ; une
-2.0 finale pourrait faire bouger `LifecycleHooksInterface`/`BuilderContext`.
-
-Pas de subscriptions — Seaography ne fournit aucun mécanisme de détection de changement
-(`register_entity` ne peuple que `Query`/`Mutation`, `Subscription` reste un root vide à peupler
-soi-même). Le faire correctement demanderait une détection de changement cohérente avec tous les
-chemins d'écriture (REST compris), pas seulement les mutations GraphQL — hors-scope pour
-l'instant.
-
 ## Serveur MCP
 
 Tools CRUD générés par entité (`list`/`get`/`create`/`update`/`delete`), exposés en JSON-RPC 2.0
 sur un unique `POST /mcp` (mêmes patterns que `kydah-mcp-template/src/mcp.rs`). Dual-auth et RBAC
 entièrement réutilisés (`rest/core.rs`, cf. section REST ci-dessus) — aucune règle réécrite pour
-MCP. Feature Cargo `mcp` (`vynil-core`, `default-features = false, features = ["hbs", "crypto"]`).
+MCP. Feature Cargo `mcp` : implique `db` ; `vynil-core` en `default-features = false, features = ["hbs"]`
+(sans `crypto`).
 
 **Décision : un seul mécanisme de rendu**, pas quatre chemins de code séparés :
 
@@ -468,11 +440,11 @@ pub enum OutputFormat {
 (`{{json_to_str this format="json_pretty"}}`, `format="yaml"`, un gabarit `{{#each}}` générique
 pour markdown) ; `Custom` est le même mécanisme de rendu, juste avec le template de l'app à la
 place du défaut. Le format est fixé une fois par l'app, au montage du serveur MCP — pas
-reconfigurable par appel (cohérent avec REST/GraphQL). Un enregistrement seul (`get`/`create`/
+reconfigurable par appel (cohérent avec REST). Un enregistrement seul (`get`/`create`/
 `update`) et une page de résultats (`list`, forme `PagedResult`) n'ont pas la même forme JSON :
 deux templates par défaut internes selon l'opération, pas exposé comme complexité côté app.
 
-Dispatch par nom d'entité (comme `graphql::PolicyRegistry`) plutôt que par type, puisque
+Dispatch par nom d'entité plutôt que par type, puisque
 `tools/call` arrive avec un nom de méthode en chaîne, pas un type Rust :
 
 ```rust
@@ -507,7 +479,7 @@ chemin, pas du corps).
 
 ## Moteur de workflow
 
-Quatrième surface, à forme différente : la feature Cargo `workflow` ne monte **aucune** route sur le
+Feature `workflow`, qui implique `db` (table `miryad_workflow_definitions`). Quatrième surface, à forme différente : la feature Cargo `workflow` ne monte **aucune** route sur le
 `axum::Router` de l'app — ses deux services (`DagInterpreter`, `StepDispatcher`) parlent le protocole
 `restate-sdk` (0.12), et l'app construit et lie elle-même son `Endpoint` dans son `main()`
 (`src/workflow/mod.sdd`). Le DAG est une donnée : stocké dans `miryad_workflow_definitions`, éditable
@@ -647,20 +619,7 @@ pas NULL dans un index composite). La migration `m20260923_000001` a été modif
 occasion — exception actée par Sébastien le 2026-10-04 parce qu'aucune production n'existe à ce jour ;
 la règle « une migration committée est immuable » reprend dès la première mise en production.
 
-**Asymétrie GraphQL de `before_update`/`before_delete` — actée, et ce qu'elle change pour le
-workflow.** La revalidation du DAG à la mise à jour d'une `WorkflowDefinition` repose sur
-`MiryadResource::before_update` (amendement `/src/resource.sdd` du 2026-09-23, motivé par
-`src/workflow/definition.sdd` : une définition doit être revalidée à l'édition, pas seulement à la
-création). Seaography `2.0.0-rc.9` ne pilote son hook équivalent (`before_active_model_save`) qu'à
-l'insertion : `before_update`/`before_delete` ne se déclenchent donc que sur REST et MCP, **jamais sur
-GraphQL** — exception nommée à la règle de parité, tracée (`/src/resource.sdd`,
-`/src/graphql/hooks.sdd`), pour cette paire de hooks seulement. Conséquence workflow : l'édition d'une
-définition par GraphQL bypasserait la validation du hook — rattrapée à l'exécution par
-`DagInterpreter::run`, qui revalide systématiquement en tête (TerminalError `400`, message
-`MRD-WORKFLOW-004`, aucun step exécuté) : un DAG cassé n'est jamais exécuté, il est rejeté au premier
-déclenchement au lieu d'être refusé à l'écriture. À replacer dans son contexte : le pont GraphQL
-lui-même reste un prototype sans consommateur en production (statut du 2026-09-27,
-`/src/graphql/hooks.sdd`).
+**Revalidation à l'édition, filet à l'exécution.** La revalidation du DAG à la mise à jour d'une `WorkflowDefinition` repose sur `MiryadResource::before_update` (amendement `/src/resource.sdd` du 2026-09-23, motivé par `src/workflow/definition.sdd` : une définition doit être revalidée à l'édition, pas seulement à la création). `before_update` et `before_delete` se déclenchent sur REST et MCP, ce qui garde la validation à l'écriture. Filet à l'exécution, indépendant de la surface : `DagInterpreter::run` revalide systématiquement le DAG en tête (TerminalError `400`, message `MRD-WORKFLOW-004`, aucun step exécuté). Un DAG invalide n'est jamais exécuté : il est rejeté au premier déclenchement.
 
 ### Templating central de la `config` d'un step
 
@@ -732,7 +691,7 @@ et `src/workflow/systemone_step.sdd`.
   l'aval décider. La configuration des gates est validée **avant** tout appel réseau, et un gate refuse
   les clés inconnues (une borne mal orthographiée ne doit pas disparaître en silence).
 
-## Client Matrix de bot (feature `matrix`)
+## Client Matrix de bot (feature `matrix`, implique `db`)
 
 Primitives pour bâtir des bots Matrix : se connecter, envoyer, lire (historique et flux), rejoindre une
 salle, avec chiffrement de bout en bout. Aucune logique de conversation : le futur harnais de chatbot
@@ -791,7 +750,7 @@ visé est Palpo derrière MAS (authentification déléguée à Authentik, mots d
 
 ## Hooks métier CRUD
 
-Point d'extension optionnel par entité sur `create`, `update` et `delete` — validation ou
+Sous feature `db` (méthodes du trait `MiryadResource`). Point d'extension optionnel par entité sur `create`, `update` et `delete` — validation ou
 mutation de l'`ActiveModel` avant insertion ou mise à jour, refus d'une suppression avant toute
 émission de `DELETE`. `before_update` et `before_delete` reçoivent `existing` en lecture seule :
 le `Model` relu avant la modification (celui sur lequel le RBAC a statué), pour que comparer
@@ -799,13 +758,7 @@ avant/après — valider une transition d'état par exemple — ne demande pas d
 soi-même. Les trois s'exécutent après la décision RBAC, avant les invariants qui restent les
 derniers mots (clé primaire, propriétaire) — la séquence d'appel est tenue par
 `/src/rest/core.sdd`. Couvre REST **et** MCP simultanément (MCP délègue aux mêmes fonctions de
-`rest::core`). Seul `before_create` fait le pont côté GraphQL : Seaography `2.0.0-rc.9` ne
-pilote son équivalent (`before_active_model_save`) qu'à l'insertion, `before_update` et
-`before_delete` ne s'y déclenchent jamais — une mutation que le hook aurait rejetée sur REST y
-réussit silencieusement. Exception nommée à la règle de parité, actée par Sébastien le
-2026-09-23, décrite par le bloc ci-dessus et tracée dans `/src/resource.sdd` et
-`/src/graphql/hooks.sdd` ; la parité reste la règle par défaut pour tout le reste du trait.
-Pas de hook sur la lecture, pas d'"after".
+`rest::core`). Pas de hook sur la lecture, pas d'"after".
 
 ```rust
 // src/resource.rs
@@ -829,26 +782,17 @@ rejette une requête). `code` est libre, à la charge de l'app.
 Exécution : `rest::core::create` appelle `E::before_create` après `can_create`, avant le
 PK-stripping et l'injection du propriétaire — dans cet ordre pour que ces deux invariants de
 sécurité restent les derniers mots, un hook ne pouvant pas les contourner en mutant l'ActiveModel.
-Couvre REST **et** MCP simultanément (même fonction). Côté GraphQL, `MiryadHooks::
-before_active_model_save` fait le pont : downcast de l'`ActiveModel` type-erasé (`&mut dyn Any`)
-vers le type concret via un pointeur de fonction monomorphisé à l'enregistrement
-(`PolicyRegistry::register::<E>()`, même mécanisme que `EntityPolicy`).
+Couvre REST **et** MCP simultanément (même fonction).
 
 Chaque surface restitue `HookError` sans lui imposer sa taxonomie interne : REST en
 `422 Unprocessable Entity` (JSON `{code, message}`), MCP sur le code JSON-RPC `-32000` (`code` de
-l'app porté dans le champ `data`), GraphQL en concaténant `code`/`message` dans l'unique `String`
-que permet `GuardAction::Block` (Seaography ne transporte pas d'extension structurée à cet
-endroit — limite du mécanisme upstream, pas un choix).
-
-**Point d'attention — principal GraphQL.** Le hook reçoit le même `AuthPrincipal` que REST/MCP,
-pas le `GraphQlPrincipal` dérivé (user_id/is_admin/groups) utilisé par le RBAC — `graphql_handler`
-injecte donc les deux dans les données de requête (`req.data(snapshot).data(principal)`).
+l'app porté dans le champ `data`).
 
 ## Support frontend (IR + service statique)
 
 miryad-core reste strictement backend : la génération du frontend lui-même (composants Vue,
 écrans CRUD, générateur TypeScript) vit dans le template `miryad`, pas ici — décision du
-2026-08-23 (cf. `docs/roadmap.md`, item 8, livré). Deux briques seulement de ce côté-ci :
+2026-08-23 (cf. `docs/roadmap.md`, item 8, livré). Deux briques seulement de ce côté-ci (l'IR est sous `db`, le service statique sous `static-frontend`) :
 
 ```rust
 // src/ir.rs
@@ -894,9 +838,8 @@ et l'écrit en JSON ; l'app décide comment l'appeler (binaire dédié, ou sous-
 binaire backend existant).
 
 **`FieldIr::references` (relations, #19) — résolu en deux temps.** `resource_ir::<E>()` lit
-`E::Relation` (même déclaration `belongs_to`/`has_many` que celle requise pour GraphQL, cf.
-section "API GraphQL" ci-dessus) et ne retient que les relations `belongs_to` scalaires
-(`rel_type == HasOne && !is_owner`, colonne simple non composite) ; une entité seule ne connaît
+`E::Relation` (déclaration `belongs_to`/`has_many` de SeaORM) et ne retient que les relations
+`belongs_to` scalaires (`rel_type == HasOne && !is_owner`, colonne simple non composite) ; une entité seule ne connaît
 que le **nom de table SQL brut** de la cible, pas son `resource_name`. `IrRegistry` résout ce nom
 de table en `resource_name` une fois toutes les entités enregistrées connues
 (`write_to_file`) — `None` si la cible n'est pas enregistrée dans le même `IrRegistry`.
@@ -920,16 +863,20 @@ Sert `assets_dir` (`tower_http::services::ServeDir`) avec fallback vers `assets_
 pour toute route non capturée par l'API — routing SPA côté client (Vue Router). Répertoire
 externe, pas d'embarquement des assets dans le binaire (pas de `rust-embed`) : miryad-core reste
 agnostique de la provenance des fichiers. `static-frontend` est activée par défaut
-(`default = ["static-frontend"]`) — contrairement à `graphql`/`mcp`/`swagger-ui` (dépendances
+(`default = ["static-frontend"]`) — contrairement à `mcp`/`swagger-ui` (dépendances
 lourdes, opt-in), celle-ci ne tire que `tower-http` et est attendue par la quasi-totalité des apps
 miryad ; désactivable explicitement (`default-features = false`) pour un backend pur API.
 
 ## Conventions transverses
 
 - Identifiants d'erreur uniques, préfixés par domaine : `MRD-AUTH-XXX` (`src/auth/error.rs`),
-  `MRD-REST-XXX` (`src/rest/error.rs`). Un nouveau domaine (GraphQL, MCP, workflow) suit le même
+  `MRD-REST-XXX` (`src/rest/error.rs`). Un nouveau domaine (MCP, workflow) suit le même
   schéma `MRD-<DOMAINE>-XXX`.
-- Tables internes préfixées `miryad_` (cf. section Migrations).
+- Tables internes préfixées `miryad_` (cf. section Migrations, sous feature `db`).
 - Toute fonction qui doit pouvoir être appelée depuis une migration (donc via
   `SchemaManagerConnection`, pas directement `DatabaseConnection`) est générique sur
   `C: ConnectionTrait` plutôt que de prendre `&DatabaseConnection` en dur.
+
+## Décisions retirées
+
+- **GraphQL supprimé (2026-10-19)** — prototype sans consommateur en production (désalignement de clé de politique fail-open, hooks update/delete non pilotés par Seaography `2.0.0-rc.9`), dette coûteuse (carve-out clippy, feature `sea-orm/seaography`, `seaography` figé en release candidate). La surface applicative est REST + MCP.

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use cookie::Key;
+#[cfg(feature = "db")]
 use sea_orm::DatabaseConnection;
 
 use crate::auth::oidc::OidcClientTrait;
@@ -24,15 +25,18 @@ pub struct MiryadAuthState {
     /// `Location` de la `302` de `GET /auth/logout`, posée même sans session — seule source de
     /// vérité de cette redirection, même posture que `post_login_redirect`.
     pub post_logout_redirect: String,
-    /// Utilisé par tout le flow auth : validation des tokens API, `resolve_user` et
-    /// `sync_group_memberships` au callback — y compris sur le flow cookie seul.
+    /// Disponible sous la feature `db` (absent sans elle). Utilisé par le flow auth dès que `db`
+    /// est active : validation des tokens API, `resolve_user` et `sync_group_memberships` au
+    /// callback — y compris sur le flow cookie seul.
+    #[cfg(feature = "db")]
     pub db: DatabaseConnection,
     /// Positionne l'attribut `Secure` du cookie de session `miryad_session` (cf. `auth::cookie`)
     /// — `true` en HTTPS, `false` en HTTP local de développement (arbitré 2026-09-27).
     pub secure_cookies: bool,
-    /// Poivre HMAC des empreintes de tokens API (cf. `auth::token`) — consommé par
-    /// `issue_token`/`validate_token`/`ensure_token`. Le type ne dérive pas `Debug`, le poivre
-    /// ne fuit donc pas par un `{:?}` (arbitré 2026-09-27).
+    /// Disponible sous la feature `db` (absent sans elle). Poivre HMAC des empreintes de tokens
+    /// API (cf. `auth::token`) — consommé par `issue_token`/`validate_token`/`ensure_token`. Le
+    /// type ne dérive pas `Debug`, le poivre ne fuit donc pas par un `{:?}` (arbitré 2026-09-27).
+    #[cfg(feature = "db")]
     pub token_pepper: String,
 }
 
@@ -44,20 +48,23 @@ mod tests {
     use axum::body::Body;
     use axum::extract::FromRef;
     use axum::http::{Request, StatusCode};
+    #[cfg(feature = "db")]
     use sea_orm::ConnectionTrait;
     use tower::ServiceExt;
 
-    /// Fixture : état bâti sur `MockOidcClient` (jamais de discovery, aucune I/O) et une base
-    /// `MockDatabase` `SQLite` sauf là où le `Scenario` exige une vraie base en mémoire.
-    fn fixture(post_login: &str, secure_cookies: bool, token_pepper: &str) -> MiryadAuthState {
+    /// Fixture : état bâti sur `MockOidcClient` (jamais de discovery, aucune I/O) et, sous `db`
+    /// seulement, une base `MockDatabase` `SQLite` que les tests de ce fichier n'interrogent pas.
+    fn fixture(post_login: &str, secure_cookies: bool) -> MiryadAuthState {
         MiryadAuthState {
             oidc_client: Arc::new(MockOidcClient::default()),
             cookie_key: Key::from(&[0u8; 64]),
             post_login_redirect: post_login.to_string(),
             post_logout_redirect: "/logout-done".to_string(),
+            #[cfg(feature = "db")]
             db: sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Sqlite).into_connection(),
             secure_cookies,
-            token_pepper: token_pepper.to_string(),
+            #[cfg(feature = "db")]
+            token_pepper: String::new(),
         }
     }
 
@@ -65,7 +72,7 @@ mod tests {
     /// discovery ni construction de client HTTP (le mock n'en connaît aucune).
     #[test]
     fn clone_shares_oidc_provider() {
-        let state = fixture("/", false, "");
+        let state = fixture("/", false);
         let cloned = state.clone();
         assert!(
             Arc::ptr_eq(&state.oidc_client, &cloned.oidc_client),
@@ -76,7 +83,7 @@ mod tests {
     /// `Scenario` : « redirections proprement dupliquées entre clones ».
     #[test]
     fn clone_deep_copies_redirects() {
-        let state = fixture("/login-done", false, "");
+        let state = fixture("/login-done", false);
         let mut cloned = state.clone();
         cloned.post_login_redirect = "/autre".to_string();
 
@@ -86,6 +93,7 @@ mod tests {
 
     /// `Scenario` : « clones de db adressent le même pool » — insertion via la `db` du clone,
     /// relure par une requête `SeaORM` sur la `db` d'origine (`sqlite` en mémoire, comme dual.rs).
+    #[cfg(feature = "db")]
     #[tokio::test]
     async fn db_clone_shares_pool() {
         let db = sea_orm::Database::connect("sqlite::memory:")
@@ -124,13 +132,14 @@ mod tests {
     /// d'axum-core, aucune impl de `FromRef` ne vit dans ce fichier.
     #[test]
     fn identity_from_ref_keeps_arc() {
-        let state = fixture("/", false, "");
+        let state = fixture("/", false);
         let same = <MiryadAuthState as FromRef<MiryadAuthState>>::from_ref(&state);
 
         assert!(Arc::ptr_eq(&state.oidc_client, &same.oidc_client));
         assert_eq!(state.post_login_redirect, same.post_login_redirect);
         assert_eq!(state.post_logout_redirect, same.post_logout_redirect);
         assert_eq!(state.secure_cookies, same.secure_cookies);
+        #[cfg(feature = "db")]
         assert_eq!(state.token_pepper, same.token_pepper);
     }
 
@@ -147,7 +156,7 @@ mod tests {
     #[test]
     fn pub_field_swapped_in_place() {
         let k1_key = Key::from(&[0u8; 64]);
-        let mut state = fixture("/", false, "");
+        let mut state = fixture("/", false);
         assert_eq!(state.cookie_key, k1_key);
 
         state.cookie_key = Key::from(&[7u8; 64]);
@@ -161,7 +170,7 @@ mod tests {
     /// provider sans discovery, aucune erreur ni panic, et le provider reste appelable.
     #[test]
     fn unvalidated_provider_accepted() {
-        let state = fixture("/", false, "");
+        let state = fixture("/", false);
         let (url, _csrf, _nonce, _verifier) = state.oidc_client.authorization_url();
         assert_eq!(url.as_str(), "https://issuer.example.com/authorize");
     }
@@ -182,7 +191,7 @@ mod tests {
         }
 
         let app = auth_router::<AppTestState>().with_state(AppTestState {
-            auth: fixture("/", false, ""),
+            auth: fixture("/", false),
         });
         let req = Request::builder()
             .uri("/auth/logout")
@@ -206,14 +215,33 @@ mod tests {
         fn takes_public_path(state: &crate::auth::MiryadAuthState) -> bool {
             !state.post_login_redirect.is_empty()
         }
-        assert!(takes_public_path(&fixture("/", false, "")));
+        assert!(takes_public_path(&fixture("/", false)));
+    }
+
+    /// `Scenario` : « l'état se construit avec cinq champs sans db » (2026-10-19) — littéral à
+    /// cinq champs seulement, sans `db` ni `token_pepper` (champs inexistants sans la feature).
+    #[cfg(not(feature = "db"))]
+    #[test]
+    fn state_builds_with_five_fields_without_db() {
+        let state = MiryadAuthState {
+            oidc_client: Arc::new(MockOidcClient::default()),
+            cookie_key: Key::from(&[0u8; 64]),
+            post_login_redirect: "/a".to_string(),
+            post_logout_redirect: "/b".to_string(),
+            secure_cookies: true,
+        };
+        assert!(state.secure_cookies);
+        assert_eq!(state.post_login_redirect, "/a");
+        assert_eq!(state.post_logout_redirect, "/b");
     }
 
     /// `Scenario` : « `secure_cookies` et `token_pepper` se clonent indépendamment » (arbitré
-    /// 2026-09-27) — copies propres, comme les redirections.
+    /// 2026-09-27) — copies propres, comme les redirections. Touche `token_pepper` : sous `db`.
+    #[cfg(feature = "db")]
     #[test]
     fn secure_cookies_and_token_pepper_clone_independently() {
-        let state = fixture("/", true, "pepper-1");
+        let mut state = fixture("/", true);
+        state.token_pepper = "pepper-1".to_string();
         let mut cloned = state.clone();
         cloned.secure_cookies = false;
         cloned.token_pepper = "pepper-2".to_string();
@@ -224,7 +252,8 @@ mod tests {
 
     /// `Scenario` : « tout littéral de construction de la crate porte les sept champs » — le
     /// littéral des sept champs compile ici ; la preuve crate-wide est la compilation de tous
-    /// les sites de construction (`mod.rs`, `middleware.rs`, `dual.rs`, `rest`, `graphql`).
+    /// les sites de construction (`mod.rs`, `middleware.rs`, `dual.rs`, `rest`).
+    #[cfg(feature = "db")]
     #[test]
     fn secure_cookies_and_token_pepper_present_in_every_literal_construction() {
         let state = MiryadAuthState {
@@ -240,7 +269,26 @@ mod tests {
         assert_eq!(state.token_pepper, "x");
     }
 
+    /// `Scenario` : « db et `token_pepper` existent sous db » (2026-10-19) — littéral à sept
+    /// champs ; omettre `db` ou `token_pepper` est rejeté par le compilateur.
+    #[cfg(feature = "db")]
+    #[test]
+    fn state_has_db_and_token_pepper_under_db() {
+        let state = MiryadAuthState {
+            oidc_client: Arc::new(MockOidcClient::default()),
+            cookie_key: Key::from(&[0u8; 64]),
+            post_login_redirect: "/a".to_string(),
+            post_logout_redirect: "/b".to_string(),
+            db: sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Sqlite).into_connection(),
+            secure_cookies: false,
+            token_pepper: "poivre".to_string(),
+        };
+        assert_eq!(state.token_pepper, "poivre");
+        assert!(!state.secure_cookies);
+    }
+
     /// Variante de fixture pour le `Scenario` du pool partagé (vraie connexion `SQLite`).
+    #[cfg(feature = "db")]
     fn fixture_with_db(
         post_login: &str,
         secure_cookies: bool,

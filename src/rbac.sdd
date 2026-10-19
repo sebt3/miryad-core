@@ -21,7 +21,7 @@ Owns:
 
 References:
   /miryad-core.sdd — contrat hérité : codes `MRD-<DOMAINE>-NNN` portés par les modules, parité de
-    lecture REST/GraphQL/MCP sur la seule métadonnée @resource::MiryadResource
+    lecture REST/MCP sur la seule métadonnée @resource::MiryadResource
   ./lib.sdd — déclare @rbac sans gating de feature, sans ré-export à la racine
   ./resource.sdd — contrat amont dont ce fichier consomme les déclarations ; documente désormais
     l'incohérence @AccessPolicy::OwnerOnly sans @resource::MiryadResource::owner_column comme une
@@ -37,9 +37,6 @@ References:
     @rbac::ListAccess::Forbidden en @RestError::Forbidden (`MRD-REST-002`)
   ./mcp/registry.rs — vérifié, les cinq outils MCP délèguent aux fonctions de @rest::core sans
     réévaluer la politique : la surface MCP hérite mot pour mot des décisions de ./rbac.rs
-  ./graphql/hooks.rs — surface GraphQL qui ne consomme pas ces fonctions : @graphql::MiryadHooks
-    relit @AccessPolicy lui-même sur un @graphql::GraphQlPrincipal précalculé par requête ; ses
-    écarts avec ./rbac.rs sont remontés en `Tasks` de la présente spec.
 
 Must:
   Compiler sans aucun gating de feature : aucun `#[cfg(feature = ...)]` dans ./rbac.rs ;
@@ -114,6 +111,10 @@ Must:
     (enregistrement et liste) pour tout appelant non-admin, documenté dans les commentaires de
     @rbac::evaluate et de @rbac::list_access comme un choix de refus explicite plutôt qu'un risque
     d'accès non voulu.
+  **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute mention contraire (« toujours compilé », « sans gating », « sur chaque combinaison de
+    /tooling.sdd, `--no-default-features` compris ») de ce fichier : ./rbac.rs n'est compilé que sous `#[cfg(feature = "db")]`, le `cfg` étant posé par la
+    déclaration `pub mod rbac;` de /src/lib.rs ; le fichier ne porte aucun `cfg` propre. Sans `db`, il n'existe pas. Les combinaisons de la
+    batterie /tooling.sdd qui l'exercent sont celles qui activent `db` (par défaut, par `--features db`, ou par implication de `mcp`, `workflow`, `matrix`).
 
 Must not:
   Évaluer une permission depuis un token, un cookie, un rôle d'un claim ou un champ de
@@ -121,15 +122,12 @@ Must not:
     @MiryadResource/@sea_orm ; la preuve d'appartenance vient seulement de
     @users::group::is_admin et @users::group::is_member, par jointure @users::membership, jamais
     d'un champ booléen porté par une table.
-  Inventer un code `MRD-*` ici : les `MRD-REST-002`, `MRD-REST-003` et `MRD-GQL-001` des surfaces
+  Inventer un code `MRD-*` ici : les `MRD-REST-002` et `MRD-REST-003` des surfaces
     vivent dans leurs modules respectifs ; ./rbac.rs retourne des booléens et @sea_orm::DbErr,
     rien d'autre.
   Faire une trace avec @tracing, imprimer sur stdout/stderr, ou déclencher un effet visible autre
     que les requêtes SELECT des helpers @users — ./rbac.rs ne mute aucune table, ne verrouille
     rien, ne log rien.
-  Exposer la décision de permission GraphQL comme déjà couverte par ./rbac.rs : @graphql::hooks ne
-    passe pas par @rbac::evaluate ni par @rbac::list_access et peut donc dévier — les écarts sont
-    `[?]` de ce fichier, pas une parité supposée.
   Décider une mutation en base, insérer, mettre à jour ou supprimer dans les chemins de décision :
     ./rbac.rs est pure lecture, l'insertion appartient à @rest::core::create et consorts.
   Laisser @rbac::evaluate être appelé par un autre module que ./rbac.rs lui-même : il reste privé
@@ -236,8 +234,6 @@ Handles:
   @AccessPolicy::Group à la création : admin et membres du groupe passent, tous les autres refusés ;
     un compte de service provisionné avec @users::ensure_service_account suit le même chemin que
     n'importe quel utilisateur.
-  Écarts surface par surface — GraphQL ne consomme pas ce module, ses écarts sur @AccessPolicy::OwnerOnly
-    sans colonne sont remontés en `Tasks`.
 
 Example:
   # Matrice de décision complète — R/W: rbac::can_read/can_write avec enregistrement passé ; C:
@@ -314,11 +310,8 @@ Tasks:
     côté REST (panic, ./rest/mod.sdd), donc en principe inatteignable pour une entité montée — ce
     fichier ne suppose pas ce garde-fou amont et refuse quand même. Scenario « Création `OwnerOnly`
     sans colonne » à réécrire (le `Then` passe de `true` à `false`) et à renommer en conséquence.
-  [?] Le pont GraphQL ./graphql/hooks.rs, sur un enregistrement `OwnerOnly` sans colonne, retourne
-    un @GuardAction::Allow + @entity_filter `None` en Read : la liste voit toutes les lignes de
-    toutes les entités, contrairement à ./rbac.rs qui retourne `false`. Différé (2026-09-27) : le
-    pont GraphQL reste un prototype sans consommateur (exception `Must` de /miryad-core.sdd), cette
-    asymétrie n'est pas arbitrée dans cette version mineure.
+  [x] Le pont GraphQL ./graphql/hooks.rs (fail-open sur `OwnerOnly` sans colonne) est supprimé avec
+    la surface GraphQL (2026-10-19) : l'écart n'a plus d'objet.
   [x] Question spec-dd 2026-10-02 (posée en `[?]`, résolue le même jour sur validation du
     validator B5a — aucune ambiguïté de contrat, le `Given` du `Scenario` est explicite, seule la
     parenthèse descriptive de la tâche était périmée) : texte de la tâche de conversion corrigé
@@ -351,10 +344,10 @@ Done when:
     distinct nommé, la batterie /tooling.sdd est verte sur chaque combinaison de features, et
     ./rbac.rs ne porte plus de dette stricte `unreachable` lors de la purge programmée de
     /tooling.sdd (arbitrage du 2026-09-29 : purge reportée, non requise ici).
-  Cinq des six `[?]`/`[!]` de `Tasks` sont arbitrés (fail-closed de @rbac::can_create, 2026-09-27 ;
+  Les `[?]`/`[!]` de `Tasks` sont tous arbitrés (fail-closed de @rbac::can_create, 2026-09-27 ;
     valeur `None` sur une colonne propriétaire = contrat, colonne non-i32 = déclaration invalide
-    refusée au montage REST, purge `unreachable` reportée à /tooling.sdd, 2026-09-29) ; le sixième,
-    le fail-open du pont GraphQL, reste `[?]` différé (prototype sans consommateur).
+    refusée au montage REST, purge `unreachable` reportée à /tooling.sdd, 2026-09-29) ; le fail-open du pont GraphQL
+    est soldé par la suppression de la surface (2026-10-19).
 
 Scenario: Lecture `Public` : tout principal authentifié passe
   Given la fixture recipe avec `read_policy` @AccessPolicy::Public, un utilisateur `anyone` sans

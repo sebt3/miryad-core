@@ -3,22 +3,21 @@
 //! # miryad-core
 //!
 //! Moteur générique derrière le template d'application **miryad**.
-//! Vous décrivez votre modèle de données via le trait [`MiryadResource`](resource::MiryadResource),
-//! `miryad-core` fournit tout le reste : auth OIDC, RBAC/ownership, API REST,
-//! GraphQL, MCP, `OpenAPI`, et scaffolding frontend.
+//! Vous décrivez votre modèle de données via le trait `MiryadResource` (`resource::MiryadResource`,
+//! feature `db`), `miryad-core` fournit tout le reste : auth OIDC, RBAC/ownership, API REST,
+//! MCP, `OpenAPI`, et scaffolding frontend.
 //!
 //! > **80% de l'application vient gratuitement** — une seule implémentation de trait
-//! > par entité, lue telle quelle par REST, GraphQL et MCP (zéro duplication).
+//! > par entité, lue telle quelle par REST et MCP (zéro duplication).
 //!
 //! ## Architecture
 //!
 //! ```text
 //! [ Vue 3 + shadcn-vue ]              ← scaffoldé côté app consommatrice
-//!         │  REST / GraphQL (cookie OIDC ou token API)
+//!         │  REST (cookie OIDC ou token API)
 //!         ▼
 //! [ miryad-core — couche générique ]   ← jamais de code par entité à écrire
 //!   ├─ REST CRUD (axum)
-//!   ├─ GraphQL (Seaography, schéma dynamique)
 //!   ├─ MCP (tools CRUD, sortie markdown/json/yaml)
 //!   ├─ Auth (OIDC + cookie + tokens API, dual-auth)
 //!   ├─ RBAC/ownership (par entité)
@@ -32,7 +31,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! miryad-core = { version = "0.1", features = ["graphql", "mcp"] }
+//! miryad-core = { version = "0.1", features = ["mcp"] }
 //! sea-orm = { version = "2", features = ["macros", "runtime-tokio-rustls"] }
 //! axum = "0.8"
 //! ```
@@ -77,10 +76,25 @@
 //!
 //! * REST: `GET/POST /api/v1/recipes`, `GET/PUT/DELETE /api/v1/recipes/{id}`
 //!   — paginé (`?page=&per_page=&filter=`), RBAC automatique.
-//! * `GraphQL` (feature `graphql`, module `graphql`) : `POST /api/graphql` + `GraphiQL`.
 //! * `MCP` (feature `mcp`, module `mcp`) : `POST /mcp` — 5 tools par entité.
 //! * `OpenAPI` toujours disponible via [`rest::openapi`], Swagger UI derrière `swagger-ui`.
-//! * IR frontend pour le générateur TypeScript : [`ir::resource_ir`] / [`ir::IrRegistry`].
+//! * IR frontend pour le générateur TypeScript (feature `db`) : `ir::resource_ir` / `ir::IrRegistry`.
+//!
+//! ## Profil sans base de données
+//!
+//! Compilée sans `db` (`--no-default-features`), la crate ne tire ni `sea-orm` ni entités, RBAC,
+//! migrations ni tokens API : elle fournit l'authentification OIDC (cookie de session, extracteurs,
+//! validation d'un JWT OIDC en `Authorization: Bearer`) et le contrat `OpenAPI` (`rest::openapi`).
+//! L'application écrit alors ses propres routes ; la crate n'en monte aucune hors `/auth/*`,
+//! `/api/openapi.json` et `/api/swagger-ui`.
+//!
+//! ```rust,ignore
+//! use miryad_core::auth::{auth_router, MiryadAuthState, OidcClient};
+//! use miryad_core::rest::openapi::openapi_router;
+//! let oidc = Arc::new(OidcClient::new(&oidc_config).await?);
+//! let state = MiryadAuthState { oidc_client: oidc, cookie_key, post_login_redirect, post_logout_redirect, secure_cookies };
+//! let app = Router::new().merge(auth_router::<MiryadAuthState>()).merge(openapi_router::<MiryadAuthState>(spec)).with_state(state);
+//! ```
 //!
 //! ## Feature flags
 //!
@@ -88,11 +102,11 @@
 //! |---------|-------|---------------------|
 //! | `static-frontend` *(default)* | `frontend::static_frontend_router` — service SPA | `tower-http` |
 //! | `swagger-ui` | Swagger UI sur `/api/swagger-ui` | `utoipa-swagger-ui` |
-//! | `graphql` | GraphQL dynamique (Seaography) | `seaography`, `async-graphql` |
-//! | `graphiql` | IDE `GraphiQL` sur `/api/graphiql` (implique `graphql`) | `async-graphql/graphiql` |
-//! | `mcp` | Serveur MCP JSON-RPC sur `/mcp` | `vynil-core` (Handlebars) |
-//! | `workflow` | Moteur de workflow DAG sur Restate — **aucune** route sur le `axum::Router` de l'app (services liés par l'app elle-même, `Endpoint::builder()` ; voir `docs/architecture.md`) | `restate-sdk`, `uuid`, `tokio`, `vynil-core` (`rhai`) |
+//! | `db` *(default)* | Entités `MiryadResource`, comptes locaux, RBAC, migrations internes, tokens API ; active `sea-orm` | `sea-orm`, `sea-orm-migration` |
+//! | `mcp` | Serveur MCP JSON-RPC sur `/mcp` (implique `db`) | `vynil-core` (Handlebars) |
+//! | `workflow` | Moteur de workflow DAG sur Restate (implique `db`) — **aucune** route sur le `axum::Router` de l'app (services liés par l'app elle-même, `Endpoint::builder()` ; voir `docs/architecture.md`) | `restate-sdk`, `uuid`, `tokio`, `vynil-core` (`rhai`) |
 //! | `systemone` | Client HTTP vers l'API System One (`POST /v1/systemone`) — **aucune** route, aucun état | aucune (`reqwest` déjà présent) |
+//! | `matrix` | Client Matrix de bot sur `matrix-sdk` 0.18 (E2EE, store `SeaORM`), hors défaut ; implique `db` | `matrix-sdk`, `matrix-sdk-crypto`, `matrix-sdk-store-encryption`, `zeroize`, `tokio` |
 //!
 //! Voir aussi [`docs/architecture.md`](https://github.com/sebt3/miryad-core/blob/main/docs/architecture.md)
 //! et [`docs/roadmap.md`](https://github.com/sebt3/miryad-core/blob/main/docs/roadmap.md).
@@ -101,7 +115,7 @@
 //!
 //! * Pas de `println!`/`dbg!` — [`tracing`].
 //! * Erreurs avec code unique `MRD-<DOMAINE>-NNN` (`MRD-AUTH-XXX`, `MRD-REST-XXX`).
-//! * [`HookError`](resource::HookError) reste l'erreur **applicative** de l'application
+//! * `HookError` (`resource::HookError`) reste l'erreur **applicative** de l'application
 //!   consommatrice : jamais de code `MRD-*` sur ce chemin, chaque surface la restitue sans lui
 //!   imposer la taxonomie de la crate.
 //! * Tables internes préfixées `miryad_*`, migrations isolées (tracking table dédiée).
@@ -140,31 +154,31 @@ pub mod auth;
 #[cfg(feature = "static-frontend")]
 pub mod frontend;
 
-/// API GraphQL dynamique via Seaography (feature `graphql`).
-#[cfg(feature = "graphql")]
-pub mod graphql;
-
-/// Représentation intermédiaire par entité pour le générateur frontend TypeScript.
+/// Représentation intermédiaire par entité pour le générateur frontend TypeScript (feature `db`).
 ///
 /// Voir [`ir::resource_ir`] et [`ir::IrRegistry`].
+#[cfg(feature = "db")]
 pub mod ir;
 
 /// Serveur MCP — tools CRUD génériques, sortie JSON/YAML/Markdown (feature `mcp`).
 #[cfg(feature = "mcp")]
 pub mod mcp;
 
-/// Migrations SeaORM internes (`miryad_*`). À appliquer au démarrage de l'app :
+/// Migrations SeaORM internes (`miryad_*`, feature `db`). À appliquer au démarrage de l'app :
 /// `miryad_core::migration::Migrator::up(&db, None).await`.
+#[cfg(feature = "db")]
 pub mod migration;
 
 /// Pagination partagée par REST et MCP (MCP via `rest::core::list`) — volontairement hors de
-/// `rest/` ; GraphQL utilise ses propres curseurs seaography et n'est pas partie au contrat.
+/// `rest/`.
 pub mod query;
 
-/// RBAC row-level et filtrage de liste par propriétaire.
+/// RBAC row-level et filtrage de liste par propriétaire (feature `db`).
+#[cfg(feature = "db")]
 pub mod rbac;
 
-/// Contrat central [`resource::MiryadResource`] et [`resource::AccessPolicy`].
+/// Contrat central [`resource::MiryadResource`] et [`resource::AccessPolicy`] (feature `db`).
+#[cfg(feature = "db")]
 pub mod resource;
 
 /// API REST générique — routeur CRUD + OpenAPI.
@@ -180,7 +194,9 @@ pub mod systemone;
 #[cfg(feature = "matrix")]
 pub mod matrix;
 
-/// Gestion utilisateurs/groupes (résolution, synchronisation OIDC, comptes de service).
+/// Gestion utilisateurs/groupes (résolution, synchronisation OIDC, comptes de service ; feature
+/// `db`).
+#[cfg(feature = "db")]
 pub mod users;
 
 /// Moteur de workflow à DAG (feature `workflow`) : définitions persistées en base, exécutées par
@@ -218,6 +234,73 @@ mod tests {
         assert!(
             !axum::Router::<()>::new().has_routes(),
             "workflow ne doit monter aucune route sur un Router que l'app ne construit pas elle-même"
+        );
+    }
+
+    /// Scénario verrouillé : « sans db la surface se réduit à auth, query et `rest::openapi` »
+    /// (`./lib.sdd`, amendement 2026-10-19). Sous `--no-default-features` (sans `db`), les six
+    /// chemins du `Then` compilent. La clause d'absence (aucun `sea-orm` dans le graphe normal)
+    /// n'est pas un test Rust : elle se prouve par `cargo tree -e normal -i sea-orm`.
+    #[cfg(not(feature = "db"))]
+    #[test]
+    fn db_absent_surface() {
+        fn witness(
+            _: Option<crate::auth::MiryadAuthState>,
+            _: Option<crate::auth::AuthPrincipal>,
+            _: Option<crate::auth::middleware::AuthUser>,
+            _: Option<crate::query::Pagination>,
+        ) {
+        }
+        fn _openapi_surface<S>()
+        where
+            S: Clone + Send + Sync + 'static,
+        {
+            std::hint::black_box(crate::rest::openapi::openapi_router::<S>);
+        }
+        witness(None, None, None, None);
+        std::hint::black_box(crate::auth::auth_router::<crate::auth::MiryadAuthState>);
+    }
+
+    /// Scénario verrouillé : « les modules d'entités sont gatés par db » (`./lib.sdd`,
+    /// amendement 2026-10-19). Sous `--no-default-features --features db`, les sept chemins du
+    /// `Then` compilent : types en position `Option`, items de fonction référencés sans appel,
+    /// fonctions génériques sous leurs bornes.
+    #[cfg(feature = "db")]
+    #[test]
+    fn db_gates_modules() {
+        fn witness(_: Option<crate::ir::IrRegistry>, _: Option<crate::migration::Migrator>) {}
+        fn _resource_trait_resolves<E: crate::resource::MiryadResource>() {}
+        fn _rbac_surface<E>()
+        where
+            E: crate::resource::MiryadResource,
+            E::Model: sea_orm::ModelTrait<Entity = E>,
+        {
+            std::hint::black_box(crate::rbac::can_read::<E>);
+        }
+        fn _rest_surface<E, S>()
+        where
+            E: crate::rest::RestEntity,
+            S: Clone + Send + Sync + 'static,
+            crate::auth::MiryadAuthState: axum::extract::FromRef<S>,
+        {
+            std::hint::black_box(crate::rest::resource_router::<E, S>);
+        }
+        witness(None, None);
+        std::hint::black_box(crate::users::resolve_user::<sea_orm::DatabaseConnection>);
+        std::hint::black_box(crate::auth::validate_token);
+    }
+
+    /// Scénario verrouillé : « mcp, workflow et matrix impliquent db » (`./lib.sdd`, amendement
+    /// 2026-10-19). Sous chacune de ces features (sans `db` explicite), `resource` est résolvable
+    /// et `db` est activée par implication dans `[features]`.
+    #[cfg(any(feature = "mcp", feature = "workflow", feature = "matrix"))]
+    #[test]
+    fn features_imply_db() {
+        fn _resource_trait_resolves<E: crate::resource::MiryadResource>() {}
+        let db_active = cfg!(feature = "db");
+        assert!(
+            db_active,
+            "`mcp`, `workflow` et `matrix` doivent impliquer `db` dans `[features]`"
         );
     }
 
@@ -277,7 +360,7 @@ mod tests {
     /// `workflow_gated_compiles`. Les neuf chemins `miryad_core::…` du `Then` compilent : huit
     /// par témoins de types en position `Option`, `frontend` par l'item de
     /// `frontend::static_frontend_router` sous les mêmes bornes `S`, jamais appelé.
-    #[cfg(feature = "static-frontend")]
+    #[cfg(all(feature = "static-frontend", feature = "db"))]
     #[test]
     fn default_surface_compiles() {
         fn witness(
@@ -300,28 +383,6 @@ mod tests {
         std::hint::black_box(crate::auth::auth_router::<crate::auth::MiryadAuthState>);
     }
 
-    /// Scénario verrouillé : « graphql gated par la feature graphql » (`./lib.sdd`). Sous
-    /// `--no-default-features --features graphql`, le `Then` exige `graphql::graphql_router`
-    /// résolvable ; hors feature, le module n'est pas déclaré et le test disparaît avec lui
-    /// (`Handles` de `./lib.sdd`).
-    #[cfg(feature = "graphql")]
-    #[test]
-    fn graphql_gated_compiles() {
-        std::hint::black_box(crate::graphql::graphql_router::<crate::auth::MiryadAuthState>);
-    }
-
-    /// Scénario verrouillé : « `graphiql` implique `graphql` à la racine » (`./lib.sdd`). Sous
-    /// `--no-default-features --features graphiql`, sans `graphql` demandée explicitement, la
-    /// cible de test ne compile que si `crate::graphql` — gate `#[cfg(feature = "graphql")]` à la
-    /// racine — est bien ouvert par l'implication du graphe `[features]` de `/Cargo.toml` : la
-    /// compilation de ce test est la vérification, `graphql_router` est le `Then` du scenario
-    /// jumeau revérifié sous l'implication seule.
-    #[cfg(feature = "graphiql")]
-    #[test]
-    fn graphiql_implies_graphql() {
-        std::hint::black_box(crate::graphql::graphql_router::<crate::auth::MiryadAuthState>);
-    }
-
     /// Scénario verrouillé : « mcp gated par la feature mcp » (`./lib.sdd`). Sous
     /// `--no-default-features --features mcp`, les quatre items publics promis par l'`Exposes`
     /// de `./lib.sdd` (`mcp_router`, `McpToolRegistry`, `McpError`, `OutputFormat`) sont
@@ -340,8 +401,9 @@ mod tests {
     }
 
     /// Scénario verrouillé : « static-frontend retiré garde le reste de la surface »
-    /// (`./lib.sdd`). Sous `--no-default-features`, `rest`, `resource` et `ir` restent
-    /// disponibles — témoins de types. La clause « `frontend` n'est pas déclaré » est
+    /// (`./lib.sdd`). Sous `--no-default-features`, `rest` reste disponible — témoin de type ;
+    /// `resource` et `ir`, gatés par `db` (amendement 2026-10-19), ne sont plus témoins ici.
+    /// La clause « `frontend` n'est pas déclaré » est
     /// structurelle et vérifiée par la combinaison elle-même : `frontend.rs`, seul consommateur
     /// de `tower-http`, n'est pas compilé — une déclaration hors `#[cfg]` ferait échouer le build
     /// bien avant le test, et tout chemin `crate::frontend::…` serait une erreur de compilation.
@@ -351,13 +413,12 @@ mod tests {
     #[cfg(not(feature = "static-frontend"))]
     #[test]
     fn static_frontend_absent_surface() {
-        fn witness(
-            _: Option<crate::ir::IrRegistry>,
-            _: Option<crate::resource::AccessPolicy>,
-            _: Option<crate::rest::error::RestError>,
-        ) {
+        // `rest::error` est gaté par `db` : témoin de type sous `db` seulement.
+        #[cfg(feature = "db")]
+        {
+            fn witness(_: Option<crate::rest::error::RestError>) {}
+            witness(None);
         }
-        witness(None, None, None);
         let cargo = cargo_toml_source();
         assert!(
             cargo.contains("static-frontend = [\"dep:tower-http\"]"),
@@ -379,6 +440,7 @@ mod tests {
     /// référencés sans appel, `resource_router` et `resource_ir` (génériques) résolus sous les
     /// bornes `where` qu'ils exigent, jamais instanciés. Clause « But » : aucun `pub use` de
     /// racine n'apparaît dans le source (`Must not` de `./lib.sdd`).
+    #[cfg(feature = "db")]
     #[test]
     fn documented_paths_resolve() {
         fn witness(
@@ -487,9 +549,7 @@ mod tests {
     /// Scénario verrouillé : « commentaire de @query aligne la réalité » (`./lib.sdd`, arbitré
     /// par Sébastien le 2026-09-29, à l'unisson du `Must` de `./query.sdd`). Le `///` de
     /// `pub mod query` présente la pagination comme partagée par REST et MCP (MCP via
-    /// `rest::core::list`) — jamais l'énumération « REST/GraphQL/MCP » ni le futur « plus tard » ;
-    /// clause « But » : si `GraphQL` est nommé, ce l'est pour l'exclure du contrat (curseurs
-    /// `seaography` propres).
+    /// `rest::core::list`) — jamais l'énumération « REST/GraphQL/MCP » ni le futur « plus tard ».
     #[test]
     fn query_doc_matches_reality() {
         let lib = crate_source();
@@ -513,11 +573,6 @@ mod tests {
         assert!(
             !doc.contains("REST/GraphQL/MCP") && !doc.contains("plus tard"),
             "le commentaire de @query ne doit plus présenter GraphQL comme consommant @query ni promettre un « plus tard » : `{doc}`"
-        );
-        let lower = doc.to_lowercase();
-        assert!(
-            !lower.contains("graphql") || lower.contains("n'est pas partie au contrat"),
-            "si @graphql est nommé, ce doit être pour l'exclure du contrat (curseurs @seaography propres) : `{doc}`"
         );
     }
 
@@ -543,7 +598,7 @@ mod tests {
 
     /// Scénario verrouillé : « cargo doc propre sur les combinaisons de features »
     /// (`./lib.sdd`). Le bloc `//!` est compilé sur toutes les combinaisons : nul lien intra-doc
-    /// qu'il porte ne peut viser un module gated (`frontend`, `graphql`, `mcp`, `workflow`),
+    /// qu'il porte ne peut viser un module gated (`frontend`, `mcp`, `workflow`),
     /// faute de quoi `rustdoc::broken_intra_doc_links` sonne dès que la feature est amputée —
     /// `Raises` de `./lib.sdd` promet zéro tel avertissement, la correction attendue étant une
     /// forme robuste au graphe de features, pas la désactivation du lint. Seconde clause : les
@@ -553,7 +608,16 @@ mod tests {
     /// `broken_intra_doc_links` au brut — étape de la batterie, tenue par le validator.
     #[test]
     fn doc_links_feature_stable() {
-        const GATED: [&str; 4] = ["frontend", "graphql", "mcp", "workflow"];
+        const GATED: [&str; 8] = [
+            "frontend",
+            "mcp",
+            "workflow",
+            "ir",
+            "migration",
+            "rbac",
+            "resource",
+            "users",
+        ];
         let doc = crate_doc_block(crate_source());
         for target in intra_doc_targets(&doc) {
             let base = target.split('#').next().unwrap_or("");
@@ -584,16 +648,11 @@ mod tests {
     }
 
     /// Scénario verrouillé : « surface complète en toutes features » (`./lib.sdd`). Sous
-    /// `--all-features` — seule combinaison de la batterie `/tooling.sdd` où les quatre modules
+    /// `--all-features` — seule combinaison de la batterie `/tooling.sdd` où les trois modules
     /// gatés compilent ensemble — les douze chemins `miryad_core::…` du `Then` compilent : huit
     /// modules toujours compilés par témoins de types, `workflow` par ses quatre items promis,
-    /// `frontend`, `graphql` et `mcp` par l'item de leur routeur sous bornes, jamais appelé.
-    #[cfg(all(
-        feature = "static-frontend",
-        feature = "graphql",
-        feature = "mcp",
-        feature = "workflow"
-    ))]
+    /// `frontend` et `mcp` par l'item de leur routeur sous bornes, jamais appelé.
+    #[cfg(all(feature = "static-frontend", feature = "mcp", feature = "workflow"))]
     #[test]
     fn all_features_surface() {
         fn witness(
@@ -623,7 +682,6 @@ mod tests {
         {
             let frontend = crate::frontend::static_frontend_router::<S>("spa");
             std::mem::drop(frontend);
-            std::hint::black_box(crate::graphql::graphql_router::<S>);
             std::hint::black_box(crate::mcp::mcp_router::<S>);
         }
         witness(None, None, None, None);

@@ -1,7 +1,7 @@
 //! Crate d'intégration rattachée à `src/resource.sdd` — exerce le contrat `MiryadResource`,
 //! `AccessPolicy` et `HookError` : métadonnées relues telles quelles, hooks de création, de mise
 //! à jour et de suppression, et parité de lecture des surfaces.
-
+#![cfg(feature = "db")]
 // Famille panic/unwrap/indexation tolérée dans cette crate de test : en-tête d'exemption
 // équivalent à celui de `src/lib.rs`, posé d'après le `Must` de `tooling.sdd` — une crate
 // d'intégration n'hérite pas des attributs de la librairie. Groupes `pedantic` et `cargo`

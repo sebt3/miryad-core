@@ -44,7 +44,7 @@ Owns:
     et sont régis par la présente spec.
 
 References:
-  /miryad-core.sdd — contrat hérité : lecture identique REST/GraphQL/MCP depuis la seule
+  /miryad-core.sdd — contrat hérité : lecture identique REST/MCP depuis la seule
     métadonnée @MiryadResource, codes `MRD-<DOMAINE>-NNN` réservés à la crate, exception
     @HookError, préfixe `/api/v1` de la feature 6
   ../lib.sdd — déclare @rest sans gating, expose @rest::resource_router et @rest::RestEntity
@@ -175,6 +175,13 @@ Must:
   La tolérance aux champs inconnus est le contrat d'entrée de la surface (arbitré par Sébastien le 2026-09-29) : un paramètre inconnu
     dans la query (@ListParams sans @deny_unknown_fields) et un champ JSON inconnu en `POST`/`PUT`
     sont ignorés, ce qui permet de faire évoluer le modèle sans casser les clients.
+  **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute mention contraire (« aucun `#[cfg(feature = ...)]` », « compile sur
+    toute la matrice », `--no-default-features` compris) de ce fichier. Sous `#[cfg(feature = "db")]` : les déclarations `pub mod
+    admin;`, `pub(crate) mod core;`, `pub mod error;`, `pub mod me;`, `pub mod tokens;`, le trait @RestEntity, @resource_router, leurs
+    `use` (`sea_orm`, `crate::resource`, `crate::query`, `error::RestError`) et le `mod tests`. `pub mod openapi;` n'est PAS gaté.
+    Sans `db`, le module @rest n'expose donc que `rest::openapi` (`openapi_router`, `swagger_ui_router` sous `swagger-ui` — ./openapi.sdd) ;
+    @RestEntity, @resource_router et @RestError n'existent pas. Les deux `cfg` sont posés dans ce fichier, aucune sous-spec
+    enfant ne porte le sien.
 
 Must not:
   Composer lui-même @admin::users_router, @me::me_router, @tokens::tokens_router ou les
@@ -334,7 +341,7 @@ Handles:
     une entité non @serde avec PK `i32`
   Combinaisons de features : défaut (`static-frontend`), `--no-default-features`, seules,
     cumulées ou `--all-features` — le fichier et ses routes ne changent sur aucune de ces
-    combinaisons (aucun @cfg @feature) ; `swagger-ui`, `graphql`, `graphiql`, `mcp` ne
+    combinaisons (aucun @cfg @feature) ; `swagger-ui`, `mcp` ne
     concernent ./mod.rs par aucune ligne
 
 Tasks:
@@ -404,6 +411,8 @@ Tasks:
   [x] Rejouer la batterie complète de /tooling.sdd (toutes les combinaisons de features de
     /AGENTS.md, dont `--no-default-features` comme preuve de non-gating, plus
     `cargo test --doc` pour le @compile_fail) après création des tests.
+  [x] Amendement 2026-10-19 (`db`) : dans `./mod.rs`, poser `#[cfg(feature = "db")]` sur les cinq `mod` enfants gatés, le trait @RestEntity,
+    @resource_router, leurs `use` et le module de tests ; laisser `pub mod openapi;` nu.
 
 Done when:
   Chaque `Scenario` de la présente spec dispose d'au moins un test nommé distinct vérifiant son
@@ -592,3 +601,14 @@ Scenario: Surface disponible sans aucune feature
   Then @rest::resource_router et @rest::RestEntity compilent et les seize tests inline tournent
     verts, comme sur `--all-features`
   But aucune feature de /tooling.sdd n'est nécessaire au montage de la surface CRUD
+
+Scenario: sans db le module rest n'expose que openapi (2026-10-19)
+  Given un build `--no-default-features` (sans `db`)
+  When un test référence `rest::openapi::openapi_router::<S>`
+  Then il résout ; et `rest::resource_router`, `rest::RestEntity`, `rest::error`, `rest::admin`, `rest::me`, `rest::tokens`
+    n'existent pas (preuve : le test ne les cite pas et le build passe sans `sea-orm` dans le graphe `normal`)
+
+Scenario: sous db la surface rest est inchangée (2026-10-19)
+  Given un build `--features db`
+  When les tests existants de ./mod.rs tournent
+  Then ils passent tous, sans modification de contrat

@@ -2,7 +2,7 @@ Spec: definition — entité `WorkflowDefinition`, forme du DAG, validation stru
 
 Purpose:
   Porter l'entité @MiryadResource `WorkflowDefinition` (table `miryad_workflow_definitions`) : le
-    seul endroit où un DAG de workflow est stocké et administré — CRUD gratuit sur REST/GraphQL/MCP
+    seul endroit où un DAG de workflow est stocké et administré — CRUD gratuit sur REST/MCP
     par le mécanisme générique de la crate, exactement la promesse « un admin doit pouvoir définir un
     workflow sans redéploiement » du roadmap (feature 7/9). Porte aussi `StepDefinition` (la forme
     d'un step tel que stocké : `id`, `depends_on`, `kind`, `config` — consommée telle quelle par
@@ -21,11 +21,8 @@ Purpose:
     `MiryadResource::before_update` et `MiryadResource::before_delete` (hors périmètre de ce fichier :
     amendement possédé par ces deux specs, pas par ./definition.rs). `WorkflowDefinition::before_update`
     appelle `validate_dag` exactement comme `before_create` (`Must`) — implémenté (les deux
-    fichiers amendés le sont, `Tasks [x]` ci-dessous). Comme `before_create`, ces deux hooks ne se déclenchent pas sur le chemin GraphQL
-    (Seaography ne pilote ses hooks `before_active_model_save` qu'à l'insertion, `/src/graphql/hooks.sdd`
-    en attente) — asymétrie documentée au niveau transverse (`/src/resource.sdd`,
-    `docs/architecture.md`), pas
-    seulement ici.
+    fichiers amendés le sont, `Tasks [x]` ci-dessous). Les hooks `before_create` et `before_update` (et `before_delete`, laissé au défaut du trait) se déclenchent sur REST et MCP (la surface GraphQL, qui
+    ne pilotait que l'insertion, est supprimée le 2026-10-19).
   Sébastien (2026-09-23) : `AccessPolicy::AdminOnly` en lecture/écriture (`Must`) n'est qu'un défaut —
     une application fille doit pouvoir le resserrer ou l'assouplir (ex. chaque utilisateur possède ses
     propres workflows, `AccessPolicy::OwnerOnly`) sans réimplémenter l'entité. Les règles orphelines de
@@ -199,7 +196,7 @@ Accepts:
     `id` ou `depends_on` de contenu arbitraire (chaînes vides comprises — une chaîne vide est un `id`
     comme un autre, sans traitement spécial)
   `before_create` : un `ActiveModel` déjà construit par `rest::core::mark_all_set` depuis le corps
-    client (REST) ou l'équivalent GraphQL/MCP — ./definition.rs ne construit jamais lui-même
+    client (REST) ou l'équivalent MCP — ./definition.rs ne construit jamais lui-même
     l'`ActiveModel` initial
 
 Returns:
@@ -302,6 +299,9 @@ Tasks:
     Réalisé 2026-10-02 (B5e-mini, validator consolidé PASS) : les trois liens déliés en chemin
     de code (item @pub(crate)), phrases inchangées ; @cargo doc workflow et @all-features à
     zéro avertissement au brut ; hunks doc-seule @diff-vérifiés.
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./definition.rs`, retirer GraphQL de l'en-tête `//!` (ligne ~4 :
+    « REST/MCP ») et de la doc de l'`impl MiryadResource` (lignes ~250-252 : « REST et MCP », supprimer la phrase sur l'asymétrie
+    GraphQL). Aucun changement de comportement.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.

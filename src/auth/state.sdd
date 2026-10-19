@@ -6,7 +6,7 @@ Purpose:
     2026-09-27 le drapeau `Secure` des cookies de session et le poivre de hachage des tokens API
     (`Tasks`) — dans un type `pub struct` sans logique, sans constructeur et sans validation,
     dérivant @Clone seul. Le type est un sous-état : @auth_router, @resource_router,
-    @graphql_router, @mcp_router et les extracteurs @AuthUser et @AuthPrincipal sont génériques sur
+    @mcp_router et les extracteurs @AuthUser et @AuthPrincipal sont génériques sur
     @S tant que @MiryadAuthState: @FromRef<@S> ; miryad-core n'impose jamais d'@AppState concret
     (pattern natif d'axum, cf. /docs/architecture.md).
 
@@ -34,7 +34,6 @@ References:
   /src/rest/mod.rs — @resource_router et ses cinq handlers : lecture de @db seule
   /src/rest/me.rs — @me_router : @db seul ; /src/rest/admin.rs — @users_router : @db seul ;
     /src/rest/tokens.rs — @tokens_router : @db seul
-  /src/graphql/handler.rs — @graphql_router : @db injecté dans la requête et @load_principal
   /src/mcp/handler.rs — @mcp_router : @db passé à @entity.call
   /tooling.sdd — matrice de features que ce type doit traverser sans gating
 
@@ -48,7 +47,7 @@ Must:
     ./token.sdd — poivre HMAC des empreintes de token, consommé par ./dual.rs, ../rest/tokens.rs et
     ../users/service_account.rs à l'appel de @issue_token/@validate_token/@ensure_token). Toute
     suppression, renommage ou retype casse la compilation de ./mod.rs, ./middleware.rs, ./dual.rs
-    et des routeurs REST, GraphQL et MCP : c'est le contrat d'exigence du flow auth
+    et des routeurs REST et MCP : c'est le contrat d'exigence du flow auth
   Le seul derive présent est @Clone : pas de @Debug, @PartialEq, @Default, aucun `impl`, aucune
     méthode, aucun chemin exécutable dans le fichier ; @token_pepper est un @String comme les
     redirections — pas de @Debug sur ce type non plus, donc pas de fuite du poivre par `{:?}` tant
@@ -75,14 +74,20 @@ Must:
     contrat est identique de `--no-default-features` à `--all-features` et doit être exercé sur
     la matrice de /tooling.sdd
   Parité des surfaces sur une instance unique : la même valeur alimente @auth_router, la
-    surface REST (@resource_router, @me_router, @users_router, @tokens_router), @graphql_router
+    surface REST (@resource_router, @me_router, @users_router, @tokens_router)
     et @mcp_router ; lectures par surface — auth : tous les champs ; @AuthUser : @cookie_key ;
     @AuthPrincipal : @db et @token_pepper en chemin `Bearer`, @cookie_key en chemin cookie ; REST,
-    GraphQL et MCP : @db seul. Aucune divergence de comportement entre surfaces n'est constatée.
+    et MCP : @db seul. Aucune divergence de comportement entre surfaces n'est constatée.
     Le commentaire de doc de @db (« non utilisé par le flow cookie seul ») était faux et corrigé le
     2026-09-27 (`Tasks`) : @resolve_user et @sync_group_memberships touchent @db même sur ce
     chemin. L'absence de validation des deux redirections reste un choix assumé (`Tasks`), pas un
     écart à corriger
+  **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute mention contraire (« exactement sept champs », « compilation
+    inconditionnelle », « @sea-orm non optionnel ») de ce fichier : les champs @db (type `sea_orm::DatabaseConnection`) et
+    @token_pepper n'existent que sous `#[cfg(feature = "db")]`, chacun avec son propre attribut. @MiryadAuthState a donc
+    **sept** champs sous `db` et **cinq** sans (@oidc_client, @cookie_key, @post_login_redirect, @post_logout_redirect,
+    @secure_cookies). Le fichier ne cite `sea_orm` que sous `db` ; `sea-orm` n'est pas dans le graphe sans `db`. Les doc-comments
+    de @db et @token_pepper précisent « disponible sous la feature `db` ». Le type reste @Clone seul, sans @Debug.
 
 Must not:
   Imposer un @AppState concret ni écrire ici un @FromRef pour l'état d'une application :
@@ -115,7 +120,7 @@ Accepts:
   Construction par littéral de structure à sept valeurs nommées (révisé 2026-09-27) — pas de
     constructeur, pas de builder ; l'application consommatrice est le seul point de construction, et
     les tests inline de la crate (sous `#[cfg(test)]` dans ./mod.rs, ./middleware.rs, ./dual.rs,
-    /src/rest, /src/graphql) font de même
+    /src/rest) font de même
   Un provider non validé : n'importe quelle implémentation de @OidcClientTrait enveloppée
     d'@Arc est acceptée (@MockOidcClient le prouve en test), y compris une instance n'ayant
     jamais effectué de discovery — confirmé comme contrat voulu le 2026-09-27 (`Tasks`) : la
@@ -159,7 +164,7 @@ Handles:
   Rotation en cours de vie : champs `pub` sans setter — un porteur mutable substitue une
     valeur ; un handler ne peut pas corrompre l'état partagé car @State lui livre une copie à
     chaque extraction
-  Combinaisons gateées : les routeurs derrière `graphql` et `mcp` n'ajoutent que des bornes du
+  Combinaisons gateées : les routeurs derrière `mcp` n'ajoutent que des bornes du
     même genre, que le type non gateé satisfait déjà
 
 Tasks:
@@ -177,7 +182,7 @@ Tasks:
     login/logout en déploiement.
   [x] Deux nouveaux champs `secure_cookies: bool` et `token_pepper: String` (arbitré 2026-09-27,
     `Must`, cross-file avec ./cookie.sdd et ./token.sdd) — mise à jour de tous les littéraux de
-    construction de la crate (./mod.rs, ./middleware.rs, ./dual.rs, /src/rest, /src/graphql, tests
+    construction de la crate (./mod.rs, ./middleware.rs, ./dual.rs, /src/rest, tests
     inline partout où @MiryadAuthState est construit par littéral).
   [x] Convertir les 11 `Scenario` (9 originaux, 2 nés des deux nouveaux champs) en au moins 11
     tests distincts nommés dans le `mod tests` `#[cfg(test)]` inline de ./state.rs — le contrat ne
@@ -191,6 +196,12 @@ Tasks:
     s'exécutent partout, le onzième (présence sans feature) est prouvé par la batterie /tooling.sdd
     sur `--no-default-features` ; les dev-dependencies @tokio, @tower et @sea-orm (feature
     `sqlx-sqlite`) existent déjà
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./state.rs` (doc ligne ~227), retirer `graphql` de la liste des
+    sites de construction (`mod.rs`, `middleware.rs`, `dual.rs`, `rest`). Aucun changement de comportement.
+  [x] Amendement 2026-10-19 (`db`) : dans `./state.rs`, gater @db et @token_pepper (et l'`use` de `DatabaseConnection`) sous
+    `#[cfg(feature = "db")]` ; gater sous `db` les tests qui touchent @db (`db_clone_shares_pool`, fixtures `fixture_with_db`) ; adapter
+    la fixture partagée pour construire l'état sans ces deux champs quand `db` est absente. Mettre à jour les décomptes des
+    tests de littéraux (sept sous `db`, cinq sans).
 
 Done when:
   Les 11 `Scenario` ont chacun au moins un test nommé distinct et vert (les dix premiers dans
@@ -276,6 +287,17 @@ Scenario: secure_cookies et token_pepper se clonent indépendamment
 Scenario: tout littéral de construction de la crate porte les sept champs
   Given les sept champs de la table de `Must` révisée le 2026-09-27
   When un littéral de @MiryadAuthState est écrit n'importe où dans la crate (./mod.rs,
-    ./middleware.rs, ./dual.rs, /src/rest, /src/graphql, tests inline)
+    ./middleware.rs, ./dual.rs, /src/rest, tests inline)
   Then la compilation rejette tout littéral omettant @secure_cookies ou @token_pepper — les deux
     nouveaux champs sont aussi obligatoires que les cinq préexistants
+
+Scenario: l'état se construit avec cinq champs sans db (2026-10-19)
+  Given un build `--no-default-features` (sans `db`)
+  When un test construit @MiryadAuthState par littéral avec @oidc_client, @cookie_key, @post_login_redirect, @post_logout_redirect
+    et @secure_cookies seulement
+  Then la compilation réussit et le littéral n'accepte ni @db ni @token_pepper (champs inexistants)
+
+Scenario: db et token_pepper existent sous db (2026-10-19)
+  Given un build `--features db`
+  When un test construit le littéral à sept champs
+  Then la compilation réussit ; omettre @db ou @token_pepper est rejeté par le compilateur

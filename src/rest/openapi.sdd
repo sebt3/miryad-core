@@ -145,6 +145,13 @@ Must:
   Les homonymes de schémas `Model` sans `#[schema(as)]` restent un point d'attention documentaire
     (arbitré par Sébastien le 2026-09-29) : la fusion @utoipa écarte le second en silence et la crate ne peut pas intercepter le
     `merge` ; `#[schema(as)]` reste une exigence d'usage de `docs/architecture.md`.
+  **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute mention contraire (« @utoipa non optionnelle », « aucun `#[cfg]` »
+    hors `swagger-ui`) de ce fichier. Sous `#[cfg(feature = "db")]` : le trait @OpenApiEntity (qui exige @RestEntity), la fonction
+    @resource_openapi, et tout item du fichier consommé par eux seuls (constantes de schéma/sécurité, aides de construction,
+    `use` de `crate::rest::RestEntity`). Restent compilés sans `db` : @openapi_router et, sous `swagger-ui`, @swagger_ui_router,
+    qui prennent n'importe quel @utoipa::openapi::OpenApi fourni par l'application — c'est ce qui permet à une application sans
+    entités (API écrite à la main) de publier son document et son Swagger UI. `utoipa` reste une dépendance non optionnelle.
+    Aucun item non gaté ne référence @RestError, @RestEntity ni `sea_orm`.
 
 Must not:
   Ajouter une extension `x-miryad-*` (ou toute clé `x-`) au document pour pousser du scaffolding
@@ -158,8 +165,8 @@ Must not:
     la divergence silencieuse des clés wire en est la rupture.
   Fixer un @Info (titre, version) dans un fragment : @OpenApi::@merge n'en fusionne pas la valeur — un
     renseigné ici serait silencieusement perdu à la fusion, et l'app doit renseigner le document final.
-  Déclarer ici les routes GraphQL (`POST /api/graphql`) ou MCP (`POST /mcp`) : surfaces gated par leurs
-    propres features, hors du graphe de compilation de ce fichier — le document ne décrit que REST (la
+  Déclarer ici la route MCP (`POST /mcp`) : surface gated par sa
+    propre feature, hors du graphe de compilation de ce fichier — le document ne décrit que REST (la
     question de couvrir les autres routes REST du crate est ouverte en `Tasks`).
   Réécrire les schémas avec la macro @utoipa::@path ou @utoipa_axum : ils exigent une fonction concrète
     par route, incompatible avec les handlers génériques par entité — choix acté et documenté dans
@@ -316,6 +323,9 @@ Tasks:
     de @openapi_router et du @Scenario hors feature), `--features swagger-ui` (UI, JSON et panic),
     défaut et `--all-features`, clippy `-D warnings` sur chaque combinaison — `missing_docs` et les
     `pedantic` sur les trois items publics déjà documentés ne doivent pas bouger.
+  [x] Amendement 2026-10-19 (`db`) : dans `./openapi.rs`, gater sous `db` @OpenApiEntity, @resource_openapi et les items qu'ils seuls utilisent
+    (laisser compiler sans avertissement `dead_code` : le gating suit l'usage) ; gater sous `db` les tests qui utilisent
+    @RestEntity ou une entité `sea_orm` ; ajouter le test `openapi_router_serves_handwritten_document_without_db`.
 
 Done when:
   La spec porte exactement treize `Scenario`, chacun vérifié par son test nommé distinct dans le
@@ -446,3 +456,9 @@ Scenario: le document publié ne porte aucune extension x-miryad
   Then aucune clé commençant par `x-miryad-` n'apparaît nulle part dans le document — ni en racine, ni
     sous les chemins, ni sous les schémas
   And l'artefact interne du scaffolding reste @ir::@IrRegistry, que ce document ne contient pas
+
+Scenario: un document OpenAPI écrit à la main est servi sans db (2026-10-19)
+  Given un build `--no-default-features` (sans `db`) et un @OpenApi construit sans entité (`OpenApi::default()` avec un `info`)
+  When @openapi_router::<S>(spec) est monté et `GET /api/openapi.json` est appelé
+  Then la réponse est `200` avec le JSON de ce document
+  And le test ne dépend d'aucun type `sea_orm`

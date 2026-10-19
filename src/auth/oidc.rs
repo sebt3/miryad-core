@@ -4,7 +4,7 @@ use openidconnect::{
     AuthorizationCode, ClaimsVerificationError, ClientId, ClientSecret, CsrfToken, EndpointMaybeSet,
     EndpointNotSet, EndpointSet, HttpRequest, HttpResponse, IssuerUrl, Nonce, PkceCodeChallenge,
     PkceCodeVerifier, RedirectUrl, Scope, SignatureVerificationError, TokenResponse,
-    core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
+    core::{CoreAuthenticationFlow, CoreClient, CoreIdToken, CoreProviderMetadata},
 };
 
 use crate::auth::config::OidcConfig;
@@ -79,6 +79,16 @@ pub trait OidcClientTrait: Send + Sync {
         expected_nonce: &Nonce,
         pkce_verifier: &PkceCodeVerifier,
     ) -> Result<OidcLoginResult, AuthError>;
+    /// Valide un JWT reçu en `Authorization: Bearer` (amendement 2026-10-19) : signature contre
+    /// le JWKS du snapshot de discovery, `iss` égal à l'issuer découvert, `aud` contenant le
+    /// `client_id`, `exp` vérifié (`iat` non contraint par la bibliothèque). Synchrone : aucune E/S, aucun nonce.
+    ///
+    /// # Errors
+    ///
+    /// `AuthError::BearerExpired` (`MRD-AUTH-020`) si le JWT est valide par ailleurs mais échu ;
+    /// `AuthError::InvalidBearer` (`MRD-AUTH-019`) pour tout autre rejet (chaîne non parsable,
+    /// signature, `iss`, `aud`, autre claim). Le JWT n'entre jamais dans l'erreur.
+    fn verify_bearer(&self, jwt: &str) -> Result<OidcIdentity, AuthError>;
 }
 
 /// Client `OIDC` de production, bâti sur `CoreClient` d'`openidconnect` après discovery —
@@ -355,6 +365,31 @@ impl OidcClientTrait for OidcClient {
             groups,
         })
     }
+
+    fn verify_bearer(&self, jwt: &str) -> Result<OidcIdentity, AuthError> {
+        // Nonce neutre : un JWT `Bearer` ne transporte pas de flux de connexion (amendement
+        // 2026-10-19). Tout le reste (signature, `iss`, `aud`, `exp`) reste vérifié (`iat` n'est pas contraint par la bibliothèque).
+        let nonce_neutre = |_: Option<&Nonce>| -> Result<(), String> { Ok(()) };
+        let id_token: CoreIdToken = jwt.parse().map_err(|_| AuthError::InvalidBearer)?;
+        let claims = id_token
+            .claims(&self.inner.id_token_verifier(), nonce_neutre)
+            .map_err(|e| match &e {
+                ClaimsVerificationError::Expired(_) => AuthError::BearerExpired,
+                ClaimsVerificationError::SignatureVerification(SignatureVerificationError::NoMatchingKey) => {
+                    // Même discipline que `exchange_code` : variant précis, jamais un texte.
+                    self.jwks_rotation_needed.store(true, Ordering::Relaxed);
+                    AuthError::InvalidBearer
+                }
+                _ => AuthError::InvalidBearer,
+            })?;
+
+        Ok(OidcIdentity {
+            id_token: jwt.to_string(),
+            subject: claims.subject().to_string(),
+            email: claims.email().map(|e| e.to_string()),
+            preferred_username: claims.preferred_username().map(|u| u.to_string()),
+        })
+    }
 }
 
 /// Contrat de test des appelants (`oidc.sdd`) : URL d'émission statique sans E/S, secrets frais
@@ -366,11 +401,14 @@ impl OidcClientTrait for OidcClient {
 pub struct MockOidcClient {
     /// `None` = mode panique (défaut) ; `Some` = mode configurable.
     exchange_result: Option<OidcLoginResult>,
+    /// Résultat de `verify_bearer` (amendement 2026-10-19) : `None` = panique. Rendu une seule
+    /// fois, `AuthError` n'étant pas `Clone` ; un second appel panique comme le mode par défaut.
+    bearer_result: std::sync::Mutex<Option<Result<OidcIdentity, AuthError>>>,
 }
 
 #[cfg(test)]
 impl MockOidcClient {
-    /// Mode par défaut : `exchange_code` panique (`unimplemented!` nommé).
+    /// Mode par défaut : `exchange_code` et `verify_bearer` paniquent (`unimplemented!` nommé).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -382,6 +420,17 @@ impl MockOidcClient {
     pub fn with_login_result(result: OidcLoginResult) -> Self {
         Self {
             exchange_result: Some(result),
+            ..Self::default()
+        }
+    }
+
+    /// Mode configurable (amendement 2026-10-19) : `verify_bearer` rend ce résultat verbatim,
+    /// une seule fois.
+    #[must_use]
+    pub fn with_bearer_result(result: Result<OidcIdentity, AuthError>) -> Self {
+        Self {
+            bearer_result: std::sync::Mutex::new(Some(result)),
+            ..Self::default()
         }
     }
 }
@@ -407,6 +456,14 @@ impl OidcClientTrait for MockOidcClient {
         match &self.exchange_result {
             Some(result) => Ok(result.clone()),
             None => unimplemented!("MockOidcClient::exchange_code"),
+        }
+    }
+
+    fn verify_bearer(&self, _jwt: &str) -> Result<OidcIdentity, AuthError> {
+        let mut configured = self.bearer_result.lock().expect("mutex du mock non empoisonné");
+        match configured.take() {
+            Some(result) => result,
+            None => unimplemented!("MockOidcClient::verify_bearer (aucun résultat configuré, ou déjà rendu)"),
         }
     }
 }
@@ -2152,5 +2209,252 @@ mod tests {
         assert_eq!(result.identity.email.as_deref(), Some("alice@example.com"));
         assert_eq!(result.identity.preferred_username.as_deref(), Some("alice"));
         assert_eq!(result.groups, vec!["editors".to_string()]);
+    }
+
+    // ---- Validation Bearer (amendement 2026-10-19) : `verify_bearer` ----
+
+    /// Secret du banc `HS256` : `openidconnect` vérifie `HS256` avec le `client_secret` configuré.
+    const BEARER_SECRET: &str = "test-secret";
+    const BEARER_CLIENT_ID: &str = "test-client";
+
+    /// Client de production découvert auprès du mock `IdP` (`HS256` + `RS256` déclarés, comme
+    /// le test de clé `kid` inconnue de `exchange_code`).
+    async fn bearer_client() -> (MockIdP, OidcClient) {
+        let plan = IdPPlan {
+            algs_json: r#""HS256","RS256""#.to_string(),
+            ..IdPPlan::default()
+        };
+        let idp = MockIdP::start(plan);
+        let client = OidcClient::new(&idp.config(BEARER_CLIENT_ID, BEARER_SECRET))
+            .await
+            .expect("mock IdP discovery succeeds");
+        (idp, client)
+    }
+
+    /// JWT signé au banc, `fixture` appliquée aux défauts (`iss`, `aud`, `exp`, `kid`…).
+    fn bearer_jwt(idp: &MockIdP, fixture: &ClaimsFixture) -> String {
+        build_signed_token(
+            fixture,
+            &idp.issuer,
+            BEARER_CLIENT_ID,
+            "n-quelconque",
+            BEARER_SECRET,
+        )
+    }
+
+    #[tokio::test]
+    async fn verify_bearer_valid_jwt_returns_identity() {
+        let (idp, client) = bearer_client().await;
+        let jwt = bearer_jwt(&idp, &ClaimsFixture::default());
+
+        let identity = client
+            .verify_bearer(&jwt)
+            .expect("un JWT signé, émis pour ce client et non échu est accepté");
+
+        assert_eq!(identity.id_token, jwt, "le JWT reçu est restitué verbatim");
+        assert_eq!(identity.subject, "user-1");
+        assert_eq!(identity.email.as_deref(), Some("user-1@example.com"));
+        assert_eq!(identity.preferred_username.as_deref(), Some("alice"));
+        assert!(
+            !client.jwks_rotation_needed(),
+            "un succès n'arme pas le signal de rotation"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_bearer_expired_jwt_returns_bearer_expired() {
+        let (idp, client) = bearer_client().await;
+        let jwt = bearer_jwt(
+            &idp,
+            &ClaimsFixture {
+                exp_secs_from_now: -60,
+                ..ClaimsFixture::default()
+            },
+        );
+
+        let err = client.verify_bearer(&jwt).expect_err("un JWT échu est refusé");
+
+        assert!(matches!(err, AuthError::BearerExpired), "{err:?}");
+        assert!(
+            !client.jwks_rotation_needed(),
+            "l'expiration n'arme pas le signal de rotation"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_bearer_altered_signature_returns_invalid_bearer() {
+        let (idp, client) = bearer_client().await;
+        let jwt = bearer_jwt(&idp, &ClaimsFixture::default());
+        let (head, sig) = jwt.rsplit_once('.').expect("JWT tri-segment");
+        // Premier caractère de la signature changé : les 6 bits de ce caractère pèsent dans la signature.
+        let flipped = if sig.starts_with('A') { 'B' } else { 'A' };
+        let altered = format!("{head}.{flipped}{}", &sig[1..]);
+
+        let err = client
+            .verify_bearer(&altered)
+            .expect_err("une signature altérée est refusée");
+
+        assert!(matches!(err, AuthError::InvalidBearer), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn verify_bearer_other_audience_returns_invalid_bearer() {
+        let (idp, client) = bearer_client().await;
+        let jwt = bearer_jwt(
+            &idp,
+            &ClaimsFixture {
+                aud: Some("autre-client".to_string()),
+                ..ClaimsFixture::default()
+            },
+        );
+
+        let err = client
+            .verify_bearer(&jwt)
+            .expect_err("un JWT d'une autre audience est refusé");
+
+        assert!(matches!(err, AuthError::InvalidBearer), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn verify_bearer_other_issuer_returns_invalid_bearer() {
+        let (idp, client) = bearer_client().await;
+        let jwt = bearer_jwt(
+            &idp,
+            &ClaimsFixture {
+                iss: Some("https://autre-issuer.example.com".to_string()),
+                ..ClaimsFixture::default()
+            },
+        );
+
+        let err = client
+            .verify_bearer(&jwt)
+            .expect_err("un JWT d'un autre issuer est refusé");
+
+        assert!(matches!(err, AuthError::InvalidBearer), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn verify_bearer_unknown_kid_arms_rotation_signal() {
+        let (idp, client) = bearer_client().await;
+        assert!(
+            !client.jwks_rotation_needed(),
+            "le signal est désarmé à la construction"
+        );
+        let jwt = bearer_jwt(
+            &idp,
+            &ClaimsFixture {
+                alg: "RS256",
+                kid: Some("kid-apres-rotation".to_string()),
+                ..ClaimsFixture::default()
+            },
+        );
+
+        let err = client
+            .verify_bearer(&jwt)
+            .expect_err("un kid absent du JWKS est refusé");
+
+        assert!(matches!(err, AuthError::InvalidBearer), "{err:?}");
+        assert!(
+            client.jwks_rotation_needed(),
+            "la cause « clé/kid introuvable » arme le signal de rotation"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_bearer_non_jwt_strings_return_invalid_bearer_without_panic() {
+        let (_idp, client) = bearer_client().await;
+
+        for candidat in ["", "abc", "a.b.c"] {
+            let err = client
+                .verify_bearer(candidat)
+                .expect_err("une chaîne qui n'est pas un JWT est refusée");
+            assert!(matches!(err, AuthError::InvalidBearer), "{candidat:?} : {err:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_bearer_error_never_contains_the_jwt() {
+        let (idp, client) = bearer_client().await;
+        let rejets = [
+            bearer_jwt(
+                &idp,
+                &ClaimsFixture {
+                    exp_secs_from_now: -60,
+                    ..ClaimsFixture::default()
+                },
+            ),
+            bearer_jwt(
+                &idp,
+                &ClaimsFixture {
+                    aud: Some("autre-client".to_string()),
+                    ..ClaimsFixture::default()
+                },
+            ),
+            bearer_jwt(
+                &idp,
+                &ClaimsFixture {
+                    iss: Some("https://autre-issuer.example.com".to_string()),
+                    ..ClaimsFixture::default()
+                },
+            ),
+            bearer_jwt(
+                &idp,
+                &ClaimsFixture {
+                    alg: "RS256",
+                    kid: Some("kid-apres-rotation".to_string()),
+                    ..ClaimsFixture::default()
+                },
+            ),
+        ];
+
+        for jwt in &rejets {
+            let (guard, captured) = capture_traces();
+            let err = client
+                .verify_bearer(jwt)
+                .expect_err("chaque motif de rejet produit une erreur");
+            drop(guard);
+
+            let rendus = [format!("{err}"), format!("{err:?}")];
+            for segment in jwt.split('.') {
+                for rendu in &rendus {
+                    assert!(!rendu.contains(segment), "segment du JWT dans l'erreur : {rendu}");
+                }
+                for ligne in captured.lines() {
+                    assert!(
+                        !ligne.contains(segment),
+                        "segment du JWT dans une trace : {ligne}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "MockOidcClient::verify_bearer")]
+    fn verify_bearer_mock_default_mode_panics() {
+        let mock = MockOidcClient::new();
+        let _ = mock.verify_bearer("n-importe");
+    }
+
+    #[test]
+    fn verify_bearer_mock_configured_mode_returns_the_configured_result() {
+        let provided = OidcIdentity {
+            id_token: "a.b.c".to_string(),
+            subject: "alice".to_string(),
+            email: None,
+            preferred_username: None,
+        };
+        let mock = MockOidcClient::with_bearer_result(Ok(provided));
+        let identity = mock
+            .verify_bearer("a.b.c")
+            .expect("le mode configuré rend Ok sans panique");
+        assert_eq!(identity.subject, "alice");
+        assert_eq!(identity.id_token, "a.b.c");
+
+        let mock = MockOidcClient::with_bearer_result(Err(AuthError::BearerExpired));
+        let err = mock
+            .verify_bearer("n-importe")
+            .expect_err("le mode configuré rend l'erreur fournie");
+        assert!(matches!(err, AuthError::BearerExpired), "{err:?}");
     }
 }

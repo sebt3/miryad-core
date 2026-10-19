@@ -91,7 +91,7 @@ Must:
   Front de surface : ce fichier ne sert que MCP ; la version de protocole qu'il déclare est
     uniquement JSON-RPC `2.0` (littéral de construction), la version MCP `2024-11-05` vit en
     @PROTOCOL_VERSION (ici, arbitré 2026-09-29) ; la négociation de version — écho de la version
-    du client si elle est égale, sinon la version du serveur — vit dans ./handler.rs. La parité REST/GraphQL/MCP du contrat transverse
+    du client si elle est égale, sinon la version du serveur — vit dans ./handler.rs. La parité REST/MCP du contrat transverse
     (`.specdd/bootstrap.project.md`) porte sur la lecture de @MiryadResource, pas sur la forme
     d'enveloppe : l'asymétrie de forme REST (texte/`code`+`message`, /src/rest/error.sdd) contre
     enveloppe JSON-RPC est constitutive, pas un décalage à combler
