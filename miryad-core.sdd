@@ -201,7 +201,7 @@ Tasks:
     huit features de `[package.metadata.docs.rs]`.
   [ ] G0 — suppression de la surface GraphQL (décision 2026-10-19 ; specs amendées le même jour, code à suivre) : les
     tâches G1 à G7 ci-dessous se jouent dans l'ordre, une par fichier ou par petit groupe, validator entre chaque.
-  [ ] G1 — `src/resource.rs`, `src/mcp/mod.rs`, `src/lib.rs` : retirer tests et références à `crate::graphql` (tâches
+  [x] G1 — `src/resource.rs`, `src/mcp/mod.rs`, `src/lib.rs` : retirer tests et références à `crate::graphql` (tâches
     d'amendement 2026-10-19 de `./src/resource.sdd`, `./src/mcp/mod.sdd`, `./src/lib.sdd`), de sorte que plus aucun code hors
     `src/graphql/` ne nomme ce module.
   [ ] G2 — supprimer le répertoire `src/graphql/` (les cinq `.rs` ; les `.sdd` sont déjà retirés) et la ligne `pub mod graphql` de `./src/lib.rs`.

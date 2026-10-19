@@ -308,9 +308,10 @@ Tasks:
     @mcp + runs @cargo tree/@cargo doc nommés — tout vert hors baseline gelée graphql (7/8
     sites, carve-out @tooling.sdd) ; décisions des trois lignes arbitrées portées dans la
     présente spec (purge `crypto` exécutée et Scenario ressynchronisé).
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./mod.rs`, supprimer le test inline `mcp_graphql_coexist` (et son
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./mod.rs`, supprimer le test inline `mcp_graphql_coexist` (et son
     `#[cfg(all(feature = "mcp", feature = "graphql"))]`, lignes ~95-125) ; le scénario correspondant a été retiré de cette spec,
     les cinq preuves restantes ne bougent pas.
+    Validé 2026-10-19 (validator Sonnet GO) : `mcp_graphql_coexist` supprimé.
 
 Done when:
   Chaque `Scenario` de la présente spec est couvert par sa preuve nommée distincte — deux tests

@@ -5,20 +5,19 @@
 //! Moteur générique derrière le template d'application **miryad**.
 //! Vous décrivez votre modèle de données via le trait [`MiryadResource`](resource::MiryadResource),
 //! `miryad-core` fournit tout le reste : auth OIDC, RBAC/ownership, API REST,
-//! GraphQL, MCP, `OpenAPI`, et scaffolding frontend.
+//! MCP, `OpenAPI`, et scaffolding frontend.
 //!
 //! > **80% de l'application vient gratuitement** — une seule implémentation de trait
-//! > par entité, lue telle quelle par REST, GraphQL et MCP (zéro duplication).
+//! > par entité, lue telle quelle par REST et MCP (zéro duplication).
 //!
 //! ## Architecture
 //!
 //! ```text
 //! [ Vue 3 + shadcn-vue ]              ← scaffoldé côté app consommatrice
-//!         │  REST / GraphQL (cookie OIDC ou token API)
+//!         │  REST (cookie OIDC ou token API)
 //!         ▼
 //! [ miryad-core — couche générique ]   ← jamais de code par entité à écrire
 //!   ├─ REST CRUD (axum)
-//!   ├─ GraphQL (Seaography, schéma dynamique)
 //!   ├─ MCP (tools CRUD, sortie markdown/json/yaml)
 //!   ├─ Auth (OIDC + cookie + tokens API, dual-auth)
 //!   ├─ RBAC/ownership (par entité)
@@ -32,7 +31,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! miryad-core = { version = "0.1", features = ["graphql", "mcp"] }
+//! miryad-core = { version = "0.1", features = ["mcp"] }
 //! sea-orm = { version = "2", features = ["macros", "runtime-tokio-rustls"] }
 //! axum = "0.8"
 //! ```
@@ -77,7 +76,6 @@
 //!
 //! * REST: `GET/POST /api/v1/recipes`, `GET/PUT/DELETE /api/v1/recipes/{id}`
 //!   — paginé (`?page=&per_page=&filter=`), RBAC automatique.
-//! * `GraphQL` (feature `graphql`, module `graphql`) : `POST /api/graphql` + `GraphiQL`.
 //! * `MCP` (feature `mcp`, module `mcp`) : `POST /mcp` — 5 tools par entité.
 //! * `OpenAPI` toujours disponible via [`rest::openapi`], Swagger UI derrière `swagger-ui`.
 //! * IR frontend pour le générateur TypeScript : [`ir::resource_ir`] / [`ir::IrRegistry`].
@@ -88,11 +86,10 @@
 //! |---------|-------|---------------------|
 //! | `static-frontend` *(default)* | `frontend::static_frontend_router` — service SPA | `tower-http` |
 //! | `swagger-ui` | Swagger UI sur `/api/swagger-ui` | `utoipa-swagger-ui` |
-//! | `graphql` | GraphQL dynamique (Seaography) | `seaography`, `async-graphql` |
-//! | `graphiql` | IDE `GraphiQL` sur `/api/graphiql` (implique `graphql`) | `async-graphql/graphiql` |
 //! | `mcp` | Serveur MCP JSON-RPC sur `/mcp` | `vynil-core` (Handlebars) |
 //! | `workflow` | Moteur de workflow DAG sur Restate — **aucune** route sur le `axum::Router` de l'app (services liés par l'app elle-même, `Endpoint::builder()` ; voir `docs/architecture.md`) | `restate-sdk`, `uuid`, `tokio`, `vynil-core` (`rhai`) |
 //! | `systemone` | Client HTTP vers l'API System One (`POST /v1/systemone`) — **aucune** route, aucun état | aucune (`reqwest` déjà présent) |
+//! | `matrix` | Client Matrix de bot sur `matrix-sdk` 0.18 (E2EE, store `SeaORM`), hors défaut | `matrix-sdk`, `matrix-sdk-crypto`, `matrix-sdk-store-encryption`, `zeroize`, `tokio` |
 //!
 //! Voir aussi [`docs/architecture.md`](https://github.com/sebt3/miryad-core/blob/main/docs/architecture.md)
 //! et [`docs/roadmap.md`](https://github.com/sebt3/miryad-core/blob/main/docs/roadmap.md).
@@ -140,10 +137,6 @@ pub mod auth;
 #[cfg(feature = "static-frontend")]
 pub mod frontend;
 
-/// API GraphQL dynamique via Seaography (feature `graphql`).
-#[cfg(feature = "graphql")]
-pub mod graphql;
-
 /// Représentation intermédiaire par entité pour le générateur frontend TypeScript.
 ///
 /// Voir [`ir::resource_ir`] et [`ir::IrRegistry`].
@@ -158,7 +151,7 @@ pub mod mcp;
 pub mod migration;
 
 /// Pagination partagée par REST et MCP (MCP via `rest::core::list`) — volontairement hors de
-/// `rest/` ; GraphQL utilise ses propres curseurs seaography et n'est pas partie au contrat.
+/// `rest/`.
 pub mod query;
 
 /// RBAC row-level et filtrage de liste par propriétaire.
@@ -298,28 +291,6 @@ mod tests {
         witness(None, None, None, None, None, None, None);
         witness_users(None);
         std::hint::black_box(crate::auth::auth_router::<crate::auth::MiryadAuthState>);
-    }
-
-    /// Scénario verrouillé : « graphql gated par la feature graphql » (`./lib.sdd`). Sous
-    /// `--no-default-features --features graphql`, le `Then` exige `graphql::graphql_router`
-    /// résolvable ; hors feature, le module n'est pas déclaré et le test disparaît avec lui
-    /// (`Handles` de `./lib.sdd`).
-    #[cfg(feature = "graphql")]
-    #[test]
-    fn graphql_gated_compiles() {
-        std::hint::black_box(crate::graphql::graphql_router::<crate::auth::MiryadAuthState>);
-    }
-
-    /// Scénario verrouillé : « `graphiql` implique `graphql` à la racine » (`./lib.sdd`). Sous
-    /// `--no-default-features --features graphiql`, sans `graphql` demandée explicitement, la
-    /// cible de test ne compile que si `crate::graphql` — gate `#[cfg(feature = "graphql")]` à la
-    /// racine — est bien ouvert par l'implication du graphe `[features]` de `/Cargo.toml` : la
-    /// compilation de ce test est la vérification, `graphql_router` est le `Then` du scenario
-    /// jumeau revérifié sous l'implication seule.
-    #[cfg(feature = "graphiql")]
-    #[test]
-    fn graphiql_implies_graphql() {
-        std::hint::black_box(crate::graphql::graphql_router::<crate::auth::MiryadAuthState>);
     }
 
     /// Scénario verrouillé : « mcp gated par la feature mcp » (`./lib.sdd`). Sous
@@ -487,9 +458,7 @@ mod tests {
     /// Scénario verrouillé : « commentaire de @query aligne la réalité » (`./lib.sdd`, arbitré
     /// par Sébastien le 2026-09-29, à l'unisson du `Must` de `./query.sdd`). Le `///` de
     /// `pub mod query` présente la pagination comme partagée par REST et MCP (MCP via
-    /// `rest::core::list`) — jamais l'énumération « REST/GraphQL/MCP » ni le futur « plus tard » ;
-    /// clause « But » : si `GraphQL` est nommé, ce l'est pour l'exclure du contrat (curseurs
-    /// `seaography` propres).
+    /// `rest::core::list`) — jamais l'énumération « REST/GraphQL/MCP » ni le futur « plus tard ».
     #[test]
     fn query_doc_matches_reality() {
         let lib = crate_source();
@@ -513,11 +482,6 @@ mod tests {
         assert!(
             !doc.contains("REST/GraphQL/MCP") && !doc.contains("plus tard"),
             "le commentaire de @query ne doit plus présenter GraphQL comme consommant @query ni promettre un « plus tard » : `{doc}`"
-        );
-        let lower = doc.to_lowercase();
-        assert!(
-            !lower.contains("graphql") || lower.contains("n'est pas partie au contrat"),
-            "si @graphql est nommé, ce doit être pour l'exclure du contrat (curseurs @seaography propres) : `{doc}`"
         );
     }
 
@@ -543,7 +507,7 @@ mod tests {
 
     /// Scénario verrouillé : « cargo doc propre sur les combinaisons de features »
     /// (`./lib.sdd`). Le bloc `//!` est compilé sur toutes les combinaisons : nul lien intra-doc
-    /// qu'il porte ne peut viser un module gated (`frontend`, `graphql`, `mcp`, `workflow`),
+    /// qu'il porte ne peut viser un module gated (`frontend`, `mcp`, `workflow`),
     /// faute de quoi `rustdoc::broken_intra_doc_links` sonne dès que la feature est amputée —
     /// `Raises` de `./lib.sdd` promet zéro tel avertissement, la correction attendue étant une
     /// forme robuste au graphe de features, pas la désactivation du lint. Seconde clause : les
@@ -553,7 +517,7 @@ mod tests {
     /// `broken_intra_doc_links` au brut — étape de la batterie, tenue par le validator.
     #[test]
     fn doc_links_feature_stable() {
-        const GATED: [&str; 4] = ["frontend", "graphql", "mcp", "workflow"];
+        const GATED: [&str; 3] = ["frontend", "mcp", "workflow"];
         let doc = crate_doc_block(crate_source());
         for target in intra_doc_targets(&doc) {
             let base = target.split('#').next().unwrap_or("");
@@ -584,16 +548,11 @@ mod tests {
     }
 
     /// Scénario verrouillé : « surface complète en toutes features » (`./lib.sdd`). Sous
-    /// `--all-features` — seule combinaison de la batterie `/tooling.sdd` où les quatre modules
+    /// `--all-features` — seule combinaison de la batterie `/tooling.sdd` où les trois modules
     /// gatés compilent ensemble — les douze chemins `miryad_core::…` du `Then` compilent : huit
     /// modules toujours compilés par témoins de types, `workflow` par ses quatre items promis,
-    /// `frontend`, `graphql` et `mcp` par l'item de leur routeur sous bornes, jamais appelé.
-    #[cfg(all(
-        feature = "static-frontend",
-        feature = "graphql",
-        feature = "mcp",
-        feature = "workflow"
-    ))]
+    /// `frontend` et `mcp` par l'item de leur routeur sous bornes, jamais appelé.
+    #[cfg(all(feature = "static-frontend", feature = "mcp", feature = "workflow"))]
     #[test]
     fn all_features_surface() {
         fn witness(
@@ -623,7 +582,6 @@ mod tests {
         {
             let frontend = crate::frontend::static_frontend_router::<S>("spa");
             std::mem::drop(frontend);
-            std::hint::black_box(crate::graphql::graphql_router::<S>);
             std::hint::black_box(crate::mcp::mcp_router::<S>);
         }
         witness(None, None, None, None);

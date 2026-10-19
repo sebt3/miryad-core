@@ -293,12 +293,13 @@ Tasks:
     (invérifiable dans ce dépôt) ; documenter aussi `owner_column` `i32` (`Must`).
     Réalisé 2026-10-02 (B5b, validator PASS) : doc-comments de @label_column et @owner_column
     reformulés dans ./resource.rs, aucun changement de comportement (diff non-test = doc seule).
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./resource.rs`, supprimer les tests `graphql_policy_registry_reads_trait_metadata`
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./resource.rs`, supprimer les tests `graphql_policy_registry_reads_trait_metadata`
     et `graphql_mutations_skip_before_update_and_before_delete` (et leurs aides sous `#[cfg(feature = "graphql")]`, ~lignes 399-450 et
     717-775), puis réécrire les doc-comments qui nomment GraphQL/Seaography (module et trait : « REST et MCP » ; `resource_name` :
     retirer le paragraphe sur le type d'objet GraphQL et le désalignement de clé ; `filter_column` : « consommé par REST et MCP » ;
     `before_create` : retirer « miroir de `before_active_model_save` » et la justification Seaography ; `before_update`/`before_delete` :
     « se déclenchent sur REST et MCP » sans « jamais sur GraphQL »). Aucun changement de comportement ; `tests/resource.rs` ne change pas.
+    Validé 2026-10-19 (validator Sonnet GO) : cinq tests/aides GraphQL supprimés, doc-comments réécrits, batterie verte.
 
 Done when:
   La spec porte exactement vingt-quatre `Scenario` (dix-huit originaux depuis la suppression de GraphQL, six de l'amendement

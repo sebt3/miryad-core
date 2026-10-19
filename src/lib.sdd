@@ -270,12 +270,13 @@ Tasks:
     Validé 2026-10-19 (Claude) : `cfg` et tableau de features en place, `cargo doc --no-deps` avec `-D warnings` vert sur
     onze combinaisons (défaut, `--no-default-features`, `swagger-ui`, `graphql`, `mcp`, `workflow`, `systemone`,
     `workflow,systemone`, `matrix`, `workflow,matrix`, `--all-features`).
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./lib.rs`, retirer `pub mod graphql` et son
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./lib.rs`, retirer `pub mod graphql` et son
     `#[cfg(feature = "graphql")]`, les tests `graphql_gated_compiles` et `graphiql_implies_graphql`, `"graphql"` de
     la constante `GATED` et de la liste des features du test de chemins, l'appel `graphql_router` du test de
     surface, puis nettoyer le bloc `//!` (titre, schéma, exemple `features`, routes, tableau passant à six features,
     promesse « deux surfaces REST et MCP ») et le test `query_doc_matches_reality` (supprimer la clause
     « GraphQL nommé pour l'exclure », qui n'a plus d'objet). `cargo doc` sans avertissement sur chaque combinaison.
+    Validé 2026-10-19 (validator Sonnet GO) : `pub mod graphql` et tests retirés, `GATED` à trois, tableau à six features (ligne `matrix` ajoutée), `cargo doc` propre.
 
 Done when:
   La spec porte exactement treize `Scenario` (douze originaux, un pour l'amendement @workflow du

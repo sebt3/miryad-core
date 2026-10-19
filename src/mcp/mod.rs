@@ -91,36 +91,4 @@ mod tests {
             "la chaîne montée à travers ./mod.rs seul produit un routeur portant POST /mcp"
         );
     }
-
-    /// `Scenario` : « mcp et graphql coexistent sans interférence » — `mcp_router` en chemin
-    /// court `crate::mcp::*` et `crate::graphql::graphql_router` en chemin court graphql
-    /// adressés dans une même unité de compilation (`--all-features`). La coercition des deux
-    /// items en pointeurs de fonction typés force la validation de leurs bornes
-    /// `FromRef<MiryadAuthState>` respectives ; ./mod.rs ne change aucune ligne entre `mcp`
-    /// seul et `mcp` + `graphql` (aucun cfg croisé), et la surface publique de `mcp` reste
-    /// exactement les quatre items, ni amputée ni étendue par `graphql`.
-    #[cfg(all(feature = "mcp", feature = "graphql"))]
-    #[test]
-    fn mcp_graphql_coexist() {
-        use crate::auth::MiryadAuthState;
-        use crate::mcp::{McpToolRegistry, OutputFormat, mcp_router};
-
-        fn witness(
-            _mcp: fn(McpToolRegistry) -> axum::Router<MiryadAuthState>,
-            _graphql: fn(async_graphql::dynamic::Schema) -> axum::Router<MiryadAuthState>,
-        ) {
-        }
-        witness(
-            mcp_router::<MiryadAuthState>,
-            crate::graphql::graphql_router::<MiryadAuthState>,
-        );
-
-        // La chaîne de montage mcp reste entièrement constructible sous --all-features,
-        // à l'identique de `mcp` seul : même registre, même routeur, surface inchangée.
-        let router = mcp_router::<MiryadAuthState>(McpToolRegistry::new(OutputFormat::Json));
-        assert!(
-            router.has_routes(),
-            "sous mcp + graphql, mcp_router construit toujours POST /mcp sans interférence"
-        );
-    }
 }

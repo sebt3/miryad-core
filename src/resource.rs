@@ -1,5 +1,5 @@
 //! Contrat central [`MiryadResource`](crate::resource::MiryadResource) — une implémentation par entité SeaORM,
-//! lue telle quelle par REST, GraphQL et MCP.
+//! lue telle quelle par REST et MCP.
 //!
 //! Voir la doc crate pour un exemple complet et `docs/architecture.md` pour les détails.
 
@@ -62,21 +62,11 @@ pub enum AccessPolicy {
 }
 
 /// Contrat qu'implémente toute entité `SeaORM` exposée par miryad-core.
-/// Une seule implémentation par entité — REST, GraphQL et MCP la lisent
+/// Une seule implémentation par entité — REST et MCP la lisent
 /// telle quelle, aucune n'a sa propre déclaration de politique.
 pub trait MiryadResource: EntityTrait {
     /// Nom exposé côté API (ex: "recipes") — utilisé pour les chemins REST et le nom des tools
     /// MCP.
-    ///
-    /// Côté GraphQL, ce nom n'est **pas** le type d'objet exposé dans le schéma : `Seaography`
-    /// `2.0.0-rc.9` construit le nom d'objet et l'identifiant passé à ses hooks depuis le nom de
-    /// table SQL en `CamelCase` (`EntityObjectBuilder::type_name`, vérifié source amont), jamais
-    /// depuis `resource_name`. `graphql::PolicyRegistry` indexe pourtant par `resource_name` et
-    /// `graphql::hooks` retombe sur `GuardAction::Allow` quand aucune politique ne correspond —
-    /// fail-open documenté tel quel, bug `[!]` #19 de `resource.sdd`, correctif différé tant que
-    /// le pont GraphQL reste un prototype sans consommateur. Une entité dont la table SQL et le
-    /// `resource_name` ne s'alignent pas (ex: table `tags` pour le nom `recipe-tags`) voit ses
-    /// politiques déclarées inappliquées sur cette surface.
     fn resource_name() -> &'static str;
 
     /// Politique de lecture déclarée — déclaration indépendante de `write_policy` (aucune
@@ -104,10 +94,8 @@ pub trait MiryadResource: EntityTrait {
     /// compilation — l'invalidité se prouve en aval, le comportement est documenté ici.
     fn owner_column() -> Option<<Self as EntityTrait>::Column>;
 
-    /// Colonne texte sur laquelle la liste peut être filtrée côté REST et MCP seulement
-    /// (`?filter=valeur`, égalité exacte) — feature 4. GraphQL ne lit jamais cette colonne :
-    /// le pont GraphQL ne construit que la clause propriétaire, le filtrage y passe par les
-    /// inputs natifs `seaography` (arbitré 2026-09-27). `None` par défaut : pas
+    /// Colonne texte sur laquelle la liste peut être filtrée, consommée par REST et MCP
+    /// (`?filter=valeur`, égalité exacte) — feature 4. `None` par défaut : pas
     /// de filtre pour cette entité. Une entité qui veut un filtre de liste
     /// (ex. "recettes par catégorie") le déclare explicitement.
     #[must_use]
@@ -127,10 +115,7 @@ pub trait MiryadResource: EntityTrait {
 
     /// Hook métier exécuté après RBAC (`can_create`), avant l'insertion — peut muter
     /// l'`ActiveModel` (champ dérivé, valeur calculée) ou rejeter l'opération avec une erreur
-    /// métier. Miroir direct de `before_active_model_save` (Seaography, feature 5) : create only,
-    /// car Seaography ne déclenche ce hook que sur un insert pour l'instant — un hook qui ne se
-    /// comporterait pas à l'identique sur les 3 surfaces (REST/GraphQL/MCP) n'a pas sa place ici.
-    /// Défaut : no-op.
+    /// métier. Défaut : no-op.
     ///
     /// # Errors
     ///
@@ -151,10 +136,8 @@ pub trait MiryadResource: EntityTrait {
     /// hostile est défait par le même ordre que sur la création. `existing` (le `Model` relu avant
     /// mise à jour, la même ligne qu'a évaluée `can_write`) est prêté en lecture seule : comparer
     /// avant/après (ex. valider une transition d'état) ne demande pas de relire la base soi-même.
-    /// Déclenché sur REST et MCP seulement, **jamais sur GraphQL** — Seaography `2.0.0-rc.9` ne
-    /// pilote son hook équivalent (`before_active_model_save`) qu'à l'insertion ; asymétrie actée
-    /// par l'amendement `resource.sdd` du 2026-09-23 à la règle de parité. Défaut : identité —
-    /// `Ok(active)`, `existing` et `principal` ignorés.
+    /// Déclenché sur REST et MCP. Défaut : identité — `Ok(active)`, `existing` et `principal`
+    /// ignorés.
     ///
     /// # Errors
     ///
@@ -173,9 +156,8 @@ pub trait MiryadResource: EntityTrait {
     /// Hook métier de la suppression : exécuté après RBAC (`can_write`, évalué sur la ligne
     /// relue), avant l'exécution du `DELETE` — un `Err` interrompt avant toute requête. Aucun
     /// `ActiveModel` n'existe pour une suppression, seul `existing` (le `Model` relu) est prêté,
-    /// en lecture seule. Déclenché sur REST et MCP seulement, **jamais sur GraphQL** (même
-    /// asymétrie actée que [`before_update`](Self::before_update), amendement `resource.sdd` du
-    /// 2026-09-23). Défaut : `Ok(())`, `existing` et `principal` ignorés.
+    /// en lecture seule. Déclenché sur REST et MCP. Défaut : `Ok(())`, `existing` et `principal`
+    /// ignorés.
     ///
     /// # Errors
     ///
@@ -391,63 +373,6 @@ mod tests {
             }
             fn owner_column() -> Option<Column> {
                 None
-            }
-        }
-    }
-
-    /// Entité dont `before_update` et `before_delete` rejettent systématiquement en comptant
-    /// leurs appels — espions du verrou GraphQL (sans feature, ce module est absent, et le harnais
-    /// ne compte personne).
-    #[cfg(feature = "graphql")]
-    mod locked_pair {
-        use super::{AccessPolicy, AuthPrincipal, HookError, MiryadResource};
-        use sea_orm::entity::prelude::*;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        pub static UPDATE_CALLS: AtomicUsize = AtomicUsize::new(0);
-        pub static DELETE_CALLS: AtomicUsize = AtomicUsize::new(0);
-
-        #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
-        #[sea_orm(table_name = "locked_pairs")]
-        pub struct Model {
-            #[sea_orm(primary_key)]
-            pub id: i32,
-            pub label: String,
-        }
-
-        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-        pub enum Relation {}
-
-        impl ActiveModelBehavior for ActiveModel {}
-
-        impl MiryadResource for Entity {
-            fn resource_name() -> &'static str {
-                "locked-pair"
-            }
-            fn read_policy() -> AccessPolicy {
-                AccessPolicy::Public
-            }
-            fn write_policy() -> AccessPolicy {
-                AccessPolicy::AdminOnly
-            }
-            fn owner_column() -> Option<Column> {
-                None
-            }
-
-            fn before_update(
-                active: ActiveModel,
-                existing: &Self::Model,
-                principal: &AuthPrincipal,
-            ) -> Result<ActiveModel, HookError> {
-                let _ = (active, existing, principal);
-                UPDATE_CALLS.fetch_add(1, Ordering::Relaxed);
-                Err(HookError::new("update must never reach the GraphQL bridge"))
-            }
-
-            fn before_delete(existing: &Self::Model, principal: &AuthPrincipal) -> Result<(), HookError> {
-                let _ = (existing, principal);
-                DELETE_CALLS.fetch_add(1, Ordering::Relaxed);
-                Err(HookError::new("delete must never reach the GraphQL bridge"))
             }
         }
     }
@@ -711,63 +636,6 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&AccessPolicy::OwnerOnly).expect("json"),
             "\"OwnerOnly\""
-        );
-    }
-
-    /// `Scenario` « métadonnées identiques au seuil GraphQL » — compilé sous la feature
-    /// `graphql` : `PolicyRegistry` relit exactement les `AccessPolicy` déclarés et la colonne
-    /// propriétaire stringifiée, sans retraduction. But du `Scenario` : l'alignement entre la clé
-    /// `resource_name` et l'identifiant que `seaography` passe réellement à ses hooks n'est pas
-    /// prouvé ici — bug connu `[!]` #19, différé tant que le pont reste un prototype sans
-    /// consommateur (exception `Must` de `/miryad-core.sdd`).
-    #[cfg(feature = "graphql")]
-    #[test]
-    fn graphql_policy_registry_reads_trait_metadata() {
-        let mut registry = crate::graphql::PolicyRegistry::new();
-        registry.register::<recipes::Entity>();
-
-        let policy = registry.get("recipes").expect("entité enregistrée retrouvée");
-        assert_eq!(policy.read, AccessPolicy::Public);
-        assert_eq!(policy.write, AccessPolicy::OwnerOnly);
-        assert_eq!(policy.owner_column.as_deref(), Some("owner_id"));
-    }
-
-    /// `Scenario` « `before_update` et `before_delete` ne se déclenchent jamais sur GraphQL » —
-    /// limitation consignée (tâche `[ ]` de `resource.sdd`, signalé pour `[?]`) : aucune exécution
-    /// de mutations `seaography` n'est harnaisable dans ce dépôt (pas de schéma de builder monté
-    /// sur base en mémoire dans les tests) ; le harnais GraphQL neuf ou la preuve par lecture
-    /// reste à arbitrer. Ce test verrouille la conséquence observable du mécanisme, pas les
-    /// mutations exécutées : le miroir `graphql::EntityPolicy` ne porte qu'un slot de hook —
-    /// `before_create` —, aucun chemin du pont ne peut joindre `before_update`/`before_delete` ;
-    /// et appeler le seul point d'entrée de hook que le pont détienne sur une entité dont les
-    /// deux hooks rejettent systématiquement laisse les deux espions à zéro. La lecture de la
-    /// source vendue `seaography-2.0.0-rc.9` (`before_active_model_save` appelé uniquement par les
-    /// mutations de création) reste la seconde preuve, consignée par la tâche.
-    #[cfg(feature = "graphql")]
-    #[test]
-    fn graphql_mutations_skip_before_update_and_before_delete() {
-        use std::sync::atomic::Ordering;
-
-        let mut registry = crate::graphql::PolicyRegistry::new();
-        registry.register::<locked_pair::Entity>();
-        let policy = registry.get("locked-pair").expect("entité enregistrée retrouvée");
-
-        let mut active = locked_pair::ActiveModel {
-            id: sea_orm::ActiveValue::NotSet,
-            label: sea_orm::ActiveValue::NotSet,
-        };
-        (policy.before_create)(&mut active, &api_principal())
-            .expect("le défaut d'identité de before_create passe");
-
-        assert_eq!(
-            locked_pair::UPDATE_CALLS.load(Ordering::Relaxed),
-            0,
-            "before_update jamais appelé par le pont GraphQL"
-        );
-        assert_eq!(
-            locked_pair::DELETE_CALLS.load(Ordering::Relaxed),
-            0,
-            "before_delete jamais appelé par le pont GraphQL"
         );
     }
 }
