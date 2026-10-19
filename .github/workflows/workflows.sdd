@@ -130,7 +130,7 @@ Tasks:
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./ci.yml`, retirer les entrées de test `graphql` et `graphiql`, ajouter
     au job clippy l'entrée `all-features` (`--all-features`) et supprimer le commentaire « Pas de graphe contenant graphql ni
     --all-features : carve-out du pont gele ». Une tâche par fichier : ./ci.yml seul.
-  [ ] Amendement 2026-10-19 (`db`) : dans `./ci.yml`, passer chaque matrice à treize entrées nommées (default, no-default, db, swagger-ui,
+  [x] Amendement 2026-10-19 (`db`) : dans `./ci.yml`, passer chaque matrice à treize entrées nommées (default, no-default, db, swagger-ui,
     swagger-ui-db, frontend-swagger-ui, mcp, workflow, systemone, workflow-systemone, matrix, workflow-matrix, all-features) et ajouter le
     job `no-db-graph` (trois commandes `cargo tree … -i sea-orm` dont la sortie standard doit être vide ; le pas échoue si `cargo tree` imprime une ligne ou si cargo
     lui-même échoue ; par exemple `out=$(cargo tree … -i sea-orm) && test -z "$out"`, sans `|| true`).

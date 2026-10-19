@@ -323,7 +323,7 @@ Tasks:
     de @openapi_router et du @Scenario hors feature), `--features swagger-ui` (UI, JSON et panic),
     défaut et `--all-features`, clippy `-D warnings` sur chaque combinaison — `missing_docs` et les
     `pedantic` sur les trois items publics déjà documentés ne doivent pas bouger.
-  [ ] Amendement 2026-10-19 (`db`) : dans `./openapi.rs`, gater sous `db` @OpenApiEntity, @resource_openapi et les items qu'ils seuls utilisent
+  [x] Amendement 2026-10-19 (`db`) : dans `./openapi.rs`, gater sous `db` @OpenApiEntity, @resource_openapi et les items qu'ils seuls utilisent
     (laisser compiler sans avertissement `dead_code` : le gating suit l'usage) ; gater sous `db` les tests qui utilisent
     @RestEntity ou une entité `sea_orm` ; ajouter le test `openapi_router_serves_handwritten_document_without_db`.
 

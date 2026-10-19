@@ -331,7 +331,7 @@ Tasks:
     publics résolus, état composé @FromRef) dans le même module, et la combinaison
     `--no-default-features` revérifiée par la matrice de /tooling.sdd — le contrat compile ne
     déborde pas du fichier, l'exercice de features est hors fichier.
-  [ ] Amendement 2026-10-19 (`db`) : dans `./mod.rs`, gater `pub mod token;` et ses `pub use` sous `db`, et dans @handler_callback les
+  [x] Amendement 2026-10-19 (`db`) : dans `./mod.rs`, gater `pub mod token;` et ses `pub use` sous `db`, et dans @handler_callback les
     deux appels (et le binding de `login_result.groups`) sous `db` ; gater sous `db` les tests qui préparent une @MockDatabase pour
     `resolve_user`/`ensure_group` (le scenario « callback succès » existe en deux versions : sous `db` avec base préparée,
     sans `db` sans base) ; aucun changement pour les routes ni les cookies.

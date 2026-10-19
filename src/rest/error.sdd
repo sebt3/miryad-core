@@ -286,7 +286,7 @@ Tasks:
     ici — ./mod.rs : `403` ×2, `404` ×1 (GET+DELETE), `422` ×1 avec corps JSON `code`/`message` ;
     ./admin.rs : `403` ×1 ; ./tokens.rs : `403` ×1, `404` ×1 — mais aucun n'affirme les corps texte
     exacts `403`/`404`/`500` de ce fichier, et /tests/resource.rs n'exerce rien de ce contrat.
-  [ ] Amendement 2026-10-19 (`db`) : aucun changement de `./error.rs` ; le `cfg` est posé par `./mod.rs`.
+  [x] Amendement 2026-10-19 (`db`) : aucun changement de `./error.rs` ; le `cfg` est posé par `./mod.rs`.
 
 Done when:
   Les 16 `Scenario` ont chacun au moins un test nommé distinct et vert dans ./error.rs, sur features

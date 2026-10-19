@@ -237,7 +237,7 @@ Tasks:
     `grep -ril 'graphql\|seaography'` ne renvoie plus que des lignes d'historique (`[x]`, amendements datés), la clause de suppression et la puce de `docs/architecture.md`.
     Validé 2026-10-19 (validator Sonnet, puis clippy rejoué par Claude après correction de `users/group.rs`) : batterie à dix
     combinaisons verte (tests, clippy `-D warnings` dont `--all-features`, `cargo doc`, `fmt`, `specdd lint`).
-  [ ] D0 — mode sans base et validation Bearer (décision 2026-10-19 ; specs amendées, code à suivre) : livrés quand D1 à D8 sont `[x]` et que la batterie de
+  [x] D0 — mode sans base et validation Bearer (décision 2026-10-19 ; specs amendées, code à suivre) : livrés quand D1 à D8 sont `[x]` et que la batterie de
     `./tooling.sdd` (treize combinaisons) est verte. Ordre d'exécution (D4 d'abord : un `cfg(feature = "db")` exige la feature déclarée, puis D1, D2, D3, D5, D6, D7, D8, D9) : un fichier ou un petit groupe par tâche, validator entre chaque ; tant que D7 n'est pas
     faite, seules les combinaisons AVEC `db` compilent — c'est attendu.
   [x] D1 — `./src/auth/error.rs` et `./src/auth/principal.rs` : variantes `InvalidBearer`/`BearerExpired`, `PrincipalSource::Bearer`, `cfg(db)` sur `AuthError::Database`
@@ -249,20 +249,24 @@ Tasks:
     Validé 2026-10-19 (D1–D4, validator Sonnet GO, aucune faille de sécurité trouvée) : neuf combinaisons avec `db` vertes en tests et clippy, `cargo doc` propre. Dette reportée à D6 :
     dégater les tests de `dual.rs` qui ne dépendent que de l'état (constructeur d'état sans base, voir `src/auth/dual.sdd`). Constats consignés : `aud ∋ client_id` (pas d'égalité, `azp` non contrôlé) ;
     `iat` non contraint par la bibliothèque ; un `sub` vide est accepté tel quel (comme au login) ; `OidcIdentity` dérive `Debug` et porte le JWT en clair (à instruire).
-  [ ] D5 — `./src/lib.rs` : gating des cinq modules (tâche d'amendement de `./src/lib.sdd`).
-  [ ] D6 — `./src/auth/state.rs`, `./src/auth/mod.rs` : `cfg(db)` des champs, de `token`, du callback (tâches d'amendement de `./src/auth/state.sdd` et `./src/auth/mod.sdd`).
-  [ ] D6b — tests sans `db` (aucun code de production ne change) : `cargo test` sans `db` doit compiler et passer sur les quatre combinaisons sans base
+  [x] D5 — `./src/lib.rs` : gating des cinq modules (tâche d'amendement de `./src/lib.sdd`).
+  [x] D6 — `./src/auth/state.rs`, `./src/auth/mod.rs` : `cfg(db)` des champs, de `token`, du callback (tâches d'amendement de `./src/auth/state.sdd` et `./src/auth/mod.sdd`).
+  [x] D6b — tests sans `db` (aucun code de production ne change) : `cargo test` sans `db` doit compiler et passer sur les quatre combinaisons sans base
     (`--no-default-features`, `swagger-ui`, `static-frontend,swagger-ui`, `systemone`). `./Cargo.toml` : `hmac` et `sha2` (versions identiques) rejoignent
     `[dev-dependencies]` — les tests de `src/auth/oidc.rs` et `src/auth/middleware.rs` signent des JWT HS256 de fixture, alors que ces crates sont optionnelles
     sous `db` ; `./tests/resource.rs` : `#![cfg(feature = "db")]` en tête ; `./src/lib.rs` : le test `static_frontend_absent_surface` ne cite plus `rest::error`
     sans `db` ; `./src/auth/dual.rs` et `./src/auth/middleware.rs` : constructeur d'état sans base dans `mod tests`, dégatage de tous les tests qui n'ont besoin
     que de l'état (dont les scenarios `bearer_jwt_*` et `session_cookie_alone_*` de `./src/auth/dual.sdd`, qui doivent exister sans `db`).
-  [ ] D7 — `./src/rest/mod.rs`, `./src/rest/openapi.rs` : gating (tâches d'amendement de `./src/rest/mod.sdd` et `./src/rest/openapi.sdd`) ; les tests de tous les modules touchés
+  [x] D7 — `./src/rest/mod.rs`, `./src/rest/openapi.rs` : gating (tâches d'amendement de `./src/rest/mod.sdd` et `./src/rest/openapi.sdd`) ; les tests de tous les modules touchés
     sont gatés ou adaptés pour que `cargo test --no-default-features` compile.
-  [ ] D8 — `./.github/workflows/ci.yml`, `./AGENTS.md`, `./README.md`, `./docs/architecture.md` : treize combinaisons, présentation de la feature `db` et du profil sans base ;
+  [x] D8 — `./.github/workflows/ci.yml`, `./AGENTS.md`, `./README.md`, `./docs/architecture.md` : treize combinaisons, présentation de la feature `db` et du profil sans base ;
     puis batterie complète de `./tooling.sdd` (tests et clippy `-D warnings` sur les treize combinaisons, `cargo doc`, `fmt`, `specdd lint`).
-  [ ] D9 — après D8 : consigner dans `docs/architecture.md` (section auth) le contrat du Bearer OIDC et ses limites assumées (pas de re-fetch automatique du JWKS ;
+  [x] D9 — après D8 : consigner dans `docs/architecture.md` (section auth) le contrat du Bearer OIDC et ses limites assumées (pas de re-fetch automatique du JWKS ;
     pas de groupes pour un sujet jamais passé par le login navigateur) ; les inscrire à `docs/roadmap.md` n'est possible qu'avec la décision explicite du développeur principal.
+    Validé 2026-10-19 (D5–D9, validator Sonnet, un bloquant corrigé : lien rustdoc de `src/rest/mod.rs:1`, rejoué par Claude) : treize combinaisons vertes en tests et clippy
+    (de 190 à 1 017 tests selon la combinaison, 0 échec), `cargo doc -D warnings` vert sur défaut, sans `db`, `swagger-ui`, `static-frontend,swagger-ui`, `systemone`, `--all-features` ;
+    `sea-orm`, `sea-orm-migration` et `hex` absents du graphe `normal` sans `db` (`hmac`, `sha2`, `rand`, `chrono` y restent tirés par `openidconnect`/`cookie`, pas par la crate) ;
+    job CI `no-db-graph` rejoué localement. Dette mineure : les tests de dispatch Bearer de `dual.rs` qui passent par le chemin token API ne tournent que sous `db`.
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec `.sdd` relue et approuvée par Sébastien, sans

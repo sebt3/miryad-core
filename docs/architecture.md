@@ -8,6 +8,9 @@ pas l'historique de comment on y est arrivé.
 
 ## Modèle de ressources — `MiryadResource`
 
+Sous feature `db` (défaut ; absente du profil sans base, cf. « Profil sans base de données » dans
+la section Authentification).
+
 Contrat central (`src/resource.rs`) sur lequel REST, MCP et le frontend générique se
 greffent — une seule implémentation par entité SeaORM, lue telle quelle par les deux couches API
 (pas de déclaration de politique dupliquée entre elles).
@@ -44,11 +47,13 @@ pub enum AccessPolicy { Public, OwnerOnly, Group(&'static str), AdminOnly }
 
 ## Migrations
 
-Schéma interne géré par un `Migrator` (`sea-orm-migration`) embarqué dans le crate (`src/
-migration/`), séparé des migrations métier de l'app consommatrice — elle l'appelle explicitement
-au démarrage : `miryad_core::migration::Migrator::up(&db, None).await`. Toutes les tables internes
-sont préfixées `miryad_` (`miryad_api_tokens`, `miryad_users`, `miryad_groups`,
-`miryad_group_memberships`) pour ne jamais collisionner avec le schéma applicatif.
+Sous feature `db` uniquement. Schéma interne géré par un `Migrator` (`sea-orm-migration`) embarqué
+dans le crate (`src/migration/`), séparé des migrations métier de l'app consommatrice — elle l'appelle
+explicitement au démarrage : `miryad_core::migration::Migrator::up(&db, None).await`. Toutes les tables
+internes sont préfixées `miryad_` (`miryad_api_tokens`, `miryad_users`, `miryad_groups`,
+`miryad_group_memberships`) pour ne jamais collisionner avec le schéma applicatif. Les features
+`workflow` (`miryad_workflow_*`) et `matrix` (`miryad_matrix_*`) suivent la même convention ; elles
+impliquent `db`.
 
 Ajouter une table interne = ajouter un fichier `m<date>_<numéro>_<nom>.rs` et l'enregistrer dans
 `Migrator::migrations()` — rien d'autre à changer côté app (elle rejoue simplement `Migrator::up`).
@@ -70,7 +75,9 @@ pub struct MiryadAuthState {
     pub cookie_key: cookie::Key,
     pub post_login_redirect: String,
     pub post_logout_redirect: String,
-    pub db: DatabaseConnection,   // requis pour valider un token API et résoudre un User
+    pub secure_cookies: bool,
+    #[cfg(feature = "db")] pub db: DatabaseConnection,  // valider un token API, résoudre un User
+    #[cfg(feature = "db")] pub token_pepper: String,    // clé HMAC-SHA256 de hachage des tokens API
 }
 
 pub fn auth_router<S>() -> Router<S>
@@ -95,33 +102,94 @@ chiffré, `Max-Age=300`).
 navigateur — cf. section suivante pour `AuthPrincipal`, le type réellement consommé par les API.
 
 Erreurs : `AuthError` (`src/auth/error.rs`), préfixe `MRD-AUTH-XXX`, implémente `IntoResponse`
-(401 non-authentifié/session invalide, 502 erreur OIDC amont, 401 token invalide/expiré, 500
-erreur base).
+(401 non-authentifié/session invalide, 502 erreur OIDC amont, 401 token API invalide/expiré et 500
+erreur base sous `db`, 401 JWT Bearer invalide `MRD-AUTH-019` ou échu `MRD-AUTH-020`).
+
+### Feature `db` et profil sans base
+
+La feature `db` est la valeur par défaut ; `mcp`, `workflow` et `matrix` l'impliquent. Elle gate
+tout ce qui touche à la base :
+
+- les modules `ir`, `migration`, `rbac`, `resource`, `users`, `auth::token` (tokens API), et tout
+  `rest` sauf `rest::openapi` (`admin`, `core`, `error`, `me`, `tokens`, `resource_router`) ;
+- dans `MiryadAuthState`, les champs `db` et `token_pepper` ;
+- dans le callback de login, la lecture de `login_result.groups` et la synchronisation des comptes
+  (`resolve_user` puis `sync_group_memberships`). Sans `db`, le callback vérifie le `state`, échange
+  le code, pose le cookie de session et redirige, sans aucune écriture : le cookie est alors le seul
+  chemin. Les routes `/auth/login`, `/auth/callback` et `/auth/logout` sont identiques dans les deux
+  profils.
+
+**Validation d'un JWT OIDC en `Authorization: Bearer`** (sans `db` comme avec). Un en-tête
+`Authorization: Bearer <matériau>` reconnu est un choix définitif : aucun repli sur le cookie, quel
+que soit le résultat. Le matériau est traité comme JWT si et seulement s'il contient exactement deux
+caractères `.` (règle sans parse : un token API `mrd_…`, en base64url, n'en contient jamais).
+
+- JWT : `OidcClientTrait::verify_bearer` (`src/auth/oidc.rs`, synchrone, sans E/S). Vérifie la
+  signature contre le JWKS du snapshot de discovery, `iss` égal à l'issuer découvert, `aud` contenant
+  le `client_id`, et `exp`. `iat` n'est pas contraint : la bibliothèque `openidconnect` 4 n'applique
+  aucune borne sur `iat` par défaut, et `oidc.rs` ne la configure pas. Aucun nonce (un JWT Bearer
+  n'appartient à aucun flux de connexion). Succès : `AuthPrincipal` avec `PrincipalSource::Bearer { jwt }`.
+  Échec : `MRD-AUTH-020` (`AuthError::BearerExpired`) si le JWT est par ailleurs valide mais échu,
+  `MRD-AUTH-019` (`AuthError::InvalidBearer`) pour tout autre rejet. Le JWT n'entre jamais dans l'erreur.
+- Autre matériau, sous `db` : token API (`validate_token`, codes `MRD-AUTH-014`/`015`/`016` inchangés).
+- Autre matériau, sans `db` : `MRD-AUTH-019` immédiat, sans aucune E/S.
+
+**Limites assumées**, telles quelles :
+
+- Pas de rafraîchissement automatique du JWKS. Une rotation de clés côté fournisseur impose un
+  redémarrage de l'application. Une signature sans clé correspondante arme le signal
+  `OidcClient::jwks_rotation_needed()` et la requête est rejetée en `MRD-AUTH-019`, sans re-fetch.
+- Pas de groupes pour un sujet qui ne s'est jamais connecté par le navigateur : le claim `groups`
+  n'est lu qu'au callback, et `PrincipalSource::Bearer` ne porte aucun groupe.
+- L'`aud` est testé par « contient » (pas d'égalité). `azp` n'est pas contrôlé : la vérification
+  `azp` d'`openidconnect` est commentée dans sa source (`verification/mod.rs`).
+- Un `sub` vide est accepté, comme au login.
+- `OidcIdentity` dérive `Debug` et porte le `id_token` en clair : ne jamais le formater avec `{:?}`.
+- Un `id_token` volé reste valable jusqu'à son `exp`.
+
+**Profil sans base de données.** Cas d'usage : une API écrite à la main qui transmet l'`id_token` de
+l'utilisateur à l'API server Kubernetes (cas de gramophone), ou une UI Kubernetes générique. L'application
+n'a alors ni comptes, ni tables, ni RBAC de la crate à porter. Elle monte `auth_router`, les extracteurs
+et `rest::openapi::openapi_router` (ou `swagger_ui_router`), et ses propres routes.
+
+**Preuves attendues.** La batterie de `tooling.sdd` compte treize combinaisons de tests et de clippy
+(défaut ; `--no-default-features` ; `db` seul ; `swagger-ui` avec et sans `db` ; `static-frontend,swagger-ui` ;
+`mcp` ; `workflow` ; `systemone` ; `workflow,systemone` ; `matrix` ; `workflow,matrix` ; `--all-features`).
+Chaque combinaison sans `db` doit prouver que `sea-orm` est absent du graphe :
+`cargo tree --no-default-features -e normal -i sea-orm` ne doit rien imprimer sur stdout (cargo écrit
+« warning: nothing to print » sur stderr, code de sortie 0). La même vérification vaut avec
+`--features swagger-ui` et `--features static-frontend,swagger-ui`. Les dev-dependencies gardent
+`sea-orm` pour les tests, d'où `-e normal`.
+
+`MiryadAuthState` compte cinq champs sans `db` et sept avec `db`.
 
 ## Tokens API + dual-auth
 
+Tokens API sous `db` (module `auth::token`). Le dispatch `Authorization: Bearer` est commun aux deux
+profils, cf. section précédente.
+
 ```rust
-// src/auth/token.rs
+// src/auth/token.rs (sous db)
 pub type ApiToken = Entity;
 pub struct Model {
     pub id: i32,
     pub subject: String,           // pas de FK vers User — résolu par requête, cf. section RBAC
     pub name: String,
-    pub token_hash: String,        // SHA-256 hex — jamais le token en clair
+    pub token_hash: String,        // HMAC-SHA256 hex (poivre) — jamais le token en clair
     pub created_at: DateTimeUtc,
     pub expires_at: Option<DateTimeUtc>,
     pub last_used_at: Option<DateTimeUtc>,
 }
 
-pub async fn issue_token(db, subject, name, expires_at) -> Result<IssuedToken, AuthError>;
-pub async fn validate_token(db, token) -> Result<AuthPrincipal, AuthError>;
+pub async fn issue_token(db, subject, name, expires_at, pepper) -> Result<IssuedToken, AuthError>;
+pub async fn validate_token(db, token, pepper) -> Result<AuthPrincipal, AuthError>;
 pub async fn revoke_token(db, id) -> Result<(), AuthError>;
-pub async fn ensure_token(db, subject, name, token, expires_at) -> Result<(), AuthError>;
+pub async fn ensure_token(db, subject, name, token, expires_at, pepper) -> Result<(), AuthError>;
 ```
 
 Format du token émis par `issue_token` : `mrd_<43 car. base64url>` (32 octets aléatoires, préfixe
-façon GitHub/Stripe), haché en SHA-256 avant stockage (pas un KDF lent : le secret est déjà
-haute-entropie, pas un mot de passe humain).
+façon GitHub/Stripe), haché en HMAC-SHA256 avec le poivre `token_pepper` de `MiryadAuthState` avant stockage (pas un KDF
+lent : le secret est déjà haute-entropie, pas un mot de passe humain).
 
 `ensure_token` diffère d'`issue_token` : la valeur du token est **fournie par l'appelant** (pas
 générée), et l'opération est idempotente (aucun doublon si un token avec ce hash existe déjà pour
@@ -135,12 +203,16 @@ côté app, l'appel suivant **ajoute** un nouveau token sans supprimer l'ancien,
 jusqu'à révocation explicite (`revoke_token`).
 
 `AuthPrincipal` (`src/auth/principal.rs`) est le type unifié que REST/MCP consomment,
-produit soit par le cookie de session soit par un token API :
+produit par le cookie de session, par un token API (sous `db`) ou par un JWT Bearer :
 
 ```rust
 pub struct AuthPrincipal { pub subject: String, pub email: Option<String>, pub preferred_username: Option<String>, pub source: PrincipalSource }
-pub enum PrincipalSource { Session { id_token: String }, ApiToken { token_id: i32 } }
+pub enum PrincipalSource { Session { id_token: String }, ApiToken { token_id: i32 }, Bearer { jwt: String } }
 ```
+
+Pour `PrincipalSource::Bearer`, `subject`, `email` et `preferred_username` sont lus dans les claims du
+JWT vérifié par `verify_bearer`, comme pour la session. Le `Debug` manuel de `Session` et de `Bearer`
+rédige l'`id_token` ou le JWT en `"[REDACTED]"`.
 
 **Décision (Sébastien, 2026-09-27) — `preferred_username`.** Le claim OIDC standard
 `preferred_username` est propagé de l'`id_token` jusqu'à `AuthPrincipal` (session) car `email`
@@ -151,9 +223,9 @@ posés avant le déploiement (payload à trois clés) se relisent `preferred_use
 invalidation de session — pas de migration de cookie, le claim regagne le payload au re-login.
 
 L'extracteur dual-auth (`src/auth/dual.rs`) résout dans cet ordre : `Authorization: Bearer
-<token>` d'abord, cookie de session en repli. Un header `Bearer` présent mais invalide ne retombe
-**pas** sur le cookie — c'est le choix explicite du client, son échec est final (pas de repli
-silencieux vers un mode plus faible).
+<matériau>` d'abord (JWT ou token API, selon la règle de la section précédente), cookie de session en
+repli. Un header `Bearer` présent mais invalide ne retombe **pas** sur le cookie — c'est le choix
+explicite du client, son échec est final (pas de repli silencieux vers un mode plus faible).
 
 **Self-service des tokens (issue #5)** : `issue_token`/`revoke_token` existaient déjà comme
 fonctions Rust mais n'étaient montées derrière aucune route HTTP. `src/rest/tokens.rs` monte
@@ -166,10 +238,12 @@ aucune vérification de propriétaire, c'est au routeur de la faire.
 
 ## Utilisateurs & Groupes / RBAC
 
+Sous feature `db` (modules `users` et `rbac`).
+
 **Décision structurante : synchronisation, pas gestion.** Authentik est la seule source de vérité
 pour l'appartenance aux groupes (`admin` compris) — miryad-core ne fournit **aucune API
 d'assignation manuelle**. À chaque login OIDC réussi, `handler_callback` enchaîne `resolve_user`
-(get-or-create par `subject`) puis `sync_groups_from_oidc`, qui réconcilie **entièrement** les
+(get-or-create par `subject`) puis `sync_group_memberships`, qui réconcilie **entièrement** les
 `GroupMembership` locales depuis le claim `groups` : ajout des groupes présents (création à la
 volée d'un `Group` jamais vu — pas de registre préalable), retrait de ceux qui ne le sont plus. Le
 groupe `admin` est *seedé* par migration (toujours présent, vide au départ), sans rien de spécial
@@ -184,7 +258,7 @@ la prochaine connexion navigateur de la personne concernée.
 // src/users/{user,group,membership}.rs — génériques sur C: ConnectionTrait (pas &DatabaseConnection
 // en dur : le seed de migration les appelle via manager.get_connection(), qui satisfait le même trait)
 pub async fn resolve_user<C>(db: &C, subject: &str, email: Option<&str>) -> Result<user::Model, DbErr>;
-pub async fn sync_groups_from_oidc<C>(db: &C, user_id: i32, groups: &[String]) -> Result<(), DbErr>;
+pub async fn sync_group_memberships<C: ConnectionTrait + TransactionTrait>(db: &C, user_id: i32, groups: &[String]) -> Result<(), DbErr>;
 pub async fn is_admin<C>(db: &C, user_id: i32) -> Result<bool, DbErr>;
 pub async fn is_member<C>(db: &C, user_id: i32, group_name: &str) -> Result<bool, DbErr>;
 
@@ -223,6 +297,9 @@ tables internes. Réutilise `groups_by_user` (`rest::admin`, rendue `pub(crate)`
 même logique que la liste admin, pas de second mécanisme de résolution de groupes à maintenir.
 
 ## API REST générique
+
+Sous feature `db` (`rest::resource_router`, `rest::core`, `rest::admin`, `rest::me`, `rest::tokens`).
+`rest::openapi` reste disponible sans `db`.
 
 ```rust
 // src/rest/mod.rs
@@ -289,9 +366,11 @@ Pas de pagination par curseur, pas de tri, pas de filtre multi-champs, pas de ma
 
 ### OpenAPI + Swagger UI
 
-`utoipa` est une dépendance normale (pas optionnelle) — la génération `/api/openapi.json` est
-toujours disponible. Seule la UI Swagger (`utoipa-swagger-ui`) est optionnelle, derrière la
-feature Cargo `swagger-ui`. Les chemins générés par `resource_openapi` (`/api/v1/{resource}`,
+`utoipa` est une dépendance normale (pas optionnelle). Le trait `OpenApiEntity` et la fonction
+`resource_openapi` sont sous feature `db` ; `openapi_router` et `swagger_ui_router` restent compilés
+sans `db` et servent le document fourni par l'application. `openapi_router` sert `GET /api/openapi.json`
+sans `swagger-ui`. La UI Swagger (`utoipa-swagger-ui`) est optionnelle, derrière la feature Cargo
+`swagger-ui`. Les chemins générés par `resource_openapi` (`/api/v1/{resource}`,
 `/api/v1/{resource}/{id}`) suivent le préfixe figé de `resource_router` (feature 6) — toujours
 à jour vis-à-vis des routes REST réellement montées.
 
@@ -342,7 +421,8 @@ contrairement à ce qu'un `#[derive(ToSchema)]` nu laisserait penser.
 Tools CRUD générés par entité (`list`/`get`/`create`/`update`/`delete`), exposés en JSON-RPC 2.0
 sur un unique `POST /mcp` (mêmes patterns que `kydah-mcp-template/src/mcp.rs`). Dual-auth et RBAC
 entièrement réutilisés (`rest/core.rs`, cf. section REST ci-dessus) — aucune règle réécrite pour
-MCP. Feature Cargo `mcp` (`vynil-core`, `default-features = false, features = ["hbs", "crypto"]`).
+MCP. Feature Cargo `mcp` : implique `db` ; `vynil-core` en `default-features = false, features = ["hbs"]`
+(sans `crypto`).
 
 **Décision : un seul mécanisme de rendu**, pas quatre chemins de code séparés :
 
@@ -399,7 +479,7 @@ chemin, pas du corps).
 
 ## Moteur de workflow
 
-Quatrième surface, à forme différente : la feature Cargo `workflow` ne monte **aucune** route sur le
+Feature `workflow`, qui implique `db` (table `miryad_workflow_definitions`). Quatrième surface, à forme différente : la feature Cargo `workflow` ne monte **aucune** route sur le
 `axum::Router` de l'app — ses deux services (`DagInterpreter`, `StepDispatcher`) parlent le protocole
 `restate-sdk` (0.12), et l'app construit et lie elle-même son `Endpoint` dans son `main()`
 (`src/workflow/mod.sdd`). Le DAG est une donnée : stocké dans `miryad_workflow_definitions`, éditable
@@ -611,7 +691,7 @@ et `src/workflow/systemone_step.sdd`.
   l'aval décider. La configuration des gates est validée **avant** tout appel réseau, et un gate refuse
   les clés inconnues (une borne mal orthographiée ne doit pas disparaître en silence).
 
-## Client Matrix de bot (feature `matrix`)
+## Client Matrix de bot (feature `matrix`, implique `db`)
 
 Primitives pour bâtir des bots Matrix : se connecter, envoyer, lire (historique et flux), rejoindre une
 salle, avec chiffrement de bout en bout. Aucune logique de conversation : le futur harnais de chatbot
@@ -670,7 +750,7 @@ visé est Palpo derrière MAS (authentification déléguée à Authentik, mots d
 
 ## Hooks métier CRUD
 
-Point d'extension optionnel par entité sur `create`, `update` et `delete` — validation ou
+Sous feature `db` (méthodes du trait `MiryadResource`). Point d'extension optionnel par entité sur `create`, `update` et `delete` — validation ou
 mutation de l'`ActiveModel` avant insertion ou mise à jour, refus d'une suppression avant toute
 émission de `DELETE`. `before_update` et `before_delete` reçoivent `existing` en lecture seule :
 le `Model` relu avant la modification (celui sur lequel le RBAC a statué), pour que comparer
@@ -712,7 +792,7 @@ l'app porté dans le champ `data`).
 
 miryad-core reste strictement backend : la génération du frontend lui-même (composants Vue,
 écrans CRUD, générateur TypeScript) vit dans le template `miryad`, pas ici — décision du
-2026-08-23 (cf. `docs/roadmap.md`, item 8, livré). Deux briques seulement de ce côté-ci :
+2026-08-23 (cf. `docs/roadmap.md`, item 8, livré). Deux briques seulement de ce côté-ci (l'IR est sous `db`, le service statique sous `static-frontend`) :
 
 ```rust
 // src/ir.rs
@@ -792,7 +872,7 @@ miryad ; désactivable explicitement (`default-features = false`) pour un backen
 - Identifiants d'erreur uniques, préfixés par domaine : `MRD-AUTH-XXX` (`src/auth/error.rs`),
   `MRD-REST-XXX` (`src/rest/error.rs`). Un nouveau domaine (MCP, workflow) suit le même
   schéma `MRD-<DOMAINE>-XXX`.
-- Tables internes préfixées `miryad_` (cf. section Migrations).
+- Tables internes préfixées `miryad_` (cf. section Migrations, sous feature `db`).
 - Toute fonction qui doit pouvoir être appelée depuis une migration (donc via
   `SchemaManagerConnection`, pas directement `DatabaseConnection`) est générique sur
   `C: ConnectionTrait` plutôt que de prendre `&DatabaseConnection` en dur.

@@ -10,7 +10,10 @@ SpecDD specs as source-adjacent development contracts, not optional documentatio
 Crate Rust **opinionated** (axum + SeaORM) publiée sur crates.io, moteur générique
 derrière le template d'application `miryad`. Une application consommatrice déclare ses
 entités via le trait @MiryadResource et obtient auth OIDC, RBAC/ownership, REST, MCP,
-OpenAPI, IR frontend et migrations. Le moteur de workflow (Restate + step Rhai, feature `workflow`)
+OpenAPI, IR frontend et migrations. Sans la feature `db` (absente de la combinaison `--no-default-features` ; le défaut
+`static-frontend` + `db` l'inclut), la crate est un socle
+d'authentification (OIDC, cookie, JWT Bearer) et de publication d'API sans entités ni comptes
+locaux ; `sea-orm` n'est alors pas dans le graphe. Le moteur de workflow (Restate + step Rhai, feature `workflow`)
 est livré ; ses évolutions sont arbitrées dans `docs/roadmap.md` (item 9). BSD-3-Clause, API instable avant `1.0`.
 
 Le contexte durable vit ici et n'est pas à re-déduire du code :
@@ -71,7 +74,10 @@ Avant toute tâche `[x]`, la batterie complète (définie par `tooling.sdd`, rep
 ```bash
 cargo test
 cargo test --no-default-features
+cargo test --no-default-features --features db
 cargo test --no-default-features --features swagger-ui
+cargo test --no-default-features --features swagger-ui,db
+cargo test --no-default-features --features static-frontend,swagger-ui
 cargo test --no-default-features --features mcp
 cargo test --no-default-features --features workflow
 cargo test --no-default-features --features systemone
@@ -81,7 +87,10 @@ cargo test --no-default-features --features workflow,matrix
 cargo test --all-features
 cargo clippy --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
+cargo clippy --no-default-features --features db --all-targets -- -D warnings
 cargo clippy --no-default-features --features swagger-ui --all-targets -- -D warnings
+cargo clippy --no-default-features --features swagger-ui,db --all-targets -- -D warnings
+cargo clippy --no-default-features --features static-frontend,swagger-ui --all-targets -- -D warnings
 cargo clippy --no-default-features --features mcp --all-targets -- -D warnings
 cargo clippy --no-default-features --features workflow --all-targets -- -D warnings
 cargo clippy --no-default-features --features systemone --all-targets -- -D warnings
@@ -90,7 +99,15 @@ cargo clippy --no-default-features --features matrix --all-targets -- -D warning
 cargo clippy --no-default-features --features workflow,matrix --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo fmt --check
+cargo tree --no-default-features -e normal -i sea-orm
+cargo tree --no-default-features --features swagger-ui -e normal -i sea-orm
+cargo tree --no-default-features --features static-frontend,swagger-ui -e normal -i sea-orm
 ```
+
+Les treize combinaisons de tests et de clippy sont celles de `tooling.sdd` (amendement 2026-10-19,
+feature `db`). Les trois `cargo tree … -e normal -i sea-orm` prouvent que `sea-orm` n'est plus dans
+le graphe sans `db` : sans `db` leur sortie standard doit être vide (cargo imprime « nothing to
+print » et rend 0) ; une ligne `sea-orm v…` en sortie fait échouer la vérification.
 
 Le harnais doit tourner sur **toutes** ces combinaisons : des lints `pedantic`
 (`must_use_candidate`, `missing_errors_doc`) dépendent du graphe de features et peuvent ne se

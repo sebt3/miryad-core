@@ -289,7 +289,7 @@ Tasks:
     promesse « deux surfaces REST et MCP ») et le test `query_doc_matches_reality` (supprimer la clause
     « GraphQL nommé pour l'exclure », qui n'a plus d'objet). `cargo doc` sans avertissement sur chaque combinaison.
     Validé 2026-10-19 (validator Sonnet GO) : `pub mod graphql` et tests retirés, `GATED` à trois, tableau à six features (ligne `matrix` ajoutée), `cargo doc` propre.
-  [ ] Amendement 2026-10-19 (`db`) : dans `./lib.rs`, poser `#[cfg(feature = "db")]` sur les cinq `pub mod` listés (leur `///` de rôle suit),
+  [x] Amendement 2026-10-19 (`db`) : dans `./lib.rs`, poser `#[cfg(feature = "db")]` sur les cinq `pub mod` listés (leur `///` de rôle suit),
     ajouter la ligne `db` au tableau de la doc `//!` et la mention « implique `db` » pour `mcp`, `workflow`, `matrix`, décrire le profil sans base
     (quickstart de cinq lignes `rust,ignore` : `OidcClient::new`, `MiryadAuthState` à cinq champs, `auth_router`, `openapi_router`) ;
     adapter les tests de surface : `default_surface_compiles` reste sous défaut, `static_frontend_absent_surface` perd

@@ -368,7 +368,7 @@ impl OidcClientTrait for OidcClient {
 
     fn verify_bearer(&self, jwt: &str) -> Result<OidcIdentity, AuthError> {
         // Nonce neutre : un JWT `Bearer` ne transporte pas de flux de connexion (amendement
-        // 2026-10-19). Tout le reste (signature, `iss`, `aud`, `exp`, `iat`) reste vérifié.
+        // 2026-10-19). Tout le reste (signature, `iss`, `aud`, `exp`) reste vérifié (`iat` n'est pas contraint par la bibliothèque).
         let nonce_neutre = |_: Option<&Nonce>| -> Result<(), String> { Ok(()) };
         let id_token: CoreIdToken = jwt.parse().map_err(|_| AuthError::InvalidBearer)?;
         let claims = id_token

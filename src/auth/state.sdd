@@ -198,7 +198,7 @@ Tasks:
     `sqlx-sqlite`) existent déjà
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./state.rs` (doc ligne ~227), retirer `graphql` de la liste des
     sites de construction (`mod.rs`, `middleware.rs`, `dual.rs`, `rest`). Aucun changement de comportement.
-  [ ] Amendement 2026-10-19 (`db`) : dans `./state.rs`, gater @db et @token_pepper (et l'`use` de `DatabaseConnection`) sous
+  [x] Amendement 2026-10-19 (`db`) : dans `./state.rs`, gater @db et @token_pepper (et l'`use` de `DatabaseConnection`) sous
     `#[cfg(feature = "db")]` ; gater sous `db` les tests qui touchent @db (`db_clone_shares_pool`, fixtures `fixture_with_db`) ; adapter
     la fixture partagée pour construire l'état sans ces deux champs quand `db` est absente. Mettre à jour les décomptes des
     tests de littéraux (sept sous `db`, cinq sans).

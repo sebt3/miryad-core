@@ -147,7 +147,7 @@ Tasks:
     restent à ajouter avec le lot Matrix — la tâche reste ouverte jusque-là.
     Clos le 2026-10-18 (accord explicite du développeur principal) : `matrix` et `workflow,matrix` sont dans la batterie de
     `./AGENTS.md` et dans les matrices test et clippy de `./.github/workflows/ci.yml`.
-  [ ] Amendement 2026-10-19 (`db`) : la batterie de `./AGENTS.md`, de `./.github/workflows/ci.yml` (matrices test et clippy) et de l'agent
+  [x] Amendement 2026-10-19 (`db`) : la batterie de `./AGENTS.md`, de `./.github/workflows/ci.yml` (matrices test et clippy) et de l'agent
     `validator` est portée de dix à treize combinaisons (tâche D8 de `./miryad-core.sdd`).
 
 Done when:

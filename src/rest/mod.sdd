@@ -411,7 +411,7 @@ Tasks:
   [x] Rejouer la batterie complète de /tooling.sdd (toutes les combinaisons de features de
     /AGENTS.md, dont `--no-default-features` comme preuve de non-gating, plus
     `cargo test --doc` pour le @compile_fail) après création des tests.
-  [ ] Amendement 2026-10-19 (`db`) : dans `./mod.rs`, poser `#[cfg(feature = "db")]` sur les cinq `mod` enfants gatés, le trait @RestEntity,
+  [x] Amendement 2026-10-19 (`db`) : dans `./mod.rs`, poser `#[cfg(feature = "db")]` sur les cinq `mod` enfants gatés, le trait @RestEntity,
     @resource_router, leurs `use` et le module de tests ; laisser `pub mod openapi;` nu.
 
 Done when:

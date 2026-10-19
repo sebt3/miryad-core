@@ -66,16 +66,40 @@ synthèse honnête. Si ce n'est pas bon, l'écart remonte — il ne s'excuse pas
 ```bash
 cargo test
 cargo test --no-default-features
+cargo test --no-default-features --features db
 cargo test --no-default-features --features swagger-ui
+cargo test --no-default-features --features swagger-ui,db
+cargo test --no-default-features --features static-frontend,swagger-ui
 cargo test --no-default-features --features mcp
+cargo test --no-default-features --features workflow
+cargo test --no-default-features --features systemone
+cargo test --no-default-features --features workflow,systemone
+cargo test --no-default-features --features matrix
+cargo test --no-default-features --features workflow,matrix
 cargo test --all-features
 cargo clippy --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
+cargo clippy --no-default-features --features db --all-targets -- -D warnings
 cargo clippy --no-default-features --features swagger-ui --all-targets -- -D warnings
+cargo clippy --no-default-features --features swagger-ui,db --all-targets -- -D warnings
+cargo clippy --no-default-features --features static-frontend,swagger-ui --all-targets -- -D warnings
 cargo clippy --no-default-features --features mcp --all-targets -- -D warnings
+cargo clippy --no-default-features --features workflow --all-targets -- -D warnings
+cargo clippy --no-default-features --features systemone --all-targets -- -D warnings
+cargo clippy --no-default-features --features workflow,systemone --all-targets -- -D warnings
+cargo clippy --no-default-features --features matrix --all-targets -- -D warnings
+cargo clippy --no-default-features --features workflow,matrix --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo fmt --check
+cargo tree --no-default-features -e normal -i sea-orm
+cargo tree --no-default-features --features swagger-ui -e normal -i sea-orm
+cargo tree --no-default-features --features static-frontend,swagger-ui -e normal -i sea-orm
 ```
+
+Les treize combinaisons de tests et de clippy sont celles de `tooling.sdd` (amendement 2026-10-19,
+feature `db`). Les trois `cargo tree … -e normal -i sea-orm` : sans `db` leur sortie standard doit
+être vide (cargo imprime « nothing to print » et rend 0) ; une ligne `sea-orm v…` en sortie est un
+échec, même avec le code 0.
 
 - Toutes les combinaisons comptent : un lint `pedantic` peut ne se déclencher que sur un seul graphe
   de features (`must_use_candidate`, `missing_errors_doc`). Un harnais lancé uniquement en
