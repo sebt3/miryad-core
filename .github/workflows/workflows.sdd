@@ -105,7 +105,7 @@ Tasks:
     ni ./publish.yml. Clôt la ligne `cargo audit` de ../../tooling.sdd (à cocher en même temps).
     Validé 2026-10-18 (Claude) : job unique `continue-on-error`, `rustsec/audit-check@v2.0.0`, cron lundi 06:00 UTC,
     permissions `contents: read`, `checks: write`, `issues: write` (README de l'action) ; YAML valide, lint OK.
-  [ ] Allonger les jobs de test (huit combinaisons) et de clippy (cinq combinaisons hors pont :
+  [x] Allonger les jobs de test (huit combinaisons) et de clippy (cinq combinaisons hors pont :
     `--no-default-features`, défaut, `swagger-ui`, `mcp`, `workflow`) dans ./ci.yml ; retirer le
     pas `cargo clippy --all-features` actuel, rouge durablement sur les sites gelés du pont et qui
     bloquerait la CI (arbitré 2026-10-03, option A). Une tâche par fichier : ./ci.yml seul.
@@ -115,6 +115,8 @@ Tasks:
     `cargo clippy --all-features` retiré, `fail-fast: false` sans `continue-on-error`, job `fmt`
     byte-à-byte inchangé, ./publish.yml non touché ; les quatorze commandes rejouées localement
     vertes.
+    Revu 2026-10-19 (Claude) : la matrice a depuis grandi avec `systemone` et `matrix` (onze entrées de test, huit de
+    clippy, toujours sans graphe `graphql`), sans `continue-on-error`.
   [ ] Confirmer que le job clippy garde `-- -D warnings` dès que `../../tooling.sdd` est à zéro
     dette : le harnais est en `deny` à l'adoption, donc la CI est rouge tant que la purge n'est
     pas finie — c'est l'effet voulu, pas une raison de retirer le drapeau.

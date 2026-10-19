@@ -53,7 +53,9 @@ Exposes:
 Tasks:
   [x] Écrire `mod.rs` après ./error.rs et ./client.rs ; test de chemins plats dans `mod tests`.
     Validé 2026-10-13 (validator) : cinq ré-exports exacts, test `les_chemins_plats_existent` vert.
-  [ ] Amender /src/lib.rs, /Cargo.toml (feature `systemone`, `docs.rs`) et la batterie de /tooling.sdd.
+  [x] Amender /src/lib.rs, /Cargo.toml (feature `systemone`, `docs.rs`) et la batterie de /tooling.sdd.
+    Validé 2026-10-19 (Claude) : feature et `cfg` en place, combinaisons `systemone` et `workflow,systemone` vertes en test
+    et en clippy (batterie rejouée), `cargo doc -D warnings` vert.
 
 Done when:
   Les ré-exports sont exactement ceux de `Must`, `cargo build --no-default-features --features systemone`

@@ -266,9 +266,12 @@ Tasks:
     count @broken_intra_doc_links 1 → 0 sous @no-default-features, zéro sur les six combinaisons
     sans @workflow ; sous @workflow subsiste un autre lien cassé, imputable à
     `src/workflow/dispatcher.rs` et hors de cette spec (tâche ouverte dans sa spec fille).
-  [ ] Amendement 2026-10-06 : déclarer `systemone` et `matrix` avec leur `cfg`, étendre le tableau de features et
+  [x] Amendement 2026-10-06 : déclarer `systemone` et `matrix` avec leur `cfg`, étendre le tableau de features et
     le test des chemins plats (`Scenario` ci-dessous) ; zéro lien rustdoc cassé sous chaque combinaison.
     Dernier fichier du lot (après ./systemone/mod.rs et ./matrix/mod.rs).
+    Validé 2026-10-19 (Claude) : `cfg` et tableau de features en place, `cargo doc --no-deps` avec `-D warnings` vert sur
+    onze combinaisons (défaut, `--no-default-features`, `swagger-ui`, `graphql`, `mcp`, `workflow`, `systemone`,
+    `workflow,systemone`, `matrix`, `workflow,matrix`, `--all-features`).
 
 Done when:
   La spec porte exactement treize `Scenario` (douze originaux, un pour l'amendement @workflow du
