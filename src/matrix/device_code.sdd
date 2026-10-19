@@ -1,0 +1,181 @@
+Spec: device_code — connexion OAuth 2.0 « device code » auprès de MAS
+
+Purpose:
+  Porter le login nominal du bot, **sans navigateur côté bot** : flux d'autorisation de périphérique
+    (RFC 8628) contre le service d'authentification du homeserver (Matrix Authentication Service,
+    MAS, derrière Palpo ; connexion par mot de passe désactivée, `passwords: enabled: false`). Un
+    opérateur ouvre l'URL affichée, s'authentifie via l'IdP (Authentik, compte de service) et approuve ;
+    le bot reçoit alors ses jetons. Décision de Sébastien (2026-10-06) : « partons sur un device code ;
+    si on se casse les dents en utilisation, on avisera ».
+  **Constat du 2026-10-06** : `matrix-sdk` 0.18 n'expose **pas** le device code à l'appelant (les
+    fonctions `request_device_authorization`/`exchange_device_code` de son module OAuth sont privées,
+    réservées au login par QR d'un autre appareil). La crate implémente donc le protocole elle-même,
+    en HTTP (`reqwest`, déjà direct), puis remet les jetons à `matrix-sdk` (`OAuth::restore_session`,
+    ./client.sdd). Fichier **isolé** pour deux raisons : c'est la partie la moins vérifiée de la feature
+    (aucun MAS réel n'a été essayé à la rédaction — `Tasks`), et son remplacement par un appel natif de
+    `matrix-sdk` ≥ 0.19 doit rester local.
+  Fichier neuf, conception ; protocole documenté de RFC 8628, MSC2967 (portées Matrix), MSC2965/
+    MSC4191 (découverte), RFC 7591 (enregistrement dynamique) — comportement exact de MAS à valider.
+
+Owns:
+  ./device_code.rs
+
+Can modify:
+  ../../tests/matrix_device_code.rs — crate d'intégration : faux MAS en `axum` sur port éphémère
+
+References:
+  ./client.sdd — appelant (`login_with_device_code`) ; ./session.sdd — persistance des jetons
+  ./error.sdd — @MatrixError::Login, `Network`
+  /home/coder/projets/kydah/box/messaging/palpo/AGENTS.md — déploiement : MAS devant Palpo, `delegated_auth`
+
+Must:
+  @DeviceCodePrompt — struct `pub`, `#[derive(Debug, Clone)]`, champs `pub` : `verification_uri: String`,
+    `verification_uri_complete: Option<String>`, `user_code: String`, `expires_in_secs: u64`. C'est ce
+    que l'application montre à l'opérateur (log, message, console).
+  `pub(crate) struct DeviceCodeTokens` — `client_id: String`, `user_id: String`, `device_id: String`,
+    `access_token: String`, `refresh_token: Option<String>`, `expires_in_secs: Option<u64>` ; `Debug`
+    manuel sans jeton.
+  `pub(crate) async fn login(homeserver_url: &str, display_name: &str, existing_client_id: Option<&str>,
+    on_prompt: impl FnOnce(DeviceCodePrompt), http: &reqwest::Client) -> Result<DeviceCodeTokens, MatrixError>`,
+    étapes dans cet ordre :
+    1. **Découverte** : `GET {homeserver}/_matrix/client/v1/auth_metadata` ; en cas de `404`, repli sur
+      `GET {homeserver}/_matrix/client/unstable/org.matrix.msc2965/auth_metadata`. Le JSON doit porter
+      `issuer`, `token_endpoint`, `device_authorization_endpoint` (et `registration_endpoint` si
+      `existing_client_id` est `None`) ; sinon @MatrixError::Login « le serveur n'annonce pas le device code ».
+    2. **Client** : `existing_client_id` fourni → réutilisé ; sinon enregistrement dynamique `POST
+      registration_endpoint` avec `client_name = display_name`, `grant_types` =
+      `["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"]`, `response_types = []`,
+      `token_endpoint_auth_method = "none"`, `application_type = "native"`, `redirect_uris = []`,
+      `client_uri = {homeserver}` ; la réponse porte `client_id`. L'appelant persiste ce `client_id`
+      (valeur personnalisée `miryad.matrix.oauth_client`, ./client.sdd) pour ne pas se ré-enregistrer.
+    3. **Appareil** : `device_id` aléatoire de 10 caractères `[A-Z]` (`rand`, déjà direct).
+    4. **Demande de code** : `POST device_authorization_endpoint`, formulaire `client_id` et `scope` =
+      `openid urn:matrix:org.matrix.msc2967.client:api:* urn:matrix:org.matrix.msc2967.client:device:{device_id}` ;
+      réponse `device_code`, `user_code`, `verification_uri`, `verification_uri_complete?`, `expires_in`,
+      `interval?` (défaut 5 s).
+    5. `on_prompt(DeviceCodePrompt { .. })` appelé **une seule fois**, avant la première interrogation.
+    6. **Interrogation** du `token_endpoint` (`grant_type=urn:ietf:params:oauth:grant-type:device_code`,
+      `device_code`, `client_id`) toutes les `interval` secondes : `authorization_pending` → on continue ;
+      `slow_down` → `interval += 5` ; `expired_token` ou délai total `expires_in` dépassé → @Login
+      « code expiré » ; `access_denied` → @Login « refusé » ; succès → `access_token`, `refresh_token?`,
+      `expires_in?`. Une réponse HTTP d'erreur autre (`5xx`, coupure) pendant l'interrogation est
+      réessayée tant que le délai total n'est pas dépassé. **Les erreurs OAuth se lisent dans le champ `error` du
+      corps JSON, jamais dans le statut HTTP** : MAS répond `authorization_pending` en `403` (la RFC 8628 prévoit
+      `400`), constaté au spike du 2026-10-18. Un corps non JSON avec un statut `5xx` reste une erreur réessayée.
+    **Résilience** (amendement 2026-10-18, constaté au banc de persistance : un `whoami` en échec passager après l'approbation a
+      perdu des jetons déjà émis, le `device_code` étant consommé) : chaque requête hors interrogation (découverte, enregistrement,
+      demande de code, `whoami`) est **retentée** après une erreur de transport, un `429` ou un `5xx`, jusqu'à 3 tentatives au total
+      espacées de 1 s puis 2 s (`tokio::time::sleep`, testable sous `pause`), avant d'échouer en `Network` retryable ; une erreur
+      de configuration ou un `4xx` autre que `429` n'est jamais retenté. Une fois les jetons reçus, seule l'étape 7 reste à faire :
+      sa nouvelle tentative est la garantie de ne pas les perdre.
+    7. **Identité** : `GET {homeserver}/_matrix/client/v3/account/whoami` avec `Authorization: Bearer
+      {access_token}` ; `user_id` en vient ; `device_id` doit valoir celui de l'étape 3 (sinon
+      @Login « appareil inattendu »).
+  L'attente entre deux interrogations utilise `tokio::time::sleep` (testable avec `tokio::time::pause`).
+    La boucle d'interrogation (intervalle, `slow_down`, borne `expires_in`) est une fonction privée **indépendante
+    du transport** : elle reçoit l'interrogation sous forme de fermeture asynchrone et ne connaît pas `reqwest`.
+    Raison (amendement 2026-10-18) : sous `tokio::time::pause`, attendre une E/S réelle compte comme inactivité et
+    l'horloge saute ; les Scenario de temps se prouvent donc sur cette fonction, sans réseau, en temps simulé.
+  Compiler sous `#[cfg(feature = "matrix")]`.
+
+Must not:
+  Journaliser (`tracing`) un `device_code`, un jeton ou un `user_code` (le `user_code` n'est transmis qu'à
+    `on_prompt`) ; suivre une redirection hors du host de l'API appelée ; réessayer indéfiniment (le
+    délai `expires_in` borne tout).
+  Importer un type `matrix-sdk` : ce fichier est du protocole pur.
+
+Forbids:
+  `matrix_sdk::*`, `restate_sdk::*` dans ./device_code.rs
+
+Depends on:
+  @reqwest (feature `json`, déjà direct), @serde_json, @rand, @tokio::time (et, en dev-dependency, la feature `test-util` de `tokio` pour `pause`/`start_paused`, ajoutée le 2026-10-18), ./error.rs
+
+Exposes:
+  `DeviceCodePrompt` (`pub`, ré-exporté par ./mod.rs) ; `login`, `DeviceCodeTokens` (`pub(crate)`).
+
+Handles:
+  Serveur sans `device_authorization_endpoint` : erreur explicite (le repli est `SessionImport`, ./client.sdd).
+  Interruption (le futur est abandonné) : aucun état local à nettoyer ; le code côté serveur expire seul.
+
+Tasks:
+  [x] Résilience (amendement 2026-10-18, voir `Must`) : retenter 3 fois (1 s, 2 s) les requêtes hors interrogation sur erreur de transport,
+    `429` ou `5xx`, pour qu'un `whoami` en échec passager ne perde pas des jetons déjà émis — tests d'abord (faux MAS : 502 puis succès ;
+    4xx jamais retenté ; échec après trois tentatives), puis ./device_code.rs. Constaté une fois au banc live (login perdu après approbation).
+    Validé 2026-10-18 (Claude) : rouge constaté (trois tests de reprise en échec, la garde « jamais retenté » déjà verte), puis quatre tests
+    verts (reprise puis succès en 3 s simulées, aucune reprise d'une erreur non retryable, abandon après trois tentatives, `whoami` en
+    502 une fois dans le faux MAS), 12 tests `device_code` verts, clippy `matrix` et `workflow,matrix` sans écart, fmt OK. Limite connue :
+    `register` n'est pas idempotent — un `POST` dont la réponse est perdue puis retenté peut laisser un client dynamique orphelin côté MAS.
+  [x] **Spike obligatoire avant l'implémentation** contre un MAS réel (déploiement `box/messaging/palpo`,
+    compte de service Authentik) : (a) MAS autorise-t-il l'enregistrement dynamique avec ces métadonnées
+    (sinon : client statique configuré, ajouter `client_id` à `MatrixConfig`) ? (b) la portée
+    `urn:matrix:org.matrix.msc2967.client:device:{id}` est-elle acceptée ? (c) Palpo accepte-t-il le jeton
+    en introspection ? (d) un compte de service peut-il approuver (flux device côté Authentik) ? Les
+    réponses amendent cette spec. En cas d'échec, la voie de repli est `SessionImport` (./client.sdd) et
+    cette spec passe en `[-]`.
+    **Résultat du spike, 2026-10-18** (MAS 0.x derrière Palpo 0.4.0, tenant `media-test`, Authentik 2026.2) — **(a) OUI** :
+    `POST /oauth2/registration` avec exactement les métadonnées de l'étape 2 rend `201` et un `client_id` ; pas de
+    client statique, `MatrixConfig` ne change pas. **(b) OUI** : `POST /oauth2/device` accepte la portée
+    `openid urn:matrix:org.matrix.msc2967.client:api:* urn:matrix:org.matrix.msc2967.client:device:{id}` et le
+    `device_id` demandé est celui du jeton (`whoami` rend `SPIKEBOT01`). **(c) OUI** : Palpo accepte le jeton
+    (`whoami` → `@media-test-matrix-bot:media.rennes.home`). **(d) OUI** : un utilisateur Authentik de type
+    `service_account` avec un jeton d'intention `app_password` s'authentifie dans `default-authentication-flow`
+    (stages identification puis mot de passe, API `flows/executor`) ; MAS affiche ensuite une page « Create
+    Account » (première fois seulement, le localpart vient de `preferred_username`) puis « Give access to your
+    account? » (case `confirm_device` + `action=consent`). Constats utiles à l'implémentation : la découverte
+    `GET /_matrix/client/v1/auth_metadata` de Palpo et son chemin `unstable` répondent tous deux `200` et portent
+    `issuer` (avec `/` final), `token_endpoint`, `device_authorization_endpoint`, `registration_endpoint` ;
+    `verification_uri` est `…/link` **sans** `verification_uri_complete` (l'opérateur saisit le code) ;
+    `interval = 5`, `expires_in = 1200` ; le jeton d'accès vit **300 s** et un `refresh_token` est rendu, d'où
+    l'importance de la persistance des rotations (./client.sdd) ; `authorization_pending` arrive en `403`.
+  [x] Tests d'abord contre un faux MAS (`../../tests/matrix_device_code.rs`), puis ./device_code.rs.
+    Validé 2026-10-18 (Claude) : huit tests verts sous `matrix` et `workflow,matrix`, clippy des deux sans écart, fmt et
+    `specdd lint` OK. Écarts à la lettre de la tâche, tous actés : les tests vivent en **inline** (`login` est
+    `pub(crate)`, une crate d'intégration ne le voit pas, donc pas de `tests/matrix_device_code.rs`) ; les deux
+    Scenario de temps portent sur la boucle `poll_until_done` seule, sous `start_paused` (un faux MAS réel fait sauter
+    l'horloge simulée) ; la vérification d'origine après envoi est gardée, la garantie réelle contre les redirections
+    (client `reqwest` en `redirect::Policy::none()`) relève de ./client.sdd, Tâche C ; la garde de délai tronque à la
+    seconde (le dernier sondage peut être sauté de moins d'une seconde avant `expires_in`).
+
+Done when:
+  Les `Scenario` sont verts ; le spike est consigné (ci-dessus) ; la spec est relue et approuvée avant
+    ./device_code.rs.
+
+Scenario: le flux nominal aboutit
+  Given un faux MAS annonçant les trois endpoints, répondant `authorization_pending` deux fois puis un jeton, et un `whoami` cohérent
+  When `login` est appelé
+  Then le résultat porte les jetons, `on_prompt` a été appelé exactement une fois avec le `user_code` du faux serveur, et `user_id`/`device_id` viennent de `whoami`
+
+Scenario: slow_down allonge l'intervalle
+  Given un faux MAS qui répond `slow_down` à la première interrogation, `interval = 5`
+  When `login` s'exécute sous `tokio::time::pause`
+  Then la deuxième interrogation intervient 10 s après la première
+
+Scenario: un code expiré ou refusé est une erreur de login
+  Given un faux MAS qui répond `expired_token`, puis un autre `access_denied`
+  When `login` est appelé pour chacun
+  Then chaque résultat est @Err(MatrixError::Login(_)) sans autre interrogation
+
+Scenario: le délai total borne l'attente
+  Given un faux MAS qui répond toujours `authorization_pending` et `expires_in = 30`
+  When `login` s'exécute sous `tokio::time::pause`
+  Then le résultat est @Err(MatrixError::Login(_)) après 30 s simulées au plus
+
+Scenario: la découverte retombe sur le chemin instable
+  Given un faux serveur qui répond `404` à `/v1/auth_metadata` et le JSON à `/unstable/org.matrix.msc2965/auth_metadata`
+  When `login` est appelé
+  Then la découverte réussit
+
+Scenario: un serveur sans device code est refusé explicitement
+  Given des métadonnées sans `device_authorization_endpoint`
+  When `login` est appelé
+  Then le résultat est @Err(MatrixError::Login(m)) dont le message nomme le device code
+
+Scenario: un client_id existant évite l'enregistrement
+  Given `existing_client_id = Some("abc")` et un faux MAS sans `registration_endpoint`
+  When `login` est appelé
+  Then aucune requête d'enregistrement n'est émise et la demande de code porte `client_id=abc`
+
+Scenario: aucun secret n'est journalisé
+  Given un subscriber `tracing` capturant les événements
+  When `login` s'exécute jusqu'au succès
+  Then aucun événement ne contient le `device_code`, le `user_code` ni les jetons

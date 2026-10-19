@@ -1,0 +1,128 @@
+Spec: crypto — @SeaOrmCryptoStore, impl du trait @CryptoStore et conformité officielle
+
+Purpose:
+  Porter le type public du store et son `impl matrix_sdk_crypto::store::CryptoStore` : `open`, le
+    mappage de chacune des 46 méthodes du trait vers les fonctions inhérentes de ./crypto_account.sdd,
+    ./crypto_sessions.sdd et ./crypto_devices.sdd, `save_changes` transactionnel (atomique : tout ou
+    rien, exigence du trait), `get_own_device` (composition compte + appareil), et l'assemblage d'une
+    `StoreConfig` pour un `Client`. Ce fichier est aussi le **juge** : il exécute la suite de conformité
+    officielle de `matrix-sdk-crypto` (`cryptostore_integration_tests!`, ~1 500 lignes de tests) sur
+    SQLite en mémoire via SeaORM ; si elle passe, le store respecte le trait. Fichier neuf, conception.
+
+Owns:
+  ./crypto.rs
+
+References:
+  ./crypto_account.sdd, ./crypto_sessions.sdd, ./crypto_devices.sdd, ./kv.sdd, ./error.sdd, ./mod.sdd
+  matrix-sdk-crypto `0.18.0`, `src/store/traits.rs` (trait, autorité) et `src/store/integration_tests.rs`
+    (macro `cryptostore_integration_tests!`, feature `testing` de `matrix-sdk-crypto`)
+
+Must:
+  @SeaOrmCryptoStore — struct `pub`, `#[derive(Clone)]`, champs privés : `kv: Kv`, `db: DatabaseConnection`
+    (le `account_key` vit dans `kv`). `Debug` manuel sans secret.
+    `pub async fn open(db: DatabaseConnection, account_key: &str, passphrase: &str) -> Result<Self, StoreError>`
+    → `Kv::open` (./kv.sdd). Les migrations de ./migration.sdd doivent avoir été appliquées par l'hôte ;
+    si une table manque, la première opération rend `StoreError::Db`.
+    `pub fn store_config(&self, lock: CrossProcessLockConfig) -> matrix_sdk::config::StoreConfig` (./mod.sdd).
+  `#[async_trait] impl CryptoStore for SeaOrmCryptoStore`, `type Error = StoreError` (le trait exige
+    `Into<CryptoStoreError>`, ./error.sdd), **toutes** les méthodes du trait de `matrix-sdk-crypto` `0.18.0`,
+    tableau de délégation :
+    ./crypto_account.rs → `load_account`, `load_identity`, `save_pending_changes`, `load_backup_keys`,
+      `load_dehydrated_device_pickle_key`, `delete_dehydrated_device_pickle_key`, `get_custom_value`,
+      `set_custom_value`, `remove_custom_value`, `try_take_leased_lock`, `next_batch_token`, `close`,
+      `reopen`, `get_size` (14)
+    ./crypto_sessions.rs → `save_inbound_group_sessions`, `get_sessions`, `get_inbound_group_session`,
+      `get_withheld_info`, `get_withheld_sessions_by_room_id`, `get_inbound_group_sessions`,
+      `inbound_group_session_counts`, `get_inbound_group_sessions_by_room_id`,
+      `get_inbound_group_sessions_for_device_batch`, `inbound_group_sessions_for_backup`,
+      `mark_inbound_group_sessions_as_backed_up`, `reset_backup_state`, `get_outbound_group_session` (13)
+    ./crypto_devices.rs → `load_tracked_users`, `save_tracked_users`, `get_device`, `get_user_devices`,
+      `get_user_identity`, `is_message_known`, `get_outgoing_secret_requests`, `get_secret_request_by_info`,
+      `get_unsent_secret_requests`, `delete_outgoing_secret_requests`, `get_secrets_from_inbox`,
+      `delete_secrets_from_inbox`, `get_room_settings`, `get_received_room_key_bundle_data`,
+      `get_pending_key_bundle_details_for_room`, `get_all_rooms_pending_key_bundles`,
+      `has_downloaded_all_room_keys` (17)
+    ce fichier → `save_changes`, `get_own_device` (2)
+    Total : 46. Si le trait de la version épinglée a une méthode de plus ou de moins, l'implémenteur
+    lève un `[?]` et met à jour cette spec avant de coder : le trait fait autorité.
+  `save_changes(changes)` : ouvre **une** `DatabaseTransaction`, appelle `apply_account`, `apply_sessions`, `apply_devices` (un nom par fichier, arbitré le 2026-10-15) dans
+    l'ordre compte → sessions → appareils, puis `commit` ; toute erreur → `rollback` implicite (la
+    transaction est abandonnée), aucun effet partiel visible. `Changes` vide : succès sans écriture.
+  `get_own_device()` : `load_account` puis `Device` de l'identité du compte (`account.device_keys()` →
+    `DeviceData::from_account`) ; compte absent → erreur du trait prévue (`CryptoStoreError::...` via
+    `StoreError::Corrupt("pas de compte")`).
+  Suite de conformité : un `#[cfg(test)] mod tests` fournit `async fn get_store(name: &str, passphrase:
+    Option<&str>, clear_data: bool) -> SeaOrmCryptoStore` (SQLite mémoire, migrations appliquées, un
+    `account_key` dérivé de `name`) puis invoque `matrix_sdk_crypto::cryptostore_integration_tests!();`
+    et `cryptostore_integration_tests_time!();`. Dev-dependencies requises par la macro : `matrix-sdk-crypto`
+    (feature `testing`), `matrix-sdk-test`, `matrix-sdk-common`, `ruma`, `assert_matches` — versions alignées
+    sur `0.18` (voir ../mod.sdd). La macro émet des `#[cfg(feature = "experimental-…")]` évalués contre les
+    features **de cette crate** : le module de test porte `#![allow(unexpected_cfgs)]` avec commentaire d'une
+    ligne citant cette spec.
+  Compiler sous `#[cfg(feature = "matrix")]`.
+
+Must not:
+  Implémenter une méthode du trait par du code propre ici quand elle appartient à un des trois fichiers
+    (une seule implémentation par méthode) ; laisser `save_changes` écrire hors transaction ;
+    désactiver ou filtrer un test de la suite officielle (un test rouge se corrige dans le store, ou se
+    justifie par un `[?]` tracé, jamais par un `#[ignore]` silencieux).
+
+Depends on:
+  ./crypto_account.rs, ./crypto_sessions.rs, ./crypto_devices.rs, ./kv.rs, ./error.rs, `async-trait`
+    (déjà direct), @matrix_sdk_crypto, @matrix_sdk (`StoreConfig`)
+
+Exposes:
+  `SeaOrmCryptoStore::{open, store_config}` et son `impl CryptoStore`.
+
+Handles:
+  `save_changes` interrompu en cours de transaction : aucun changement partiel après reprise.
+  Deux `SeaOrmCryptoStore` ouverts sur la même base avec deux `account_key` : indépendants.
+
+Tasks:
+  [x] Après les trois fichiers de domaine (./crypto_account.rs, ./crypto_sessions.rs, ./crypto_devices.rs) :
+    écrire `open`, `save_changes`, `get_own_device`, la délégation des 46 méthodes, puis brancher la suite
+    officielle. **Cette tâche est le critère de réussite du lot store** : on ne déclare pas le store livré
+    tant que la suite officielle n'est pas entièrement verte.
+    Note : squelette (struct + `open`) posé en avance par ./crypto_account.sdd, 2026-10-15.
+    Validé 2026-10-17 (Claude) : suite officielle branchée (`cryptostore_integration_tests!` et `_time!`, 36 tests) :
+    35 verts, 1 `#[ignore]` posé par l'amont. Deux dérogations tracées ci-dessous.
+    [?] `test_save_inbound_group_session_from_old_backup` reste `#[ignore]` (macro amont, intégration_tests.rs,
+      « only works on the MemoryStore, the other stores are waiting for more work »). Le store est volontairement
+      **aveugle à la version de sauvegarde** (un booléen `backed_up`, comme ./crypto_sessions.sdd le fixe) : une
+      session sauvegardée sous une version est exclue pour une autre. Conséquence assumée : après rotation de la
+      version de sauvegarde, la reprise exigerait un `reset_backup_state`. À rouvrir si le harnais de chatbot a besoin de
+      l'état par version (colonne `backup_version` : migration en place, spec ./crypto_sessions.sdd).
+    Dérogation de harnais : la macro appelle `get_static_account()` (synchrone) sur le type de `get_store` ; le module
+      `conformance` fournit donc un type de **test** `ProbeStore` qui délègue à `SeaOrmCryptoStore` et met en cache le
+      `StaticAccountData`. Aucune conséquence en production. Correctif découvert : `Changes::is_empty` (0.18) oublie
+      `room_key_backups_fully_downloaded` et `rooms_pending_key_bundle` ; `save_changes` les teste en plus.
+  [x] Tests d'atomicité propres : `save_changes` dont la seconde partie échoue (table supprimée en cours de test)
+    laisse la première partie non écrite.
+    Validé 2026-10-17 (Claude) : `save_changes_is_atomic` vert (table `devices` supprimée, session Olm absente après
+    l'échec) ; rollback par abandon de la `DatabaseTransaction`. Passe A de la 1re Task faite (46 méthodes, `save_changes`,
+    `get_own_device`, `store_config`) ; reste le branchement de la suite officielle (passe B).
+
+Done when:
+  La suite officielle `cryptostore_integration_tests!` et `cryptostore_integration_tests_time!` est
+    entièrement verte sur SQLite en mémoire ; les `Scenario` sont verts ; clippy sans avertissement sur
+    `--features matrix` ; la spec est relue et approuvée avant ./crypto.rs.
+
+Scenario: la suite officielle passe
+  Given `get_store` fournissant un store neuf par test sur SQLite en mémoire
+  When `cryptostore_integration_tests!` et `cryptostore_integration_tests_time!` s'exécutent
+  Then tous les tests de la suite sont verts
+
+Scenario: save_changes est atomique
+  Given un `Changes` portant une session Olm et un appareil, et la table `devices` supprimée avant l'appel
+  When `save_changes` est appelé
+  Then le résultat est @Err et `get_sessions` ne retrouve pas la session Olm (rollback)
+
+Scenario: deux comptes cohabitent dans une base
+  Given deux stores `open` sur la même base avec `account_key` `a` et `b`
+  When chacun enregistre un compte différent
+  Then `load_account` de chacun rend son compte et jamais celui de l'autre
+
+Scenario: la passphrase protège les données
+  Given un store `open` avec la passphrase `p1` ayant enregistré un compte
+  When un second `open` est tenté avec `p2`
+  Then le résultat est @Err(StoreError::Cipher(_))

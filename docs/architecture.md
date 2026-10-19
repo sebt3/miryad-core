@@ -662,6 +662,133 @@ déclenchement au lieu d'être refusé à l'écriture. À replacer dans son cont
 lui-même reste un prototype sans consommateur en production (statut du 2026-09-27,
 `/src/graphql/hooks.sdd`).
 
+### Templating central de la `config` d'un step
+
+Chaque `string` de la `config` d'un step est rendue par `vynil_core::hbs` **avant** l'appel du kind
+(`src/workflow/template.rs`, appelé par le seul dispatcher), avec pour contexte `{"inputs": <sorties
+amont>, "run": {"run_key", "step_id", "depth"}}`. Un kind hérite du templating sans y penser ; il ne
+déclare que ses champs bruts (`raw_fields`, par défaut aucun) : `rhai` garde son `script`,
+`subworkflow` son `dag` (rendu plus tard, step par step, par le run enfant).
+
+Règles : moteur **neuf à chaque appel**, mode strict (une variable absente est une erreur, jamais une
+chaîne vide), aucun échappement HTML (la sortie alimente du JSON), un seul passage (la sortie d'un rendu
+n'est jamais re-rendue), les clés d'objet ne sont jamais rendues. Une chaîne rendue reste une chaîne :
+`{"$json": "{{inputs.n}}"}` produit une valeur typée, `{"$raw": ..}` protège un sous-arbre. Toute erreur
+est un `StepError` non retryable (`template invalide à {pointeur JSON}: ..`) qui ne contient jamais le
+contenu de `inputs`. Un kind inconnu rend `404` **avant** tout rendu.
+
+**Modèle de menace.** Les templates sont écrits par les auteurs de workflows (avec `OwnerOnly`, chaque
+utilisateur écrit les siens) et les `inputs` peuvent venir d'un tiers (message Matrix, requête API).
+Deux conséquences : la sortie d'un rendu n'est jamais interprétée comme template (pas d'injection de
+template par une donnée), et les helpers d'accès à l'hôte de `vynil-core` (`read_to_str`, `env_var`,
+`canonicalize`, `parent`, `file_name`, `extension`, `jsonnet`) sont retirés du moteur.
+
+**La liste noire est transitoire et fail-open** (arbitrage du développeur principal, option « liste noire
+telle que spécifiée »). Elle vit dans `DENIED_HELPERS` en attendant `sebt3/vynil-core#13` (moteur sans
+effet de bord à la construction). Tant qu'elle tient, un helper dangereux ajouté par un futur
+`vynil-core` serait exposé sans que rien ne casse : **relire `CORE_HBS_HELPERS` de `vynil-core` à chaque
+montée de version**. Sortie de transition : remplacer la liste par le constructeur restreint, bumper
+`vynil-core` (tâche ouverte dans `src/workflow/template.sdd`).
+
+**Pièges constatés.**
+- `to_json` de `vynil-core` est un helper de **bloc** : en forme inline (`{{to_json inputs.a}}`) il rend
+  une chaîne vide, sans erreur. Pour un objet en JSON compact dans un template, utiliser `json_to_str`.
+- Le plafond de 1 Mio par rendu est contrôlé **après** le rendu : il borne la sortie, pas la mémoire ni
+  le CPU d'un template qui itère sur une donnée volumineuse. Acceptable en v1, à reprendre si un
+  consommateur expose des templates à des tiers non fiables.
+- Un kind durable est rendu dans un `ctx.run()` dédié : le résultat du rendu est journalisé, donc un
+  helper non déterministe (`uuid_new_v4`) ne change pas de valeur au rejeu. Un kind ordinaire est rendu
+  dans la fermeture `ctx.run` qui l'exécute (`run_invocation`).
+- Le kind `rhai` reçoit en plus la variable `run` et une fonction `render(template)` sur le même contexte ;
+  son script, déclaré champ brut, n'est jamais rendu.
+
+La branche durable n'est pas testable en unitaire (aucun `Context` Restate virtualisé par
+`restate-sdk` 0.12.1) : elle est prouvée par un test d'intégration `#[ignore]` contre un vrai
+`restate-server` (`tests/workflow_restate.rs`).
+
+## Client System One (feature `systemone`)
+
+Client HTTP mince vers `POST /v1/systemone` (modèles de décision : questions typées `noul`, `choice`,
+`score`, réponses en **probabilités calibrées**, pas du texte), exposé par `kydah-ai-proxy` (issue
+`kydah/kydah-ai-proxy#111`, proxy transparent). Aucune bibliothèque Rust n'existe pour cette API ;
+c'est un `POST`, donc la crate le porte elle-même, derrière une feature **hors défaut** et **sans
+dépendance nouvelle** (`reqwest`, `serde`, `thiserror` sont déjà directes). Specs : `src/systemone/*.sdd`
+et `src/workflow/systemone_step.sdd`.
+
+- **Client** (`SystemOneClient`) : sans état hors son pool HTTP, ne dépend ni de `workflow` ni d'axum ni
+  de la base. Questions et réponses sont des `serde_json::Value` opaques — un nouveau type de question
+  de l'API n'impose aucun changement de la crate. La clé Bearer est posée en en-tête par défaut marqué
+  sensible ; les redirections sont désactivées (la clé ne part jamais vers un autre hôte) ; le corps
+  d'une erreur est tronqué à 512 caractères ; aucune nouvelle tentative interne (la politique de retry
+  appartient à l'appelant). `Debug` de la configuration masque la clé.
+- **Erreurs** : `MRD-SYSTEMONE-001` (configuration), `-002` (transport), `-003` (statut rejeté), `-004`
+  (réponse invalide). `retryable()` : délai ou connexion, `429`, `529` et `5xx` sont rejouables ; le reste
+  non.
+- **Kind de workflow `systemone`** (sous `workflow` **et** `systemone`) : comme `RhaiStep`, l'application
+  l'enregistre elle-même (`registry.register(SystemOneStep::new(client))`). Il pose les questions puis
+  évalue des **gates** (seuils inclusifs sur la probabilité d'une question `noul`, d'une option de
+  `choice` ou d'un `score`). Par défaut un gate non franchi arrête le workflow (échec non retryable :
+  une probabilité calibrée n'est pas une panne) ; `on_fail: "continue"` rend `passed: false` et laisse
+  l'aval décider. La configuration des gates est validée **avant** tout appel réseau, et un gate refuse
+  les clés inconnues (une borne mal orthographiée ne doit pas disparaître en silence).
+
+## Client Matrix de bot (feature `matrix`)
+
+Primitives pour bâtir des bots Matrix : se connecter, envoyer, lire (historique et flux), rejoindre une
+salle, avec chiffrement de bout en bout. Aucune logique de conversation : le futur harnais de chatbot
+consommera `MatrixEventHandler`. Specs : `src/matrix/**/*.sdd`, `src/workflow/matrix_step.sdd`. Le homeserver
+visé est Palpo derrière MAS (authentification déléguée à Authentik, mots de passe désactivés).
+
+- **`matrix-sdk` épinglé en `0.18`.** `matrix-sdk` ≥ 0.19 impose `libsqlite3-sys` 0.38 et casse le graphe avec le
+  `sqlx-sqlite` de SeaORM (`links = "sqlite3"`). Aucune feature `sqlite` de `matrix-sdk` n'est activée.
+  Critère de sortie : relever le plafond `sqlx` ou `matrix-sdk-sqlite`. L'API publique n'expose aucun type de
+  `matrix-sdk` ni de `ruma` (identifiants en `String`), donc la montée de version ne casse pas les applications.
+- **Store de chiffrement dans la base de l'application** (`matrix::store`). Il implémente `CryptoStore` sur
+  SeaORM : seize tables préfixées `miryad_matrix_` (`TABLE_PREFIX`), une clé de compte dans chacune, les
+  valeurs sensibles scellées par le `StoreCipher` du compte (protégé par la passphrase de la config). La
+  suite de conformité officielle de `matrix-sdk-crypto` est branchée (35 verts, 1 `#[ignore]` posé par
+  l'amont). Le module est **conçu pour être extrait** en crate dédiée (test d'isolation : aucun accès à
+  `matrix-sdk-sqlite`, ses seules dépendances sont SeaORM et `matrix-sdk-crypto`) ; la logique dérivée de
+  `matrix-sdk-sqlite` (schéma, formats, sémantique ; six fichiers) porte une attribution Apache-2.0 en tête de fichier, `NOTICE` et `LICENSE-APACHE`. **PostgreSQL éprouvé** (2026-10-18) : la suite entière du store, conformité officielle
+  comprise, passe sur PostgreSQL 17 comme sur SQLite (73 verts) ; `MIRYAD_TEST_PG_URL` bascule les tests sur une base réelle,
+  un schéma neuf par test (`src/matrix/store/test_support.sdd`).
+- **Session** : stockée dans le store, scellée, jamais en clair, jamais dans un fichier. Les jetons de
+  rafraîchissement **tournent** (le jeton d'accès de MAS vit 300 s) : le client écoute
+  `subscribe_to_session_changes` et réécrit la session à chaque rotation ; une session non réécrite devient
+  invalide au redémarrage. La persistance réelle des rotations n'est pas encore éprouvée contre un MAS.
+- **Connexion** : `login_with_device_code` (RFC 8628, nominal, un opérateur approuve une fois) et
+  `import_session` (jeton importé, repli et voie automatisable). `matrix-sdk` 0.18 n'expose pas le device code à
+  l'appelant : `device_code.rs` implémente le protocole en HTTP puis remet les jetons à `matrix-sdk`
+  (`restore_session`), fichier isolé pour le remplacer par un appel natif ≥ 0.19. Spike du 2026-10-18 contre
+  Palpo 0.4.0 + MAS 1.26.0 : enregistrement dynamique accepté, portée MSC2967 `device:{id}` honorée,
+  introspection par Palpo, approbation possible par un compte de service Authentik (jeton `app_password`).
+  Pièges constatés : MAS répond `authorization_pending` en **HTTP 403** (les erreurs OAuth se lisent dans le
+  corps JSON, pas dans le statut) ; pas de `verification_uri_complete`. Le consentement et la création de
+  compte de MAS sont des pages humaines : l'automatisation passe par l'API d'administration de MAS
+  (`kydah/box#454`), jamais par du scraping HTML.
+- **CA interne** : le `reqwest` direct de la crate n'a que les racines webpki ; `MatrixConfig::ca_cert` (contenu
+  PEM, comme `OidcConfig::ca_cert`) **s'ajoute** aux racines des deux clients HTTP (device code et
+  `matrix-sdk`). Le client du device code désactive les redirections.
+- **Synchronisation** (`run_sync`) : **un seul synchronisateur par compte à la fois**, arbitré par un bail dans
+  le store (`miryad.matrix.sync`, `2 × sync_timeout + 15 s`, renouvelé à chaque réponse, libéré à l'arrêt) ;
+  les autres réplicas attendent. Deux appareils qui déchiffrent en parallèle corrompraient les sessions Olm.
+  Livraison **au moins une fois, sans rattrapage** : le sync initial est sans jeton et ses messages ne sont
+  pas remis ; un message reçu pendant une coupure est perdu (trace `info` au démarrage). Un message peut être
+  remis deux fois (bascule de bail) : le handler doit être idempotent, clé naturelle `event_id`. Les messages
+  du bot, les `m.notice` et les éditions ne sont jamais remis (anti-boucle). Auto-join seulement pour les
+  inviteurs listés dans `auto_join_from`.
+- **Envoi** : `send` accepte un `txn_id` ; un rejeu avec le même identifiant est dédupliqué par le serveur. Le
+  kind de workflow `matrix_send` (sous `workflow` **et** `matrix`, enregistré par l'application) en dérive un
+  `txn_id` déterministe de `(run_key, step_id)` : un retry Restate ne produit pas de doublon. Une erreur
+  retryable du client le reste, `RoomUnavailable` et les erreurs de configuration ne le sont pas.
+- **Erreurs** : `MRD-MATRIX-*` pour le client, `MRD-MXSTORE-*` pour le store.
+- **Pas encore fait** : cross-signing du bot (Element affiche « chiffré par un appareil non vérifié par son
+  propriétaire »), envoi chiffré depuis un réplica qui ne synchronise pas (hypothèse retenue, à éprouver
+  avec deux processus), rattrapage des messages manqués (voie retenue : `/messages`
+  depuis le dernier `event_id` traité, persisté en base).
+- **Banc d'essai live** : `tests/matrix_live.rs` (`#[ignore]`, variables `MIRYAD_MATRIX_*`), dont le test
+  interactif `device_code_login_then_echo` exécuté le 2026-10-18.
+
 ## Hooks métier CRUD
 
 Point d'extension optionnel par entité sur `create`, `update` et `delete` — validation ou

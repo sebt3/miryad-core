@@ -36,7 +36,10 @@ Must:
     écrite) reste l'autorité sur tout le reste de ces fichiers.
   Lancer le harnais et les tests sur **chaque** combinaison de features : défaut
     (`static-frontend`), `--no-default-features`, `swagger-ui`, `graphql`, `graphiql`, `mcp`,
-    `workflow` (amendement 2026-09-23, moteur de workflow — roadmap 9), `--all-features`. Les
+    `workflow` (amendement 2026-09-23, moteur de workflow — roadmap 9), `--all-features`. **Amendement 2026-10-06** : s'y ajoutent `systemone`, `matrix`, et les deux croisements `workflow,systemone` et
+    `workflow,matrix` (les steps croisés ne compilent que sous le croisement, ./src/workflow/mod.sdd) — soit
+    **douze** combinaisons de tests et douze de clippy (les huit précédentes plus quatre), toutes en
+    `--no-default-features --features <liste>` hors défaut et `--all-features`. Les
     analyses `pedantic` (`must_use_candidate`, `missing_errors_doc`) dépendent du graphe de
     features : une combinaison non rejouée laisse passer des avertissements.
   Tolérer `multiple_crate_versions` en `allow` : ses doublons sont imposés par les dépendances
@@ -114,12 +117,26 @@ Tasks:
     160 en `--all-features` au point de départ.
   [x] Basculer `missing_docs` en `deny` quand la crate est à zéro avertissement, en gardant
     l'exemption `cfg(test)`.
-  [ ] Décider (Sébastien) si `cargo audit` entre dans la CI : l'`AGENTS.md` de l'ancien workflow
-    le listait dans les commandes de validation, alors qu'aucun job de CI ne le lance et qu'il
-    n'est pas installé sur ce poste.
-  [ ] Décider (Sébastien) si `./rustfmt.toml` adopte les options instables
+  [x] `cargo audit` en CI — arbitré par Sébastien le 2026-10-17 : OUI, `cargo audit` entre dans la CI ;
+    tâche pour l'`implementer` (job ajouté dans `./.github/workflows/`). Contexte d'origine :
+    l'`AGENTS.md` de l'ancien workflow le listait parmi les commandes de validation, alors qu'aucun job
+    de CI ne le lance et qu'il n'est pas installé sur ce poste.
+    Livré 2026-10-18 : ./.github/workflows/audit.yml (informatif, voir .github/workflows/workflows.sdd).
+  [x] Décider (Sébastien) si `./rustfmt.toml` adopte les options instables
     (`imports_granularity`, `comment_width`, `group_imports`), ce qui impose nightly en CI et
     reformate tout le dépôt.
+    Arbitré par Sébastien le 2026-10-18 : **non**, on reste sur la toolchain stable en local et en CI ; aucune option
+    instable dans `./rustfmt.toml`.
+  [x] Amendement 2026-10-06 : refléter les quatre combinaisons ajoutées dans la batterie de `./AGENTS.md` (reprise à
+    l'identique par `validator`) et dans `./.github/workflows/` (CI, `workflows.sdd`). `./AGENTS.md` et le CI sont
+    modifiés par le lot d'implémentation, **avec** l'accord explicite du développeur principal — pas par cette
+    spec. Les quatre combinaisons supplémentaires exigent `cargo test --no-default-features --features matrix`,
+    qui compile `matrix-sdk` : prévoir le temps de compilation (cache CI).
+    Avancement 2026-10-13 (accord du développeur principal) : `systemone` et `workflow,systemone` sont dans
+    `./AGENTS.md`, `./.github/workflows/ci.yml` (test et clippy) et `workflows.sdd` ; `matrix` et `workflow,matrix`
+    restent à ajouter avec le lot Matrix — la tâche reste ouverte jusque-là.
+    Clos le 2026-10-18 (accord explicite du développeur principal) : `matrix` et `workflow,matrix` sont dans la batterie de
+    `./AGENTS.md` et dans les matrices test et clippy de `./.github/workflows/ci.yml`.
 
 Done when:
   `cargo clippy --all-targets -- -D warnings`, la même commande sur chacune des combinaisons de

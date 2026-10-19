@@ -25,14 +25,22 @@ pub struct Migrator;
 
 impl sea_orm_migration::MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
-        vec![
-            Box::new(m20260822_000001_create_api_tokens::Migration),
+        let migrations = vec![
+            Box::new(m20260822_000001_create_api_tokens::Migration)
+                as Box<dyn sea_orm_migration::MigrationTrait>,
             Box::new(m20260822_000002_create_users_groups::Migration),
             Box::new(m20260822_000003_seed_admin_group::Migration),
             #[cfg(feature = "workflow")]
             Box::new(m20260923_000001_create_workflow_definitions::Migration),
             Box::new(m20260930_000001_index_api_tokens_subject::Migration),
-        ]
+        ];
+        // Amendement 2026-10-06 (`matrix`) : fin de liste, jamais avant une entrée existante.
+        #[cfg(feature = "matrix")]
+        let migrations = migrations
+            .into_iter()
+            .chain(crate::matrix::store::migrations())
+            .collect();
+        migrations
     }
 
     /// Table de suivi dédiée, distincte du défaut `seaql_migrations` — une app consommatrice
@@ -115,6 +123,8 @@ mod tests {
         #[cfg(feature = "workflow")]
         stems.push("m20260923_000001_create_workflow_definitions");
         stems.push("m20260930_000001_index_api_tokens_subject");
+        #[cfg(feature = "matrix")]
+        stems.push("m20261006_000001_create_matrix_store");
         stems
     }
 
@@ -341,9 +351,16 @@ mod tests {
         let last_registered = expected_applied
             .pop()
             .expect("the registration list is never empty");
+        // Sous `matrix`, la dernière entrée enregistrée est la migration du store (amendement
+        // 2026-10-06, en fin de liste) : c'est elle que `down(Some(1))` défait.
+        let expected_last = if cfg!(feature = "matrix") {
+            "m20261006_000001_create_matrix_store"
+        } else {
+            "m20260930_000001_index_api_tokens_subject"
+        };
         assert_eq!(
-            last_registered, "m20260930_000001_index_api_tokens_subject",
-            "la dernière appliquée en ordre d'enregistrement est l'index de 2026-09-30, non la seed 003"
+            last_registered, expected_last,
+            "la dernière appliquée en ordre d'enregistrement n'est pas la seed 003"
         );
         assert_eq!(
             applied, expected_applied,
@@ -439,6 +456,48 @@ mod tests {
                 "l'entrée workflow est la quatrième, après les trois internes"
             );
         }
+    }
+
+    /// Scenario (amendement 2026-10-06) : « sous matrix, le Migrator applique aussi les tables du
+    /// store ». Les tables `miryad_matrix_*` existent après les historiques, et `down(Some(1))`
+    /// les retire en premier, sans toucher aux tables historiques.
+    #[cfg(feature = "matrix")]
+    #[tokio::test]
+    async fn matrix_store_tables_are_applied_last_and_removed_first() {
+        let db = fresh_db().await;
+        Migrator::up(&db, None)
+            .await
+            .expect("up applies the historical migrations and the matrix store");
+        let manager = SchemaManager::new(&db);
+        assert!(
+            manager
+                .has_table("miryad_matrix_kv")
+                .await
+                .expect("has_table probe succeeds"),
+            "les tables miryad_matrix_* existent après up"
+        );
+        assert_eq!(
+            dedicated_versions(&db).await.last().map(String::as_str),
+            Some("m20261006_000001_create_matrix_store"),
+            "la migration du store est la dernière entrée du tracking"
+        );
+        Migrator::down(&db, Some(1))
+            .await
+            .expect("down Some(1) undoes the matrix store first");
+        assert!(
+            !manager
+                .has_table("miryad_matrix_kv")
+                .await
+                .expect("has_table probe succeeds"),
+            "down retire d'abord les tables miryad_matrix_*"
+        );
+        assert!(
+            manager
+                .has_table("miryad_api_tokens")
+                .await
+                .expect("has_table probe succeeds"),
+            "les tables historiques ne sont pas touchées"
+        );
     }
 
     /// Scenario : « le migrateur consommatrice au tracking défaut s'installe après

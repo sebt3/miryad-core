@@ -81,9 +81,15 @@ Must:
     `serde_json::from_value`.
   `impl MiryadWorkflowStep for RhaiStep` :
     `kind() -> &'static str` rend `"rhai"`.
+    `raw_fields() -> &'static [&'static str]` rend `&["script"]` (2026-10-06, ./template.sdd, décision de Sébastien :
+      « templatiser un script rhai serait une folie » — le code Rhai gère lui-même les changements de forme de
+      ses données). Le texte du script n'est donc **jamais** rendu ; en revanche les **autres** champs de `config`
+      le sont (ils servent de paramètres au script : `config.extra` est la valeur rendue), et le contexte de rendu
+      (`inputs`, `run`, fonction `render`) est disponible au script par les variables décrites à l'étape 2.
     `async fn run(&self, _run: &RunInfo, config, inputs) -> Result<serde_json::Value, StepError>`
     (#26 lot A, 2026-10-04 : premier paramètre `&RunInfo` ajouté par le changement de signature du
-    trait, ./step.sdd ; ce kind l'ignore, le script ne voit toujours que `inputs` et `config`) :
+    trait, ./step.sdd ; **depuis le templating central, 2026-10-06, ce kind ne l'ignore plus** : `run` alimente la
+    variable `run` et la fonction `render` du script, voir étape 2) :
     1. `serde_json::from_value::<RhaiConfig>(config.clone())` — @Err → @StepError { retryable: false,
       message: format!("config rhai invalide: {e}") } (config mal formé, ne se corrige pas en
       rejouant).
@@ -95,7 +101,12 @@ Must:
       par Rhai lui-même, `ErrorTooManyOperations`, rendu par l'étape 3) ; `set_dynamic("inputs", &Value::Object(inputs.into_iter().collect()))`
       (conversion infaillible : @HashMap<@String, @Value> vers @serde_json::Map<@String, @Value> ne
       peut pas échouer, aucun @Result à cette étape, contrairement à une conversion par
-      `serde_json::to_value`) ; `set_dynamic("config", &config)` (le `config` complet, `script`
+      `serde_json::to_value`) ; `set_dynamic("run", {"run_key", "step_id", "depth"})` (identité du run, 2026-10-06 : le même objet que
+      `run` dans le contexte de ./template.sdd) ; enregistrement de la fonction Rhai `render(template: String) ->
+      String` (2026-10-06) qui appelle `template::render_str(&template, &run, &inputs)` (./template.sdd) avec des
+      **clones** de `run` et `inputs` capturés par la fermeture : un script peut ainsi produire un texte avec les mêmes
+      règles, le même contexte et le même moteur durci que la config d'un autre kind — une erreur de rendu est une
+      erreur Rhai d'exécution (donc @StepError non retryable à l'étape 3) ; `set_dynamic("config", &config)` (le `config` complet **rendu**, `script`
       compris, exposé tel quel — un script qui a besoin d'un champ de configuration au-delà de
       `script` lui-même y accède par `config.mon_champ`) ; puis chaque closure de `setups`, dans
       l'ordre, avec `(&mut script, &config, &inputs)` ; puis `eval_map_json(&rhai_config.script)`.
@@ -125,7 +136,8 @@ Must not:
   Rendre `StepError { retryable: true }` pour un échec de script ou de désérialisation de `config` :
     les deux causes sont déterministes vis-à-vis de l'entrée — rejouer ne change jamais le résultat
     (contrairement à un kind qui appellerait un service externe, hors périmètre de ce fichier).
-  Enregistrer lui-même une fonction Rhai au-delà de ce que `Script::new_bare` fournit déjà : ce
+  Enregistrer lui-même une fonction Rhai au-delà de ce que `Script::new_bare` fournit déjà et de `render`
+    (2026-10-06, seule fonction ajoutée par ce fichier, `Must`) : ce
     fichier ne connaît ni accès DB, ni appel HTTP, ni client MCP. Un besoin additionnel est
     apporté par l'application via `with_setup` (closure fournie par elle, jamais par la crate), ou
     par un nouveau kind — jamais codé en dur ici.
@@ -232,6 +244,12 @@ Tasks:
     une invariance) mais porte un observable nouveau (aucune fonction hôte par défaut).
     Correction cosmétique relevée par le validator : la ligne `[x]` du 2026-09-23 comptait « sept
     tests » préexistants — ils sont huit (huit `Scenario` préexistants).
+  [x] Templating central (2026-10-06, ./template.sdd) : implémenter `raw_fields` (`["script"]`), passer `run` au
+    script (variable `run`) et enregistrer `render` avant les closures de `setups` (une closure de l'app peut
+    la surcharger) ; tests nommés des `Scenario` ci-dessous. Même lot que ./template.rs, après ./step.sdd.
+    Validé 2026-10-13 (validator) : cinq tests nommés verts (20 dans le module), clippy `workflow` sans écart.
+    Le premier test simule le rendu du dispatcher par `render_config` ; la preuve côté dispatcher est portée par
+    la tâche de ./dispatcher.sdd.
 
 Done when:
   Les `Scenario` (ceux de #27 compris) ont chacun un test nommé distinct et vert, sur la combinaison de features
@@ -339,3 +357,28 @@ Scenario: sans with_setup le comportement est inchangé (#27)
   When les Scenario préexistants s'exécutent
   Then ils passent tous à l'identique, une fonction hôte non enregistrée (`double(1)`) échoue en
     erreur Rhai non retryable (fonction introuvable)
+
+Scenario: le script n'est jamais rendu mais les autres champs de config le sont (2026-10-06)
+  Given `config = {"script": "#{ s: \"{{inputs.a}}\", v: config.nom }", "nom": "{{inputs.a}}"}` et `inputs = {"a": "Ada"}`, rendu par ./dispatcher.sdd avant `run`
+  When `run` est appelé avec la config rendue
+  Then le résultat est `{"s": "{{inputs.a}}", "v": "Ada"}` — le texte du script est intact, `config.nom` est rendu
+
+Scenario: le script lit l'identité du run (2026-10-06)
+  Given `RunInfo { run_key: "r1", step_id: "s1", depth: 2 }` et `config = {"script": "#{ k: run.run_key, d: run.depth }"}`
+  When `run` est appelé
+  Then le résultat est `{"k": "r1", "d": 2}`
+
+Scenario: la fonction render utilise le contexte du run (2026-10-06)
+  Given `inputs = {"a": "Ada"}` et `config = {"script": "#{ m: render(\"salut {{inputs.a}}\") }"}`
+  When `run` est appelé
+  Then le résultat est `{"m": "salut Ada"}`
+
+Scenario: render échoue en erreur de script non retryable (2026-10-06)
+  Given `config = {"script": "#{ m: render(\"{{inputs.absent}}\") }"}` et `inputs` vide
+  When `run` est appelé
+  Then le résultat est @Err(StepError { retryable: false, .. }) et le message porte `template invalide`
+
+Scenario: raw_fields du kind rhai (2026-10-06)
+  Given un registre contenant `RhaiStep::default()`
+  When `StepRegistry::raw_fields("rhai")` est appelé
+  Then le résultat est `Some(&["script"])`

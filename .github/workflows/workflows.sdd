@@ -11,6 +11,7 @@ Purpose:
 Owns:
   ./ci.yml
   ./publish.yml
+  ./audit.yml
   ../dependabot.yml
 
 Can read:
@@ -22,12 +23,14 @@ References:
 
 Must:
   Déclencher les tests sur `push` et `pull_request` vers `main`.
-  Lancer `cargo test` sur les huit combinaisons de la batterie de `../../tooling.sdd`
+  Lancer `cargo test` sur les combinaisons de la batterie de `../../tooling.sdd`
     (`--no-default-features`, défaut `static-frontend`, `swagger-ui`, `graphql`, `graphiql`,
-    `mcp`, `workflow`, `--all-features`) : les tests sont verts partout, y compris sur le pont
-    GraphQL.
+    `mcp`, `workflow`, `--all-features`, plus `systemone` et `workflow,systemone` depuis
+    l'amendement 2026-10-06 ; `matrix` et `workflow,matrix` s'y ajoutent avec leur lot) : les tests
+    sont verts partout, y compris sur le pont GraphQL.
   Rejouer le harnais clippy sur chaque combinaison de features **hors pont GraphQL**
-    (`--no-default-features`, défaut, `swagger-ui`, `mcp`, `workflow`, avec `--all-targets`), le
+    (`--no-default-features`, défaut, `swagger-ui`, `mcp`, `workflow`, `systemone`,
+    `workflow,systemone`, avec `--all-targets`), le
     `-D warnings` escaladant tout avertissement résiduel hors `[lints]` : ce que
     `../../tooling.sdd` déclare interdit doit casser la CI, pas seulement le poste de travail.
   Le pont GraphQL (`src/graphql/**`, features `graphql`, `graphiql`, et `--all-features` qui les
@@ -42,6 +45,13 @@ Must:
   Lancer les tests avant `cargo publish` dans le job de publication.
   Créer la release GitHub uniquement après la réussite du job de publication (`needs: publish`).
   Publier avec `CARGO_REGISTRY_TOKEN` lu depuis les secrets, jamais en clair dans le workflow.
+  Auditer les dépendances (advisories RustSec) avec `cargo audit` dans un workflow dédié `./audit.yml`
+    (amendement 2026-10-18, arbitré par Sébastien : OUI en CI, fichier séparé, informatif) : déclenché sur
+    `pull_request` vers `main`, sur `push` vers `main` et chaque semaine (`schedule`), un seul job car l'audit
+    porte sur `Cargo.lock` (versionné) et non sur les features. Le job est **informatif** : il ne bloque jamais
+    un merge ni une publication (`continue-on-error: true`), pour qu'une advisory amont qui tombe un jour ne
+    rougisse pas des PR sans rapport ; son résultat reste lisible. Action `rustsec/audit-check` épinglée par
+    tag explicite, avec les seules permissions qu'elle exige.
   Faire surveiller chaque semaine par Dependabot (`../dependabot.yml`) les écosystèmes `cargo` et
     `github-actions` ; ses PR passent par la même CI que les autres, aucun auto-merge.
 
@@ -51,6 +61,7 @@ Must not:
     miryad-core est une bibliothèque, la chaîne de déploiement de l'application appartient à
     `miryad`.
   Publier depuis une branche autre qu'un tag `v*`.
+  Faire dépendre `./publish.yml` ou le blocage d'un merge de `./audit.yml` (job informatif).
 
 Depends on:
   ../../tooling.sdd
@@ -82,7 +93,18 @@ Scenario: harnais contourné
   Then l'avertissement escaladé en `-D warnings` fait échouer le job
   And la revue demande la correction, pas un `#[allow]` de plus
 
+Scenario: advisory RustSec sur une dépendance
+  Given une dépendance de `Cargo.lock` visée par une advisory RustSec
+  When `./audit.yml` tourne sur une PR, un push vers `main` ou le déclencheur hebdomadaire
+  Then le job d'audit signale l'advisory sans bloquer le merge ni la publication
+  And les jobs de `./ci.yml` et `./publish.yml` ne sont ni retardés ni rougis par lui
+
 Tasks:
+  [x] Ajouter ./audit.yml (job `cargo audit` informatif, déclencheurs `pull_request`/`push` vers `main` +
+    `schedule` hebdomadaire) selon les `Must` ci-dessus. Une tâche par fichier : ./audit.yml seul, ni ./ci.yml
+    ni ./publish.yml. Clôt la ligne `cargo audit` de ../../tooling.sdd (à cocher en même temps).
+    Validé 2026-10-18 (Claude) : job unique `continue-on-error`, `rustsec/audit-check@v2.0.0`, cron lundi 06:00 UTC,
+    permissions `contents: read`, `checks: write`, `issues: write` (README de l'action) ; YAML valide, lint OK.
   [ ] Allonger les jobs de test (huit combinaisons) et de clippy (cinq combinaisons hors pont :
     `--no-default-features`, défaut, `swagger-ui`, `mcp`, `workflow`) dans ./ci.yml ; retirer le
     pas `cargo clippy --all-features` actuel, rouge durablement sur les sites gelés du pont et qui

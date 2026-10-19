@@ -6,6 +6,10 @@
 //! protocole `restate-sdk`, servis par un `HttpServer`/`Endpoint` que l'app construit et lie
 //! elle-même dans son propre `main()`. Schéma de déploiement (StatefulSet Restate, vynil box)
 //! dans `docs/architecture.md`.
+//!
+//! Les kinds natifs à dépendance externe ne sont **pas** enregistrés par le moteur : l'application les
+//! enregistre elle-même dans son `StepRegistry`, comme `RhaiStep` — `register(SystemOneStep::new(client))`
+//! sous `workflow` + `systemone`, `register(MatrixSendStep::new(client))` sous `workflow` + `matrix`.
 
 pub mod client;
 pub mod definition;
@@ -13,9 +17,14 @@ pub mod dispatcher;
 pub mod durable;
 pub mod error;
 pub mod interpreter;
+#[cfg(all(feature = "workflow", feature = "matrix"))]
+pub mod matrix_step;
 pub mod rhai_step;
 pub mod step;
 pub mod subworkflow;
+#[cfg(all(feature = "workflow", feature = "systemone"))]
+pub mod systemone_step;
+mod template;
 
 // Ré-exports à plat, par sous-module (ordre alphabétique des sous-modules, comme les déclarations
 // ci-dessus) ; à l'intérieur des accolades, rustfmt (style edition 2024) impose son tri des noms —
@@ -32,9 +41,13 @@ pub use dispatcher::{StepDispatcher, recommended_options};
 pub use durable::{MiryadDurableStep, StepContext};
 pub use error::WorkflowError;
 pub use interpreter::DagInterpreter;
+#[cfg(all(feature = "workflow", feature = "matrix"))]
+pub use matrix_step::MatrixSendStep;
 pub use rhai_step::RhaiStep;
 pub use step::{MiryadWorkflowStep, RunInfo, StepError, StepRegistry};
 pub use subworkflow::SubWorkflowStep;
+#[cfg(all(feature = "workflow", feature = "systemone"))]
+pub use systemone_step::SystemOneStep;
 
 #[cfg(test)]
 mod tests {
@@ -82,5 +95,22 @@ mod tests {
         // Neuvième chemin : `configure_policy`, référencé en valeur sans être appelé — sa sémantique
         // `OnceLock` est prouvée par `tests/workflow_policy.rs`, hors de ce scénario.
         std::hint::black_box(crate::workflow::configure_policy);
+    }
+
+    /// Scenario « les steps croisés n'existent que sous leur croisement de features » : ces deux tests
+    /// n'existent que sous leur `cfg` — leur compilation est la preuve ; sous `workflow` seul, aucun
+    /// des deux chemins ne résout (`E0432`).
+    #[cfg(all(feature = "workflow", feature = "systemone"))]
+    #[test]
+    fn systemone_step_est_importable_sous_son_croisement() {
+        fn witness(_: Option<crate::workflow::SystemOneStep>) {}
+        witness(None);
+    }
+
+    #[cfg(all(feature = "workflow", feature = "matrix"))]
+    #[test]
+    fn matrix_send_step_est_importable_sous_son_croisement() {
+        fn witness(_: Option<crate::workflow::MatrixSendStep>) {}
+        witness(None);
     }
 }

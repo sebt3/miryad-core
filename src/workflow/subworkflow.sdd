@@ -56,6 +56,10 @@ Must:
     4. @Ok(dag).
   `impl MiryadDurableStep for SubWorkflowStep` :
     `kind()` rend `"subworkflow"`.
+    `raw_fields()` rend `&["dag"]` (2026-10-06, ./template.sdd) : le DAG enfant est embarqué dans la `config` du
+    parent ; ses `config` de steps contiennent des templates destinés au rendu **de chaque step enfant**
+    (avec leurs propres `inputs`), jamais au rendu du parent. Sans cette déclaration le parent tenterait de
+    rendre `{{inputs.x}}` d'un step enfant avec les `inputs` du parent et échouerait (mode strict).
     `async fn run(&self, ctx, config, _inputs)` : `prepare(ctx.run_info(), config, self.max_depth)?`
     puis `ctx.run_child_dag(&dag).await?` ; sortie = `Value::Object(map.into_iter().collect())` (clé =
     id du step enfant, valeur = sa sortie, comme les `results` de `DagInterpreter::run`), sans
@@ -149,6 +153,8 @@ Tasks:
     run). Non bloquant ; à rouvrir sur besoin.
   [ ] [reporté, approuvé 2026-10-04 : prochaine livraison, non bloquant] **Autorisation / droits du déclencheur** (#26) : sans identité dans @RunInfo, l'enfant n'hérite de
     rien (voir ./step.sdd `Tasks`). Non bloquant.
+  [x] Templating central (2026-10-06) : implémenter `raw_fields` ci-dessus ; test nommé du `Scenario` ci-dessous.
+    Validé 2026-10-13 (validator) : `les_templates_d_un_dag_enfant_ne_sont_pas_rendus_par_le_parent` vert.
 
 Done when:
   Les `Scenario` ci-dessous ont chacun un test nommé distinct et vert (`prepare` et `kind`/`Default`,
@@ -202,3 +208,8 @@ Scenario: le kind et le défaut sont ceux du contrat
   When `kind()` est appelé et que `max_depth` est observé par un `prepare` à `run.depth = 3` puis `4`
   Then `kind()` vaut `"subworkflow"`, `DEFAULT_MAX_DEPTH` vaut `4`, la profondeur 3 passe et la
     profondeur 4 est refusée — le défaut applique bien `DEFAULT_MAX_DEPTH`
+
+Scenario: les templates d'un DAG enfant ne sont pas rendus par le parent (2026-10-06)
+  Given un parent dont `config = {"dag": [{"id": "a", "depends_on": [], "kind": "x", "config": {"m": "{{inputs.q}}"}}]}`
+  When `StepRegistry::raw_fields("subworkflow")` est consulté puis la config est rendue par ./template.sdd avec `inputs` vide
+  Then `raw_fields` vaut `Some(&["dag"])` et la `config` rendue est identique à l'entrée (le template enfant est intact)

@@ -1,0 +1,97 @@
+Spec: kv — chiffrement des payloads et accès clé/valeur du store
+
+Purpose:
+  Porter les trois primitives communes à tous les fichiers du store : (1) le @StoreCipher du compte
+    (créé au premier `open`, exporté chiffré par la passphrase dans la table `kv`, ré-importé aux
+    ouvertures suivantes), (2) le chiffrement/déchiffrement des `payload` et le hachage déterministe
+    des colonnes de recherche, (3) la lecture/écriture/suppression de lignes de la table `kv`.
+    Tout fichier du store passe par ici : aucun autre fichier n'appelle @StoreCipher directement
+    (un seul site de chiffrement, donc un seul endroit à auditer). Fichier neuf, conception ; la sémantique
+    de référence est celle de `matrix-sdk-sqlite` `0.18.0` (`src/crypto_store.rs`, `src/utils.rs`), réécrite
+    sur SeaORM ; format dérivé, donc attribution Apache-2.0 en tête de fichier (./crypto_sessions.sdd `Tasks`, licence).
+
+Owns:
+  ./kv.rs
+
+References:
+  ./mod.sdd — extractibilité et contraintes ; ./migration.sdd — table `kv`
+  matrix-sdk-store-encryption `0.18.0`, @StoreCipher : `new`, `export`/`import` (passphrase),
+    `encrypt_value_data`/`decrypt_value_data` (octets), `hash_key(table_name, key) -> [u8; 32]` — API à
+    relire en source, noms exacts à confirmer à l'implémentation
+
+Must:
+  `pub(super) struct Kv` — `Clone`, champs : `account_key: String`,
+    `cipher: Arc<StoreCipher>` (la connexion n'est **pas** portée : chaque opération reçoit sa `conn`,
+    amendement 2026-10-17). Constructeur `pub(super) async fn open(db, account_key: &str, passphrase: &str)
+    -> Result<Kv, StoreError>` :
+    1. lit la ligne `kv(account_key, key = "cipher")` ; absente → crée `StoreCipher::new()`, l'exporte avec
+      `passphrase` et insère la ligne (insertion conditionnelle : en concurrence deux `open`, un seul
+      cipher survit, l'autre ré-lit la ligne gagnante) ;
+    2. présente → `StoreCipher::import(passphrase, &bytes)` ; échec → `StoreError::Cipher`
+      (mauvaise passphrase ou export corrompu — jamais un panic, jamais un cipher neuf silencieux
+      qui rendrait les anciens payloads illisibles).
+  `pub(super) fn hash(&self, table: &str, value: &str) -> String` — hexadécimal de
+    `cipher.hash_key(table, value.as_bytes())` : valeur **déterministe** par (table, value) pour un
+    même cipher, donc utilisable en égalité SQL ; jamais la valeur en clair dans une colonne de recherche.
+  `pub(super) fn seal<T: Serialize>(&self, v: &T) -> Result<Vec<u8>, StoreError>` et
+    `pub(super) fn open_sealed<T: DeserializeOwned>(&self, bytes: &[u8]) -> Result<T, StoreError>` —
+    sérialisation JSON puis chiffrement ; échec de déchiffrement avec le bon cipher → `StoreError::Corrupt`.
+  `pub(super) async fn get(&self, conn: &impl ConnectionTrait, key: &str) -> Result<Option<Vec<u8>>, StoreError>`,
+    `put(&self, conn, key, value: Vec<u8>)` (upsert : insertion, ou mise à jour si la ligne existe),
+    `delete(&self, conn, key)` — opèrent sur `kv` pour `account_key`, valeurs **déjà scellées** par l'appelant
+    (`kv` ne chiffre pas elle-même : le cipher se stocke en clair-exporté, les autres valeurs sont scellées
+    par `seal`). `conn` est une connexion ou une transaction (`ConnectionTrait`) : l'appelant choisit.
+  Compiler sous `#[cfg(feature = "matrix")]` (porté par ../mod.rs).
+
+Must not:
+  Logguer ou formater (`Debug`) un cipher, une passphrase ou un octet de payload ; `Kv` n'implémente
+    `Debug` que par une impl manuelle qui n'imprime pas le cipher.
+  Dériver une clé de chiffrement ailleurs que par @StoreCipher.
+
+Depends on:
+  ./error.rs, @sea_orm, @matrix_sdk_store_encryption, @serde, @serde_json, @hex (déjà direct)
+
+Exposes:
+  `Kv` (`pub(super)`), `Kv::{open, hash, seal, open_sealed, get, put, delete}`, et l'accesseur `Kv::account_key(&self) -> &str`
+    (`pub(super)`, ajouté le 2026-10-15 : le bail de ./crypto_account.sdd filtre `leases` par `account_key`)
+
+Raises:
+  `MRD-MXSTORE-001` (`DbErr`), `-002` (cipher), `-003` (sérialisation), `-004` (payload corrompu)
+
+Handles:
+  Deux comptes (deux `account_key`) dans la même base : chacun son cipher, ses `kv` ; une passphrase
+    qui ouvre l'un n'ouvre pas l'autre.
+
+Tasks:
+  [x] Tests d'abord (SQLite mémoire) depuis les `Scenario`, puis ./kv.rs.
+    Validé 2026-10-15 (Claude) : cinq tests nommés verts (un par Scenario), clippy `matrix` et `workflow,matrix` sans
+    écart. Lectures retenues : `open_sealed` rend `Corrupt` (payload indéchiffrable), `seal` rend `Cipher` pour un
+    échec de chiffrement et `Serialization` pour un échec JSON (cohérent avec ./error.sdd).
+
+Done when:
+  Les `Scenario` sont verts sous `matrix` ; la spec est relue et approuvée avant ./kv.rs.
+
+Scenario: le premier open crée un cipher, le second le relit
+  Given une base vide
+  When `Kv::open` est appelé deux fois avec la même passphrase
+  Then une seule ligne `cipher` existe et un payload scellé par la première instance est lu par la seconde
+
+Scenario: une mauvaise passphrase est une erreur, pas un cipher neuf
+  Given un store ouvert avec la passphrase `a`
+  When `Kv::open` est appelé avec `b`
+  Then le résultat est @Err(StoreError::Cipher(_)) et la ligne `cipher` est inchangée
+
+Scenario: le hachage est déterministe et dépend de la table
+  Given un `Kv`
+  When `hash("t1", "x")` est appelé deux fois, puis `hash("t2", "x")`
+  Then les deux premiers résultats sont égaux et le troisième diffère
+
+Scenario: put est un upsert, delete supprime
+  Given une clé absente
+  When `put` est appelé deux fois avec des valeurs différentes puis `delete`
+  Then `get` rend la seconde valeur entre-temps, puis `None`
+
+Scenario: deux comptes sont isolés
+  Given deux `Kv` d'`account_key` différents sur la même base
+  When chacun écrit la clé `k`
+  Then chacun ne relit que sa valeur

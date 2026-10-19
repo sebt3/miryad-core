@@ -124,6 +124,12 @@ impl MiryadDurableStep for SubWorkflowStep {
         "subworkflow"
     }
 
+    /// Le `dag` enfant porte des templates destinés au rendu de chaque step enfant : le parent ne
+    /// doit pas les rendre (./subworkflow.sdd, 2026-10-06).
+    fn raw_fields(&self) -> &'static [&'static str] {
+        &["dag"]
+    }
+
     /// Prépare (`prepare`) puis lance le DAG enfant via [`StepContext::run_child_dag`] —
     /// idempotent au rejeu (clé enfant `{run_key}:{step_id}`, profondeur incrémentée, portées par
     /// ./durable.rs, jamais calculées ici). Sortie : la table des sorties de l'enfant en objet
@@ -149,8 +155,11 @@ mod tests {
     use super::prepare;
     use crate::workflow::MiryadDurableStep as _;
     use crate::workflow::step::RunInfo;
+    use crate::workflow::step::StepRegistry;
+    use crate::workflow::template::render_config;
     use serde_json::Value;
     use serde_json::json;
+    use std::collections::HashMap;
 
     // Fixtures — `prepare` est une fonction pure (spec ./subworkflow.sdd `Must`) : aucun
     // `StepContext`, aucun serveur Restate. Le `run` de MiryadDurableStep n'est pas testable en
@@ -289,5 +298,32 @@ mod tests {
             erreur.message.starts_with("MRD-WORKFLOW-008:"),
             "la profondeur 4 (enfant à 5) doit être refusée sous le défaut : {erreur}"
         );
+    }
+
+    /// Scenario « les templates d'un DAG enfant ne sont pas rendus par le parent » (2026-10-06) :
+    /// `StepRegistry::raw_fields("subworkflow")` vaut `Some(&["dag"])` et le rendu du `config`
+    /// parent avec `inputs` vides laisse le DAG enfant intact (`{{inputs.q}}` n'est pas évalué,
+    /// sinon le mode strict échouerait).
+    #[test]
+    fn les_templates_d_un_dag_enfant_ne_sont_pas_rendus_par_le_parent() {
+        let mut registry = StepRegistry::new();
+        registry
+            .register_durable(SubWorkflowStep::default())
+            .expect("kind distinct");
+        let dag: &[&str] = &["dag"];
+        assert_eq!(registry.raw_fields("subworkflow"), Some(dag));
+
+        let config = json!({
+            "dag": [{
+                "id": "a",
+                "depends_on": [],
+                "kind": "x",
+                "config": { "m": "{{inputs.q}}" }
+            }]
+        });
+        let raw = registry.raw_fields("subworkflow").unwrap_or(&[]);
+        let rendu = render_config(&config, &run(0), &HashMap::new(), raw)
+            .expect("le DAG enfant ne doit pas être rendu par le parent");
+        assert_eq!(rendu, config, "le template enfant doit rester intact");
     }
 }

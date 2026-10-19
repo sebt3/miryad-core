@@ -16,6 +16,7 @@ use serde_json::Value;
 
 use super::durable::StepContext;
 use super::step::{RunInfo, StepError, StepRegistry};
+use super::template::render_config;
 
 /// Corps de requête de [`StepDispatcher::execute`] — forme sérialisée échangée avec
 /// ./interpreter.rs via le protocole `restate-sdk`.
@@ -81,8 +82,28 @@ impl StepDispatcher {
         // n'a pas lieu. Aucune politique de retry posée ici : la traduction est le seul site
         // `step_error_to_handler_error`, comme pour un kind ordinaire.
         if let Some(durable) = self.registry.durable(&kind) {
+            // Rendu de la config dans un `ctx.run()` dédié au seul rendu : journalisé, donc
+            // rejoué à l'identique après reprise (un helper non déterministe comme
+            // `uuid_new_v4` ne doit pas donner une autre valeur à chaque rejeu). Les clones
+            // sont requis : la fermeture doit posséder ses données, `run_info` et `inputs`
+            // servent encore au `run` du kind.
+            let run_pour_rendu = run_info.clone();
+            let inputs_pour_rendu = inputs.clone();
+            let Json(rendered) = ctx
+                .run(move || async move {
+                    render_for_kind(
+                        &self.registry,
+                        &kind,
+                        &run_pour_rendu,
+                        &config,
+                        &inputs_pour_rendu,
+                    )
+                    .map(Json)
+                    .map_err(step_error_to_handler_error)
+                })
+                .await?;
             return durable
-                .run(&StepContext::new(&ctx, run_info), config, inputs)
+                .run(&StepContext::new(&ctx, run_info), rendered, inputs)
                 .await
                 .map(Json)
                 .map_err(step_error_to_handler_error);
@@ -98,6 +119,28 @@ impl StepDispatcher {
     }
 }
 
+/// Erreur `404` « kind inconnu » : erreur de configuration du DAG, jamais `StepError`.
+fn kind_inconnu(kind: &str) -> HandlerError {
+    HandlerError::from(TerminalError::new_with_code(404, format!("kind inconnu: {kind}")))
+}
+
+/// Rendu de la `config` d'un step selon les `raw_fields` de son kind (./template.sdd). Pure :
+/// seul pont entre [`StepRegistry`] et [`render_config`]. Un kind absent rend un `StepError`
+/// non retryable, qui ne se produit jamais en pratique : les appelants testent le kind avant.
+fn render_for_kind(
+    registry: &StepRegistry,
+    kind: &str,
+    run: &RunInfo,
+    config: &Value,
+    inputs: &HashMap<String, Value>,
+) -> Result<Value, StepError> {
+    let raw = registry.raw_fields(kind).ok_or_else(|| StepError {
+        message: format!("kind inconnu: {kind}"),
+        retryable: false,
+    })?;
+    render_config(config, run, inputs, raw)
+}
+
 /// Seul corps de la fermeture de `ctx.run` du handler : dispatch du kind, puis attente de son
 /// futur. Séparaison tranchée par Sébastien (2026-09-23) : `restate-sdk` ne virtualise aucun
 /// `Context`, cette fonction rend les trois branches (404 kind inconnu, transit intact du
@@ -111,12 +154,18 @@ async fn run_invocation(
     config: Value,
     inputs: HashMap<String, Value>,
 ) -> Result<Json<Value>, HandlerError> {
+    // Kind absent : 404 posé avant tout rendu (un template invalide ne change pas ce code).
     // Err de `dispatch` = kind absent du registre : erreur de configuration du DAG (4xx),
     // jamais une panne du service (5xx). Code 404 posé explicitement, et jamais par
     // `step_error_to_handler_error`, réservée aux StepError d'un run.
-    let found = registry.dispatch(&kind, &run_info, config, inputs).map_err(|_| {
-        HandlerError::from(TerminalError::new_with_code(404, format!("kind inconnu: {kind}")))
-    })?;
+    if registry.raw_fields(&kind).is_none() {
+        return Err(kind_inconnu(&kind));
+    }
+    let rendered =
+        render_for_kind(registry, &kind, &run_info, &config, &inputs).map_err(step_error_to_handler_error)?;
+    let found = registry
+        .dispatch(&kind, &run_info, rendered, inputs)
+        .map_err(|_| kind_inconnu(&kind))?;
     // Enveloppe `Json` posée ici (wrapper requis pour tout type non primitif traversant le
     // protocole `restate-sdk`) : la `Must` fixe le `run` en `Result<Json<Value>, TerminalError>`,
     // la sortie du run et la forme sur le fil restent le `Value` nu du kind.
@@ -258,6 +307,46 @@ mod tests {
             _inputs: HashMap<String, Value>,
         ) -> Result<Value, StepError> {
             Ok(json!({ "run_key": run.run_key, "step_id": run.step_id, "depth": run.depth }))
+        }
+    }
+
+    /// Kind de fixture `"echo_config_inputs"` (scenarios « config rendue avant dispatch » 2026-10-06) :
+    /// rend la `config` **et** les `inputs` reçus, pour observer ce que le kind reçoit réellement.
+    struct EchoConfigEtInputs;
+    /// Kind de fixture `"brut"` qui déclare `raw_fields` = `["code"]` et rend sa `config` reçue
+    /// (scenario « un champ brut déclaré par le kind n'est pas rendu » 2026-10-06).
+    struct Brut;
+
+    #[async_trait::async_trait]
+    impl MiryadWorkflowStep for EchoConfigEtInputs {
+        fn kind(&self) -> &'static str {
+            "echo_config_inputs"
+        }
+        async fn run(
+            &self,
+            _run: &RunInfo,
+            config: Value,
+            inputs: HashMap<String, Value>,
+        ) -> Result<Value, StepError> {
+            Ok(json!({ "config": config, "inputs": inputs }))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MiryadWorkflowStep for Brut {
+        fn kind(&self) -> &'static str {
+            "brut"
+        }
+        fn raw_fields(&self) -> &'static [&'static str] {
+            &["code"]
+        }
+        async fn run(
+            &self,
+            _run: &RunInfo,
+            config: Value,
+            _inputs: HashMap<String, Value>,
+        ) -> Result<Value, StepError> {
+            Ok(config)
         }
     }
 
@@ -495,6 +584,116 @@ mod tests {
         assert_eq!(
             affiche, "Terminal error [404]: kind inconnu: d",
             "le durable ne se résout pas par run_invocation : {affiche}"
+        );
+    }
+
+    /// Scenario « la config d'un kind ordinaire est rendue avant dispatch » (2026-10-06) : la
+    /// `config` atteint le kind rendue (`{{inputs.a.nom}}` → `Ada`), les `inputs` reçus par le kind
+    /// restent exactement ceux d'entrée (non rendus, non modifiés).
+    #[tokio::test]
+    async fn la_config_d_un_kind_ordinaire_est_rendue_avant_dispatch() {
+        let mut registry = StepRegistry::new();
+        registry.register(EchoConfigEtInputs).expect("kind distinct");
+        let rendu = run_invocation(
+            &registry,
+            "echo_config_inputs".to_string(),
+            run_info(),
+            json!({"m": "bonjour {{inputs.a.nom}}"}),
+            HashMap::from([("a".to_string(), json!({"nom": "Ada"}))]),
+        )
+        .await
+        .expect("le kind de fixture est enregistré");
+        let Json(valeur) = rendu;
+        assert_eq!(
+            valeur,
+            json!({
+                "config": {"m": "bonjour Ada"},
+                "inputs": {"a": {"nom": "Ada"}}
+            }),
+            "la config doit être rendue, les inputs transmis tels quels"
+        );
+    }
+
+    /// Scenario « un champ brut déclaré par le kind n'est pas rendu » (2026-10-06) : le champ
+    /// `code`, déclaré par `raw_fields`, arrive au kind tel quel ; le champ `t` est rendu.
+    #[tokio::test]
+    async fn un_champ_brut_declare_par_le_kind_n_est_pas_rendu() {
+        let mut registry = StepRegistry::new();
+        registry.register(Brut).expect("kind distinct");
+        let rendu = run_invocation(
+            &registry,
+            "brut".to_string(),
+            run_info(),
+            json!({"code": "{{x}}", "t": "{{inputs.a}}"}),
+            HashMap::from([("a".to_string(), json!("v"))]),
+        )
+        .await
+        .expect("le kind de fixture `brut` est enregistré");
+        let Json(valeur) = rendu;
+        assert_eq!(
+            valeur,
+            json!({"code": "{{x}}", "t": "v"}),
+            "le champ brut doit parvenir intact, le champ ordinaire rendu"
+        );
+    }
+
+    /// Scenario « un kind inconnu rend 404 même avec un template invalide » (2026-10-06) : aucun
+    /// rendu n'est tenté avant le `404` — un template invalide ne change pas le code d'erreur.
+    #[tokio::test]
+    async fn un_kind_inconnu_rend_404_meme_avec_template_invalide() {
+        let registry = StepRegistry::new();
+        let Err(erreur) = run_invocation(
+            &registry,
+            "nope".to_string(),
+            run_info(),
+            json!({"m": "{{inputs.absent.x}}"}),
+            HashMap::new(),
+        )
+        .await
+        else {
+            panic!("un kind absent doit rendre une erreur, jamais Ok");
+        };
+        let affiche = AsRef::<dyn StdError>::as_ref(&erreur).to_string();
+        assert_eq!(
+            affiche, "Terminal error [404]: kind inconnu: nope",
+            "le 404 doit primer sur toute erreur de template : {affiche}"
+        );
+    }
+
+    /// Scenario « une erreur de template est une erreur terminale non retryable » (2026-10-06) :
+    /// le message commence par `template invalide à /m:`, et le kind n'a jamais été exécuté
+    /// (compteur à `0`).
+    #[tokio::test]
+    async fn une_erreur_de_template_est_terminale_non_retryable() {
+        let compteur = Arc::new(AtomicUsize::new(0));
+        let mut registry = StepRegistry::new();
+        registry
+            .register(Compteur(Arc::clone(&compteur)))
+            .expect("kind distinct");
+        let Err(erreur) = run_invocation(
+            &registry,
+            "compteur".to_string(),
+            run_info(),
+            json!({"m": "{{inputs.absent.x}}"}),
+            HashMap::new(),
+        )
+        .await
+        else {
+            panic!("une erreur de template doit rendre une erreur, jamais Ok");
+        };
+        let affiche = AsRef::<dyn StdError>::as_ref(&erreur).to_string();
+        assert!(
+            affiche.contains("Terminal error [500]: template invalide à /m:"),
+            "une erreur de template est une TerminalError non retryable, affiche : {affiche}"
+        );
+        assert!(
+            !affiche.contains("Retryable error:"),
+            "une erreur de template ne doit jamais être retryable, affiche : {affiche}"
+        );
+        let n = compteur.load(Ordering::SeqCst);
+        assert_eq!(
+            n, 0,
+            "le kind ne doit pas être exécuté sur un template invalide : {n}"
         );
     }
 

@@ -61,6 +61,13 @@ Must:
       Le retour est la valeur que @DagInterpreter (./interpreter.sdd) collecte et republie en `inputs`
       de chacun des steps qui déclarent celui-ci en dépendance — ./step.rs ne construit ni ne consomme
       lui-même `inputs`, il ne fait que le transporter jusqu'à l'`impl` du kind.
+    `fn raw_fields(&self) -> &'static [&'static str] { &[] }` (**méthode à implémentation par défaut**,
+      ajoutée 2026-10-06, non cassante — le registre du templating, ./template.sdd) — noms de clés de
+      **premier niveau** de `config` que le rendu Handlebars central ne doit jamais toucher : le
+      sous-arbre est remis tel quel au kind. Défaut : aucun (toute la `config` est rendue). Un kind
+      qui porte du code ou un contenu qui est lui-même un template destiné à un autre rendu le déclare :
+      `"rhai"` → `["script"]` (./rhai_step.sdd), `"subworkflow"` → `["dag"]` (./subworkflow.sdd).
+      Le contrat est statique (`'static`) : la liste ne dépend ni de la `config` ni de l'état du kind.
   @RunInfo — struct `pub`, `#[derive(Debug, Clone, PartialEq, Eq)]`, trois champs `pub` (#26,
     2026-10-04), donnée pure sans `restate-sdk` : `run_key: @String` (clé du run en cours, c'est-à-dire
     la clé de workflow Restate de l'invocation de @DagInterpreter qui exécute ce step — pour un run
@@ -97,6 +104,10 @@ Must:
       espace de noms que `register` : un `kind()` déjà pris, par un kind ordinaire **ou** durable,
       rend @WorkflowError::DuplicateStepKind sans rien insérer. Le registre garde deux collections
       internes (ordinaires, durables), jamais deux espaces de noms.
+    `pub(crate) fn raw_fields(&self, kind: &str) -> Option<&'static [&'static str]>` (2026-10-06) — les
+      `raw_fields` du kind enregistré sous `kind`, ordinaire **ou** durable ; @None si aucun kind n'est
+      enregistré sous ce nom (permet à ./dispatcher.sdd de rendre le `404` « kind inconnu » **avant** tout
+      rendu de template). Seul point d'accès de ./dispatcher.rs aux `raw_fields`.
     `pub(crate) fn durable(&self, kind: &str) -> Option<&dyn MiryadDurableStep>` (#26) — le kind
       durable enregistré sous `kind`, ou @None ; seul point d'entrée de ./dispatcher.rs pour les kinds
       durables, consulté **avant** `dispatch`.
@@ -259,6 +270,12 @@ Tasks:
     Réalisé 2026-10-02 (B5e-mini, validator consolidé PASS) : @Self::dispatch délié en chemin de
     code (méthode @pub(crate)), phrase inchangée ; @cargo doc workflow et @all-features à zéro
     avertissement au brut.
+  [x] Templating central (2026-10-06, ./template.sdd) : ajouter `MiryadWorkflowStep::raw_fields` (méthode
+    par défaut, aucun `impl` existant à modifier) et `StepRegistry::raw_fields` ; tests nommés des deux
+    `Scenario` ci-dessous dans `mod tests` ; aucun changement de comportement pour les kinds existants.
+    **Avant** ./dispatcher.rs (qui consomme `StepRegistry::raw_fields`).
+    Validé 2026-10-13 (validator) : trois tests nommés verts (step.rs ×2, durable.rs ×1), clippy workflow sans écart.
+    `StepRegistry::raw_fields` porte un `#[allow(dead_code)]` jusqu'à la tâche dispatcher du même lot.
 
 Done when:
   Les `Scenario` ajoutés par #26 (marqués `(#26)`) ont chacun un test nommé distinct et vert.
@@ -335,3 +352,13 @@ Scenario: collision d'enregistrement entre kind ordinaire et kind durable (#26)
     d'abord, `register` ensuite)
   Then chaque second enregistrement rend @Err(WorkflowError::DuplicateStepKind("x")) sans écraser le
     premier
+
+Scenario: raw_fields vaut vide par défaut et se redéfinit par kind (2026-10-06)
+  Given un kind de fixture sans redéfinition et un second qui rend `&["script"]`
+  When `StepRegistry::raw_fields` est appelé pour chacun
+  Then les résultats sont `Some(&[])` et `Some(&["script"])`
+
+Scenario: raw_fields d'un kind inconnu est None (2026-10-06)
+  Given un registre sans kind `"x"`
+  When `StepRegistry::raw_fields("x")` est appelé
+  Then le résultat est `None`

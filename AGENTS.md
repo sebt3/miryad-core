@@ -76,6 +76,10 @@ cargo test --no-default-features --features graphql
 cargo test --no-default-features --features graphiql
 cargo test --no-default-features --features mcp
 cargo test --no-default-features --features workflow
+cargo test --no-default-features --features systemone
+cargo test --no-default-features --features workflow,systemone
+cargo test --no-default-features --features matrix
+cargo test --no-default-features --features workflow,matrix
 cargo test --all-features
 cargo clippy --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
@@ -84,6 +88,10 @@ cargo clippy --no-default-features --features graphql --all-targets -- -D warnin
 cargo clippy --no-default-features --features graphiql --all-targets -- -D warnings
 cargo clippy --no-default-features --features mcp --all-targets -- -D warnings
 cargo clippy --no-default-features --features workflow --all-targets -- -D warnings
+cargo clippy --no-default-features --features systemone --all-targets -- -D warnings
+cargo clippy --no-default-features --features workflow,systemone --all-targets -- -D warnings
+cargo clippy --no-default-features --features matrix --all-targets -- -D warnings
+cargo clippy --no-default-features --features workflow,matrix --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo fmt --check
 ```
@@ -105,6 +113,8 @@ la syntaxe `.sdd`, `specdd resolve <cible>` vérifie la chaîne de specs avant d
 - Modification d'une migration committée interdite : on ajoute la migration suivante.
   Exception actée le 2026-10-04 (aucune production à ce jour) : `m20260923_000001` est modifiée en
   place pour #28 ; la règle reprend dès la première mise en production.
+  Exception actée le 2026-10-17 (feature `matrix` jamais déployée) : `m20261006_000001` est modifiée en
+  place (`payload` sur `tracked_users`, table `rooms_pending_key_bundle`) ; même clause de sortie.
 
 ## Git
 

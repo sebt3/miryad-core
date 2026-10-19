@@ -1,0 +1,9 @@
+miryad-core
+Copyright (c) 2026, Sébastien Huss — BSD-3-Clause (voir LICENSE)
+
+Ce paquet contient, sous la feature `matrix`, des portions dérivées de matrix-sdk-sqlite 0.18.0
+(https://github.com/matrix-org/matrix-rust-sdk), Copyright 2022, 2026 The Matrix.org Foundation C.I.C.,
+distribué sous Apache License 2.0 (voir LICENSE-APACHE) : schéma des tables du store de chiffrement,
+formats de sérialisation et sémantique des opérations, réimplémentés sur SeaORM.
+Fichiers concernés : src/matrix/store/{migration,kv,crypto,crypto_account,crypto_devices,crypto_sessions}.rs
+(chacun porte un en-tête de modification). Aucun autre fichier n'en dérive.

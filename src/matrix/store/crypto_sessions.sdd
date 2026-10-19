@@ -1,0 +1,116 @@
+Spec: crypto_sessions — sessions Olm, sessions de groupe Megolm, sauvegarde de clés
+
+Purpose:
+  Porter la partie « sessions » du trait @CryptoStore : sessions Olm (une par couple appareil-appareil),
+    sessions de groupe entrantes et sortantes (Megolm), informations de refus (`withheld`) et l'état
+    de sauvegarde des clés de salon (`backed_up`, compteurs, lots de sauvegarde). C'est la partie la
+    plus volumineuse en lignes et la plus interrogée : les requêtes filtrées exigent des colonnes
+    indexées (./migration.sdd), pas seulement des blobs. Fichier neuf, conception ; fonctions
+    inhérentes déléguées par ./crypto.sdd.
+
+Owns:
+  ./crypto_sessions.rs
+
+References:
+  ./kv.sdd — @Kv (`hash`, `seal`, `open_sealed`) ; ./migration.sdd — tables `olm_sessions`,
+    `inbound_group_sessions`, `outbound_group_sessions`, `withheld_sessions`
+  matrix-sdk-crypto `0.18.0` — trait @CryptoStore (sémantique de chaque méthode), `olm::{Session,
+    InboundGroupSession, OutboundGroupSession}` (API de pickle publique)
+  matrix-sdk-sqlite `0.18.0`, `src/crypto_store.rs` — référence de sémantique, réimplémentée sur SeaORM (contenu des payloads, requêtes), attribution Apache-2.0 en tête de fichier (licence : `Tasks`)
+
+Must:
+  Méthodes inhérentes `pub(super)` de `impl SeaOrmCryptoStore`, mêmes signatures que le trait,
+    `Result<_, StoreError>` : `save_inbound_group_sessions`, `get_sessions`, `get_inbound_group_session`,
+    `get_withheld_info`, `get_withheld_sessions_by_room_id`, `get_inbound_group_sessions`,
+    `inbound_group_session_counts`, `get_inbound_group_sessions_by_room_id`,
+    `get_inbound_group_sessions_for_device_batch`, `inbound_group_sessions_for_backup`,
+    `mark_inbound_group_sessions_as_backed_up`, `reset_backup_state`, `get_outbound_group_session`.
+  `pub(super) async fn apply_sessions(&self, txn: &DatabaseTransaction, changes: &Changes) -> Result<(), StoreError>` —
+    applique `changes.sessions` (Olm), `changes.inbound_group_sessions`, `changes.outbound_group_sessions`,
+    `changes.withheld_session_info` ; insertion ou remplacement par clé primaire (upsert) ; dans la
+    transaction reçue.
+  Colonnes de recherche hachées par `Kv::hash(<nom de table>, <valeur>)` ; `payload` scellé par `Kv::seal`
+    avec le pickle de la session (jamais un champ en clair). Un `backed_up` BOOLEAN, `sender_key` et
+    `sender_data_type` en colonnes de requête pour les sessions de groupe entrantes (index de
+    ./migration.sdd) ; `sender_key` est haché, `sender_data_type` est l'entier de `SenderDataType`.
+  Requêtes à implémenter côté SQL (index utilisés, pas de filtrage en mémoire sur une table entière) :
+    `get_sessions(sender_key)` → lignes `olm_sessions` pour `hash(sender_key)` ; `None` si aucune ;
+    `inbound_group_sessions_for_backup(version, limit)` → au plus `limit` sessions dont `backed_up = false` ;
+    `inbound_group_session_counts(version)` → `(total, backed_up)` par `COUNT` SQL ;
+    `get_inbound_group_sessions_for_device_batch(key, type, after_session_id, limit)` → tri par `session_id` (haché :
+      l'ordre doit être celui défini par le trait — à vérifier avec la suite officielle ; si l'ordre exige
+      la valeur en clair, une colonne `session_id_order` scellée n'est pas triable : l'implémenteur lève
+      un `[?]` plutôt que de trier en mémoire) ;
+    `mark_inbound_group_sessions_as_backed_up(version, ids)` et `reset_backup_state()` → `UPDATE` ciblés.
+  `save_inbound_group_sessions(sessions, backed_up_to_version)` : une session sauvegardée avec
+    `backed_up_to_version = Some(v)` est marquée `backed_up = true` ; avec `None`, `backed_up = false` ;
+    une session déjà présente est remplacée, jamais dupliquée.
+  Compiler sous `#[cfg(feature = "matrix")]`.
+
+Must not:
+  Charger toute une table en mémoire pour filtrer (`get_inbound_group_sessions` sans filtre est le seul
+    chemin « tout lire », exigé par le trait) ; écrire hors de la transaction reçue dans `apply_sessions`.
+
+  Décisions d'implémentation (arbitrées le 2026-10-15) : `get_inbound_group_sessions_for_device_batch` trie sur
+    la colonne `session_id` hachée (ordre déterministe, le trait n'en impose aucun) ; `backed_up` de la colonne
+    est la source de vérité de la recherche — `save_inbound_group_sessions(Some(version))` l'écrit à `true`,
+    `None` à `false`, `apply_sessions` reprend `session.backed_up()` ; `mark_inbound_group_sessions_as_backed_up`
+    et `reset_backup_state` mettent à jour la colonne ET le drapeau pickle-é de la session (re-scellé), pour que
+    la session relue soit cohérente.
+
+Depends on:
+  ./kv.rs, ./error.rs, @sea_orm, @matrix_sdk_crypto, `matrix_sdk::ruma` (ré-export de `ruma` : `RoomId` et
+    consorts, `matrix_sdk_crypto` ne les ré-exporte pas ; aucune dépendance `ruma` directe)
+
+Exposes:
+  Fonctions inhérentes `pub(super)` listées ci-dessus.
+
+Handles:
+  Session de groupe sans sauvegarde configurée : `inbound_group_session_counts(None)` rend le total avec
+    `backed_up = 0`.
+
+Tasks:
+  [x] Tests unitaires locaux depuis les `Scenario` (SQLite mémoire, sessions fabriquées avec l'API de test
+    de `matrix-sdk-crypto` ou `Account::new`/`InboundGroupSession` selon ce qui est public), puis
+    ./crypto_sessions.rs ; la conformité complète est prouvée par ./crypto.sdd.
+    Validé 2026-10-15 (Claude) : sept tests verts (six Scenario/Handles + cohérence du drapeau après mark/reset),
+    clippy `matrix` et `workflow,matrix` sans écart. `get_withheld_*`, `get_outbound_group_session` et les écritures
+    withheld/sortantes de `apply_sessions` seront exercés par la suite officielle de ./crypto.rs.
+  [x] Licence (arbitré le 2026-10-06, corrigé le 2026-10-19) : le store implémente le trait @CryptoStore sur SeaORM. Le
+    texte n'est pas recopié (mesure du 2026-10-19 : hors signatures imposées par le trait, moins de dix lignes
+    identiques sur ./crypto_*.rs), mais le schéma des tables, les formats de sérialisation (`info_key`, hachage des
+    colonnes de recherche) et la sémantique des opérations suivent `matrix-sdk-sqlite` 0.18.0 (Apache-2.0,
+    Copyright The Matrix.org Foundation C.I.C.). Par prudence ces portions sont traitées comme dérivées : les six
+    fichiers `migration`, `kv`, `crypto`, `crypto_account`, `crypto_devices`, `crypto_sessions` (`.rs`) portent un
+    en-tête de copyright, de licence et de modification ; `/NOTICE` les liste ; `/LICENSE-APACHE` livre le texte de
+    la licence ; `Cargo.toml` déclare `BSD-3-Clause AND Apache-2.0`. Les autres fichiers de `src/matrix/` restent BSD-3.
+    À l'extraction en crate dédiée, la crate conserve ces en-têtes, `NOTICE` et `LICENSE-APACHE`.
+
+Done when:
+  Les `Scenario` sont verts ; la suite officielle passe pour les méthodes de ce fichier ; la spec est
+    relue et approuvée avant ./crypto_sessions.rs.
+
+Scenario: une session de groupe entrante fait l'aller-retour
+  Given une `InboundGroupSession` pour la salle `!r:x`
+  When `save_inbound_group_sessions(vec![s], None)` puis `get_inbound_group_session(room, session_id)`
+  Then le résultat est `Some` d'une session de même `session_id`, `room_id` et clé de session
+
+Scenario: une session sauvegardée n'est plus proposée à la sauvegarde
+  Given deux sessions enregistrées avec `None`
+  When `mark_inbound_group_sessions_as_backed_up("v1", [(room, id1)])` puis `inbound_group_sessions_for_backup("v1", 10)`
+  Then seule la deuxième session est rendue, et `inbound_group_session_counts(Some("v1"))` rend `(2, 1)`
+
+Scenario: reset_backup_state remet tout à non sauvegardé
+  Given une session marquée sauvegardée
+  When `reset_backup_state` est appelé
+  Then `inbound_group_sessions_for_backup` la rend de nouveau
+
+Scenario: les sessions Olm sont retrouvées par clé d'expéditeur
+  Given deux sessions Olm de même `sender_key` et une troisième d'une autre
+  When `get_sessions(sender_key)` est appelé
+  Then exactement les deux premières sont rendues ; pour une clé inconnue le résultat est `None`
+
+Scenario: une colonne de recherche ne contient pas la valeur en clair
+  Given une session enregistrée pour la salle `!room:x`
+  When on lit les colonnes brutes de `miryad_matrix_inbound_group_sessions`
+  Then aucune colonne ne contient la sous-chaîne `!room:x` ni le `session_id` en clair

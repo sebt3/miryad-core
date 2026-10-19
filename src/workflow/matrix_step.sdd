@@ -1,0 +1,116 @@
+Spec: matrix_step — kind natif `"matrix_send"`, envoi d'un message Matrix depuis un workflow
+
+Purpose:
+  Porter le `impl MiryadWorkflowStep` (./step.sdd) qui envoie un message dans une salle Matrix via
+    @MatrixClient (../matrix/client.sdd) : notifier la fin d'un traitement, répondre à une commande
+    reçue par le bot, signaler un gate refusé. Disponible seulement sous `workflow` **et** `matrix`
+    (décision de Sébastien 2026-10-06) ; comme `RhaiStep`, l'application l'enregistre elle-même
+    (`StepRegistry::register(MatrixSendStep::new(client))`, ./step.sdd) — à documenter.
+  **Idempotence** : Restate peut rejouer un step (retry, reprise sur crash) ; un message Matrix envoyé
+    deux fois est un doublon visible. Le step dérive donc un identifiant de transaction **déterministe**
+    de l'identité du run (`run_key`, `step_id`, ./step.sdd @RunInfo) : un rejeu envoie le même `txn_id`
+    et le serveur le dédoublonne. Fichier neuf, conception.
+  La `config` est rendue par ./template.sdd avant `run` : `body`, `html` et `room_id` peuvent référencer
+    `inputs` (`{{inputs.decide.answers.urgent.noul}}`).
+
+Owns:
+  ./matrix_step.rs
+
+References:
+  ./step.sdd — @MiryadWorkflowStep, @StepError, @RunInfo ; ./template.sdd — rendu avant `run`
+  ../matrix/client.sdd — @MatrixClient::send, @MessageKind ; ../matrix/error.sdd — @MatrixError::retryable
+  ./systemone_step.sdd — précédent de forme d'un kind natif conditionné par une seconde feature
+
+Must:
+  `MatrixSendStep` — struct `pub`, un champ privé `sender: Arc<dyn Sender>`. `Sender` est un trait **privé**
+    (`#[async_trait]`, `Send + Sync`) à une méthode `async fn send(&self, room_id: &str, body: &str, html:
+    Option<&str>, kind: MessageKind, txn_id: &str) -> Result<String, MatrixError>`, implémenté pour
+    @MatrixClient (délègue à `MatrixClient::send` avec `Some(txn_id)`) : c'est la couture qui rend le step
+    testable sans homeserver (un faux `Sender` en `mod tests`). `pub fn new(client: MatrixClient) -> Self`
+    (enveloppe le client) ; `#[cfg(test)] fn with_sender(sender: Arc<dyn Sender>) -> Self`. `impl MiryadWorkflowStep` : `kind()` rend `"matrix_send"` ; `raw_fields()` garde son défaut (`&[]`).
+  `MatrixSendConfig` — struct privée, `#[derive(Deserialize)]`, `#[serde(deny_unknown_fields)]` :
+    `room_id: String`, `body: String`, `html: Option<String>`, `kind: SendKind` (`#[serde(default)]`).
+    `SendKind` — enum privé `#[serde(rename_all = "lowercase")]` : `Text` (défaut), `Notice`.
+  `pub(crate) fn txn_id(run: &RunInfo) -> String` — pure : `"miryad-"` suivi des 32 premiers caractères
+    hexadécimaux de `sha256(run_key + "\0" + step_id)` (`sha2` et `hex`, déjà directs) ; stable pour un
+    même `(run_key, step_id)`, différent dès que l'un des deux change. La profondeur (`depth`) n'y entre pas
+    (déjà portée par `run_key`, ./step.sdd).
+  `run(&self, run, config, _inputs)` dans cet ordre :
+    1. `serde_json::from_value::<MatrixSendConfig>(config)` — @Err → @StepError { retryable: false,
+      message: format!("config matrix_send invalide: {e}") }.
+    2. Validation (pure, avant tout appel réseau), même message préfixé, non retryable : `room_id` commence par
+      `!` ; `body` non vide après `trim` ; `html`, si présent, non vide.
+    3. `sender.send(&room_id, &body, html.as_deref(), kind, &txn_id(run))` — @Err(e) → @StepError {
+      retryable: e.retryable(), message: e.to_string() }.
+    4. @Ok(event_id) → `{"event_id": "<id>", "room_id": "<room_id>"}`.
+  Compiler uniquement sous `#[cfg(all(feature = "workflow", feature = "matrix"))]`.
+
+Must not:
+  Envoyer sans `txn_id` (un rejeu dupliquerait le message) ; ajouter un repli non chiffré ; journaliser
+    `body` ou `html`.
+  Rendre `retryable: true` pour une `RoomUnavailable` ou une erreur de configuration : rejouer ne change rien.
+
+Forbids:
+  `restate_sdk::*` dans ./matrix_step.rs (kind ordinaire, ./step.sdd)
+
+Depends on:
+  ./step.rs, ../matrix/client.rs, ../matrix/error.rs, @sha2, @hex, @serde, @serde_json
+
+Exposes:
+  `MatrixSendStep` — struct `pub`, `new` ; ré-exporté `miryad_core::workflow::MatrixSendStep` sous
+    `all(workflow, matrix)` (./mod.sdd).
+
+Accepts:
+  `config` : `{"room_id", "body", "html"?, "kind"?}` après rendu.
+
+Returns:
+  `{"event_id", "room_id"}` ou @StepError.
+
+Handles:
+  Rejeu du même step : même `txn_id`, donc un seul message dans la salle (déduplication serveur ; la
+    fenêtre de déduplication est celle du homeserver).
+
+Tasks:
+  [x] Tests unitaires d'abord pour `txn_id`, la désérialisation et la validation (fonctions pures) ; le
+    chemin d'envoi réel est couvert par `../../tests/matrix_live.rs` (../matrix/client.sdd). Puis
+    ./matrix_step.rs ; ré-export dans ./mod.rs et amendement de ./mod.sdd (même lot).
+    Validé 2026-10-18 (Claude) : six tests verts (un par Scenario) sous `workflow,matrix` et `--all-features`, clippy
+    `workflow,matrix`, `workflow` et `matrix` sans écart, fmt et `specdd lint` OK. Déclaration et ré-export posés dans
+    ./mod.rs ; le test de chemins plats et l'amendement de ./mod.sdd restent à la case de ./mod.sdd. Lectures
+    retenues : `html` « non vide » = chaîne vide stricte (sans `trim`, à la différence de `body`) ; le message d'erreur
+    sur `room_id` ne reprend pas la valeur ; un `kind` inconnu est refusé par serde sous le même préfixe.
+
+Done when:
+  Les `Scenario` unitaires sont verts sous `all(workflow, matrix)` et `--all-features` ; ./step.sdd,
+    ./template.sdd et ../matrix/client.sdd sont approuvées avant ou avec cette spec ; la spec est relue
+    et approuvée avant ./matrix_step.rs.
+
+Scenario: txn_id est stable pour une identité de run
+  Given deux `RunInfo` identiques `(run_key "r", step_id "s")`
+  When `txn_id` est appelé sur chacun
+  Then les deux résultats sont égaux, commencent par `miryad-` et font 39 caractères
+
+Scenario: txn_id change avec le run ou le step
+  Given `(r1, s)`, `(r2, s)`, `(r1, s2)`
+  When `txn_id` est appelé sur chacun
+  Then les trois résultats sont deux à deux différents
+
+Scenario: une config invalide ne fait aucun appel réseau
+  Given `room_id = "#alias:x"`, puis `body = "  "`, puis `html = ""`, puis une clé inconnue `rooms`
+  When `run` est appelé pour chacune
+  Then chaque résultat est @Err(StepError { retryable: false, message }) avec `message` commençant par `config matrix_send invalide:` et aucun message n'est envoyé
+
+Scenario: kind notice et html sont transmis
+  Given `config = {"room_id": "!r:x", "body": "ok", "html": "<b>ok</b>", "kind": "notice"}`
+  When `run` est appelé avec un faux `Sender` qui enregistre ses appels
+  Then l'appel porte `kind = Notice`, `html = Some("<b>ok</b>")` et un `txn_id` égal à `txn_id(run)`
+
+Scenario: les erreurs du client suivent leur retryabilité
+  Given un faux `Sender` qui échoue avec `Network { retryable: true }`, puis avec `RoomUnavailable`
+  When `run` est appelé pour chacun
+  Then le premier résultat est @Err(StepError { retryable: true, .. }), le second @Err(StepError { retryable: false, .. })
+
+Scenario: la sortie porte l'event_id
+  Given un faux `Sender` qui rend l'`event_id` `$abc`
+  When `run` est appelé
+  Then le résultat est `{"event_id": "$abc", "room_id": "!r:x"}`

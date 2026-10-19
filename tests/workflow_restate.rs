@@ -184,6 +184,26 @@ impl MiryadDurableStep for DurableSleeper {
     }
 }
 
+/// Kind durable de fixture `"durable_config"` (tâche ./dispatcher.sdd, rendu de la branche
+/// durable) : rend sa `config` telle que reçue — déjà rendue par le dispatcher dans un `ctx.run()`
+/// dédié — preuve que la branche durable applique le rendu de template.
+struct DurableConfig;
+
+#[async_trait::async_trait]
+impl MiryadDurableStep for DurableConfig {
+    fn kind(&self) -> &'static str {
+        "durable_config"
+    }
+    async fn run(
+        &self,
+        _ctx: &StepContext<'_>,
+        config: Value,
+        _inputs: HashMap<String, Value>,
+    ) -> Result<Value, StepError> {
+        Ok(config)
+    }
+}
+
 /// Pile de test : Restate en conteneur + endpoint applicatif en tâche tokio, déploiement
 /// enregistré. `_container` garde le conteneur vivant jusqu'à la fin du test.
 struct Stack {
@@ -235,6 +255,7 @@ impl Stack {
             .and_then(|r| r.register(Fail))
             .and_then(|r| r.register(Flaky(Arc::clone(&flaky_calls))))
             .and_then(|r| r.register_durable(DurableSleeper))
+            .and_then(|r| r.register_durable(DurableConfig))
             .and_then(|r| r.register_durable(SubWorkflowStep::new(max_depth)))
             .expect("kinds distincts");
         let endpoint = Endpoint::builder()
@@ -471,6 +492,45 @@ async fn un_kind_durable_dort_durablement_et_reçoit_son_run_info() {
     assert_eq!(
         body["D"]["depth"], 0,
         "un run racine est à la profondeur 0 : {body}"
+    );
+}
+
+/// Scenario « la config d'un kind durable est rendue avant `run` » (./dispatcher.sdd étape 1b,
+/// tâche templating 2026-10-06) : le kind durable `durable_config` reçoit `{{run.run_key}}`
+/// rendu avec la clé du run déclenché ; le rendu passe par le `ctx.run()` dédié de la branche
+/// durable, sans enveloppe autour de `run`.
+#[tokio::test]
+#[ignore = "exige podman et l'image restate"]
+async fn un_kind_durable_recoit_sa_config_rendue() {
+    let stack = Stack::start().await;
+    let dag = DagSteps(vec![step(
+        "D",
+        &[],
+        "durable_config",
+        json!({ "m": "{{run.run_key}}" }),
+    )]);
+    let handle = trigger_run(&stack.config, &stack.http, &dag)
+        .await
+        .expect("le déclenchement doit être accepté");
+    let response = stack
+        .http
+        .get(format!(
+            "{}/restate/workflow/DagInterpreter/{}/attach",
+            stack.config.ingress_url, handle.run_key
+        ))
+        .timeout(Duration::from_mins(2))
+        .send()
+        .await
+        .expect("l'attache au workflow doit répondre");
+    let status = response.status().as_u16();
+    let body = response.json::<Value>().await.unwrap_or(Value::Null);
+    assert_eq!(
+        status, 200,
+        "le kind durable doit mener le run au bout : {status} {body}"
+    );
+    assert_eq!(
+        body["D"]["m"], handle.run_key,
+        "le kind durable doit recevoir la config rendue (run_key) : {body}"
     );
 }
 

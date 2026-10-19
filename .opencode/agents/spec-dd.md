@@ -1,7 +1,7 @@
 ---
 description: Agent primaire SpecDD de miryad-core — rédige les specs avec Sébastien et orchestre les sous-agents spec-reverse / implementer / validator. Ne code jamais.
 mode: primary
-temperature: 0.2
+model: smart/qwen3.8-flash-next
 color: info
 permission:
   doom_loop: ask

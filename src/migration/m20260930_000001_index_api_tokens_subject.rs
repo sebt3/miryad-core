@@ -172,36 +172,26 @@ mod tests {
     }
 
     /// `Scenario` : « la migration suit l'ordre d'enregistrement attendu » — quatre entrées
-    /// sous features par défaut dont le stem, après les trois internes ; cinq sous `workflow`.
+    /// après les trois internes ; une de plus sous `workflow` (004), une de plus sous `matrix` (en dernier).
     #[tokio::test]
     async fn get_migration_files_registers_the_index_migration_after_the_three_internals() {
         let files = Migrator::get_migration_files();
         let names: Vec<&str> = files.iter().map(sea_orm_migration::Migration::name).collect();
 
-        #[cfg(not(feature = "workflow"))]
-        assert_eq!(
-            names,
-            vec![
-                "m20260822_000001_create_api_tokens",
-                "m20260822_000002_create_users_groups",
-                "m20260822_000003_seed_admin_group",
-                STEM,
-            ],
-            "quatre entrées sous features par défaut, l'index en dernière position"
-        );
-
+        let mut expected = vec![
+            "m20260822_000001_create_api_tokens",
+            "m20260822_000002_create_users_groups",
+            "m20260822_000003_seed_admin_group",
+        ];
         #[cfg(feature = "workflow")]
+        expected.push("m20260923_000001_create_workflow_definitions");
+        expected.push(STEM);
+        #[cfg(feature = "matrix")]
+        expected.push("m20261006_000001_create_matrix_store");
+
         assert_eq!(
-            names,
-            vec![
-                "m20260822_000001_create_api_tokens",
-                "m20260822_000002_create_users_groups",
-                "m20260822_000003_seed_admin_group",
-                "m20260923_000001_create_workflow_definitions",
-                STEM,
-            ],
-            "cinq entrées sous workflow — la 004 gateée garde sa position (dernière enregistrée \
-             gateée), l'index s'inscrit hors du branchement de feature, en fin de liste"
+            names, expected,
+            "l'index s'inscrit après les internes et la 004 gatée, la migration matrix reste en dernier"
         );
     }
 }

@@ -1,0 +1,102 @@
+Spec: mod — module `matrix::store`, store de chiffrement matrix-sdk sur SeaORM, conçu pour être extrait
+
+Purpose:
+  Porter l'état de chiffrement de bout en bout (E2EE) d'un client `matrix-sdk` dans **la base de
+    données de l'application** (SeaORM, Postgres en production), au lieu du store SQLite livré avec
+    `matrix-sdk`. Décision de Sébastien (2026-10-06) : une seule instance de base de données pour tout
+    le projet, aucun état sur volume. Contrainte de graphe constatée au spike du 2026-10-06 : le store
+    SQLite de `matrix-sdk` ≥ 0.19 exige `libsqlite3-sys` 0.38 et entre en conflit (`links = "sqlite3"`)
+    avec le `sqlx-sqlite` de SeaORM ; `matrix-sdk` est donc épinglé en `0.18` (compatible, `libsqlite3-sys`
+    unifié en 0.35) et la feature `sqlite` de `matrix-sdk` n'est **jamais** activée — aucun code SQLite
+    de `matrix-sdk` n'est compilé ni lié (vérifié : `cargo tree -i matrix-sdk-sqlite` ne trouve rien).
+  Seul le store **de chiffrement** est persistant : sans lui un bot redevient un appareil inconnu à
+    chaque redémarrage (clés Olm/Megolm perdues). Les stores d'état de salon, de cache d'événements
+    et de médias restent en mémoire (`matrix-sdk` fournit ses `MemoryStore`) : un bot refait un sync
+    initial au démarrage (../sync.sdd).
+  **Extractible** : ce module est écrit pour devenir une crate à part (`matrix-sdk-crypto-sea-orm`,
+    nom provisoire) par simple déplacement du répertoire, sans refactoring. Contraintes qui le
+    garantissent, toutes testées (`Must`) : aucune importation de `crate::` hors de `crate::matrix::store`
+    (ni `crate::matrix`, ni `crate::workflow`, ni `crate::auth`…) ; erreurs propres (./error.sdd) ;
+    migrations livrées par le module (./migration.sdd) et assemblées par l'hôte ; préfixe de tables
+    unique (`miryad_matrix_`, constante) ; clé de compte (`account_key`) dans chaque table pour
+    héberger plusieurs comptes dans une même base. À l'extraction : renommer la crate, le préfixe de
+    table (constante `TABLE_PREFIX`), les codes d'erreur `MRD-MXSTORE-*`, et lui ajouter son propre CI.
+  Fichier d'agrégation ; chaque enfant a sa spec.
+
+Owns:
+  ./mod.rs
+
+Can modify:
+  ../../../tests/matrix_store_isolation.rs — test d'intégration d'isolation (voir `Must`)
+
+References:
+  ./error.sdd, ./migration.sdd, ./kv.sdd, ./crypto_account.sdd, ./crypto_sessions.sdd, ./crypto_devices.sdd,
+    ./crypto.sdd — les sept enfants
+  ../mod.sdd — hôte : déclare le module, assemble ses migrations, fournit l'`account_key`
+  ../../migration/mod.sdd — @Migrator y ajoute @migrations de ce module sous `matrix`
+  matrix-sdk-crypto `0.18.0`, `src/store/traits.rs` — trait @CryptoStore (autorité sur l'ensemble des méthodes),
+    `src/store/integration_tests.rs` — suite de conformité officielle `cryptostore_integration_tests!`
+  matrix-sdk `0.18.0`, `matrix_sdk::config::StoreConfig` — assemblage des stores d'un `Client`
+
+Must:
+  Déclarer `pub mod error;`, `pub mod migration;`, et les modules privés `kv`, `crypto_account`,
+    `crypto_sessions`, `crypto_devices`, `crypto`.
+  Exposer exactement, en `pub use` : `error::StoreError`, `migration::migrations`, `crypto::SeaOrmCryptoStore`,
+    `TABLE_PREFIX` (`pub const TABLE_PREFIX: &str = "miryad_matrix_"`).
+  `SeaOrmCryptoStore::open(db: DatabaseConnection, account_key: &str, passphrase: &str) ->
+    Result<SeaOrmCryptoStore, StoreError>` (./crypto.sdd) est le seul constructeur ; la méthode
+    `SeaOrmCryptoStore::store_config(&self, lock: CrossProcessLockConfig) -> matrix_sdk::config::StoreConfig`
+    assemble la configuration de stores d'un `Client` : le store de chiffrement est celui-ci, les trois
+    autres stores sont les stores mémoire de `matrix-sdk`. (`CrossProcessLockConfig` : nom et chemin à
+    revérifier dans `matrix-sdk` `0.18.0` à l'implémentation — la doc de `ClientBuilder::store_config`
+    le cite ; l'implémenteur remplace par le type réel sans changer la sémantique.)
+  **Isolation** : `tests/matrix_store_isolation.rs` lit les sources de `src/matrix/store/*.rs` et échoue
+    si une ligne `use` ou un chemin `crate::` pointe hors de `crate::matrix::store` (ou si un
+    `crate::error`/`crate::resource`/`crate::workflow`/… apparaît). C'est le garde-fou d'extractibilité.
+  Compiler sous `#[cfg(feature = "matrix")]` (porté par ../mod.rs).
+
+Must not:
+  Activer la feature `sqlite` de `matrix-sdk` ou dépendre de `matrix-sdk-sqlite`, `rusqlite`, `libsqlite3-sys`.
+  Écrire, dans une table ou un journal, une clé, une session ou un `payload` en clair : tout contenu
+    sensible est chiffré par le `StoreCipher` du compte (./kv.sdd).
+  Appeler `tracing` avec le contenu d'un payload, d'une clé ou d'un identifiant d'appareil.
+  Connaître `MatrixConfig`, `MatrixClient` ou une entité miryad (l'hôte passe `db`, `account_key`, `passphrase`).
+
+Forbids:
+  `crate::` hors `crate::matrix::store`, `reqwest::*`, `restate_sdk::*`, `axum::*`, `rusqlite::*`
+
+Depends on:
+  @sea_orm (déjà direct), @sea_orm_migration (déjà direct), `matrix-sdk` `0.18` (`default-features = false`,
+    `features = ["e2e-encryption"]`), `matrix-sdk-crypto` `0.18` (trait @CryptoStore, types d'olm),
+    `matrix-sdk-store-encryption` `0.18` (@StoreCipher), `matrix-sdk-common` `0.18` si les types de
+    verrou l'exigent. Les noms de crates et versions exactes sont à confirmer à l'implémentation
+    (voir ../mod.sdd, diff Cargo documenté).
+
+Exposes:
+  `SeaOrmCryptoStore`, `StoreError`, `migrations`, `TABLE_PREFIX`.
+
+Tasks:
+  [x] Amendement 2026-10-18 : déclarer `#[cfg(test)] mod test_support;` (./test_support.sdd, base de test SQLite mémoire
+    ou PostgreSQL réel selon `MIRYAD_TEST_PG_URL`). Preuve PostgreSQL : `MIRYAD_TEST_PG_URL=postgres://… cargo test
+    --no-default-features --features matrix --lib matrix::store`. Cette case se clôt avec celle de ./test_support.sdd.
+  [x] Écrire `mod.rs` en dernier du lot store (après tous les enfants), plus le test d'isolation.
+    Validé 2026-10-17 (Claude) : ré-exports exacts, `TABLE_PREFIX` partagé avec la migration, test d'isolation (4 tests,
+    dont détecteur négatif et positif) vert, `cargo tree -i matrix-sdk-sqlite` vide, clippy `matrix` et
+    `workflow,matrix` à zéro. `Kv::db` retiré (champ mort).
+  [x] Documenter dans `docs/architecture.md`, à la clôture de la feature, la contrainte `matrix-sdk` 0.18 /
+    `sqlx` et le plan d'extraction (critère de sortie : relever le plafond `sqlx` ou `matrix-sdk-sqlite`).
+
+Done when:
+  Les `Scenario` sont verts ; `tests/matrix_store_isolation.rs` vert ; `cargo tree -i matrix-sdk-sqlite`
+    sous `--features matrix` ne trouve aucun paquet ; la spec est relue et approuvée avant ./mod.rs.
+
+Scenario: aucun import hors du module
+  Given les fichiers `src/matrix/store/*.rs`
+  When le test d'isolation les parcourt
+  Then aucune ligne ne référence `crate::` hors `crate::matrix::store` (ni `super::` qui sorte de `store` ; un `super::super` interne au module, par exemple depuis un
+    `mod tests` d'un enfant, reste dans `store` et est admis — lecture actée le 2026-10-17)
+
+Scenario: les ré-exports sont exactement ceux de Must
+  Given la feature `matrix`
+  When un test importe `crate::matrix::store::{SeaOrmCryptoStore, StoreError, migrations, TABLE_PREFIX}`
+  Then le test compile et `TABLE_PREFIX == "miryad_matrix_"`

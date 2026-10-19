@@ -49,6 +49,10 @@ Must:
       `ctx.run_info()`. Le dispatcher ne l'enveloppe dans aucun `ctx.run()` : **c'est au kind de
       journaliser ses effets** (`ctx.run_effect`) ; tout appel non déterministe hors de ces primitives
       (horloge, aléa, I/O) casse le rejeu — contrat à rappeler dans la rustdoc du trait.
+    `fn raw_fields(&self) -> &'static [&'static str] { &[] }` (méthode par défaut, 2026-10-06) — mêmes
+      sémantique et contrat que @MiryadWorkflowStep::raw_fields (./step.sdd) : clés de premier niveau de
+      `config` jamais rendues par ./template.sdd. Le rendu d'un kind durable est journalisé par ./dispatcher.sdd
+      (un `ctx.run()` dédié) avant `run` : `run` reçoit une `config` déjà rendue.
   @StepContext<'a> — struct `pub`, **opaque** (aucun champ `pub`), deux champs privés : `ctx: &'a
     restate_sdk::prelude::Context<'a>` et `run: @RunInfo`. `pub(crate) fn new(ctx: &'a Context<'a>, run:
     RunInfo) -> Self` — unique constructeur, appelé par ./dispatcher.rs ; une app ne construit jamais un
@@ -171,6 +175,11 @@ Tasks:
     Réalisé 2026-10-04 (commit e521581) : `un_kind_durable_dort_durablement_et_reçoit_son_run_info`,
     jouée verte par l'implementer puis REJOUÉE verte par le validator contre vrai `restate-server`
     (podman, ~10 s, `run_key`/`step_id`/`depth` assertés).
+  [x] Templating central (2026-10-06) : ajouter `MiryadDurableStep::raw_fields` (méthode par défaut) ;
+    aucun `impl` existant à modifier hors ./subworkflow.rs (`["dag"]`, ./subworkflow.sdd) ; test nommé du
+    `Scenario` ci-dessous. Même lot que ./step.sdd.
+    Validé 2026-10-13 (validator) : trois tests nommés verts (step.rs ×2, durable.rs ×1), clippy workflow sans écart.
+    `StepRegistry::raw_fields` porte un `#[allow(dead_code)]` jusqu'à la tâche dispatcher du même lot.
 
 Done when:
   Les `Scenario` ci-dessous ont chacun un test nommé distinct et vert, sur la feature `workflow` ; les
@@ -198,3 +207,8 @@ Scenario: un kind durable de fixture s'enregistre et se retrouve par durable()
   When `StepRegistry::durable("d")` est appelé
   Then le résultat est @Some et son `kind()` vaut `"d"` — preuve que le trait est dyn-compatible
     (`Box<dyn MiryadDurableStep>`)
+
+Scenario: raw_fields d'un kind durable vaut vide par défaut (2026-10-06)
+  Given un kind durable de fixture sans redéfinition
+  When `StepRegistry::raw_fields(kind)` est appelé
+  Then le résultat est `Some(&[])`

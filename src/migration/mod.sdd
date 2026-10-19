@@ -41,6 +41,12 @@ Must:
     @m20260930_000001_index_api_tokens_subject::Migration (inconditionnelle). Toute migration
     ultérieure s'ajoute en fin de liste. Amendement arbitré par Sébastien le 2026-10-03 (Q5) : le
     texte d'origine « trois, pas un de plus » était gelé avant la migration d'index.
+  **Amendement 2026-10-06 (`matrix`)** : sous `#[cfg(feature = "matrix")]`, @migrations **ajoute en fin de liste**
+    (après `m20260930_000001_index_api_tokens_subject`, jamais avant une entrée existante) les migrations du
+    module extractible `matrix::store`, rendues par `crate::matrix::store::migrations()`
+    (`../matrix/store/migration.sdd`) : le store garde ses migrations hors de `src/migration/` pour rester
+    déplaçable, l'hôte les assemble ici. Le suivi reste la table `seaql_migrations_miryad_core`. `down` les défait
+    en tête (ordre inverse, règle ci-dessous inchangée).
   Ordre d'application = ordre du @Vec écrit ici, vérifié au source de sea-orm-migration 2.0.2 :
     @get_migration_files préserve l'ordre de @migrations, @exec_up_with itère les pending dans cet
     ordre, aucun tri ni graphe de dépendance n'existe (@MigrationOrder a disparu en 2.x) — toute
@@ -196,11 +202,14 @@ Handles:
     ./m20260822_000001_create_api_tokens.sdd)
 
 Tasks:
-  [ ] Migration suivante : index sur `miryad_api_tokens.subject` (arbitré par Sébastien le
+  [x] Migration suivante : index sur `miryad_api_tokens.subject` (arbitré par Sébastien le
     2026-09-29 dans ../rest/tokens.sdd ; la migration 001 est immuable) — écrire la spec de cette
     migration (nom `mYYYYMMDD_NNNNNN_…`, `Must` : `CREATE INDEX IF NOT EXISTS`, `down` strict),
     l'implémenter et l'enregistrer dans @migrations ; le Scenario « @migrations enregistre exactement
     les trois internes » passe à quatre (cinq avec la feature `workflow`).
+    Clos le 2026-10-17, vérifié : tâche close par la migration `m20260930_000001_index_api_tokens_subject`
+    (./m20260930_000001_index_api_tokens_subject.sdd + .rs existante, enregistrée dans ./mod.rs :
+    `mod` privé et `Box::new` en fin de @migrations ; quatre entrées dans @migrations, cinq sous `workflow`).
   [x] Amendement du 2026-09-23 (migration 004 gated `workflow`) : une app qui active `workflow`,
     applique 004, puis reconstruit sans `workflow` se retrouve avec une entrée de tracking
     (`seaql_migrations_miryad_core`) que le @Migrator reconstruit ne connaît plus — même
@@ -248,6 +257,10 @@ Tasks:
     spec : une tâche autorisée retire ces commentaires et repointe les noms de tests (« trois »
     → « les enregistrements »). Facultatif repris : un @assert!(@has_table) explicite sur
     @seaql_migrations dans le Scenario de coexistence — accepté, une ligne.
+  [x] Amendement 2026-10-06 : étendre @migrations (ajout conditionnel `matrix`) et le test inline : sous
+    `matrix`, `up` complet crée aussi les seize tables `miryad_matrix_*` et `down` les supprime.
+    **Après** ../matrix/store/migration.rs.
+    Validé 2026-10-15 (Claude) : liste étendue en fin sous `matrix`, test inline vert ; spec 0930 amendée en conséquence.
 
 Done when:
   Les dix `Scenario` (neuf originaux, un pour l'amendement 2026-09-23) sont chacun vérifiés par au
@@ -339,3 +352,8 @@ Scenario: la quatrième migration n'existe que sous la feature workflow
   And avec `workflow`, cinq entrées apparaissent, la quatrième après les trois premières et
     avant l'index, et
     `miryad_workflow_definitions` existe
+
+Scenario: sous matrix, le Migrator applique aussi les tables du store (2026-10-06)
+  Given une base SQLite en mémoire et la feature `matrix`
+  When `Migrator::up(&db, None)` est exécuté
+  Then les tables `miryad_matrix_*` existent après les tables historiques, puis `down` les retire en premier

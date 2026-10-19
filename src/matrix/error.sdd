@@ -1,0 +1,70 @@
+Spec: error — @MatrixError, erreurs du client Matrix
+
+Purpose:
+  Porter l'erreur du client Matrix : un code `MRD-MATRIX-NNN` par variante et la décision de
+    retryabilité consommée par le step `matrix_send` (../workflow/matrix_step.sdd). L'erreur ne contient
+    aucun type de `matrix-sdk` : les causes sont transportées en `String` (stabilité d'API, ./mod.sdd).
+    Fichier neuf, conception.
+
+Owns:
+  ./error.rs
+
+References:
+  ./store/error.sdd — @StoreError, converti en `Store` ici
+  ../workflow/matrix_step.sdd — consommateur de `retryable()`
+
+Must:
+  @MatrixError — `pub enum`, `#[derive(Debug, thiserror::Error)]`, `#[non_exhaustive]` :
+    `Config(String)` → `MRD-MATRIX-001` → `MRD-MATRIX-001: invalid configuration: {0}`
+    `NotLoggedIn` → `MRD-MATRIX-002` → `MRD-MATRIX-002: no matrix session for this account (log in or import a session first)`
+    `Store(StoreError)` → `MRD-MATRIX-003` → `MRD-MATRIX-003: store error: {0}`
+    `Login(String)` → `MRD-MATRIX-004` → `MRD-MATRIX-004: login failed: {0}`
+    `InvalidId(String)` → `MRD-MATRIX-005` → `MRD-MATRIX-005: invalid matrix identifier: {0}`
+    `RoomUnavailable(String)` → `MRD-MATRIX-006` → `MRD-MATRIX-006: room unavailable: {0}` (salle inconnue du
+      compte, non rejoignable, ou refus de permission)
+    `Network { message: String, retryable: bool }` → `MRD-MATRIX-007` → `MRD-MATRIX-007: network error: {message}`
+    `Sdk(String)` → `MRD-MATRIX-008` → `MRD-MATRIX-008: matrix sdk error: {0}` (toute autre erreur de `matrix-sdk`,
+      non retryable)
+  `impl From<StoreError> for MatrixError` (variante `Store`).
+  `pub fn retryable(&self) -> bool` (`#[must_use]`) : `Network { retryable, .. }` → `retryable` ; `Store(_)` →
+    `true` seulement si `StoreError` est un `Db` (panne de base transitoire), sinon `false` ; toutes les
+    autres variantes → `false`.
+  La traduction d'une erreur `matrix-sdk` vers `Network`/`RoomUnavailable`/`Sdk` est faite par
+    `pub(crate) fn from_sdk(e: &matrix_sdk::Error) -> MatrixError` dans ce fichier : transport coupé,
+    délai, `5xx` HTTP et `429` (`M_LIMIT_EXCEEDED`) → `Network { retryable: true }` ; `403` (`M_FORBIDDEN`),
+    `404` (`M_NOT_FOUND`) → `RoomUnavailable` ; autres `4xx` → `Sdk`. La détection se fait par les types/codes
+    HTTP de `matrix-sdk` (à relire en source à l'implémentation), jamais par recherche de sous-chaîne dans
+    un message.
+  Compiler sous `#[cfg(feature = "matrix")]`.
+
+Must not:
+  Embarquer un jeton d'accès, une passphrase ou un contenu de message dans un message d'erreur.
+
+Exposes:
+  `MatrixError`, `retryable`.
+
+Tasks:
+  [x] Tests d'abord (codes, retryabilité, `from_sdk` sur des erreurs `matrix-sdk` construites en test),
+    puis ./error.rs.
+    Validé 2026-10-17 (Claude) : six tests verts (codes, retryabilité, `from_sdk` sur 429/502/403/404 construits par
+    `RumaApiError::from_http_response`), clippy `matrix` et `workflow,matrix` sans écart. Lectures retenues :
+    `matrix_sdk::Error::Io` → `Sdk` (non retryable) ; transport coupé = timeout, connect ou request ; les erreurs
+    non-HTTP gardent `to_string()` du SDK. `allow(dead_code)` de `from_sdk` à retirer avec ./client.rs.
+
+Done when:
+  Les `Scenario` sont verts ; la spec est relue et approuvée avant ./error.rs.
+
+Scenario: les codes sont stables
+  Given une variante de chaque sorte
+  When `to_string()` est appelé
+  Then chaque message commence par `MRD-MATRIX-001` à `-008`
+
+Scenario: la retryabilité suit le type d'erreur
+  Given `Network { retryable: true }`, `Network { retryable: false }`, `RoomUnavailable`, `Login`, `Store(Db)`, `Store(Cipher)`
+  When `retryable()` est appelé
+  Then les résultats sont `true`, `false`, `false`, `false`, `true`, `false`
+
+Scenario: 429 et 5xx sont retryables, 403 et 404 ne le sont pas
+  Given des erreurs `matrix-sdk` portant les statuts HTTP 429, 502, 403, 404
+  When `from_sdk` est appelé sur chacune
+  Then les résultats sont `Network{retryable:true}`, `Network{retryable:true}`, `RoomUnavailable`, `RoomUnavailable`

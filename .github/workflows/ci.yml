@@ -31,6 +31,14 @@ jobs:
             args: "--no-default-features --features mcp"
           - name: workflow
             args: "--no-default-features --features workflow"
+          - name: systemone
+            args: "--no-default-features --features systemone"
+          - name: workflow-systemone
+            args: "--no-default-features --features workflow,systemone"
+          - name: matrix
+            args: "--no-default-features --features matrix"
+          - name: workflow-matrix
+            args: "--no-default-features --features workflow,matrix"
           - name: all-features
             args: "--all-features"
     steps:
@@ -81,6 +89,14 @@ jobs:
             args: "--no-default-features --features mcp"
           - name: workflow
             args: "--no-default-features --features workflow"
+          - name: systemone
+            args: "--no-default-features --features systemone"
+          - name: workflow-systemone
+            args: "--no-default-features --features workflow,systemone"
+          - name: matrix
+            args: "--no-default-features --features matrix"
+          - name: workflow-matrix
+            args: "--no-default-features --features workflow,matrix"
     steps:
       - uses: actions/checkout@v7
 

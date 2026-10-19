@@ -1,7 +1,7 @@
 ---
 description: Reverse-engineering de spec dans miryad-core — lit un fichier source et rédige la spec .sdd la plus complète possible du comportement actuel, sans jamais toucher au code.
 mode: subagent
-temperature: 0.1
+model: smart/qwen3.8-flash-next
 color: accent
 permission:
   doom_loop: ask

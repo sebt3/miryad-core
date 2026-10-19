@@ -60,8 +60,11 @@ Must:
     HandlerError>`. Corps exact :
     1. Décompose `req` en `kind`, `config`, `inputs` et construit le @RunInfo (`run_key`, `step_id`,
       `depth`).
-    1b. (#26) Si `self.registry.durable(&kind)` rend @Some(step) : **branche durable** — appelle
-      `step.run(&StepContext::new(&ctx, run_info), config, inputs).await`, **sans** `ctx.run()` global
+    1b. (#26) Si `self.registry.durable(&kind)` rend @Some(step) : **branche durable** — rend d'abord la `config` (templating central, 2026-10-06, ./template.sdd) par un
+      `ctx.run()` **dédié au seul rendu** : `let config = ctx.run(move || async move { render_for_kind(..) }).await?`
+      (la config rendue est journalisée : un helper non déterministe comme `uuid_new_v4` donnerait sinon une
+      valeur différente à chaque rejeu et romprait le déterminisme du kind durable) ; puis appelle
+      `step.run(&StepContext::new(&ctx, run_info), config, inputs).await`, **sans** `ctx.run()` global autour du kind
       (un kind durable journalise lui-même ses effets via @StepContext, ./durable.sdd), puis
       `.map(Json).map_err(step_error_to_handler_error)` ; retour immédiat, l'étape 2 n'a pas lieu.
       Un kind durable n'est jamais enveloppé : l'envelopper interdirait tout appel
@@ -77,8 +80,10 @@ Must:
   `run_invocation(registry: &StepRegistry, kind: @String, run_info: @RunInfo, config:
     @serde_json::Value, inputs: @HashMap<@String, @serde_json::Value>) ->
     Result<Json<@serde_json::Value>, HandlerError>` —
-    `async fn` privée, seul corps de la fermeture de @ctx.run : `registry.dispatch(&kind, &run_info,
-    config, inputs)` (./step.sdd) ; un @Err de `dispatch` (kind inconnu — seule erreur que cette fonction
+    `async fn` privée, seul corps de la fermeture de @ctx.run : (1) `registry.raw_fields(&kind)` — @None (kind inconnu) → le `404` ci-dessous,
+    **avant** tout rendu (un kind inconnu avec un template invalide rend `404`, pas une erreur de template) ;
+    (2) `render_for_kind(registry, &kind, &run_info, &config, &inputs)` (voir ci-dessous) ; (3) `registry.dispatch(&kind, &run_info,
+    rendered_config, inputs)` (./step.sdd, `inputs` **non rendus**, tels que reçus) ; un @Err de `dispatch` (kind inconnu — seule erreur que cette fonction
     rend avant l'await du futur, ./step.sdd) est traduit en `404` par la `Must` « Kind inconnu »
     ci-dessous, jamais par `step_error_to_handler_error` ; sur @Ok, await du futur retourné et le
     @StepError éventuel est traduit par cette dernière fonction, avant retour. Séparaison tranchée
@@ -88,6 +93,13 @@ Must:
     @ctx.run() par invocation » vit dans le handler (`Must` ci-dessus), la logique dans cette
     fonction ; les tests appellent @run_invocation directement — c'est la jointure testable entre
     ./step.sdd et le protocole, pas une surface exposée.
+  `render_for_kind(registry: &StepRegistry, kind: &str, run: &RunInfo, config: &Value, inputs: &HashMap<String,
+    Value>) -> Result<Value, StepError>` (2026-10-06) — fonction privée, pure, le seul pont entre
+    @StepRegistry et ./template.sdd : `raw = registry.raw_fields(kind)` (@None → @Err(StepError { retryable:
+    false, message: format!("kind inconnu: {kind}") }), cas déjà écarté en amont par `run_invocation`) puis
+    `template::render_config(config, run, inputs, raw)`. Une erreur de rendu est un @StepError non retryable,
+    traduit par `step_error_to_handler_error` (unique site de traduction, inchangé) : une @TerminalError
+    `500` portant le message `template invalide à …`.
   `step_error_to_handler_error(e: StepError) -> HandlerError`, fonction privée, seul site de
     traduction de toute la crate :
     `e.retryable == true` → `HandlerError::from(e)` (le blanket `impl<E: Into<Box<dyn StdError + Send
@@ -144,6 +156,10 @@ Must not:
     un panic dans la fermeture de `ctx.run()` n'interrompt que l'invocation en cours (isolation par
     tâche tokio du serveur HTTP `restate-sdk`), le processus `StepDispatcher` reste debout et continue
     de servir les autres invocations sans dégradation observée.
+  Rendre la `config` ailleurs que par `render_for_kind` (donc ./template.rs), rendre les `inputs`, ou rendre
+    deux fois : un seul rendu par exécution, jamais de `ctx.run()` supplémentaire pour un kind **ordinaire**
+    (l'invariant « un `ctx.run()` par step ordinaire » tient : le rendu est dans la même fermeture) ; le
+    `ctx.run()` de rendu de la branche durable est la seule exception, et elle est dédiée.
   Importer `reqwest` : la frontière avec ./client.rs (HTTP nu vs protocole `restate-sdk`) est stricte
     dans les deux sens.
 
@@ -158,6 +174,7 @@ Depends on:
     `ContextSideEffects::run`
   ./step.rs — @StepRegistry, @StepError, @MiryadWorkflowStep (indirectement, via le futur retourné par
     `dispatch`)
+  ./template.rs — `render_config` (templating central, 2026-10-06)
   @serde (derive) + @serde_json — forme de `StepInvocation` et du corps de retour
 
 Exposes:
@@ -287,6 +304,15 @@ Tasks:
     @MiryadWorkflowStep] (chemin complet, item `pub` résolvable — pas de dé-liaison, l'import de
     portée écarté pour @unused_imports) ; @cargo doc workflow et @all-features à zéro
     avertissement au brut.
+  [x] Templating central (2026-10-06, ./template.sdd) : ajouter `render_for_kind`, l'appeler dans `run_invocation`
+    (avant `dispatch`, après le `404`) et dans la branche durable de `execute` (`ctx.run()` dédié) ; adapter les
+    tests de `run_invocation` existants (config sans `{{` : comportement identique) ; tests nommés des
+    `Scenario` ci-dessous. La branche durable n'est pas testable en unitaire (même borne que `execute`) :
+    preuve par un test d'intégration `#[ignore]` dans `../../tests/workflow_restate.rs`
+    (propriété de ./interpreter.sdd) — **après** ./template.rs, ./step.rs et ./durable.rs.
+    Validé 2026-10-13 (validator) : quatre tests unitaires nommés verts ; branche durable prouvée par
+    `un_kind_durable_recoit_sa_config_rendue` (`--ignored`, podman, 9/9 verts). Le test d'intégration a été écrit
+    après l'implémentation (non observé rouge) : la preuve est sa présence verte contre un vrai restate-server.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow` — périmètre
@@ -366,3 +392,23 @@ Scenario: un kind durable n'est pas résolu par run_invocation (#26)
   When `run_invocation` est appelé avec `kind = "d"`
   Then le résultat est la @TerminalError `404` « kind inconnu: d » — la branche durable vit dans
     `execute`, jamais dans `run_invocation` (qui reste le corps de la fermeture `ctx.run`)
+
+Scenario: la config d'un kind ordinaire est rendue avant dispatch (2026-10-06)
+  Given un kind de fixture qui renvoie sa `config` reçue, `config = {"m": "bonjour {{inputs.a.nom}}"}` et `inputs = {"a": {"nom": "Ada"}}`
+  When `run_invocation` est appelé
+  Then le résultat est `{"m": "bonjour Ada"}` ; les `inputs` reçus par le kind sont inchangés
+
+Scenario: un champ brut déclaré par le kind n'est pas rendu (2026-10-06)
+  Given un kind de fixture dont `raw_fields` vaut `["code"]` et `config = {"code": "{{x}}", "t": "{{inputs.a}}"}`, `inputs = {"a": "v"}`
+  When `run_invocation` est appelé
+  Then le kind reçoit `{"code": "{{x}}", "t": "v"}`
+
+Scenario: un kind inconnu rend 404 même avec un template invalide (2026-10-06)
+  Given aucun kind `"nope"` et `config = {"m": "{{inputs.absent.x}}"}`
+  When `run_invocation` est appelé
+  Then le résultat est une @TerminalError de code `404` « kind inconnu: nope » — aucun rendu tenté
+
+Scenario: une erreur de template est une erreur terminale non retryable (2026-10-06)
+  Given un kind de fixture et `config = {"m": "{{inputs.absent.x}}"}`, `inputs` vide
+  When `run_invocation` est appelé
+  Then le résultat est une @TerminalError dont le message commence par `template invalide à /m:` et le kind n'a pas été exécuté

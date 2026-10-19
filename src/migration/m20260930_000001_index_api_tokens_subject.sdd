@@ -99,7 +99,10 @@ Scenario: rejeu de up est idempotent, down est strict
 Scenario: la migration suit l'ordre d'enregistrement attendu
   Given @Migrator::get_migration_files sous features par défaut
   Then la liste contient quatre entrées dont `m20260930_000001_index_api_tokens_subject`, après
-    les trois internes de base ; sous feature `workflow` elle en contient cinq
+    les trois internes de base ; sous feature `workflow` elle en contient cinq ; sous feature `matrix`
+    elle en contient une de plus, `m20261006_000001_create_matrix_store`, **en dernière position**
+    (après l'index, amendement 2026-10-15 arbitré par Sébastien) — soit quatre, cinq ou six selon
+    `workflow` et `matrix`
 
 Done when:
   Les trois `Scenario` ont au moins un test nommé distinct et vert (dans ./m20260930_000001_index_api_tokens_subject.rs

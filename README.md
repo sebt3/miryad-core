@@ -71,6 +71,8 @@ let app = axum::Router::new()
 | `graphql` | GraphQL dynamique (Seaography) | `seaography`, `async-graphql` |
 | `graphiql` | IDE GraphiQL (implique `graphql`) | `async-graphql/graphiql` |
 | `mcp` | Serveur MCP JSON-RPC | `vynil-core` |
+| `workflow` | Moteur de workflow (DAG, Restate, steps Rhai, templating Handlebars central) | `restate-sdk`, `vynil-core`, `tokio`, `uuid` |
+| `systemone` | Client System One (`POST /v1/systemone`) ; kind de workflow `systemone` avec `workflow` | aucune |
 
 ```bash
 cargo doc --open --features graphql,mcp,swagger-ui
@@ -84,4 +86,4 @@ cargo doc --open --features graphql,mcp,swagger-ui
 
 ## Licence
 
-BSD 3-Clause.
+BSD 3-Clause. Les fichiers du store de chiffrement Matrix (`src/matrix/store/`, feature `matrix`) portent des portions dérivées de `matrix-sdk-sqlite` sous Apache-2.0 : voir `NOTICE` et `LICENSE-APACHE`.
