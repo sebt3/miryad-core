@@ -16,7 +16,7 @@ References:
     `inbound_group_sessions`, `outbound_group_sessions`, `withheld_sessions`
   matrix-sdk-crypto `0.18.0` — trait @CryptoStore (sémantique de chaque méthode), `olm::{Session,
     InboundGroupSession, OutboundGroupSession}` (API de pickle publique)
-  matrix-sdk-sqlite `0.18.0`, `src/crypto_store.rs` — référence de sémantique, consultée et non recopiée (contenu des payloads, requêtes ; licence : `Tasks`)
+  matrix-sdk-sqlite `0.18.0`, `src/crypto_store.rs` — référence de sémantique, réimplémentée sur SeaORM (contenu des payloads, requêtes), attribution Apache-2.0 en tête de fichier (licence : `Tasks`)
 
 Must:
   Méthodes inhérentes `pub(super)` de `impl SeaOrmCryptoStore`, mêmes signatures que le trait,
@@ -76,12 +76,15 @@ Tasks:
     Validé 2026-10-15 (Claude) : sept tests verts (six Scenario/Handles + cohérence du drapeau après mark/reset),
     clippy `matrix` et `workflow,matrix` sans écart. `get_withheld_*`, `get_outbound_group_session` et les écritures
     withheld/sortantes de `apply_sessions` seront exercés par la suite officielle de ./crypto.rs.
-  [x] Licence (arbitré par Sébastien le 2026-10-06) : le store est une implémentation du trait @CryptoStore,
-    code écrit pour ce dépôt, sous la licence du dépôt (BSD-3) — rien à relicencier à l'extraction pour le
-    code propre. `matrix-sdk-sqlite` (Apache-2.0) est une **référence de sémantique**, pas une source à
-    recopier ; si un passage substantiel en est tout de même copié, le fichier concerné conserve l'en-tête de
-    copyright et la mention Apache-2.0 de la source et signale ses modifications. Apache-2.0 et BSD-3
-    sont toutes deux permissives et compatibles.
+  [x] Licence (arbitré le 2026-10-06, corrigé le 2026-10-19) : le store implémente le trait @CryptoStore sur SeaORM. Le
+    texte n'est pas recopié (mesure du 2026-10-19 : hors signatures imposées par le trait, moins de dix lignes
+    identiques sur ./crypto_*.rs), mais le schéma des tables, les formats de sérialisation (`info_key`, hachage des
+    colonnes de recherche) et la sémantique des opérations suivent `matrix-sdk-sqlite` 0.18.0 (Apache-2.0,
+    Copyright The Matrix.org Foundation C.I.C.). Par prudence ces portions sont traitées comme dérivées : les six
+    fichiers `migration`, `kv`, `crypto`, `crypto_account`, `crypto_devices`, `crypto_sessions` (`.rs`) portent un
+    en-tête de copyright, de licence et de modification ; `/NOTICE` les liste ; `/LICENSE-APACHE` livre le texte de
+    la licence ; `Cargo.toml` déclare `BSD-3-Clause AND Apache-2.0`. Les autres fichiers de `src/matrix/` restent BSD-3.
+    À l'extraction en crate dédiée, la crate conserve ces en-têtes, `NOTICE` et `LICENSE-APACHE`.
 
 Done when:
   Les `Scenario` sont verts ; la suite officielle passe pour les méthodes de ce fichier ; la spec est

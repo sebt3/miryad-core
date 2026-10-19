@@ -16,7 +16,7 @@ References:
   matrix-sdk-crypto `0.18.0`, `src/store/traits.rs` — signatures et sémantique de chaque méthode ;
     `Changes`/`PendingChanges` de `src/store/types.rs`
   matrix-sdk-sqlite `0.18.0`, `src/crypto_store.rs` — implémentation de référence de la sémantique (contenu
-    des payloads, requêtes) — consultée, non recopiée (./crypto_sessions.sdd, `Tasks` licence)
+    des payloads, requêtes) — réimplémentée sur SeaORM, attribution Apache-2.0 en tête de fichier (./crypto_sessions.sdd, `Tasks` licence)
 
 Must:
   Méthodes inhérentes de `impl SeaOrmCryptoStore` (`pub(super)`, `async`), une par méthode du trait, mêmes

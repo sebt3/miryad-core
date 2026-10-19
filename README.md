@@ -86,4 +86,4 @@ cargo doc --open --features graphql,mcp,swagger-ui
 
 ## Licence
 
-BSD 3-Clause.
+BSD 3-Clause. Les fichiers du store de chiffrement Matrix (`src/matrix/store/`, feature `matrix`) portent des portions dérivées de `matrix-sdk-sqlite` sous Apache-2.0 : voir `NOTICE` et `LICENSE-APACHE`.

@@ -748,8 +748,8 @@ visé est Palpo derrière MAS (authentification déléguée à Authentik, mots d
   valeurs sensibles scellées par le `StoreCipher` du compte (protégé par la passphrase de la config). La
   suite de conformité officielle de `matrix-sdk-crypto` est branchée (35 verts, 1 `#[ignore]` posé par
   l'amont). Le module est **conçu pour être extrait** en crate dédiée (test d'isolation : aucun accès à
-  `matrix-sdk-sqlite`, ses seules dépendances sont SeaORM et `matrix-sdk-crypto`) ; le code porté depuis
-  `matrix-sdk-sqlite` garde son en-tête Apache-2.0. **PostgreSQL éprouvé** (2026-10-18) : la suite entière du store, conformité officielle
+  `matrix-sdk-sqlite`, ses seules dépendances sont SeaORM et `matrix-sdk-crypto`) ; la logique dérivée de
+  `matrix-sdk-sqlite` (schéma, formats, sémantique ; six fichiers) porte une attribution Apache-2.0 en tête de fichier, `NOTICE` et `LICENSE-APACHE`. **PostgreSQL éprouvé** (2026-10-18) : la suite entière du store, conformité officielle
   comprise, passe sur PostgreSQL 17 comme sur SQLite (73 verts) ; `MIRYAD_TEST_PG_URL` bascule les tests sur une base réelle,
   un schéma neuf par test (`src/matrix/store/test_support.sdd`).
 - **Session** : stockée dans le store, scellée, jamais en clair, jamais dans un fichier. Les jetons de

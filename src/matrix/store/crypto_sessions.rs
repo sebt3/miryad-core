@@ -1,3 +1,10 @@
+// Portions de ce fichier (schéma des tables, formats de sérialisation et sémantique des opérations) suivent
+// `matrix-sdk-sqlite` 0.18.0, réimplémentés sur SeaORM.
+// Copyright 2022, 2026 The Matrix.org Foundation C.I.C.
+// Licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
+// Modifié pour miryad-core : réécriture sur SeaORM (SQLite et PostgreSQL), autre découpage en fichiers.
+// Le reste du fichier est sous la licence du dépôt (BSD-3-Clause), voir LICENSE et NOTICE.
+
 //! Partie « sessions » du store de chiffrement : sessions Olm, sessions de groupe entrantes et
 //! sortantes (Megolm), refus (`withheld`) et état de sauvegarde (`src/matrix/store/crypto_sessions.sdd`).
 //! Fonctions inhérentes de `SeaOrmCryptoStore` ; l'`impl CryptoStore` les délègue

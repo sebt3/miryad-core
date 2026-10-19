@@ -7,8 +7,8 @@ Purpose:
     des colonnes de recherche, (3) la lecture/écriture/suppression de lignes de la table `kv`.
     Tout fichier du store passe par ici : aucun autre fichier n'appelle @StoreCipher directement
     (un seul site de chiffrement, donc un seul endroit à auditer). Fichier neuf, conception ; la sémantique
-    de référence est celle de `matrix-sdk-sqlite` `0.18.0` (`src/crypto_store.rs`, `src/utils.rs`), consultée
-    et réécrite sur SeaORM (non recopiée, licence : ./crypto_sessions.sdd `Tasks`).
+    de référence est celle de `matrix-sdk-sqlite` `0.18.0` (`src/crypto_store.rs`, `src/utils.rs`), réécrite
+    sur SeaORM ; format dérivé, donc attribution Apache-2.0 en tête de fichier (./crypto_sessions.sdd `Tasks`, licence).
 
 Owns:
   ./kv.rs

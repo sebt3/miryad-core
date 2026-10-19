@@ -16,7 +16,7 @@ References:
     `room_keys_downloaded`
   matrix-sdk-crypto `0.18.0` — trait @CryptoStore, `store::types::{Changes, DeviceChanges, IdentityChanges}`,
     `GossipRequest`, `SecretInfo`, `RoomSettings`, `StoredRoomKeyBundleData`, `RoomPendingKeyBundleDetails`
-  matrix-sdk-sqlite `0.18.0`, `src/crypto_store.rs` — référence de sémantique, consultée et non recopiée
+  matrix-sdk-sqlite `0.18.0`, `src/crypto_store.rs` — référence de sémantique, réimplémentée sur SeaORM, attribution Apache-2.0 en tête de fichier (./crypto_sessions.sdd, `Tasks` licence)
 
 Must:
   Méthodes inhérentes `pub(super)` de `impl SeaOrmCryptoStore`, mêmes signatures que le trait,

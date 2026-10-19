@@ -41,8 +41,7 @@ Livré et validé en réel le 2026-10-18 (login device code, auto-join, écho, v
 Matrix de bot »). Store éprouvé sur PostgreSQL (suite entière verte). Reste ouvert :
 persistance des rotations de session contre un MAS réel, cross-signing du bot, provisionnement automatisé du compte
 et de la session de bot (`kydah/box#454`), envoi chiffré depuis un réplica qui ne synchronise pas, rattrapage des
-messages reçus pendant une coupure (`matrix/mod.sdd`), licence du code porté depuis `matrix-sdk-sqlite`
-(`crypto_sessions.sdd`).
+messages reçus pendant une coupure (`matrix/mod.sdd`).
 Hors périmètre, **à venir** : le harnais de chatbot (outillage standardisé issu de vanyline), dont la remontée de
 code et de spec n'est pas prête — il consommera `MatrixEventHandler` ; l'identité Matrix → utilisateur miryad
 (RBAC) y sera tranchée.
