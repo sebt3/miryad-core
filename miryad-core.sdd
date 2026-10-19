@@ -251,6 +251,12 @@ Tasks:
     `iat` non contraint par la bibliothèque ; un `sub` vide est accepté tel quel (comme au login) ; `OidcIdentity` dérive `Debug` et porte le JWT en clair (à instruire).
   [ ] D5 — `./src/lib.rs` : gating des cinq modules (tâche d'amendement de `./src/lib.sdd`).
   [ ] D6 — `./src/auth/state.rs`, `./src/auth/mod.rs` : `cfg(db)` des champs, de `token`, du callback (tâches d'amendement de `./src/auth/state.sdd` et `./src/auth/mod.sdd`).
+  [ ] D6b — tests sans `db` (aucun code de production ne change) : `cargo test` sans `db` doit compiler et passer sur les quatre combinaisons sans base
+    (`--no-default-features`, `swagger-ui`, `static-frontend,swagger-ui`, `systemone`). `./Cargo.toml` : `hmac` et `sha2` (versions identiques) rejoignent
+    `[dev-dependencies]` — les tests de `src/auth/oidc.rs` et `src/auth/middleware.rs` signent des JWT HS256 de fixture, alors que ces crates sont optionnelles
+    sous `db` ; `./tests/resource.rs` : `#![cfg(feature = "db")]` en tête ; `./src/lib.rs` : le test `static_frontend_absent_surface` ne cite plus `rest::error`
+    sans `db` ; `./src/auth/dual.rs` et `./src/auth/middleware.rs` : constructeur d'état sans base dans `mod tests`, dégatage de tous les tests qui n'ont besoin
+    que de l'état (dont les scenarios `bearer_jwt_*` et `session_cookie_alone_*` de `./src/auth/dual.sdd`, qui doivent exister sans `db`).
   [ ] D7 — `./src/rest/mod.rs`, `./src/rest/openapi.rs` : gating (tâches d'amendement de `./src/rest/mod.sdd` et `./src/rest/openapi.sdd`) ; les tests de tous les modules touchés
     sont gatés ou adaptés pour que `cargo test --no-default-features` compile.
   [ ] D8 — `./.github/workflows/ci.yml`, `./AGENTS.md`, `./README.md`, `./docs/architecture.md` : treize combinaisons, présentation de la feature `db` et du profil sans base ;
