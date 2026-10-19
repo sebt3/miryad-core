@@ -204,11 +204,13 @@ Tasks:
   [x] G1 — `src/resource.rs`, `src/mcp/mod.rs`, `src/lib.rs` : retirer tests et références à `crate::graphql` (tâches
     d'amendement 2026-10-19 de `./src/resource.sdd`, `./src/mcp/mod.sdd`, `./src/lib.sdd`), de sorte que plus aucun code hors
     `src/graphql/` ne nomme ce module.
-  [ ] G2 — supprimer le répertoire `src/graphql/` (les cinq `.rs` ; les `.sdd` sont déjà retirés) et la ligne `pub mod graphql` de `./src/lib.rs`.
-  [ ] G3 — `./Cargo.toml` : retirer les features `graphql` et `graphiql`, les dépendances `seaography`, `async-graphql`,
+  [x] G2 — supprimer le répertoire `src/graphql/` (les cinq `.rs` ; les `.sdd` sont déjà retirés) et la ligne `pub mod graphql` de `./src/lib.rs`.
+  [x] G3 — `./Cargo.toml` : retirer les features `graphql` et `graphiql`, les dépendances `seaography`, `async-graphql`,
     `async-graphql-axum`, `graphql`/`graphiql` de `[package.metadata.docs.rs].features`, le commentaire du carve-out `seaography`
     (ligne ~48), et mettre la `description` à « REST/MCP » ; régénérer `./Cargo.lock` (`cargo update -w` minimal : aucune montée
     de version hors départ de `seaography`/`async-graphql*` et de leurs satellites).
+    Validé 2026-10-19 (validator Sonnet GO) : 22 paquets retirés de `Cargo.lock`, aucune version changée, `--locked` stable ; batterie à dix
+    combinaisons (tests et clippy, `--all-features` comprise sans carve-out), `cargo doc` et `specdd lint` verts.
   [ ] G4 — doc-comments sans changement de comportement, par groupes de trois fichiers au plus : (a) `./src/auth/cookie.rs`,
     `./src/auth/error.rs`, `./src/auth/principal.rs` ; (b) `./src/auth/state.rs`, `./src/query.rs`, `./src/ir.rs` ;
     (c) `./src/users/group.rs`, `./src/users/user.rs`, `./src/users/mod.rs` ; (d) `./src/mcp/format.rs`, `./src/mcp/handler.rs`,

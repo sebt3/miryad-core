@@ -2,7 +2,7 @@
 name = "miryad-core"
 version = "0.1.6"
 edition = "2024"
-description = "Moteur générique (auth OIDC, RBAC, REST/GraphQL/MCP, workflow) derrière le template d'application miryad — une ligne de trait par entité, tout le reste est fourni"
+description = "Moteur générique (auth OIDC, RBAC, REST/MCP, workflow) derrière le template d'application miryad — une ligne de trait par entité, tout le reste est fourni"
 license = "BSD-3-Clause AND Apache-2.0"
 repository = "https://github.com/sebt3/miryad-core"
 homepage = "https://github.com/sebt3/miryad-core"
@@ -44,8 +44,8 @@ arithmetic_side_effects = "deny"
 indexing_slicing = "deny"
 unwrap_in_result = "deny"
 panic_in_result_fn = "deny"
-# Doublons de versions imposés par les dépendances amont (SeaORM, axum, openidconnect,
-# seaography) — cargo update ne les déduplique pas. Décision Sébastien, voir tooling.sdd.
+# Doublons de versions imposés par les dépendances amont (SeaORM, axum, openidconnect) —
+# cargo update ne les déduplique pas. Décision Sébastien, voir tooling.sdd.
 multiple_crate_versions = { level = "allow", priority = 1 }
 
 [dependencies]
@@ -72,9 +72,6 @@ hex = "0.4"
 chrono = "0.4"
 utoipa = "5"
 utoipa-swagger-ui = { version = "9", optional = true, features = ["axum", "vendored"] }
-seaography = { version = "2.0.0-rc.9", optional = true }
-async-graphql = { version = "7", optional = true }
-async-graphql-axum = { version = "7", optional = true }
 vynil-core = { version = "0.7.7", default-features = false, features = ["hbs"], optional = true }
 tower-http = { version = "0.6", default-features = false, features = ["fs"], optional = true }
 restate-sdk = { version = "0.12", features = ["http_server"], optional = true }
@@ -92,8 +89,6 @@ zeroize = { version = "1", optional = true }
 default = ["static-frontend"]
 static-frontend = ["dep:tower-http"]
 swagger-ui = ["dep:utoipa-swagger-ui"]
-graphql = ["dep:seaography", "dep:async-graphql", "dep:async-graphql-axum", "sea-orm/seaography"]
-graphiql = ["graphql", "async-graphql/graphiql"]
 mcp = ["dep:vynil-core"]
 # async-trait n'est pas dans ce tableau : déjà dépendance directe non optionnelle utilisée hors
 # gating (src/auth/oidc.rs, src/migration/*) ; la rendre optionnelle casserait tout build sans
@@ -128,5 +123,5 @@ tracing-subscriber = { version = "0.3", features = ["registry"] }
 
 [package.metadata.docs.rs]
 all-features = false
-features = ["static-frontend", "swagger-ui", "graphql", "graphiql", "mcp", "workflow", "systemone", "matrix"]
+features = ["static-frontend", "swagger-ui", "mcp", "workflow", "systemone", "matrix"]
 rustdoc-args = ["--cfg", "docsrs"]
