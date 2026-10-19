@@ -60,6 +60,12 @@ pub enum PrincipalSource {
         /// `Model::id`) ; verbatim dans le `Debug` — pas un secret.
         token_id: i32,
     },
+    /// JWT OIDC brut d'un en-tête `Authorization: Bearer`, vérifié par `OidcClientTrait::verify_bearer` ;
+    /// produit par `dual.rs`. Rédigé `"[REDACTED]"` par le `Debug` manuel.
+    Bearer {
+        /// JWT brut tel que reçu dans l'en-tête ; jamais reproduit par le `Debug`.
+        jwt: String,
+    },
 }
 
 impl std::fmt::Debug for PrincipalSource {
@@ -71,6 +77,8 @@ impl std::fmt::Debug for PrincipalSource {
                 .field("id_token", &"[REDACTED]")
                 .finish(),
             Self::ApiToken { token_id } => f.debug_struct("ApiToken").field("token_id", token_id).finish(),
+            // `jwt` rédigé (amendement 2026-10-19, principal.sdd) : jamais le JWT brut.
+            Self::Bearer { .. } => f.debug_struct("Bearer").field("jwt", &"[REDACTED]").finish(),
         }
     }
 }
@@ -98,7 +106,9 @@ mod tests {
         assert_eq!(principal.preferred_username.as_deref(), Some("alice"));
         let id_token = match &principal.source {
             super::PrincipalSource::Session { id_token } => id_token,
-            super::PrincipalSource::ApiToken { .. } => panic!("source construite en Session"),
+            super::PrincipalSource::ApiToken { .. } | super::PrincipalSource::Bearer { .. } => {
+                panic!("source construite en Session")
+            }
         };
         assert_eq!(id_token, "jwt-brut");
     }
@@ -121,7 +131,9 @@ mod tests {
         assert_eq!(principal.preferred_username, None);
         let token_id = match &principal.source {
             super::PrincipalSource::ApiToken { token_id } => *token_id,
-            super::PrincipalSource::Session { .. } => panic!("source construite en ApiToken"),
+            super::PrincipalSource::Session { .. } | super::PrincipalSource::Bearer { .. } => {
+                panic!("source construite en ApiToken")
+            }
         };
         assert_eq!(token_id, 7);
     }
@@ -147,10 +159,14 @@ mod tests {
 
         let charge_sessionne = match &session.source {
             super::PrincipalSource::Session { id_token } => id_token.as_str(),
-            super::PrincipalSource::ApiToken { .. } => panic!("premier principal en Session"),
+            super::PrincipalSource::ApiToken { .. } | super::PrincipalSource::Bearer { .. } => {
+                panic!("premier principal en Session")
+            }
         };
         let charge_api = match &api.source {
-            super::PrincipalSource::Session { .. } => panic!("second principal en ApiToken"),
+            super::PrincipalSource::Session { .. } | super::PrincipalSource::Bearer { .. } => {
+                panic!("second principal en ApiToken")
+            }
             super::PrincipalSource::ApiToken { token_id } => *token_id,
         };
         assert_eq!(charge_sessionne, "jwt-brut");
@@ -176,7 +192,9 @@ mod tests {
         assert_eq!(copie.preferred_username, original.preferred_username);
         let id_token_de_la_copie = match &copie.source {
             super::PrincipalSource::Session { id_token } => id_token.clone(),
-            super::PrincipalSource::ApiToken { .. } => panic!("copie en Session"),
+            super::PrincipalSource::ApiToken { .. } | super::PrincipalSource::Bearer { .. } => {
+                panic!("copie en Session")
+            }
         };
         assert_eq!(id_token_de_la_copie, "jwt-brut");
 
@@ -187,7 +205,9 @@ mod tests {
         assert_eq!(original.subject, "alice");
         let id_token_originale = match &original.source {
             super::PrincipalSource::Session { id_token } => id_token.as_str(),
-            super::PrincipalSource::ApiToken { .. } => panic!("original en Session"),
+            super::PrincipalSource::ApiToken { .. } | super::PrincipalSource::Bearer { .. } => {
+                panic!("original en Session")
+            }
         };
         assert_eq!(id_token_originale, "jwt-brut");
     }
@@ -332,5 +352,56 @@ mod tests {
             matches!(fixture.source, super::PrincipalSource::ApiToken { token_id: 0 }),
             "fixture du registre MCP : token_id 0 rendu inchangé"
         );
+    }
+
+    /// `Scenario` (2026-10-19) : « Debug de la variante Bearer rédige le JWT » — le JWT brut
+    /// n'apparaît jamais dans le `Debug`, ni en entier ni en fragment.
+    #[test]
+    fn principal_source_bearer_debug_redacts_jwt() {
+        let principal = super::AuthPrincipal {
+            subject: "user-1".to_string(),
+            email: None,
+            preferred_username: None,
+            source: super::PrincipalSource::Bearer {
+                jwt: "aaa.bbb.ccc".to_string(),
+            },
+        };
+
+        let rendu = format!("{principal:?}");
+        assert!(
+            rendu.contains("[REDACTED]"),
+            "le `Debug` de `Bearer` doit rédiger le JWT : {rendu}"
+        );
+        assert!(
+            !rendu.contains("aaa.bbb.ccc"),
+            "le `Debug` ne doit jamais reproduire le JWT brut : {rendu}"
+        );
+        assert!(
+            !rendu.contains("bbb"),
+            "aucun fragment du JWT dans le `Debug` : {rendu}"
+        );
+    }
+
+    /// `Scenario` (2026-10-19) : « la variante Bearer se construit par littéral sur toute
+    /// combinaison » — test ordinaire, sans aucune dépendance `db`/`sea_orm` : les trois
+    /// variantes se construisent et se discriminent.
+    #[test]
+    fn principal_source_variants_construct_without_db() {
+        let variantes = [
+            super::PrincipalSource::Session {
+                id_token: "jwt-brut".to_string(),
+            },
+            super::PrincipalSource::ApiToken { token_id: 1 },
+            super::PrincipalSource::Bearer {
+                jwt: "aaa.bbb.ccc".to_string(),
+            },
+        ];
+        assert_eq!(variantes.len(), 3);
+        assert!(matches!(variantes[0], super::PrincipalSource::Session { .. }));
+        assert!(matches!(
+            variantes[1],
+            super::PrincipalSource::ApiToken { token_id: 1 }
+        ));
+        assert!(matches!(variantes[2], super::PrincipalSource::Bearer { .. }));
     }
 }

@@ -310,7 +310,7 @@ Tasks:
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./error.rs`, retirer de la doc de test (ligne ~333)
     la mention de `graphql_handler` (la liste devient `issue_token`, `validate_token`, `revoke_token`,
     `ensure_token`). Aucun changement de comportement.
-  [ ] Amendement 2026-10-19 (Bearer OIDC, `db`) : dans `./error.rs`, ajouter @InvalidBearer (`MRD-AUTH-019`) et @BearerExpired
+  [x] Amendement 2026-10-19 (Bearer OIDC, `db`) : dans `./error.rs`, ajouter @InvalidBearer (`MRD-AUTH-019`) et @BearerExpired
     (`MRD-AUTH-020`) avec leurs bras de `401` dans la table de rendu, poser `#[cfg(feature = "db")]` sur @Database (variante, bras
     de rendu, @From) et sur les tests qui construisent un `sea_orm::DbErr` ; trois tests nommés `invalid_bearer_renders_401_019`,
     `bearer_expired_renders_401_020`, `database_variant_gated_by_db` (preuve par la batterie `--no-default-features`). Mettre à jour

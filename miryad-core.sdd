@@ -240,12 +240,15 @@ Tasks:
   [ ] D0 — mode sans base et validation Bearer (décision 2026-10-19 ; specs amendées, code à suivre) : livrés quand D1 à D8 sont `[x]` et que la batterie de
     `./tooling.sdd` (treize combinaisons) est verte. Ordre d'exécution (D4 d'abord : un `cfg(feature = "db")` exige la feature déclarée, puis D1, D2, D3, D5, D6, D7, D8, D9) : un fichier ou un petit groupe par tâche, validator entre chaque ; tant que D7 n'est pas
     faite, seules les combinaisons AVEC `db` compilent — c'est attendu.
-  [ ] D1 — `./src/auth/error.rs` et `./src/auth/principal.rs` : variantes `InvalidBearer`/`BearerExpired`, `PrincipalSource::Bearer`, `cfg(db)` sur `AuthError::Database`
+  [x] D1 — `./src/auth/error.rs` et `./src/auth/principal.rs` : variantes `InvalidBearer`/`BearerExpired`, `PrincipalSource::Bearer`, `cfg(db)` sur `AuthError::Database`
     (tâches d'amendement de `./src/auth/error.sdd` et `./src/auth/principal.sdd`).
-  [ ] D2 — `./src/auth/oidc.rs` : `verify_bearer` au trait, implémentation, mode du mock (tâche d'amendement de `./src/auth/oidc.sdd`).
-  [ ] D3 — `./src/auth/dual.rs` : dispatch JWT/API-token (tâche d'amendement de `./src/auth/dual.sdd`).
-  [ ] D4 — `./Cargo.toml` : feature `db`, dépendances optionnelles, implications de `mcp`/`workflow`/`matrix`, `default = ["static-frontend", "db"]`, `docs.rs.features`
+  [x] D2 — `./src/auth/oidc.rs` : `verify_bearer` au trait, implémentation, mode du mock (tâche d'amendement de `./src/auth/oidc.sdd`).
+  [x] D3 — `./src/auth/dual.rs` : dispatch JWT/API-token (tâche d'amendement de `./src/auth/dual.sdd`).
+  [x] D4 — `./Cargo.toml` : feature `db`, dépendances optionnelles, implications de `mcp`/`workflow`/`matrix`, `default = ["static-frontend", "db"]`, `docs.rs.features`
     (`Cargo.lock` régénéré sans montée de version ; rien ne se compile encore sans `db`).
+    Validé 2026-10-19 (D1–D4, validator Sonnet GO, aucune faille de sécurité trouvée) : neuf combinaisons avec `db` vertes en tests et clippy, `cargo doc` propre. Dette reportée à D6 :
+    dégater les tests de `dual.rs` qui ne dépendent que de l'état (constructeur d'état sans base, voir `src/auth/dual.sdd`). Constats consignés : `aud ∋ client_id` (pas d'égalité, `azp` non contrôlé) ;
+    `iat` non contraint par la bibliothèque ; un `sub` vide est accepté tel quel (comme au login) ; `OidcIdentity` dérive `Debug` et porte le JWT en clair (à instruire).
   [ ] D5 — `./src/lib.rs` : gating des cinq modules (tâche d'amendement de `./src/lib.sdd`).
   [ ] D6 — `./src/auth/state.rs`, `./src/auth/mod.rs` : `cfg(db)` des champs, de `token`, du callback (tâches d'amendement de `./src/auth/state.sdd` et `./src/auth/mod.sdd`).
   [ ] D7 — `./src/rest/mod.rs`, `./src/rest/openapi.rs` : gating (tâches d'amendement de `./src/rest/mod.sdd` et `./src/rest/openapi.sdd`) ; les tests de tous les modules touchés

@@ -176,8 +176,8 @@ Must:
     la source vendue `openidconnect-4.0.1`) : le JWT se parse en @CoreIdToken par `FromStr` ; ses claims se vérifient par
     `IdToken::claims(&self.inner.id_token_verifier(), nonce_neutre)` où `nonce_neutre` est une fermeture
     `|_: Option<&Nonce>| Ok(())` (`NonceVerifier` est implémenté pour toute fermeture, `verification/mod.rs`) — donc signature
-    contre les clés du snapshot, `iss` égal à l'issuer découvert, `aud` contenant le `client_id` de ce client, `exp` et `iat`
-    valides. Aucune audience supplémentaire n'est configurable : `OidcConfig` ne change pas (`Must not`).
+    contre les clés du snapshot, `iss` égal à l'issuer découvert, `aud` contenant le `client_id` de ce client, `exp` vérifié
+    (`iat` n'est pas contraint : `openidconnect` 4.0.1 pose par défaut un `iat_verifier_fn` qui accepte tout, `verification/mod.rs`). Aucune audience supplémentaire n'est configurable : `OidcConfig` ne change pas (`Must not`).
   Rendre, sur succès, un @OidcIdentity dont @id_token vaut le JWT reçu verbatim et dont @subject, @email, @preferred_username
     viennent des claims vérifiés (mêmes extracteurs qu'@exchange_code) ; le claim `groups` n'est pas lu ici.
   Mapper les rejets sans fuite : `ClaimsVerificationError::Expired` → @AuthError::BearerExpired (`MRD-AUTH-020`) ;
@@ -431,7 +431,7 @@ Tasks:
     l'@unimplemented!), fixture mock IdP + HMAC au runtime + `tracing-subscriber` (ci-dessus) ; le
     contrat ne déborde pas du fichier — si un mock HTTP en crate d'intégration est préféré,
     rattacher ./tests par un `Can modify` de cette spec.
-  [ ] Amendement 2026-10-19 (validation Bearer) : dans `./oidc.rs`, ajouter @verify_bearer au trait, son implémentation pour
+  [x] Amendement 2026-10-19 (validation Bearer) : dans `./oidc.rs`, ajouter @verify_bearer au trait, son implémentation pour
     @OidcClient (règle et mappage d'erreur de `Must`) et le mode configurable de @MockOidcClient ; les tests de la
     validation utilisent le banc HS256 déjà employé pour @exchange_code (clé symétrique signée au runtime). Dépend de
     ./error.sdd (variantes 019/020) et de ./principal.sdd. Les `Scenario` ci-dessous sont convertis en tests nommés

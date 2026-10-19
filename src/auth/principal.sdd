@@ -197,7 +197,7 @@ Tasks:
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./principal.rs`, remplacer « REST/GraphQL/MCP » par « REST/MCP »
     (docs ligne ~2 et ~24) et la chaîne d'assertion `"fixture des registres GraphQL/MCP …"` (ligne ~333) par
     `"fixture du registre MCP : token_id 0 rendu inchangé"`. Aucun changement de comportement.
-  [ ] Amendement 2026-10-19 (Bearer OIDC) : dans `./principal.rs`, ajouter la variante @Bearer { jwt } à @PrincipalSource, étendre le
+  [x] Amendement 2026-10-19 (Bearer OIDC) : dans `./principal.rs`, ajouter la variante @Bearer { jwt } à @PrincipalSource, étendre le
     `Debug` manuel (jwt rédigé), tests `principal_source_bearer_debug_redacts_jwt` et `principal_source_variants_construct_without_db`
     (le second est un test ordinaire, sa preuve sans `db` est le run `--no-default-features`).
 

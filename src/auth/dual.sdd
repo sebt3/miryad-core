@@ -250,7 +250,7 @@ Tasks:
       et écrire 14 tests neufs pour les scenarios 6 à 19, dont
       @lowercase_bearer_scheme_now_authenticates (remplace l'ancien test de repli) et
       @successful_and_rejected_resolutions_emit_debug_traces_without_leaking_credentials
-  [ ] Amendement 2026-10-19 (JWT Bearer) : dans `./dual.rs`, implémenter le dispatch de `Must` (règle « exactement deux `.` »,
+  [x] Amendement 2026-10-19 (JWT Bearer) : dans `./dual.rs`, implémenter le dispatch de `Must` (règle « exactement deux `.` »,
     chemins (1) à (3)), poser `#[cfg(feature = "db")]` sur l'`use` de @validate_token et sur le chemin (2), et gater sous `db` les
     tests qui émettent un token API ou construisent une base (fixtures `state_around`, `sqlite::memory:`) ; les `Scenario` ci-dessous
     sont convertis en tests nommés `bearer_jwt_*` / `bearer_*_without_db`. Dépend de ./oidc.sdd, ./principal.sdd, ./error.sdd.

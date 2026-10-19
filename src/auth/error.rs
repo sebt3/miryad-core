@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-/// Erreurs d'authentification du module `auth` : dix variantes portant chacune un code unique
+/// Erreurs d'authentification du module `auth` : douze variantes (onze sans `db`) portant chacune un code unique
 /// `MRD-AUTH-NNN` dans son `Display`, rendues en `text/plain` par l'implémentation
 /// `IntoResponse` de ce fichier selon la table variante → statut (invariante, sans joker).
 /// Dérives `Debug` et `thiserror::Error` uniquement — ni `Clone` ni `PartialEq`.
@@ -45,10 +45,20 @@ pub enum AuthError {
     /// 2026-09-27, rendue `409` : la ressource est déjà allouée.
     #[error("MRD-AUTH-017: token hash already provisioned for another subject")]
     TokenHashConflict,
+    /// `MRD-AUTH-019` — JWT `Bearer` rejeté (non parsable, signature, `iss`, `aud`, claims),
+    /// variante unitaire rendue `401`, sans `WWW-Authenticate` (amendement 2026-10-19). Le JWT
+    /// n'est porté ni par le `Display`, ni par un champ, ni par les traces.
+    #[error("MRD-AUTH-019: invalid bearer token")]
+    InvalidBearer,
+    /// `MRD-AUTH-020` — JWT `Bearer` valide par ailleurs mais échu, variante unitaire rendue
+    /// `401`, distincte de `InvalidBearer` par son corps (amendement 2026-10-19).
+    #[error("MRD-AUTH-020: expired bearer token")]
+    BearerExpired,
     /// Variante tuple d'un `sea_orm::DbErr` sous `#[from]`, code `MRD-AUTH-016`, rendue `500` —
     /// la voie de passage des `DbErr` nus du module (et de l'opérateur `?` de tout appel
     /// `SeaORM`) : un `DbErr` de traversée n'est pas une erreur miryad, il traverse nu jusqu'à
-    /// cette décoration.
+    /// cette décoration. N'existe que sous la feature `db` (amendement 2026-10-19).
+    #[cfg(feature = "db")]
     #[error("MRD-AUTH-016: database error: {0}")]
     Database(#[from] sea_orm::DbErr),
     /// Variante tuple d'un `String`, code `MRD-AUTH-018`, rendue `500` — arrêt interne de la
@@ -76,12 +86,15 @@ impl IntoResponse for AuthError {
             AuthError::InvalidCallback | AuthError::CsrfMismatch => StatusCode::BAD_REQUEST,
             AuthError::Oidc(_) => StatusCode::BAD_GATEWAY,
             AuthError::TokenHashConflict => StatusCode::CONFLICT,
-            // `Database` et `Internal` (arbitrée 2026-09-30) partagent `500` dans la table de
-            // `Must` — groupées par `|` comme le groupe `401` ci-dessus : les variantes
-            // restent nommées, le match reste sans joker, une onzième variante interrompt
-            // toujours la compilation (`match_same_arms` interdit deux armures de corps
-            // identiques séparées).
-            AuthError::Database(_) | AuthError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AuthError::InvalidBearer | AuthError::BearerExpired => StatusCode::UNAUTHORIZED,
+            // `Database` (sous `db` seulement) et `Internal` (arbitrée 2026-09-30) partagent
+            // `500` dans la table de `Must` — groupées par `|` comme le groupe `401` ci-dessus :
+            // les variantes restent nommées, le match reste sans joker, une variante nouvelle
+            // interrompt toujours la compilation (`match_same_arms` interdit deux armures de
+            // corps identiques séparées).
+            #[cfg(feature = "db")]
+            AuthError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AuthError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, self.to_string()).into_response()
     }
@@ -95,6 +108,7 @@ mod tests {
     /// Corps du contrat `text/plain` vérifié au source d'axum-core 0.5.6 (`Must`).
     const TEXT_PLAIN: &str = "text/plain; charset=utf-8";
 
+    #[cfg(feature = "db")]
     fn database_boom() -> AuthError {
         AuthError::Database(sea_orm::DbErr::Custom("boom".to_string()))
     }
@@ -168,6 +182,7 @@ mod tests {
 
     /// `Scenario` : « Display 016 `DbErr` embarqué » — préfixe `Custom Error: ` de
     /// sea-orm 2.0.2 inclus, exposition verbatim confirmée comme contrat voulu.
+    #[cfg(feature = "db")]
     #[test]
     fn display_016_database_embedded_err() {
         assert_eq!(
@@ -289,6 +304,7 @@ mod tests {
 
     /// `Scenario` : « rendu HTTP 500 pour 016 » — `DbErr` verbatim sur le fil,
     /// exposition confirmée comme voulue (self-hosted).
+    #[cfg(feature = "db")]
     #[tokio::test]
     async fn http_render_016_database_is_500() {
         let (status, content_type, body) = render(database_boom()).await;
@@ -326,11 +342,66 @@ mod tests {
         );
     }
 
+    /// `Scenario` (2026-10-19, `db`) : « JWT Bearer invalide rendu 401 avec le code 019 » —
+    /// statut `401`, corps texte exact, aucun `WWW-Authenticate`.
+    #[tokio::test]
+    async fn invalid_bearer_renders_401_019() {
+        let resp = AuthError::InvalidBearer.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            resp.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            Some(TEXT_PLAIN)
+        );
+        assert!(
+            resp.headers().get(axum::http::header::WWW_AUTHENTICATE).is_none(),
+            "aucun `WWW-Authenticate` sur le 401 de 019"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("readable body");
+        assert_eq!(&body[..], b"MRD-AUTH-019: invalid bearer token");
+    }
+
+    /// `Scenario` (2026-10-19, `db`) : « JWT Bearer échu rendu 401 avec le code 020 » —
+    /// statut `401`, corps texte exact, distinct de celui de 019, aucun `WWW-Authenticate`.
+    #[tokio::test]
+    async fn bearer_expired_renders_401_020() {
+        let resp = AuthError::BearerExpired.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            resp.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            Some(TEXT_PLAIN)
+        );
+        assert!(
+            resp.headers().get(axum::http::header::WWW_AUTHENTICATE).is_none(),
+            "aucun `WWW-Authenticate` sur le 401 de 020"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("readable body");
+        assert_eq!(&body[..], b"MRD-AUTH-020: expired bearer token");
+        assert_ne!(&body[..], b"MRD-AUTH-019: invalid bearer token");
+    }
+
+    /// `Scenario` (2026-10-19) : la variante `Database` n'existe que sous `db` — ce test
+    /// ne compile que sous `db` ; son absence sans `db` est prouvée par la batterie
+    /// `--no-default-features`.
+    #[cfg(feature = "db")]
+    #[tokio::test]
+    async fn database_variant_gated_by_db() {
+        let (status, content_type, body) =
+            render(AuthError::Database(sea_orm::DbErr::Custom("x".to_string()))).await;
+        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(content_type, TEXT_PLAIN);
+        assert!(body.starts_with(b"MRD-AUTH-016"));
+    }
+
     // ——— Conversion `#[from]` et contrat de `source` ———
 
     /// `Scenario` : « erreur `SeaORM` convertie par l'opérateur de propagation » —
     /// le chemin qu'emprunte `?` dans `issue_token`, `validate_token`,
     /// `revoke_token` et `ensure_token`.
+    #[cfg(feature = "db")]
     #[test]
     fn db_err_converts_to_database_variant() {
         let err = AuthError::from(sea_orm::DbErr::Custom("connection lost".to_string()));
@@ -345,13 +416,13 @@ mod tests {
         );
     }
 
-    /// `Scenario` : « source présente sur 016 seulement » — `#[from]` vaut
-    /// `#[source]` (thiserror-impl 2.0.20) ; les neuf autres valent `None`,
-    /// `Oidc`, les trois variantes 2026-09-27 et `Internal` (2026-09-30) compris —
-    /// la charge utile `String` d'`Internal` n'est pas une source, comme celle d'`Oidc`.
+    /// `Scenario` : « source absente hors 016 » — les onze variantes non `Database` (`Oidc`,
+    /// les trois variantes 2026-09-27, `Internal` (2026-09-30), `InvalidBearer`/`BearerExpired`
+    /// (2026-10-19) compris) rendent `source() == None` ; la charge utile `String` d'`Internal`
+    /// n'est pas une source, comme celle d'`Oidc`.
     #[test]
-    fn source_is_some_on_database_only() {
-        let ten: [(AuthError, &str); 10] = [
+    fn source_is_none_on_non_database_variants() {
+        let cases: [(AuthError, &str); 11] = [
             (AuthError::NotAuthenticated, "NotAuthenticated"),
             (AuthError::InvalidSession, "InvalidSession"),
             (AuthError::InvalidCallback, "InvalidCallback"),
@@ -360,22 +431,29 @@ mod tests {
             (AuthError::InvalidToken, "InvalidToken"),
             (AuthError::TokenExpired, "TokenExpired"),
             (AuthError::TokenHashConflict, "TokenHashConflict"),
-            (database_boom(), "Database"),
             (AuthError::Internal("x".to_string()), "Internal"),
+            (AuthError::InvalidBearer, "InvalidBearer"),
+            (AuthError::BearerExpired, "BearerExpired"),
         ];
-        for (err, name) in ten {
+        for (err, name) in cases {
             let source = std::error::Error::source(&err);
-            if name == "Database" {
-                let db_err = source
-                    .and_then(|e| e.downcast_ref::<sea_orm::DbErr>())
-                    .expect("Database source is the embedded DbErr");
-                assert_eq!(db_err.to_string(), "Custom Error: boom");
-            } else {
-                assert!(
-                    source.is_none(),
-                    "{name} doit rendre source() == None, pas {source:?}"
-                );
-            }
+            assert!(
+                source.is_none(),
+                "{name} doit rendre source() == None, pas {source:?}"
+            );
         }
+    }
+
+    /// `Scenario` : « source présente sur 016 seulement » — `#[from]` vaut `#[source]`
+    /// (thiserror-impl 2.0.20) : sous `db`, `source()` de `Database` rend le `DbErr` embarqué.
+    #[cfg(feature = "db")]
+    #[test]
+    fn source_is_some_on_database_only() {
+        let err = database_boom();
+        let source = std::error::Error::source(&err);
+        let db_err = source
+            .and_then(|e| e.downcast_ref::<sea_orm::DbErr>())
+            .expect("Database source is the embedded DbErr");
+        assert_eq!(db_err.to_string(), "Custom Error: boom");
     }
 }
