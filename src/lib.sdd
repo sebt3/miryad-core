@@ -95,7 +95,7 @@ Must:
     (`https://docs.rs/miryad-core`).
   **Amendement 2026-10-19 (feature `db`, validation Bearer)** — prévaut sur toute mention contraire de ce fichier. La feature
     `db` (par défaut avec `static-frontend`) active `sea-orm`, `sea-orm-migration` et les dépendances qu'elle seule consomme
-    (`hmac`, `sha2`, `rand`, `chrono`) ; sans elle aucune n'est dans le graphe `normal`. La racine déclare toujours treize `pub
+    (`hmac`, `sha2`, `rand`, `hex`, `chrono`) ; sans elle aucune n'est dans le graphe `normal`. La racine déclare toujours treize `pub
     mod` mais gate désormais **neuf** d'entre eux : `#[cfg(feature = "db")]` sur @ir, @migration, @rbac, @resource, @users ;
     les gates existants de @frontend (`static-frontend`), @mcp, @workflow, @matrix (chacune de ces trois features implique
     `db` dans `[features]`) et @systemone (indépendante de `db`) sont inchangés. @auth, @query et @rest restent déclarés sans `cfg`
