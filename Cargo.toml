@@ -49,8 +49,8 @@ panic_in_result_fn = "deny"
 multiple_crate_versions = { level = "allow", priority = 1 }
 
 [dependencies]
-sea-orm = { version = "2", features = ["macros"] }
-sea-orm-migration = "2"
+sea-orm = { version = "2", features = ["macros"], optional = true }
+sea-orm-migration = { version = "2", optional = true }
 clap = { version = "4", features = ["derive"] }
 axum = "0.8"
 openidconnect = "4.0"
@@ -65,11 +65,11 @@ async-trait = "0.1"
 thiserror = "2"
 tracing = "0.1"
 base64 = "0.23"
-rand = "0.8"
-sha2 = "0.10"
-hmac = "0.12"
-hex = "0.4"
-chrono = "0.4"
+rand = { version = "0.8", optional = true }
+sha2 = { version = "0.10", optional = true }
+hmac = { version = "0.12", optional = true }
+hex = { version = "0.4", optional = true }
+chrono = { version = "0.4", optional = true }
 utoipa = "5"
 utoipa-swagger-ui = { version = "9", optional = true, features = ["axum", "vendored"] }
 vynil-core = { version = "0.7.7", default-features = false, features = ["hbs"], optional = true }
@@ -86,18 +86,20 @@ matrix-sdk-store-encryption = { version = "0.18", optional = true }
 zeroize = { version = "1", optional = true }
 
 [features]
-default = ["static-frontend"]
+default = ["static-frontend", "db"]
 static-frontend = ["dep:tower-http"]
 swagger-ui = ["dep:utoipa-swagger-ui"]
-mcp = ["dep:vynil-core"]
+# Entités, comptes locaux, RBAC, migrations, tokens API (miryad-core.sdd, amendement 2026-10-19) ; active sea-orm.
+db = ["dep:sea-orm", "dep:sea-orm-migration", "dep:hmac", "dep:sha2", "dep:rand", "dep:chrono", "dep:hex"]
+mcp = ["db", "dep:vynil-core"]
 # async-trait n'est pas dans ce tableau : déjà dépendance directe non optionnelle utilisée hors
 # gating (src/auth/oidc.rs, src/migration/*) ; la rendre optionnelle casserait tout build sans
 # workflow — contrat tranché dans src/workflow/mod.sdd `Must` (implémentation 2026-09-23).
-workflow = ["dep:restate-sdk", "dep:uuid", "dep:vynil-core", "vynil-core?/rhai", "dep:tokio"]
+workflow = ["db", "dep:restate-sdk", "dep:uuid", "dep:vynil-core", "vynil-core?/rhai", "dep:tokio"]
 # Client System One (src/systemone/mod.sdd) : aucune dépendance nouvelle, hors `default` (décision 2026-10-06).
 systemone = []
 # Client Matrix de bot (src/matrix/mod.sdd), hors `default` (arbitrage 2026-10-06).
-matrix = ["dep:matrix-sdk", "dep:matrix-sdk-crypto", "dep:matrix-sdk-store-encryption", "dep:zeroize", "dep:tokio"]
+matrix = ["db", "dep:matrix-sdk", "dep:matrix-sdk-crypto", "dep:matrix-sdk-store-encryption", "dep:zeroize", "dep:tokio"]
 
 [dev-dependencies]
 sea-orm = { version = "2", features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "macros", "mock"] }
@@ -123,5 +125,5 @@ tracing-subscriber = { version = "0.3", features = ["registry"] }
 
 [package.metadata.docs.rs]
 all-features = false
-features = ["static-frontend", "swagger-ui", "mcp", "workflow", "systemone", "matrix"]
+features = ["static-frontend", "db", "swagger-ui", "mcp", "workflow", "systemone", "matrix"]
 rustdoc-args = ["--cfg", "docsrs"]
