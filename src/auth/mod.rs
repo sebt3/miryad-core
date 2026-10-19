@@ -1021,7 +1021,7 @@ mod tests {
         ) {
         }
         witness_flat(None, None, None, None, None, None, None);
-        let _clear: fn(bool) -> String = crate::auth::cookie::clear_cookie;
+        std::hint::black_box(crate::auth::cookie::clear_cookie as fn(bool) -> String);
         assert_eq!(crate::auth::cookie::SESSION_COOKIE_NAME, "miryad_session");
     }
 

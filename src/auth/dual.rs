@@ -151,7 +151,9 @@ mod tests {
     /// chaque rejet affirmé ici l'est par la chaîne entière, jamais par le seul statut.
     const BODY_001: &str = "MRD-AUTH-001: not authenticated (no session cookie)";
     const BODY_002: &str = "MRD-AUTH-002: invalid or expired session";
+    #[cfg(feature = "db")]
     const BODY_014: &str = "MRD-AUTH-014: invalid or unknown API token";
+    #[cfg(feature = "db")]
     const BODY_015: &str = "MRD-AUTH-015: expired API token";
     const BODY_019: &str = "MRD-AUTH-019: invalid bearer token";
     const BODY_020: &str = "MRD-AUTH-020: expired bearer token";
@@ -169,6 +171,19 @@ mod tests {
         }
     }
 
+    /// État sans base (profil sans `db`) : seuls le client OIDC mock, la clé de cookie et les
+    /// redirections existent ; aucun champ `db` ni `token_pepper` (`src/auth/state.rs`).
+    #[cfg(not(feature = "db"))]
+    fn state_without_db(oidc: MockOidcClient) -> MiryadAuthState {
+        MiryadAuthState {
+            oidc_client: std::sync::Arc::new(oidc),
+            cookie_key: cookie::Key::from(&[0u8; 64]),
+            post_login_redirect: "/".to_string(),
+            post_logout_redirect: "/".to_string(),
+            secure_cookies: false,
+        }
+    }
+
     #[cfg(feature = "db")]
     async fn test_state() -> MiryadAuthState {
         let db = sea_orm::Database::connect("sqlite::memory:")
@@ -178,6 +193,13 @@ mod tests {
         state_around(db)
     }
 
+    /// Variante sans `db` : `async` conservé pour les appelants (`.await`), sans travail
+    /// asynchrone à faire.
+    #[cfg(not(feature = "db"))]
+    fn test_state() -> std::future::Ready<MiryadAuthState> {
+        std::future::ready(state_without_db(MockOidcClient::default()))
+    }
+
     /// `test_state` dont le client OIDC est le mock configuré (amendement 2026-10-19).
     #[cfg(feature = "db")]
     async fn test_state_with_oidc(oidc: MockOidcClient) -> MiryadAuthState {
@@ -185,6 +207,12 @@ mod tests {
             oidc_client: std::sync::Arc::new(oidc),
             ..test_state().await
         }
+    }
+
+    /// Variante sans `db` de `test_state_with_oidc`.
+    #[cfg(not(feature = "db"))]
+    fn test_state_with_oidc(oidc: MockOidcClient) -> std::future::Ready<MiryadAuthState> {
+        std::future::ready(state_without_db(oidc))
     }
 
     /// État sur base `SQLite` en mémoire sans aucune migration appliquée : la table
@@ -413,7 +441,6 @@ mod tests {
 
     /// `Scenario` : « Cookie de session valide seul » — Then complets (renforcé 2026-09-27) :
     /// `email` `Some` exact et `id_token` identique octet pour octet au payload du cookie.
-    #[cfg(feature = "db")]
     #[tokio::test]
     async fn session_cookie_authenticates_when_no_bearer_header() {
         let state = test_state().await;
@@ -470,7 +497,6 @@ mod tests {
 
     /// `Scenario` : « Aucune credential » — renforcé 2026-09-27 : corps exact affirmé,
     /// pas seulement le statut.
-    #[cfg(feature = "db")]
     #[tokio::test]
     async fn neither_credential_is_rejected() {
         let state = test_state().await;
@@ -558,7 +584,6 @@ mod tests {
     }
 
     /// `Scenario` : « Session expirée rendue par 002 » — cookie bien formé, `exp` passée.
-    #[cfg(feature = "db")]
     #[tokio::test]
     async fn expired_session_renders_002() {
         let state = test_state().await;
@@ -578,7 +603,6 @@ mod tests {
     /// `Scenario` : « Session signée d'une autre clé rendue par 002 » — pas
     /// `MRD-AUTH-001` : le cookie a été trouvé puis refusé, non pas absent (l'un et
     /// l'autre corps sont exclusifs, affirmés par chaîne exacte).
-    #[cfg(feature = "db")]
     #[tokio::test]
     async fn session_signed_with_other_key_renders_002() {
         let state = test_state().await;
@@ -598,7 +622,6 @@ mod tests {
     /// `Scenario` : « Schème Basic retombe sur le cookie » — gelé (arbitré 2026-09-27) :
     /// un schème qui n'égale pas `Bearer` n'est pas un choix Bearer, le cookie reprend
     /// la main.
-    #[cfg(feature = "db")]
     #[tokio::test]
     async fn basic_scheme_falls_back_to_cookie() {
         let state = test_state().await;
@@ -727,7 +750,6 @@ mod tests {
     /// `Scenario` : « Octet illisible de Authorization retombe sur le cookie » — `to_str`
     /// échoue, la valeur est traitée comme absente ; l'événement `auth ok` capture ne
     /// porte ni la valeur illisible ni le cookie, seulement `session`.
-    #[cfg(feature = "db")]
     #[tokio::test]
     async fn unreadable_authorization_falls_back_to_cookie() {
         let state = test_state().await;
@@ -771,7 +793,6 @@ mod tests {
 
     /// `Scenario` : « Deux en-têtes Cookie la première seule compte » — le cookie de
     /// session de la seconde en-tête n'est jamais lu (gelé, arbitré 2026-09-27).
-    #[cfg(feature = "db")]
     #[tokio::test]
     async fn first_cookie_header_alone_counts() {
         let state = test_state().await;
@@ -894,16 +915,20 @@ mod tests {
 
     /// `Scenario` : « JWT Bearer valide authentifie sans toucher la base » — la base est une
     /// `MockDatabase` sans requête préparée : toute requête ferait échouer la chaîne.
-    #[cfg(feature = "db")]
     #[tokio::test]
     async fn bearer_jwt_valid_authenticates_without_touching_db() {
-        let db = sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Sqlite).into_connection();
-        let state = MiryadAuthState {
-            oidc_client: Arc::new(MockOidcClient::with_bearer_result(Ok(bearer_identity(
-                "aaa.bbb.ccc",
-            )))),
-            ..state_around(db)
+        let oidc = MockOidcClient::with_bearer_result(Ok(bearer_identity("aaa.bbb.ccc")));
+        // Sous `db` : `MockDatabase` nue, toute requête la ferait échouer. Sans `db` : pas de base.
+        #[cfg(feature = "db")]
+        let state = {
+            let db = sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Sqlite).into_connection();
+            MiryadAuthState {
+                oidc_client: Arc::new(oidc),
+                ..state_around(db)
+            }
         };
+        #[cfg(not(feature = "db"))]
+        let state = state_without_db(oidc);
 
         let app = dump_app(state);
         let req = Request::builder()
@@ -922,7 +947,6 @@ mod tests {
 
     /// `Scenario` : « JWT Bearer invalide est définitif, sans repli cookie » — le cookie
     /// valide présent n'est jamais lu : le corps reste `MRD-AUTH-019`.
-    #[cfg(feature = "db")]
     #[tokio::test]
     async fn bearer_jwt_invalid_is_definitive_no_cookie_fallback() {
         let state =
@@ -943,7 +967,6 @@ mod tests {
 
     /// `Scenario` : « JWT Bearer échu rend 020 » — l'erreur de `verify_bearer` est propagée
     /// telle quelle.
-    #[cfg(feature = "db")]
     #[tokio::test]
     async fn bearer_jwt_expired_returns_020() {
         let state =
@@ -1001,7 +1024,6 @@ mod tests {
 
     /// `Scenario` : « cookie seul reste le chemin de session sans db » — source `Session`
     /// portant l'`id_token` du cookie.
-    #[cfg(feature = "db")]
     #[tokio::test]
     async fn session_cookie_alone_yields_session_source() {
         let state = test_state().await;

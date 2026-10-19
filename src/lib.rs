@@ -237,7 +237,7 @@ mod tests {
         );
     }
 
-    /// Scénario verrouillé : « sans db la surface se réduit à auth, query et rest::openapi »
+    /// Scénario verrouillé : « sans db la surface se réduit à auth, query et `rest::openapi` »
     /// (`./lib.sdd`, amendement 2026-10-19). Sous `--no-default-features` (sans `db`), les six
     /// chemins du `Then` compilent. La clause d'absence (aucun `sea-orm` dans le graphe normal)
     /// n'est pas un test Rust : elle se prouve par `cargo tree -e normal -i sea-orm`.
@@ -413,8 +413,12 @@ mod tests {
     #[cfg(not(feature = "static-frontend"))]
     #[test]
     fn static_frontend_absent_surface() {
-        fn witness(_: Option<crate::rest::error::RestError>) {}
-        witness(None);
+        // `rest::error` est gaté par `db` : témoin de type sous `db` seulement.
+        #[cfg(feature = "db")]
+        {
+            fn witness(_: Option<crate::rest::error::RestError>) {}
+            witness(None);
+        }
         let cargo = cargo_toml_source();
         assert!(
             cargo.contains("static-frontend = [\"dep:tower-http\"]"),

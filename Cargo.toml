@@ -122,6 +122,9 @@ assert_matches = "1"
 # Capture des `tracing::error` des chemins d'échec d'échange dans les tests de `auth/oidc.rs`
 # (stratégie fixture arbitrée `[x]` 2026-09-27, `Depends on` de `oidc.sdd`).
 tracing-subscriber = { version = "0.3", features = ["registry"] }
+# fixtures HS256 des tests oidc/middleware ; optionnelles sous `db` côté lib.
+hmac = "0.12"
+sha2 = "0.10"
 
 [package.metadata.docs.rs]
 all-features = false
