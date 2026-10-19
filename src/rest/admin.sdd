@@ -227,7 +227,7 @@ Tasks:
     @groups_by_user_caps_at_two_queries (« deux requêtes au plus pour une page » —
     @sea_orm::MockDatabase avec exactement deux @SELECT attendus),
     @unknown_path_under_mount_is_not_found (« chemin inconnu sous le préfixe monté »).
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./admin.rs`, doc de `groups_by_user` (lignes ~103-104) : retirer « (cf. `graphql::principal::load_principal`, même précaution) ». Aucun changement de comportement.
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./admin.rs`, doc de `groups_by_user` (lignes ~103-104) : retirer « (cf. `graphql::principal::load_principal`, même précaution) ». Aucun changement de comportement.
 
 Done when:
   Chaque `Scenario` est vérifié par au moins un test nommé distinct dans le `#[cfg(test)] mod

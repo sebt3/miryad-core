@@ -5,16 +5,16 @@
 
 Moteur générique derrière **miryad**, template d'application Rust/Vue « à la Debian » :
 vous décrivez votre modèle de données via le trait `MiryadResource`, miryad-core fournit
-tout le reste — auth OIDC, RBAC/ownership, REST/GraphQL/MCP, OpenAPI, frontend admin —
+tout le reste — auth OIDC, RBAC/ownership, REST/MCP, OpenAPI, frontend admin —
 **sans code par entité à écrire ni à maintenir**.
 
-> Une seule implémentation de trait par entité, lue telle quelle par REST, GraphQL et MCP.
+> Une seule implémentation de trait par entité, lue telle quelle par REST et MCP.
 
 ## Installation
 
 ```toml
 [dependencies]
-miryad-core = { version = "0.1", features = ["graphql", "mcp"] }
+miryad-core = { version = "0.1", features = ["mcp"] }
 sea-orm = { version = "2", features = ["macros", "runtime-tokio-rustls"] }
 axum = "0.8"
 ```
@@ -57,7 +57,6 @@ let app = axum::Router::new()
 ```
 
 * REST: `GET/POST /api/v1/recipes`, `GET/PUT/DELETE /api/v1/recipes/{id}` — paginé, filtré, RBAC auto.
-* GraphQL (`graphql`): `POST /api/graphql` + GraphiQL (`graphiql`).
 * MCP (`mcp`): `POST /mcp` — 5 tools CRUD par entité.
 * OpenAPI toujours disponible (`rest::openapi`), Swagger UI derrière `swagger-ui`.
 * IR frontend pour le générateur TypeScript : `ir::resource_ir`.
@@ -68,14 +67,12 @@ let app = axum::Router::new()
 |---------|-------|-------------|
 | `static-frontend` *(default)* | Service SPA `frontend::static_frontend_router` | `tower-http` |
 | `swagger-ui` | Swagger UI sur `/api/swagger-ui` | `utoipa-swagger-ui` |
-| `graphql` | GraphQL dynamique (Seaography) | `seaography`, `async-graphql` |
-| `graphiql` | IDE GraphiQL (implique `graphql`) | `async-graphql/graphiql` |
 | `mcp` | Serveur MCP JSON-RPC | `vynil-core` |
 | `workflow` | Moteur de workflow (DAG, Restate, steps Rhai, templating Handlebars central) | `restate-sdk`, `vynil-core`, `tokio`, `uuid` |
 | `systemone` | Client System One (`POST /v1/systemone`) ; kind de workflow `systemone` avec `workflow` | aucune |
 
 ```bash
-cargo doc --open --features graphql,mcp,swagger-ui
+cargo doc --open --features mcp,swagger-ui
 ```
 
 ## Documentation

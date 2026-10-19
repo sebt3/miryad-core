@@ -3,7 +3,7 @@ use vynil_core::hbs::HandleBars;
 use crate::mcp::error::McpError;
 
 /// Format de sortie des tools MCP — fixé une fois par l'app, au montage du serveur (pas
-/// reconfigurable par appel, cohérent avec REST/GraphQL). `Json`/`Yaml`/`Markdown` sont des
+/// reconfigurable par appel, cohérent avec REST). `Json`/`Yaml`/`Markdown` sont des
 /// templates Handlebars fournis en dur par miryad-core ; `Custom` est le même mécanisme, avec le
 /// template de l'app à la place du défaut — pas un quatrième chemin de code séparé.
 #[derive(Debug, Clone)]

@@ -290,7 +290,7 @@ Tasks:
     (dont le mapping @openapi_type variante par variante et la forme @write_to_file octet à
     octet), extension des nulls @owner_column/@filter_column sur @ingredient faite comme
     prescrit, 18/18 verts sur la matrice.
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./ir.rs`, l'en-tête `//!` (ligne ~8) cesse de renvoyer à la section
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./ir.rs`, l'en-tête `//!` (ligne ~8) cesse de renvoyer à la section
     « API GraphQL » de `docs/architecture.md` (supprimée) et de présenter l'IR comme alignée sur le schéma GraphQL.
 
 Done when:

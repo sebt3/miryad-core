@@ -17,7 +17,7 @@ pub(crate) enum McpOp {
     Delete,
 }
 
-/// Dispatch par nom d'entité (runtime, comme en GraphQL — cf. `graphql::PolicyRegistry`) plutôt
+/// Dispatch par nom d'entité (runtime) plutôt
 /// que par type : `tools/call` arrive avec un nom de méthode string, pas un type Rust.
 #[async_trait::async_trait]
 pub(crate) trait McpEntity: Send + Sync {

@@ -23,10 +23,6 @@ jobs:
             args: "--no-default-features"
           - name: swagger-ui
             args: "--no-default-features --features swagger-ui"
-          - name: graphql
-            args: "--no-default-features --features graphql"
-          - name: graphiql
-            args: "--no-default-features --features graphiql"
           - name: mcp
             args: "--no-default-features --features mcp"
           - name: workflow
@@ -76,8 +72,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Pas de graphe contenant graphql ni --all-features : carve-out du pont gele
-        # (./workflows.sdd, arbitre par Sebastien le 2026-10-03, option A).
         include:
           - name: no-default
             args: "--no-default-features"
@@ -97,6 +91,8 @@ jobs:
             args: "--no-default-features --features matrix"
           - name: workflow-matrix
             args: "--no-default-features --features workflow,matrix"
+          - name: all-features
+            args: "--all-features"
     steps:
       - uses: actions/checkout@v7
 

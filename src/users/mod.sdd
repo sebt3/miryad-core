@@ -160,7 +160,7 @@ Tasks:
     qu'un chemin plat absent n'existe pas. Réalisé 2026-09-30 (B2, validator PASS) : quatre tests
     inline à l'identité de type réellement affirmée, cinquième consigné en commentaire du
     `mod tests` et prouvé par le combo `--no-default-features` vert.
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./mod.rs` (commentaire de test ligne ~30), retirer `graphql` et `graphiql` de la
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./mod.rs` (commentaire de test ligne ~30), retirer `graphql` et `graphiql` de la
     liste « `static-frontend`, `swagger-ui` ni `mcp` ». Aucun changement de comportement.
 
 Done when:

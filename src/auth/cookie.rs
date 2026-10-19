@@ -64,7 +64,7 @@ pub fn build_set_cookie(identity: &OidcIdentity, key: &Key, secure: bool) -> Str
 /// l'en-tête `Cookie` (première occurrence du nom exact retenue), déchiffrement de la valeur
 /// scellée sous `key`, désérialisation du payload, puis ré-lecture serveur de la claim `exp` du
 /// `id_token` déchiffré (`exp ≤ now` est déjà un rejet). Émetteur exclusif des deux erreurs
-/// ci-dessous, pour les trois surfaces via `AuthUser` (REST) et `AuthPrincipal` (REST/GraphQL/MCP).
+/// ci-dessous, pour les deux surfaces via `AuthUser` (REST) et `AuthPrincipal` (REST/MCP).
 ///
 /// # Errors
 ///

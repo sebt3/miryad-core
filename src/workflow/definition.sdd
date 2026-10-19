@@ -21,7 +21,7 @@ Purpose:
     `MiryadResource::before_update` et `MiryadResource::before_delete` (hors périmètre de ce fichier :
     amendement possédé par ces deux specs, pas par ./definition.rs). `WorkflowDefinition::before_update`
     appelle `validate_dag` exactement comme `before_create` (`Must`) — implémenté (les deux
-    fichiers amendés le sont, `Tasks [x]` ci-dessous). Les trois hooks se déclenchent sur REST et MCP (la surface GraphQL, qui
+    fichiers amendés le sont, `Tasks [x]` ci-dessous). Les hooks `before_create` et `before_update` (et `before_delete`, laissé au défaut du trait) se déclenchent sur REST et MCP (la surface GraphQL, qui
     ne pilotait que l'insertion, est supprimée le 2026-10-19).
   Sébastien (2026-09-23) : `AccessPolicy::AdminOnly` en lecture/écriture (`Must`) n'est qu'un défaut —
     une application fille doit pouvoir le resserrer ou l'assouplir (ex. chaque utilisateur possède ses
@@ -299,7 +299,7 @@ Tasks:
     Réalisé 2026-10-02 (B5e-mini, validator consolidé PASS) : les trois liens déliés en chemin
     de code (item @pub(crate)), phrases inchangées ; @cargo doc workflow et @all-features à
     zéro avertissement au brut ; hunks doc-seule @diff-vérifiés.
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./definition.rs`, retirer GraphQL de l'en-tête `//!` (ligne ~4 :
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./definition.rs`, retirer GraphQL de l'en-tête `//!` (ligne ~4 :
     « REST/MCP ») et de la doc de l'`impl MiryadResource` (lignes ~250-252 : « REST et MCP », supprimer la phrase sur l'asymétrie
     GraphQL). Aucun changement de comportement.
 

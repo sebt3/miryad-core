@@ -198,7 +198,7 @@ Tasks:
     (B2) : doc-comment posé reprenant le contrat du `Must`.
   [x] @users::user::Relation vide durablement (arbitré par Sébastien le 2026-09-29) : le `Must
     not` est le verrou explicite.
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./user.rs`, retirer la mention de `GraphQL` de l'en-tête `//!` (ligne ~3 : les surfaces
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./user.rs`, retirer la mention de `GraphQL` de l'en-tête `//!` (ligne ~3 : les surfaces
     `REST` et `MCP` seulement) et celle de `Seaography` de la doc de `Relation` (ligne ~36 : « le graphe d'entités `SeaORM` n'en
     voit aucune »). Aucun changement de comportement.
 

@@ -27,7 +27,7 @@ mod tests {
     // aucune feature activée ») n'a pas de test unitaire ici, conformément à sa note et à la
     // tâche « Convertir » : sa preuve est la combinaison `--no-default-features` de la batterie
     // de `/tooling.sdd` (lib et tests du module users compilés sans `static-frontend`,
-    // `swagger-ui`, `graphql`, `graphiql` ni `mcp`), l'exercice de features débordant du
+    // `swagger-ui` ni `mcp`), l'exercice de features débordant du
     // fichier. Les quatre autres `Scenario` ont chacun un test nommé distinct ci-dessous.
 
     /// `Scenario` : « les neuf chemins plats résolvent sans passer par un enfant ».

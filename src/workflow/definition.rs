@@ -1,7 +1,7 @@
 //! Entité `WorkflowDefinition` (feature `workflow`) — contrat porté par `./definition.sdd`.
 //!
 //! Table `miryad_workflow_definitions` : le seul endroit où un DAG de workflow est stocké et
-//! administré — CRUD gratuit sur REST/GraphQL/MCP par le mécanisme générique de la crate. Porte la
+//! administré — CRUD gratuit sur REST/MCP par le mécanisme générique de la crate. Porte la
 //! forme stockée d'un step ([`StepDefinition`], enveloppe de colonne [`DagSteps`]) et
 //! `validate_dag`, la seule validation structurelle de DAG de toute la crate (`MRD-WORKFLOW-004`
 //! via [`WorkflowError::InvalidDag`]). La validation est déclenchée par les hooks
@@ -247,9 +247,8 @@ fn rejeter_si_dag_invalide(steps: &ActiveValue<DagSteps>) -> Result<(), HookErro
     })
 }
 
-/// Métadonnées et hooks de la ressource `workflows`, lue à l'identique par REST, GraphQL et MCP.
-/// L'asymétrie documentée (./../resource.sdd, amendement 2026-09-23) vaut ici comme partout :
-/// `before_update` et `before_delete` ne se déclenchent que sur REST et MCP, pas sur GraphQL.
+/// Métadonnées et hooks de la ressource `workflows`, lue à l'identique par REST et MCP.
+/// Les hooks `before_create` et `before_update` se déclenchent sur REST et MCP.
 impl MiryadResource for Entity {
     fn resource_name() -> &'static str {
         "workflows"

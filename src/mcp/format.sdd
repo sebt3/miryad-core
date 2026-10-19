@@ -304,7 +304,7 @@ Tasks:
     l'agent MCP, donc un cycle spec-first séparé. Les commentaires « Écart consigné » de
     ./format.rs deviennent obsolètes : une tâche autorisée les retire, les égalités exactes des
     tests restent.
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./format.rs`, en-tête `///` (ligne ~6) : « cohérent avec REST » (retirer `/GraphQL`). Aucun changement de comportement.
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./format.rs`, en-tête `///` (ligne ~6) : « cohérent avec REST » (retirer `/GraphQL`). Aucun changement de comportement.
 
 Done when:
   Chaque `Scenario` dispose d'au moins un test nommé distinct vérifiant son `Then` dans le

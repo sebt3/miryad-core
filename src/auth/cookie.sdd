@@ -311,7 +311,7 @@ Tasks:
     grossièrement 4 Scenarios mais n’affirment les attributs posés que par `contains` — resserrer
     en assertions de chaîne complète avant comptage, et les adapter à la nouvelle signature
     (`secure: bool`) des deux fonctions
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./cookie.rs` (doc ligne ~67), remplacer « les trois surfaces via `AuthUser` (REST) et `AuthPrincipal` (REST/GraphQL/MCP) » par « les deux surfaces … `AuthPrincipal` (REST/MCP) ».
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./cookie.rs` (doc ligne ~67), remplacer « les trois surfaces via `AuthUser` (REST) et `AuthPrincipal` (REST/GraphQL/MCP) » par « les deux surfaces … `AuthPrincipal` (REST/MCP) ».
 
 Done when:
   24 tests nommés distincts verts, un par `Scenario`, sur features par défaut comme sur

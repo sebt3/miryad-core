@@ -292,7 +292,7 @@ Tasks:
     rendu HTTP sous `#[tokio::test]` lisant le corps avec @axum::body::to_bytes
     (dev-dependencies déjà présentes via les tests de ./mod.rs) — le contrat ne déborde pas du
     fichier, aucun test d'intégration séparé requis
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./error.rs`, retirer de la doc de test (ligne ~333)
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./error.rs`, retirer de la doc de test (ligne ~333)
     la mention de `graphql_handler` (la liste devient `issue_token`, `validate_token`, `revoke_token`,
     `ensure_token`). Aucun changement de comportement.
 

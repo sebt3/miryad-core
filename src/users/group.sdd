@@ -294,7 +294,7 @@ Tasks:
   [x] `down` de 000003 : contrainte documentaire, pas de réécriture (arbitré par Sébastien le
     2026-09-29, `Must`) — miroir dans ./../migration/m20260822_000003_seed_admin_group.sdd.
   [x] Bypass GraphQL (snapshot par requête) : soldé par la suppression de la surface GraphQL (2026-10-19).
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./group.rs` (doc ligne ~35), remplacer la mention de `Seaography` par
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./group.rs` (doc ligne ~35), remplacer la mention de `Seaography` par
     « le graphe d'entités SeaORM ». Aucun changement de comportement.
 
 Done when:

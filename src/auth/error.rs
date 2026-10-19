@@ -330,7 +330,7 @@ mod tests {
 
     /// `Scenario` : « erreur `SeaORM` convertie par l'opérateur de propagation » —
     /// le chemin qu'emprunte `?` dans `issue_token`, `validate_token`,
-    /// `revoke_token`, `ensure_token` et `graphql_handler`.
+    /// `revoke_token` et `ensure_token`.
     #[test]
     fn db_err_converts_to_database_variant() {
         let err = AuthError::from(sea_orm::DbErr::Custom("connection lost".to_string()));

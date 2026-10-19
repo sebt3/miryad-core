@@ -190,7 +190,7 @@ Tasks:
     s'exécutent partout, le onzième (présence sans feature) est prouvé par la batterie /tooling.sdd
     sur `--no-default-features` ; les dev-dependencies @tokio, @tower et @sea-orm (feature
     `sqlx-sqlite`) existent déjà
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./state.rs` (doc ligne ~227), retirer `graphql` de la liste des
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./state.rs` (doc ligne ~227), retirer `graphql` de la liste des
     sites de construction (`mod.rs`, `middleware.rs`, `dual.rs`, `rest`). Aucun changement de comportement.
 
 Done when:

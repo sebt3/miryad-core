@@ -1,5 +1,5 @@
 /// Identité unifiée d'une requête authentifiée, quelle que soit la source (cookie de session ou
-/// token API) — c'est ce type que REST/GraphQL/MCP consomment (feature 4+), pas `AuthUser` qui
+/// token API) — c'est ce type que REST/MCP consomment (feature 4+), pas `AuthUser` qui
 /// reste spécifique au flow navigateur (feature 2a).
 ///
 /// `Debug` est un `impl` manuel (arbitré 2026-09-27) : même sortie que le dérivé, sauf
@@ -21,7 +21,7 @@ pub struct AuthPrincipal {
     /// token API.
     pub preferred_username: Option<String>,
     /// Source d'authentification de la requête : c'est la seule divergence visible entre
-    /// appelants REST/GraphQL/MCP, qui consomment le même type par ailleurs.
+    /// appelants REST/MCP, qui consomment le même type par ailleurs.
     pub source: PrincipalSource,
 }
 
@@ -330,7 +330,7 @@ mod tests {
         );
         assert!(
             matches!(fixture.source, super::PrincipalSource::ApiToken { token_id: 0 }),
-            "fixture des registres GraphQL/MCP : token_id 0 rendu inchangé"
+            "fixture du registre MCP : token_id 0 rendu inchangé"
         );
     }
 }

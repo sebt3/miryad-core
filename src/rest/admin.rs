@@ -100,8 +100,8 @@ async fn list_users_handler(
 }
 
 /// Deux requêtes (memberships puis groupes), jamais une par utilisateur — évite le N+1 sur une
-/// page de résultats. `is_in` sur une liste vide est explicitement court-circuité (cf.
-/// `graphql::principal::load_principal`, même précaution) plutôt que délégué au driver.
+/// page de résultats. `is_in` sur une liste vide est explicitement court-circuité plutôt que
+/// délégué au driver.
 /// `pub(crate)` : réutilisée par `rest::me` (issue #24), même besoin "groupes d'un utilisateur".
 pub(crate) async fn groups_by_user(
     db: &sea_orm::DatabaseConnection,

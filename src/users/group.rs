@@ -32,7 +32,7 @@ pub struct Model {
 
 /// `DeriveRelation` déclaré avec un enum vide : aucune relation `SeaORM` malgré les `FK` du
 /// schéma — les jointures se font par filtres explicites, donc `DeriveRelatedEntity` (et
-/// `Seaography`) ne verra jamais de relation depuis ce modèle.
+/// le graphe d'entités `SeaORM`) ne verra jamais de relation depuis ce modèle.
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}
 

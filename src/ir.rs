@@ -4,8 +4,8 @@
 //! (feature 4b) : deux publics différents, deux artefacts — cf. `docs/architecture.md`.
 //!
 //! `FieldIr::references` (relations, #19) est résolu en deux temps : `resource_ir::<E>()` est pure
-//! et ne connaît que le nom de table SQL physique cible (via `E::Relation`, même déclaration que
-//! GraphQL — cf. `docs/architecture.md`, section "API GraphQL") ; `IrRegistry` résout ce nom de
+//! et ne connaît que le nom de table SQL physique cible (via `E::Relation`, déclaration SeaORM qui
+//! fait foi pour la relation) ; `IrRegistry` résout ce nom de
 //! table en `resource_name` une fois toutes les entités enregistrées (`resolved_entities`, appelée
 //! par `write_to_file`) — une entité seule ne peut pas savoir quel `resource_name` porte une table
 //! qu'elle référence.

@@ -122,7 +122,7 @@ Tasks:
     A — matrice des tests étendue, clippy sans graphe `graphql`. Le pont est un prototype qui ne
     doit en aucun cas gêner une release. `publish.yml` ne lance que `cargo test` (défaut) avant
     `cargo publish` : aucun changement requis côté publication pour cette décision.
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./ci.yml`, retirer les entrées de test `graphql` et `graphiql`, ajouter
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./ci.yml`, retirer les entrées de test `graphql` et `graphiql`, ajouter
     au job clippy l'entrée `all-features` (`--all-features`) et supprimer le commentaire « Pas de graphe contenant graphql ni
     --all-features : carve-out du pont gele ». Une tâche par fichier : ./ci.yml seul.
 

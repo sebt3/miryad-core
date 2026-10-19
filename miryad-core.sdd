@@ -199,7 +199,7 @@ Tasks:
     dépendances optionnelles (`matrix-sdk`, `matrix-sdk-crypto`, `matrix-sdk-store-encryption` épinglées
     en `0.18`, `zeroize`, `tokio`), les dev-dependencies de la suite de conformité officielle et les
     huit features de `[package.metadata.docs.rs]`.
-  [ ] G0 — suppression de la surface GraphQL (décision 2026-10-19 ; specs amendées le même jour, code à suivre) : les
+  [x] G0 — suppression de la surface GraphQL (décision 2026-10-19 ; specs amendées le même jour, code à suivre) : les
     tâches G1 à G7 ci-dessous se jouent dans l'ordre, une par fichier ou par petit groupe, validator entre chaque.
   [x] G1 — `src/resource.rs`, `src/mcp/mod.rs`, `src/lib.rs` : retirer tests et références à `crate::graphql` (tâches
     d'amendement 2026-10-19 de `./src/resource.sdd`, `./src/mcp/mod.sdd`, `./src/lib.sdd`), de sorte que plus aucun code hors
@@ -211,18 +211,20 @@ Tasks:
     de version hors départ de `seaography`/`async-graphql*` et de leurs satellites).
     Validé 2026-10-19 (validator Sonnet GO) : 22 paquets retirés de `Cargo.lock`, aucune version changée, `--locked` stable ; batterie à dix
     combinaisons (tests et clippy, `--all-features` comprise sans carve-out), `cargo doc` et `specdd lint` verts.
-  [ ] G4 — doc-comments sans changement de comportement, par groupes de trois fichiers au plus : (a) `./src/auth/cookie.rs`,
+  [x] G4 — doc-comments sans changement de comportement, par groupes de trois fichiers au plus : (a) `./src/auth/cookie.rs`,
     `./src/auth/error.rs`, `./src/auth/principal.rs` ; (b) `./src/auth/state.rs`, `./src/query.rs`, `./src/ir.rs` ;
     (c) `./src/users/group.rs`, `./src/users/user.rs`, `./src/users/mod.rs` ; (d) `./src/mcp/format.rs`, `./src/mcp/handler.rs`,
     `./src/mcp/registry.rs` ; (e) `./src/rest/admin.rs`, `./src/workflow/definition.rs` — chacun selon la tâche d'amendement de la
     spec adjacente.
-  [ ] G5 — `./.github/workflows/ci.yml` (tâche d'amendement de `./.github/workflows/workflows.sdd`) et `./README.md` (retirer GraphQL
+  [x] G5 — `./.github/workflows/ci.yml` (tâche d'amendement de `./.github/workflows/workflows.sdd`) et `./README.md` (retirer GraphQL
     de la promesse, de l'exemple `features`, de la liste des routes, du tableau des features et de la commande `cargo doc`).
-  [ ] G6 — `./docs/architecture.md` : supprimer la section « API GraphQL » et retirer toute mention de GraphQL/Seaography/`graphql`
+  [x] G6 — `./docs/architecture.md` : supprimer la section « API GraphQL » et retirer toute mention de GraphQL/Seaography/`graphql`
     du récit (parité REST/MCP, exception des hooks update/delete, `sea-orm/seaography`, épinglement `async-graphql`) ; conserver
     une ligne d'historique « GraphQL supprimé le 2026-10-19 » dans la section des décisions.
-  [ ] G7 — batterie complète de `./tooling.sdd` (dix combinaisons de tests et de clippy, `fmt`, `cargo doc`, `npx specdd lint`) ;
-    `grep -ril 'graphql\|seaography'` ne renvoie plus que des lignes d'historique (`[x]`, amendements datés) et la ligne G6.
+  [x] G7 — batterie complète de `./tooling.sdd` (dix combinaisons de tests et de clippy, `fmt`, `cargo doc`, `npx specdd lint`) ;
+    `grep -ril 'graphql\|seaography'` ne renvoie plus que des lignes d'historique (`[x]`, amendements datés), la clause de suppression et la puce de `docs/architecture.md`.
+    Validé 2026-10-19 (validator Sonnet, puis clippy rejoué par Claude après correction de `users/group.rs`) : batterie à dix
+    combinaisons verte (tests, clippy `-D warnings` dont `--all-features`, `cargo doc`, `fmt`, `specdd lint`).
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec `.sdd` relue et approuvée par Sébastien, sans

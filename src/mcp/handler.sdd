@@ -311,7 +311,7 @@ Tasks:
     Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : @wire_message sur le fil (aucun @to_string
     de @Display dans le corps), @error! avec détail @DbErr complet dans la trace seule, @warn! sur
     `-32001` sans arguments ni token (test d'absence affirmé).
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./handler.rs`, doc (ligne ~32) : « comme REST » (retirer `/GraphQL`). Aucun changement de comportement.
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./handler.rs`, doc (ligne ~32) : « comme REST » (retirer `/GraphQL`). Aucun changement de comportement.
 
 Done when:
   Chaque `Scenario` a au moins un test nommé distinct et vert, joués sur

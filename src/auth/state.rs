@@ -224,7 +224,7 @@ mod tests {
 
     /// `Scenario` : « tout littéral de construction de la crate porte les sept champs » — le
     /// littéral des sept champs compile ici ; la preuve crate-wide est la compilation de tous
-    /// les sites de construction (`mod.rs`, `middleware.rs`, `dual.rs`, `rest`, `graphql`).
+    /// les sites de construction (`mod.rs`, `middleware.rs`, `dual.rs`, `rest`).
     #[test]
     fn secure_cookies_and_token_pepper_present_in_every_literal_construction() {
         let state = MiryadAuthState {

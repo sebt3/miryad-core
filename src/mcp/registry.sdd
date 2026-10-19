@@ -401,7 +401,7 @@ Tasks:
     sous-chaîne `expected struct`, sans verrouiller le nom de structure (détail interne de serde) ;
     l'exemple de @Raises est lu comme illustratif. Les commentaires « Écart consigné » de
     ./registry.rs deviennent obsolètes : une tâche autorisée les retire.
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./registry.rs`, doc (ligne ~20) : retirer « comme en GraphQL — cf. `graphql::PolicyRegistry` » (dispatch par nom d'entité à l'exécution). Aucun changement de comportement.
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./registry.rs`, doc (ligne ~20) : retirer « comme en GraphQL — cf. `graphql::PolicyRegistry` » (dispatch par nom d'entité à l'exécution). Aucun changement de comportement.
 
 Done when:
   La spec porte exactement dix-neuf `Scenario` et chacun est vérifié par au moins un test nommé

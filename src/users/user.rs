@@ -1,6 +1,6 @@
 //! Entité SeaORM de la table `miryad_users` et get-or-create `resolve_user` : lien du claim
 //! `sub` de l'`OIDC` vers un `id` interne `i32` stable, seule identité comparée par le `RBAC`
-//! et indexée par `sync_group_memberships`. Les surfaces `REST`, `GraphQL` et `MCP` ne
+//! et indexée par `sync_group_memberships`. Les surfaces `REST` et `MCP` ne
 //! rencontrent ce fichier que par `resolve_user` — `User` n'est pas une `MiryadResource`.
 
 use chrono::Utc;
@@ -33,7 +33,7 @@ pub struct Model {
 }
 
 /// `DeriveRelation` déclaré avec un enum vide : l'appartenance aux groupes ne se lit que par
-/// requête explicite (`membership`), le graphe d'entités `SeaORM` (et donc `Seaography`) n'en
+/// requête explicite (`membership`), le graphe d'entités `SeaORM` n'en
 /// voit aucune.
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}

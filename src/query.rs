@@ -1,6 +1,5 @@
 //! Pagination partagée par REST et MCP (MCP via `rest::core::list`) — volontairement hors de
-//! `rest/`, pour éviter de la dupliquer entre ces couches ; GraphQL utilise ses propres curseurs
-//! seaography et n'est pas partie au contrat.
+//! `rest/`, pour éviter de la dupliquer entre ces couches.
 
 /// Valeur par défaut de `per_page` quand le paramètre est absent.
 pub const DEFAULT_PER_PAGE: u64 = 100;

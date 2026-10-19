@@ -247,7 +247,7 @@ Tasks:
     fichier côté HTTP : le `400` de `page=abc`, l'écrêtement vu sur le fil par
     `list_pagination_returns_requested_page` (`./rest/mod.rs`) et `pagination_params_are_respected`
     (`./rest/admin.rs`) restent la matière des specs `rest`, pas des tests produits ici.
-  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./query.rs`, l'en-tête `//!` (lignes 2-3) cesse de nommer GraphQL et
+  [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./query.rs`, l'en-tête `//!` (lignes 2-3) cesse de nommer GraphQL et
     seaography : « partagée entre REST et MCP (MCP via `rest::core::list`) » suffit. Aucun changement de comportement.
 
 Done when:
