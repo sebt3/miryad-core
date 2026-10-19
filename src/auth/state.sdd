@@ -82,6 +82,12 @@ Must:
     2026-09-27 (`Tasks`) : @resolve_user et @sync_group_memberships touchent @db même sur ce
     chemin. L'absence de validation des deux redirections reste un choix assumé (`Tasks`), pas un
     écart à corriger
+  **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute mention contraire (« exactement sept champs », « compilation
+    inconditionnelle », « @sea-orm non optionnel ») de ce fichier : les champs @db (type `sea_orm::DatabaseConnection`) et
+    @token_pepper n'existent que sous `#[cfg(feature = "db")]`, chacun avec son propre attribut. @MiryadAuthState a donc
+    **sept** champs sous `db` et **cinq** sans (@oidc_client, @cookie_key, @post_login_redirect, @post_logout_redirect,
+    @secure_cookies). Le fichier ne cite `sea_orm` que sous `db` ; `sea-orm` n'est pas dans le graphe sans `db`. Les doc-comments
+    de @db et @token_pepper précisent « disponible sous la feature `db` ». Le type reste @Clone seul, sans @Debug.
 
 Must not:
   Imposer un @AppState concret ni écrire ici un @FromRef pour l'état d'une application :
@@ -192,6 +198,10 @@ Tasks:
     `sqlx-sqlite`) existent déjà
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./state.rs` (doc ligne ~227), retirer `graphql` de la liste des
     sites de construction (`mod.rs`, `middleware.rs`, `dual.rs`, `rest`). Aucun changement de comportement.
+  [ ] Amendement 2026-10-19 (`db`) : dans `./state.rs`, gater @db et @token_pepper (et l'`use` de `DatabaseConnection`) sous
+    `#[cfg(feature = "db")]` ; gater sous `db` les tests qui touchent @db (`db_clone_shares_pool`, fixtures `fixture_with_db`) ; adapter
+    la fixture partagée pour construire l'état sans ces deux champs quand `db` est absente. Mettre à jour les décomptes des
+    tests de littéraux (sept sous `db`, cinq sans).
 
 Done when:
   Les 11 `Scenario` ont chacun au moins un test nommé distinct et vert (les dix premiers dans
@@ -280,3 +290,14 @@ Scenario: tout littéral de construction de la crate porte les sept champs
     ./middleware.rs, ./dual.rs, /src/rest, tests inline)
   Then la compilation rejette tout littéral omettant @secure_cookies ou @token_pepper — les deux
     nouveaux champs sont aussi obligatoires que les cinq préexistants
+
+Scenario: l'état se construit avec cinq champs sans db (2026-10-19)
+  Given un build `--no-default-features` (sans `db`)
+  When un test construit @MiryadAuthState par littéral avec @oidc_client, @cookie_key, @post_login_redirect, @post_logout_redirect
+    et @secure_cookies seulement
+  Then la compilation réussit et le littéral n'accepte ni @db ni @token_pepper (champs inexistants)
+
+Scenario: db et token_pepper existent sous db (2026-10-19)
+  Given un build `--features db`
+  When un test construit le littéral à sept champs
+  Then la compilation réussit ; omettre @db ou @token_pepper est rejeté par le compilateur

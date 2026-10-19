@@ -116,6 +116,10 @@ Must:
     vérifier lui-même à la compilation, seul le comportement documenté du reste de la crate change.
   Documenter @MiryadResource::filter_column comme un filtre consommé par REST et MCP
     (arbitré par Sébastien le 2026-09-27 ; GraphQL, qui ne le lisait pas, est retiré 2026-10-19).
+  **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute mention contraire (« toujours compilé », « sans gating », « sur chaque combinaison de
+    /tooling.sdd, `--no-default-features` compris ») de ce fichier : ./resource.rs n'est compilé que sous `#[cfg(feature = "db")]`, le `cfg` étant posé par la
+    déclaration `pub mod resource;` de /src/lib.rs ; le fichier ne porte aucun `cfg` propre. Sans `db`, il n'existe pas. Les combinaisons de la
+    batterie /tooling.sdd qui l'exercent sont celles qui activent `db` (par défaut, par `--features db`, ou par implication de `mcp`, `workflow`, `matrix`).
 
 Must not:
   Évaluer, décider ou exécuter une autorisation ici : l'évaluation par enregistrement

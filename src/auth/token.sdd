@@ -108,6 +108,10 @@ Must:
   @subject n'est relié à `miryad_users` par aucune FK et nulle part vérifié contre elle (hérité du
     contrat de la migration 001) : un token survit à la disparition de sa ligne utilisateur et
     @validate_token ne joint jamais aucune table de comptes.
+  **Amendement 2026-10-19 (feature `db`)** — le module entier, comme les dépendances `sea-orm`, `hmac`, `sha2`, `rand` et `chrono` qu'il
+    est seul à consommer parmi les fichiers hors `db`, n'existe que sous `#[cfg(feature = "db")]` : le `cfg` est posé par la
+    déclaration `pub mod token;` de ./mod.rs, ce fichier ne porte aucun `cfg` propre. Sans `db` aucun token API n'est émis,
+    validé ni révoqué, et l'extracteur @AuthPrincipal répond `MRD-AUTH-019` à tout `Bearer` non JWT (./dual.sdd).
 
 Must not:
   Dépendre de @crate::users, @crate::auth::oidc ou @crate::auth::cookie : le moteur de tokens est
@@ -325,6 +329,8 @@ Tasks:
     n'a jamais connu d'email (non demandé, non stocké à l'émission) ; le chemin session ne joint
     pas non plus `users`, il lit le cookie posé au login OIDC. Une vraie parité demanderait une
     colonne `email` optionnelle à l'émission, hors de cette spec.
+  [ ] Amendement 2026-10-19 (`db`) : aucun changement de `./token.rs` (le `cfg` est posé par `./mod.rs`) ; vérifier seulement par la batterie
+    `--no-default-features` qu'il n'est plus compilé et que ses dépendances ont quitté le graphe.
 
 Done when:
   Les `20` `Scenario` sont chacun vérifiés par un test nommé distinct de la liste `Tasks`, joués

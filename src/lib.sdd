@@ -93,6 +93,18 @@ Must:
     `rustdoc::missing_crate_level_docs`, actifs sur toute combinaison de features.
   Garder `#![doc(html_root_url = ...)]` égal au champ `documentation` de `/Cargo.toml`
     (`https://docs.rs/miryad-core`).
+  **Amendement 2026-10-19 (feature `db`, validation Bearer)** — prévaut sur toute mention contraire de ce fichier. La feature
+    `db` (par défaut avec `static-frontend`) active `sea-orm`, `sea-orm-migration` et les dépendances qu'elle seule consomme
+    (`hmac`, `sha2`, `rand`, `chrono`) ; sans elle aucune n'est dans le graphe `normal`. La racine déclare toujours treize `pub
+    mod` mais gate désormais **neuf** d'entre eux : `#[cfg(feature = "db")]` sur @ir, @migration, @rbac, @resource, @users ;
+    les gates existants de @frontend (`static-frontend`), @mcp, @workflow, @matrix (chacune de ces trois features implique
+    `db` dans `[features]`) et @systemone (indépendante de `db`) sont inchangés. @auth, @query et @rest restent déclarés sans `cfg`
+    et portent leur gating interne (./auth/*.sdd, ./rest/mod.sdd). Sans `db` la surface est donc : @auth (OIDC, cookie, extracteurs
+    @AuthUser/@AuthPrincipal, validation du JWT Bearer, sans tokens API), @query, @rest::openapi, et selon features @frontend et
+    @systemone — le profil d'une API écrite à la main qui ne veut ni base ni comptes locaux. Le tableau de la doc racine passe à
+    **sept** features (`db` ajoutée, effet « entités, comptes, RBAC, migrations, tokens API ; active `sea-orm` »), la doc
+    présente le profil sans base et ne promet aucune route pour lui hors `/auth/*`, `/api/openapi.json` et `/api/swagger-ui`.
+    Les features `mcp`, `workflow`, `matrix` apparaissent dans le tableau comme « implique `db` ».
 
 Must not:
   Héberger du code de runtime, une implémentation de trait ou un `pub use` de racine : la
@@ -277,6 +289,12 @@ Tasks:
     promesse « deux surfaces REST et MCP ») et le test `query_doc_matches_reality` (supprimer la clause
     « GraphQL nommé pour l'exclure », qui n'a plus d'objet). `cargo doc` sans avertissement sur chaque combinaison.
     Validé 2026-10-19 (validator Sonnet GO) : `pub mod graphql` et tests retirés, `GATED` à trois, tableau à six features (ligne `matrix` ajoutée), `cargo doc` propre.
+  [ ] Amendement 2026-10-19 (`db`) : dans `./lib.rs`, poser `#[cfg(feature = "db")]` sur les cinq `pub mod` listés (leur `///` de rôle suit),
+    ajouter la ligne `db` au tableau de la doc `//!` et la mention « implique `db` » pour `mcp`, `workflow`, `matrix`, décrire le profil sans base
+    (quickstart de cinq lignes `rust,ignore` : `OidcClient::new`, `MiryadAuthState` à cinq champs, `auth_router`, `openapi_router`) ;
+    adapter les tests de surface : `default_surface_compiles` reste sous défaut, `static_frontend_absent_surface` perd
+    @rest::resource_router/@resource/@ir (désormais sous `db`), ajouter `db_absent_surface` et `db_gates_modules`
+    (scenarios ci-dessous), conserver `all_features_surface`.
 
 Done when:
   La spec porte exactement treize `Scenario` (douze originaux, un pour l'amendement @workflow du
@@ -368,3 +386,23 @@ Scenario: les modules systemone et matrix suivent leur feature (2026-10-06)
   Given la crate compilée sans `systemone` ni `matrix`, puis avec chacune
   When un test importe `miryad_core::systemone` et `miryad_core::matrix`
   Then chaque module n'existe que sous sa feature (le test est lui-même gated par `cfg`) et `--all-features` compile les deux
+
+Scenario: sans db la surface se réduit à auth, query et rest::openapi (2026-10-19)
+  Given un build `--no-default-features` (sans `db`, sans `static-frontend`)
+  When un test de consommateur référence @auth::MiryadAuthState, @auth::auth_router, @auth::AuthPrincipal, @auth::middleware::AuthUser,
+    @query::Pagination, @rest::openapi::openapi_router
+  Then les six chemins `miryad_core::…` compilent
+  And aucune référence à @resource, @rbac, @users, @ir, @migration, @rest::resource_router, @auth::issue_token n'est possible
+    (le test n'en cite pas ; la preuve d'absence est `cargo build --no-default-features` + `cargo tree --no-default-features -e normal
+    -i sea-orm` qui échoue : « did not match any packages »)
+
+Scenario: les modules d'entités sont gatés par db (2026-10-19)
+  Given un build `--no-default-features --features db`
+  When un test référence @resource::MiryadResource, @rbac::can_read, @users::resolve_user, @ir::IrRegistry, @migration::Migrator,
+    @rest::resource_router et @auth::validate_token
+  Then les sept chemins compilent
+
+Scenario: mcp, workflow et matrix impliquent db (2026-10-19)
+  Given un build `--no-default-features --features mcp`, puis `workflow`, puis `matrix`
+  When un test référence @resource::MiryadResource
+  Then il compile dans les trois builds (la feature `db` est activée par implication dans `[features]`)

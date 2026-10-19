@@ -82,6 +82,12 @@ Must:
   Documenter @PrincipalSource et ses deux variantes au `///` (arbitré 2026-09-27, `Tasks`) : purge
     immédiate de la dette `missing_docs` sur ce petit fichier plutôt qu'une purge différée au
     calendrier module par module de /tooling.sdd.
+  **Amendement 2026-10-19 (Bearer OIDC)** — prévaut sur toute mention contraire (« deux variantes ») de ce fichier :
+    @PrincipalSource gagne une troisième variante `Bearer { jwt: String }` — le JWT OIDC brut d'un en-tête
+    `Authorization: Bearer`, vérifié par @OidcClientTrait::verify_bearer (./oidc.sdd) ; seul producteur : ./dual.rs. Pour ce
+    chemin @AuthPrincipal porte @subject, @email, @preferred_username issus des claims vérifiés. Le `Debug` manuel rédige
+    @jwt en `"[REDACTED]"`, comme @id_token de @PrincipalSource::Session. La variante @ApiToken reste présente sur toute
+    combinaison de features (aucun type `sea_orm`) mais n'est produite que sous `db` (./token.sdd).
 
 Must not:
   Porter un champ d'appartenance (@is_admin, @groups, identifiant utilisateur) : la fraîcheur de
@@ -191,6 +197,9 @@ Tasks:
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./principal.rs`, remplacer « REST/GraphQL/MCP » par « REST/MCP »
     (docs ligne ~2 et ~24) et la chaîne d'assertion `"fixture des registres GraphQL/MCP …"` (ligne ~333) par
     `"fixture du registre MCP : token_id 0 rendu inchangé"`. Aucun changement de comportement.
+  [ ] Amendement 2026-10-19 (Bearer OIDC) : dans `./principal.rs`, ajouter la variante @Bearer { jwt } à @PrincipalSource, étendre le
+    `Debug` manuel (jwt rédigé), tests `principal_source_bearer_debug_redacts_jwt` et `principal_source_variants_construct_without_db`
+    (le second est un test ordinaire, sa preuve sans `db` est le run `--no-default-features`).
 
 Done when:
   Les neuf `Scenario` (huit originaux, un nouveau sur la rédaction `Debug`) ont chacun au moins un
@@ -289,3 +298,13 @@ Scenario: Validation absente : valeurs vides ou malformées passent telles quell
     normalise et ne refuse rien
   But ce comportement est celui constaté aujourd'hui, son appropriation comme contrat est la
     ligne `[?]` de `Tasks`
+
+Scenario: Debug de la variante Bearer rédige le JWT (2026-10-19)
+  Given un @AuthPrincipal dont @source est @PrincipalSource::Bearer { jwt: "aaa.bbb.ccc" }
+  When il est formaté par `{:?}`
+  Then le texte contient `[REDACTED]` et ne contient ni `aaa.bbb.ccc` ni `bbb`
+
+Scenario: la variante Bearer se construit par littéral sur toute combinaison (2026-10-19)
+  Given la crate compilée `--no-default-features`, puis `--features db`
+  When un test construit @PrincipalSource::Bearer { jwt } et @PrincipalSource::ApiToken { token_id: 1 }
+  Then les deux littéraux compilent dans les deux builds (aucune des deux n'est gatée)

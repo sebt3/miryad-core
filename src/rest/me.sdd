@@ -132,6 +132,8 @@ Must:
     `.specdd/bootstrap.project.md` ; pas de tool MCP `me`, pas de
     fragment OpenAPI aujourd'hui (fragment des routes de compte à la roadmap).
   @email est le snapshot de première vue, jamais rafraîchi (arbitré par Sébastien le 2026-09-29) : conséquence de ./../users/user.sdd.
+  **Amendement 2026-10-19 (feature `db`)** — ./me.rs n'est compilé que sous `db` : le `cfg` est posé par la déclaration du module dans
+    ./mod.rs ; ce fichier ne porte aucun `cfg` propre. Sans `db` il n'existe pas, comme `sea-orm`, dans le graphe.
 
 Must not:
   Accepter une cible venue du client : aucun extracteur @Query, @Path ni @Json n'est déclaré par

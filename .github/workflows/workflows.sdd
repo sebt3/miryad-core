@@ -52,6 +52,11 @@ Must:
     tag explicite, avec les seules permissions qu'elle exige.
   Faire surveiller chaque semaine par Dependabot (`../dependabot.yml`) les écosystèmes `cargo` et
     `github-actions` ; ses PR passent par la même CI que les autres, aucun auto-merge.
+  **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute liste de combinaisons ci-dessus : les matrices de test et de clippy de
+    `./ci.yml` portent les treize combinaisons de `../../tooling.sdd` (dont `--all-features`), toutes bloquantes ; un job ou un pas
+    supplémentaire exécute `cargo tree --no-default-features -e normal -i sea-orm` et exige qu'il échoue (preuve que `sea-orm` n'est
+    plus dans le graphe sans `db`), chaque commande en `--no-default-features`, `--no-default-features --features swagger-ui` et
+    `--no-default-features --features static-frontend,swagger-ui`.
 
 Must not:
   Publier alors que les tests ou le harnais ont échoué.
@@ -125,7 +130,17 @@ Tasks:
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./ci.yml`, retirer les entrées de test `graphql` et `graphiql`, ajouter
     au job clippy l'entrée `all-features` (`--all-features`) et supprimer le commentaire « Pas de graphe contenant graphql ni
     --all-features : carve-out du pont gele ». Une tâche par fichier : ./ci.yml seul.
+  [ ] Amendement 2026-10-19 (`db`) : dans `./ci.yml`, passer chaque matrice à treize entrées nommées (default, no-default, db, swagger-ui,
+    swagger-ui-db, frontend-swagger-ui, mcp, workflow, systemone, workflow-systemone, matrix, workflow-matrix, all-features) et ajouter le
+    job `no-db-graph` (trois commandes `cargo tree … -i sea-orm` qui doivent échouer ; écrire le test du code de sortie explicitement,
+    sans `|| true`).
 
 Done when:
   La CI prouve les tests, le harnais et le formatage sur chaque combinaison de features, et un
     tag dont la version ne correspond pas à `Cargo.toml` ne publie rien.
+
+Scenario: sea-orm absent du graphe sans db (2026-10-19)
+  Given le job `no-db-graph`
+  When il exécute `cargo tree --no-default-features -e normal -i sea-orm`
+  Then la commande échoue avec « did not match any packages » et le job réussit
+  And si la commande réussissait (sea-orm présent), le job échouerait et bloquerait le merge

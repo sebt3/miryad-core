@@ -53,6 +53,9 @@ Must:
     `matrix-sdk-common`, `ruma`, `assert_matches` (suite de conformité du store, ./store/crypto.sdd).
     La feature n'est **pas** dans `default` ; `[package.metadata.docs.rs].features` y ajoute `matrix`.
     `reqwest` (déjà direct) sert ./device_code.sdd.
+  **Amendement 2026-10-19 (feature `db`)** — la feature `matrix` implique `db` dans `[features]` de /Cargo.toml (`matrix = ["db", …]`) : tout build
+    qui compile ce module compile aussi `sea-orm`, @resource, @rbac, @users et @migration. Aucun `cfg(feature = "db")` n'est posé dans ce
+    module (l'implication suffit).
 
 Must not:
   Monter une route `axum` ou ouvrir un état global (`static`, `OnceLock`) : le client est une valeur

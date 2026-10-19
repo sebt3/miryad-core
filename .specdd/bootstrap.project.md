@@ -70,7 +70,7 @@ Sébastien, pas d'implémentation avant les tests dérivés de la spec.
   code pas ses `DbErr`.
 - Logging : `tracing` uniquement. Jamais `println!` / `eprintln!` / `dbg!`.
 - Gating de feature : chaque spec dit explicitement sous quelle(s) feature(s) son fichier
-  compile (`static-frontend` — default, `swagger-ui`, `mcp`, `workflow`, `systemone`, `matrix`) et ce que
+  compile (`static-frontend` et `db` — default, `swagger-ui`, `mcp`, `workflow`, `systemone`, `matrix` ; `mcp`, `workflow` et `matrix` impliquent `db`) et ce que
   ce gating impose à la batterie de vérification.
 - Une entité déclarée par @MiryadResource est lue **à l'identique** par REST et MCP :
   tout comportement ajouté sur une surface doit être honoré sur l'autre. Un décalage

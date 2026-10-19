@@ -112,6 +112,9 @@ Must:
     permanence puisque ./mod.rs ne compile que sous `mcp` — le `#![warn(rustdoc::
     broken_intra_doc_links)]` de ../lib.rs s'applique à ce bloc sans qu'il puisse rester une
     promesse non compilée.
+  **Amendement 2026-10-19 (feature `db`)** — la feature `mcp` implique `db` dans `[features]` de /Cargo.toml (`mcp = ["db", …]`) : tout build
+    qui compile ce module compile aussi `sea-orm`, @resource, @rbac, @users et @migration. Aucun `cfg(feature = "db")` n'est posé dans ce
+    module (l'implication suffit).
 
 Must not:
   Ajouter un gating interne au fichier — un `#[cfg(feature = "mcp")]` redondant ou un cfg sur

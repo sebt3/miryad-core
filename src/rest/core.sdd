@@ -200,6 +200,8 @@ Must:
     `ORDER BY` sur la colonne de clé primaire avant @paginate — pagination déterministe, jamais de
     ligne sautée ou dupliquée entre deux pages ; les listes de ./admin.rs et ./tokens.rs suivent la
     même règle.
+  **Amendement 2026-10-19 (feature `db`)** — ./core.rs n'est compilé que sous `db` : le `cfg` est posé par la déclaration du module dans
+    ./mod.rs ; ce fichier ne porte aucun `cfg` propre. Sans `db` il n'existe pas, comme `sea-orm`, dans le graphe.
 
 Must not:
   Choisir un statut HTTP ni importer @axum : ./core.rs ne produit que @RestError ; la table

@@ -109,6 +109,10 @@ Must:
   L'@AppMigration de test enregistre son entrée sous le nom `mod` (stem de ./mod.rs) (arbitré par Sébastien le 2026-09-29) :
     inoffensif tant que les tables de test sont distinctes ; commentaire explicite dans le test,
     pas de renommage.
+  **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute mention contraire (« toujours compilé », « sans gating », « sur chaque combinaison de
+    /tooling.sdd, `--no-default-features` compris ») de ce fichier : le module @migration, ses migrations `miryad_*` et le @Migrator n'est compilé que sous `#[cfg(feature = "db")]`, le `cfg` étant posé par la
+    déclaration `pub mod migration;` de /src/lib.rs ; le fichier ne porte aucun `cfg` propre. Sans `db`, il n'existe pas. Les combinaisons de la
+    batterie /tooling.sdd qui l'exercent sont celles qui activent `db` (par défaut, par `--features db`, ou par implication de `mcp`, `workflow`, `matrix`).
 
 Must not:
   Réordonner, retirer ou renommer un enregistrement de @migrations ou son fichier fille :

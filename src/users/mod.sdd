@@ -58,6 +58,10 @@ Must:
     les quatre `missing_docs` « for a module » des lignes `pub mod`, sans toucher ce fichier.
   Les @sea_orm::DbErr de la surface plate restent nues (arbitré par Sébastien le 2026-09-29) : le code `MRD-*` est posé par la
     surface qui les traduit (règle transverse de `.specdd/bootstrap.project.md`).
+  **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute mention contraire (« toujours compilé », « sans gating », « sur chaque combinaison de
+    /tooling.sdd, `--no-default-features` compris ») de ce fichier : le module @users et ses quatre sous-modules n'est compilé que sous `#[cfg(feature = "db")]`, le `cfg` étant posé par la
+    déclaration `pub mod users;` de /src/lib.rs ; le fichier ne porte aucun `cfg` propre. Sans `db`, il n'existe pas. Les combinaisons de la
+    batterie /tooling.sdd qui l'exercent sont celles qui activent `db` (par défaut, par `--features db`, ou par implication de `mcp`, `workflow`, `matrix`).
 
 Must not:
   Gater sous une feature une déclaration ou un ré-export : aucune feature de /Cargo.toml ne

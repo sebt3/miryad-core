@@ -138,6 +138,10 @@ Must:
     unifié.
   Le contrat d'erreur des routes REST entre dans le document OpenAPI public (arbitré par Sébastien le 2026-09-29) (statuts et
     corps ci-dessous, ./openapi.sdd) ; l'@ir reste code-only.
+  **Amendement 2026-10-19 (feature `db`)** — prévaut sur « compilation inconditionnelle » : ce fichier n'est compilé que sous
+    `db` (le `cfg` est posé par `pub mod error;` de ./mod.sdd ; ce fichier ne porte aucun `cfg` propre). @RestError, ses sept
+    variantes dont @Database (`#[from] sea_orm::DbErr`) et @Application (@HookError), et ses rendus sont donc inchangés sous
+    `db` et absents sans.
 
 Must not:
   Émettre une trace ou un effet de bord dans @Display, ou dans @into_response hors l'unique `error!`
@@ -282,6 +286,7 @@ Tasks:
     ici — ./mod.rs : `403` ×2, `404` ×1 (GET+DELETE), `422` ×1 avec corps JSON `code`/`message` ;
     ./admin.rs : `403` ×1 ; ./tokens.rs : `403` ×1, `404` ×1 — mais aucun n'affirme les corps texte
     exacts `403`/`404`/`500` de ce fichier, et /tests/resource.rs n'exerce rien de ce contrat.
+  [ ] Amendement 2026-10-19 (`db`) : aucun changement de `./error.rs` ; le `cfg` est posé par `./mod.rs`.
 
 Done when:
   Les 16 `Scenario` ont chacun au moins un test nommé distinct et vert dans ./error.rs, sur features

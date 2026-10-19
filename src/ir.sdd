@@ -98,6 +98,10 @@ Must:
   Le repli `("string", null)` de @ir::openapi_type est figé comme contrat (arbitré par Sébastien le 2026-09-29) : toute variante amont
     future de @ColumnType (`#[non_exhaustive]`) tombe dessus ; aucune preuve possible tant qu'aucune
     variante nouvelle n'existe.
+  **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute mention contraire (« toujours compilé », « sans gating », « sur chaque combinaison de
+    /tooling.sdd, `--no-default-features` compris ») de ce fichier : ./ir.rs n'est compilé que sous `#[cfg(feature = "db")]`, le `cfg` étant posé par la
+    déclaration `pub mod ir;` de /src/lib.rs ; le fichier ne porte aucun `cfg` propre. Sans `db`, il n'existe pas. Les combinaisons de la
+    batterie /tooling.sdd qui l'exercent sont celles qui activent `db` (par défaut, par `--features db`, ou par implication de `mcp`, `workflow`, `matrix`).
 
 Must not:
   Exiger de l'app consommatrice, pour l'IR, des annotations dédiées en plus de @MiryadResource —

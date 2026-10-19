@@ -82,6 +82,8 @@ Must:
     (arbitré par Sébastien le 2026-09-29) — jamais le token ni le cookie ; la tentative d'accès admin est la trace la plus utile.
   @groups_by_user ignore une membership dont le groupe ne remonte pas (arbitré par Sébastien le 2026-09-29) : la FK cascade rend le
     cas quasi impossible, comportement « ignorer » gelé et documenté.
+  **Amendement 2026-10-19 (feature `db`)** — ./admin.rs n'est compilé que sous `db` : le `cfg` est posé par la déclaration du module dans
+    ./mod.rs ; ce fichier ne porte aucun `cfg` propre. Sans `db` il n'existe pas, comme `sea-orm`, dans le graphe.
 
 Must not:
   Exposer une écriture sur cette surface : pas de `POST`/`PUT`/`DELETE /api/v1/users` ni

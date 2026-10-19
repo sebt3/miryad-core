@@ -122,6 +122,19 @@ Must:
     les `401`, confirmé comme contrat voulu le 2026-09-27 (`Tasks`) : aucun client réel n'en a
     besoin ici, et le poser correctement demanderait de savoir quel flow (cookie ou Bearer) a été
     tenté, information que l'enum ne porte pas
+  **Amendement 2026-10-19 (Bearer OIDC, feature `db`)** — prévaut sur toute mention contraire de ce fichier :
+    deux variantes s'ajoutent, sans type `sea_orm`, présentes sur toute combinaison de features :
+    @AuthError::InvalidBearer (variante unitaire, `#[error("MRD-AUTH-019: invalid bearer token")]`, rendue `401`) —
+    JWT `Bearer` rejeté (non parsable, signature, `iss`, `aud`, claims) — et @AuthError::BearerExpired
+    (variante unitaire, `#[error("MRD-AUTH-020: expired bearer token")]`, rendue `401`) — JWT valide par ailleurs mais
+    échu. Table de rendu toujours exhaustive et sans joker : statut `401`, corps texte `Display`, aucun
+    `WWW-Authenticate` (même contrat que 014/015). Aucune de ces deux variantes ne porte le JWT : ni dans la
+    `Display`, ni dans un champ, ni dans les traces. Le total des messages portant un code passe de dix à douze.
+  **Amendement 2026-10-19 (feature `db`)** : la variante @AuthError::Database (`MRD-AUTH-016`, `#[from]
+    sea_orm::DbErr`) n'existe que sous `#[cfg(feature = "db")]`, avec son bras de la table de rendu et son
+    @From ; sans `db`, `sea-orm` n'est pas dans le graphe de la crate et aucun type de ce fichier ne le cite. Les
+    variantes @InvalidToken, @TokenExpired, @TokenHashConflict (`MRD-AUTH-014/015/017`) et @Internal (`MRD-AUTH-018`) restent
+    présentes sur toute combinaison (aucun type `sea_orm` dans leur forme) bien que, sans `db`, aucune ne soit produite.
 
 Must not:
   Émettre le moindre événement @tracing dans @Display ou @into_response — les traces de rejet
@@ -176,6 +189,8 @@ Exposes:
   @From<@sea_orm::DbErr> pour @AuthError — conversion générée par `#[from]`, empruntée par
     l'opérateur `?` de tout appel SeaORM du module
   @Display publique dérivée — les dix messages portant code listés dans `Must`
+  **Amendement 2026-10-19** : @AuthError::InvalidBearer, @AuthError::BearerExpired (voir `Must`) ; @AuthError::Database
+    derrière `#[cfg(feature = "db")]`.
 
 Accepts:
   @IntoResponse::into_response : `self` par valeur — l'erreur est mue, plus aucune inspection
@@ -295,6 +310,11 @@ Tasks:
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./error.rs`, retirer de la doc de test (ligne ~333)
     la mention de `graphql_handler` (la liste devient `issue_token`, `validate_token`, `revoke_token`,
     `ensure_token`). Aucun changement de comportement.
+  [ ] Amendement 2026-10-19 (Bearer OIDC, `db`) : dans `./error.rs`, ajouter @InvalidBearer (`MRD-AUTH-019`) et @BearerExpired
+    (`MRD-AUTH-020`) avec leurs bras de `401` dans la table de rendu, poser `#[cfg(feature = "db")]` sur @Database (variante, bras
+    de rendu, @From) et sur les tests qui construisent un `sea_orm::DbErr` ; trois tests nommés `invalid_bearer_renders_401_019`,
+    `bearer_expired_renders_401_020`, `database_variant_gated_by_db` (preuve par la batterie `--no-default-features`). Mettre à jour
+    le décompte « dix messages » des tests existants.
 
 Done when:
   Les 22 `Scenario` ont chacun au moins un test nommé distinct et vert dans le `mod tests` de
@@ -446,3 +466,21 @@ Scenario: rendu HTTP 500 pour 018
   Then le statut est `500` (arbitré par Sébastien le 2026-09-30, option a)
   And le corps lu par @axum::body::to_bytes est exactement `MRD-AUTH-018: internal error: token hash construction failed`
   And l'en-tête @CONTENT_TYPE vaut `text/plain; charset=utf-8`
+
+Scenario: JWT Bearer invalide rendu 401 avec le code 019 (2026-10-19)
+  Given une @AuthError::InvalidBearer
+  When elle est rendue par @IntoResponse
+  Then le statut est `401`, le corps texte vaut exactement `MRD-AUTH-019: invalid bearer token`
+  And aucun en-tête `WWW-Authenticate` n'est posé
+
+Scenario: JWT Bearer échu rendu 401 avec le code 020 (2026-10-19)
+  Given une @AuthError::BearerExpired
+  When elle est rendue par @IntoResponse
+  Then le statut est `401`, le corps texte vaut exactement `MRD-AUTH-020: expired bearer token`
+  And ce corps est distinct de celui de 019, seul signal pour distinguer l'échéance côté client
+
+Scenario: la variante Database n'existe que sous db (2026-10-19)
+  Given la crate compilée `--no-default-features` (sans `db`), puis avec `--features db`
+  When le fichier ./error.rs est compilé
+  Then sans `db` aucune référence à `sea_orm` n'apparaît en production et la variante @AuthError::Database n'existe pas
+  And avec `db` la variante, son `From<sea_orm::DbErr>`, son code `MRD-AUTH-016` et son rendu `500` sont inchangés

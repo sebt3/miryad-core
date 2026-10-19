@@ -84,6 +84,8 @@ Must:
     @DateTimeUtc se sérialise en RFC 3339 avec suffixe `Z` (chrono 0.4.45 vérifié au source
     `datetime/serde.rs` : sérialisation par défaut `write_rfc3339` avec @SecondsFormat::AutoSi et
     @use_z @true) et un @Option::None rend `null`.
+  **Amendement 2026-10-19 (feature `db`)** — ./tokens.rs n'est compilé que sous `db` : le `cfg` est posé par la déclaration du module dans
+    ./mod.rs ; ce fichier ne porte aucun `cfg` propre. Sans `db` il n'existe pas, comme `sea-orm`, dans le graphe.
 
 Must not:
   Sortir de la sémantique du moteur pour cette surface — flag `revoked`, purge ou filtre de

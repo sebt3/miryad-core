@@ -111,6 +111,10 @@ Must:
     (enregistrement et liste) pour tout appelant non-admin, documenté dans les commentaires de
     @rbac::evaluate et de @rbac::list_access comme un choix de refus explicite plutôt qu'un risque
     d'accès non voulu.
+  **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute mention contraire (« toujours compilé », « sans gating », « sur chaque combinaison de
+    /tooling.sdd, `--no-default-features` compris ») de ce fichier : ./rbac.rs n'est compilé que sous `#[cfg(feature = "db")]`, le `cfg` étant posé par la
+    déclaration `pub mod rbac;` de /src/lib.rs ; le fichier ne porte aucun `cfg` propre. Sans `db`, il n'existe pas. Les combinaisons de la
+    batterie /tooling.sdd qui l'exercent sont celles qui activent `db` (par défaut, par `--features db`, ou par implication de `mcp`, `workflow`, `matrix`).
 
 Must not:
   Évaluer une permission depuis un token, un cookie, un rôle d'un claim ou un champ de
