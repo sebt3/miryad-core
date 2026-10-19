@@ -37,7 +37,8 @@ pub mod principal;
 pub mod state;
 
 /// Moteur des tokens API : secret `mrd_`, empreinte `HMAC-SHA256` poivrée hex, émission,
-/// validation, révocation, garantie idempotente.
+/// validation, révocation, garantie idempotente. Disponible sous la feature `db` uniquement.
+#[cfg(feature = "db")]
 pub mod token;
 
 pub use config::OidcConfig;
@@ -46,6 +47,7 @@ pub use middleware::AuthUser;
 pub use oidc::{OidcClient, OidcClientTrait, OidcIdentity};
 pub use principal::{AuthPrincipal, PrincipalSource};
 pub use state::MiryadAuthState;
+#[cfg(feature = "db")]
 pub use token::{ApiToken, IssuedToken, ensure_token, issue_token, revoke_token, validate_token};
 
 #[cfg(test)]
@@ -158,8 +160,13 @@ async fn handler_callback(
         .await?;
     let identity = login_result.identity;
 
-    let user = crate::users::resolve_user(&auth.db, &identity.subject, identity.email.as_deref()).await?;
-    crate::users::sync_group_memberships(&auth.db, user.id, &login_result.groups).await?;
+    // Synchronisation des comptes et des appartenances de groupes : n'existe que sous `db`
+    // (amendement 2026-10-19, `mod.sdd` `Must`). Sans `db`, le login est le seul chemin cookie.
+    #[cfg(feature = "db")]
+    {
+        let user = crate::users::resolve_user(&auth.db, &identity.subject, identity.email.as_deref()).await?;
+        crate::users::sync_group_memberships(&auth.db, user.id, &login_result.groups).await?;
+    }
 
     let set_cookie_main =
         crate::auth::cookie::build_set_cookie(&identity, &auth.cookie_key, auth.secure_cookies);
@@ -195,11 +202,13 @@ mod tests {
     use super::*;
     use crate::auth::cookie::SESSION_COOKIE_NAME;
     use crate::auth::oidc::OidcLoginResult;
+    #[cfg(feature = "db")]
     use crate::users::{group, membership, user};
     use axum::{
         body::Body,
         http::{HeaderMap, Request, StatusCode, request::Builder},
     };
+    #[cfg(feature = "db")]
     use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase};
     use std::sync::{Arc, Mutex};
     use tower::ServiceExt;
@@ -208,29 +217,32 @@ mod tests {
 
     /// Base `MockDatabase` volontairement non préparée : la première requête qui y touche rend une
     /// `DbErr` (donc un `500` `MRD-AUTH-016` rendu par ./error.rs). Un `400` ou un `302` obtenu
-    /// sur cette base est donc la preuve que le handler n'a rien lu.
+    /// sur cette base est donc la preuve que le handler n'a rien lu. Sous `db` seulement.
+    #[cfg(feature = "db")]
     fn unprepared_db() -> DatabaseConnection {
         MockDatabase::new(DatabaseBackend::Sqlite).into_connection()
     }
 
     /// État de test : `post_login_redirect` distinct de `post_logout_redirect` pour que le
-    /// `Location` prouve le champ lu.
-    fn state_on(client: MockOidcClient, db: DatabaseConnection, secure_cookies: bool) -> MiryadAuthState {
+    /// `Location` prouve le champ lu. Sous `db`, la base est non préparée (cf. `unprepared_db`).
+    fn state_on(client: MockOidcClient, secure_cookies: bool) -> MiryadAuthState {
         MiryadAuthState {
             oidc_client: Arc::new(client),
             cookie_key: ::cookie::Key::from(&[0u8; 64]),
             post_login_redirect: "/login-done".to_string(),
             post_logout_redirect: "/".to_string(),
-            db,
+            #[cfg(feature = "db")]
+            db: unprepared_db(),
             secure_cookies,
+            #[cfg(feature = "db")]
             token_pepper: String::new(),
         }
     }
 
     /// État des parcours qui n'exercent que le flow cookie/OIDC : mock `OIDC` en mode panique à
-    /// l'échange et base non préparée.
+    /// l'échange, et sous `db` une base non préparée.
     fn test_state() -> MiryadAuthState {
-        state_on(MockOidcClient::default(), unprepared_db(), false)
+        state_on(MockOidcClient::default(), false)
     }
 
     fn app_on(state: MiryadAuthState) -> Router {
@@ -450,7 +462,7 @@ mod tests {
     /// `; Secure` est inséré après `HttpOnly`, `SameSite=Lax` conservé.
     #[tokio::test]
     async fn login_redirects_and_sets_pending_cookie_with_secure_attribute() {
-        let app = app_on(state_on(MockOidcClient::default(), unprepared_db(), true));
+        let app = app_on(state_on(MockOidcClient::default(), true));
 
         let got = served(Request::builder().uri("/auth/login"), app).await;
 
@@ -682,12 +694,13 @@ mod tests {
         }
     }
 
-    /// Parcours « callback succès » partagé par les deux tests du `Scenario`, paramétré par
+    /// Parcours « callback succès » partagé par les tests `db` du `Scenario`, paramétré par
     /// `secure_cookies` (un test par valeur, arbitré 2026-09-29) : `MockOidcClient` en mode
     /// configurable, `MockDatabase` préparée pour `resolve_user`, `ensure_group` et la lecture des
-    /// appartenances, pending au bon CSRF. Rend la réponse servie, les traces captées et l'`exp`
-    /// du JWT de session.
-    async fn serve_callback_success(secure: bool) -> (Served, Vec<String>, u64) {
+    /// appartenances, pending au bon CSRF. Rend la réponse servie, les traces captées, l'`exp`
+    /// du JWT de session et une poignée clonée de la base, pour relire le journal des requêtes.
+    #[cfg(feature = "db")]
+    async fn serve_callback_success(secure: bool) -> (Served, Vec<String>, u64, DatabaseConnection) {
         let exp = now_secs() + 3600;
         let login_result = OidcLoginResult {
             identity: OidcIdentity {
@@ -719,12 +732,11 @@ mod tests {
                 group_id: 10,
             }]])
             .into_connection();
+        let probe = db.clone();
 
-        let app = app_on(state_on(
-            MockOidcClient::with_login_result(login_result),
-            db,
-            secure,
-        ));
+        let mut state = state_on(MockOidcClient::with_login_result(login_result), secure);
+        state.db = db;
+        let app = app_on(state);
         let header = pending_header("csrf-ok:nonce-ok:verifier-ok", &::cookie::Key::from(&[0u8; 64]));
 
         let (_guard, captured) = capture_traces();
@@ -735,16 +747,93 @@ mod tests {
             app,
         )
         .await;
-        (got, captured.lines(), exp)
+        (got, captured.lines(), exp, probe)
+    }
+
+    /// `Scenario` : « callback de login sous db synchronise inchangé » (2026-10-19) — le callback
+    /// rend la même `302` que sans `db`, et la synchronisation a bien interrogé la base : le journal
+    /// du mock porte des requêtes sur les tables de comptes et d'appartenances.
+    #[cfg(feature = "db")]
+    #[tokio::test]
+    async fn callback_with_db_syncs_groups() {
+        let (got, _lines, _exp, probe) = serve_callback_success(false).await;
+
+        assert_eq!(got.status, StatusCode::FOUND);
+        assert_eq!(got.location(), "/login-done");
+
+        let statements: Vec<String> = probe
+            .into_transaction_log()
+            .iter()
+            .flat_map(|tx| tx.statements().iter().map(|stmt| stmt.sql.clone()))
+            .collect();
+        assert!(
+            statements.iter().any(|sql| sql.contains("miryad_users")),
+            "resolve_user a lu la table des comptes : {statements:?}"
+        );
+        assert!(
+            statements.iter().any(|sql| sql.contains("group")),
+            "sync_group_memberships a lu les groupes : {statements:?}"
+        );
+    }
+
+    /// `Scenario` : « callback de login sans db pose le cookie sans écriture » (2026-10-19) —
+    /// `302` vers `post_login_redirect` avec la session posée, les groupes du login ignorés. Aucune
+    /// base n'existe dans ce build : aucune table n'est lue ni écrite.
+    #[cfg(not(feature = "db"))]
+    #[tokio::test]
+    async fn callback_without_db_sets_cookie_only() {
+        let exp = now_secs() + 3600;
+        let login_result = OidcLoginResult {
+            identity: OidcIdentity {
+                id_token: make_jwt(exp),
+                subject: "user-1".to_string(),
+                email: Some("user-1@example.com".to_string()),
+                preferred_username: Some("alice".to_string()),
+            },
+            groups: vec!["admin".to_string()],
+        };
+        let app = app_on(state_on(MockOidcClient::with_login_result(login_result), false));
+        let header = pending_header("csrf-ok:nonce-ok:verifier-ok", &::cookie::Key::from(&[0u8; 64]));
+
+        let got = served(
+            Request::builder()
+                .uri("/auth/callback?code=valide&state=csrf-ok")
+                .header("Cookie", header),
+            app,
+        )
+        .await;
+
+        assert_eq!(got.status, StatusCode::FOUND);
+        assert_eq!(
+            got.location(),
+            "/login-done",
+            "le `post_login_redirect` de l'état"
+        );
+        assert!(got.body.is_empty(), "corps vide");
+
+        let cookies = got.set_cookies();
+        assert_eq!(cookies.len(), 2, "session puis purge du pending : {cookies:?}");
+        let session = cookies.first().expect("première ligne : la session");
+        assert!(
+            cookie_pair(session).starts_with(&format!("{SESSION_COOKIE_NAME}=")),
+            "la session `miryad_session` est posée : {session}"
+        );
+        let purge = cookies.last().expect("seconde ligne : la purge du pending");
+        assert_eq!(
+            purge,
+            &format!("{PENDING_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"),
+            "purge littérale du pending sans `Secure`"
+        );
     }
 
     /// `Scenario` : « callback succès pose la session puis purge le pending » — variante
     /// `secure_cookies: true` (arbitré 2026-09-29) : la purge du pending porte les mêmes
     /// attributs que la pose, donc le `; Secure` inséré après `HttpOnly`. Deux `Set-Cookie`
     /// ordonnés, trace `info` avec `subject`.
+    #[cfg(feature = "db")]
     #[tokio::test]
     async fn callback_success_sets_session_then_purges_pending() {
-        let (got, lines, exp) = serve_callback_success(true).await;
+        let (got, lines, exp, _probe) = serve_callback_success(true).await;
 
         assert_eq!(got.status, StatusCode::FOUND);
         assert_eq!(
@@ -799,9 +888,10 @@ mod tests {
     /// `Scenario` : « callback succès pose la session puis purge le pending » — variante
     /// `secure_cookies: false` (un test par valeur, arbitré 2026-09-29) : purge sans `Secure`,
     /// `SameSite=Lax` conservé ; la session non plus ne porte pas `Secure`.
+    #[cfg(feature = "db")]
     #[tokio::test]
     async fn callback_success_sans_secure_cookies_purge_pending_sans_secure() {
-        let (got, lines, _exp) = serve_callback_success(false).await;
+        let (got, lines, _exp, _probe) = serve_callback_success(false).await;
 
         assert_eq!(got.status, StatusCode::FOUND);
         assert_eq!(got.location(), "/login-done");
@@ -839,7 +929,8 @@ mod tests {
     /// compilation (patron `witness` de ./lib.rs) : les vingt chemins de l'`Exposes` et du
     /// `Scenario` sont référencés par le chemin `auth::…`, aucun symbole importé directement sous
     /// `miryad_core`. L'absence d'équivalent à la racine est le contrat de ./src/lib.rs (aucun
-    /// `pub use` racine), tenu à la lecture de ce fichier.
+    /// `pub use` racine), tenu à la lecture de ce fichier. Les chemins `token` n'existent que sous `db`.
+    #[cfg(feature = "db")]
     #[test]
     fn public_surface_paths_resolve_without_root_shortcuts() {
         fn witness_flat(
@@ -912,6 +1003,26 @@ mod tests {
 
         assert_eq!(got.status, StatusCode::FOUND);
         assert_eq!(got.location(), "/");
+    }
+
+    /// `Scenario` : « surface publique sans `db` » (sous-ensemble non token du test précédent) : les
+    /// chemins plats hors `token` résolvent sans la feature `db`, et `clear_cookie` est atteignable.
+    #[cfg(not(feature = "db"))]
+    #[test]
+    fn public_surface_paths_resolve_without_db() {
+        fn witness_flat(
+            _: Option<OidcConfig>,
+            _: Option<AuthError>,
+            _: Option<AuthUser>,
+            _: Option<OidcClient>,
+            _: Option<Box<dyn OidcClientTrait>>,
+            _: Option<OidcIdentity>,
+            _: Option<AuthPrincipal>,
+        ) {
+        }
+        witness_flat(None, None, None, None, None, None, None);
+        let _clear: fn(bool) -> String = crate::auth::cookie::clear_cookie;
+        assert_eq!(crate::auth::cookie::SESSION_COOKIE_NAME, "miryad_session");
     }
 
     /// `Scenario` : « le module compile sans aucune feature activée » — part inline : ni le

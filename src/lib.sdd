@@ -394,7 +394,7 @@ Scenario: sans db la surface se réduit à auth, query et rest::openapi (2026-10
   Then les six chemins `miryad_core::…` compilent
   And aucune référence à @resource, @rbac, @users, @ir, @migration, @rest::resource_router, @auth::issue_token n'est possible
     (le test n'en cite pas ; la preuve d'absence est `cargo build --no-default-features` + `cargo tree --no-default-features -e normal
-    -i sea-orm` qui échoue : « did not match any packages »)
+    -i sea-orm` dont la sortie standard est vide : « nothing to print »)
 
 Scenario: les modules d'entités sont gatés par db (2026-10-19)
   Given un build `--no-default-features --features db`

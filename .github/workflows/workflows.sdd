@@ -54,7 +54,7 @@ Must:
     `github-actions` ; ses PR passent par la même CI que les autres, aucun auto-merge.
   **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute liste de combinaisons ci-dessus : les matrices de test et de clippy de
     `./ci.yml` portent les treize combinaisons de `../../tooling.sdd` (dont `--all-features`), toutes bloquantes ; un job ou un pas
-    supplémentaire exécute `cargo tree --no-default-features -e normal -i sea-orm` et exige qu'il échoue (preuve que `sea-orm` n'est
+    supplémentaire exécute `cargo tree --no-default-features -e normal -i sea-orm` et exige que sa sortie standard soit vide (cargo imprime « nothing to print » sur stderr et rend le code 0 ; preuve que `sea-orm` n'est
     plus dans le graphe sans `db`), chaque commande en `--no-default-features`, `--no-default-features --features swagger-ui` et
     `--no-default-features --features static-frontend,swagger-ui`.
 
@@ -132,8 +132,8 @@ Tasks:
     --all-features : carve-out du pont gele ». Une tâche par fichier : ./ci.yml seul.
   [ ] Amendement 2026-10-19 (`db`) : dans `./ci.yml`, passer chaque matrice à treize entrées nommées (default, no-default, db, swagger-ui,
     swagger-ui-db, frontend-swagger-ui, mcp, workflow, systemone, workflow-systemone, matrix, workflow-matrix, all-features) et ajouter le
-    job `no-db-graph` (trois commandes `cargo tree … -i sea-orm` qui doivent échouer ; écrire le test du code de sortie explicitement,
-    sans `|| true`).
+    job `no-db-graph` (trois commandes `cargo tree … -i sea-orm` dont la sortie standard doit être vide ; le pas échoue si `cargo tree` imprime une ligne ou si cargo
+    lui-même échoue ; par exemple `out=$(cargo tree … -i sea-orm) && test -z "$out"`, sans `|| true`).
 
 Done when:
   La CI prouve les tests, le harnais et le formatage sur chaque combinaison de features, et un
@@ -142,5 +142,5 @@ Done when:
 Scenario: sea-orm absent du graphe sans db (2026-10-19)
   Given le job `no-db-graph`
   When il exécute `cargo tree --no-default-features -e normal -i sea-orm`
-  Then la commande échoue avec « did not match any packages » et le job réussit
-  And si la commande réussissait (sea-orm présent), le job échouerait et bloquerait le merge
+  Then sa sortie standard est vide (stderr : « nothing to print », code de sortie 0) et le job réussit
+  And si la sortie contenait une ligne `sea-orm v…` (sea-orm présent), le job échouerait et bloquerait le merge

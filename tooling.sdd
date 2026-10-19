@@ -61,8 +61,8 @@ Must:
     static-frontend,swagger-ui` (profil sans base d'une API écrite à la main avec son frontend) ; `--no-default-features --features mcp` ;
     `workflow` ; `systemone` ; `workflow,systemone` ; `matrix` ; `workflow,matrix` ; `--all-features`. Chaque combinaison sans `db`
     prouve que `sea-orm` n'est plus dans le graphe : en plus de `cargo test`/`cargo clippy`, `cargo tree --no-default-features -e normal
-    -i sea-orm` (et la même commande avec `--features swagger-ui` et `static-frontend,swagger-ui`) doit échouer avec « did not match
-    any packages » — les dev-dependencies de test gardent `sea-orm`, d'où l'option `-e normal`. Les doc builds (`cargo doc --no-deps`) couvrent défaut,
+    -i sea-orm` (et la même commande avec `--features swagger-ui` et `static-frontend,swagger-ui`) doit ne rien imprimer sur stdout (cargo rend
+    « warning: nothing to print » sur stderr avec le code 0 : le test est la SORTIE vide, pas le code de sortie — mesuré 2026-10-19) — les dev-dependencies de test gardent `sea-orm`, d'où l'option `-e normal`. Les doc builds (`cargo doc --no-deps`) couvrent défaut,
     `--no-default-features` et `--all-features`.
 
 Must not:
