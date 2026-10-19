@@ -61,9 +61,9 @@ Must:
   Le nettoyage des lignes orphelines vient du schéma, pas du code : `on delete cascade` sur les deux FK
     (m20260822_000002). @sync_group_memberships ne code aucune purge des références pendantes.
   Parité des surfaces : @Entity n'a aucun @DeriveRelatedEntity (@Relation est un enum vide) et aucune
-    @MiryadResource — la table n'est exposée en CRUD sur aucune surface REST, GraphQL ou MCP, ni dans
-    l'IR. Elle est lue à l'identique par les trois via @is_member/@is_admin (`./group.rs`),
-    `rest::admin::groups_by_user` et `graphql::principal` ; aucune surface ne l'écrit. Cette absence
+    @MiryadResource — la table n'est exposée en CRUD sur aucune surface REST ou MCP, ni dans
+    l'IR. Elle est lue via @is_member/@is_admin (`./group.rs`) et
+    `rest::admin::groups_by_user` ; aucune surface ne l'écrit. Cette absence
     d'écriture côté surface est unilatérale par conception, pas une dette : l'écriture est le monopole
     de la voie login/provisioning.
   Le fichier compile sans gating : aucune `#[cfg(feature = ...)]` ; le module @users est déclaré non-gaté
@@ -87,16 +87,16 @@ Must:
     traduit (arbitré par Sébastien le 2026-09-29) ; règle transverse de `.specdd/bootstrap.project.md`.
 
 Must not:
-  Exposer une API d'assignation d'appartenance manuelle (route REST, mutation GraphQL, tool MCP ou
+  Exposer une API d'assignation d'appartenance manuelle (route REST, tool MCP ou
     fonction d'ajout isolée) : @sync_group_memberships est l'unique chemin d'écriture, Authentik reste la
     seule source de vérité.
   Retoucher les lignes de `miryad_groups` ou de `miryad_users` : ne jamais purger un groupe disparu du
     claim, ne jamais poser une appartenance sans passer par @ensure_group.
   Ajouter une variante à @Relation ou un @DeriveRelatedEntity : la table doit rester hors du graphe
-    Seaography ; l'exposer aux surfaces demande une décision de contrat, pas une dérive de typage.
+    d'entités exposé ; l'exposer aux surfaces demande une décision de contrat, pas une dérive de typage.
   Decoder le claim `groups` du JWT ici : l'extraction appartient à `/src/auth/oidc.rs` ; ce fichier reçoit
     des noms déjà extraits.
-  Mapper @DbErr vers un type d'erreur d'une surface (REST/GraphQL/MCP) ou inventer un code maison : la
+  Mapper @DbErr vers un type d'erreur d'une surface (REST/MCP) ou inventer un code maison : la
     propagation est brute (voir Tasks [arbitré 2026-09-29] pour la frontière `MRD-*`).
 
 Depends on:

@@ -22,7 +22,7 @@ Owns:
 References:
   /miryad-core.sdd — contrat hérité : codes `MRD-<DOMAINE>-NNN` portés par les modules (aucun ici,
     choix documenté en `Raises`), tables internes préfixées `miryad_*`, parité de lecture
-    REST/GraphQL/MCP sur la même métadonnée
+    REST/MCP sur la même métadonnée
   ../rbac.rs et ../rbac.sdd — consommateur exclusif des helpers : @rbac::evaluate,
     @rbac::can_create et @rbac::list_access appellent @is_admin et @is_member à chaque décision non
     publique et propagent @sea_orm::DbErr par `?` ; la ligne `Handles` de ../rbac.sdd affirme
@@ -50,10 +50,6 @@ References:
   /src/rest/admin.rs — garde d'accès de `GET /api/v1/users` : appelle @is_admin sur le caller
     résolu, puis lit @group::Entity/@group::Column::Id.is_in pour nommer les groupes (deux
     requêtes, jamais un N+1) ; /src/rest/me.rs consomme la même @rest::admin::groups_by_user
-  /src/graphql/principal.rs — surface qui ne consomme PAS les helpers : @graphql::load_principal
-    recalcule un @graphql::GraphQlPrincipal précalculé par requête avec des @Entity::find directs
-    sur les mêmes tables ; seule la constante @ADMIN_GROUP_NAME est partagée (via
-    @HashSet::contains) ; asymétrie de chemin de lecture signalée en `Tasks` [arbitré 2026-09-29]
   /src/mcp/registry.rs — la surface MCP délègue aux fonctions de @rest::core sans réévaluer la
     politique : elle hérite donc des décisions @rbac, donc de ces helpers, mot pour mot
   /src/resource.sdd — aucune de ces entités n'y est déclarée pour les groupes : @group::Entity
@@ -73,7 +69,7 @@ Must:
     traité comme tel (une migration committée ne se réécrit pas).
   Garder @users::group::ADMIN_GROUP_NAME (valeur verbatim `admin`) comme seul lien de la convention
     admin, jamais comparé à un littéral inline dans ./group.rs : @is_admin la lit, le `up` du seed
-    000003 la lit, @graphql::load_principal la lit — toute la crate ne connaît le nom que par la
+    000003 la lit — toute la crate ne connaît le nom que par la
     constante (le littéral brut du `down` de 000003 est l'exception signalée en `Tasks` [arbitré 2026-09-29]).
   Définir @is_admin comme le strict appel à @is_member avec @ADMIN_GROUP_NAME, sans aucune logique
     propre, sans cache, sans seconde définition de l'admin : c'est la garantie qu'il n'existe
@@ -108,7 +104,7 @@ Must:
     porté par /src/rest/error.sdd) ; une panne d'infrastructure ne dégrade jamais silencieusement
     un accès — comportement vérifié et requis aussi côté ../rbac.sdd.
   Réserver l'écriture de `miryad_groups` à @ensure_group (plus le DELETE brut du `down` de 000003)
-    : ./membership.rs, ./user.rs, /src/rest/admin.rs, /src/graphql/principal.rs ne font que lire
+    : ./membership.rs, ./user.rs et /src/rest/admin.rs ne font que lire
     @group::Entity/@group::Column — vérifié par recherche de tous les usages dans la crate.
   Rendre @group::Entity jamais lisible ni insérable par les surfaces CRUD : aucune implémentation
     de @MiryadResource pour cette entité n'existe ni n'est due ici ; les groupes ne sortent en
@@ -124,9 +120,6 @@ Must:
   Le `down` de la migration `000003` écrit le littéral `'admin'` : contrainte documentaire (arbitré par Sébastien le 2026-09-29), la
     constante @ADMIN_GROUP_NAME et le littéral doivent bouger ensemble (au besoin par une
     migration suivante, jamais par réécriture de la migration committée).
-  @graphql::load_principal lit un snapshot par requête par @Entity::find direct, quand REST relit
-    à la demande via @is_admin/@is_member : différence de fraîcheur assumée (arbitré par Sébastien le 2026-09-29), à dire dans la
-    spec GraphQL ; le pont est gelé, on ne l'unifie pas maintenant.
 
 Must not:
   Créer ou modifier quoi que ce soit sur le chemin de @is_admin et @is_member : les deux sont du
@@ -141,8 +134,7 @@ Must not:
   Introduire un second marqueur d'admin : pas de booléen dans une table, pas de cas spécial dans
     le schéma, pas de contournement de @is_member — la convention est le nom seul.
   Cacher ou mémoriser une appartenance entre deux appels : chaque appel de @is_member est une
-    lecture fraîche des deux tables ; le snapshot GraphQL de /src/graphql/principal.rs est la seule
-    dérogation et elle appartient à son fichier (arbitrage [arbitré 2026-09-29]).
+    lecture fraîche des deux tables .
   Émettre une trace @tracing autre que le @debug du rebond d'@INSERT (arbitré 2026-09-29), un
     @println!/@eprintln!/@dbg!, ou tout effet observable hors des SELECT et de l'INSERT de
     @ensure_group.
@@ -175,7 +167,7 @@ Exposes:
   @users::group::Group — `pub type @Group = @Entity` (alias, seul nom alternatif de l'entité)
   @users::group::Relation — @enum @vide sous @DeriveRelation : aucune relation sea-orm déclarée
     malgré les FK du schéma ; les jointures sont faites par filtres explicites ici et chez les
-    consommateurs — donc @DeriveRelatedEntity/GraphQL ne verra jamais de relation depuis ce modèle
+    consommateurs — donc aucun consommateur ne verra de relation depuis ce modèle
   @users::group::ActiveModelBehavior — implémentation vide, aucun comportement avant-save
   @users::group::ensure_group — `pub async fn <C: @sea_orm::ConnectionTrait>(db: &@C, name: &@str)
     -> @Result<@i32, @sea_orm::DbErr>` (documenté : get-or-create, création à la volée sans
@@ -254,10 +246,9 @@ Handles:
   Suppression d'un groupe hors flux (SQL brut) : la FK cascade de 000002 emporte les lignes de
     `miryad_group_memberships` qui pointaient vers lui ; @is_member répond alors @Ok(@false) pour
     les anciens membres, par le même chemin « groupe absent » qu'un groupe inconnu, sans erreur.
-  Gating et surfaces : fichier non gaté — disponible avec ou sans `graphql`/`mcp` ; REST et rbac
+  Gating et surfaces : fichier non gaté — disponible avec ou sans `mcp` ; REST et rbac
     consultent ces helpers à la demande (à chaque décision), MCP hérite à l'identique par
-    délégation @rest::core ; GraphQL (/src/graphql/principal.rs) recalcule un snapshot par requête
-    en contournant les helpers (asymétrie de chemin de lecture, [arbitré 2026-09-29] en `Tasks`).
+    délégation @rest::core.
 
 Example:
   # is_member — deux SELECT, zéro écriture
@@ -275,7 +266,7 @@ Example:
 Tasks:
   [x] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé, dans le
     `#[cfg(test)] @mod tests` de ./group.rs (le contrat ne déborde pas du fichier : rbac.rs,
-    rest/admin.rs et graphql/principal.rs ont leurs propres specs et tests). Le fichier compte 3
+    et rest/admin.rs ont leurs propres specs et tests). Le fichier compte 3
     tests inline : `admin_group_is_seeded_by_migration` couvre « le seed 000003 pose le groupe
     `admin` » ; `is_member_true_for_member_false_otherwise` couvre « membre vrai, non-membre
     faux » ; `is_member_false_for_unknown_group` couvre le volet « faux » du scénario de groupe
@@ -302,8 +293,9 @@ Tasks:
     ./membership.sdd).
   [x] `down` de 000003 : contrainte documentaire, pas de réécriture (arbitré par Sébastien le
     2026-09-29, `Must`) — miroir dans ./../migration/m20260822_000003_seed_admin_group.sdd.
-  [x] Bypass GraphQL : snapshot par requête assumé, à écrire dans la spec GraphQL (arbitré par
-    Sébastien le 2026-09-29, `Must`) ; pont gelé, pas d'unification maintenant.
+  [x] Bypass GraphQL (snapshot par requête) : soldé par la suppression de la surface GraphQL (2026-10-19).
+  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./group.rs` (doc ligne ~35), remplacer la mention de `Seaography` par
+    « le graphe d'entités SeaORM ». Aucun changement de comportement.
 
 Done when:
   Chaque `Scenario` a au moins un test Rust distinct nommé vérifiant son @Then (onze minimum dans

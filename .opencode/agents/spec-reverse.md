@@ -63,7 +63,7 @@ seule une spec `.sdd` sort de ton travail.
    sémantique compte (`~/.cargo/registry/src` est en lecture) — miryad-core a déjà évité un bug en
    lisant `sea-orm` plutôt que son doc-comment. Ce que tu vérifies là devient une ligne de contrat
    argumentée, pas une supposition.
-6. Parité des surfaces : si le fichier participe à une surface partagée (REST, GraphQL, MCP, IR),
+6. Parité des surfaces : si le fichier participe à une surface partagée (REST, MCP, IR),
    dis dans la spec ce que le fichier garantit pour chaque surface, et signale explicitement toute
    asymétrie constatée.
 7. Toute incertitude — comportement qui ressemble à un bug, branche jamais testée, commentaire en

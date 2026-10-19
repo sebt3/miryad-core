@@ -196,7 +196,7 @@ Handles:
     seul, @down @Some(@k) défait les @k dernières appliquées en ordre inverse
   Échec partiel d'une séquence @up : la migration faillie garde zéro ligne de tracking et bloque
     seule la suite — rejouer @up retraverse par la même table dédiée
-  Parité des surfaces : @Migrator n'expose rien sur REST, GraphQL, MCP, OpenAPI ni @ir — aucune
+  Parité des surfaces : @Migrator n'expose rien sur REST, MCP, OpenAPI ni @ir — aucune
     table `miryad_*` n'est @MiryadResource, le module n'a donc aucune asymétrie de surface à
     aligner (les asymétries self-service sont consignées côté filles, voir
     ./m20260822_000001_create_api_tokens.sdd)

@@ -44,7 +44,7 @@ Owns:
     et sont régis par la présente spec.
 
 References:
-  /miryad-core.sdd — contrat hérité : lecture identique REST/GraphQL/MCP depuis la seule
+  /miryad-core.sdd — contrat hérité : lecture identique REST/MCP depuis la seule
     métadonnée @MiryadResource, codes `MRD-<DOMAINE>-NNN` réservés à la crate, exception
     @HookError, préfixe `/api/v1` de la feature 6
   ../lib.sdd — déclare @rest sans gating, expose @rest::resource_router et @rest::RestEntity
@@ -334,7 +334,7 @@ Handles:
     une entité non @serde avec PK `i32`
   Combinaisons de features : défaut (`static-frontend`), `--no-default-features`, seules,
     cumulées ou `--all-features` — le fichier et ses routes ne changent sur aucune de ces
-    combinaisons (aucun @cfg @feature) ; `swagger-ui`, `graphql`, `graphiql`, `mcp` ne
+    combinaisons (aucun @cfg @feature) ; `swagger-ui`, `mcp` ne
     concernent ./mod.rs par aucune ligne
 
 Tasks:

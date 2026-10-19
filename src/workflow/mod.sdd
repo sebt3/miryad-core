@@ -13,7 +13,7 @@ Purpose:
     aucune — `async-trait` est déjà une dépendance directe non optionnelle de /Cargo.toml,
     utilisée hors feature par ./../auth/oidc.rs et ./../migration/*) et
     qu'aucune n'a autorité sur `/Cargo.toml` lui-même (`Can modify` de /miryad-core.sdd).
-  Contrairement aux trois autres surfaces de la crate (REST, GraphQL, MCP), `workflow` ne monte
+  Contrairement aux autres surfaces de la crate (REST, MCP), `workflow` ne monte
     aucune route sur le `axum::Router` de l'app — ses deux services (`DagInterpreter`,
     `StepDispatcher`) parlent le protocole `restate-sdk`, servis par un `HttpServer`/`Endpoint` que
     l'app construit et lie elle-même dans son propre `main()`, hors de toute fonction exposée par ce
@@ -83,7 +83,7 @@ Must:
   Compiler tout le module sous `#[cfg(feature = "workflow")]` — posé dans `/src/lib.rs`
     (`#[cfg(feature = "workflow")] pub mod workflow;`, amendement `/src/lib.sdd`), pas dans `mod.rs`
     lui-même (`mod.rs` n'a pas à se re-gater, la racine le fait une fois pour tous ses enfants — même
-    convention que `./mcp/mod.rs`, `./graphql/mod.rs`).
+    convention que `./mcp/mod.rs`).
   Documenter dans `/Cargo.toml` (hors `Owns` de ce fichier, mais le diff qu'il impose) exactement :
     `workflow = ["dep:restate-sdk", "dep:uuid", "dep:vynil-core", "vynil-core?/rhai",
     "dep:tokio"]` ; nouvelles entrées `[dependencies]` : `restate-sdk = { version = "0.12", features =
@@ -111,7 +111,7 @@ Must not:
   Ré-exporter `definition::validate_dag`, ou toute fonction/type marqué `pub(crate)` par un enfant :
     ce fichier respecte la visibilité choisie par chaque spec, il ne l'élargit jamais.
   Monter quoi que ce soit sur un `axum::Router`, importer `axum` ou `tower`, enregistrer un handler
-    HTTP autre que via `restate-sdk` : la frontière avec les trois autres surfaces (REST, GraphQL,
+    HTTP autre que via `restate-sdk` : la frontière avec les autres surfaces (REST,
     MCP) est stricte — `workflow` ne partage ni routeur ni middleware avec elles.
   Fournir une fonction d'assemblage (`fn build_endpoint(...) -> Endpoint`) qui construirait
     l'`Endpoint` `restate-sdk` à la place de l'app : `.bind(DagInterpreter)`,
@@ -142,7 +142,7 @@ Raises:
 
 Handles:
   Compilation sous `workflow` seule et en cumul avec chaque autre feature de la matrice de
-    /tooling.sdd (`swagger-ui`, `graphql`, `graphiql`, `mcp` — `mcp` et `workflow` activés ensemble
+    /tooling.sdd (`swagger-ui`, `mcp` — `mcp` et `workflow` activés ensemble
     exercent l'unification de features `vynil-core` décrite en `Must`) ; `--all-features` exerce les
     deux activations de `vynil-core` simultanément.
   Absence de la feature `workflow` : le module entier disparaît de la surface publique, comme tout
@@ -172,16 +172,15 @@ Tasks:
     Restate vs les options écartées (roadmap 7, déjà écrit), le schéma de déploiement (une instance
     Restate par cluster, StatefulSet trivial, vynil box hors dépôt), les risques opérationnels déjà
     identifiés par ./client.sdd (rollout avec `force: true`, `Service` Kubernetes stable) et
-    ./dispatcher.sdd (isolation des panics, `RunRetryPolicy`), l'asymétrie GraphQL de
-    `before_update`/`before_delete` (/src/resource.sdd, amendement 2026-09-23).
+    ./dispatcher.sdd (isolation des panics, `RunRetryPolicy`), `before_update`/`before_delete`
+    (/src/resource.sdd, amendement 2026-09-23).
     Réalisé 2026-10-04/05 (commits 9ccb677 + 46edf02, validator PASS ×2) : douze blocs, toutes les
     notes « Reste ouvert : documenter dans docs/architecture.md » des tâches `[x]` de ./client.sdd,
     ./dispatcher.sdd et ./interpreter.sdd absorbées (le `Done when` de ./client.sdd est satisfait
     au passage) ; renvoi à roadmap 7 sans re-recopiage ; 14 affirmations re-vérifiées au source.
     Le 46edf02 corrige au passage la section voisine « Hooks métier CRUD » restée caduque depuis
     l'amendement 2026-09-23 (acquittement à effet différé du `Handles` de /src/resource.sdd —
-    correction recommandée par le validator, le document s'auto-contradictait). Reste dû hors de
-    cette tâche : le versant « à documenter dans ./graphql/hooks.sdd » de ce même `Handles`.
+    correction recommandée par le validator, le document s'auto-contradictait).
   [x] Mettre à jour `docs/roadmap.md`, feature 9 (fait 2026-10-04, standby levé et lot #26/#27 décrit) : passer de "reprise du moteur de workflow, si une
     solution saine se présente" à un état reflétant les sept specs de ce module approuvées (ou en
     cours d'implémentation), une fois cette relecture faite.

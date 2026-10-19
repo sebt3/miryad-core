@@ -246,10 +246,9 @@ Handles:
     ne fait pas.
   Parité des surfaces : `miryad_groups` n'est pas une @MiryadResource (aucune implémentation en
     crate, vérifications portées par /src/users/group.sdd) — ce seed n'est lu ni collecté par
-    aucune route REST, @graphql ou @mcp, ni par @ir : les trois surfaces ne rencontrent jamais ce
-    fichier, aucune asymétrie n'est créée par lui, et les divergences de chemins de lecture du
-    groupe @graphql::load_principal versus /src/users/group.rs appartiennent à leurs specs.
-  Gating : fichier universel — avec et sans `graphql`, `mcp`, `swagger-ui` sur la batterie de
+    aucune route REST ou @mcp, ni par @ir : les surfaces ne rencontrent jamais ce
+    fichier et aucune asymétrie n'est créée par lui.
+  Gating : fichier universel — avec et sans `mcp`, `swagger-ui` sur la batterie de
     /tooling.sdd, la ligne seedée existe dès @migration::Migrator::up quelque soit la combinaison.
 
 Tasks:

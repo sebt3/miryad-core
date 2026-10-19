@@ -7,9 +7,9 @@ SpecDD specs as source-adjacent development contracts, not optional documentatio
 
 ## Projet
 
-Crate Rust **opinionated** (axum + SeaORM + Seaography) publiée sur crates.io, moteur générique
+Crate Rust **opinionated** (axum + SeaORM) publiée sur crates.io, moteur générique
 derrière le template d'application `miryad`. Une application consommatrice déclare ses
-entités via le trait @MiryadResource et obtient auth OIDC, RBAC/ownership, REST, GraphQL, MCP,
+entités via le trait @MiryadResource et obtient auth OIDC, RBAC/ownership, REST, MCP,
 OpenAPI, IR frontend et migrations. Le moteur de workflow (Restate + step Rhai, feature `workflow`)
 est livré ; ses évolutions sont arbitrées dans `docs/roadmap.md` (item 9). BSD-3-Clause, API instable avant `1.0`.
 
@@ -37,7 +37,7 @@ Le contexte durable vit ici et n'est pas à re-déduire du code :
   en tests qui échouent, puis écrit le minimum de code de production qui les fait passer.
 - Aucune tâche `Tasks` ne passe à `[x]` sans synthèse `validator` au vert.
 - Le détail du flux, la règle de regroupement de fichiers et les contrats transverses
-  (`MRD-*`, `tracing`, gating de features, parité REST/GraphQL/MCP) sont dans
+  (`MRD-*`, `tracing`, gating de features, parité REST/MCP) sont dans
   `.specdd/bootstrap.project.md`.
 
 ## Agents (`.opencode/agents/`)
@@ -72,8 +72,6 @@ Avant toute tâche `[x]`, la batterie complète (définie par `tooling.sdd`, rep
 cargo test
 cargo test --no-default-features
 cargo test --no-default-features --features swagger-ui
-cargo test --no-default-features --features graphql
-cargo test --no-default-features --features graphiql
 cargo test --no-default-features --features mcp
 cargo test --no-default-features --features workflow
 cargo test --no-default-features --features systemone
@@ -84,8 +82,6 @@ cargo test --all-features
 cargo clippy --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
 cargo clippy --no-default-features --features swagger-ui --all-targets -- -D warnings
-cargo clippy --no-default-features --features graphql --all-targets -- -D warnings
-cargo clippy --no-default-features --features graphiql --all-targets -- -D warnings
 cargo clippy --no-default-features --features mcp --all-targets -- -D warnings
 cargo clippy --no-default-features --features workflow --all-targets -- -D warnings
 cargo clippy --no-default-features --features systemone --all-targets -- -D warnings

@@ -43,8 +43,6 @@ References:
     @oidc_client ne servent qu'à l'extracteur @AuthPrincipal appelé avant le handler
   /src/users/user.sdd — @resolve_user get-or-create : snapshot d'email à la première vue, bras de
     course, colonne @display_name NULL
-  /src/graphql/principal.rs — @load_principal calcule le même snapshot (id interne, subject,
-    groupes) pour la surface GraphQL, sans l'exposer en requête publique (voir `Tasks` [arbitré 2026-09-29])
   /src/mcp/handler.rs — la surface MCP ne monte aucun tool d'identité self-service
   /docs/architecture.md — section « Identité self-service (issue #24) » : même promesse
     `{ subject, email, groups }` et réutilisation explicite de @groups_by_user
@@ -122,7 +120,7 @@ Must:
   Parité des surfaces, ce que le fichier garantit : la surface REST expose l'identité self-service
     sous `GET /api/v1/me`, lue en dual-auth comme le reste de la surface, avec le même rendu
     d'erreur d'authentification que les routes protégées CRUD, admin et tokens ; asymétries
-    constatées hors du fichier (GraphQL sans requête `me`, MCP sans tool `me`, OpenAPI muet) :
+    constatées hors du fichier (MCP sans tool `me`, OpenAPI muet) :
     voir `Tasks` [arbitré 2026-09-29], la règle transverse visant les entités @MiryadResource dont `me` n'est pas
   Ne pas exposer de champ `id` dans @MeResponse (arbitré par Sébastien le 2026-09-29) : la clé interne reste hors du frontend,
     `subject` suffit ; ni @display_name ni @created_at.
@@ -131,7 +129,7 @@ Must:
   @get sert aussi `HEAD` par le comportement implicite d'@axum (arbitré par Sébastien le 2026-09-29), déjà arbitré dans ./mod.sdd
     (`Allow: GET,HEAD`) : @resolve_user est idempotent, `HEAD` fait ce que fait `GET`.
   Route de compte, REST-only par nature (arbitré par Sébastien le 2026-09-29) : l'exemption de parité est écrite dans
-    `.specdd/bootstrap.project.md` ; pas de tool MCP `me`, pas de requête GraphQL `me`, pas de
+    `.specdd/bootstrap.project.md` ; pas de tool MCP `me`, pas de
     fragment OpenAPI aujourd'hui (fragment des routes de compte à la roadmap).
   @email est le snapshot de première vue, jamais rafraîchi (arbitré par Sébastien le 2026-09-29) : conséquence de ./../users/user.sdd.
 
@@ -299,7 +297,7 @@ Done when:
     par ./tooling.sdd et ne doivent pas grossir
   Les 6 lignes [arbitré 2026-09-29] de `Tasks` sont arbitrées par Sébastien et leurs suites reflétées dans ce
     contrat (ou dans le code par la tâche d'implémentation qui en découle)
-  Les asymétries constatées (absence de `id`, GraphQL et MCP sans équivalent, OpenAPI muet) sont
+  Les asymétries constatées (absence de `id`, MCP sans équivalent, OpenAPI muet) sont
     écrites comme décisions assumées — plus comme silences
 
 Scenario: Callante cookie de session rend son identité et ses groupes

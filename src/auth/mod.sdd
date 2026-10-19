@@ -189,8 +189,7 @@ Exposes:
     @auth::validate_token — ré-export de @validate_token (./token.rs)
   @auth::MockOidcClient — ré-export conditionnel @MockOidcClient (./oidc.rs), présent
     uniquement sous `#[cfg(test)]` ; consommé par les tests inline d'autres modules
-    (./graphql/handler.rs en chemin plat, ./rest/mod.rs en chemin @auth::oidc::MockOidcClient —
-    les deux chemins sont válides sous `cfg(test)`).
+    (./rest/mod.rs en chemin @auth::oidc::MockOidcClient).
   Non mis à plat, atteignables par le chemin du sous-module seulement : @OidcLoginResult
     (./oidc.rs), toute la surface de ./cookie.rs (@SESSION_COOKIE_NAME, @build_set_cookie,
     @extract_session, @clear_cookie), les items SeaORM générés de ./token.rs (@token::Model,
@@ -466,8 +465,7 @@ Scenario: un état composé de l'app monte le routeur sans AppState imposé
     dans axum-core 0.5.6)
 
 Scenario: le module compile sans aucune feature activée
-  Given un build `--no-default-features` — ni `static-frontend`, `swagger-ui`, `graphql`,
-    `graphiql` ni `mcp`
+  Given un build `--no-default-features` — ni `static-frontend`, `swagger-ui` ni `mcp`
   When la bibliothèque et les tests inline du module auth sont compilés
   Then @auth_router et les quinze chemins plats sont atteignables
   And les tests de ./mod.rs tournent sous cette combinaison

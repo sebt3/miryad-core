@@ -40,7 +40,7 @@ References:
     consommateurs en aval de @subject, @email et @groups ; ./mod.rs est le point de jonction, ce
     fichier ne touche ni la base ni ces fonctions
   /src/rest/mod.rs, /src/rest/me.rs, /src/rest/admin.rs, /src/rest/tokens.rs,
-    /src/graphql/handler.rs, ./dual.rs, ./middleware.rs — tests `#[cfg(test)]` qui injectent
+    ./dual.rs, ./middleware.rs — tests `#[cfg(test)]` qui injectent
     @MockOidcClient dans @MiryadAuthState : @MockOidcClient::exchange_code n'y est jamais appelé
     avec succès (les scénarios testés s'arrêtent avant l'échange), et
     @MockOidcClient::authorization_url est exercé par les tests de ./mod.rs
@@ -159,7 +159,7 @@ Must:
   @MockOidcClient (présent sous @cfg(test) seulement) est le contrat de test des appelants : URL
     d'émission statique sans E/S, @CsrfToken::new_random/@Nonce::new_random/@PkceCodeVerifier frais
     par appel, @exchange_code volontairement @unimplemented! (panique nommée) par défaut —
-    ./mod.rs, ./dual.rs, ./middleware.rs, /src/rest/*.rs et /src/graphql/handler.rs s'appuient sur
+    ./mod.rs, ./dual.rs, ./middleware.rs, et /src/rest/*.rs s'appuient sur
     cette panique comme assertion d'absence, ce comportement par défaut ne change pas. Arbitré par
     Sébastien le 2026-09-27 (cross-file avec ./mod.sdd, `Tasks`) : @MockOidcClient gagne un mode
     configurable où @exchange_code rend un @OidcLoginResult fourni à la construction au lieu de

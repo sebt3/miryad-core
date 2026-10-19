@@ -4,7 +4,7 @@
 Spec: dual — extracteur dual-auth axum de @AuthPrincipal : Bearer token API résolu d'abord, cookie de session en repli, aucun repli silencieux sur un Bearer reconnu
 
 Purpose:
-  Unifier le point d'entrée d'authentification des trois surfaces du moteur (REST, GraphQL, MCP) :
+  Unifier le point d'entrée d'authentification des deux surfaces du moteur (REST, MCP) :
     une seule implémentation de @FromRequestParts produit @AuthPrincipal à partir d'un token API
     (`Authorization: Bearer`) ou du cookie de session chiffré, et fixe l'ordre de résolution (Bearer
     d'abord, cookie ensuite), la priorité quand les deux sont présents, et l'irréversibilité du
@@ -27,8 +27,8 @@ References:
     confusion entre les deux extracteurs est l'erreur de frontière locale la plus plausible
   /src/rest/mod.rs, /src/rest/admin.rs, /src/rest/me.rs, /src/rest/tokens.rs — handlers REST
     consommant @AuthPrincipal comme extracteur
-  /src/graphql/handler.rs, /src/mcp/handler.rs — handlers GraphQL et MCP consommant @AuthPrincipal
-    comme extracteur : les trois surfaces résolvent avec le présent fichier
+  /src/mcp/handler.rs — handler MCP consommant @AuthPrincipal
+    comme extracteur : les deux surfaces résolvent avec le présent fichier
   /src/rest/openapi.rs — ne déclare que le schéma de sécurité `bearer_auth` côté OpenAPI, le cookie
     HttpOnly étant écarté de l'`Authorize` pour une raison documentée chez lui
   /docs/architecture.md — formule l'ordre « Bearer d'abord, pas de repli sur le cookie » ; la
@@ -94,12 +94,12 @@ Must:
     pas extracteur) — l'asymétrie qui subsistait entre les deux extracteurs (@AuthUser et cet
     impl) est celle qui est corrigée ici, pas la couche moteur en dessous.
   Parité des surfaces : la même implémentation fournit @AuthPrincipal aux handlers REST (CRUD
-    `/api/v1`, admin, `me`, `tokens`), à `POST /api/graphql` et à `POST /mcp` — ordre, priorité et
-    codes sont identiques sur les trois surfaces. Asymétries constatées, hors du périmètre de ce
-    fichier : le rejet rend en `text/plain` hors enveloppe GraphQL/MCP (./error.sdd et sa tâche
+    `/api/v1`, admin, `me`, `tokens`) et à `POST /mcp` — ordre, priorité et
+    codes sont identiques sur les deux surfaces. Asymétries constatées, hors du périmètre de ce
+    fichier : le rejet rend en `text/plain` hors enveloppe MCP (./error.sdd et sa tâche
     `[?]`) et les déclarations de sécurité des surfaces sont déséquilibrées — gelé comme limite
     documentaire assumée le 2026-09-27 (`Tasks`) : OpenAPI ne peut de toute façon pas décrire
-    nativement la sécurité GraphQL/MCP, ce n'est pas une dette de ce fichier
+    nativement la sécurité MCP, ce n'est pas une dette de ce fichier
 
 Must not:
   Réimplémenter ici une partie de l'analyse, du déchiffrement, du contrôle d'`exp`, du hachage ou
@@ -219,7 +219,7 @@ Tasks:
     des champs structurés GELÉE, ./dual.rs pose `path`, /src/auth/middleware.rs pose `subject`,
     les deux avec les mêmes messages `auth ok` / `auth rejected`.
   [x] Parité déclarative des surfaces : gelée comme limite documentaire assumée — OpenAPI ne peut
-    pas décrire nativement la sécurité GraphQL/MCP, ce n'est pas une dette de ce fichier.
+    pas décrire nativement la sécurité MCP, ce n'est pas une dette de ce fichier.
   [x] Convertir les 19 `Scenario` (18 originaux, 1 réécrit pour la casse insensible ne change pas
     le compte, plus le nouveau scenario de trace) en au moins 19 tests distincts nommés dans le mod
     @tests `#[cfg(test)]` de ./dual.rs — le contrat ne déborde pas du fichier : tout s'exerce comme
@@ -245,7 +245,7 @@ Done when:
   Les cinq lignes `[?]` de `Tasks` sont toutes arbitrées par Sébastien le 2026-09-27 et reflétées
     dans le contrat : deux changent le comportement (casse insensible du schème, trace `debug`),
     trois confirment l'état actuel sans y toucher (repli sur schème non-Bearer, première valeur
-    gagne sur en-têtes multi-valués, parité déclarative OpenAPI/GraphQL/MCP)
+    gagne sur en-têtes multi-valués, parité déclarative OpenAPI/MCP)
 
 Scenario: Bearer token valide seul
   Given un token émis par @issue_token pour le subject `token-user`, et aucune en-tête `Cookie`

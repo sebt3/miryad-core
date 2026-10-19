@@ -8,10 +8,8 @@ Purpose:
     d'autres lignes. Le module est volontairement hors de `./rest/` et sans dépendance d'aucune
     surface pour que la règle ne se duplique pas quand chaque couche l'adopte. État constaté à
     la rédaction : REST consomme le module directement, MCP consomme @PagedResult indirectement
-    via @rest::core::list, @graphql ne le consomme pas (pagination par curseur propre à
-    @seaography) — l'écart entre ce constat, le commentaire `//!` du fichier et la règle de
-    ./lib.sdd est tranché le 2026-09-29 (`Tasks`, `Must`) : REST et MCP sont présentés comme
-    consommateurs, @graphql comme hors contrat.
+    via @rest::core::list — REST et MCP sont les deux consommateurs (la surface GraphQL, qui avait
+    sa pagination propre, est retirée le 2026-10-19).
 
 Owns:
   ./query.rs
@@ -20,7 +18,7 @@ Owns:
 
 References:
   ./lib.sdd — impose de documenter @query comme la pagination utilisée aujourd'hui par REST
-    sans présenter @graphql ni @mcp comme la consommant déjà ; le commentaire `//!` de
+    sans présenter @mcp comme la consommant autrement que via @rest::core::list ; le commentaire `//!` de
     `./query.rs` est une source de cette présentation et formulation arbitrée le 2026-09-29 et
     ./lib.sdd corrigé en conséquence (`Tasks`).
   ./rest/openapi.rs — surface REST : query parameters `page` et `per_page` non requis
@@ -74,8 +72,7 @@ Must:
     réellement choisi par ailleurs. Une page hors limite réelle mais sous @MAX_PAGE continue de se
     résoudre en amont comme avant (@Vec vide, totaux réels conservés).
   Le commentaire `//!` de `./query.rs` énonce, arbitré par Sébastien le 2026-09-29 : pagination
-    partagée par REST et MCP (MCP via @rest::core::list), volontairement hors de `./rest/` ;
-    @graphql utilise ses propres curseurs @seaography et n'est pas partie au contrat. Le
+    partagée par REST et MCP (MCP via @rest::core::list), volontairement hors de `./rest/`. Le
     commentaire de @query dans `./lib.rs` porte la même formulation (présent, jamais « plus
     tard »).
   L'asymétrie zéro contre négatif est une convention assumée (arbitré 2026-09-29) : une valeur
@@ -129,7 +126,7 @@ Depends on:
     /Cargo.toml, sans quoi le derive ne compilerait pas et le fichier perdrait sa compilation
     sans feature.
   @std — @Option::unwrap_or, @u64::max et @u64::clamp comme seules primitives de calcul.
-  Rien d'autre en amont direct : ni @rest, @mcp, @graphql ni @auth — le sens de dépendance est
+  Rien d'autre en amont direct : ni @rest, @mcp ni @auth — le sens de dépendance est
     l'inverse, ces modules consomment @query.
 
 Exposes:
@@ -150,8 +147,8 @@ Exposes:
     derives imposent @M : @Debug pour @Debug et @M : @Clone pour @Clone ; la sérialisation
     n'exige @M : @serde::Serialize qu'au moment du `to_value`.
   En-tête de module `//!` — positionne le fichier hors de `./rest/` et énonce son intention
-    REST et MCP (MCP par @rest::core::list) comme consommateurs, @graphql comme hors contrat
-    (curseurs @seaography) ; formulation arbitrée le 2026-09-29, `Must` ci-dessous.
+    REST et MCP (MCP par @rest::core::list) comme consommateurs, sans mention de GraphQL
+    (retiré 2026-10-19) ; formulation arbitrée le 2026-09-29, `Must` ci-dessous.
   Compilation non gatée — le module figure à toutes les combinaisons de features, comme le
     reprend ./lib.sdd (@query toujours compilé).
 
@@ -201,11 +198,10 @@ Handles:
     en amont, offset au-delà de la dernière ligne donnant un @Vec vide avec totaux réels.
   Table vide : @Pagination::from_raw n'intervient pas ; @total_items `0`, @total_pages `0`
     (division majorante @sea_orm vérifiée) et @items vide sérialisé `[]`.
-  Toute combinaison de features : absence ou présence de `static-frontend`, `swagger-ui`,
-    `graphql`, `graphiql` ou `mcp` ne change rien à la compilation du fichier.
-  Parité des surfaces : mêmes bornes pour REST et MCP faute de second normaliseur ; @graphql
-    n'est pas partie au contrat (curseurs @seaography) — exclusion délibérée (arbitré
-    2026-09-29).
+  Toute combinaison de features : absence ou présence de `static-frontend`, `swagger-ui`
+    ou `mcp` ne change rien à la compilation du fichier.
+  Parité des surfaces : mêmes bornes pour REST et MCP faute de second normaliseur ;
+    GraphQL est retiré de la crate (2026-10-19).
 
 Tasks:
   [x] En-tête `//!` de `./query.rs` (arbitré par Sébastien le 2026-09-29, `Must`) : remplacer
@@ -251,6 +247,8 @@ Tasks:
     fichier côté HTTP : le `400` de `page=abc`, l'écrêtement vu sur le fil par
     `list_pagination_returns_requested_page` (`./rest/mod.rs`) et `pagination_params_are_respected`
     (`./rest/admin.rs`) restent la matière des specs `rest`, pas des tests produits ici.
+  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./query.rs`, l'en-tête `//!` (lignes 2-3) cesse de nommer GraphQL et
+    seaography : « partagée entre REST et MCP (MCP via `rest::core::list`) » suffit. Aucun changement de comportement.
 
 Done when:
   Chaque `Scenario` dispose d'au moins un test nommé distinct et vérifie son `Then` dans le

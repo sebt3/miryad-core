@@ -1,7 +1,7 @@
 Spec: principal — types de données @AuthPrincipal et @PrincipalSource : identité unifiée d'une requête authentifiée, session ou token API
 
 Purpose:
-  Porter le seul type d'identité que les surfaces REST, GraphQL et MCP consomment pour une
+  Porter le seul type d'identité que les surfaces REST et MCP consomment pour une
     requête authentifiée, quelle que soit la source d'authentification : @AuthPrincipal (QUATRE
     champs publics @subject, @email, @preferred_username, @source — @preferred_username AJOUT
     REQUIS, Sébastien 2026-09-27, cf. `Tasks` : claim OIDC standard, garanti unique par le
@@ -11,7 +11,7 @@ Purpose:
     uniquement. Le fichier ne contient que ces deux types :
     aucun constructeur, aucune validation, aucune conversion, aucun effet de bord, aucune logique
     d'extraction — celle-ci vit dans ./dual.rs (@impl @FromRequestParts). Le type efface
-    volontairement rôles et groupes : @crate::rbac et @graphql::load_principal les relisent en
+    volontairement rôles et groupes : @crate::rbac les relit en
     base. Aucun `#[cfg(feature = ...)]` : le fichier compile sur chaque combinaison de la batterie
     de /tooling.sdd. Aucun code `MRD-*` n'y est produit.
   @Debug manuel rédigeant @id_token (arbitré par Sébastien le 2026-09-27, `Tasks`) : cohérent avec
@@ -22,18 +22,16 @@ Owns:
   ./principal.rs
 
 References:
-  /miryad-core.sdd — contrat hérité : codes `MRD-<DOMAINE>-NNN` (aucun ici), parité REST/GraphQL/MCP lue à l'identique
+  /miryad-core.sdd — contrat hérité : codes `MRD-<DOMAINE>-NNN` (aucun ici), parité REST/MCP lue à l'identique
   ./mod.rs — déclare `pub mod principal` sans gating et ré-exporte à plat @crate::auth::AuthPrincipal et @crate::auth::PrincipalSource ; la documentation de ./lib.rs présente @auth::AuthPrincipal comme le type du dual-auth
   ./dual.rs — l'@impl @FromRequestParts for @AuthPrincipal vit là, pas ici : seul producteur de @PrincipalSource::Session en production, champs issus de @OidcIdentity retourné par @extract_session (dont @preferred_username, à propager — AJOUT REQUIS, cf. `Tasks`)
   ./token.rs — @validate_token, seul producteur de @PrincipalSource::ApiToken en production : @email @None codé en dur, @preferred_username @None codé en dur de même (AJOUT REQUIS, cf. `Tasks` — aucune session OIDC vivante sur ce chemin), @token_id égal à la clé primaire @i32 de @miryad_api_tokens
   ./middleware.rs — @AuthUser, type adjacent propre au flow navigateur : la confusion @AuthUser contre @AuthPrincipal est la frontière de ce fichier, le commentaire d'en-tête de ./principal.rs la nomme
   /src/resource.sdd — @MiryadResource::before_create reçoit @crate::auth::AuthPrincipal en lecture seule, seul paramètre principal du hook : le contrat par lequel l'app consommatrice consomme le type
   /src/rbac.sdd — effacement acté en amont : la distinction session/token s'efface dans @crate::auth::AuthPrincipal avant @rbac, qui ne connaît que @users::user::Model et relit @users::group::is_admin et @users::group::is_member en base
-  /src/graphql/principal.rs — @graphql::load_principal recharge @users/@miryad_groups en base pour @graphql::GraphQlPrincipal : preuve que l'appartenance ne voyage pas dans @AuthPrincipal ; ses tests inline construisent le type par littéral, @id_token @String::new()
   /src/rest/core.rs, /src/rest/me.rs, /src/rest/admin.rs — consommateurs de @subject et @email : chaque appel passe @resolve_user(db, `&`@principal.subject, @principal.email.as_deref())
   /src/rest/tokens.rs — self-service restreint par filtrage SQL sur @principal.subject et garde
     d'égalité entre @record.subject et @principal.subject : @subject sert de clé de propriété
-  /src/graphql/handler.rs — injecte @principal par valeur dans les données de requête @async_graphql ; /src/graphql/hooks.rs le relit via @ctx.data::<@AuthPrincipal>() et répond l'erreur interne `MRD-GQL-002` s'il est absent
   /src/mcp/handler.rs — @mcp_handler extrait @principal par valeur puis le passe par référence à /src/mcp/registry.rs, qui délègue à @rest::core : la parité MCP s'obtient par délégation sur le même type
   /docs/architecture.md — récit non contractuel : type unifié, aucun repli silencieux entre sources d'authentification
 
@@ -66,13 +64,11 @@ Must:
     purger (arbitré 2026-09-27, `Tasks`).
   Effacer volontairement rôles et groupes : aucun champ booléen admin, aucun @HashSet de groupes,
     aucun identifiant @users::user::Model dans @AuthPrincipal ; l'appartenance est relue en base par
-    @crate::rbac et snapshotée par requête par @graphql::load_principal.
+    @crate::rbac.
   Rester @Send plus @Sync plus `'static` par composition de champs : @String, @Option<@String>
-    (deux occurrences depuis l'ajout de @preferred_username), @i32 seulement — ce qui permet le
-    déplacement du principal dans les données de requête @async_graphql
-    (/src/graphql/handler.rs) et son rôle de type d'extracteur axum.
+    (deux occurrences depuis l'ajout de @preferred_username), @i32 seulement — ce qui permet son rôle de type d'extracteur axum.
   Garantir la parité des surfaces par le type lui-même : @AuthPrincipal est le même type, produit
-    de la même façon, pour REST, GraphQL et MCP ; le producteur en production est exclusivement
+    de la même façon, pour REST et MCP ; le producteur en production est exclusivement
     l'extracteur de ./dual.rs (qui délègue à @validate_token pour la branche token) ; aucune
     variante, aucun champ, aucun constructeur spécifique d'une surface n'existe — la seule
     divergence visible entre appelants est la valeur de @source.
@@ -93,7 +89,7 @@ Must not:
     l'appartenance se relit en base ; un tel champ créerait une seconde source de vérité que
     @sync_group_memberships ne rafraîchirait pas.
   Dériver @PartialEq ou @Eq : aucun code de la crate ne compare deux principaux entiers ; les
-    tests inline de ./token.rs, ./dual.rs, /src/graphql/registry.rs et /src/mcp/registry.rs
+    tests inline de ./token.rs, ./dual.rs et /src/mcp/registry.rs
     discriminent par @matches! et lisent les champs, jamais par opérateur d'égalité.
   Sérialiser @AuthPrincipal ou @PrincipalSource : le type ne figure ni dans OpenAPI ni dans l'IR de
     @ir::resource_ir ; une identité sur le fil relève de l'arbitrage documentaire de
@@ -105,7 +101,7 @@ Must not:
     @validate_token (./token.rs), pas au type.
 
 Forbids:
-  @crate::users, @crate::rbac, @crate::resource, @crate::rest, @crate::graphql, @crate::mcp —
+  @crate::users, @crate::rbac, @crate::resource, @crate::rest, @crate::mcp —
     direction de dépendance figée : tous dépendent de @AuthPrincipal ou de son extracteur, jamais
     l'inverse.
   Tout import @sea_orm, @axum, @tracing, @serde : ./principal.rs n'importe rien aujourd'hui ; les
@@ -122,8 +118,7 @@ Accepts:
   Toute combinaison de valeurs est légale à la construction, aucune validation à aucune frontière :
     @subject vide `""` ou non unique, @email @Some d'une chaîne non conforme au format email ou
     @None, @preferred_username @Some ou @None sans validation de forme, @id_token libre (JWT bien
-    formé comme chaîne vide), @token_id @i32 quelconque — les fixtures de /src/mcp/registry.rs et
-    /src/graphql/registry.rs construisent `0`.
+    formé comme chaîne vide), @token_id @i32 quelconque — la fixture de /src/mcp/registry.rs construit `0`.
   Deux producteurs en production : la branche cookie de ./dual.rs (champs de @OidcIdentity rendu
     par @extract_session, dont @preferred_username) et @validate_token de ./token.rs (@subject de
     la ligne lue, @email @None, @preferred_username @None, @token_id de la clé primaire).
@@ -193,6 +188,9 @@ Tasks:
     minimum, le fichier compte zéro test inline aujourd'hui) dans le `#[cfg(test)] mod tests` de
     ./principal.rs : tests synchrones, sans @tokio ni base @sea_orm. Le contrat ne déborde pas du
     fichier, aucune crate d'intégration séparée n'est requise.
+  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./principal.rs`, remplacer « REST/GraphQL/MCP » par « REST/MCP »
+    (docs ligne ~2 et ~24) et la chaîne d'assertion `"fixture des registres GraphQL/MCP …"` (ligne ~333) par
+    `"fixture du registre MCP : token_id 0 rendu inchangé"`. Aucun changement de comportement.
 
 Done when:
   Les neuf `Scenario` (huit originaux, un nouveau sur la rédaction `Debug`) ont chacun au moins un
@@ -263,7 +261,7 @@ Scenario: @as_deref sur @email et @preferred_username : la forme de lecture des 
     pour l'un, @email @None et @preferred_username @None pour l'autre
   When @principal.email.as_deref() et @principal.preferred_username.as_deref() sont évalués — la
     forme exacte des appelants /src/rest/core.rs,
-    /src/rest/me.rs et /src/graphql/principal.rs vers @resolve_user pour @email, et la forme
+    et /src/rest/me.rs vers @resolve_user pour @email, et la forme
     attendue des apps consommatrices pour @preferred_username
   Then @Some de l'emprunt `a@b` et @Some de l'emprunt `alice` pour le premier
   But @None et @None pour le second, sans valeur de défaut inventée par le type
@@ -281,8 +279,8 @@ Scenario: @preferred_username absent : @None relivré sans normalisation
 Scenario: Validation absente : valeurs vides ou malformées passent telles quelles
   Given un @AuthPrincipal construit @subject vide `""`, @email @Some de `pas-un-email`,
     @preferred_username @Some de `  mal formé  `,
-    @PrincipalSource::Session à @id_token vide `""`, et un second construit comme les fixtures de
-    /src/mcp/registry.rs et /src/graphql/registry.rs : @email @None, @preferred_username @None,
+    @PrincipalSource::Session à @id_token vide `""`, et un second construit comme les fixture de
+    /src/mcp/registry.rs : @email @None, @preferred_username @None,
     @PrincipalSource::ApiToken à
     @token_id `0`
   When les champs sont relus et @source appariée

@@ -35,15 +35,16 @@ Must:
     **que** cet en-tête d'exemption : le `Owns` de la spec du fichier (`./src/lib.sdd`, une fois
     écrite) reste l'autorité sur tout le reste de ces fichiers.
   Lancer le harnais et les tests sur **chaque** combinaison de features : défaut
-    (`static-frontend`), `--no-default-features`, `swagger-ui`, `graphql`, `graphiql`, `mcp`,
+    (`static-frontend`), `--no-default-features`, `swagger-ui`, `mcp`,
     `workflow` (amendement 2026-09-23, moteur de workflow — roadmap 9), `--all-features`. **Amendement 2026-10-06** : s'y ajoutent `systemone`, `matrix`, et les deux croisements `workflow,systemone` et
-    `workflow,matrix` (les steps croisés ne compilent que sous le croisement, ./src/workflow/mod.sdd) — soit
-    **douze** combinaisons de tests et douze de clippy (les huit précédentes plus quatre), toutes en
+    `workflow,matrix` (les steps croisés ne compilent que sous le croisement, ./src/workflow/mod.sdd).
+    **Amendement 2026-10-19** : `graphql` et `graphiql` sortent de la batterie avec la suppression de la
+    surface GraphQL — soit **dix** combinaisons de tests et dix de clippy, toutes en
     `--no-default-features --features <liste>` hors défaut et `--all-features`. Les
     analyses `pedantic` (`must_use_candidate`, `missing_errors_doc`) dépendent du graphe de
     features : une combinaison non rejouée laisse passer des avertissements.
   Tolérer `multiple_crate_versions` en `allow` : ses doublons sont imposés par les dépendances
-    amont (mer de versions derrière SeaORM, axum, openidconnect et seaography), `cargo update`
+    amont (mer de versions derrière SeaORM, axum et openidconnect), `cargo update`
     ne les déduplique pas, et ce n'est pas un signal d'implémentation.
   Formatter avec `cargo fmt --check` à la toolchain stable : `./rustfmt.toml` ne contient
     aucune option instable, aucun toolchain nightly n'est nécessaire.
@@ -140,7 +141,6 @@ Tasks:
 
 Done when:
   `cargo clippy --all-targets -- -D warnings`, la même commande sur chacune des combinaisons de
-    features listées plus haut, et `cargo fmt --check` sortent sans un seul avertissement, carve-out
-    acté (2026-09-29) : les combinaisons incluant `graphql` peuvent échouer sur les seuls sites
-    gelés de `src/graphql/**` (exception du pont sans consommateur, /miryad-core.sdd 2026-09-27),
+    features listées plus haut, et `cargo fmt --check` sortent sans un seul avertissement — plus aucun
+    carve-out depuis la suppression de `src/graphql/**` (2026-10-19) —
     et `./miryad-core.sdd` ne porte plus de tâche ouverte de dette harnais.

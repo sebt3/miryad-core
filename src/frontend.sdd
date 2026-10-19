@@ -26,8 +26,8 @@ Must:
   Compiler seulement sous `static-frontend`, par la déclaration du module ici dans
     @lib.rs — le fichier n'utilise pas @tower_http sans cette feature.
   N'être construit que par deux combinaisons de la batterie de /tooling.sdd — défaut et
-    `--all-features`. Les cinq constructions `--no-default-features` (dont
-    `swagger-ui`, `graphql`, `graphiql`, `mcp`) compilent sans ce
+    `--all-features`. Les constructions `--no-default-features` (dont
+    `swagger-ui`, `mcp`) compilent sans ce
     module et doivent rester vertes ; @frontend::static_frontend_router n'est pas dans leur
     surface publique.
   Ne faire aucun accès au système de fichiers à la construction : pas de contrôle

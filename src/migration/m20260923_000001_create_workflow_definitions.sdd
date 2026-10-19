@@ -30,7 +30,7 @@ References:
     `owner_id` comme pour `subject`)
   ../workflow/definition.sdd — @workflow::definition::Model mappe en un-à-un les cinq colonnes posées
     ici ; `Entity`, `ActiveModel`, `impl MiryadResource` sont les lecteurs et rédacteurs contractuels
-    de cette table, au travers du CRUD générique de la crate (REST/GraphQL/MCP)
+    de cette table, au travers du CRUD générique de la crate (REST/MCP)
   /miryad-core.sdd — contrat des tables internes préfixées `miryad_*` à tracking dédié et interdit de
     réélire une migration committée
   /tooling.sdd — batterie et matrice de features (huit combinaisons depuis l'amendement 2026-09-23) ;
@@ -166,7 +166,7 @@ Handles:
     `miryad_workflow_definitions` dans le graphe de migrations ni dans le binaire compilé.
   Parité des surfaces : à la différence de `miryad_api_tokens` (self-service uniquement),
     `miryad_workflow_definitions` **est** une @MiryadResource (../workflow/definition.sdd) — lue à
-    l'identique par REST, GraphQL et MCP via le CRUD générique, sans route dédiée comme
+    l'identique par REST et MCP via le CRUD générique, sans route dédiée comme
     `/api/v1/tokens`.
 
 Tasks:

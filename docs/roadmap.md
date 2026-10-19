@@ -6,7 +6,7 @@ sans passer par cette page.
 
 La numérotation est historique et conservée : des specs y renvoient (« roadmap 2c », « roadmap 7/9 »…).
 Les items 1 à 8 et 11 sont livrés — fondations, auth (2a OIDC/cookie, 2b tokens API, 2c comptes de service),
-utilisateurs/groupes, REST, OpenAPI (4b), GraphQL, MCP, moteur de workflow Restate (7), hooks CRUD
+utilisateurs/groupes, REST, OpenAPI (4b), MCP, moteur de workflow Restate (7), hooks CRUD
 (7b), support frontend (8).
 
 ## 9. Moteur de workflow — évolutions
@@ -47,7 +47,7 @@ code et de spec n'est pas prête — il consommera `MatrixEventHandler` ; l'iden
 (RBAC) y sera tranchée.
 
 ## 10. Filtrage et tri étendus — après un premier usage réel
-Le filtrage REST/GraphQL/MCP (`filter_column()`) est limité à une seule colonne, égalité exacte.
+Le filtrage REST/MCP (`filter_column()`) est limité à une seule colonne, égalité exacte.
 Pas de tri, pas de filtre multi-critères, pas de recherche texte. Gap réel mais **pas MVP** : à
 reprendre une fois une première application miryad réelle construite dessus, pour caler le besoin
 sur un usage concret plutôt que sur une complétude théorique. Décidé le 2026-08-23.

@@ -78,8 +78,7 @@ Must:
     pour les `500`, détail en trace émise par ./error.rs, arbitré 2026-09-29).
   Aucun `#[cfg(feature = ...)]` ne gate le fichier : ./mod.rs déclare @tokens sans condition, le
     @rest de ./lib.rs aussi — le fichier compile sur toutes les combinaisons de la batterie
-    /tooling.sdd (`static-frontend` défaut, `--no-default-features`, `swagger-ui`, `graphql`,
-    `graphiql`, `mcp`, `--all-features`).
+    /tooling.sdd (`static-frontend` défaut, `--no-default-features`, `swagger-ui`, `mcp`, `--all-features`).
   Le wire JSON est celui de @PagedResult : exactement les cinq clés `items`, `page`, `per_page`,
     @total_items, @total_pages (../query.sdd), chaque item un @TokenSummary à exactement cinq clés ;
     @DateTimeUtc se sérialise en RFC 3339 avec suffixe `Z` (chrono 0.4.45 vérifié au source
@@ -107,7 +106,7 @@ Forbids:
   @crate::rbac — le self-service ne passe pas par les politiques d'entité
   @crate::auth::oidc et @crate::auth::cookie — l'authentification est faite en amont par
     l'extracteur, ce fichier ne parle ni OIDC ni session
-  @crate::graphql, @crate::mcp, @utoipa — les surfaces génériques et l'artefact OpenAPI ne sont pas
+  @crate::mcp, @utoipa — les surfaces génériques et l'artefact OpenAPI ne sont pas
     entretenus depuis ici (asymétries consignées en `Handles` et [arbitré 2026-09-29])
 
 Depends on:
@@ -288,7 +287,7 @@ Tasks:
     @TokenHashConflict → @RestError::Conflict dans @to_rest_error + test inline dans ./tokens.rs ;
     bras @RestError::Conflict → @McpError::Internal (match 7/7 sans joker) + test inline dans
     ../mcp/error.rs ; batterie 8/8 tests verte, clippy critère 5/5 à zéro warning, dette gelée
-    inchangée (7/8/8 hors src/graphql/**).
+    inchangée.
 
 Done when:
   Les `22` `Scenario` sont chacun vérifiés par un test nommé distinct du module de tests inline de

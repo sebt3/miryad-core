@@ -164,7 +164,7 @@ Exposes:
     l'empreinte ; @hash_token(secret : &@str, pepper : &@str) -> @Result<@String, @AuthError>
     (signature changée le 2026-09-27, mise à @Result le 2026-09-30 — arbitrage option a, `Tasks`)
   ./mod.rs ré-exporte les quatre fonctions et les deux types sur @crate::auth ; le fichier n'est
-    pas @MiryadResource : hors des surfaces génériques REST/GraphQL/MCP par entité, il n'est lu
+    pas @MiryadResource : hors des surfaces génériques REST/MCP par entité, il n'est lu
     que par @tokens_router (self-service), par l'extracteur @AuthPrincipal de ./dual.rs (schéma
     `Bearer`) et par @ensure_service_account des comptes de service
 
@@ -252,7 +252,7 @@ Handles:
     propriétaire d'une collision sans que le second en soit informé
   Parité des surfaces — consigné, non tranché : l'émission et la révocation ne vivent qu'en REST
     self-service `/api/v1/tokens` (`../rest/tokens.rs`, avec la garde d'appartenance `subject` au
-    handler) et en Rust (@ensure_service_account) ; ni GraphQL ni MCP n'exposent d'opération de
+    handler) et en Rust (@ensure_service_account) ; MCP n'expose d'opération de
     gestion de token ; l'@AuthPrincipal issu d'un token rend @email @None alors que le principal de
     session en porte un — asymétrie architecturale gelée le 2026-09-27 : un token n'a jamais connu
     d'email (non demandé, non stocké à l'émission), et le chemin session ne l'obtient pas non plus

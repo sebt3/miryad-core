@@ -50,8 +50,8 @@ synthèse honnête. Si ce n'est pas bon, l'écart remonte — il ne s'excuse pas
 - Vérifie que chaque `Scenario` est exécuté par un test qui assert vraiment le `Then` (un test qui
   appelle le chemin sans rien vérifier ne couvre pas le scenario).
 - Vérifie la parité des surfaces pour tout comportement exposé : ce qui est vrai en REST doit l'être
-  en GraphQL et en MCP, avec la même sémantique d'erreur (`MRD-*` d'un côté, error-object JSON-RPC
-  de l'autre, `extensions.code` côté GraphQL).
+  en MCP, avec la même sémantique d'erreur (`MRD-*` d'un côté, error-object JSON-RPC
+  de l'autre).
 - Vérifie les codes d'erreur : présents, uniques, dans le domaine attendu ; jamais de code `MRD-*`
   sur le chemin @HookError (erreur applicative de la consommatrice).
 - Vérifie les gates de features déclarés dans la spec, et que le gating réel du fichier correspond.
@@ -67,15 +67,11 @@ synthèse honnête. Si ce n'est pas bon, l'écart remonte — il ne s'excuse pas
 cargo test
 cargo test --no-default-features
 cargo test --no-default-features --features swagger-ui
-cargo test --no-default-features --features graphql
-cargo test --no-default-features --features graphiql
 cargo test --no-default-features --features mcp
 cargo test --all-features
 cargo clippy --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
 cargo clippy --no-default-features --features swagger-ui --all-targets -- -D warnings
-cargo clippy --no-default-features --features graphql --all-targets -- -D warnings
-cargo clippy --no-default-features --features graphiql --all-targets -- -D warnings
 cargo clippy --no-default-features --features mcp --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo fmt --check

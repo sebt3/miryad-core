@@ -10,9 +10,7 @@ Purpose:
     de la clé primaire fournie par le client et colonne propriétaire jamais écrivable par le corps
     sous @AccessPolicy::OwnerOnly. Il est le seul endroit de la crate où ces règles existent : les
     handlers de ./mod.rs et les cinq tools de ./../mcp/registry.rs appellent exactement ces
-    fonctions — la parité REST/MCP est structurelle, pas documentaire. ./../graphql ne passe pas
-    par lui (chemin @seaography + @graphql::hooks propre) : asymétrie constatée, signalée en
-    `Handles` et relayée au `Done when`, instruite par ./../rbac.sdd et ./../resource.sdd.
+    fonctions — la parité REST/MCP est structurelle, pas documentaire. 
   Le fichier ne choisit aucun statut HTTP : il ne produit que @RestError (./error.rs) et n’atteint
     que trois de ses codes — `MRD-REST-001` (@RestError::NotFound), `MRD-REST-002`
     (@RestError::Forbidden), `MRD-REST-003` (@RestError::Database) ; @HookError traverse en
@@ -25,10 +23,8 @@ Purpose:
     ./../workflow/definition.sdd) : @rest::core::update et @rest::core::delete appellent désormais
     @MiryadResource::before_update et @MiryadResource::before_delete, positionnés symétriquement à
     @before_create dans @rest::core::create — après @rbac::can_write, avant les invariants de
-    sécurité de chaque opération. Exception actée au principe de parité : ./../graphql ne les appelle
-    jamais (asymétrie déjà constatée pour le chemin GraphQL en général, `Handles`, mais cette fois
-    délibérée pour ces deux hooks précisément, pas seulement une conséquence de l'architecture
-    Seaography — voir ./../resource.sdd `Purpose`).
+    sécurité de chaque opération. Les deux hooks se
+    déclenchent à l'identique sur REST et MCP (voir ./../resource.sdd `Purpose`).
 
 Owns:
   ./core.rs
@@ -64,7 +60,7 @@ References:
     page
   ./../resource.sdd — @MiryadResource::before_create (position : après @rbac::can_create, avant
     insertion), @MiryadResource::owner_column, @MiryadResource::filter_column, @AccessPolicy,
-    @HookError sans code `MRD-*` ; sa ligne `[!]` sur les clés GraphQL n’est pas de ce fichier
+    @HookError sans code `MRD-*`
   ./../auth/error.rs et ./error.rs — les deux tables de traduction amont/aval : @AuthError (`401`,
     codes `MRD-AUTH-*`) rejette avant que ./core.rs ne soit appelé ; ./core.rs ne construit jamais
     de @AuthError et ne voit jamais les rejets `400`/`401` des extracteurs
@@ -439,8 +435,7 @@ Handles:
     n’est introduit.
   Parité MCP : toute décision listée ci-dessus est rendue depuis ./../mcp/registry.rs par @McpOp
     correspondant et traduite par @From<@RestError> de ./../mcp/error.rs en codes `-320xx`/`-32603`,
-    sans qu’une politique soit consultée deux fois ; @graphql n’emprunte pas ./core.rs (asymétrie
-    d’architecture instruite par ./../rbac.sdd, ./../graphql/hooks.sdd en attente).
+    sans qu’une politique soit consultée deux fois.
   Dette harnais du fichier : aucune ouverte depuis le 2026-09-29 (tâche A1 /tooling.sdd) — la
     soustraction `pagination.page - 1` est éteinte (@saturating_sub, comportement identique sous
     `page >= 1`) et l'@expect de @rest::core::primary_key_column (`expect_used`, inatteignable
@@ -589,10 +584,7 @@ Done when:
     ./../rest/mod.sdd) ; les quatre autres (oracle, provisioning, colonne étendue, TOCTOU) changent
     le comportement documenté de ce fichier et attendent leur implémentation par `Tasks`.
   La parité ./../mcp/registry.rs est prouvée au moins par le scenario portant, sous `--features mcp`,
-    et la compilation sans feature est prouvée sur `--no-default-features` ; ./../graphql/hooks.sdd
-    reste un prototype sans consommateur (exception `Must` de /miryad-core.sdd, 2026-09-27) et ne
-    porte pas cette parité pour l’instant, y compris pour @before_update/@before_delete (`Purpose`,
-    amendement 2026-09-23).
+    et la compilation sans feature est prouvée sur `--no-default-features` .
   L’amendement @before_update/@before_delete est cohérent avec son miroir dans ./../resource.sdd
     (signatures, position d’appel) — les deux specs sont relues et approuvées ensemble.
   La spec est relue et approuvée par Sébastien, puis la ligne correspondante de /miryad-core.sdd

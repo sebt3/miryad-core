@@ -8,7 +8,7 @@ Purpose:
     et définir leur rendu HTTP via @IntoResponse : statut exact, corps texte égal à la @Display,
     aucune trace. Le fichier ne construit lui-même aucune erreur : il reçoit celles de ./cookie.rs,
     ./token.rs, ./oidc.rs et ./mod.rs (via @From<@sea_orm::DbErr>) et décide du sort sur le fil pour
-    les trois surfaces montées du crate (REST, GraphQL, MCP).
+    les deux surfaces montées du crate (REST, MCP).
   `MRD-AUTH-012` (cookie pending) et `MRD-AUTH-013` (CSRF) portent désormais chacun leur propre
     variante (@AuthError::InvalidCallback, @AuthError::CsrfMismatch), rendue `400` — arbitré par
     Sébastien le 2026-09-27 : ce sont des échecs pilotés par le client sur la requête de callback
@@ -38,8 +38,6 @@ References:
     introduire
   /src/rest/error.rs — contraste de rendu : @RestError::Application émet du @Json, @AuthError
     n'émet que du texte
-  /src/graphql/handler.rs — @graphql_handler retourne `Result<@GraphQLResponse, @AuthError>`, donc
-    le rejet d'@AuthPrincipal et les @sea_orm::DbErr de @load_principal rendus par ce fichier
   /src/mcp/handler.rs — @mcp_handler consomme @AuthPrincipal en extracteur : le rejet passe par ce
     fichier avant toute enveloppe JSON-RPC
   /src/users/service_account.rs — @ensure_service_account extrait le @sea_orm::DbErr de
@@ -113,12 +111,11 @@ Must:
     `/Cargo.toml`, `pub mod auth` non gateé dans `/src/lib.rs` — la batterie de `tooling.sdd` sur
     `--no-default-features` doit compiler et exercer ce contrat comme sur `--all-features`
   Parité des surfaces pour le rejet d'authentification : même statut et même corps texte sur REST
-    (rejets de @AuthUser et @AuthPrincipal), GraphQL `POST /api/graphql` et MCP `POST /mcp` —
-    asymétrie confirmée le 2026-09-27 (`Tasks`) : sur les deux dernières, la rejection d'extracteur
-    contourne l'enveloppe JSON/JSON-RPC de la surface. Ce n'est pas une dette de ce fichier —
+    (rejets de @AuthUser et @AuthPrincipal) et MCP `POST /mcp` —
+    asymétrie confirmée le 2026-09-27 (`Tasks`) : sur MCP, la rejection d'extracteur
+    contourne l'enveloppe JSON-RPC de la surface. Ce n'est pas une dette de ce fichier —
     @into_response reste volontairement générique et agnostique de surface ; le fix, s'il est fait,
-    vit dans /src/graphql/handler.sdd (surface actuellement gelée, prototype) et
-    /src/mcp/handler.sdd (surface active, à traiter séparément)
+    vit dans /src/mcp/handler.sdd (surface active, à traiter séparément)
   @AuthError::InvalidToken et @AuthError::TokenExpired sont confondues au niveau HTTP (`401`), de
     même qu'@AuthError::InvalidCallback et @AuthError::CsrfMismatch le sont au niveau `400` :
     seul le code du corps distingue les variantes pour le client — pas de `WWW-Authenticate` sur
@@ -177,7 +174,7 @@ Exposes:
   @IntoResponse pour @AuthError — la conversion HTTP définie ici, seule implémentation manuelle du
     fichier
   @From<@sea_orm::DbErr> pour @AuthError — conversion générée par `#[from]`, empruntée par
-    l'opérateur `?` de tout appel SeaORM du module et de @graphql_handler
+    l'opérateur `?` de tout appel SeaORM du module
   @Display publique dérivée — les dix messages portant code listés dans `Must`
 
 Accepts:
@@ -226,8 +223,7 @@ Raises:
     (arbitré en session avec Sébastien le 2026-09-27)
   `MRD-AUTH-016` via @AuthError::Database : produit par l'opérateur `?` sur l'insertion de
     @issue_token, les requêtes de @validate_token, la suppression de @revoke_token, les deux
-    chemins de @ensure_token (./token.rs), et sur le @sea_orm::DbErr de @load_principal remonté par
-    @graphql_handler (/src/graphql/handler.rs)
+    chemins de @ensure_token (./token.rs)
   `MRD-AUTH-018` via @AuthError::Internal (variante arbitrée par Sébastien le 2026-09-30, `500`) :
     émis par @hash_token (./token.rs) si @hmac::Mac::new_from_slice refusait la poivre — chemin
     infaillible en pratique, rendu @Err par contrat (remplace l'@expect sous @allow purgé, cf.
@@ -250,11 +246,11 @@ Handles:
     utile de @AuthError::Oidc contre le préfixe `MRD-AUTH-003` (préfixe de catégorie, pas le code
     diagnostique — clarifié 2026-09-27)
   Consommation par les surfaces : @AuthError sert de @Rejection aux extracteurs @AuthUser
-    (./middleware.rs) et @AuthPrincipal (./dual.rs), et de type d'erreur de @graphql_handler ; les
-    surfaces REST protégées, `POST /api/graphql` et `POST /mcp` rendent donc ce fichier telle quelle
-    — l'asymétrie d'enveloppe sur les deux dernières (`text/plain` hors JSON/JSON-RPC) est confirmée
+    (./middleware.rs) et @AuthPrincipal (./dual.rs), ; les
+    surfaces REST protégées et `POST /mcp` rendent donc ce fichier telle quelle
+    — l'asymétrie d'enveloppe sur MCP (`text/plain` hors JSON-RPC) est confirmée
     comme hors du périmètre de ce fichier (2026-09-27, `Must`), fix éventuel dans
-    /src/graphql/handler.sdd (gelé) et /src/mcp/handler.sdd (actif, à traiter séparément)
+    /src/mcp/handler.sdd (actif, à traiter séparément)
 
 Tasks:
   [x] Quatrième variante arbitrée par Sébastien le 2026-09-30 (option a, chantier ./token.sdd
@@ -286,9 +282,9 @@ Tasks:
   [x] `401` sans `WWW-Authenticate` : confirmé comme contrat voulu (2026-09-27, `Must`, `Handles`)
     — aucun client réel n'en a besoin, et le poser correctement demanderait de connaître le flow
     tenté (cookie ou Bearer), absent de l'enum.
-  [x] Asymétrie d'enveloppe GraphQL/MCP : confirmée hors du périmètre de ce fichier (2026-09-27,
-    `Must`, `Handles`) — fix éventuel dans /src/graphql/handler.sdd (gelé, prototype) et
-    /src/mcp/handler.sdd (surface active, à traiter dans un futur batch MCP).
+  [x] Asymétrie d'enveloppe MCP : confirmée hors du périmètre de ce fichier (2026-09-27,
+    `Must`, `Handles`) — fix éventuel dans /src/mcp/handler.sdd (surface active, à traiter dans un
+    futur batch MCP).
   [x] Convertir les 22 `Scenario` (14 originaux, 4 nés des deux variantes `400`, 2 nés de
     @AuthError::TokenHashConflict, 2 nés de @AuthError::Internal le 2026-09-30) en au moins 22
     tests distincts nommés dans le `mod tests` `#[cfg(test)]` inline de ./error.rs — conversion
@@ -296,6 +292,9 @@ Tasks:
     rendu HTTP sous `#[tokio::test]` lisant le corps avec @axum::body::to_bytes
     (dev-dependencies déjà présentes via les tests de ./mod.rs) — le contrat ne déborde pas du
     fichier, aucun test d'intégration séparé requis
+  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./error.rs`, retirer de la doc de test (ligne ~333)
+    la mention de `graphql_handler` (la liste devient `issue_token`, `validate_token`, `revoke_token`,
+    `ensure_token`). Aucun changement de comportement.
 
 Done when:
   Les 22 `Scenario` ont chacun au moins un test nommé distinct et vert dans le `mod tests` de
@@ -411,7 +410,7 @@ Scenario: rendu HTTP 500 pour 016
 Scenario: erreur SeaORM convertie par l'opérateur de propagation
   Given un @sea_orm::DbErr::Custom de texte `connection lost`
   When la conversion @From générée par `#[from]` est appliquée — le chemin qu'emprunte
-    l'opérateur `?` dans @issue_token, @validate_token, @revoke_token, @ensure_token et @graphql_handler
+    l'opérateur `?` dans @issue_token, @validate_token, @revoke_token et @ensure_token
   Then la valeur obtenue est @AuthError::Database conservant l'erreur d'origine
   And sa @Display vaut exactement `MRD-AUTH-016: database error: Custom Error: connection lost`
 

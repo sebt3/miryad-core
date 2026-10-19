@@ -70,18 +70,12 @@ Sébastien, pas d'implémentation avant les tests dérivés de la spec.
   code pas ses `DbErr`.
 - Logging : `tracing` uniquement. Jamais `println!` / `eprintln!` / `dbg!`.
 - Gating de feature : chaque spec dit explicitement sous quelle(s) feature(s) son fichier
-  compile (`static-frontend` — default, `swagger-ui`, `graphql`, `graphiql`, `mcp`) et ce que
+  compile (`static-frontend` — default, `swagger-ui`, `mcp`, `workflow`, `systemone`, `matrix`) et ce que
   ce gating impose à la batterie de vérification.
-- Une entité déclarée par @MiryadResource est lue **à l'identique** par REST, GraphQL et MCP :
-  tout comportement ajouté sur une surface doit être honoré sur les deux autres. Un décalage
-  fonctionnel entre surfaces est un no-go, pas une dette.
-  Exception nommée (actée par Sébastien le 2026-09-23, tracée dans `./src/resource.sdd`) :
-  @MiryadResource::before_update et @MiryadResource::before_delete ne se déclenchent que sur
-  REST et MCP — Seaography `2.0.0-rc.9` ne pilote son hook équivalent qu'à l'insertion. Cette
-  exception ne vaut que pour cette paire de hooks, est documentée (`resource.sdd`,
-  `rest/core.sdd`, puis `graphql/hooks.sdd` et `docs/architecture.md`), et un validateur ne
-  tient pas son absence côté GraphQL pour un décalage ; la règle par défaut reste la règle
-  pour tout le reste.
+- Une entité déclarée par @MiryadResource est lue **à l'identique** par REST et MCP :
+  tout comportement ajouté sur une surface doit être honoré sur l'autre. Un décalage
+  fonctionnel entre surfaces est un no-go, pas une dette. Aucune exception nommée depuis la
+  suppression de la surface GraphQL (2026-10-19).
   Exemption nommée (actée par Sébastien le 2026-09-29) : les routes de compte et de plateforme
   — `/auth/*`, `GET /api/v1/me`, `GET /api/v1/users`, `/api/v1/tokens` — ne sont pas des
   @MiryadResource et sont **REST-only par nature** ; la règle de parité ne les vise pas (`rest/me.sdd`,

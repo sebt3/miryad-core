@@ -24,7 +24,7 @@ Owns:
 
 References:
   /miryad-core.sdd — héritage : code unique `MRD-<DOMAINE>-NNN` pour les erreurs internes (ici `MRD-MCP-001` à
-    `MRD-MCP-010`), exception de fond @HookError restitué sans taxonomie de la crate, parité REST/GraphQL/MCP,
+    `MRD-MCP-010`), exception de fond @HookError restitué sans taxonomie de la crate, parité REST/MCP,
     règle tests ≥ scenarios
   ./../rest/error.sdd — contrat amont @RestError : variantes, littéraux @Display, @From<@sea_orm::DbErr> sans
     perte, @HookError jamais `MRD-*` (rendu `422` JSON `code`/`message`) ; ses arbitrages [arbitré 2026-09-29] corps verbatim
@@ -118,7 +118,7 @@ Must:
     d'implémentation) et non un jugement sur le hook ; @code/@message traversent 1:1 vers `message`/`data.code`
   Compiler sur `mcp` et `--all-features` et sur elles seules, par le gating de module de ./../lib.rs : le
     fichier lui-même n'a aucun `#[cfg(feature = ...)]` ; sur `--no-default-features`, @mcp — donc @McpError et
-    tout `MRD-MCP-*` — disparaît de la surface sans casser ./../rest ni ./../graphql
+    tout `MRD-MCP-*` — disparaît de la surface sans casser ./../rest
   Pureté totale : aucun @tracing, @println, @eprintln, @dbg dans @Display, @rpc_code, @data,
     @wire_message ou les @From ; ces fonctions sont totales sur `&self`, sans @Result, sans IO ni effet
     de bord. Les traces (`error!` sur `-32603`, `warn!` sur `-32001`, (arbitré par Sébastien le 2026-09-29)) sont émises par
@@ -170,8 +170,6 @@ Must not:
 Forbids:
   @axum, @axum::http::@StatusCode, @axum::response::@IntoResponse dans ./error.rs — la monnaie erreur→HTTP vit
     ./../rest/error.rs, et cette dépendance ferait de REST la surface de référence de la traduction
-  @seaography, @async_graphql et la taxonomie `MRD-GQL-*` : ./../graphql ne consomme pas @RestError (asymétrie
-    déjà signalée par ./../rest/error.sdd et ./../rbac.sdd) — la traduction GraphQL ne peut pas transiter ici
 
 Depends on:
   ./../rest/error.rs — @RestError : @RestError::NotFound/@RestError::Forbidden/@RestError::Database/
@@ -271,8 +269,7 @@ Handles:
     params: `, que le JSON casse à l'étage de @ToolCallParams (./handler.rs) ou à celui des arguments
     d'opération (./registry.rs).
   Surfaces partagées : ce fichier garantit le triple (code, message, `data`) pour la surface MCP seulement ;
-    REST rend ./../rest/error.rs (statuts), ./../graphql sa taxonomie `MRD-GQL-*` (@RestError n'y entre pas —
-    asymétries constatées, portées par ./../rest/error.sdd et ./../rbac.sdd) ; aucune erreur MCP n'entre dans un
+    REST rend ./../rest/error.rs (statuts) ; aucune erreur MCP n'entre dans un
     document OpenAPI ni dans l'@IR (le contrat MCP d'erreur n'est publié nulle part — constat, pas un écart de ce fichier)
   Combinaisons de features : `mcp` et `--all-features` compilent et exercent le fichier ; les cinq autres
     combinaisons de /tooling.sdd le suppriment entièrement avec le module @mcp — aucune branche `#[cfg]` interne
@@ -505,7 +502,7 @@ Scenario: la porte feature `mcp` gouverne toute la surface du fichier
   Given la crate compilée sans la feature `mcp` (`--no-default-features` de la batterie /tooling.sdd)
   When le module @mcp est retiré par le `#[cfg(feature = "mcp")]` de ./../lib.rs
   Then ./error.rs n'est pas compilé : @crate::mcp::McpError n'existe plus comme chemin public et aucun message
-    `MRD-MCP-*` n'est atteignable, sans casser ./../rest ni ./../graphql
+    `MRD-MCP-*` n'est atteignable, sans casser ./../rest
   And sous `--features mcp` et `--all-features`, le fichier compile sans le moindre `#[cfg(feature = ...)]`
     interne, attesté par le test `surface_mcp_error_presente_sous_feature_mcp` présent dans ces deux runs
 

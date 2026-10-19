@@ -128,8 +128,7 @@ Must:
   Parité des surfaces pour la monnaie d'erreur @RestError : rendue en statuts HTTP par ce fichier
     sur REST (les dix handlers de ./mod.rs, ./admin.rs, ./me.rs et ./tokens.rs retournent
     `Result<_, @RestError>`), convertie 1:1 charges utiles incluses en @McpError côté MCP
-    (/src/mcp/error.rs) ; GraphQL ne consomme pas @RestError et suit sa propre taxonomie
-    `MRD-GQL-*` (/src/rbac.sdd) — asymétrie d'enveloppe constatée, pas de décalage de sens
+    (/src/mcp/error.rs) .
   @RestError::Application reste rendu `422` en @Json et sa @Display reste le message nu, sans
     @code (arbitré par Sébastien le 2026-09-29) : le corps porte le `code`, MCP le place dans `data` ; la règle « message nu sans
     code » du hook l'emporte sur une @Display qui afficherait le code.

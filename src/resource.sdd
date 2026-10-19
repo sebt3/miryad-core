@@ -7,21 +7,17 @@ Purpose:
     de libellé, hooks métier de création, de mise à jour et de suppression). Le fichier ne déclare
     rien d'exécutable : ni évaluation d'autorisation, ni IO, ni trace, ni code `MRD-*`. La promesse
     héritée de /miryad-core.sdd — ajouter une entité = implémenter ce trait, et rien de plus — tient
-    parce que REST, GraphQL et MCP lisent ces métadonnées à l'identique et que le miroir @ir les
+    parce que REST et MCP lisent ces métadonnées à l'identique et que le miroir @ir les
     exporte telles quelles.
   Le fichier ne porte aucun `#[cfg(feature = ...)]` : il compile sur toute la matrice de
     /tooling.sdd, `--no-default-features` compris — contractué en première ligne de `Must`.
   Amendement du 2026-09-23 (demandé par Sébastien, motivé par ./workflow/definition.sdd : une
     définition de workflow doit être revalidée à la mise à jour, pas seulement à la création) :
-    introduit @MiryadResource::before_update et @MiryadResource::before_delete. Exception explicite,
-    actée par Sébastien, au principe de parité de /miryad-core.sdd et à la règle qu'elle portait
-    jusqu'ici dans ce fichier (« pas de hook update/delete tant que Seaography reste create-only ») —
-    les deux nouveaux hooks se déclenchent sur REST et MCP, jamais sur GraphQL (Seaography
-    `2.0.0-rc.9` ne pilote son hook équivalent, @LifecycleHooksInterface::before_active_model_save,
-    qu'à l'insertion). L'asymétrie est documentée ici, dans /src/rest/core.sdd (séquence
-    d'appel) et devra l'être dans ./graphql/hooks.sdd à sa rédaction (encore « en attente » à ce
-    jour) — un décalage assumé et tracé, pas silencieux, pour cette paire de hooks seulement ; le
-    principe de parité reste la règle par défaut pour tout le reste du contrat.
+    introduit @MiryadResource::before_update et @MiryadResource::before_delete. Les deux
+    hooks se déclenchent à l'identique sur REST et MCP (séquence d'appel dans /src/rest/core.sdd).
+    Amendement du 2026-10-19 : la surface GraphQL, seule source de l'exception de parité qu'ils
+    portaient (Seaography `2.0.0-rc.9` ne pilotait son hook équivalent qu'à l'insertion), est
+    supprimée ; le principe de parité de /miryad-core.sdd s'applique sans exception.
 
 Owns:
   ./resource.rs
@@ -30,10 +26,10 @@ Can modify:
   ../tests/resource.rs — crate d'intégration rattachée à ce contrat inter-surface par la convention
     de /.specdd/bootstrap.project.md (les tests de tests/ sont rattachés à la spec du contrat
     exercé, pas de spec propre) ; elle exerce la lecture @MiryadResource/@AccessPolicy/@HookError
-    identique sur REST, GraphQL et MCP. Deux tests rattachés y existent déjà.
+    identique sur REST et MCP. Deux tests rattachés y existent déjà.
 
 References:
-  /miryad-core.sdd — contrat hérité : parité REST/GraphQL/MCP lue depuis la seule métadonnée,
+  /miryad-core.sdd — contrat hérité : parité REST/MCP lue depuis la seule métadonnée,
     codes `MRD-<DOMAINE>-NNN` réservés à la crate, exception @HookError
   ./lib.sdd — spec de la racine qui déclare @resource (chemin @miryad_core::resource, aucun
     ré-export) et impose la documentation de @HookError comme erreur applicative
@@ -55,9 +51,7 @@ Must:
     @MiryadResource::before_create, @MiryadResource::before_update et @MiryadResource::before_delete,
     en lecture seule.
   Réserver @MiryadResource::before_create à la création, après le contrôle @rbac::can_create et
-    avant l'insertion — miroir de @seaography::LifecycleHooksInterface.before_active_model_save,
-    que @seaography `2.0.0-rc.9` ne déclenche que sur un insert (vérifié dans la source amont :
-    seules @entity_create_one_mutation et @entity_create_batch_mutation l'appellent).
+    avant l'insertion.
   Réserver @MiryadResource::before_update à la mise à jour, après @rbac::can_write (évalué sur la
     ligne relue avant mise à jour) et après @rest::core::mark_all_set, avant les deux invariants de
     @rest::core::update (forçage de la PK à l'id du chemin, reconduction de @owner_column depuis la
@@ -71,10 +65,7 @@ Must:
     seul `existing` (le @Model relu) est prêté en lecture seule ; un @Err interrompt avant toute
     requête `DELETE`.
   Fixer la signature de @MiryadResource::before_create, @MiryadResource::before_update et
-    @MiryadResource::before_delete comme synchrones, sans point d'attente : @before_create reste un
-    miroir du hook Seaography, lui-même synchrone (source `seaography-2.0.0-rc.9`) ; @before_update et
-    @before_delete n'ont aucun homologue Seaography à miroiter (ils ne se déclenchent pas sur ce
-    chemin, `Purpose`) mais restent synchrones par cohérence de signature avec @before_create et parce
+    @MiryadResource::before_delete comme synchrones, sans point d'attente : parce
     qu'aucun besoin d'IO n'a été identifié pour un hook de validation — un hook qui aurait besoin
     d'IO reste un cas non couvert par ce contrat, à instruire séparément s'il se présente.
   Garantir qu'une implémentation de @MiryadResource::before_create ne peut pas contourner les
@@ -108,12 +99,11 @@ Must:
   Retourner des colonnes typées et jamais des chaînes : @MiryadResource::owner_column,
     @MiryadResource::filter_column et @MiryadResource::label_column retournent l'@Option du @Column
     de @sea_orm::EntityTrait ; la conversion en nom @Iden (snake_case) est opérée par les
-    consommateurs qui en ont besoin (@ir::resource_ir et le miroir @graphql::EntityPolicy), pas ici.
+    consommateurs qui en ont besoin (@ir::resource_ir), pas ici.
   Exposer @MiryadResource en supertrait de @sea_orm::EntityTrait avec toutes ses méthodes
     statiques : ni instance ni forme @dyn @MiryadResource n'est possible ; les surfaces
-    monomorphisent par généricité ou effacent le type elles-mêmes — le champ
-    @graphql::EntityPolicy.before_create est un pointeur de fonction sur `dyn @std::any::Any`
-    monomorphisé par entité, preuve que l'effacement est une décision du consommateur, pas du trait.
+    monomorphisent par généricité ou effacent le type elles-mêmes (par exemple le registre MCP)
+    — l'effacement est une décision du consommateur, pas du trait.
   Documenter @HookError comme dérivant @Debug et @Clone uniquement — pas @Copy, pas @PartialEq, et
     aucune implémentation de @std::fmt::Display ni de @std::error::Error nulle part dans la crate
     (vérifié dans toutes les sources de `src/`) ; les surfaces lisent les champs @code et @message
@@ -124,25 +114,17 @@ Must:
     même mécanisme que la collision de @resource_name) et @rbac::can_create refuse par cohérence
     défensive avec @rbac::can_read/@rbac::can_write (./rbac.sdd) — ce fichier continue de ne rien
     vérifier lui-même à la compilation, seul le comportement documenté du reste de la crate change.
-  Documenter @MiryadResource::filter_column comme un filtre consommé par REST et MCP seulement
-    (arbitré par Sébastien le 2026-09-27) : GraphQL ne le lit jamais (./graphql/hooks.rs ne
-    construit que la clause propriétaire, le filtrage y passe par les inputs natifs @seaography) —
-    la doc du trait ne promet plus « REST/GraphQL/MCP » pour cette méthode tant que le pont
-    GraphQL n'y est pas raccordé (cf. exception `Must` de /miryad-core.sdd).
+  Documenter @MiryadResource::filter_column comme un filtre consommé par REST et MCP
+    (arbitré par Sébastien le 2026-09-27 ; GraphQL, qui ne le lisait pas, est retiré 2026-10-19).
 
 Must not:
   Évaluer, décider ou exécuter une autorisation ici : l'évaluation par enregistrement
     (@rbac::can_read, @rbac::can_write, @rbac::can_create, @rbac::list_access) et les gardes de
     surface vivent ailleurs — ce fichier ne connaît ni base de données ni @users.
-  Laisser croire que @MiryadResource::before_update ou @MiryadResource::before_delete se
-    déclenchent sur GraphQL : Seaography `2.0.0-rc.9` ne pilote @LifecycleHooksInterface::before_active_model_save
-    qu'à l'insertion (vérifié source, `Must`) — les deux hooks ne s'exécutent que sur REST et MCP
-    (chemin @rest::core::update/@rest::core::delete, partagé par les deux surfaces). Exception actée
-    par Sébastien (2026-09-23, `Purpose`) au principe général de parité de /miryad-core.sdd : documentée
-    ici, dans /src/rest/core.sdd, et à documenter dans ./graphql/hooks.sdd à sa rédaction — jamais
-    silencieuse, mais une exception, pas un relâchement général de la règle de parité pour le reste du
-    contrat (@read_policy, @write_policy, @owner_column, @filter_column, @label_column,
-    @before_create restent lus à l'identique par les trois surfaces).
+  Documenter une exception de parité entre surfaces : les deux hooks s'exécutent sur le chemin
+    @rest::core::update/@rest::core::delete, partagé par REST et MCP (@read_policy, @write_policy,
+    @owner_column, @filter_column, @label_column, @before_create restent lus à l'identique par
+    les deux surfaces).
   Construire @HookError depuis le runtime de miryad-core pour une panne qui ne vient pas d'un hook
     applicatif : une erreur interne de la crate porte son propre code `MRD-*` dans son module.
   Introduire de l'asynchrone, de l'IO ou de l'état partageable dans ce contrat : les déclarations
@@ -155,7 +137,7 @@ Depends on:
     feature `derive`, jamais optionnelle : le dérivé survit à toutes les combinaisons de features.
   ./auth/principal.rs — @crate::auth::AuthPrincipal, paramètre commun aux trois hooks @before_create,
     @before_update et @before_delete.
-  # Direction de dépendance respectée : @rbac, @ir, @rest, @graphql et @mcp dépendent de ce
+  # Direction de dépendance respectée : @rbac, @ir, @rest et @mcp dépendent de ce
   # fichier, jamais l'inverse ; ils ne sont nommés en amont que comme preuves de contrat (parité,
   # signature, effacement de type), jamais comme dépendances.
 
@@ -174,7 +156,7 @@ Exposes:
     Sérialisation @serde par défaut : `Public`, `OwnerOnly`, `AdminOnly` en chaînes JSON, @Group en
     objet `{"Group":"<nom>"}`.
   @MiryadResource — trait public, supertrait @sea_orm::EntityTrait, une implémentation par entité,
-    lu à l'identique par REST, GraphQL et MCP. Méthodes obligatoires :
+    lu à l'identique par REST et MCP. Méthodes obligatoires :
     `fn resource_name() -> &'static str`, `fn read_policy() -> AccessPolicy`,
     `fn write_policy() -> AccessPolicy`,
     `fn owner_column() -> Option<<Self as EntityTrait>::Column>`
@@ -228,9 +210,7 @@ Raises:
   Seule traversée d'erreur possible : un @HookError remonté par l'override de
     @MiryadResource::before_create, @MiryadResource::before_update ou @MiryadResource::before_delete
     — erreur de l'application que chaque surface restitue dans son vocabulaire propre sans lui
-    imposer de code de la crate. GraphQL ne peut jamais rendre le @HookError d'@before_update ou
-    @before_delete puisqu'elle ne les appelle jamais (`Purpose`, `Must not`) — seuls REST et MCP le
-    peuvent.
+    imposer de code de la crate.
   Aucune erreur de base de données possible : @sea_orm n'est utilisé qu'au niveau des types.
 
 Handles:
@@ -248,37 +228,18 @@ Handles:
     du routeur REST (panic, ./rest/mod.sdd) plutôt que tolérée comme un cas runtime ;
     @rbac::can_create refuse aussi par cohérence défensive (./rbac.sdd). Ce fichier ne vérifie
     toujours rien lui-même — l'invalidité se prouve en aval.
-  Surface GraphQL sur une entité dont @before_update ou @before_delete est surdéclaré : la mutation
-    Seaography s'exécute sans jamais appeler le hook — une mise à jour ou suppression qu'un hook REST
-    aurait rejetée réussit silencieusement côté GraphQL. Comportement assumé (`Purpose`), pas un bug
-    de ce fichier ; à documenter pour l'app consommatrice dans ./graphql/hooks.sdd et
-    `docs/architecture.md`.
 
 Tasks:
-  [?] Amendement du 2026-09-23 (@before_update, @before_delete) : convertir les six nouveaux
-    `Scenario` en tests distincts nommés — statut après implémentation (validateur 2026-09-23) :
-    les quatre tests directs vivent dans ../tests/resource.rs (`default_before_update_is_identity_and_ignores_existing`,
+  [x] Amendement du 2026-09-23 (@before_update, @before_delete) : les six nouveaux `Scenario` sont
+    convertis en tests — les quatre tests directs vivent dans ../tests/resource.rs
+    (`default_before_update_is_identity_and_ignores_existing`,
     `before_update_override_can_compare_existing_and_reject`, `default_before_delete_is_ok_and_ignores_existing`,
     `before_delete_override_rejects_with_free_form_error` — le dernier au niveau trait, code
     `"WIDGET-LOCKED"` intact) ; le scenario « invariants postérieurs » et le versant surface du rejet
     de delete sont portés par ./rest/mod.rs (`update_hook_hostile_ne_contourne_les_invariants`,
-    `before_delete_hook_error_blocks_delete_without_mrd_code` — même délegation que « position du
-    hook dans la création » par les tests de la surface appelante). Reste non couvert :
-    « before_update/before_delete absents de GraphQL » — aucun harnais d'exécution de mutations
-    Seaography n'existe dans le dépôt ; la preuve est à ce jour la source vendue
-    `seaography-2.0.0-rc.9` (@LifecycleHooksInterface::before_active_model_save appelé uniquement
-    par les deux mutations de création, vérifiée par le validateur). Arbitrage Sébastien en fin de
-    cycle : harnais GraphQL neuf ou preuve par lecture consignée. `graphql_mutations_skip_before_update_and_before_delete`
-    en attente de ce truchement.
-    Statut 2026-10-02 (B5b) : les cinq premiers verrous sont vérifiés existants ; le sixième est
-    verrouillé par truchement dans ./resource.rs (@graphql_mutations_skip_before_update_and_before_delete
-    — @graphql::EntityPolicy ne porte qu'un slot @before_create, espions @UPDATE/@DELETE à zéro sur
-    le seul point d'entrée du pont ; limitation consignée en doc-comment du test). Question
-    d'arbitrage : (A) harnais @graphql neuf exerçant la mutation réelle, espions à zéro à
-    l'appui ; ou (B) preuve par lecture consignée acceptée comme preuve pleine (source vendue
-    @before_active_model_save appelé uniquement par les deux mutations de création + verrou
-    observable du test inline), et le `Scenario` est alors reformulé pour rendre ce truchement
-    vérifiable.
+    `before_delete_hook_error_blocks_delete_without_mrd_code`). Le sixième scénario
+    (« before_update/before_delete absents de GraphQL ») est supprimé avec la surface GraphQL le
+    2026-10-19, de même que son test de truchement.
   [x] Convertir les vingt `Scenario` originaux en au moins vingt tests nommés distincts, un par
     scenario. État des lieux : 0 test inline dans ./resource.rs, 2 tests rattachés existants dans
     ../tests/resource.rs, 1 scenario couvert par des tests de la surface déléguée — soit 17 tests à
@@ -305,9 +266,7 @@ Tasks:
     `before_create_override_rejects_with_free_form_error` ; « accès générique au contrat via le
     supertrait » → `entity_columns_are_reachable_through_generic_bound` ; « surface disponible sans
     aucune feature » → `resource_surface_available_without_default_features` (test ordinaire,
-    prouvé par le run `--no-default-features` de la batterie de /tooling.sdd) ; « métadonnées
-    identiques au seuil GraphQL » → `graphql_policy_registry_reads_trait_metadata` compilé sous
-    `#[cfg(feature = "graphql")]` ; « position du hook dans la création » → couvert par les tests
+    prouvé par le run `--no-default-features` de la batterie de /tooling.sdd) ; « position du hook dans la création » → couvert par les tests
     existants `before_create_hook_mutation_is_applied_at_insert` et
     `before_create_hook_error_blocks_insert_without_mrd_code` de ./rest/mod.rs — le contrat déborde
     du fichier, c'est là que ces tests vivent (surface déléguée, non owned ici).
@@ -323,19 +282,10 @@ Tasks:
     `#[cfg(test)] mod tests` de ./resource.rs ; la tâche et le `Done when` sont amendés en ce
     sens, aucun déplacement. Le `Must` de non-gating s'entend « hors `#[cfg(test)]` » : les deux
     tests @cfg(feature) inline n'y contreviennent pas.
-  [!] #19 La doc de @MiryadResource::resource_name affirme que le nom fait « le type GraphQL ». Vérifié
-    dans la source `seaography-2.0.0-rc.9` (@EntityObjectBuilder::type_name) : le nom d'objet
-    GraphQL et l'identifiant passé aux hooks viennent du nom de table SQL en CamelCase, jamais de
-    @MiryadResource::resource_name ; côté miryad-core, @graphql::PolicyRegistry indexe pourtant par
-    @MiryadResource::resource_name et ./graphql/hooks.rs retombe sur @GuardAction::Allow quand
-    aucune politique ne correspond — fail-open. Si le template n'aligne pas tables et noms déclarés
-    (cas testé dans ./ir.rs : table `tags` pour le nom `recipe-tags`), les politiques déclarées ne
-    s'appliquent pas sur cette surface. Tranché par Sébastien : c'est un BUG, pas un contrat de
-    nommage. Statut au 2026-09-27 : le pont GraphQL n'a aucun consommateur en production et reste
-    prototype (exception `Must` de /miryad-core.sdd) ; le fix (`fix/graphql-policy-key-mismatch`)
-    est différé — ni le choix de clé de ./graphql/registry.sdd, ni le fail-closed de
-    ./graphql/hooks.sdd ne sont arbitrés dans cette version mineure. Le fail-open actuel reste
-    documenté tel quel dans ces deux fichiers, qui ne passent pas en `[x]`.
+  [x] #19 (soldé 2026-10-19 par la suppression de la surface GraphQL) : la doc de
+    @MiryadResource::resource_name affirmait que le nom fait « le type GraphQL » et le pont GraphQL
+    indexait ses politiques par ce nom (fail-open sur désalignement). Le pont est supprimé ; la doc de
+    `resource_name` est corrigée par la tâche d'amendement ci-dessous.
   [x] `label_column` : promesse conservée comme contrat du template `miryad` (arbitré par
     Sébastien le 2026-09-29, `Must`) — reformuler le doc-comment de @MiryadResource::label_column
     dans `./resource.rs` : « miryad-core ne déclare que la colonne ; le générateur du template
@@ -343,22 +293,26 @@ Tasks:
     (invérifiable dans ce dépôt) ; documenter aussi `owner_column` `i32` (`Must`).
     Réalisé 2026-10-02 (B5b, validator PASS) : doc-comments de @label_column et @owner_column
     reformulés dans ./resource.rs, aucun changement de comportement (diff non-test = doc seule).
+  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./resource.rs`, supprimer les tests `graphql_policy_registry_reads_trait_metadata`
+    et `graphql_mutations_skip_before_update_and_before_delete` (et leurs aides sous `#[cfg(feature = "graphql")]`, ~lignes 399-450 et
+    717-775), puis réécrire les doc-comments qui nomment GraphQL/Seaography (module et trait : « REST et MCP » ; `resource_name` :
+    retirer le paragraphe sur le type d'objet GraphQL et le désalignement de clé ; `filter_column` : « consommé par REST et MCP » ;
+    `before_create` : retirer « miroir de `before_active_model_save` » et la justification Seaography ; `before_update`/`before_delete` :
+    « se déclenchent sur REST et MCP » sans « jamais sur GraphQL »). Aucun changement de comportement ; `tests/resource.rs` ne change pas.
 
 Done when:
-  La spec porte exactement vingt-six `Scenario` (vingt originaux, six de l'amendement
+  La spec porte exactement vingt-quatre `Scenario` (dix-huit originaux depuis la suppression de GraphQL, six de l'amendement
     @before_update/@before_delete du 2026-09-23) et chaque `Scenario` est vérifié par au moins un
     test nommé distinct au total : 17 tests rattachés créés inline dans le `#[cfg(test)] mod tests`
     de ./resource.rs pour les scenarios originaux, 2 tests rattachés existants, 2 tests de ./rest/mod.rs pour « position du
-    hook dans la création », plus 6 tests rattachés pour l'amendement — 27 tests distincts pour 26
-    `Scenario`.
+    hook dans la création », plus 6 tests rattachés pour l'amendement — au moins 24 tests distincts pour 24
+    `Scenario` (les deux tests GraphQL sont supprimés, 2026-10-19).
   Les tests passent sur chaque combinaison de la matrice de /tooling.sdd, y compris
-    `--no-default-features` pour la preuve de non-gating et `--features graphql` pour le seuil
-    GraphQL (scenario d'absence des deux nouveaux hooks compris).
+    `--no-default-features` pour la preuve de non-gating.
   Trois des quatre lignes `[?]`/`[!]` originales ont été arbitrées par Sébastien le 2026-09-27
     (la quatrième, `label_column`, l'a été le 2026-09-29 — voir plus bas)
     (incohérence `OwnerOnly` sans colonne → montage REST refusé, `Must`/`Handles` ; sur-promesse de
-    @filter_column → doc corrigée REST/MCP, `Must` ; bug `[!]` #19 → différé, pont GraphQL prototype
-    sans consommateur, exception `Must` de /miryad-core.sdd). Le 2026-09-29, la promesse de
+    @filter_column → doc corrigée REST/MCP, `Must` ; bug `[!]` #19 → soldé par la suppression de la surface GraphQL, 2026-10-19). Le 2026-09-29, la promesse de
     fallback de @MiryadResource::label_column sur la clé primaire devient un contrat du template
     (générateur hors dépôt) : doc-comment à reformuler, aucun test ici.
   L'amendement @before_update/@before_delete est cohérent avec son miroir dans /src/rest/core.sdd
@@ -490,17 +444,6 @@ Scenario: surface disponible sans aucune feature
     @miryad_core::resource::HookError sont utilisables dans les deux cas, un test ordinaire
     s'exécutant sur chaque combinaison de la batterie de /tooling.sdd
 
-Scenario: métadonnées identiques au seuil GraphQL
-  Given un build sous la feature `graphql` et l'entité `recipe`, enregistrée via
-    @graphql::PolicyRegistry::register dans un registre neuf
-  When la politique est relue par @graphql::PolicyRegistry::get avec la clé `"recipes"`
-  Then @graphql::EntityPolicy porte exactement les @AccessPolicy déclarés par
-    @MiryadResource::read_policy et @MiryadResource::write_policy, et son champ owner_column est la
-    chaîne exacte `owner_id` — même déclaration lue à l'identique, sans retraduction de politique
-  But l'alignement entre la clé @MiryadResource::resource_name et l'identifiant que @seaography
-    passe réellement à ses hooks n'est pas prouvé ici : bug connu `[!]` #19, différé tant que le
-    pont GraphQL reste un prototype sans consommateur (exception `Must` de /miryad-core.sdd)
-
 Scenario: position du hook dans la création
   Given une entité avec override de @MiryadResource::before_create montée sur la surface REST, et
     l'outil de création MCP qui délègue à la même fonction @rest::core::create
@@ -550,11 +493,3 @@ Scenario: rejet par un override de @before_delete
   When @rest::core::delete est exécuté sur une ligne `"locked"` puis sur une ligne d'un autre statut
   Then le premier appel rend @Err(HookError { code: Some("WIDGET-LOCKED"), .. }) et aucun `DELETE`
     n'est émis ; le second supprime normalement
-
-Scenario: before_update et before_delete ne se déclenchent jamais sur GraphQL
-  Given une entité dont @MiryadResource::before_update et @MiryadResource::before_delete rejettent
-    systématiquement (espions comptant leurs appels)
-  When une mutation GraphQL de mise à jour puis de suppression est exécutée sur cette entité (feature
-    `graphql`)
-  Then les deux mutations réussissent (aucun hook n'a été appelé, les deux espions restent à zéro) —
-    contrairement à REST/MCP sur la même entité, où les deux mêmes appels seraient rejetés

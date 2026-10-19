@@ -158,8 +158,8 @@ Must not:
     la divergence silencieuse des clés wire en est la rupture.
   Fixer un @Info (titre, version) dans un fragment : @OpenApi::@merge n'en fusionne pas la valeur — un
     renseigné ici serait silencieusement perdu à la fusion, et l'app doit renseigner le document final.
-  Déclarer ici les routes GraphQL (`POST /api/graphql`) ou MCP (`POST /mcp`) : surfaces gated par leurs
-    propres features, hors du graphe de compilation de ce fichier — le document ne décrit que REST (la
+  Déclarer ici la route MCP (`POST /mcp`) : surface gated par sa
+    propre feature, hors du graphe de compilation de ce fichier — le document ne décrit que REST (la
     question de couvrir les autres routes REST du crate est ouverte en `Tasks`).
   Réécrire les schémas avec la macro @utoipa::@path ou @utoipa_axum : ils exigent une fonction concrète
     par route, incompatible avec les handlers génériques par entité — choix acté et documenté dans

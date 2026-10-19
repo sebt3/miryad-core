@@ -229,12 +229,9 @@ Handles:
     exploite, et son @ON CONFLICT cible des colonnes, non un nom d'index, donc lui survit au fait que
     l'index posé ici soit sans nom.
   Parité des surfaces : aucune des trois tables n'est une @MiryadResource — ni collection/item REST
-    générique, ni @graphql via Seaography (aucune n'est portée par le graphe d'entités exposé), ni
-    @mcp, ni @ir ; elles ne sortent en HTTP que comme pièces construites de /src/rest/admin.rs et
+    générique, ni @mcp, ni @ir ; elles ne sortent en HTTP que comme pièces construites de /src/rest/admin.rs et
     /src/rest/me.rs (noms de groupes, lecture derrière garde admin ou self), les chemins de lecture
-    étant @users::user::Entity, @users::group (helpers) et @users::membership via ./membership.rs,
-    avec le snapshot GraphQL propre à /src/graphql/principal.rs. Asymétrie interne factuelle que ce
-    fichier consigne sans trancher.
+    étant @users::user::Entity, @users::group (helpers) et @users::membership via ./membership.rs.
 
 Tasks:
   [x] Convertir les vingt `Scenario` en au moins vingt tests nommés distincts dans le @mod tests

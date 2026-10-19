@@ -48,7 +48,7 @@ ses `Tasks`). Tu travailles en test-first strict, dans le périmètre d'autorit�
    pas erreur de construction). Un test qui passe d'emblée est un test inutile ou une spec fausse :
    tu le signales, tu ne l'ignores pas.
    - Tests inline dans le `#[cfg(test)] mod tests` du fichier concerné, comme le reste de la crate.
-   - Un contrat inter-surfaces (la même entité lue en REST, GraphQL et MCP) se prouve dans la crate
+   - Un contrat inter-surfaces (la même entité lue en REST et MCP) se prouve dans la crate
      d'intégration que la spec attache (`tests/resource.rs` pour @MiryadResource).
    - Les dépendances d'un test suivent ce que la spec autorise : base SQLite en mémoire et
      @MockDatabase comme dans les modules existants, pas un Postgres réel.
@@ -65,7 +65,7 @@ ses `Tasks`). Tu travailles en test-first strict, dans le périmètre d'autorit�
   harnais sont en `deny` dans `[lints]` de `Cargo.toml`, donc ils font déjà échouer la compilation
   clippy : un `[lints]` rouge sur ta modification n'est pas un bruit de fond.
 - Si ta modification touche du code `#[cfg(feature = ...)]`, relance clippy sur les combinaisons
-  concernées (`--no-default-features`, `swagger-ui`, `graphql`, `graphiql`, `mcp`,
+  concernées (`--no-default-features`, `swagger-ui`, `mcp`,
   `--all-features`) : des lints `pedantic` (`must_use_candidate`, `missing_errors_doc`) ne se
   déclenchent que sur un seul graphe de features.
 - Production : jamais `unwrap()` / `expect()` / `panic!` / `todo!` / `unimplemented!` / `dbg!` /
@@ -78,7 +78,7 @@ ses `Tasks`). Tu travailles en test-first strict, dans le périmètre d'autorit�
   justifie. Sans citation, c'est un échec.
 - Toute trace passe par `tracing`. @HookError reste une erreur applicative de l'application
   consommatrice : jamais de code `MRD-*` sur ce chemin.
-- Parité des surfaces : si tu modifies un comportement lu par REST, GraphQL ou MCP depuis
+- Parité des surfaces : si tu modifies un comportement lu par REST ou MCP depuis
   @MiryadResource, tu vérifies (test ou lecture du chemin de dispatch) que les autres surfaces
   honorent le même contrat. Un écart s'arrête et se remonte, il ne se documente pas en dette.
 - Une migration committée est immuable : tu en ajoutes une nouvelle, tu ne modifies jamais une

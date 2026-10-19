@@ -42,7 +42,7 @@ Must:
     @Group et @group, @GroupMembership et @membership coexistent par distinction de casse dans
     un même list `use` ; tout ajout ou renommage qui les ferait entrer en conflit casse la
     double route des consommateurs.
-  Servir d'entrée unique et identique aux trois surfaces REST, GraphQL et MCP pour le domaine
+  Servir d'entrée unique et identique aux deux surfaces REST et MCP pour le domaine
     users : la résolution (@resolve_user), la synchronisation OIDC
     (@sync_group_memberships) et le provisionnement de compte de service
     (@ensure_service_account) sont les mêmes primitives plates pour toutes les consommations
@@ -160,6 +160,8 @@ Tasks:
     qu'un chemin plat absent n'existe pas. Réalisé 2026-09-30 (B2, validator PASS) : quatre tests
     inline à l'identité de type réellement affirmée, cinquième consigné en commentaire du
     `mod tests` et prouvé par le combo `--no-default-features` vert.
+  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./mod.rs` (commentaire de test ligne ~30), retirer `graphql` et `graphiql` de la
+    liste « `static-frontend`, `swagger-ui` ni `mcp` ». Aucun changement de comportement.
 
 Done when:
   Cinq `Scenario` ont chacun au moins un test nommé distinct et vert, ou une place explicite
@@ -200,8 +202,7 @@ Scenario: modules et items à plat coexistent dans un même list d'imports
     fonction, aucune copie n'existant
 
 Scenario: le module compile et expose sa surface sans aucune feature activée
-  Given un build `--no-default-features` — ni `static-frontend`, `swagger-ui`, `graphql`,
-    `graphiql` ni `mcp`
+  Given un build `--no-default-features` — ni `static-frontend`, `swagger-ui` ni `mcp`
   When la bibliothèque et les tests du module users sont compilés
   Then les quatre sous-modules et les neuf chemins plats sont atteignables
   And @users::ensure_service_account résout alors que ./auth est lui aussi non gated — la chaîne

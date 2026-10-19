@@ -6,7 +6,7 @@ Purpose:
     Ce dispatch est manuel : `vynil-core 0.7.4`, la dépendance derrière la feature `mcp`, ne
     contient aucun module JSON-RPC ni serveur MCP (source du registre vérifié : seul @HandleBars
     du module `hbs` est consommé, comme auxiliaire de rendu) ; la promesse « la même métadonnée
-    @MiryadResource lue à l'identique par REST, GraphQL et MCP » tient parce que l'exécution dresse
+    @MiryadResource lue à l'identique par REST et MCP » tient parce que l'exécution dresse
     le @AuthPrincipal extrait par ./../auth/dual.rs dans @McpEntity::call, lequel delegue aux mêmes
     fonctions @rest::core que REST. Les enveloppes JSON-RPC vivent dans ./protocol.rs, les outils
     dans ./registry.rs, la forme de sortie dans ./format.rs, les erreurs typées et leurs codes
@@ -66,9 +66,8 @@ Must:
     lu — aucun corps, valide ou non, n'est jamais parsé pour une requête sans credentials.
   Extraire le principal avec le contrat dual-auth complet d'../auth/dual.rs : le @AuthPrincipal
     (§subject, email, source) est injecté tel quel dans l'exécution, sans aucun branchement sur
-    @PrincipalSource — session et token API suivent le même chemin, et aucune résolution d'user ni
-    aucun snapshot @GraphQlPrincipal n'est construit ici (asymétrie assumée avec
-    @crate::graphql::load_principal, signalée en `Purpose`).
+    @PrincipalSource — session et token API suivent le même chemin, et aucune résolution d'user
+    n'est construite ici.
   Réserver @StatusCode::ACCEPTED : @ParsedRequest::Notification (`id` absent — un `id` nul explicite
     n'en est plus une, c'est `-32600`, arbitré 2026-09-29) répond `202` corps vide, sans enveloppe
     et sans regarder la méthode, connue ou inconnue ; @params n'est pas consulté sur ce chemin.
@@ -163,7 +162,7 @@ Must not:
     supporter est un contrat nouveau à faire approuver.
   Brancher l'exécution sur @PrincipalSource, résoudre l'user en table avant appel, ou construire
     un @AuthPrincipal de toutes pièces — l'identité vient d'../auth/dual.rs et de lui seul, et sa
-    résolution locale est le contrat de @crate::graphql::load_principal, pas de ce fichier.
+    résolution locale (@resolve_user) est le contrat des fonctions @rest::core, pas de ce fichier.
   Construire, mapper ou enrichir une @McpError, une @HookError ou une @AuthError ici : les
     codes viennent du seul @McpError::rpc_code, les messages du seul @McpError::wire_message ; ce
     fichier ne pose aucun code ni message littéral en propre (arbitré 2026-09-29).
@@ -312,6 +311,7 @@ Tasks:
     Réalisé 2026-10-02 (fusion B4a+B4c, validator PASS) : @wire_message sur le fil (aucun @to_string
     de @Display dans le corps), @error! avec détail @DbErr complet dans la trace seule, @warn! sur
     `-32001` sans arguments ni token (test d'absence affirmé).
+  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./handler.rs`, doc (ligne ~32) : « comme REST » (retirer `/GraphQL`). Aucun changement de comportement.
 
 Done when:
   Chaque `Scenario` a au moins un test nommé distinct et vert, joués sur

@@ -16,10 +16,9 @@ Purpose:
     l'application consommatrice, et le point où le contrat racine — `mcp` n'embarque
     vynil-core `0.7.7` que réduit à `hbs` (`crypto` en est purgé depuis l'arbitrage du
     2026-09-29, exécuté 2026-10-02), `default-features = false` —
-    conditionne sa compilation. Asymétrie de forme avec ./graphql/mod.rs signalée ici : les
+    conditionne sa compilation. Les
     cinq enfants sont tous `mod` privés (un seul adresseur par item, les chemins longs
-    `miryad_core::mcp::<enfant>::*` ne résolvent pas), alors que le module graphql ouvre trois
-    de ses enfants en `pub mod` — arbitrage de convention en `Tasks` [arbitré 2026-09-29].
+    `miryad_core::mcp::<enfant>::*` ne résolvent pas) — convention arbitrée le 2026-09-29.
 
 Structure:
   ./error.rs — sous-module `mod` (privé) : @McpError, huit variantes portant les motifs
@@ -104,11 +103,9 @@ Must:
     que par ./format.rs et ./handler.rs, vérifié au source), zéro @tracing, aucun littéral
     `MRD-MCP-` écrit ici (les codes `MRD-MCP-001`..`MRD-MCP-010` vivent en ./error.rs) ; le
     fichier ne peut pas paniquer de son propre fait.
-  Rester identique sous toute combinaison contenant `mcp` : ./mod.rs ne mentionne `graphql`,
-    `graphiql`, `swagger-ui` ni `static-frontend` sous aucune forme (aucun cfg croisé) ; la
-    surface est la même en `mcp` seul et en `--all-features` — la coexistence `mcp` + `graphql`
-    est débloquée depuis le bump vynil-core `0.7.4` (commit `6384a68`, « débloque la
-    combinaison graphql+mcp » ; la version courante est `0.7.7`).
+  Rester identique sous toute combinaison contenant `mcp` : ./mod.rs ne mentionne
+    `swagger-ui` ni `static-frontend` sous aucune forme (aucun cfg croisé) ; la
+    surface est la même en `mcp` seul et en `--all-features`.
   Garder l'en-tête `//!` aligné sur la promesse réelle : rôle (« 5 tools CRUD par entité,
     sortie JSON/YAML/Markdown »), mention de l'exigence de la feature `mcp`, et deux liens
     intra-doc `crate::mcp::@McpToolRegistry` et `crate::mcp::@mcp_router` qui résolvent en
@@ -120,15 +117,13 @@ Must not:
   Ajouter un gating interne au fichier — un `#[cfg(feature = "mcp")]` redondant ou un cfg sur
     une déclaration ou un ré-export : le cfg de ../lib.rs suffit et le répéter fragmente la
     preuve d'atomicité ; ./mod.rs n'a aucun cfg à porter, aucun détail de feature ne se joue à
-    ce niveau (contrairement à ./graphql/mod.rs dont l'enfant ./graphql/handler.rs porte le cfg
-    `graphiql` — ici aucun enfant de mcp ne porte le moindre cfg de feature, vérifié aux
+    ce niveau (aucun enfant de mcp ne porte le moindre cfg de feature, vérifié aux
     sources des cinq enfants).
   Passer un enfant en `pub mod`, ou ajouter un cinquième `pub use` (@McpOp, @McpEntity,
     @JsonRpcRequest, @JsonRpcResponse, @RpcError, @RenderShape, @render) : ces items sont
     choisis `pub(crate)` ou privés par leurs enfants et leur ouverture créerait une seconde
     surface ; la protocol JSON-RPC interne et le dispatch @McpOp ne sont pas des contrats
-    publics, et l'arborescence docs.rs basculerait sans arbitrage de Sébastien (cf. `Tasks`
-    [arbitré 2026-09-29] pour la convention vs ./graphql/mod.rs).
+    publics, et l'arborescence docs.rs basculerait sans arbitrage de Sébastien.
   Héberger un type, une erreur, un état, une façade ou du câblage sous prétexte que le module
     agrège cinq enfants (type façade partagé, état de registre racine, macro de montage,
     enveloppe d'erreur partagée) : le contrat d'un mod.rs de la crate est déclaratif —
@@ -189,8 +184,7 @@ Exposes:
     mapping codes JSON-RPC et enveloppe `data` : contrat ./error.sdd
   Les cinq déclarations de modules — ./error.rs, ./format.rs, ./handler.rs, ./protocol.rs,
     ./registry.rs, toutes `mod` privés : adressage unique par chemin court pour chaque item
-    public, aucun `pub(crate)` enfant joignable de l'extérieur du module (à la différence du
-    double adressage de ./graphql/mod.rs — asymétrie signalée, `Tasks` [arbitré 2026-09-29])
+    public, aucun `pub(crate)` enfant joignable de l'extérieur du module
   L'en-tête `//!` et ses deux liens (@mcp::@McpToolRegistry, @mcp::@mcp_router) — deux des
     quatre items, @McpError et @OutputFormat n'y sont pas cités ; aucun `#[cfg(test)] mod tests`
     inline à la rédaction — les preuves du fichier ont été créées 2026-10-02 (B4d2)
@@ -203,19 +197,17 @@ Accepts:
     pour monter la surface, sur son propre état @S résolvant @FromRef de @MiryadAuthState —
     ./mod.rs ne construit ni ne présume aucun état concret
   Toute combinaison de features contenant `mcp` : ./mod.rs ne change de forme sous aucune
-    alliance avec `graphql`, `graphiql`, `swagger-ui` ou `static-frontend`
+    alliance avec `swagger-ui` ou `static-frontend`
   Hors `mcp` — ./mod.rs n'est pas compilé : le module n'est pas déclaré par ../lib.rs, le
     chemin `miryad_core::mcp` n'existe pas (`Returns`, `Raises`)
 
 Returns:
   ./mod.rs ne retourne rien — zéro fonction ; il retourne une surface par combinaison de features :
-  défaut (`static-frontend`), `--no-default-features`, `swagger-ui` seul, `graphql` seul,
-    `graphiql` seul — module absent : les chemins `miryad_core::mcp::*` ne résolvent pas, sans
+  défaut (`static-frontend`), `--no-default-features`, `swagger-ui` seul — module absent : les chemins `miryad_core::mcp::*` ne résolvent pas, sans
     erreur de substitution ni squelette
   `--no-default-features --features mcp` — les quatre items en chemins courts, cinq modules
     privés inaccessibles, @mcp_router montant `POST /mcp` (route réelle : ./handler.rs)
-  `--all-features` (et toute combinaison contenant `mcp` + `graphql`) — surface mcp strictement
-    identique à `mcp` seul, coexistant avec @graphql sans interférence ni ligne différente dans
+  `--all-features` — surface mcp strictement identique à `mcp` seul, sans ligne différente dans
     ./mod.rs
 
 Raises:
@@ -233,21 +225,20 @@ Raises:
     derrière), aucune enveloppe de runtime ne peut en découler
 
 Handles:
-  Toute la matrice de /tooling.sdd — défaut, `--no-default-features`, `swagger-ui`, `graphql`,
-    `graphiql`, `mcp`, `--all-features` : `swagger-ui`, `graphql`, `graphiql` et
+  Toute la matrice de /tooling.sdd — défaut, `--no-default-features`, `swagger-ui`, `mcp`, `--all-features` : `swagger-ui` et
     `static-frontend` n'ont aucune prise sur ./mod.rs (aucun cfg croisé, vérifié au source du
-    fichier) ; la combinaison `graphql` + `mcp` compile depuis le commit `6384a68`
+    fichier) 
   Absence de feature demandée explicitement : module simplement non déclaré — pas de stub,
-    pas d'erreur de substitution ; même loi que ../lib.sdd pour @frontend et @graphql
+    pas d'erreur de substitution ; même loi que ../lib.sdd pour @frontend
   Vie interne à la crate : les enfants s'appellent entre eux par `crate::mcp::*` — ./handler.rs
     importe @crate::mcp::format, @crate::mcp::protocol et @crate::mcp::registry, ./registry.rs
     et ./format.rs importent @crate::mcp::error ; l'ensemble des fichiers de `src/` hors du
-    sous-arbre mcp ignore @crate::mcp (vérifié au source) — @rest, @graphql, @ir, @auth
+    sous-arbre mcp ignore @crate::mcp (vérifié au source) — @rest, @ir, @auth
     n'importent pas le module ; la parité des surfaces se joue sur @MiryadResource et
     @rest::core, pas sur l'import du module
   Sorties MCP absentes des artefacts descriptifs : @utoipa/@openapi et @ir::@resource_ir ne
     décrivent ni les tools ni @mcp_router — la surface MCP n'existe que par le dispatch
-    JSON-RPC runtime de ./handler.rs ; asymétrie avec REST (documenté par OpenAPI) et GraphQL
+    JSON-RPC runtime de ./handler.rs ; asymétrie avec REST (documenté par OpenAPI)
     signalée ici, l'arbitrage (un IR des tools) n'est pas de cette spec
   Pagination MCP : ./registry.rs reçoit @page/@per_page/@filter et les transmet à
     @rest::core::@list — @query::@Pagination n'est pas consommé par le sous-arbre mcp
@@ -268,9 +259,8 @@ Tasks:
     ./handler.rs étant privés à leurs modules ; sans instance d'état — la construction du
     @Router générique n'en requiert pas) ; « le module est absent sans mcp » →
     `mcp_surface_absent_without_feature`, portée par les runs nommés
-    `cargo test --no-default-features` et `cargo test --no-default-features --features graphql`
-    de la batterie /tooling.sdd — précédent : le scenario d'absence de ./graphql/mod.sdd prouvé
-    de même, une négation de compilation ne pouvant vivre dans la cible qu'elle nie ; « enfants
+    `cargo test --no-default-features` et `cargo test --no-default-features --features swagger-ui`
+    de la batterie /tooling.sdd — une négation de compilation ne pouvant vivre dans la cible qu'elle nie ; « enfants
     jamais joignables en chemin long » → doctest `compile_fail` du bloc `//!`
     (`use miryad_core::mcp::protocol;` — `E0603`, collecté seulement quand le module compile,
     stable sur la matrice) ; « mcp n'ajoute que vynil-core au graphe » → preuve par runs nommés
@@ -281,13 +271,10 @@ Tasks:
     `cargo tree -i kube` n'ont aucun résultat (features `http`/`rhai`/`k8s`/`oci`/`s3` de
     vynil-core absentes) ; « liens d'en-tête résolus dans la configuration où le fichier
     compile » → run nommé `cargo doc --no-default-features --features mcp` sans avertissement
-    `rustdoc::broken_intra_doc_links` sur ./mod.rs ; « mcp et graphql coexistent sans
-    interférence » → `mcp_graphql_coexist`, test inline du même module sous
-    `#[cfg(all(feature = "mcp", feature = "graphql"))]` référençant @mcp_router et
-    @crate::graphql::@graphql_router dans une même unité de compilation. Les six preuves ne
-    sauraient être réduites à moins de six ; aucune ne peut rester implicite.
+    `rustdoc::broken_intra_doc_links` sur ./mod.rs . Les cinq preuves ne
+    sauraient être réduites à moins de cinq ; aucune ne peut rester implicite.
     Réalisé 2026-10-02 (B4d2, validator PASS) : les six preuves vivent — deux tests inline
-    (@mcp_surface_four_reexports_resolve, @mcp_graphql_coexist sous @cfg(all)), doctest
+    (@mcp_surface_four_reexports_resolve ; @mcp_graphql_coexist, supprimé 2026-10-19), doctest
     `compile_fail` @E0603 collecté sous @mcp, runs @cargo tree (unique ajout direct
     @vynil-core 0.7.7, `-i rhai`/`-i kube` vides), @cargo doc sans lien cassé sur ./mod.rs,
     absence prouvée par les runs nommés de la batterie.
@@ -310,7 +297,7 @@ Tasks:
     @McpToolRegistry, @McpError, @OutputFormat) (arbitré par Sébastien le 2026-09-29) — ../lib.sdd mis à jour ; la doc racine de
     ../lib.rs suit (tâche de ../lib.sdd).
   [x] Convention de surface : enfants fermés (`mod` privés) et items ré-exportés, un seul adresseur
-    par item (arbitré par Sébastien le 2026-09-29) ; ./graphql/mod.rs s'aligne (lot GraphQL, tâche à écrire là-bas).
+    par item (arbitré par Sébastien le 2026-09-29) .
   [x] Rejouer la batterie complète de /tooling.sdd (toutes les combinaisons de /AGENTS.md,
     `--no-default-features` comme preuve d'absence, `--features mcp` comme preuve de surface,
     `--all-features` comme preuve de coexistence, plus `cargo test --doc` pour le doctest
@@ -321,19 +308,22 @@ Tasks:
     @mcp + runs @cargo tree/@cargo doc nommés — tout vert hors baseline gelée graphql (7/8
     sites, carve-out @tooling.sdd) ; décisions des trois lignes arbitrées portées dans la
     présente spec (purge `crypto` exécutée et Scenario ressynchronisé).
+  [ ] Amendement 2026-10-19 (suppression de GraphQL) : dans `./mod.rs`, supprimer le test inline `mcp_graphql_coexist` (et son
+    `#[cfg(all(feature = "mcp", feature = "graphql"))]`, lignes ~95-125) ; le scénario correspondant a été retiré de cette spec,
+    les cinq preuves restantes ne bougent pas.
 
 Done when:
   Chaque `Scenario` de la présente spec est couvert par sa preuve nommée distincte — deux tests
-    inline du `#[cfg(test)] mod tests` de ./mod.rs (surface mcp, coexistence mcp+graphql), un
+    inline du `#[cfg(test)] mod tests` de ./mod.rs (surface mcp), un
     doctest `compile_fail` de son bloc `//!`, et trois runs nommés de la batterie (absence,
     graphe, doc) — soit au moins six preuves nommées pour six scenarios ; la batterie de
     /tooling.sdd passe verte sur toutes les combinaisons de features avec `-- -D warnings`,
-    `--no-default-features` prouvant l'absence du module et `--all-features` la coexistence
-    mcp+graphql ; le graphe de dépendances sous `mcp` est exact (vynil-core seul ajouté, en
+    `--no-default-features` prouvant l'absence du module et `--all-features` la surface
+    complète ; le graphe de dépendances sous `mcp` est exact (vynil-core seul ajouté, en
     `hbs` seul (`crypto` purgé 2026-10-02), rien des features `http`/`rhai`/`k8s`/`oci`/`s3` de vynil-core) ; les
     lignes [arbitré 2026-09-29] ont reçu une décision de Sébastien (purge de `crypto`, exécutée
     2026-10-02, exhaustivité de
-    la documentation de surface de ../lib.sdd, convention d'adressage vs ./graphql/mod.sdd) ;
+    la documentation de surface de ../lib.sdd) ;
     la spec est relue et approuvée par lui.
 
 Scenario: quatre ré-exports et la chaîne de montage résolvent sous mcp
@@ -351,12 +341,12 @@ Scenario: quatre ré-exports et la chaîne de montage résolvent sous mcp
 
 Scenario: le module est absent sans mcp
   Given la bibliothèque en features par défaut (`static-frontend` seule), puis en
-    `--no-default-features`, puis en `--no-default-features --features graphql` — trois runs de
+    `--no-default-features`, puis en `--no-default-features --features swagger-ui` — trois runs de
     la batterie /tooling.sdd où ./mod.rs n'est jamais compilé
   When la compilation et les tests de la crate tournent sur ces trois runs
   Then la compilation réussit : aucune déclaration de la crate ne référence @crate::mcp (le
     module gate est dans ../lib.rs, ./mod.rs n'importe rien qui pourrait fuiler son absence),
-    @rest, @graphql et @auth montent normalement — pas de squelette, pas de stub, pas d'erreur
+    @rest et @auth montent normalement — pas de squelette, pas de stub, pas d'erreur
     de substitution
   And toute import `miryad_core::mcp::*` par un consommateur échoue à la compilation
     (`E0432`/`E0433`) — preuve négative hors crate, ./mod.rs n'étant pas compilé sous ces runs
@@ -404,13 +394,3 @@ Scenario: liens d'en-tête résolus dans la configuration où le fichier compile
     le fichier lui-même
   And la page du module ne liste que les quatre items publics et l'en-tête : les cinq modules
     privés n'y figurent pas
-
-Scenario: mcp et graphql coexistent sans interférence
-  Given un build `--all-features`
-  When un test inline de ./mod.rs sous `#[cfg(all(feature = "mcp", feature = "graphql"))]`
-    référence @mcp_router en chemin court mcp et @crate::graphql::@graphql_router en chemin
-    court graphql dans une même unité de compilation
-  Then la compilation réussit et le test passe : ./mod.rs ne change aucune ligne entre `mcp`
-    seul et `mcp` + `graphql` (coexistence débloquée par le bump vynil-core `0.7.4`, commit
-    `6384a68`), et la surface publique de @mcp reste exactement les quatre items, ni amputée ni
-    étendue par la présence de @graphql
