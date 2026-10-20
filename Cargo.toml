@@ -70,7 +70,7 @@ sha2 = { version = "0.10", optional = true }
 hmac = { version = "0.12", optional = true }
 hex = { version = "0.4", optional = true }
 chrono = { version = "0.4", optional = true }
-utoipa = "5"
+utoipa = "6"
 utoipa-swagger-ui = { version = "9", optional = true, features = ["axum", "vendored"] }
 vynil-core = { version = "0.7.7", default-features = false, features = ["hbs"], optional = true }
 tower-http = { version = "0.6", default-features = false, features = ["fs"], optional = true }
