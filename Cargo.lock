@@ -1035,7 +1035,7 @@ checksum = "1a373e3602691c3cdea496d2f0ee5935151e6168fe87739483c463db1b2f2f87"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
- "rand 0.8.7",
+ "rand 0.8.8",
  "subtle",
  "time",
  "version_check",
@@ -2853,7 +2853,7 @@ dependencies = [
  "js-sys",
  "p256",
  "p384",
- "rand 0.8.7",
+ "rand 0.8.8",
  "rsa",
  "serde",
  "serde_json",
@@ -3567,7 +3567,7 @@ dependencies = [
  "matrix-sdk-store-encryption",
  "matrix-sdk-test",
  "openidconnect",
- "rand 0.8.7",
+ "rand 0.10.2",
  "reqwest 0.12.28",
  "restate-sdk",
  "ruma",
@@ -3648,7 +3648,7 @@ dependencies = [
  "num-integer",
  "num-iter",
  "num-traits",
- "rand 0.8.7",
+ "rand 0.8.8",
  "smallvec",
  "zeroize",
 ]
@@ -3732,7 +3732,7 @@ dependencies = [
  "chrono",
  "getrandom 0.2.17",
  "http",
- "rand 0.8.7",
+ "rand 0.8.8",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3796,7 +3796,7 @@ dependencies = [
  "oauth2",
  "p256",
  "p384",
- "rand 0.8.7",
+ "rand 0.8.8",
  "rsa",
  "serde",
  "serde-value",
@@ -4342,9 +4342,9 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 
 [[package]]
 name = "rand"
-version = "0.8.7"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22f6172bdec972074665ed81ed53b71da00bfc44b65a753cfde883ec4c702a1a"
+checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
 dependencies = [
  "libc",
  "rand_chacha 0.3.1",
@@ -4994,7 +4994,7 @@ dependencies = [
  "borsh",
  "bytes",
  "num-traits",
- "rand 0.8.7",
+ "rand 0.8.8",
  "rkyv",
  "serde",
  "serde_json",
@@ -6852,7 +6852,7 @@ dependencies = [
  "hmac 0.12.1",
  "matrix-pickle",
  "prost",
- "rand 0.8.7",
+ "rand 0.8.8",
  "serde",
  "serde_bytes",
  "serde_json",
