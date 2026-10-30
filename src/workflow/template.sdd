@@ -121,11 +121,13 @@ Tasks:
     Validé 2026-10-13 (validator) : 15 tests nommés verts, clippy `workflow` et `--no-default-features` sans écart ;
     `#[allow(dead_code)]` sur `render_config`/`render_str` jusqu'à la tâche dispatcher. Scenario « helpers utiles »
     amendé (arbitré par Sébastien) : `to_json` de vynil-core est un helper de bloc, `json_to_str` le remplace.
-  [ ] A2 (2026-10-30, `dsd/miryad-core/workflow.md` `DEC-7`) : `engine()` construit `HandleBars::new_restricted()` (après
+  [x] A2 (2026-10-30, `dsd/miryad-core/workflow.md` `DEC-7`) : `engine()` construit `HandleBars::new_restricted()` (après
     la tâche A1 de /miryad-core.sdd, `vynil-core` 0.9) ; supprimer @DENIED_HELPERS et ses `unregister_helper`, sauf `jsonnet`
     si le `Scenario` « jsonnet ne lit aucun fichier de l'hôte » échoue sous `new_restricted()` seul (voir `Must`, Moteur).
     Le `Scenario` jsonnet est écrit d'abord : contre le code actuel il passe (la liste noire retire `jsonnet`), le rouge
     éventuel n'apparaît qu'au retrait de la liste — le consigner dans le rapport. Un fichier : ./template.rs.
+    Validé 2026-10-30 : Scenario jsonnet vert d'emblée sous l'ancien code, rouge sous `new_restricted()` seul (le marqueur de la sonde est rendu) ;
+    `DENIED_HELPERS = ["jsonnet"]` conservé (à remonter à `vynil-core`, `CON-5`). Tests/clippy `workflow` et `--all-features`, fmt verts.
   [ ] B2 (2026-10-30, `FR-12`/`FR-13`, `CON-7`) : le contexte de rendu porte `"vars"` (lu dans `run.vars`, ./step.sdd), sans
     changer les signatures de @render_config / @render_str ; `Scenario` « vars » ci-dessous. Après B1 (./step.sdd).
     Un fichier : ./template.rs.

@@ -11,24 +11,18 @@ use vynil_core::hbs::HandleBars;
 
 use super::step::{RunInfo, StepError};
 
-/// Helpers de `vynil-core` retirés du moteur : accès fichiers, environnement et chemins hôte
-/// (`./template.sdd` `Must`, issue sebt3/vynil-core#13 — liste noire transitoire).
-const DENIED_HELPERS: &[&str] = &[
-    "read_to_str",
-    "env_var",
-    "canonicalize",
-    "parent",
-    "file_name",
-    "extension",
-    "jsonnet",
-];
+/// Helpers de `new_restricted()` retirés malgré la liste blanche : `jsonnet` lit des fichiers de
+/// l'hôte par `importstr` (Scenario « jsonnet ne lit aucun fichier de l'hôte », `./template.sdd`
+/// `Must`, Moteur ; à remonter à `vynil-core`, `dsd/miryad-core/workflow.md` `CON-5`).
+const DENIED_HELPERS: &[&str] = &["jsonnet"];
 
 /// Plafond d'un rendu de chaîne, en octets (`./template.sdd` `Must`).
 const MAX_RENDERED_BYTES: usize = 1_048_576;
 
-/// Moteur neuf, durci : mode strict, aucun échappement HTML, helpers d'accès à l'hôte retirés.
+/// Moteur neuf, durci : liste blanche `vynil-core` (`new_restricted`), `DENIED_HELPERS` retirés,
+/// mode strict, aucun échappement HTML (`./template.sdd` `Must`, Moteur).
 fn engine() -> HandleBars<'static> {
-    let mut hbs = HandleBars::new();
+    let mut hbs = HandleBars::new_restricted();
     let registry = hbs.engine_mut();
     registry.set_strict_mode(true);
     registry.register_escape_fn(|s: &str| s.to_owned());
@@ -353,5 +347,23 @@ mod tests {
         assert_eq!(rendu, "v=Z");
         let error = expect_err(render_str("v={{inputs.nope}}", &run(), &inputs));
         assert!(!error.retryable);
+    }
+
+    /// Scenario « jsonnet ne lit aucun fichier de l'hôte » (`template.sdd`, 2026-10-30).
+    ///
+    /// Sonde : le fichier lu est ce source même, qui porte le marqueur ci-dessous. Un `importstr`
+    /// qui réussit ferait apparaître le marqueur dans le rendu.
+    #[test]
+    fn jsonnet_ne_lit_aucun_fichier_de_l_hote() {
+        const MARQUEUR: &str = "CONTENU-SONDE-7f3a";
+        let chemin = concat!(env!("CARGO_MANIFEST_DIR"), "/src/workflow/template.rs");
+        let template = format!("{{{{#jsonnet}}}}importstr \"{chemin}\"{{{{/jsonnet}}}}");
+        match render_str(&template, &run(), &HashMap::new()) {
+            Ok(rendu) => assert!(
+                !rendu.contains(MARQUEUR),
+                "contenu de l'hôte rendu (marqueur présent)"
+            ),
+            Err(error) => assert!(!error.message.contains(MARQUEUR), "message : {}", error.message),
+        }
     }
 }
