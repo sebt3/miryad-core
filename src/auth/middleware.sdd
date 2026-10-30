@@ -35,7 +35,7 @@ References:
     /src/mcp/handler.rs — surface vérifiée : toutes extraient
     @AuthPrincipal, aucune n'extrait @AuthUser — confirmé comme contrat voulu, pas une surface
     résiduelle (2026-09-27, `Tasks`)
-  /docs/architecture.md — récit non contractuel : dual-auth cookie/token et extractor navigateur
+  /dsd/miryad-core/auth.md — récit non contractuel : dual-auth cookie/token et extractor navigateur
 
 Must:
   Compiler sans aucun gating de feature : aucun `#[cfg(feature = ...)]` dans ./middleware.rs,

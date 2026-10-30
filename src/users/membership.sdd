@@ -6,7 +6,7 @@ Purpose:
   Déclarer l'entité SeaORM de la table d'appartenance utilisateur↔groupe `miryad_group_memberships`
     et exposer @sync_group_memberships, unique chemin d'écriture de cette table : réconciliation
     complète des appartenances d'un utilisateur depuis un ensemble de noms de groupes, source de vérité
-    Authentik (cf. /docs/architecture.md, section RBAC). Appelée à chaque login OIDC (callback de
+    Authentik (cf. /dsd/miryad-core/access-control.md, section RBAC). Appelée à chaque login OIDC (callback de
     /src/auth/mod.rs, cf. References) et à chaque provisionnement @ensure_service_account ; aucune API
     d'assignation manuelle n'existe et n'est prévue.
 
@@ -14,7 +14,7 @@ Owns:
   ./membership.rs
 
 References:
-  /docs/architecture.md — RBAC : Authentik seule source de vérité des appartenances, aucune API d'assignation
+  /dsd/miryad-core/access-control.md — RBAC : Authentik seule source de vérité des appartenances, aucune API d'assignation
   /src/auth/mod.rs — callback de login OIDC : appelé réel de @sync_group_memberships après @resolve_user, depuis
     le claim `groups` extrait par @extract_groups_claim (contexte de lecture sur l'écrivant, pas une
     dépendance de ce fichier)

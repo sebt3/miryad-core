@@ -1,6 +1,6 @@
 //! Client HTTP mince vers l'API System One (`POST /v1/systemone`, modèles de décision au format
 //! TypeSafe), derrière la feature `systemone`. Le module ne monte aucune route HTTP et n'ouvre
-//! aucun état : le client ne garde que son pool `reqwest`. Voir `docs/architecture.md` pour le
+//! aucun état : le client ne garde que son pool `reqwest`. Voir `dsd/miryad-core/systemone.md` pour le
 //! contexte et les décisions.
 
 /// Client HTTP `POST /v1/systemone` : configuration, requête et réponse typées, client.

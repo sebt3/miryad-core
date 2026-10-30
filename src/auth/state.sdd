@@ -8,7 +8,7 @@ Purpose:
     dérivant @Clone seul. Le type est un sous-état : @auth_router, @resource_router,
     @mcp_router et les extracteurs @AuthUser et @AuthPrincipal sont génériques sur
     @S tant que @MiryadAuthState: @FromRef<@S> ; miryad-core n'impose jamais d'@AppState concret
-    (pattern natif d'axum, cf. /docs/architecture.md).
+    (pattern natif d'axum, cf. /dsd/miryad-core/auth.md).
 
 Owns:
   ./state.rs

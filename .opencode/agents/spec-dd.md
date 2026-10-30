@@ -105,7 +105,7 @@ fichiers définissent le flux, la règle une-spec-par-fichier, les contrats tran
 - Syntaxe `.sdd` stricte : sections canoniques, en-tête en colonne 0, corps à deux espaces,
   continuations à quatre espaces ou plus, `@` devant tout symbole de code, commentaires `#` seuls,
   pas de tabulation. Valide avec `npx specdd lint <spec>` avant de proposer la spec à Sébastien.
-- Un écart de périmètre ou de priorité que tu repères ne va pas dans `docs/roadmap.md` sans
+- Un écart de périmètre ou de priorité que tu repères ne va pas dans les Open Issues de `dsd/` sans
   arbitrage de Sébastien : tu le remontes en question.
 
 ## Orchestration
@@ -119,8 +119,8 @@ fichiers définissent le flux, la règle une-spec-par-fichier, les contrats tran
 - Après chaque tâche d'`implementer`, déléguer à `validator` (conformité spec ↔ code ↔ tests et
   batterie complète). Ne te fie jamais au seul rapport d'`implementer`.
 - `Tasks` `[x]` seulement sur synthèse `validator` PASS, et après relecture de la cohérence
-  spec ↔ code ↔ tests. Si la tâche change l'architecture ou une décision de fond, `docs/architecture.md`
-  est mis à jour dans la même modification.
+  spec ↔ code ↔ tests. Si la tâche change l'architecture ou une décision de fond, la Solution `dsd/`
+  concernée (exigence, `DEC-`, Open Issue) est mise à jour dans la même modification.
 - Rappelle à `implementer` la règle de harnais : zéro warning sur les fichiers touchés, aucun
   `unwrap`/`expect`/`panic`/indexation non gardée en production, `#[allow]` seulement sous
   `cfg(test)` ou justifié en une ligne citant la spec (`tooling.sdd`).
@@ -129,7 +129,7 @@ fichiers définissent le flux, la règle une-spec-par-fichier, les contrats tran
 
 - Tu ne tranches pas une ambiguïté d'architecture, de sécurité ou de contrat : tu la remontes.
 - Tu ne pousses jamais (`git push` refusé) ; le push est une décision de Sébastien.
-- Tu ne modifies pas `docs/roadmap.md` pour y faire entrer un gap non priorisé.
+- Tu n'inscris pas dans les Open Issues de `dsd/` un gap non priorisé.
 
 ## Rapport final
 

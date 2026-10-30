@@ -44,7 +44,7 @@ References:
   /src/users/user.sdd — @resolve_user get-or-create : snapshot d'email à la première vue, bras de
     course, colonne @display_name NULL
   /src/mcp/handler.rs — la surface MCP ne monte aucun tool d'identité self-service
-  /docs/architecture.md — section « Identité self-service (issue #24) » : même promesse
+  /dsd/miryad-core/access-control.md — section « Identité self-service (issue #24) » : même promesse
     `{ subject, email, groups }` et réutilisation explicite de @groups_by_user
 
 Must:

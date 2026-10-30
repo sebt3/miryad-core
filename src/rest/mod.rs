@@ -51,7 +51,7 @@ use error::RestError;
 /// (dé)sérialiser `Model` et convertir un `Model` reçu en `ActiveModel` sans code par entité
 /// (`DeriveEntityModel` fournit `IntoActiveModel` automatiquement). Contrainte assumée : une
 /// seule colonne de clé primaire, de type `i32` — vrai pour toutes les entités du crate à ce
-/// jour, documentée comme limite dans `docs/architecture.md`.
+/// jour, documentée comme limite dans `dsd/miryad-core/rest-api.md`.
 ///
 /// Une entité à clé primaire composée (ou, à défaut, un `Model` ne dérivant pas `Deserialize`)
 /// qui implémente pourtant `MiryadResource` reste exclue du routeur à la compilation :

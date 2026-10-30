@@ -38,7 +38,7 @@ pub type GroupMembership = Entity;
 /// Réconciliation complète des appartenances de `user_id` depuis un claim `groups` OIDC : les
 /// groupes absents sont retirés, les nouveaux sont ajoutés (créés à la volée si inconnus). Seul
 /// chemin d'écriture de cette table — pas d'API d'assignation manuelle (Authentik est la source
-/// de vérité, cf. `docs/architecture.md`).
+/// de vérité, cf. `dsd/miryad-core/access-control.md`).
 ///
 /// Les noms vides ou blancs du claim sont filtrés à l'entrée (trace `debug`) : le claim OIDC est
 /// la frontière de confiance externe, `ensure_group` n'est pas gardé (arbitré 2026-09-29). Les

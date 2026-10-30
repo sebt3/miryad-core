@@ -31,7 +31,7 @@ References:
     comme extracteur : les deux surfaces résolvent avec le présent fichier
   /src/rest/openapi.rs — ne déclare que le schéma de sécurité `bearer_auth` côté OpenAPI, le cookie
     HttpOnly étant écarté de l'`Authorize` pour une raison documentée chez lui
-  /docs/architecture.md — formule l'ordre « Bearer d'abord, pas de repli sur le cookie » ; la
+  /dsd/miryad-core/auth.md — formule l'ordre « Bearer d'abord, pas de repli sur le cookie » ; la
     comparaison doc ↔ code est menée dans `Must`
 
 Must:

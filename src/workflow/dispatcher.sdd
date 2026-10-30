@@ -218,7 +218,7 @@ Handles:
     partielle) jusqu'à succès, jusqu'à épuisement de `ServiceOptions::retry_policy_max_attempts` (si
     l'app en a posé un — sinon indéfiniment, `Handles` ci-dessous), ou jusqu'à pause — implication pour
     l'auteur d'un kind : un `run()` qui se déclare `retryable: true` doit être idempotent ou tolérant à
-    une réexécution complète, ./step.rs n'impose rien de ce côté (à documenter dans docs/architecture.md
+    une réexécution complète, ./step.rs n'impose rien de ce côté (à documenter dans dsd/miryad-core/workflow.md
     à la clôture, pas un contrat vérifiable ici).
   Kind durable en échec (#26) : un @StepError `retryable: true` devient un @HandlerError retryable
     — Restate rejoue `execute` depuis le journal (les effets déjà journalisés par @StepContext ne sont
@@ -237,7 +237,7 @@ Handles:
     spike — un step retryable dont la cause ne se résorbe jamais (dépendance externe durablement
     indisponible, kind buggé qui panique systématiquement) retient le run correspondant pour toujours,
     sans jamais passer en `paused`. C'est un choix de l'app, pas une lacune de ./dispatcher.rs : la
-    recommandation documentée (`Must`, docs/architecture.md à la clôture) existe précisément pour
+    recommandation documentée (`Must`, dsd/miryad-core/workflow.md à la clôture) existe précisément pour
     qu'une app n'atterrisse pas ici par omission.
   Panic du `run()` d'un kind : reste dans la même invocation Restate que l'invocation `execute` en
     cours, gouverné par la même `ServiceOptions` qu'un @StepError retryable non capturée par un

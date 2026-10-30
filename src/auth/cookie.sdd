@@ -39,7 +39,7 @@ References:
     cookie authentifie les surfaces REST et MCP
   ./state.rs — @MiryadAuthState.cookie_key : source et propriété du @cookie::Key, hors du périmètre
     de ce contrat (construction, dérivation, rotation)
-  /docs/architecture.md — récit : payload chiffré sans séparateur `|`, pending cookie `Max-Age=300`,
+  /dsd/miryad-core/auth.md — récit : payload chiffré sans séparateur `|`, pending cookie `Max-Age=300`,
     et asymétrie OpenAPI assumée (schéma `bearer_auth` seul, cookie `HttpOnly` non actionnable dans
     Swagger UI)
   /tooling.sdd — dette imputée à ce fichier : `missing_docs` sur les quatre items publics ; le
@@ -121,7 +121,7 @@ Must:
     @AuthPrincipal (./dual.rs, partagé REST/MCP) s’appuient dessus, donc le cookie
     authentifie pareillement, à `401` près, les deux surfaces ; asymétrie constatée et assumée hors
     de ce fichier : /src/rest/openapi.rs ne déclare que le schéma `bearer_auth`, le cookie n’a pas
-    de schéma OpenAPI (/docs/architecture.md)
+    de schéma OpenAPI (/dsd/miryad-core/auth.md)
   Mutisme total : aucune trace @tracing, @println, @eprintln, @dbg ici — les traces du rejet
     (`auth rejected`, debug) appartiennent à @AuthUser (./middleware.rs) et `MRD-AUTH-013` à
     ./mod.rs ; toute trace ajoutée ici exposerait sujet/email et ferait doublon de niveau

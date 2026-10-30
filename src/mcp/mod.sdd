@@ -60,7 +60,7 @@ References:
     `vynil-core = { version = "0.7.7", default-features = false, features = ["hbs"],
     optional = true }` (citation alignée sur le /Cargo.toml le 2026-10-02) ; lecture seule,
     propriétaire /miryad-core.sdd
-  /docs/architecture.md — récit du module MCP (rôle, sortie des formats)
+  /dsd/miryad-core/mcp.md — récit du module MCP (rôle, sortie des formats)
   ../rest/mod.sdd et /src/rest/core.sdd — @RestEntity (borne de @register::<@E>) et
     @rest::core::@list, @rest::core::@get, @rest::core::@create, @rest::core::@update,
     @rest::core::@delete, que ./registry.rs appelle pour la parité de lecture REST/MCP ;

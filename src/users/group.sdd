@@ -55,7 +55,7 @@ References:
   /src/resource.sdd — aucune de ces entités n'y est déclarée pour les groupes : @group::Entity
     n'implémente pas @MiryadResource (vérifié dans toute la crate) ; les groupes ne sont pas une
     ressource CRUD exposée
-  /docs/architecture.md — récit non contractuel : Authentik source de vérité des appartenances,
+  /dsd/miryad-core/access-control.md — récit non contractuel : Authentik source de vérité des appartenances,
     aucune API d'assignation manuelle de groupe, fraîcheur du membership acceptée pour les tokens
 
 Must:

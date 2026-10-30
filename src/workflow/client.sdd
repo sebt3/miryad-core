@@ -79,7 +79,7 @@ Must:
     crate — ./client.rs ne pose jamais `Idempotency-Key` lui-même. Si un appelant de haut niveau veut
     fusionner deux soumissions équivalentes, c'est à lui de le faire avant d'appeler
     @client::trigger_run (par exemple en réutilisant délibérément une clé côté application) ; ce
-    fichier ne fournit aucun mécanisme pour ça. À documenter dans docs/architecture.md à la clôture de
+    fichier ne fournit aucun mécanisme pour ça. À documenter dans dsd/miryad-core/workflow.md à la clôture de
     la feature, comme un choix de périmètre explicite, pas un oubli.
   Un seul @reqwest::Client construit par l'appelant et prêté aux deux fonctions (`&reqwest::Client`,
     jamais possédé) : ./client.rs ne construit pas de client HTTP lui-même, pour que l'app
@@ -144,7 +144,7 @@ Accepts:
     ./client.rs ne restreint ni n'inspecte la forme de `deployment_url` (IP de pod vs nom de `Service`
     Kubernetes) — c'est à l'application consommatrice de savoir ce qu'elle expose et comment Restate
     doit la joindre, pas à cette crate d'en décider ou de le deviner. Recommandation d'usage (un
-    `Service` stable, pas une IP de pod éphémère) documentée dans docs/architecture.md à la clôture,
+    `Service` stable, pas une IP de pod éphémère) documentée dans dsd/miryad-core/workflow.md à la clôture,
     jamais imposée en code.
   @client::trigger_run : un &DagSteps déjà validé structurellement (acyclique, dépendances
     résolues) par ./definition.rs avant d'atteindre ce fichier — ./client.rs ne revalide rien, il
@@ -185,7 +185,7 @@ Handles:
     cours sur l'ancien peut les casser — c'est un risque de rollout (chevauchement d'anciens/nouveaux
     pods derrière le même `Service` le temps d'un rolling update Kubernetes), pas quelque chose que
     ./client.rs peut détecter ou empêcher depuis un seul appel HTTP synchrone. Hors périmètre de ce
-    fichier de l'atténuer ; à documenter clairement dans docs/architecture.md comme un risque
+    fichier de l'atténuer ; à documenter clairement dans dsd/miryad-core/workflow.md comme un risque
     opérationnel du self-host (stratégie de rollout, `Tasks`).
 
 Tasks:
@@ -233,7 +233,7 @@ Tasks:
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
-  Les trois décisions de `Tasks` sont reflétées dans docs/architecture.md à la clôture de la feature
+  Les trois décisions de `Tasks` sont reflétées dans dsd/miryad-core/workflow.md à la clôture de la feature
     (`Service` Kubernetes stable recommandé, risque `force: true` sur rollout, déduplication hors
     périmètre) — aucune n'est laissée en [arbitré 2026-09-29] non documenté.
   ./error.sdd est approuvée avant ou avec cette spec (dépendance directe, pas de test de ./client.rs

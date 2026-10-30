@@ -104,12 +104,13 @@
 //! | `swagger-ui` | Swagger UI sur `/api/swagger-ui` | `utoipa-swagger-ui` |
 //! | `db` *(default)* | Entités `MiryadResource`, comptes locaux, RBAC, migrations internes, tokens API ; active `sea-orm` | `sea-orm`, `sea-orm-migration` |
 //! | `mcp` | Serveur MCP JSON-RPC sur `/mcp` (implique `db`) | `vynil-core` (Handlebars) |
-//! | `workflow` | Moteur de workflow DAG sur Restate (implique `db`) — **aucune** route sur le `axum::Router` de l'app (services liés par l'app elle-même, `Endpoint::builder()` ; voir `docs/architecture.md`) | `restate-sdk`, `uuid`, `tokio`, `vynil-core` (`rhai`) |
+//! | `workflow` | Moteur de workflow DAG sur Restate (implique `db`) — **aucune** route sur le `axum::Router` de l'app (services liés par l'app elle-même, `Endpoint::builder()` ; voir `dsd/miryad-core/workflow.md`) | `restate-sdk`, `uuid`, `tokio`, `vynil-core` (`rhai`) |
 //! | `systemone` | Client HTTP vers l'API System One (`POST /v1/systemone`) — **aucune** route, aucun état | aucune (`reqwest` déjà présent) |
 //! | `matrix` | Client Matrix de bot sur `matrix-sdk` 0.18 (E2EE, store `SeaORM`), hors défaut ; implique `db` | `matrix-sdk`, `matrix-sdk-crypto`, `matrix-sdk-store-encryption`, `zeroize`, `tokio` |
 //!
-//! Voir aussi [`docs/architecture.md`](https://github.com/sebt3/miryad-core/blob/main/docs/architecture.md)
-//! et [`docs/roadmap.md`](https://github.com/sebt3/miryad-core/blob/main/docs/roadmap.md).
+//! Voir aussi la bibliothèque [`dsd/`](https://github.com/sebt3/miryad-core/tree/main/dsd) : le Domain
+//! [`miryad-core`](https://github.com/sebt3/miryad-core/blob/main/dsd/miryad-core.md) et une Solution par
+//! surface (architecture, décisions, points ouverts).
 //!
 //! ## Conventions
 //!
@@ -202,7 +203,7 @@ pub mod users;
 /// Moteur de workflow à DAG (feature `workflow`) : définitions persistées en base, exécutées par
 /// un cluster Restate self-hosté. Ne monte **aucune** route sur le `axum::Router` de l'app — les
 /// services `restate-sdk` sont liés par l'app consommatrice elle-même ; voir
-/// `docs/architecture.md`.
+/// `dsd/miryad-core/workflow.md`.
 #[cfg(feature = "workflow")]
 pub mod workflow;
 

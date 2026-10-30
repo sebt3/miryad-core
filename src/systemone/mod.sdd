@@ -31,7 +31,7 @@ Must:
     `error::SystemOneError`. Chemins consommés : `miryad_core::systemone::SystemOneClient`.
   Compiler sous `#[cfg(feature = "systemone")]` posé dans `/src/lib.rs`, pas dans `mod.rs`.
   Documenter dans le bloc `//!` : la promesse du module, qu'il ne monte aucune route, qu'il n'ouvre
-    aucun état (le client est sans état hors son pool HTTP), et le renvoi vers `docs/architecture.md`.
+    aucun état (le client est sans état hors son pool HTTP), et le renvoi vers `dsd/miryad-core/systemone.md`.
   Documenter dans `/Cargo.toml` (hors `Owns`, diff imposé) exactement : `systemone = []` — **aucune**
     dépendance nouvelle : `reqwest` (features `rustls-tls`, `json`), `serde`, `serde_json`, `thiserror`
     sont déjà des dépendances directes non optionnelles. La feature n'est **pas** dans `default`

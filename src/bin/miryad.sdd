@@ -33,7 +33,7 @@ References:
     lib et aux crates de /tests/
   /src/ir.sdd — son `Must not` interdit tout exécutable ou sous-commande produisant le fichier
     IR dans miryad-core ; frontière à trancher pour l'avenir du CLI (ligne `[?]` de `Tasks`)
-  /docs/roadmap.md — cadre « Grandes étapes vers un scaffolding utilisable », sans item tranché
+  /dsd/miryad-core.md — cadre « Grandes étapes vers un scaffolding utilisable », sans item tranché
     pour le CLI
 
 Must:
