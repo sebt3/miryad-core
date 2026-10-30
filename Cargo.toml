@@ -72,7 +72,7 @@ hex = { version = "0.4", optional = true }
 chrono = { version = "0.4", optional = true }
 utoipa = "5"
 utoipa-swagger-ui = { version = "9", optional = true, features = ["axum", "vendored"] }
-vynil-core = { version = "0.7.7", default-features = false, features = ["hbs"], optional = true }
+vynil-core = { version = "0.9", default-features = false, features = ["hbs"], optional = true }
 tower-http = { version = "0.6", default-features = false, features = ["fs"], optional = true }
 restate-sdk = { version = "0.12", features = ["http_server"], optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
@@ -125,6 +125,10 @@ tracing-subscriber = { version = "0.3", features = ["registry"] }
 # fixtures HS256 des tests oidc/middleware ; optionnelles sous `db` côté lib.
 hmac = "0.12"
 sha2 = "0.10"
+# Graphe de test seulement (miryad-core.sdd A1, `dsd/miryad-core/workflow.md` `DEC-7`/`OI-1`) : les
+# features `fs` et `shell` activées ici prouvent, par un `Scenario` de src/workflow/rhai_step.sdd
+# (tâche A4), qu'aucune feature de `vynil-core` unifiée ailleurs dans le graphe n'atteint les scripts.
+vynil-core = { version = "0.9", default-features = false, features = ["hbs", "fs", "shell"] }
 
 [package.metadata.docs.rs]
 all-features = false
