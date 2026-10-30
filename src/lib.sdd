@@ -20,8 +20,8 @@ References:
     `test`
   /.github/workflows/workflows.sdd — CI sans `cargo doc`, ce qui conditionne la vérification
     effective des lints rustdoc
-  /docs/architecture.md — récit d'architecture, linké par la documentation racine
-  /docs/roadmap.md — priorisation, linké par la documentation racine
+  /dsd/miryad-core.md — récit d'architecture, linké par la documentation racine
+  /dsd/miryad-core.md — priorisation, linké par la documentation racine
 
 Must:
   Déclarer toute la surface publique — exactement douze `pub mod` (amendement 2026-09-23) — et

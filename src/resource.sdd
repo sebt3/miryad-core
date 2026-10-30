@@ -34,7 +34,7 @@ References:
   ./lib.sdd — spec de la racine qui déclare @resource (chemin @miryad_core::resource, aucun
     ré-export) et impose la documentation de @HookError comme erreur applicative
   /tooling.sdd — matrice de features qui prouve l'absence de gating de ce fichier
-  /docs/architecture.md — récit cité par le bloc `//!` du fichier, non contractuel
+  /dsd/miryad-core/resource-model.md — récit cité par le bloc `//!` du fichier, non contractuel
 
 Must:
   Compiler sans aucun gating de feature : aucune condition `#[cfg(feature = ...)]` dans le fichier

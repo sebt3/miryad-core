@@ -1,7 +1,7 @@
 //! Représentation intermédiaire (IR) par entité — feature 8. Dérivée des métadonnées SeaORM déjà
 //! obligatoires pour toute `MiryadResource` (aucune annotation supplémentaire à ajouter par
 //! l'app), destinée au générateur frontend TypeScript du template `miryad`. Séparée d'`openapi.json`
-//! (feature 4b) : deux publics différents, deux artefacts — cf. `docs/architecture.md`.
+//! (feature 4b) : deux publics différents, deux artefacts — cf. `dsd/miryad-core/frontend.md`.
 //!
 //! `FieldIr::references` (relations, #19) est résolu en deux temps : `resource_ir::<E>()` est pure
 //! et ne connaît que le nom de table SQL physique cible (via `E::Relation`, déclaration SeaORM qui
@@ -141,7 +141,7 @@ fn resolve_reference_table(def: &RelationDef, column_name: &str) -> Option<Strin
 #[must_use]
 pub fn resource_ir<E: MiryadResource>() -> EntityIr {
     // `Column` (dérivé par `DeriveEntityModel`) n'implémente pas `PartialEq` — comparaison par nom
-    // (`Iden::to_string`), pas par `==` (cf. `docs/architecture.md`, "Point d'attention").
+    // (`Iden::to_string`), pas par `==` (cf. `dsd/miryad-core/frontend.md`, "Point d'attention").
     let pk_names: Vec<String> = E::PrimaryKey::iter()
         .map(|pk| pk.into_column().to_string())
         .collect();

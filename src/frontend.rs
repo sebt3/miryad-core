@@ -1,6 +1,6 @@
 //! Service statique du frontend compilé — feature 8. Générique : ne connaît rien du contenu réel
 //! des assets, sert un répertoire externe (pas d'embarquement dans le binaire, cf.
-//! `docs/architecture.md`).
+//! `dsd/miryad-core/frontend.md`).
 
 use std::path::PathBuf;
 

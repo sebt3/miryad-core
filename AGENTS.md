@@ -14,7 +14,7 @@ OpenAPI, IR frontend et migrations. Sans la feature `db` (absente de la combinai
 `static-frontend` + `db` l'inclut), la crate est un socle
 d'authentification (OIDC, cookie, JWT Bearer) et de publication d'API sans entités ni comptes
 locaux ; `sea-orm` n'est alors pas dans le graphe. Le moteur de workflow (Restate + step Rhai, feature `workflow`)
-est livré ; ses évolutions sont arbitrées dans `docs/roadmap.md` (item 9). BSD-3-Clause, API instable avant `1.0`.
+est livré ; ses évolutions sont arbitrées dans `dsd/miryad-core/workflow.md` (Open Issues). BSD-3-Clause, API instable avant `1.0`.
 
 Le contexte durable vit ici et n'est pas à re-déduire du code :
 
@@ -24,9 +24,10 @@ Le contexte durable vit ici et n'est pas à re-déduire du code :
   basename dans le même répertoire (`src/auth/oidc.rs` ↔ `src/auth/oidc.sdd`)
 - `tooling.sdd` : le harnais clippy/rustfmt/lints et sa batterie de vérification
 - `.github/workflows/workflows.sdd` : ce que la CI doit prouver
-- `docs/architecture.md` : le récit d'architecture et les décisions (le *pourquoi*, les pièges
-  constatés dans le source des dépendances amont)
-- `docs/roadmap.md` : ce qui reste à arbitrer ou à faire — une feature n'y entre pas sans arbitrage
+- `dsd/` : la bibliothèque DSD (plugin SpecDD) — un Domain `dsd/miryad-core.md` et une Solution par surface
+  dans `dsd/miryad-core/*.md`. Elle porte le *pourquoi* : exigences tracées, décisions (`DEC-`), pièges constatés
+  dans le source des dépendances amont, et le reste à arbitrer (Open Issues, `TBD`) — une feature n'entre pas en
+  spec sans arbitrage
 
 ## Flux de travail : SpecDD + test-first (TTD)
 
@@ -138,5 +139,7 @@ la syntaxe `.sdd`, `specdd resolve <cible>` vérifie la chaîne de specs avant d
 ## Doc détaillée
 
 - `.specdd/bootstrap.project.md` — le flux, la règle une-spec-par-fichier, les contrats transverses
-- `docs/roadmap.md` — reste à faire et arbitrages (le livré vit dans `architecture.md`)
-- `docs/architecture.md` — architecture par module, décisions et pièges
+- `dsd/miryad-core.md` — le Domain : périmètre, contraintes, paysage des Solutions, correspondance avec l'ancienne
+  numérotation de la roadmap
+- `dsd/miryad-core/*.md` — une Solution par surface : exigences, décisions, pièges, critères d'acceptation, Open Issues
+- `.specdd/plugins/**/dsd/plugin.md` — les règles DSD (lire avant d'éditer `dsd/`)

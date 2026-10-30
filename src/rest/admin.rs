@@ -43,7 +43,7 @@ struct ListParams {
 }
 
 /// Monte `GET /api/v1/users` — liste paginée `{ id, subject, email, groups }`, réservée aux
-/// membres du groupe admin (`AdminOnly`, cf. `docs/architecture.md` section RBAC). Réutilise
+/// membres du groupe admin (`AdminOnly`, cf. `dsd/miryad-core/access-control.md` section RBAC). Réutilise
 /// `MiryadAuthState` comme les autres routeurs — rien de nouveau à composer côté app. Préfixe
 /// `/api/v1` figé, cohérent avec `resource_router` (feature 6).
 pub fn users_router<S>() -> Router<S>

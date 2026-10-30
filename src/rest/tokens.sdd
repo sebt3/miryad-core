@@ -230,7 +230,7 @@ Handles:
   Parité des surfaces — exemption écrite (arbitré 2026-09-29, `.specdd/bootstrap.project.md`) : les
     trois routes sont des routes de compte, REST-only par nature ; la règle de parité vise les
     @MiryadResource. Aucune déclaration @utoipa aujourd'hui : fragment des routes de compte à la
-    roadmap (`docs/roadmap.md`).
+    roadmap (`dsd/miryad-core/rest-api.md`).
 
 Tasks:
 # Cinq taches closes 2026-10-01 (vague B3d, validator PASS) ; volet index de

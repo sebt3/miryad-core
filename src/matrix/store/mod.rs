@@ -33,7 +33,7 @@
 //! - `matrix-sdk` est épinglé en `0.18` : la version `0.19` et suivantes imposent
 //!   `libsqlite3-sys` 0.38, en conflit avec le `sqlx-sqlite` de `SeaORM` (`links = "sqlite3"`).
 //!   La feature `sqlite` de `matrix-sdk` n'est jamais activée (`cargo tree -i matrix-sdk-sqlite`
-//!   ne trouve rien). Détail et plan d'extraction : `docs/architecture.md`.
+//!   ne trouve rien). Détail et plan d'extraction : `dsd/miryad-core/matrix.md`.
 
 pub mod error;
 pub mod migration;

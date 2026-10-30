@@ -33,7 +33,7 @@ References:
   /src/rest/tokens.rs — self-service restreint par filtrage SQL sur @principal.subject et garde
     d'égalité entre @record.subject et @principal.subject : @subject sert de clé de propriété
   /src/mcp/handler.rs — @mcp_handler extrait @principal par valeur puis le passe par référence à /src/mcp/registry.rs, qui délègue à @rest::core : la parité MCP s'obtient par délégation sur le même type
-  /docs/architecture.md — récit non contractuel : type unifié, aucun repli silencieux entre sources d'authentification
+  /dsd/miryad-core/auth.md — récit non contractuel : type unifié, aucun repli silencieux entre sources d'authentification
 
 Must:
   Compiler sans aucun gating de feature : aucun `#[cfg(feature = ...)]` dans ./principal.rs,
@@ -91,7 +91,7 @@ Must:
 
 Must not:
   Porter un champ d'appartenance (@is_admin, @groups, identifiant utilisateur) : la fraîcheur de
-    l'appartenance est une limite assumée par /docs/architecture.md pour les tokens API et
+    l'appartenance est une limite assumée par /dsd/miryad-core/auth.md pour les tokens API et
     l'appartenance se relit en base ; un tel champ créerait une seconde source de vérité que
     @sync_group_memberships ne rafraîchirait pas.
   Dériver @PartialEq ou @Eq : aucun code de la crate ne compare deux principaux entiers ; les

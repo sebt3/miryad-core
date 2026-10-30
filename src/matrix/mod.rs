@@ -19,7 +19,7 @@
 //! Le sync démarre par un sync initial sans jeton : **les messages reçus pendant une coupure ne sont
 //! pas rattrapés** (une trace `info` l'annonce au démarrage). Un message peut être remis deux fois
 //! après une bascule de bail : le handler doit être idempotent. Détails et décisions :
-//! `docs/architecture.md`.
+//! `dsd/miryad-core/matrix.md`.
 
 pub mod client;
 pub mod config;

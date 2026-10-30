@@ -21,7 +21,7 @@ Structure:
   ./src/migration/: migrations SeaORM internes `miryad_*`, une spec par migration
   ./src/bin/: CLI `miryad` (scaffolding) — squelette, format du modèle de données non tranché
   ./tests/: crates d'intégration, rattachées à la spec du contrat inter-surface exercé
-  ./docs/: récit d'architecture (`architecture.md`) et priorisation (`roadmap.md`)
+  ./dsd/: bibliothèque DSD — Domain `miryad-core.md` et une Solution par surface (architecture, décisions, reste à arbitrer)
   ./: specs transverses `tooling.sdd` (harnais) et `.github/workflows/workflows.sdd` (CI)
 
 Owns:
@@ -32,8 +32,8 @@ Owns:
   ./.gitignore
   ./AGENTS.md
   ./CLAUDE.md
-  ./docs/architecture.md
-  ./docs/roadmap.md
+  ./dsd/miryad-core.md
+  ./dsd/miryad-core/*.md
   ./.opencode/agents/*.md
 
 Can read:

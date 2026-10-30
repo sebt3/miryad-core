@@ -27,7 +27,7 @@ References:
     sinon, jamais de repli silencieux ; c'est lui qui produit les `401` observés sur cette route.
   /src/auth/error.sdd — codes @AuthError et leurs statuts http.
   /src/auth/state.sdd — @MiryadAuthState et le pattern @FromRef imposé à l'état de l'app.
-  /docs/architecture.md — section « Utilisateurs & Groupes / RBAC », convention `AdminOnly` et
+  /dsd/miryad-core/access-control.md — section « Utilisateurs & Groupes / RBAC », convention `AdminOnly` et
     mention explicite de ce routeur.
   /tooling.sdd — harnais hérité : le fichier est sans gating de feature, il doit passer la
     batterie complète sur chaque combinaison.
@@ -129,7 +129,7 @@ Exposes:
   @ListParams — struct @Deserialize privé du fichier (non exposé) : champs @page et @per_page
     tous deux @Option<@u64>, aucun @deny_unknown_fields.
   En-tête de module `//!` — positionne le routeur dédié en lecture seule, cite
-    @users::sync_group_memberships et la section RBAC de /docs/architecture.md comme motivations.
+    @users::sync_group_memberships et la section RBAC de /dsd/miryad-core/access-control.md comme motivations.
 
 Accepts:
   L'extracteur @AuthPrincipal en tête de handler : token API `Authorization: Bearer` (validé en

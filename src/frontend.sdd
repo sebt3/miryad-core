@@ -19,7 +19,7 @@ References:
     ["dep:tower-http"]`, `tower-http = { default-features = false, features =
     ["fs"] }`
   /tooling.sdd — matrice de batterie de features que le gating de ce fichier impose
-  /docs/architecture.md — récit « Support frontend » : assets externes, pas de
+  /dsd/miryad-core/frontend.md — récit « Support frontend » : assets externes, pas de
     `rust-embed`, feature par défaut attendue de toutes les applications miryad
 
 Must:
@@ -123,7 +123,7 @@ Must not:
 Forbids:
   `rust-embed` et tout mécanisme qui fixe le contenu des assets dans le binaire
     compilé, @std::include_str! et @std::include_bytes! compris : le contrat lit le
-    répertoire à la requête, selon /docs/architecture.md.
+    répertoire à la requête, selon /dsd/miryad-core/frontend.md.
 
 Depends on:
   @tower_http::services::ServeDir — service de `tower-http` `0.6.11`, dont le

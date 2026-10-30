@@ -9,7 +9,7 @@ Purpose:
     retryable) ; `on_fail: "continue"` rend plutôt `passed: false` et laisse l'aval décider.
   Disponible seulement sous `workflow` **et** `systemone` (décision de Sébastien 2026-10-06) ; comme
     `RhaiStep`, l'application l'enregistre elle-même (`StepRegistry::register(SystemOneStep::new(client))`,
-    ./step.sdd, aucune découverte automatique) — à documenter dans la rustdoc et `docs/architecture.md`.
+    ./step.sdd, aucune découverte automatique) — à documenter dans la rustdoc et `dsd/miryad-core/systemone.md`.
     Fichier neuf, conception.
   La `config` du step est rendue par ./template.sdd avant `run` : `state`, `instructions` et
     `criteria` peuvent donc référencer `inputs` (`{{inputs.fetch.body}}`) sans code dans ce fichier.

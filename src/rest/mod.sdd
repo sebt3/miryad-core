@@ -65,7 +65,7 @@ References:
     @axum::extract::State et @FromRef ; le contrat de ce type est le sien, pas celui d'ici
   /src/auth/dual.sdd — l'@impl @FromRequestParts for @AuthPrincipal que consomment les cinq
     handlers vit là (dual-auth bearer-prioritaire) ; ./mod.rs n'en est que le consommateur
-  /docs/architecture.md — récit : préfixe `/api/v1` figé (feature 6), contrainte assumée de
+  /dsd/miryad-core/rest-api.md — récit : préfixe `/api/v1` figé (feature 6), contrainte assumée de
     clé primaire unique `i32` documentée à la section de @RestEntity
   /tooling.sdd — harnais et batterie sur chaque combinaison de features ; la preuve de
     non-gating du fichier est le run `--no-default-features`
@@ -94,7 +94,7 @@ Must:
     @Self) + @Send, et @PrimaryKey: @PrimaryKeyTrait(ValueType = @i32) +
     @PrimaryKeyToColumn(Column = @Self::@Column) — l'@impl blanket (`impl<E> RestEntity for E
     where ...`) rend toute @impl manuelle impossible et inutile ; la borne @ValueType = @i32
-    est la limite documentée du crate (clé primaire unique, cf. /docs/architecture.md).
+    est la limite documentée du crate (clé primaire unique, cf. /dsd/miryad-core/rest-api.md).
   Tenir vérifié dans le source amont, non dans la doc : @sea-orm `2.0.2` donne aux clés
     composées un @PrimaryKeyTrait::@ValueType @tuple (`type ValueType = (i32, i32)` —
     sea-orm-macros et les entités expansées de sea-orm-codegen, lus) — une clé composée est

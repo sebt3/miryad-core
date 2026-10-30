@@ -42,7 +42,7 @@ References:
     vaut ici
   ../resource.sdd — @MiryadResource, lu en amont de @RestEntity dont ce fichier hérite via
     @OpenApiEntity
-  /docs/architecture.md — section « OpenAPI + Swagger UI » : choix de l'API bas niveau de @utoipa (ni
+  /dsd/miryad-core/rest-api.md — section « OpenAPI + Swagger UI » : choix de l'API bas niveau de @utoipa (ni
     la macro @utoipa::@path ni @utoipa_axum, incompatibles avec des handlers génériques), enveloppe de
     pagination construite à la main faute de @ToSchema sur @PagedResult, point d'attention
     `#[schema(as = NomUnique)]`
@@ -99,7 +99,7 @@ Must:
     à n'importe quelle casse ; la phrase complète est le wording en vigueur, pas une formule libre.
   N'autoriser que l'authentification par token API dans le schéma : aucun @SecurityScheme pour le
     cookie de session — il est @HttpOnly et chiffré, inutilisable depuis le champ « Authorize » de
-    Swagger UI (décision documentée de /docs/architecture.md).
+    Swagger UI (décision documentée de /dsd/miryad-core/rest-api.md).
   Poser le fragment comme document à fusionner, pas fini : @openapi::@resource_openapi ne renseigne
     pas @Info (titre/version) — une @utoipa::openapi::@OpenApi::@merge ne fusionne jamais `info` ;
     l'app remplit ces champs sur le document final. En sérialisé, le fragment rendu porte donc
@@ -141,10 +141,10 @@ Must:
     interdiction héritée de /miryad-core.sdd dont ce fichier est l'artefact tentant.
   Les routes de compte (`/api/v1/me`, `/api/v1/users`, `/api/v1/tokens`) et `/auth/*` n'ont aucun
     fragment (arbitré par Sébastien le 2026-09-29) : exclusion assumée pour cette version, fragment des routes de compte inscrit à
-    `docs/roadmap.md` ; les redirections navigateur `/auth/*` restent hors document (déjà arbitré).
+    `dsd/miryad-core/rest-api.md` ; les redirections navigateur `/auth/*` restent hors document (déjà arbitré).
   Les homonymes de schémas `Model` sans `#[schema(as)]` restent un point d'attention documentaire
     (arbitré par Sébastien le 2026-09-29) : la fusion @utoipa écarte le second en silence et la crate ne peut pas intercepter le
-    `merge` ; `#[schema(as)]` reste une exigence d'usage de `docs/architecture.md`.
+    `merge` ; `#[schema(as)]` reste une exigence d'usage de `dsd/miryad-core/rest-api.md`.
   **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute mention contraire (« @utoipa non optionnelle », « aucun `#[cfg]` »
     hors `swagger-ui`) de ce fichier. Sous `#[cfg(feature = "db")]` : le trait @OpenApiEntity (qui exige @RestEntity), la fonction
     @resource_openapi, et tout item du fichier consommé par eux seuls (constantes de schéma/sécurité, aides de construction,
@@ -170,7 +170,7 @@ Must not:
     question de couvrir les autres routes REST du crate est ouverte en `Tasks`).
   Réécrire les schémas avec la macro @utoipa::@path ou @utoipa_axum : ils exigent une fonction concrète
     par route, incompatible avec les handlers génériques par entité — choix acté et documenté dans
-    /docs/architecture.md ; de même ne pas exiger un @ToSchema écrit à la main sur @PagedResult.
+    /dsd/miryad-core/rest-api.md ; de même ne pas exiger un @ToSchema écrit à la main sur @PagedResult.
   Poser @swagger_ui_router ou son test hors de leur `#[cfg(feature = "swagger-ui")]` : @utoipa_swagger_ui
     est optionnelle, un `#[cfg]` manquant casse la compilation `--no-default-features`.
 
@@ -250,7 +250,7 @@ Raises:
 Handles:
   Fusion de fragments de plusieurs entités : chemins distincts coexistent ; homonymes de schémas — deux
     entités dérivant un @ToSchema nu portent toutes deux le nom du type @Model et @utoipa ne garde que
-    le premier schéma rencontré, en silence (source @utoipa-5.5.0 vérifiée) ; /docs/architecture.md en
+    le premier schéma rencontré, en silence (source @utoipa-5.5.0 vérifiée) ; /dsd/miryad-core/rest-api.md en
     fait l'exigence `#[schema(as)]` côté app, que le trait @OpenApiEntity ne peut pas forcer — question
     ouverte en `Tasks`.
   Collision du nom d'enveloppe : une entité dont le schéma s'appellerait `PagedX`, homonyme du

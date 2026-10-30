@@ -51,11 +51,13 @@ Sébastien, pas d'implémentation avant les tests dérivés de la spec.
 
 - La spec `.sdd` est le **contrat** : ce qui est dû, ce qui est interdit, ce qui est prouvé
   par un test. C'est l'autorité pour implémenter et pour vérifier.
-- `./docs/architecture.md` est le **récit d'architecture** (le pourquoi, les décisions, les
-  pièges de dépendances constatés dans le source des amont). Il se met à jour à la clôture
-  d'une feature ; il ne remplace jamais un contrat et ne se substitue pas à une spec.
-- `./docs/roadmap.md` est la **priorisation grosse maille**. Un gap repéré par un agent n'y
-  entre pas sans décision explicite de Sébastien sur sa priorité.
+- `./dsd/` est la **bibliothèque DSD** (plugin SpecDD, règles dans `.specdd/plugins/**/dsd/plugin.md`) : le
+  Domain `miryad-core` et une Solution par surface. Elle porte le pourquoi (exigences tracées, décisions `DEC-`,
+  pièges de dépendances constatés dans le source des amont) et le reste à arbitrer (Open Issues, `TBD`). Flux d'une
+  évolution : Domain, puis Solution, puis specs `.sdd`, puis code. Elle ne remplace jamais un contrat et ne se
+  substitue pas à une spec : une exigence DSD se réalise par la conséquence locale d'une spec (`Realized by`).
+- Un gap repéré par un agent n'entre pas dans les Open Issues d'une Solution sans décision explicite de Sébastien
+  sur sa priorité.
 - Il n'y a plus de design de feature dans `docs/features/` : le design se rédige dans la spec
   `.sdd` de la cible et dans ses `Tasks`.
 

@@ -75,7 +75,7 @@ References:
     `-32001`), @RestError::Database → @McpError::Database (`MRD-MCP-003`, `-32603`),
     @RestError::Application → @McpError::Application (`-32000`, `data.code`) — parité des décisions,
     traduction des codes
-  /docs/architecture.md — récit : PK unique @i32 comme limite documentée, raison du noyau partagé
+  /dsd/miryad-core/rest-api.md — récit : PK unique @i32 comme limite documentée, raison du noyau partagé
     contre la duplication REST/MCP
 
 Must:

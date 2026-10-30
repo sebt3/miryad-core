@@ -111,8 +111,8 @@ Ce qui disparaît :
 ## Documentation
 
 * Crate : <https://docs.rs/miryad-core>
-* Architecture : [`docs/architecture.md`](docs/architecture.md)
-* Roadmap : [`docs/roadmap.md`](docs/roadmap.md)
+* Architecture, décisions et reste à faire : [`dsd/`](dsd/) (Domain [`miryad-core`](dsd/miryad-core.md) et une
+  Solution par surface)
 
 ## Licence
 

@@ -9,7 +9,7 @@
 //! Lancement explicite :
 //! `cargo test --no-default-features --features workflow --test workflow_restate -- --ignored`.
 //!
-//! Hors périmètre (reste au spike du 2026-09-22 et à `docs/architecture.md`) : la reprise sur
+//! Hors périmètre (reste au spike du 2026-09-22 et à `dsd/miryad-core/workflow.md`) : la reprise sur
 //! crash du *processus service* — le serveur de test vit dans le processus du test et ne peut pas
 //! être tué sans tuer le test. Le rejeu d'un step transitoire, lui, est exercé ici.
 

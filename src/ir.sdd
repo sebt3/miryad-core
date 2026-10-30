@@ -10,7 +10,7 @@ Purpose:
     publics, deux contrats qui évoluent séparément — /miryad-core.sdd interdit d'étendre le
     document OpenAPI d'extensions `x-miryad-*` ; l'IR est l'artefact interne de l'outillage de
     scaffolding, `openapi.json` reste le contrat externe, et @ir ne le consomme jamais (séparation
-    consignée dans /docs/architecture.md, section Support frontend).
+    consignée dans /dsd/miryad-core/frontend.md, section Support frontend).
   Accumuler les IR d'entités dans @ir::IrRegistry et sérialiser un fichier JSON unique ; la
     production du fichier (binaire dédié ou sous-commande) reste à la charge de l'app
     consommatrice — miryad-core ne fournit pas d'exécutable pour cela.
@@ -25,7 +25,7 @@ Can read:
     optionnelles, qu'aucune feature n'alimente ce module et que cette absence de gating est un fait
 
 References:
-  /docs/architecture.md — section Support frontend : justification de la séparation, vocabulaire
+  /dsd/miryad-core/frontend.md — section Support frontend : justification de la séparation, vocabulaire
     de types repris d'OpenAPI, point d'attention `is_owner` et résolution en deux temps des
     references (#19)
   /tooling.sdd — matrice de features que ce module doit traverser sans aucun gating

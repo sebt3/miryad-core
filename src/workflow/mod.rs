@@ -5,7 +5,7 @@
 //! `workflow` ne monte **aucune** route sur le `axum::Router` de l'app : ses services parlent le
 //! protocole `restate-sdk`, servis par un `HttpServer`/`Endpoint` que l'app construit et lie
 //! elle-même dans son propre `main()`. Schéma de déploiement (StatefulSet Restate, vynil box)
-//! dans `docs/architecture.md`.
+//! dans `dsd/miryad-core/workflow.md`.
 //!
 //! Les kinds natifs à dépendance externe ne sont **pas** enregistrés par le moteur : l'application les
 //! enregistre elle-même dans son `StepRegistry`, comme `RhaiStep` — `register(SystemOneStep::new(client))`

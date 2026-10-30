@@ -29,7 +29,7 @@ References:
     décisions réelles de refus, y compris pour @rbac::can_create, sont ici
   /tooling.sdd — dette stricte `unreachable` : purgée dans ./rbac.rs le 2026-09-29 (tâche A1,
     synthèse validator PASS), et matrice de batteries de vérification
-  /docs/architecture.md — récit : admin est une convention de groupe sans rien de spécial au
+  /dsd/miryad-core/access-control.md — récit : admin est une convention de groupe sans rien de spécial au
     schéma, lecture par @users::group::is_admin seulement, limite acceptée des tokens API quant à
     la fraîcheur de membership
   ./rest/core.rs — appelant direct : @rest::core::list, @rest::core::get, @rest::core::create et

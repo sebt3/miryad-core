@@ -6,7 +6,7 @@ Purpose:
     piloter l'application fille `vanyline` depuis un client Matrix, puis le futur harnais de
     chatbot). Le module fournit les **primitives de base** — se connecter, envoyer, lire (historique et
     flux), rejoindre — sans logique de conversation : la couche chatbot viendra du harnais (hors de cette
-    spécification, `docs/roadmap.md`), qui consommera `MatrixEventHandler`.
+    spécification, `dsd/miryad-core/matrix.md`), qui consommera `MatrixEventHandler`.
   Construit sur `matrix-sdk` (décision de Sébastien 2026-10-06 : ne pas réinventer la cryptographie ni
     l'authentification), **épinglé en `0.18`** : spike du 2026-10-06, `matrix-sdk` ≥ 0.19 impose
     `libsqlite3-sys` 0.38 et casse le graphe avec le `sqlx-sqlite` de SeaORM (`links = "sqlite3"`).
@@ -38,7 +38,7 @@ Must:
   Documenter dans le bloc `//!` : la promesse du module, le déploiement requis (base de données déjà
     présente, migrations `matrix::store::migrations()` appliquées via `miryad_core::migration::Migrator`),
     la limite « sync initial au démarrage, pas de rattrapage des messages reçus pendant une coupure »
-    (`Tasks`), la contrainte d'épinglage `matrix-sdk` et le renvoi vers `docs/architecture.md`.
+    (`Tasks`), la contrainte d'épinglage `matrix-sdk` et le renvoi vers `dsd/miryad-core/matrix.md`.
   Documenter dans `/Cargo.toml` (hors `Owns`, diff imposé) exactement :
     `matrix = ["dep:matrix-sdk", "dep:matrix-sdk-crypto", "dep:matrix-sdk-store-encryption", "dep:tokio"]`
     (`tokio` est déjà une dépendance optionnelle, partagée avec `workflow` — ses features passent à
