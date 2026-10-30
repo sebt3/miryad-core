@@ -13,12 +13,11 @@ Purpose:
     Les données d'un run peuvent provenir d'un tiers non fiable (message Matrix, requête API) et une
     politique `OwnerOnly` (./definition.sdd) fait de chaque utilisateur l'auteur de ses templates :
     `read_to_str`/`env_var` ne doivent jamais être joignables depuis un template de workflow.
-  Fichier neuf, conception. API de `vynil-core` `0.7.7` vérifiée dans son source local :
-    `HandleBars::new()`, `HandleBars::render(&mut self, template: &str, data: &Value) -> Result<String>`,
-    `HandleBars::engine_mut() -> &mut handlebars::Handlebars` (accès à `set_strict_mode`,
-    `register_escape_fn`, `unregister_helper`). Le retrait par liste noire ci-dessous est transitoire :
-    issue sebt3/vynil-core#13 demande un moteur « sans effet de bord sur l'hôte » à la construction ;
-    quand elle est livrée, `engine()` s'y branche et la liste noire disparaît (`Tasks`).
+  Fichier neuf, conception. API de `vynil-core` `0.9` : `HandleBars::new_restricted()` (issue
+    sebt3/vynil-core#13, livrée en 0.8.0, puis reconstruite sur une **liste blanche** en 0.9.0 : un helper hôte
+    ajouté plus tard en amont n'est jamais enregistré — amendement 2026-10-30, `dsd/miryad-core/workflow.md`
+    `DEC-7`), `HandleBars::render(&mut self, template: &str, data: &Value) -> Result<String>` et
+    `HandleBars::engine_mut() -> &mut handlebars::Handlebars` (accès à `set_strict_mode`, `register_escape_fn`).
 
 Owns:
   ./template.rs
@@ -29,14 +28,19 @@ References:
   ./rhai_step.sdd — appelant de @render_str (fonction `render` exposée aux scripts) ; déclare `script` en champ brut
   ./subworkflow.sdd — déclare `dag` en champ brut : les templates des steps enfants sont rendus par le run enfant
   ../mcp/format.sdd — précédent d'usage de @vynil_core::hbs::HandleBars dans la crate (moteur frais par appel)
-  issue sebt3/vynil-core#13 — exclusion des helpers d'accès fichiers/environnement à la source
+  issue sebt3/vynil-core#13 — exclusion des helpers d'accès fichiers/environnement à la source (livrée : 0.8.0, liste blanche en 0.9.0)
 
 Must:
-  Contexte de rendu : un objet JSON `{"inputs": <inputs>, "run": {"run_key": .., "step_id": .., "depth": ..}}`,
+  Contexte de rendu : un objet JSON `{"inputs": <inputs>, "run": {"run_key": .., "step_id": .., "depth": ..}, "vars": <run.vars>}`
+    (`vars` : amendement 2026-10-30, lot B, `dsd/miryad-core/workflow.md` `FR-12`/`FR-13` ; `run.vars` est toujours un objet JSON,
+    `{}` pour un run sans variables),
     construit par `fn context(run: &RunInfo, inputs: &HashMap<String, Value>) -> Value` (privée,
     pure). `inputs` est l'objet des sorties amont tel que reçu par le kind (clé = id du step amont,
     ./step.sdd) ; aucun autre canal (un template ne voit jamais la sortie d'un step dont son step ne
     dépend pas, même décision que ./step.sdd).
+  `vars` est de la **donnée** : ses valeurs ne sont jamais rendues comme gabarit (seules le sont les `string` de la `config`
+    du step, règle 1 de @render_config), même quand une valeur contient `{{`. `{{vars.x}}` lit la valeur ; sur une variable
+    absente il échoue en mode strict comme toute variable absente (`dsd/miryad-core/workflow.md` `CON-7`).
   `pub(crate) fn render_config(config: &Value, run: &RunInfo, inputs: &HashMap<String, Value>,
     raw_fields: &[&str]) -> Result<Value, StepError>` — rend récursivement la `config` :
     1. `String` → rendue par le moteur ; une chaîne sans la sous-chaîne `{{` est rendue telle quelle
@@ -58,13 +62,16 @@ Must:
     (utilisé par la fonction Rhai `render`, ./rhai_step.sdd).
   Moteur (`fn engine() -> HandleBars<'static>`, privée) : un moteur **neuf par appel** de
     @render_config / @render_str (jamais partagé ni réutilisé entre deux steps, même règle que le
-    `Script` de ./rhai_step.sdd) ; `HandleBars::new()` puis, via `engine_mut()` :
+    `Script` de ./rhai_step.sdd) ; `HandleBars::new_restricted()` (amendement 2026-10-30) puis, via `engine_mut()` :
     `set_strict_mode(true)` (une variable absente est une erreur, jamais une chaîne vide — un
     workflow qui rend « bonjour  » sans nom est un bug à voir, pas à masquer) ;
     `register_escape_fn(|s| s.to_owned())` (aucun échappement HTML) ;
-    retrait (`unregister_helper`) de chaque nom de @DENIED_HELPERS, constante privée :
-    `read_to_str`, `env_var`, `canonicalize`, `parent`, `file_name`, `extension`, `jsonnet`.
-    Un template qui les appelle échoue au rendu (helper inconnu en mode strict).
+    **aucune liste noire locale** : les six helpers d'accès à l'hôte (`read_to_str`, `env_var`, `canonicalize`, `parent`,
+    `file_name`, `extension`) ne sont jamais enregistrés par `new_restricted()` (liste blanche amont) ; un template qui les
+    appelle échoue au rendu (helper inconnu en mode strict). `jsonnet` reste enregistré par `new_restricted()` en 0.9.0 et ne
+    doit lire aucun fichier de l'hôte (`Scenario` ci-dessous, `dsd/miryad-core/workflow.md` `CON-5`). Si ce `Scenario` échoue
+    sous `new_restricted()` seul, l'implémentation garde **uniquement** `unregister_helper("jsonnet")` (constante privée
+    `DENIED_HELPERS = ["jsonnet"]`), le consigne dans son rapport et remonte : la correction relève de `vynil-core`.
   Erreurs : toujours @StepError { retryable: false, .. } — un template invalide ou une variable
     absente est déterministe vis-à-vis de ses entrées, rejouer ne change rien. Le message est
     `format!("template invalide à {pointer}: {e}")` où `pointer` est le pointeur JSON (RFC 6901,
@@ -79,8 +86,8 @@ Must not:
   Rendre une clé d'objet, ou rendre deux fois une même sortie : un template ne fabrique pas de noms de
     champ, et un double rendu ferait d'une donnée tierce un template (injection).
   Enregistrer un helper ou un partial supplémentaire (`register_helper_dir`, `register_partial_dir`,
-    `register_template`) : le moteur durci n'a que les helpers de `HandleBars::new()` moins la liste
-    noire — une application qui a besoin d'un helper l'obtient par un kind, pas par le moteur central.
+    `register_template`) : le moteur durci n'a que les helpers de `HandleBars::new_restricted()` (liste
+    blanche amont) — une application qui a besoin d'un helper l'obtient par un kind, pas par le moteur central.
   Journaliser (`tracing`) un contexte, une sortie rendue ou une valeur d'`inputs` : ils peuvent
     porter des secrets ou des données personnelles ; aucune trace dans ce fichier.
   Appeler Restate : ce fichier est de la logique pure, testable sans serveur ni `restate-sdk`.
@@ -114,9 +121,14 @@ Tasks:
     Validé 2026-10-13 (validator) : 15 tests nommés verts, clippy `workflow` et `--no-default-features` sans écart ;
     `#[allow(dead_code)]` sur `render_config`/`render_str` jusqu'à la tâche dispatcher. Scenario « helpers utiles »
     amendé (arbitré par Sébastien) : `to_json` de vynil-core est un helper de bloc, `json_to_str` le remplace.
-  [ ] Après livraison de sebt3/vynil-core#13 : remplacer @DENIED_HELPERS et les `unregister_helper`
-    par le constructeur restreint de `vynil-core`, supprimer la liste noire, bumper `vynil-core`
-    (spec et `Cargo.toml` ensemble). Ne pas le faire avant : la liste noire est le contrat actuel.
+  [ ] A2 (2026-10-30, `dsd/miryad-core/workflow.md` `DEC-7`) : `engine()` construit `HandleBars::new_restricted()` (après
+    la tâche A1 de /miryad-core.sdd, `vynil-core` 0.9) ; supprimer @DENIED_HELPERS et ses `unregister_helper`, sauf `jsonnet`
+    si le `Scenario` « jsonnet ne lit aucun fichier de l'hôte » échoue sous `new_restricted()` seul (voir `Must`, Moteur).
+    Le `Scenario` jsonnet est écrit d'abord : contre le code actuel il passe (la liste noire retire `jsonnet`), le rouge
+    éventuel n'apparaît qu'au retrait de la liste — le consigner dans le rapport. Un fichier : ./template.rs.
+  [ ] B2 (2026-10-30, `FR-12`/`FR-13`, `CON-7`) : le contexte de rendu porte `"vars"` (lu dans `run.vars`, ./step.sdd), sans
+    changer les signatures de @render_config / @render_str ; `Scenario` « vars » ci-dessous. Après B1 (./step.sdd).
+    Un fichier : ./template.rs.
   [x] Typage des rendus : `"$json"` explicite, pas d'inférence (arbitré par Sébastien le 2026-10-06) — une
     inférence « la chaîne ressemble à un nombre » casserait des données légitimes (`"007"`, `"01200"`, `"true"`).
     Du sucre (helper dédié) reste un ajout futur sans changer ce défaut.
@@ -201,3 +213,19 @@ Scenario: render_str utilise le même moteur et le même contexte
   Given `inputs = {"a": "Z"}`
   When `render_str("v={{inputs.a}}", ..)` est appelé
   Then le résultat est `Ok("v=Z")` ; avec `{{inputs.nope}}` il rend @Err(StepError { retryable: false, .. })
+
+Scenario: jsonnet ne lit aucun fichier de l'hôte (2026-10-30)
+  Given un fichier réel de contenu unique `CONTENU-SONDE-7f3a`, de chemin absolu `p`
+  When `render_str` est appelé avec `{{#jsonnet}}importstr "<p>"{{/jsonnet}}`
+  Then le résultat ne contient pas `CONTENU-SONDE-7f3a` (rendu en @Err ou sortie sans le contenu) ; s'il le contient sous
+    `new_restricted()` seul, voir `Must` (Moteur)
+
+Scenario: vars est lisible dans un gabarit (2026-10-30, lot B)
+  Given `run.vars = {"project": "p1"}` et `config = {"x": "{{vars.project}}"}`
+  When `render_config` est appelé
+  Then le résultat est `{"x": "p1"}` ; avec `run.vars = {}`, la même `config` rend @Err(StepError { retryable: false, .. }) (mode strict)
+
+Scenario: une valeur de vars n'est jamais rendue comme gabarit (2026-10-30, lot B)
+  Given `run.vars = {"note": "{{inputs.x}}"}`, `inputs = {"x": "SECRET"}` et `config = {"y": "{{vars.note}}"}`
+  When `render_config` est appelé
+  Then `y` vaut `{{inputs.x}}` littéral — la valeur de `vars` n'a pas été évaluée, `SECRET` n'apparaît pas

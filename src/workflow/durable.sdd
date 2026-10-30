@@ -73,14 +73,14 @@ Must:
       @TerminalError ; l'échec final est rendu en @StepError `retryable: false` avec le message de
       l'erreur terminale. **Un seul appel concurrent par @StepContext n'est pas imposé** mais
       `run_effect` ne doit pas être appelé dans la fermeture d'un autre `run_effect` (limite du SDK).
-    `async fn run_child_dag(&self, dag: &DagSteps) -> Result<@HashMap<@String, @serde_json::Value>,
+    `async fn run_child_dag(&self, dag: &DagSteps, vars: &@serde_json::Map<@String, @serde_json::Value>) -> Result<@HashMap<@String, @serde_json::Value>,
       StepError>` — lance un `DagInterpreter` enfant et attend sa fin, **de façon idempotente au
       rejeu** :
       1. `child_key = child_run_key(&self.run.run_key, &self.run.step_id)` (déterministe : la même
           invocation parente rejouée recalcule la même clé, donc ne crée jamais de doublon — la clé
           de workflow Restate est unique par run) ;
-      2. `ctx.request::<Json<DagSteps>, Json<HashMap<String, Value>>>(RequestTarget::workflow(
-          "DagInterpreter", child_key, "run"), Json(dag.clone())).header(DEPTH_HEADER.to_string(),
+      2. `ctx.request::<Json<RunInput>, Json<HashMap<String, Value>>>(RequestTarget::workflow(
+          "DagInterpreter", child_key, "run"), Json(RunInput { dag: dag.clone(), vars: vars.clone() })).header(DEPTH_HEADER.to_string(),
           self.run.depth.saturating_add(1).to_string()).call().await` ;
       3. @Err(TerminalError) du fils (DAG invalide `400`, step en échec, annulation) → @StepError
           { retryable: false, message: e.to_string() } — **un échec de l'enfant fait échouer le parent**
@@ -180,6 +180,10 @@ Tasks:
     `Scenario` ci-dessous. Même lot que ./step.sdd.
     Validé 2026-10-13 (validator) : trois tests nommés verts (step.rs ×2, durable.rs ×1), clippy workflow sans écart.
     `StepRegistry::raw_fields` porte un `#[allow(dead_code)]` jusqu'à la tâche dispatcher du même lot.
+
+  [ ] B7b (2026-10-30, `FR-15`) : `run_child_dag(&self, dag, vars)` envoie un `RunInput` (./interpreter.sdd, amendement lot B) ;
+    même tâche que B7a de ./subworkflow.sdd (le seul appelant) — les deux fichiers ensemble. Après B4. Fichiers : ./durable.rs
+    (avec ./subworkflow.rs).
 
 Done when:
   Les `Scenario` ci-dessous ont chacun un test nommé distinct et vert, sur la feature `workflow` ; les

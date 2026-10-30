@@ -63,6 +63,10 @@ Must:
       aurait eue, `max` le plafond du kind. Même statut que `InvalidDag` : erreur de **structure** du
       workflow (et non de communication Restate), déclarée ici parce que ce fichier est l'unique
       porteur de la taxonomie `MRD-WORKFLOW-*` ; construite exclusivement par ./subworkflow.rs.
+    @WorkflowError::ScriptTimeout { seconds: @u64 } → `MRD-WORKFLOW-009` → @Display `MRD-WORKFLOW-009: script
+      exceeded its time limit of {seconds}s` (2026-10-30, `dsd/miryad-core/workflow.md` `FR-18`) — durée d'exécution d'un
+      script Rhai dépassée ; construite exclusivement par ./rhai_step.rs, qui la traduit en @StepError non retryable
+      (rejouer dépasserait de nouveau).
   Classifier un @reqwest::Error brut (reqwest `0.12.28`, verifié `src/error.rs` du crate) par
     @client::classify_transport_error(@reqwest::Error) -> WorkflowError, seule fonction du fichier en
     dehors du type : `@reqwest::Error::is_decode() || @reqwest::Error::is_body()` devient
@@ -161,6 +165,8 @@ Raises:
     @WorkflowConfig::validate (./client.rs), appelée en tête de @client::register_deployment et de
     @client::trigger_run, sur `admin_url` ou `ingress_url` vide, non parsable ou de schéma hors
     `http`/`https` ; construction directe, aucun @reqwest::Error impliqué (arbitré 2026-09-29).
+  `MRD-WORKFLOW-009` — @WorkflowError::ScriptTimeout : rendu exclusivement par ./rhai_step.rs (`RhaiStep::run`) quand
+    `timeout_secs` expire ; construction directe, aucun @reqwest::Error impliqué.
 
 Handles:
   Distinction Unreachable/Serialization : un serveur Restate down (connexion refusée) et un serveur
@@ -194,6 +200,9 @@ Tasks:
   [x] Convertir les scenarios de cette spec en tests distincts nommés dans `mod tests` de ./error.rs :
     fichier neuf à l'origine ; vérifié en revue 2026-09-24 : un test nommé par `Scenario` (sept, dont
     les variantes de configuration ajoutées le même jour), verts.
+  [ ] A3 (2026-10-30, `dsd/miryad-core/workflow.md` `FR-18`) : variante @WorkflowError::ScriptTimeout { seconds: u64 }
+    (`MRD-WORKFLOW-009`), @Display à égalité exacte (`Must`) ; à faire avant la tâche A5 de ./rhai_step.sdd qui la construit.
+    Un fichier : ./error.rs.
 
 Done when:
   Les `Scenario` ci-dessous ont chacun au moins un test nommé distinct et vert, sur la feature
@@ -271,3 +280,8 @@ Scenario: MaxDepthExceeded rend le code MRD-WORKFLOW-008 (#26)
   Given une @WorkflowError::MaxDepthExceeded { depth: 5, max: 4 }
   When la @Display est évaluée
   Then la chaîne est exactement `MRD-WORKFLOW-008: sub-workflow depth 5 exceeds the maximum of 4`
+
+Scenario: ScriptTimeout se rend avec son code (2026-10-30)
+  Given @WorkflowError::ScriptTimeout { seconds: 30 }
+  When son @Display est rendu
+  Then la chaîne est exactement `MRD-WORKFLOW-009: script exceeded its time limit of 30s`

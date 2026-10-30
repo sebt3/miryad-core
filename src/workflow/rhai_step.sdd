@@ -95,7 +95,8 @@ Must:
       rejouant).
     2. `self.resolver_path.clone()` capturé par la fermeture `move` avant `tokio::task::spawn_blocking`
       (`Must not` en explique la raison de `spawn_blocking`) : à l'intérieur,
-      `Script::new_bare(resolver_path)` (le clone capturé — `vec![]` uniquement si `RhaiStep` a été
+      le `Script` **construit à la main** par `build_script(resolver_path, &run)` (amendement 2026-10-30, voir
+      « Construction du moteur » ci-dessous ; le clone capturé — `vec![]` uniquement si `RhaiStep` a été
       construit par `Default`) ; `script.engine.set_max_operations(MAX_OPERATIONS)` (constante privée
       `MAX_OPERATIONS = 10_000_000`, plafond du moteur Rhai : un script qui la dépasse est interrompu
       par Rhai lui-même, `ErrorTooManyOperations`, rendu par l'étape 3) ; `set_dynamic("inputs", &Value::Object(inputs.into_iter().collect()))`
@@ -120,6 +121,45 @@ Must:
       traduction dédiée) → @StepError { retryable: false, message: format!("rhai task panicked: {e}") }.
     5. @Ok(valeur) → @Ok(valeur), la @serde_json::Value rendue par `eval_map_json` telle quelle,
       aucune enveloppe.
+  Construction du moteur (amendement 2026-10-30, `dsd/miryad-core/workflow.md` `DEC-8`, `FR-16`, `FR-17`) : `RhaiStep` ne passe
+    plus par `Script::new_bare`, qui enregistre tout ce que les features de `vynil-core` activées **ailleurs dans le graphe**
+    apportent (`get_env`, `sleep`, accès fichiers, `shell_run`…) et donnerait à tout auteur de workflow l'environnement du
+    processus. Fonction privée `fn build_script(resolver_path: Vec<String>, run: &RunInfo) -> Script`, appelée dans le
+    `spawn_blocking` : `Script { engine: Engine::new(), ctx: Scope::new() }` (champs `pub` ; `Engine`, `Scope`,
+    `FileModuleResolver` et `ModuleResolversCollection` sont ré-exportés par `vynil_core::engine`, aucune dépendance `rhai`
+    directe) ; résolveur de modules = un `ModuleResolversCollection` portant un `FileModuleResolver::new_with_path` par entrée
+    de `resolver_path`, dans l'ordre (vide ⇒ tout `import` échoue, fail-closed, comme `new_bare`) ;
+    `set_max_expr_depths(256, 128)` et `set_max_call_levels(512)` (valeurs de `new_bare`, voir le `Scenario` de récursion) ;
+    puis, **dans cet ordre exact** : `core_pure_rhai_register`, `chrono_rhai_register`, `hashes_rhai_register`,
+    `semver_rhai_register`, `yaml_rhai_register`, `glob_rhai_register` (chemins et signatures de la 0.9 à relire dans le source
+    local de `vynil-core`, `Script::new_bare` en est le modèle), les quatre fonctions `log_*`, puis `script.add_common()` (shims
+    `assert`, `import_run`, `import_template` ; leur chemin de saut appelle `log_debug`, qui doit donc être enregistré avant).
+  Liste blanche : ne sont **jamais** enregistrés `core_host_rhai_register` (`get_env` et les `log_*` du processus),
+    `core_sleep_rhai_register` (`sleep` : un sommeil durable existe par `MiryadDurableStep`, ./durable.sdd), ni les registrars
+    `fs`, `shell`, `password`, `crypto`, `oci`, `http`, `s3`, `k8s`, quelles que soient les features de `vynil-core` activées dans
+    le graphe. Un registrar ajouté plus tard par `vynil-core` n'atteint les scripts que par un amendement de cette spec ; la liste
+    est relue à chaque montée de `vynil-core`.
+  `log_debug`, `log_info`, `log_warn`, `log_error` : fonctions Rhai `fn(message: ImmutableString)`, enregistrées par ce fichier sur
+    chaque moteur neuf, qui émettent `tracing::debug!/info!/warn!/error!` avec les champs structurés `run_key` et `step_id` (clones
+    capturés de `run`) et le message ; elles ne font rien d'autre. Le journal est celui du step, pas celui du processus.
+  Durée d'exécution (amendement 2026-10-30, `FR-18`) : `RhaiConfig` gagne un champ `timeout_secs: Option<u64>` (`#[serde(default)]`,
+    en secondes ; absent ⇒ `DEFAULT_TIMEOUT_SECS = 300`) ; hors de `1..=MAX_TIMEOUT_SECS` (`MAX_TIMEOUT_SECS = 3600`) ⇒ @StepError
+    { retryable: false, message: "config rhai invalide: timeout_secs doit être compris entre 1 et 3600" }. Valeur par défaut et
+    plafond : **propositions de Claude, à confirmer** par le développeur principal (`dsd/miryad-core/workflow.md` `FR-18`, `TBD`).
+    Mécanisme : `run` crée un `vynil_core::cancel::CancelToken` ; l'évaluation, dans le `spawn_blocking`, s'exécute dans
+    `cancel::scope(token, ..)` (les appels natifs bloquants de `vynil-core` rendent alors `Error::Cancelled` en 25 ms environ) et le
+    moteur pose `engine.on_progress(..)` qui met fin à une boucle Rhai dès que le jeton est annulé (API de `vynil_core::cancel` à lire
+    au source local de la 0.9, `src/cancel.sdd`). Le futur du `spawn_blocking` est attendu sous
+    `tokio::time::timeout(Duration::from_secs(t), ..)` ; à l'expiration, `run` annule le jeton puis rend **immédiatement**
+    @StepError { retryable: false, message: WorkflowError::ScriptTimeout { seconds: t }.to_string() } (`MRD-WORKFLOW-009`), sans
+    attendre la fin du fil. Une closure de `setups` non coopérative peut donc survivre à l'erreur le temps de rendre la main ; c'est un
+    risque d'app, à documenter dans la rustdoc de `with_setup`. Un script qui échoue pour une autre cause garde son message habituel.
+  Variables de run (amendement 2026-10-30, lot B, `FR-14`, `CON-8`) : `set_dynamic("vars", ..)` avec `run.vars` (objet JSON, `{}` sans
+    variables), à côté de `inputs` et `run`, avant les closures de `setups`. `vars`, `inputs`, `run` et `config` sont posées comme
+    **variables ordinaires** (`set_dynamic`), jamais comme constantes (`Scope::push_constant`) : modifier une propriété d'une constante
+    map fait paniquer Rhai avec l'optimiseur par défaut (mesuré par `lymaille`, Rhai 1.25.1 et 1.27.0 ; non reproduit ici sur 1.26.1 —
+    `ASSUMPTION`). Une modification de `vars` dans un script est locale à l'exécution (moteur neuf à chaque `run`) : elle ne se propage
+    ni aux autres steps ni au run.
   Compiler uniquement sous la combinaison de features `workflow` **et** `vynil-core/rhai` (`Depends
     on` — jamais l'un sans l'autre).
 
@@ -136,8 +176,8 @@ Must not:
   Rendre `StepError { retryable: true }` pour un échec de script ou de désérialisation de `config` :
     les deux causes sont déterministes vis-à-vis de l'entrée — rejouer ne change jamais le résultat
     (contrairement à un kind qui appellerait un service externe, hors périmètre de ce fichier).
-  Enregistrer lui-même une fonction Rhai au-delà de ce que `Script::new_bare` fournit déjà et de `render`
-    (2026-10-06, seule fonction ajoutée par ce fichier, `Must`) : ce
+  Enregistrer une fonction Rhai au-delà de la liste blanche de « Construction du moteur » et de `render`
+    (2026-10-06 pour `render`, 2026-10-30 pour `log_*` : seules fonctions ajoutées par ce fichier, `Must`) : ce
     fichier ne connaît ni accès DB, ni appel HTTP, ni client MCP. Un besoin additionnel est
     apporté par l'application via `with_setup` (closure fournie par elle, jamais par la crate), ou
     par un nouveau kind — jamais codé en dur ici.
@@ -146,10 +186,10 @@ Must not:
     capturé par l'app (`Arc<Mutex<..>>`…) reste sa responsabilité.
   Appeler une closure de `setups` hors du `spawn_blocking` de `run`.
 
-  Laisser tourner un script sans plafond d'opérations : `spawn_blocking` isole le thread de travail
-    mais ne l'interrompt jamais (une tâche bloquante ne s'annule pas) — un `loop {}` occuperait un
-    thread du pool bloquant indéfiniment, hors de portée de Restate. Le plafond vit dans le moteur,
-    pas dans un timeout externe.
+  Laisser tourner un script sans plafond d'opérations **ni** de durée : `spawn_blocking` isole le thread de travail mais ne
+    l'interrompt pas de lui-même — un `loop {}` occuperait un thread du pool bloquant indéfiniment, hors de portée de Restate.
+    Le plafond d'opérations vit dans le moteur ; le plafond de durée (`timeout_secs`, amendement 2026-10-30) est une annulation
+    coopérative (jeton de `vynil-core` lu par `on_progress` et par les appels natifs bloquants).
 
 Forbids:
   `restate_sdk::*`, `reqwest::*` dans ./rhai_step.rs
@@ -182,7 +222,8 @@ Returns:
     peut rendre qu'une `Map` Rhai convertie) ou @Err(StepError), toujours `retryable: false`.
 
 Raises:
-  Aucun code `MRD-WORKFLOW-*` : @StepError n'en porte jamais (./step.sdd, contrat transverse
+  `MRD-WORKFLOW-009` (`ScriptTimeout`, amendement 2026-10-30) est le seul code porté, dans le message d'un @StepError non
+    retryable ; sinon aucun code `MRD-WORKFLOW-*` : @StepError n'en porte (./step.sdd, contrat transverse
     @HookError-like pour les erreurs de kind).
 
 Handles:
@@ -250,6 +291,16 @@ Tasks:
     Validé 2026-10-13 (validator) : cinq tests nommés verts (20 dans le module), clippy `workflow` sans écart.
     Le premier test simule le rendu du dispatcher par `render_config` ; la preuve côté dispatcher est portée par
     la tâche de ./dispatcher.sdd.
+  [ ] A4 (2026-10-30, `FR-16`, `FR-17`, `DEC-8`) : moteur par liste blanche + `log_*` (« Construction du moteur », « Liste
+    blanche ») ; `Scenario` « n'expose ni l'environnement », « fichiers et shell », « helpers purs », « log_info ». Après A1
+    (/miryad-core.sdd). Un fichier : ./rhai_step.rs.
+  [ ] A5 (2026-10-30, `FR-18`) : `timeout_secs` et annulation coopérative (« Durée d'exécution ») ; `Scenario` « dépasse
+    timeout_secs » et « hors bornes » ; supplante l'arbitrage du 2026-09-24 (« pas de `timeout_ms` »). Après A3 (./error.sdd)
+    et A4. Un fichier : ./rhai_step.rs.
+  [ ] A6 (2026-10-30, `dsd/miryad-core/workflow.md` `OI-9`) : écrire le `Scenario` de récursion et le **lancer** ; si le
+    processus de test avorte, ne corriger aucun plafond : rapport et STOP (c'est un arbitrage). Un fichier : ./rhai_step.rs.
+  [ ] B6 (2026-10-30, `FR-14`, `CON-8`) : variable `vars` (« Variables de run ») ; `Scenario` « vars ». Après B1 (./step.sdd)
+    et A4. Un fichier : ./rhai_step.rs.
 
 Done when:
   Les `Scenario` (ceux de #27 compris) ont chacun un test nommé distinct et vert, sur la combinaison de features
@@ -382,3 +433,53 @@ Scenario: raw_fields du kind rhai (2026-10-06)
   Given un registre contenant `RhaiStep::default()`
   When `StepRegistry::raw_fields("rhai")` est appelé
   Then le résultat est `Some(&["script"])`
+
+Scenario: le moteur n'expose ni l'environnement du processus ni sleep (2026-10-30)
+  Given le step `rhai` et les `config` `{"script": "#{ v: get_env(\"HOME\") }"}` puis `{"script": "sleep(1); #{}"}`
+  When `run` est appelé pour chacun
+  Then chacun rend @Err(StepError { retryable: false, message }) dont le message désigne une fonction inconnue (`get_env`, `sleep`)
+
+Scenario: fichiers et shell restent absents même quand les features de vynil-core sont actives (2026-10-30)
+  Given le graphe de test où `vynil-core` est compilé avec `fs` et `shell` (dev-dependency, /miryad-core.sdd tâche A1)
+  When `run` exécute un script qui appelle une fonction du groupe `fs` (nom lu au source de `fs_rhai_register`), puis un script
+    qui appelle `shell_run("true")`
+  Then chacun rend @Err(StepError { retryable: false, .. }) — fonction inconnue ; une sonde `Script::new_bare` du même test prouve
+    que ces fonctions existent bien dans ce graphe (le contraste attribue l'absence à la liste blanche)
+
+Scenario: les helpers purs restent disponibles (2026-10-30)
+  Given le step `rhai`
+  When `run` exécute un script qui appelle au moins une fonction de chacun des registrars `core_pure`, `chrono`, `hashes`, `semver`,
+    `yaml` et `glob` (par exemple `sha256("hello")`, `yaml_encode`, une comparaison semver…)
+  Then le résultat porte les valeurs attendues ; `import_run` et `import_template` d'un module absent sautent silencieusement
+
+Scenario: log_info émet un événement tracing du step (2026-10-30)
+  Given un abonné `tracing` de test (`tracing-subscriber`, dev-dependency existante, comme les tests de `auth/oidc.rs`) et
+    `RunInfo { run_key: "r1", step_id: "s1", .. }`
+  When `run` exécute `log_info("bonjour"); #{ ok: true }`
+  Then un événement de niveau INFO, de message `bonjour`, porte les champs `run_key = "r1"` et `step_id = "s1"` ; `log_debug`,
+    `log_warn` et `log_error` émettent chacun leur niveau
+
+Scenario: un script qui dépasse timeout_secs est interrompu (2026-10-30)
+  Given `RhaiStep::default().with_setup(|s, _, _| s.engine.set_max_operations(0))` (plafond d'opérations levé : seul le délai peut
+    arrêter la boucle) et `config = {"script": "loop {}", "timeout_secs": 1}`
+  When `run` est appelé
+  Then le résultat est @Err(StepError { retryable: false, message }), `message` commence par `MRD-WORKFLOW-009`, rendu en moins de
+    5 s ; le fil bloquant s'arrête de lui-même peu après
+
+Scenario: timeout_secs hors bornes est une config invalide (2026-10-30)
+  Given `config = {"script": "#{}", "timeout_secs": 0}` puis `{"script": "#{}", "timeout_secs": 3601}`
+  When `run` est appelé pour chacun
+  Then chacun rend @Err(StepError { retryable: false, message }) dont le message commence par `config rhai invalide`
+
+Scenario: une récursion jusqu'au plafond ne fait pas avorter le processus (2026-10-30, DSD OI-9)
+  Given le step `rhai` exécuté par `RhaiStep::run` (donc dans un `spawn_blocking`, pile par défaut) et le script
+    `fn f(n) { f(n + 1) } f(0); #{}`
+  When `run` est appelé
+  Then le résultat est @Err(StepError { retryable: false, .. }) dont le message désigne le dépassement de niveaux d'appels de Rhai ;
+    si le processus de test avorte (débordement de pile), STOP : ne rien corriger, consigner la sortie et remonter (la réponse —
+    plafonds plus bas ou fil à pile dimensionnée — est un arbitrage)
+
+Scenario: vars est lisible, modifiable localement et sans panique (2026-10-30, lot B)
+  Given `RunInfo.vars = {"project": "p1"}`
+  When `run` exécute `#{ a: vars.project }` puis `vars.project = "x"; #{ b: vars.project }`
+  Then le premier rend `{"a": "p1"}`, le second `{"b": "x"}` sans panique, et un `run` suivant avec les mêmes `vars` relit `p1`

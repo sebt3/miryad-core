@@ -40,9 +40,11 @@ Must:
     @u32) -> Self` (`#[must_use]`) ; `impl Default` rend `new(DEFAULT_MAX_DEPTH)`. L'app l'enregistre
     elle-même (`StepRegistry::register_durable(SubWorkflowStep::default())`) : aucun
     auto-enregistrement, comme ./rhai_step.sdd.
-  `SubWorkflowConfig` — struct privée `#[derive(Deserialize)]`, un champ `dag: @DagSteps`, désérialisée
+  `SubWorkflowConfig` — struct privée `#[derive(Deserialize)]`, deux champs : `dag: @DagSteps` et
+    `vars: @serde_json::Map<@String, @serde_json::Value>` (`#[serde(default)]`, amendement 2026-10-30, lot B, `dsd/miryad-core/workflow.md`
+    `FR-15`), désérialisée
     depuis le `config` du step par `serde_json::from_value`.
-  `prepare(run: &RunInfo, config: @serde_json::Value, max_depth: @u32) -> Result<@DagSteps, StepError>` —
+  `prepare(run: &RunInfo, config: @serde_json::Value, max_depth: @u32) -> Result<(@DagSteps, @serde_json::Map<@String, @serde_json::Value>), StepError>` —
     fonction privée **pure** (sans `StepContext`, donc testable en unitaire), qui porte tout ce que
     `run` décide avant d'appeler le moteur, dans cet ordre, interrompue au premier échec :
     1. `from_value::<SubWorkflowConfig>(config)` — @Err → @StepError { retryable: false, message:
@@ -53,15 +55,15 @@ Must:
     3. `definition::validate_dag(&dag.0)` — @Err(e) → @StepError { retryable: false, message:
         e.to_string() } (`MRD-WORKFLOW-004` verbatim) : échec avant tout appel, pas après le démarrage
         d'un run enfant condamné ;
-    4. @Ok(dag).
+    4. @Ok((dag, vars)) (amendement 2026-10-30 : `vars` est la valeur déjà **rendue** par le parent, voir `raw_fields`).
   `impl MiryadDurableStep for SubWorkflowStep` :
     `kind()` rend `"subworkflow"`.
     `raw_fields()` rend `&["dag"]` (2026-10-06, ./template.sdd) : le DAG enfant est embarqué dans la `config` du
     parent ; ses `config` de steps contiennent des templates destinés au rendu **de chaque step enfant**
     (avec leurs propres `inputs`), jamais au rendu du parent. Sans cette déclaration le parent tenterait de
     rendre `{{inputs.x}}` d'un step enfant avec les `inputs` du parent et échouerait (mode strict).
-    `async fn run(&self, ctx, config, _inputs)` : `prepare(ctx.run_info(), config, self.max_depth)?`
-    puis `ctx.run_child_dag(&dag).await?` ; sortie = `Value::Object(map.into_iter().collect())` (clé =
+    `async fn run(&self, ctx, config, _inputs)` : `let (dag, vars) = prepare(ctx.run_info(), config, self.max_depth)?`
+    puis `ctx.run_child_dag(&dag, &vars).await?` ; sortie = `Value::Object(map.into_iter().collect())` (clé =
     id du step enfant, valeur = sa sortie, comme les `results` de `DagInterpreter::run`), sans
     enveloppe. `inputs` du parent **non transmis à l'enfant** dans cette itération (`Tasks`).
   Propagation d'échec : un enfant en échec fait échouer ce step, donc le parent (comportement par
@@ -95,7 +97,7 @@ Exposes:
   `DEFAULT_MAX_DEPTH` — `pub const`
 
 Accepts:
-  `run` : un `config` de la forme `{"dag": [ {id, depends_on, kind, config}, ... ]}` ; tout autre
+  `run` : un `config` de la forme `{"dag": [ {id, depends_on, kind, config}, ... ], "vars": {..}}` (`vars` optionnel) ; tout autre
     contenu est rejeté par `prepare` (étape 1). `inputs` ignoré.
 
 Returns:
@@ -156,6 +158,11 @@ Tasks:
   [x] Templating central (2026-10-06) : implémenter `raw_fields` ci-dessus ; test nommé du `Scenario` ci-dessous.
     Validé 2026-10-13 (validator) : `les_templates_d_un_dag_enfant_ne_sont_pas_rendus_par_le_parent` vert.
 
+  [ ] B7a (2026-10-30, `FR-15`) : `SubWorkflowConfig.vars`, `prepare` rend `(DagSteps, Map)`, `run` appelle `run_child_dag(&dag, &vars)` ;
+    adapter les tests existants de `prepare` à la nouvelle valeur de retour ; `Scenario` « vars de l'enfant ». `vars` n'est **pas** un
+    champ brut : `raw_fields` reste `["dag"]`, le parent rend `vars` (ses `string` sont des gabarits du parent). L'enfant n'hérite
+    d'aucune autre donnée du parent. Même tâche que B7b de ./durable.sdd. Après B4. Fichiers : ./subworkflow.rs (avec ./durable.rs).
+
 Done when:
   Les `Scenario` ci-dessous ont chacun un test nommé distinct et vert (`prepare` et `kind`/`Default`,
     sans serveur Restate), sur la feature `workflow` ; les quatre intégrations de `Tasks` écrites et
@@ -213,3 +220,14 @@ Scenario: les templates d'un DAG enfant ne sont pas rendus par le parent (2026-1
   Given un parent dont `config = {"dag": [{"id": "a", "depends_on": [], "kind": "x", "config": {"m": "{{inputs.q}}"}}]}`
   When `StepRegistry::raw_fields("subworkflow")` est consulté puis la config est rendue par ./template.sdd avec `inputs` vide
   Then `raw_fields` vaut `Some(&["dag"])` et la `config` rendue est identique à l'entrée (le template enfant est intact)
+
+Scenario: les vars du step deviennent celles de l'enfant (2026-10-30, lot B)
+  Given un `config` `{"dag": [<un step>], "vars": {"project": "p1"}}` (valeur déjà rendue par le parent) et `max_depth` suffisant
+  When `prepare` est appelée
+  Then le résultat est @Ok((dag, vars)) avec `vars = {"project": "p1"}` ; sans clé `vars` il porte `{}` ; avec `"vars": [1]` (non objet)
+    il rend @StepError { retryable: false, message } commençant par `config subworkflow invalide`
+
+Scenario: l'enfant n'hérite pas des vars du parent (2026-10-30, lot B)
+  Given un `RunInfo` parent dont `vars = {"project": "p1"}` et un `config` sans clé `vars`
+  When `prepare` est appelée
+  Then les `vars` rendues sont `{}` — celles du parent ne sont pas transmises implicitement

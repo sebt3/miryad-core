@@ -25,6 +25,10 @@ Purpose:
 Owns:
   ./step.rs
 
+Can modify:
+  ./dispatcher.rs, ./durable.rs, ./matrix_step.rs, ./rhai_step.rs, ./subworkflow.rs, ./systemone_step.rs, ./template.rs —
+    **uniquement** les littéraux `RunInfo { .. }` de leurs tests (champ `vars`, tâche B1, 2026-10-30) ; aucune autre ligne
+
 References:
   ./dispatcher.sdd (à rédiger) — service Restate `StepDispatcher`, seul consommateur de
     @StepRegistry::dispatch ; traduit @StepError::retryable en @HandlerError (retry Restate) ou
@@ -68,14 +72,17 @@ Must:
       qui porte du code ou un contenu qui est lui-même un template destiné à un autre rendu le déclare :
       `"rhai"` → `["script"]` (./rhai_step.sdd), `"subworkflow"` → `["dag"]` (./subworkflow.sdd).
       Le contrat est statique (`'static`) : la liste ne dépend ni de la `config` ni de l'état du kind.
-  @RunInfo — struct `pub`, `#[derive(Debug, Clone, PartialEq, Eq)]`, trois champs `pub` (#26,
+  @RunInfo — struct `pub`, `#[derive(Debug, Clone, PartialEq, Eq)]`, quatre champs `pub` (#26, `vars` ajouté le 2026-10-30,
     2026-10-04), donnée pure sans `restate-sdk` : `run_key: @String` (clé du run en cours, c'est-à-dire
     la clé de workflow Restate de l'invocation de @DagInterpreter qui exécute ce step — pour un run
     enfant, la clé dérivée par le parent, ./durable.sdd) ; `step_id: @String` (`id` du
     @StepDefinition en cours d'exécution, unique dans son DAG) ; `depth: @u32` (profondeur
     d'imbrication des sous-workflows : `0` pour un run déclenché par `client::trigger_run`, `+1` à
     chaque niveau de sous-workflow, ./subworkflow.sdd). Les trois sont fournis à **tous** les kinds,
-    durables ou non. Aucune identité de déclencheur dans cette itération (`Tasks` `[?]`).
+    durables ou non. `vars: @serde_json::Value` (2026-10-30, `dsd/miryad-core/workflow.md` `FR-12`, `FR-13`) : les variables
+    constantes du run, toujours un `Value::Object` (`{}` sans variables), fournies au déclenchement et inchangées pour tous les steps
+    du run (pour un run enfant : celles du step `subworkflow`, ./subworkflow.sdd) ; lecture seule. Aucune identité de déclencheur dans
+    cette itération (`Tasks` `[?]`) — les `vars` permettent à l'application d'y porter la sienne.
   @StepError — struct `pub`, deux champs `pub` : `message: @String`, `retryable: @bool`. `#[derive(Debug,
     thiserror::Error)]` avec `#[error("{message}")]`. `retryable = true` signale un échec transitoire
     (réseau, ressource momentanément indisponible) que ./dispatcher.rs doit laisser au retry Restate ;
@@ -277,6 +284,12 @@ Tasks:
     Validé 2026-10-13 (validator) : trois tests nommés verts (step.rs ×2, durable.rs ×1), clippy workflow sans écart.
     `StepRegistry::raw_fields` porte un `#[allow(dead_code)]` jusqu'à la tâche dispatcher du même lot.
 
+  [ ] B1 (2026-10-30, `FR-13`) : ajouter `vars: serde_json::Value` à @RunInfo et adapter, **mécaniquement et dans la même tâche**,
+    tous les littéraux `RunInfo { .. }` de tests de la crate (`vars: serde_json::Value::Object(serde_json::Map::new())`, ou un
+    helper de test local) dans ./step.rs, ./dispatcher.rs, ./durable.rs, ./matrix_step.rs, ./rhai_step.rs, ./subworkflow.rs,
+    ./systemone_step.rs et ./template.rs (`Can modify`) — sinon la crate ne compile plus entre deux commits. Aucun changement de
+    comportement ; le `Scenario` « RunInfo porte les vars » est le seul test nouveau. Seul `RunInfo` change dans le code de production.
+
 Done when:
   Les `Scenario` ajoutés par #26 (marqués `(#26)`) ont chacun un test nommé distinct et vert.
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
@@ -362,3 +375,9 @@ Scenario: raw_fields d'un kind inconnu est None (2026-10-06)
   Given un registre sans kind `"x"`
   When `StepRegistry::raw_fields("x")` est appelé
   Then le résultat est `None`
+
+Scenario: RunInfo porte les vars jusqu'au kind (2026-10-30, lot B)
+  Given un kind de fixture dont `run` rend `run.vars.clone()`, enregistré, et `RunInfo { run_key: "r1", step_id: "s1", depth: 0,
+    vars: json!({"project": "p1"}) }`
+  When `StepRegistry::dispatch("<kind>", &run_info, config, inputs)` puis `.await` du futur rendu
+  Then le résultat est @Ok(json!({"project": "p1"}))

@@ -23,6 +23,9 @@ Purpose:
 Owns:
   ./client.rs
 
+Can modify:
+  ../../tests/workflow_restate.rs — appels de `trigger_run` (nouveau paramètre `vars`, tâche B5, 2026-10-30)
+
 References:
   ./error.sdd — @WorkflowError et @classify_transport_error, consommés sur chaque `.send()`/`.json()`
   ./definition.sdd — @DagSteps et @StepDefinition, type de payload sérialisé par
@@ -54,10 +57,11 @@ Must:
     (`GET /openapi`, composant `RegisterHttpDeploymentRequest`), le comportement observé quand le champ
     est absent du corps JSON est celui d'un `force` à `false` — @client::register_deployment ne se fie
     jamais à un défaut serveur non vérifié à l'exécution, il pose le champ explicitement à chaque appel.
-  @client::trigger_run(config: &WorkflowConfig, http: &reqwest::Client, dag: &DagSteps) ->
+  @client::trigger_run(config: &WorkflowConfig, http: &reqwest::Client, dag: &DagSteps,
+    vars: &serde_json::Map<String, serde_json::Value>) ->
     Result<RunHandle, WorkflowError> : génère `run_key` en @uuid::Uuid::new_v4 (`to_string`, format
     hyphéné standard), puis `POST {config.ingress_url}/DagInterpreter/{run_key}/run/send`, corps JSON
-    = `dag` sérialisé par @serde_json, `content-type: application/json`. Vérifié en direct : un
+    = `RunInput { dag, vars }` (./interpreter.sdd, amendement 2026-10-30, lot B) sérialisé par @serde_json, `content-type: application/json`. Vérifié en direct : un
     statut `202` répond le corps `{"invocationId": "inv_...", "status": "Accepted"}` ; l'en-tête
     `x-restate-id` porte la même valeur que `invocationId` du corps — ./client.rs lit le champ du
     corps, pas l'en-tête, pour ne dépendre que d'un seul mécanisme. Un statut hors `2xx` rend
@@ -93,6 +97,10 @@ Must:
     (sinon @WorkflowError::InvalidConfig, message nommant le champ fautif) ; `deployment_url` n'est
     ni validée ni inspectée (décision du 2026-09-23 conservée : c'est à l'application de savoir ce
     qu'elle expose et comment Restate doit la joindre).
+  `vars` de @client::trigger_run (amendement 2026-10-30, lot B, `dsd/miryad-core/workflow.md` `FR-12`, `CON-6`) : variables constantes
+    du run, un objet JSON (`&Map`, vide si l'appelant n'en a pas) transmis dans le corps avec le DAG, sans transformation ni
+    validation de contenu. Elles sont journalisées par Restate avec l'entrée du run et visibles dans son interface : la rustdoc de
+    `trigger_run` dit qu'il ne faut y mettre **aucun secret**.
 
 Must not:
   Attendre la complétion d'un run dans @client::trigger_run, ni exposer de fonction de lecture de
@@ -131,7 +139,7 @@ Exposes:
   @client::register_deployment — `pub async fn register_deployment(config: &WorkflowConfig, http:
     &reqwest::Client) -> Result<(), WorkflowError>`
   @client::trigger_run — `pub async fn trigger_run(config: &WorkflowConfig, http: &reqwest::Client,
-    dag: &DagSteps) -> Result<RunHandle, WorkflowError>`
+    dag: &DagSteps, vars: &serde_json::Map<String, serde_json::Value>) -> Result<RunHandle, WorkflowError>`
 
 Accepts:
   @WorkflowConfig : `admin_url` et `ingress_url` sont validées avant tout appel réseau (arbitré par Sébastien le 2026-09-29) — vides,
@@ -231,6 +239,10 @@ Tasks:
     Restate se comporte comme documenté. Vérifié en revue 2026-09-24 : sept `Scenario`, huit tests
     nommés verts dans `mod tests` de ./client.rs contre un serveur HTTP de test local.
 
+  [ ] B5 (2026-10-30, `FR-12`, `CON-6`) : paramètre `vars` de @client::trigger_run, corps `RunInput`, rustdoc « aucun secret » ;
+    adapter les appels de `trigger_run` des tests de ./client.rs et de ../../tests/workflow_restate.rs (`Can modify`). Après B4
+    (./interpreter.sdd, qui porte `RunInput`). Fichiers : ./client.rs et ../../tests/workflow_restate.rs.
+
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
   Les trois décisions de `Tasks` sont reflétées dans dsd/miryad-core/workflow.md à la clôture de la feature
@@ -312,3 +324,9 @@ Scenario: deployment_url n'est pas validée
   Given une @WorkflowConfig valide dont `deployment_url` vaut `n'importe quoi`
   When @WorkflowConfig::validate est appelée
   Then le résultat est @Ok — la forme de `deployment_url` reste à la charge de l'application
+
+Scenario: trigger_run envoie le DAG et les vars (2026-10-30, lot B)
+  Given un serveur de test répondant `202` avec `{"invocationId": "inv_1", "status": "Accepted"}` sur `POST /DagInterpreter/<clé>/run/send`
+  When @client::trigger_run est appelé avec un DAG d'un step et `vars = {"project": "p1"}`
+  Then le corps de la requête capturée est exactement `{"dag": [<le step>], "vars": {"project": "p1"}}` ; avec `vars` vide il porte
+    `"vars": {}`

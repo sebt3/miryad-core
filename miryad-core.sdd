@@ -126,7 +126,7 @@ Depends on:
   axum 0.8 (@axum) et @tower, @tower-http derrière `static-frontend`
   openidconnect 4 (@openidconnect)
   utoipa 5 (@utoipa), @utoipa-swagger-ui derrière `swagger-ui`
-  vynil-core 0.7.7 (`hbs`, sans `crypto` depuis le 2026-09-29), derrière les features `mcp` et `workflow`
+  vynil-core 0.9 (`hbs`, sans `crypto` depuis le 2026-09-29 ; montée depuis 0.7.7 le 2026-10-30), derrière les features `mcp` et `workflow`
   ./tooling.sdd
 
 Tasks:
@@ -267,6 +267,16 @@ Tasks:
     (de 190 à 1 017 tests selon la combinaison, 0 échec), `cargo doc -D warnings` vert sur défaut, sans `db`, `swagger-ui`, `static-frontend,swagger-ui`, `systemone`, `--all-features` ;
     `sea-orm`, `sea-orm-migration` et `hex` absents du graphe `normal` sans `db` (`hmac`, `sha2`, `rand`, `chrono` y restent tirés par `openidconnect`/`cookie`, pas par la crate) ;
     job CI `no-db-graph` rejoué localement. Dette mineure : les tests de dispatch Bearer de `dual.rs` qui passent par le chemin token API ne tournent que sous `db`.
+  [ ] A1 — montée de `vynil-core` à 0.9 (2026-10-30, `dsd/miryad-core/workflow.md` `DEC-7`, `DEC-8`, `OI-1`) : dans
+    `./Cargo.toml`, `vynil-core` passe à `version = "0.9"` (inchangés : `default-features = false`,
+    `features = ["hbs"]`, `optional = true`) ; la feature `workflow` conserve `vynil-core?/rhai`. Ajouter en
+    `[dev-dependencies]` `vynil-core = { version = "0.9", default-features = false, features = ["hbs", "fs", "shell"] }`
+    (graphe de test seulement : c'est ce qui prouve, par un `Scenario` de ./src/workflow/rhai_step.sdd, que des
+    features `fs` ou `shell` de `vynil-core` activées ailleurs dans le graphe n'atteignent pas les scripts).
+    `./Cargo.lock` par `cargo update -p vynil-core` (si une autre dépendance bouge de plus qu'un patch
+    transitif, STOP et question). Aucun changement de code attendu : vert si les tests et clippy `workflow`,
+    `mcp` et `--all-features` passent comme avant et si `cargo tree --no-default-features -e normal -i sea-orm`
+    reste vide. Si la 0.9 impose un changement de code, STOP et question.
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec `.sdd` relue et approuvée par Sébastien, sans
