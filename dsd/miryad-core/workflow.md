@@ -5,6 +5,10 @@
 Permettre à une application consommatrice de stocker des workflows comme **données** (un DAG de steps), de les faire
 exécuter durablement par un cluster Restate self-hosté, et d'y brancher ses propres kinds de steps.
 
+Un run dispose d'un **contexte immuable** : les résultats des steps précédents (`inputs`), l'identité du run (`run`) et
+des variables constantes fournies au déclenchement (`vars`). Un contexte modifiable n'est pas dans cette Solution
+(voir `OI-8`).
+
 ## Scope and Non-goals
 
 La Solution fournit deux services Restate (`DagInterpreter`, `StepDispatcher`), la définition et la validation du DAG,
@@ -15,6 +19,8 @@ Hors Solution :
 - Elle ne monte **aucune** route sur le `axum::Router` : l'app construit et lie son `Endpoint` dans son `main()`.
 - Elle ne gère jamais le cluster Restate (CON-1 de `miryad-core`).
 - Elle ne duplique jamais le statut d'un run en base : il se lit directement dans Restate.
+- Elle ne porte aucun état modifiable en cours de run : le pad Rhai de la future feature optionnelle `lymaille` en
+  relève (`OI-8`).
 - Les kinds `matrix_send` et `systemone` relèvent de leurs propres Solutions (TBD, non migrées) ; seul leur mécanisme
   d'enregistrement est ici.
 
@@ -58,14 +64,14 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
     - **Verified by:** `AC-4`
 
 - **FR-6 - MUST:** Chaque `string` de la `config` d'un step est rendue par `vynil_core::hbs` avant l'appel du kind,
-  avec le contexte `{"inputs", "run"}`, en mode strict (variable absente = erreur), sans échappement HTML, en un seul
+  avec le contexte `{"inputs", "run", "vars"}`, en mode strict (variable absente = erreur), sans échappement HTML, en un seul
   passage, et sans jamais rendre les clés d'objet. Un kind déclare ses champs bruts via `raw_fields`.
     - **Source:** `arch@c62a184`, « Templating central » (arbitrage du 2026-10-06, livré le 2026-10-13)
     - **Realized by:** SpecDD /src/workflow/template.sdd, SpecDD /src/workflow/dispatcher.sdd
     - **Verified by:** `AC-5`
 
-- **FR-7 - MUST:** Une erreur de rendu est un `StepError` non retryable qui ne contient jamais le contenu de `inputs`.
-    - **Source:** `arch@c62a184`, « Templating central »
+- **FR-7 - MUST:** Une erreur de rendu est un `StepError` non retryable qui ne contient jamais le contenu de `inputs` ni de `vars`.
+    - **Source:** `arch@c62a184`, « Templating central » ; extension `vars` : user instruction, 2026-10-30
     - **Realized by:** SpecDD /src/workflow/template.sdd
     - **Verified by:** `AC-5`
 
@@ -96,6 +102,54 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
     - **Realized by:** SpecDD /src/workflow/definition.sdd
     - **Verified by:** `AC-1`
 
+- **FR-12 - MUST:** `trigger_run` accepte des variables de run `vars` (objet JSON, vide par défaut) et les transmet en
+  entrée du run avec le DAG. Elles sont constantes pour toute la durée du run et journalisées par Restate.
+    - **Source:** user instruction, 2026-10-30 ; Observed in: `vanyline` `app/src/workflow/run_context.rs` (injection de
+      `config._run` dans chaque step, faute de variables de run)
+    - **Realized by:** SpecDD /src/workflow/client.sdd, SpecDD /src/workflow/interpreter.sdd
+    - **Verified by:** `AC-9`
+
+- **FR-13 - MUST:** Chaque invocation de step reçoit les `vars` du run, inchangées et en lecture seule, à côté de
+  `RunInfo`. Un kind ordinaire comme un kind durable les lit.
+    - **Source:** user instruction, 2026-10-30
+    - **Realized by:** SpecDD /src/workflow/dispatcher.sdd, SpecDD /src/workflow/step.sdd
+    - **Verified by:** `AC-9`
+
+- **FR-14 - MUST:** Le kind `rhai` expose `vars` comme variable ordinaire du script, comme `inputs` et `run`.
+    - **Source:** user instruction, 2026-10-30
+    - **Realized by:** SpecDD /src/workflow/rhai_step.sdd
+    - **Verified by:** `AC-11`
+
+- **FR-15 - MUST:** Les `vars` d'un run enfant sont le champ `vars` du `config` du step `subworkflow`, rendu par le
+  parent. L'enfant n'hérite d'aucune autre donnée du parent.
+    - **Source:** user instruction, 2026-10-30 ; `DEC-5`
+    - **Realized by:** SpecDD /src/workflow/subworkflow.sdd
+    - **Verified by:** `AC-14`
+
+- **FR-16 - MUST:** `RhaiStep` construit son moteur par **liste blanche explicite** : le groupe pur du cœur de
+  `vynil-core` (`core_pure_rhai_register`) et les registrars purs `chrono`, `hashes`, `semver`, `yaml` et `glob`. Il
+  n'enregistre ni le groupe hôte (`get_env`, `log_*`), ni `sleep`, ni les accès fichiers, `shell`, `http`, `s3`, `oci`
+  ou `k8s`, quelles que soient les features de `vynil-core` activées ailleurs dans le graphe de dépendances.
+    - **Source:** user instruction, 2026-10-30 ; vynil-core `CHANGELOG` 0.9.0 (#18)
+    - **Rationale:** `Script::new_bare` enregistre tout ce que les features unifiées activent ; un auteur de workflow
+      lirait alors l'environnement du processus ou lancerait un shell.
+    - **Realized by:** SpecDD /src/workflow/rhai_step.sdd
+    - **Verified by:** `AC-11`
+
+- **FR-17 - MUST:** La crate fournit aux scripts `log_debug`, `log_info`, `log_warn` et `log_error`, qui émettent un
+  événement `tracing` portant `run_key` et `step_id` du step courant. `log_debug` est requis par les shims
+  `import_run` et `import_template` de `Script::add_common`.
+    - **Source:** user instruction, 2026-10-30 ; Observed in: vynil-core 0.9.0 `src/engine.rs` (`add_common`)
+    - **Realized by:** SpecDD /src/workflow/rhai_step.sdd
+    - **Verified by:** `AC-11`
+
+- **FR-18 - MUST:** `RhaiStep` borne la durée réelle d'un script. À l'expiration, l'exécution est annulée (jeton
+  d'annulation de `vynil-core` pour les appels natifs bloquants, `on_progress` pour les boucles Rhai) et le step échoue
+  en `MRD-WORKFLOW-009`, non retryable. **TBD :** valeur par défaut, plafond, et champ du `config` qui la surcharge.
+    - **Source:** user instruction, 2026-10-30 ; vynil-core `CHANGELOG` 0.9.0 (#21)
+    - **Realized by:** SpecDD /src/workflow/rhai_step.sdd, SpecDD /src/workflow/error.sdd
+    - **Verified by:** `AC-12`
+
 ## Constraints
 
 - **CON-1 - MUST:** Le fan-out d'une couche passe par `ctx.request(...).call()` poussé dans un
@@ -121,11 +175,37 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
     - **Source:** `arch@c62a184`, « Architecture » et « Contexte de run et kinds durables »
     - **Realized by:** SpecDD /src/workflow/step.sdd, SpecDD /src/workflow/durable.sdd
 
-- **CON-5 - MUST:** La sortie d'un rendu de template n'est jamais interprétée comme template, et les helpers d'accès à
-  l'hôte de `vynil-core` (`read_to_str`, `env_var`, `canonicalize`, `parent`, `file_name`, `extension`, `jsonnet`)
-  sont retirés du moteur.
-    - **Source:** `arch@c62a184`, « Templating central », modèle de menace
+- **CON-5 - MUST:** La sortie d'un rendu de template n'est jamais interprétée comme template, et le moteur de rendu est
+  le moteur restreint `HandleBars::new_restricted()` de `vynil-core` : aucun helper d'accès à l'hôte (`read_to_str`,
+  `env_var`, `canonicalize`, `parent`, `file_name`, `extension`) n'est enregistré, et `jsonnet` ne lit aucun fichier de
+  l'hôte.
+    - **Source:** `arch@c62a184`, « Templating central », modèle de menace ; vynil-core `CHANGELOG` 0.9.0 (#27)
+    - **Rationale:** les templates sont écrits par les auteurs de workflows. `jsonnet` reste enregistré par
+      `new_restricted()` en 0.9.0 et construit une VM sans résolveur d'imports : la lecture de fichiers par
+      `importstr` est probable mais **non exécutée** (voir `AC-13`).
     - **Realized by:** SpecDD /src/workflow/template.sdd
+    - **Verified by:** `AC-13`
+
+- **CON-6 - MUST NOT:** Les `vars` ne contiennent pas de secret.
+    - **Source:** user instruction, 2026-10-30
+    - **Rationale:** l'entrée d'un run est journalisée par Restate et visible dans son interface.
+    - **Realized by:** SpecDD /src/workflow/client.sdd
+
+- **CON-7 - MUST NOT:** Une valeur de `vars` n'est jamais interprétée comme gabarit : elle est de la donnée dans le
+  contexte de rendu, pas du texte source.
+    - **Source:** user instruction, 2026-10-30 ; `CON-5`
+    - **Rationale:** l'injection dans le `config` de chaque step (usage actuel de `vanyline`) soumet les valeurs au
+      templating de `FR-6`.
+    - **Realized by:** SpecDD /src/workflow/template.sdd
+    - **Verified by:** `AC-10`
+
+- **CON-8 - MUST NOT:** `vars`, `inputs` et `run` ne sont jamais posées en constante dans le scope Rhai
+  (`Scope::push_constant`) : elles le sont comme variables ordinaires.
+    - **Source:** Observed in: `lymaille` `dsd/agent-sessions/scratchpad.md`, « Faits vérifiés »
+    - **Rationale:** modifier une propriété d'une constante map fait paniquer le processus avec l'optimiseur par défaut
+      (Rhai 1.25.1 et 1.27.0). **ASSUMPTION :** Rhai 1.26.1, verrouillé ici, est concerné ; non reproduit.
+    - **Realized by:** SpecDD /src/workflow/rhai_step.sdd
+    - **Verified by:** `AC-11`
 
 ## Non-functional Requirements
 
@@ -176,14 +256,43 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
     - **Consequences:** en v1, l'enfant n'hérite d'aucune donnée du parent et son échec fait échouer le parent.
     - **Source:** `arch@c62a184`, « Sous-workflow »
 
-- **DEC-6 - Liste noire de helpers, transitoire et fail-open**
-    - **Context:** `vynil-core` n'offrait pas de moteur sans helpers d'accès à l'hôte.
-    - **Decision:** une liste noire `DENIED_HELPERS` retire les helpers dangereux, en attendant
-      `sebt3/vynil-core#13` (arbitrage du développeur principal).
-    - **Consequences:** un helper dangereux ajouté par un futur `vynil-core` serait exposé sans que rien ne casse ;
-      `CORE_HBS_HELPERS` doit être relu à chaque montée de version. Sortie de transition : voir `OI-1`.
-    - **Source:** `arch@c62a184`, « La liste noire est transitoire et fail-open »
-    - **Realized by:** SpecDD /src/workflow/template.sdd
+- **DEC-7 - Templating : liste blanche amont plutôt que liste noire locale**
+    - **Context:** une liste noire locale (`DENIED_HELPERS`) était fail-open : un helper dangereux ajouté par un futur
+      `vynil-core` serait exposé sans que rien ne casse.
+    - **Decision:** monter `vynil-core` à 0.9.0 et employer `HandleBars::new_restricted()`, construit depuis une liste
+      blanche (`sebt3/vynil-core#13`, #27).
+    - **Alternatives:** conserver la liste noire (écarté : fail-open) ; `vynil-core` 0.8.0 (écarté : `new_restricted()`
+      y retire six helpers de `new()` au lieu de partir d'une liste blanche).
+    - **Consequences:** `DENIED_HELPERS` disparaît, sauf pour `jsonnet` si `AC-13` montre qu'il lit des fichiers ; dans
+      ce cas la correction relève de `vynil-core` (`OI-1`).
+    - **Source:** user instruction, 2026-10-30 ; vynil-core `CHANGELOG` 0.8.0 et 0.9.0
+
+- **DEC-8 - Rhai : moteur construit par liste blanche, journal et attente fournis par la crate**
+    - **Context:** `Script::new_bare` enregistre `get_env` (donc l'environnement du processus), `sleep`, et tout ce que
+      les features de `vynil-core` unifiées dans le graphe activent.
+    - **Decision:** construire le `Script` à la main (`Engine::new()`, résolveur, plafonds, registrars de `FR-16`,
+      `log_*` de la crate, puis `add_common`). Un `log_*` propre à la crate remplace le journal du processus par un
+      journal du step.
+    - **Alternatives:** garder `new_bare` (écarté : exposition de l'hôte) ; masquer `get_env` et `sleep` par des
+      surcharges qui échouent (écarté : fonctions présentes et appelables) ; demander un constructeur à sélection de
+      groupes à `vynil-core` (non retenu pour ce lot).
+    - **Consequences:** la liste de registrars est dupliquée de `new_bare` et doit être relue à chaque montée de
+      `vynil-core`. Un script qui employait `get_env` ou `sleep` casse. Aucun usage dans le code de `vanyline`
+      (vérifié le 2026-10-30) ; les scripts écrits par les utilisateurs vivent en base et n'ont pas été examinés.
+      Un sommeil durable existe par `MiryadDurableStep`.
+    - **Source:** user instruction, 2026-10-30 ; vynil-core 0.9.0 (#18, `src/engine.rs`)
+    - **Realized by:** SpecDD /src/workflow/rhai_step.sdd
+
+- **DEC-9 - Contexte de run immuable, variables en entrée du run**
+    - **Context:** le moteur ne donne à un step que `config` et `inputs`. `vanyline` contourne en recopiant un contexte
+      dans `config._run` de chaque step d'un DAG fabriqué par run.
+    - **Decision:** `vars` est une entrée du run, à côté du DAG, objet JSON libre sans schéma déclaré (`OI-7`).
+    - **Alternatives:** injection dans le `config` de chaque step (statu quo : duplication, valeurs soumises au
+      templating, convention d'écrasement d'une clé réservée) ; variables modifiables par les steps (écarté : voir
+      `OI-8`).
+    - **Consequences:** changement cassant de la signature de `trigger_run` et de l'entrée du handler `run`
+      (pré-1.0, sans production) ; `vanyline` adapte son appel et peut retirer l'injection de `config._run`.
+    - **Source:** user instruction, 2026-10-30
 
 ## Operations and Resilience
 
@@ -205,13 +314,13 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
 
 Onze des treize specs de `src/workflow/` réalisent cette Solution. Les mappings fins sont portés par les champs
 `Realized by` ci-dessus. `SpecDD /src/workflow/mod.sdd` agrège le module et son graphe de dépendances Cargo ;
-`SpecDD /src/workflow/error.sdd` porte le registre `MRD-WORKFLOW-001` à `008`. Les specs
+`SpecDD /src/workflow/error.sdd` porte le registre `MRD-WORKFLOW-001` à `009`. Les specs
 `SpecDD /src/workflow/matrix_step.sdd` et `SpecDD /src/workflow/systemone_step.sdd` appartiennent aux Solutions de
 leurs clients (TBD).
 
 ## Acceptance Criteria
 
-**ASSUMPTION :** `AC-1` à `AC-7` sont formulés d'après les requirements et les `Scenario` des specs
+**ASSUMPTION :** `AC-1` à `AC-7` et `AC-9` à `AC-14` sont formulés d'après les requirements et les `Scenario` des specs
 (`src/workflow/*.sdd`). Leur correspondance exacte avec chaque `Scenario` n'a pas été vérifiée dans ce pilote.
 
 - **AC-1:** Une `WorkflowDefinition` créée par un admin est relue à l'identique ; deux définitions de même `name`
@@ -221,12 +330,24 @@ leurs clients (TBD).
 - **AC-3:** Un step de kind inconnu rend 404 et son template n'est pas rendu.
 - **AC-4:** Deux `trigger_run` successifs produisent deux `run_key` distincts ; une clé fournie par l'appelant est
   refusée ; deux `register_deployment` concurrents sur la même URL aboutissent tous deux.
-- **AC-5:** Une variable absente dans un template échoue le step sans retry, et le message d'erreur ne contient pas les
-  `inputs`.
+- **AC-5:** Une variable absente dans un template échoue le step sans retry, et le message d'erreur ne contient ni les
+  `inputs` ni les `vars`.
 - **AC-6:** Un `subworkflow` de profondeur supérieure au maximum rend `MRD-WORKFLOW-008` sans retry ; un kind durable
   peut dormir et lancer un sous-DAG via `StepContext`.
 - **AC-7:** Un script Rhai en boucle infinie s'arrête au plafond d'opérations ; deux exécutions successives ne
   partagent aucun état.
+- **AC-9:** Un run déclenché avec `vars = {"project": "p1"}` rend `p1` pour `{{vars.project}}` dans deux steps de couches
+  différentes ; un run déclenché sans `vars` échoue sur cette même variable (mode strict) ; `vars` est vide par défaut.
+- **AC-10:** Une valeur de `vars` qui contient `{{inputs.x}}` est rendue littéralement et jamais évaluée.
+- **AC-11:** Dans un script Rhai, `vars` est lisible et `vars.a = 1` ne panique pas ; `get_env`, `sleep` et les accès
+  fichiers ou `shell` sont introuvables, y compris quand une dépendance de développement active les features `fs` et
+  `shell` de `vynil-core` ; `log_info` répond et émet un événement `tracing` portant `run_key` et `step_id`.
+- **AC-12:** Un script en boucle Rhai pure et un script bloqué dans un appel natif sont interrompus à l'échéance, en
+  `MRD-WORKFLOW-009` non retryable.
+- **AC-13:** `{{#jsonnet}}importstr "<fichier réel>"{{/jsonnet}}` rendu par le moteur de template ne produit pas le
+  contenu du fichier.
+- **AC-14:** Un `subworkflow` dont le `config` porte `vars = {"a": "{{inputs.x}}"}` donne à l'enfant la valeur rendue ;
+  l'enfant ne voit pas les `vars` du parent.
 - **AC-8:** Reprise sur crash du service en milieu de couche sans rejeu des steps journalisés.
     - **Verification:** par la méthode du spike du 2026-09-22 (tuer le processus, le relancer, vérifier). Les tests
       `#[ignore]` de `tests/workflow_restate.rs` exigent `podman` et ne tournent pas en CI : AC-8 n'est donc **pas
@@ -234,11 +355,11 @@ leurs clients (TBD).
 
 ## Open Issues
 
-- **OI-1:** `sebt3/vynil-core#13` est **fermée, livrée dans vynil-core 0.8.0** (2026-10-11,
-  `HandleBars::new_restricted()`), alors que `Cargo.toml` pin encore `vynil-core` 0.7.7 (la dernière est 0.9.0).
-  La tâche ouverte de `SpecDD /src/workflow/template.sdd` (remplacer `DENIED_HELPERS` par le constructeur restreint)
-  n'est donc plus bloquée. `roadmap@c62a184` la présente encore comme conditionnelle à une livraison qui a eu lieu.
-  Source : issue `sebt3/vynil-core#13`.
+- **OI-1:** **Montée de `vynil-core` 0.7.7 vers 0.9.0, décidée le 2026-10-30, à réaliser** : `DEC-7`, `DEC-8`,
+  `FR-16` à `FR-18`, `CON-5`. `sebt3/vynil-core#13` est livrée (0.8.0, puis liste blanche en 0.9.0) mais `Cargo.toml`
+  pin encore 0.7.7. Si `AC-13` échoue (`jsonnet` lit des fichiers), `new_restricted()` doit lui-même retirer `jsonnet`
+  en amont, ou la crate garde une désinscription ciblée de ce seul helper. Tâches ouvertes concernées :
+  `SpecDD /src/workflow/template.sdd` et `SpecDD /src/workflow/rhai_step.sdd`.
 - **OI-2:** AC-8 (reprise sur crash) n'a pas de test automatisable. Une preuve par spike est à refaire à toute évolution
   majeure de `restate-sdk`. **TBD :** décider si un test d'intégration en cluster de CI est souhaitable.
 - **OI-3:** Pilotage d'un run par awakeable : reporté par arbitrage tant qu'aucun besoin réel ne l'impose (le
@@ -247,3 +368,26 @@ leurs clients (TBD).
 - **OI-4:** Lecture du statut d'un run : `client.rs` ne fait qu'enregistrer et déclencher ; une fonction de lecture est
   « un fichier à spécifier si le besoin se confirme ». **TBD.** Source : `arch@c62a184`, « Schéma de
   déploiement ».
+- **OI-5:** **Conditions d'exécution** : le DAG est statique (`id`, `depends_on`, `kind`, `config`), sans `when`, boucle ni
+  branche. **TBD :** sémantique d'un step ignoré pour ses dépendants. Un échec de step est aujourd'hui le seul moyen
+  de décider (par exemple `on_fail: "continue"` de `systemone`, qui « laisse l'aval décider »). **TBD :** le kind
+  `gate` de `vanyline` couvre-t-il ce besoin chez lui ?
+- **OI-6:** **« Faits » établis par des steps** : non retenus pour l'instant. Sans condition, aucun consommateur ; modifiables, leur
+  valeur dépendrait de l'ordonnancement des steps d'une même couche ; en écriture unique, ils ne sont qu'un alias de
+  sortie. Définition candidate si le besoin se confirme après `OI-5` : un **export nommé** déclaré par un step, à
+  producteur unique, dont `validate_dag` vérifie que tout consommateur dépend du producteur.
+- **OI-7:** **Déclaration des `vars`** (noms attendus, défauts, obligatoires) : absente en v1. **TBD :** nécessaire si une
+  interface expose les paramètres d'une définition à l'utilisateur.
+- **OI-8:** **Contexte modifiable** : relève d'une feature optionnelle `lymaille`, distincte de `workflow` (pad Rhai
+  associé à un run, hors du premier jalon de `lymaille`). Exigences à y porter : steps de pad en chaîne
+  totalement ordonnée, vérifiée par `validate_dag` (des steps parallèles qui écrivent la même variable donneraient un
+  résultat dépendant de l'ordonnancement) ; instantané en JSON ; idempotence au rejeu d'un step interrompu (`NFR-2`).
+  **TBD :** état persisté dans l'état clé-valeur du workflow Restate plutôt que dans un second store.
+    - **Source:** `lymaille` `dsd/agent-sessions/scratchpad.md`, « Extension réservée : pad de workflow » ;
+      user instruction, 2026-10-30
+- **OI-9:** **Pile des threads de `RhaiStep`** : `spawn_blocking` donne 2 Mio de pile, alors que `vynil-core` fixe des
+  plafonds Rhai de 512 niveaux d'appels et de profondeur d'expression 256 et 128. `lymaille` a mesuré un débordement à
+  512 niveaux en débogage et un pire cas construit de 125 Mio en release, ce qui ferait avorter le processus. Restate
+  rejouerait alors l'invocation, d'où une boucle. **Non reproduit sur `RhaiStep`.** **TBD :** test de récursion jusqu'au
+  plafond ; selon le résultat, abaisser les plafonds ou exécuter dans un fil à pile dimensionnée.
+    - **Source:** `lymaille` `dsd/agent-sessions/scratchpad.md`, DEC-3 (amendement du 2026-10-27)
