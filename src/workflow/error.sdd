@@ -200,7 +200,7 @@ Tasks:
   [x] Convertir les scenarios de cette spec en tests distincts nommés dans `mod tests` de ./error.rs :
     fichier neuf à l'origine ; vérifié en revue 2026-09-24 : un test nommé par `Scenario` (sept, dont
     les variantes de configuration ajoutées le même jour), verts.
-  [ ] A3 (2026-10-30, `dsd/miryad-core/workflow.md` `FR-18`) : variante @WorkflowError::ScriptTimeout { seconds: u64 }
+  [x] A3 (2026-10-30, `dsd/miryad-core/workflow.md` `FR-18`) : variante @WorkflowError::ScriptTimeout { seconds: u64 }
     (`MRD-WORKFLOW-009`), @Display à égalité exacte (`Must`) ; à faire avant la tâche A5 de ./rhai_step.sdd qui la construit.
     Un fichier : ./error.rs.
 

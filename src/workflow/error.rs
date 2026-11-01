@@ -66,6 +66,14 @@ pub enum WorkflowError {
         /// Plafond de profondeur du kind.
         max: u32,
     },
+    /// `MRD-WORKFLOW-009` — `ScriptTimeout` : durée d'exécution d'un script Rhai dépassée
+    /// (`timeout_secs`, `dsd/miryad-core/workflow.md` `FR-18`) ; construite exclusivement par
+    /// `./rhai_step.rs`, qui la traduit en `StepError` non retryable (rejouer dépasserait de nouveau).
+    #[error("MRD-WORKFLOW-009: script exceeded its time limit of {seconds}s")]
+    ScriptTimeout {
+        /// Limite de durée du script, en secondes.
+        seconds: u64,
+    },
 }
 
 /// Budget de la `Display` de `RestateRejected` : 1 KiB de corps, coupe sur une frontière de
@@ -419,6 +427,17 @@ mod tests {
         assert_eq!(
             WorkflowError::MaxDepthExceeded { depth: 5, max: 4 }.to_string(),
             "MRD-WORKFLOW-008: sub-workflow depth 5 exceeds the maximum of 4"
+        );
+    }
+
+    /// Scenario « `ScriptTimeout` se rend avec son code » (2026-10-30) : variante structurée
+    /// `{ seconds }`, `Display` exacte `MRD-WORKFLOW-009: script exceeded its time limit of <s>s`.
+    /// Construite exclusivement par `./rhai_step.rs` (lot A5) ; ce test ne verrouille que le rendu.
+    #[test]
+    fn script_timeout_rend_le_code_mrd_workflow_009() {
+        assert_eq!(
+            WorkflowError::ScriptTimeout { seconds: 30 }.to_string(),
+            "MRD-WORKFLOW-009: script exceeded its time limit of 30s"
         );
     }
 }
