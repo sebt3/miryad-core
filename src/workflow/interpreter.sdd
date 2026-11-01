@@ -258,7 +258,7 @@ Tasks:
     l'égalité exacte d'ensemble prouvant « jamais au-delà » par mutation), validator PASS — les
     trois du corps de @run restent couverts spike + tâche d'intégration ci-dessus.
 
-  [ ] B4 (2026-10-30, `FR-12`) : `RunInput` comme entrée de `run`, `build_invocation` pure, `vars` recopiées dans chaque
+  [x] B4 (2026-10-30, `FR-12`) : `RunInput` comme entrée de `run`, `build_invocation` pure, `vars` recopiées dans chaque
     `StepInvocation` ; adapter le corps JSON des tests d'intégration `#[ignore]` de ../../tests/workflow_restate.rs à la forme
     `{"dag", "vars"}` (`Can modify`). Après B3 (./dispatcher.sdd). Fichiers : ./interpreter.rs et ../../tests/workflow_restate.rs.
 

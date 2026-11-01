@@ -66,12 +66,12 @@ use miryad_core::workflow::WorkflowConfig;
 use miryad_core::workflow::recommended_options;
 use miryad_core::workflow::register_deployment;
 use miryad_core::workflow::subworkflow::DEFAULT_MAX_DEPTH;
-use miryad_core::workflow::trigger_run;
 use restate_sdk::prelude::Endpoint;
 use restate_sdk::prelude::HttpServer;
 use restate_sdk::prelude::IntoServiceDefinition;
 use serde_json::Value;
 use serde_json::json;
+use uuid::Uuid;
 
 const IMAGE: &str = "docker.restate.dev/restatedev/restate:latest";
 
@@ -303,16 +303,40 @@ impl Stack {
         }
     }
 
+    /// Déclenche `dag` par `POST {ingress}/DagInterpreter/{run_key}/run/send` (clé neuve) et rend
+    /// sa clé de run. Corps à la forme `RunInput` de ./interpreter.sdd (amendement 2026-10-30,
+    /// lot B, tâche B4) : `{"dag": [..steps..], "vars": {}}` — le fichier de test construit ce
+    /// corps directement, `trigger_run` (./client.rs) ne portant le paramètre `vars` qu'à la
+    /// tâche B5 ; les tests n'exercent que des `vars` vides, la recopie des `vars` non vides est
+    /// verrouillée en unitaire dans ./interpreter.rs.
+    async fn send_run(&self, dag: &DagSteps) -> String {
+        let run_key = Uuid::new_v4().to_string();
+        let response = self
+            .http
+            .post(format!(
+                "{}/DagInterpreter/{}/run/send",
+                self.config.ingress_url, run_key
+            ))
+            .json(&json!({ "dag": dag, "vars": {} }))
+            .send()
+            .await
+            .expect("l'ingress doit être joignable");
+        assert!(
+            response.status().is_success(),
+            "le déclenchement doit être accepté : {}",
+            response.status()
+        );
+        run_key
+    }
+
     /// Déclenche `dag` puis attend sa complétion (`attach`) : `(statut HTTP, corps JSON)`.
     async fn run_to_completion(&self, dag: &DagSteps) -> (u16, Value) {
-        let handle = trigger_run(&self.config, &self.http, dag)
-            .await
-            .expect("le déclenchement doit être accepté");
+        let run_key = self.send_run(dag).await;
         let response = self
             .http
             .get(format!(
                 "{}/restate/workflow/DagInterpreter/{}/attach",
-                self.config.ingress_url, handle.run_key
+                self.config.ingress_url, run_key
             ))
             .timeout(Duration::from_mins(2))
             .send()
@@ -465,14 +489,12 @@ async fn step_transitoire_rejoue_sans_rejouer_les_steps_termines() {
 async fn un_kind_durable_dort_durablement_et_reçoit_son_run_info() {
     let stack = Stack::start().await;
     let dag = DagSteps(vec![step("D", &[], "durable_sleep", json!({}))]);
-    let handle = trigger_run(&stack.config, &stack.http, &dag)
-        .await
-        .expect("le déclenchement doit être accepté");
+    let run_key = stack.send_run(&dag).await;
     let response = stack
         .http
         .get(format!(
             "{}/restate/workflow/DagInterpreter/{}/attach",
-            stack.config.ingress_url, handle.run_key
+            stack.config.ingress_url, run_key
         ))
         .timeout(Duration::from_mins(2))
         .send()
@@ -485,7 +507,7 @@ async fn un_kind_durable_dort_durablement_et_reçoit_son_run_info() {
         "le kind durable doit mener le run au bout : {status} {body}"
     );
     assert_eq!(
-        body["D"]["run_key"], handle.run_key,
+        body["D"]["run_key"], run_key,
         "le run_key vu par le kind doit être la clé du run déclenché : {body}"
     );
     assert_eq!(body["D"]["step_id"], "D", "le step_id vu par le kind : {body}");
@@ -509,14 +531,12 @@ async fn un_kind_durable_recoit_sa_config_rendue() {
         "durable_config",
         json!({ "m": "{{run.run_key}}" }),
     )]);
-    let handle = trigger_run(&stack.config, &stack.http, &dag)
-        .await
-        .expect("le déclenchement doit être accepté");
+    let run_key = stack.send_run(&dag).await;
     let response = stack
         .http
         .get(format!(
             "{}/restate/workflow/DagInterpreter/{}/attach",
-            stack.config.ingress_url, handle.run_key
+            stack.config.ingress_url, run_key
         ))
         .timeout(Duration::from_mins(2))
         .send()
@@ -529,7 +549,7 @@ async fn un_kind_durable_recoit_sa_config_rendue() {
         "le kind durable doit mener le run au bout : {status} {body}"
     );
     assert_eq!(
-        body["D"]["m"], handle.run_key,
+        body["D"]["m"], run_key,
         "le kind durable doit recevoir la config rendue (run_key) : {body}"
     );
 }

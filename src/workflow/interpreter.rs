@@ -1,8 +1,9 @@
 //! Service Restate `DagInterpreter` (feature `workflow`) : marche générique d'un DAG de workflow,
 //! de bout en bout (contrat porté par `./interpreter.sdd`).
 //!
-//! Unique `#[workflow]` de la crate : reçoit un [`DagSteps`] (./definition.rs), le revalide
-//! structurellement (`validate_dag` — `pub(crate)`, ./definition.rs — aucune hypothèse sur sa
+//! Unique `#[workflow]` de la crate : reçoit un `RunInput` (`{"dag", "vars"}` — amendement
+//! 2026-10-30, lot B) dont le [`DagSteps`] (./definition.rs) est revalidé structurellement
+//! (`validate_dag` — `pub(crate)`, ./definition.rs — aucune hypothèse sur sa
 //! provenance), puis marche le graphe
 //! par couches topologiques. Le fan-out d'une couche passe uniquement par
 //! `ctx.request(...).call()` poussé dans un `DurableFuturesUnordered` **construit pour cette
@@ -21,6 +22,8 @@ use restate_sdk::prelude::Json;
 use restate_sdk::prelude::TerminalError;
 use restate_sdk::prelude::WorkflowContext;
 use restate_sdk::prelude::workflow;
+use serde::Deserialize;
+use serde::Serialize;
 
 use super::definition::DagSteps;
 use super::definition::StepDefinition;
@@ -31,6 +34,22 @@ use super::durable::DEPTH_HEADER;
 /// Marque du workflow Restate — struct unitaire sans état : tout l'état d'une marche (`completed`,
 /// `results`) vit local au handler `run`, rejoué depuis le journal Restate à la reprise.
 pub struct DagInterpreter;
+
+/// Corps JSON de l'entrée du run (amendement 2026-10-30, lot B, `FR-12`) :
+/// `{"dag": [..steps..], "vars": {..}}` — changement cassant de la forme d'entrée (jusqu'ici le
+/// tableau de steps nu), assumé : API instable avant `1.0`, aucune production. ./client.rs et
+/// ./durable.rs (`run_child_dag`) construisent ce corps ; ./interpreter.rs le lit
+/// (`./interpreter.sdd` `Must`, « Entrée du run »).
+#[derive(Serialize, Deserialize)]
+pub(crate) struct RunInput {
+    /// Le DAG à marcher — revalidé par `validate_dag` en tête de `run`, sans hypothèse sur sa
+    /// provenance (`Accepts`).
+    pub(crate) dag: DagSteps,
+    /// Variables constantes du run, journalisées par Restate avec l'entrée ; `#[serde(default)]` :
+    /// un corps sans `vars` donne `{}`.
+    #[serde(default)]
+    pub(crate) vars: serde_json::Map<String, serde_json::Value>,
+}
 
 /// Profondeur du run lue depuis la valeur brute de l'en-tête [`DEPTH_HEADER`] : un `u32` valide
 /// est rendu tel quel ; en-tête absent, non numérique ou hors plage `u32` rend `0` — un run
@@ -57,21 +76,23 @@ impl DagInterpreter {
     ///
     /// Le `WorkflowContext` de `restate-sdk` `0.12.1` n'est virtualisé par aucun harnais : la
     /// boucle de marche n'est pas prouvable en `mod tests` (borne des `Tasks` de
-    /// ./interpreter.sdd — les deux fonctions pures qu'elle appelle, [`ready_steps`] et
-    /// [`build_inputs`], le sont).
+    /// ./interpreter.sdd — les fonctions pures qu'elle appelle, [`ready_steps`], [`build_inputs`]
+    /// et [`build_invocation`], le sont).
     #[handler]
     async fn run(
         &self,
         ctx: WorkflowContext<'_>,
-        dag: Json<DagSteps>,
+        input: Json<RunInput>,
     ) -> Result<Json<HashMap<String, serde_json::Value>>, HandlerError> {
-        // Déstructuration du wrapper `Json` : sous le wrapper `restate-sdk`, `dag.0` est bien la
-        // liste des steps, telle que le `Must` de ./interpreter.sdd nomme les choses.
-        let Json(dag) = dag;
+        // Étape 0 (amendement 2026-10-30, lot B, `FR-12`) — déstructuration du wrapper `Json` :
+        // `vars` est conservée intacte pour tout le run et alimente chaque `StepInvocation` via
+        // [`build_invocation`] (recopiée en `Value::Object`) ; `dag` est la liste des steps, comme
+        // avant. Le `to_string()` de `WorkflowError::InvalidDag` porte déjà le préfixe
+        // `MRD-WORKFLOW-004:` — réutilisé verbatim à l'étape 1, jamais reconstruit.
+        let Json(RunInput { dag, vars }) = input;
         // Étape 1 — revalidation structurelle systématique, avant tout step : ./client.rs a beau
         // être le déclencheur usuel (DAG passé par `before_create`), le corps reçu est traité
-        // sans aucune hypothèse (`Accepts`). Le `to_string()` de `WorkflowError::InvalidDag`
-        // porte déjà le préfixe `MRD-WORKFLOW-004:` — réutilisé verbatim, jamais reconstruit.
+        // sans aucune hypothèse (`Accepts`).
         if let Err(erreur) = validate_dag(&dag.0) {
             return Err(HandlerError::from(TerminalError::new_with_code(
                 400,
@@ -98,20 +119,13 @@ impl DagInterpreter {
             let mut ready_ids: Vec<String> = Vec::with_capacity(prepared.len());
             for step in &prepared {
                 ready_ids.push(step.id.clone());
-                let invocation = StepInvocation {
-                    kind: step.kind.clone(),
-                    config: step.config.clone(),
-                    inputs: build_inputs(step, &results),
-                    // #26 : identité du run — clé de workflow Restate de cette invocation, `id`
-                    // du step, profondeur lue une fois à l'étape 1b.
-                    run_key: ctx.key().to_string(),
-                    step_id: step.id.clone(),
-                    depth,
-                    // B4 (./interpreter.sdd, FR-12) : les `vars` du run viendront de `RunInput`,
-                    // lues une fois pour tout le run. En attendant, valeur neutre autorisée par le
-                    // contrat (« {} sans variables ») — même traitement que le placeholder B1.
-                    vars: serde_json::Value::Object(serde_json::Map::new()),
-                };
+                // #26 : identité du run — clé de workflow Restate de cette invocation, `id`
+                // du step, profondeur lue une fois à l'étape 1b. B4 (lot B, `FR-12`) : les
+                // `vars` du run, lues une fois à l'étape 0, sont recopiées dans chaque
+                // invocation par `build_invocation` (seul endroit de la crate où une
+                // `StepInvocation` est assemblée).
+                let invocation =
+                    build_invocation(step, build_inputs(step, &results), ctx.key(), depth, &vars);
                 futures.push(
                     ctx.request::<Json<StepInvocation>, Json<serde_json::Value>>(
                         RequestTarget::Service {
@@ -180,9 +194,32 @@ pub(crate) fn build_inputs(
         .collect()
 }
 
+/// Assemble une `StepInvocation` depuis un step — fonction pure, extrait de l'étape 2.b de
+/// [`DagInterpreter::run`] (amendement 2026-10-30, lot B : le passage des `vars` est la partie
+/// décidable sans `WorkflowContext`, même rationale de séparaison que [`build_inputs`]).
+pub(crate) fn build_invocation(
+    step: &StepDefinition,
+    inputs: HashMap<String, serde_json::Value>,
+    run_key: &str,
+    depth: u32,
+    vars: &serde_json::Map<String, serde_json::Value>,
+) -> StepInvocation {
+    StepInvocation {
+        kind: step.kind.clone(),
+        config: step.config.clone(),
+        inputs,
+        run_key: run_key.to_string(),
+        step_id: step.id.clone(),
+        depth,
+        vars: serde_json::Value::Object(vars.clone()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::RunInput;
     use super::build_inputs;
+    use super::build_invocation;
     use super::parse_depth;
     use super::ready_steps;
     use crate::workflow::definition::StepDefinition;
@@ -317,5 +354,88 @@ mod tests {
                 "`{raw:?}` doit rendre 0, sans panic ni erreur"
             );
         }
+    }
+
+    /// Scenario « `build_invocation` recopie les vars sans les modifier » (2026-10-30, lot B,
+    /// B4) : l'unique endroit où une `StepInvocation` est assemblée depuis un step rend tous ses
+    /// champs identitaires tels qu'émis et les `vars` verbatim en `Value::Object` — le passage
+    /// des variables du run est la seule partie du contrat B4 décidable sans `WorkflowContext`
+    /// (la boucle de `run` elle-même reste hors unitaire, borne des `Tasks`).
+    #[test]
+    fn build_invocation_recopie_les_vars_sans_les_modifier() {
+        let etape = StepDefinition {
+            id: "b".to_string(),
+            depends_on: vec!["a".to_string()],
+            kind: "echo".to_string(),
+            config: json!({"m": 1}),
+        };
+        let vars = json!({"project": "p1"})
+            .as_object()
+            .expect("les vars de la fixture sont un objet")
+            .clone();
+
+        let invocation = build_invocation(
+            &etape,
+            HashMap::from([("a".to_string(), json!(7))]),
+            "r1",
+            2,
+            &vars,
+        );
+
+        assert_eq!(invocation.kind, "echo", "le `kind` du step, cloné");
+        assert_eq!(invocation.config, json!({"m": 1}), "la `config` du step, clonée");
+        assert_eq!(
+            invocation.inputs,
+            HashMap::from([("a".to_string(), json!(7))]),
+            "les `inputs` transmis tels quels"
+        );
+        assert_eq!(invocation.run_key, "r1");
+        assert_eq!(invocation.step_id, "b", "l'`id` du step, cloné");
+        assert_eq!(invocation.depth, 2);
+        assert_eq!(
+            invocation.vars,
+            json!({"project": "p1"}),
+            "les vars recopiées en `Value::Object`, sans modification"
+        );
+    }
+
+    /// Scenario « un corps sans vars se désérialise avec des vars vides » (2026-10-30, lot B,
+    /// B4) : les trois volets du `Then` — `{"dag": [a]}` seul donne un `dag` d'un step `a` et
+    /// `vars = {}` (`#[serde(default)]`) ; `"vars": {"project": "p1"}` porte cette valeur ;
+    /// l'ancienne forme (tableau nu de steps, avant l'amendement `FR-12`) est **refusée** —
+    /// changement cassant assumé, API instable avant 1.0.
+    #[test]
+    fn un_corps_sans_vars_se_deserialise_avec_des_vars_vides() {
+        let sans_vars: RunInput = serde_json::from_value(json!({
+            "dag": [{ "id": "a", "depends_on": [], "kind": "echo", "config": {} }]
+        }))
+        .expect("`{\"dag\": [a]}` doit se désérialiser en `RunInput`");
+        assert_eq!(sans_vars.dag.0.len(), 1, "un seul step attendu");
+        assert_eq!(sans_vars.dag.0[0].id, "a");
+        assert!(
+            sans_vars.vars.is_empty(),
+            "un corps sans `vars` donne {{}}, rendu : {:?}",
+            sans_vars.vars
+        );
+
+        let avec_vars: RunInput = serde_json::from_value(json!({
+            "dag": [{ "id": "a", "depends_on": [], "kind": "echo", "config": {} }],
+            "vars": { "project": "p1" }
+        }))
+        .expect("`{\"dag\": [a], \"vars\": {..}}` doit se désérialiser en `RunInput`");
+        assert_eq!(
+            avec_vars.vars.get("project"),
+            Some(&json!("p1")),
+            "les vars portées par le corps traversent telles quelles"
+        );
+
+        let corps_nu_refuse = serde_json::from_value::<RunInput>(json!([
+            { "id": "a", "depends_on": [], "kind": "echo", "config": {} }
+        ]))
+        .is_err();
+        assert!(
+            corps_nu_refuse,
+            "l'ancienne forme (tableau nu de steps) ne doit plus être acceptée"
+        );
     }
 }
