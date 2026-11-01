@@ -315,7 +315,7 @@ Tasks:
     `un_kind_durable_recoit_sa_config_rendue` (`--ignored`, podman, 9/9 verts). Le test d'intégration a été écrit
     après l'implémentation (non observé rouge) : la preuve est sa présence verte contre un vrai restate-server.
 
-  [ ] B3 (2026-10-30, `FR-13`) : `StepInvocation.vars`, recopié tel quel dans le @RunInfo construit par `execute` (branches
+  [x] B3 (2026-10-30, `FR-13`) : `StepInvocation.vars`, recopié tel quel dans le @RunInfo construit par `execute` (branches
     ordinaire et durable) ; `Scenario` « les vars atteignent le kind ordinaire ». Après B1 (./step.sdd). Un fichier : ./dispatcher.rs.
 
 Done when:

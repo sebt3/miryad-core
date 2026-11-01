@@ -22,8 +22,8 @@ use super::template::render_config;
 /// ./interpreter.rs via le protocole `restate-sdk`.
 // Champs `pub(crate)` : construit par littéral depuis ./interpreter.rs (`Must` étape 2.b de
 // ./interpreter.sdd), comme l'impliquent déjà `Exposes`/`Accepts` de ./dispatcher.sdd.
-// `run_key`/`step_id`/`depth` (#26, 2026-10-04) composent le [`RunInfo`] de ./step.rs,
-// reconstruit par ce fichier avant l'appel du kind.
+// `run_key`/`step_id`/`depth` (#26, 2026-10-04) et `vars` (B3, 2026-10-30, FR-13) composent le
+// [`RunInfo`] de ./step.rs, reconstruit par ce fichier avant l'appel du kind.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct StepInvocation {
     pub(crate) kind: String,
@@ -32,6 +32,10 @@ pub(crate) struct StepInvocation {
     pub(crate) run_key: String,
     pub(crate) step_id: String,
     pub(crate) depth: u32,
+    /// Variables constantes du run (B3, 2026-10-30, FR-13) : recopiées telles quelles dans le
+    /// [`RunInfo`] construit par `execute`, sans validation ni interprétation ici — la validation
+    /// éventuelle des vars d'un run vit au client (tâche B4, ./interpreter.sdd).
+    pub(crate) vars: Value,
 }
 
 /// L'unique service Restate du module : résout un kind dans le registre de l'app et enveloppe
@@ -68,16 +72,17 @@ impl StepDispatcher {
             run_key,
             step_id,
             depth,
+            vars,
         }) = req;
-        // Étape 1 (#26, 2026-10-04) — reconstruction de l'identité du run à partir du corps reçu.
-        // `vars` (B1, 2026-10-30, ./step.sdd) : pas encore véhiculées par `StepInvocation` (tâche
-        // B2) — objet vide reconstruit ici, valeur neutre autorisée par le contrat (« {} sans
-        // variables »), sans changement de comportement pour les kinds.
+        // Étape 1 (#26, 2026-10-04 ; `vars` : B3, 2026-10-30, FR-13) — reconstruction de l'identité
+        // du run à partir du corps reçu. `vars` est recopiée telle quelle depuis `StepInvocation`,
+        // dans les deux branches ci-dessous : aucune validation ni interprétation ici (elle vit au
+        // client, tâche B4).
         let run_info = RunInfo {
             run_key,
             step_id,
             depth,
-            vars: Value::Object(serde_json::Map::new()),
+            vars,
         };
         // Étape 1b (#26, 2026-10-04) — branche durable : un kind durable consulté avant le
         // registre ordinaire, appelé **sans** `ctx.run()` englobant (l'envelopper interdirait tout
@@ -204,7 +209,7 @@ pub fn recommended_options() -> ServiceOptions {
 
 #[cfg(test)]
 mod tests {
-    use super::{recommended_options, run_invocation, step_error_to_handler_error};
+    use super::{StepInvocation, recommended_options, run_invocation, step_error_to_handler_error};
     use crate::workflow::step::{MiryadWorkflowStep, RunInfo, StepError, StepRegistry};
     use restate_sdk::prelude::Json;
     use serde_json::Value;
@@ -314,6 +319,11 @@ mod tests {
         }
     }
 
+    /// Kind dont le `run` rend les `vars` de la `RunInfo` reçue (scenario « les vars atteignent le
+    /// kind ordinaire », 2026-10-30, lot B B3) : prouve que le recopiage est tel quel, sans lecture
+    /// ni normalisation du côté du dispatcher.
+    struct EchoVars;
+
     /// Kind de fixture `"echo_config_inputs"` (scenarios « config rendue avant dispatch » 2026-10-06) :
     /// rend la `config` **et** les `inputs` reçus, pour observer ce que le kind reçoit réellement.
     struct EchoConfigEtInputs;
@@ -358,6 +368,21 @@ mod tests {
     /// `run_invocation` », #26) : son `run` n'est jamais appelé — aucun `StepContext`
     /// constructible en test (borne `restate-sdk` `0.12.1`).
     struct DurableD;
+
+    #[async_trait::async_trait]
+    impl MiryadWorkflowStep for EchoVars {
+        fn kind(&self) -> &'static str {
+            "echo_vars"
+        }
+        async fn run(
+            &self,
+            run: &RunInfo,
+            _config: Value,
+            _inputs: HashMap<String, Value>,
+        ) -> Result<Value, StepError> {
+            Ok(run.vars.clone())
+        }
+    }
 
     #[async_trait::async_trait]
     impl crate::workflow::durable::MiryadDurableStep for DurableD {
@@ -556,6 +581,83 @@ mod tests {
             valeur,
             json!({ "run_key": "r1", "step_id": "s1", "depth": 3 }),
             "les trois champs du RunInfo doivent parvenir au kind tels qu'émis"
+        );
+    }
+
+    /// Scenario « les vars atteignent le kind ordinaire » (2026-10-30, lot B B3) : `run_invocation`
+    /// appelé avec `RunInfo { run_key: "r1", step_id: "s1", depth: 0, vars: {"project": "p1"} }`
+    /// fait rendre au kind ces vars exactes — le seam relaie le `RunInfo` entier au `dispatch`,
+    /// `vars` comprises, sans les lire ni les normaliser. Seconde branche du Scenario :
+    /// `vars = {}` rend `{}` (la valeur neutre est un objet vide, jamais `null`).
+    #[tokio::test]
+    async fn les_vars_atteignent_le_kind_ordinaire() {
+        let mut registry = StepRegistry::new();
+        registry.register(EchoVars).expect("kind distinct");
+        let rendu = run_invocation(
+            &registry,
+            "echo_vars".to_string(),
+            RunInfo {
+                run_key: "r1".to_string(),
+                step_id: "s1".to_string(),
+                depth: 0,
+                vars: json!({ "project": "p1" }),
+            },
+            Value::Null,
+            HashMap::new(),
+        )
+        .await
+        .expect("le kind de fixture `echo_vars` est enregistré");
+        let Json(valeur) = rendu;
+        assert_eq!(
+            valeur,
+            json!({ "project": "p1" }),
+            "les vars doivent parvenir au kind telles qu'émises, recopiées telles quelles"
+        );
+        let rendu_vide = run_invocation(
+            &registry,
+            "echo_vars".to_string(),
+            RunInfo {
+                run_key: "r1".to_string(),
+                step_id: "s1".to_string(),
+                depth: 0,
+                vars: json!({}),
+            },
+            Value::Null,
+            HashMap::new(),
+        )
+        .await
+        .expect("le kind de fixture `echo_vars` est enregistré");
+        let Json(valeur_vide) = rendu_vide;
+        assert_eq!(
+            valeur_vide,
+            json!({}),
+            "vars vides : le kind rend l'objet vide {{}}, jamais null"
+        );
+    }
+
+    /// Tâche B3, moitié « `StepInvocation.vars` » du contrat (l'autre moitié — le recopiage dans le
+    /// `RunInfo` jusqu'au kind — est verrouillée par le scenario nommé ci-dessus) : les vars du run
+    /// voyagent bel et bien sur le corps de requête échangé avec ./interpreter.rs, la forme
+    /// sérialisée de `StepInvocation` portant le champ. `execute` lui-même n'est pas testable en
+    /// unitaire (`restate-sdk` `0.12.1` ne virtualise aucun `Context`, borne actée en `Tasks`) — la
+    /// traversée du champ reçu jusqu'au `RunInfo` construit y est une affectation directe, vérifiée
+    /// à la relecture, aucune valeur n'y étant posée d'autre que celle du corps.
+    #[test]
+    fn le_corps_de_step_invocation_transport_les_vars() {
+        let invocation = StepInvocation {
+            kind: "echo_vars".to_string(),
+            config: json!(null),
+            inputs: HashMap::new(),
+            run_key: "r1".to_string(),
+            step_id: "s1".to_string(),
+            depth: 0,
+            vars: json!({ "project": "p1" }),
+        };
+        let corps = serde_json::to_value(&invocation).expect("StepInvocation est sérialisable");
+        assert_eq!(
+            corps.get("vars"),
+            Some(&json!({ "project": "p1" })),
+            "le corps de requête doit transporter les vars du run, corps : {corps}"
         );
     }
 

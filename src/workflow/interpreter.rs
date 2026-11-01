@@ -107,6 +107,10 @@ impl DagInterpreter {
                     run_key: ctx.key().to_string(),
                     step_id: step.id.clone(),
                     depth,
+                    // B4 (./interpreter.sdd, FR-12) : les `vars` du run viendront de `RunInput`,
+                    // lues une fois pour tout le run. En attendant, valeur neutre autorisée par le
+                    // contrat (« {} sans variables ») — même traitement que le placeholder B1.
+                    vars: serde_json::Value::Object(serde_json::Map::new()),
                 };
                 futures.push(
                     ctx.request::<Json<StepInvocation>, Json<serde_json::Value>>(
