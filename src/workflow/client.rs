@@ -7,6 +7,7 @@
 use crate::workflow::definition::DagSteps;
 use crate::workflow::error::WorkflowError;
 use crate::workflow::error::classify_transport_error;
+use crate::workflow::interpreter::RunInput;
 use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
@@ -131,9 +132,16 @@ pub async fn register_deployment(
 
 /// Déclenche une exécution de `DagInterpreter` sans attendre sa complétion : clé de run neuve
 /// (`uuid::Uuid::new_v4`) à chaque appel — jamais réutilisée, jamais d'`Idempotency-Key` — puis
-/// `POST {ingress_url}/DagInterpreter/{run_key}/run/send`, corps = `dag` sérialisé tel quel, sans
-/// enveloppe ni champ ajouté. Un `202` (tout `2xx` en pratique) rend un `RunHandle` dont
-/// `invocation_id` est lu dans le **corps** de réponse, pas dans un en-tête.
+/// `POST {ingress_url}/DagInterpreter/{run_key}/run/send`, corps = `RunInput { dag, vars }`
+/// sérialisé (./interpreter.sdd « Entrée du run », amendement 2026-10-30, lot B) — `{"dag":
+/// [..steps..], "vars": {..}}`, le DAG sous sa forme de tableau nu, sans autre enveloppe ni
+/// champ ajouté. Un `202` (tout `2xx` en pratique) rend un `RunHandle` dont `invocation_id` est
+/// lu dans le **corps** de réponse, pas dans un en-tête.
+///
+/// `vars` : variables constantes du run, un objet JSON (passez `&serde_json::Map::new()` si
+/// l'appelant n'en a pas), transmis dans le corps avec le DAG sans transformation ni validation
+/// de contenu. **Elles sont journalisées par Restate avec l'entrée du run et visibles dans son
+/// interface : n'y mettez aucun secret** (`dsd/miryad-core/workflow.md` `CON-6`).
 ///
 /// La cible contractuelle est `&DagSteps` (./definition.rs, ./client.sdd `Exposes`) — rive
 /// effectuée le 2026-09-23 au batch de ./definition.rs : le paramètre est le type réel de la
@@ -157,6 +165,7 @@ pub async fn trigger_run(
     config: &WorkflowConfig,
     http: &reqwest::Client,
     dag: &DagSteps,
+    vars: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<RunHandle, WorkflowError> {
     config.validate()?;
     let run_key = Uuid::new_v4().to_string();
@@ -165,7 +174,10 @@ pub async fn trigger_run(
             "{}/DagInterpreter/{}/run/send",
             config.ingress_url, run_key
         ))
-        .json(dag)
+        .json(&RunInput {
+            dag: dag.clone(),
+            vars: vars.clone(),
+        })
         .send()
         .await
         .map_err(classify_transport_error)?;
@@ -233,6 +245,17 @@ mod tests {
                 config: serde_json::json!({ "channel": "ops" }),
             },
         ])
+    }
+
+    /// DAG d'**un step** du Scenario « `trigger_run` envoie le DAG et les vars » (lot B) — le plus
+    /// petit DAG structurellement valide, pour lire le corps capturé sans bruit.
+    fn dag_fixture_un_step() -> DagSteps {
+        DagSteps(vec![StepDefinition {
+            id: "deploy".to_string(),
+            depends_on: vec![],
+            kind: "rhai".to_string(),
+            config: serde_json::json!({ "script": "1 + 1" }),
+        }])
     }
 
     // ---------------------------------------------------------------------------
@@ -527,10 +550,10 @@ mod tests {
         let config = stub.config();
         let http = test_http();
         let dag = dag_fixture();
-        let first = trigger_run(&config, &http, &dag)
+        let first = trigger_run(&config, &http, &dag, &serde_json::Map::new())
             .await
             .expect("le 202 devait rendre Ok(RunHandle)");
-        let second = trigger_run(&config, &http, &dag)
+        let second = trigger_run(&config, &http, &dag, &serde_json::Map::new())
             .await
             .expect("le second 202 devait rendre Ok(RunHandle)");
 
@@ -578,7 +601,14 @@ mod tests {
         let spike_body = "{\"code\":404,\"message\":\"service 'DagInterpreter' not found, \
                           make sure to register the service before calling it.\",\"source\":\"ingress\"}";
         let stub = StubServer::spawn(404, spike_body.to_string());
-        let Err(err) = trigger_run(&stub.config(), &test_http(), &dag_fixture()).await else {
+        let Err(err) = trigger_run(
+            &stub.config(),
+            &test_http(),
+            &dag_fixture(),
+            &serde_json::Map::new(),
+        )
+        .await
+        else {
             panic!("le statut 404 devait rendre un Err");
         };
         let WorkflowError::RestateRejected { status, body } = err else {
@@ -594,7 +624,14 @@ mod tests {
     #[tokio::test]
     async fn trigger_run_reponse_sans_invocation_id() {
         let stub = StubServer::spawn(202, "{\"status\":\"Accepted\"}".to_string());
-        let Err(err) = trigger_run(&stub.config(), &test_http(), &dag_fixture()).await else {
+        let Err(err) = trigger_run(
+            &stub.config(),
+            &test_http(),
+            &dag_fixture(),
+            &serde_json::Map::new(),
+        )
+        .await
+        else {
             panic!("un 202 sans invocationId devait rendre un Err");
         };
         assert!(
@@ -608,15 +645,17 @@ mod tests {
         );
     }
 
-    /// Scenario « le corps envoyé à `trigger_run` est le `DagSteps` tel quel, sans enveloppe » :
-    /// le capturée se re-désérialise en la fixture DAG à deux steps, octet pour octet
-    /// identique à sa sérialisation — rien d'ajouté (pas de `run_key`, il ne vit que dans
-    /// l'URI), rien de retiré.
+    /// Scenario « le corps envoyé à `trigger_run` est le `DagSteps` tel quel, sans enveloppe »,
+    /// passé à la forme `RunInput` (amendement 2026-10-30, lot B, tâche B5 — ./interpreter.sdd
+    /// « Entrée du run ») : le corps capturé est l'objet `{"dag": [..steps..], "vars": {}}` —
+    /// régression verrouillée : **plus** le tableau nu des steps — et le champ `dag` est la
+    /// fixture telle quelle, re-désérialisable octet pour octet en elle : rien d'ajouté au
+    /// tableau de steps (pas de `run_key`, il ne vit que dans l'URI), rien de retiré.
     #[tokio::test]
     async fn corps_envoye_sans_enveloppe() {
         let stub = StubServer::spawn(202, SEND_ACCEPTED_BODY.to_string());
         let dag = dag_fixture();
-        let handle: RunHandle = trigger_run(&stub.config(), &test_http(), &dag)
+        let handle: RunHandle = trigger_run(&stub.config(), &test_http(), &dag, &serde_json::Map::new())
             .await
             .expect("le 202 devait rendre Ok(RunHandle)");
 
@@ -629,20 +668,37 @@ mod tests {
             request.uri
         );
 
-        let expected_bytes = serde_json::to_vec(&dag).expect("la fixture doit être sérialisable");
-        assert_eq!(
-            request.body, expected_bytes,
-            "le corps doit être la fixture sérialisée telle quelle, sans enveloppe ajoutée"
-        );
-        let round_trip: DagSteps =
-            serde_json::from_slice(&request.body).expect("le corps doit se re-désérialiser en la fixture");
-        assert_eq!(round_trip, dag, "aucun champ retiré");
-
         let value: serde_json::Value =
             serde_json::from_slice(&request.body).expect("le corps doit être un JSON");
-        let steps = value
+        assert!(
+            value.as_array().is_none(),
+            "régression lot B : le corps n'est plus un tableau nu de steps, c'est l'objet RunInput {{dag, vars}}"
+        );
+        let mut top_keys: Vec<&str> = value
+            .as_object()
+            .expect("le corps est un objet JSON RunInput")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        top_keys.sort_unstable();
+        assert_eq!(
+            top_keys,
+            vec!["dag", "vars"],
+            "le corps porte exactement dag puis vars — aucun champ ajouté (pas de run_key, il ne vit que dans l'URI)"
+        );
+        assert_eq!(
+            value.get("vars"),
+            Some(&serde_json::json!({})),
+            "vars vide sérialisé en objet JSON vide"
+        );
+
+        let dag_value = value.get("dag").expect("le corps porte le champ dag");
+        let round_trip: DagSteps = serde_json::from_value(dag_value.clone())
+            .expect("le champ dag doit se re-désérialiser en la fixture");
+        assert_eq!(round_trip, dag, "aucun champ retiré du DAG");
+        let steps = dag_value
             .as_array()
-            .expect("DagSteps (newtype sur Vec) se sérialise en tableau JSON nu, pas en objet enveloppe");
+            .expect("le champ dag est le tableau nu des steps, sans enveloppe interne");
         assert_eq!(steps.len(), 2, "la fixture a deux steps");
         for step in steps {
             let object = step.as_object().expect("un step est un objet JSON");
@@ -661,6 +717,61 @@ mod tests {
         assert!(
             !handle.run_key.is_empty(),
             "une clé neuve est générée et rendue, elle ne passe pas par le corps"
+        );
+    }
+
+    /// Scenario « `trigger_run` envoie le DAG et les vars (2026-10-30, lot B) » : le corps capturé
+    /// est exactement `{"dag": [<le step>], "vars": {"project": "p1"}}` — le DAG et les `vars`
+    /// côte à côte dans l'objet `RunInput`, le DAG sous sa forme de tableau nu tel que
+    /// `DagSteps` le sérialise, les `vars` transmises sans transformation (./client.sdd `Must`,
+    /// amendement lot B) — et avec `vars` vide le corps porte `"vars": {}`, jamais un champ omis.
+    #[tokio::test]
+    async fn trigger_run_envoie_dag_et_vars() {
+        let stub = StubServer::spawn(202, SEND_ACCEPTED_BODY.to_string());
+        let config = stub.config();
+        let http = test_http();
+        let dag = dag_fixture_un_step();
+        let mut vars = serde_json::Map::new();
+        vars.insert("project".to_string(), serde_json::json!("p1"));
+        trigger_run(&config, &http, &dag, &vars)
+            .await
+            .expect("le 202 devait rendre Ok(RunHandle)");
+        trigger_run(&config, &http, &dag, &serde_json::Map::new())
+            .await
+            .expect("le second 202 devait rendre Ok(RunHandle)");
+
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 2, "deux appels = deux requêtes capturées");
+        let dag_bytes = serde_json::to_vec(&dag).expect("le DAG de fixture doit être sérialisable");
+        let corps_attendu = |vars_json: &str| -> String {
+            format!(
+                "{{\"dag\":{},\"vars\":{vars_json}}}",
+                String::from_utf8_lossy(&dag_bytes)
+            )
+        };
+        let avec_vars = String::from_utf8_lossy(
+            &requests
+                .first()
+                .expect("la première requête capturée doit exister")
+                .body,
+        )
+        .to_string();
+        assert_eq!(
+            avec_vars,
+            corps_attendu("{\"project\":\"p1\"}"),
+            "le corps doit être exactement dag puis vars, compacts — les vars transmises sans transformation"
+        );
+        let sans_vars = String::from_utf8_lossy(
+            &requests
+                .get(1)
+                .expect("la seconde requête capturée doit exister")
+                .body,
+        )
+        .to_string();
+        assert_eq!(
+            sans_vars,
+            corps_attendu("{}"),
+            "vars vide : le corps porte \"vars\": {{}}, jamais le champ retiré"
         );
     }
 
@@ -718,7 +829,8 @@ mod tests {
             ingress_url: stub.url(),
             deployment_url: DEPLOYMENT_URL.to_string(),
         };
-        let Err(err) = trigger_run(&config, &test_http(), &dag_fixture()).await else {
+        let Err(err) = trigger_run(&config, &test_http(), &dag_fixture(), &serde_json::Map::new()).await
+        else {
             panic!("un admin_url de schéma ftp devait rendre Err(InvalidConfig), ingress valide ou non");
         };
         assert!(

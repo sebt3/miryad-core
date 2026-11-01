@@ -66,12 +66,12 @@ use miryad_core::workflow::WorkflowConfig;
 use miryad_core::workflow::recommended_options;
 use miryad_core::workflow::register_deployment;
 use miryad_core::workflow::subworkflow::DEFAULT_MAX_DEPTH;
+use miryad_core::workflow::trigger_run;
 use restate_sdk::prelude::Endpoint;
 use restate_sdk::prelude::HttpServer;
 use restate_sdk::prelude::IntoServiceDefinition;
 use serde_json::Value;
 use serde_json::json;
-use uuid::Uuid;
 
 const IMAGE: &str = "docker.restate.dev/restatedev/restate:latest";
 
@@ -303,30 +303,18 @@ impl Stack {
         }
     }
 
-    /// Déclenche `dag` par `POST {ingress}/DagInterpreter/{run_key}/run/send` (clé neuve) et rend
-    /// sa clé de run. Corps à la forme `RunInput` de ./interpreter.sdd (amendement 2026-10-30,
-    /// lot B, tâche B4) : `{"dag": [..steps..], "vars": {}}` — le fichier de test construit ce
-    /// corps directement, `trigger_run` (./client.rs) ne portant le paramètre `vars` qu'à la
-    /// tâche B5 ; les tests n'exercent que des `vars` vides, la recopie des `vars` non vides est
+    /// Déclenche `dag` par `trigger_run` (./client.rs — clé de run neuve, `POST
+    /// {ingress}/DagInterpreter/{run_key}/run/send`) avec `vars` vides et rend sa clé de run.
+    /// Depuis la tâche B5 (amendement 2026-10-30, lot B), `trigger_run` porte le paramètre `vars`
+    /// et c'est lui qui construit le corps `RunInput` (`{"dag": [..steps..], "vars": {}}`) —
+    /// l'appel direct à l'ingress que cette fonction postait jusqu'ici n'a plus de raison d'être.
+    /// Les tests n'exercent ici que des `vars` vides ; la recopie des `vars` non vides est
     /// verrouillée en unitaire dans ./interpreter.rs.
     async fn send_run(&self, dag: &DagSteps) -> String {
-        let run_key = Uuid::new_v4().to_string();
-        let response = self
-            .http
-            .post(format!(
-                "{}/DagInterpreter/{}/run/send",
-                self.config.ingress_url, run_key
-            ))
-            .json(&json!({ "dag": dag, "vars": {} }))
-            .send()
+        let handle = trigger_run(&self.config, &self.http, dag, &serde_json::Map::new())
             .await
-            .expect("l'ingress doit être joignable");
-        assert!(
-            response.status().is_success(),
-            "le déclenchement doit être accepté : {}",
-            response.status()
-        );
-        run_key
+            .unwrap_or_else(|erreur| panic!("le déclenchement doit être accepté : {erreur}"));
+        handle.run_key
     }
 
     /// Déclenche `dag` puis attend sa complétion (`attach`) : `(statut HTTP, corps JSON)`.

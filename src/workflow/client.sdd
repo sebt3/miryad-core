@@ -239,7 +239,7 @@ Tasks:
     Restate se comporte comme documenté. Vérifié en revue 2026-09-24 : sept `Scenario`, huit tests
     nommés verts dans `mod tests` de ./client.rs contre un serveur HTTP de test local.
 
-  [ ] B5 (2026-10-30, `FR-12`, `CON-6`) : paramètre `vars` de @client::trigger_run, corps `RunInput`, rustdoc « aucun secret » ;
+  [x] B5 (2026-10-30, `FR-12`, `CON-6`) : paramètre `vars` de @client::trigger_run, corps `RunInput`, rustdoc « aucun secret » ;
     adapter les appels de `trigger_run` des tests de ./client.rs et de ../../tests/workflow_restate.rs (`Can modify`). Après B4
     (./interpreter.sdd, qui porte `RunInput`). Fichiers : ./client.rs et ../../tests/workflow_restate.rs.
 
@@ -300,11 +300,12 @@ Scenario: déclenchement avec réponse au format inattendu
   When @client::trigger_run décode la réponse
   Then le résultat est @Err(WorkflowError::Serialization(_))
 
-Scenario: le corps envoyé à trigger_run est le DagSteps tel quel, sans enveloppe
-  Given une @DagSteps de fixture à deux steps
+Scenario: le corps envoyé à trigger_run est le RunInput sans champ superflu (amendé 2026-10-30, tâche B5)
+  Given une @DagSteps de fixture à deux steps et des `vars` de fixture
   When @client::trigger_run construit la requête
-  Then le corps JSON capturé par le serveur de test désérialise en la même @DagSteps — aucun
-    champ ajouté (pas de `run_key` dans le corps, il ne vit que dans l'URL), aucun champ retiré
+  Then le corps JSON capturé par le serveur de test est l'objet à deux clés `dag` et `vars` : `dag` désérialise
+    en la même @DagSteps, `vars` est l'objet transmis, aucun autre champ ajouté (pas de `run_key` dans le corps,
+    il ne vit que dans l'URL), aucune enveloppe supplémentaire
 
 Scenario: URL d'admin vide refusée avant tout appel réseau
   Given une @WorkflowConfig dont `admin_url` est la chaîne vide
