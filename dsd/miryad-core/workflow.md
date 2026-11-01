@@ -385,6 +385,8 @@ leurs clients (TBD).
   **TBD :** état persisté dans l'état clé-valeur du workflow Restate plutôt que dans un second store.
     - **Source:** `lymaille` `dsd/agent-sessions/scratchpad.md`, « Extension réservée : pad de workflow » ;
       user instruction, 2026-10-30
+    - La Solution `miryad-core/lymaille` est ouverte depuis le 2026-11-01 et rattache cette réserve ; le **TBD**
+      persistant reste à trancher dans cette Solution.
 - **OI-9:** **Pile des threads de `RhaiStep`** : `spawn_blocking` donne 2 Mio de pile, alors que `vynil-core` fixe des
   plafonds Rhai de 512 niveaux d'appels et de profondeur d'expression 256 et 128. `lymaille` a mesuré un débordement à
   512 niveaux en débogage et un pire cas construit de 125 Mio en release, ce qui ferait avorter le processus. Restate

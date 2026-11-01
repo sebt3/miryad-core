@@ -114,11 +114,13 @@ contenus d'origine restent consultables par Git :
 - `miryad-core/matrix` : client Matrix de bot, chiffrement de bout en bout et son kind de workflow.
 - `miryad-core/frontend` : IR du frontend et service statique.
 
-- **TBD :** `lymaille` — feature optionnelle, distincte de `workflow`, destinée aux inférences LLM et à un pad de
-  workflow modifiable. Non prête ; voir `miryad-core/workflow#OI-8`. Source : user instruction, 2026-10-30.
+- `miryad-core/lymaille` : hôte de la bibliothèque `lymaille` — modules LLM sur les ressources, pad de workflow,
+  sous-agents. Ouverte le 2026-11-01, rien d'implémenté ; préalable : première release de `lymaille`. La réserve de
+  `miryad-core/workflow#OI-8` y est rattachée.
 
 Relations : `rest-api`, `mcp` et `frontend` consomment `resource-model` et `access-control` ; `auth` produit le principal
-que `rest-api` et `mcp` consomment ; `systemone` et `matrix` fournissent des kinds à `workflow`.
+que `rest-api` et `mcp` consomment ; `systemone` et `matrix` fournissent des kinds à `workflow` ; `lymaille` (cible)
+consomme `resource-model`, `access-control` et `auth`, et fournit moteur LLM et pad à `workflow` et au glue `matrix`.
 
 ## Acceptance Criteria
 
