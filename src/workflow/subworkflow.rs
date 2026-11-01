@@ -173,6 +173,7 @@ mod tests {
             run_key: "r".to_string(),
             step_id: "s".to_string(),
             depth,
+            vars: json!({}),
         }
     }
 

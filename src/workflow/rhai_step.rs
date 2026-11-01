@@ -480,6 +480,7 @@ mod tests {
             run_key: "t".into(),
             step_id: "s".into(),
             depth: 0,
+            vars: json!({}),
         }
     }
 
@@ -950,6 +951,7 @@ mod tests {
             run_key: "r1".into(),
             step_id: "s1".into(),
             depth: 2,
+            vars: json!({}),
         };
         let rendu = RhaiStep::default()
             .run(
@@ -1178,6 +1180,7 @@ import_template("zz_module_absent", #{});
             run_key: "r1".into(),
             step_id: "s1".into(),
             depth: 0,
+            vars: json!({}),
         };
 
         let rendu = RhaiStep::default()

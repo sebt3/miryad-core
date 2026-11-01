@@ -317,6 +317,7 @@ mod tests {
             run_key: "run".into(),
             step_id: "step".into(),
             depth: 0,
+            vars: json!({}),
         }
     }
 

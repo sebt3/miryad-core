@@ -163,6 +163,7 @@ mod tests {
             run_key: "t".into(),
             step_id: "s".into(),
             depth: 0,
+            vars: json!({}),
         }
     }
 
@@ -318,6 +319,7 @@ mod tests {
             run_key: "r1".into(),
             step_id: "s1".into(),
             depth: 2,
+            vars: json!({}),
         };
         let config = json!({"x": "{{run.run_key}}/{{run.step_id}}/{{run.depth}}"});
         let rendu = render_config(&config, &run, &HashMap::new(), &[]).expect("rendu sans erreur");

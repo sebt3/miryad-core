@@ -70,10 +70,14 @@ impl StepDispatcher {
             depth,
         }) = req;
         // Étape 1 (#26, 2026-10-04) — reconstruction de l'identité du run à partir du corps reçu.
+        // `vars` (B1, 2026-10-30, ./step.sdd) : pas encore véhiculées par `StepInvocation` (tâche
+        // B2) — objet vide reconstruit ici, valeur neutre autorisée par le contrat (« {} sans
+        // variables »), sans changement de comportement pour les kinds.
         let run_info = RunInfo {
             run_key,
             step_id,
             depth,
+            vars: Value::Object(serde_json::Map::new()),
         };
         // Étape 1b (#26, 2026-10-04) — branche durable : un kind durable consulté avant le
         // registre ordinaire, appelé **sans** `ctx.run()` englobant (l'envelopper interdirait tout
@@ -377,6 +381,7 @@ mod tests {
             run_key: "t".into(),
             step_id: "s".into(),
             depth: 0,
+            vars: json!({}),
         }
     }
 
@@ -539,6 +544,7 @@ mod tests {
                 run_key: "r1".to_string(),
                 step_id: "s1".to_string(),
                 depth: 3,
+                vars: json!({}),
             },
             Value::Null,
             HashMap::new(),

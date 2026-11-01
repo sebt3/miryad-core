@@ -62,7 +62,7 @@ pub trait MiryadWorkflowStep: Send + Sync {
 /// workflow Restate, `id` du `StepDefinition`, profondeur lue de l'en-tête d'invocation) et
 /// transmise telle quelle par ./dispatcher.rs. Fournie à **tous** les kinds, durables ou non ;
 /// un kind qui n'en a pas besoin l'ignore.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RunInfo {
     /// Clé du run en cours : la clé de workflow Restate de l'invocation de `DagInterpreter` qui
     /// exécute ce step — pour un run enfant, la clé dérivée par le parent (./durable.sdd).
@@ -72,6 +72,12 @@ pub struct RunInfo {
     /// Profondeur d'imbrication des sous-workflows : `0` pour un run déclenché par
     /// `client::trigger_run`, `+1` à chaque niveau de sous-workflow (./subworkflow.sdd).
     pub depth: u32,
+    /// Variables constantes du run (2026-10-30, lot B) : fournies au déclenchement et inchangées
+    /// pour tous les steps du run (pour un run enfant, celles du step `subworkflow`,
+    /// ./subworkflow.sdd) ; lecture seule. Toujours un `Value::Object` — `{}` sans variables.
+    /// Conséquence de ce champ : `Eq` est retiré des derives de `RunInfo`, `serde_json::Value`
+    /// n'étant pas `Eq` — `PartialEq` reste.
+    pub vars: serde_json::Value,
 }
 
 /// Échec d'un step tel que le rend [`MiryadWorkflowStep::run`].
@@ -218,6 +224,7 @@ mod tests {
     struct DupSecond;
     struct PanicsInRun;
     struct RunIdentity;
+    struct EchoVars;
 
     macro_rules! fixture_kind {
         ($ty:ty, $kind:literal, $body:expr) => {
@@ -323,6 +330,13 @@ mod tests {
             Ok(json!({ "run_key": run.run_key, "step_id": run.step_id, "depth": run.depth }))
         }
     );
+    // Kind du Scenario lot B (2026-10-30) : rend les `vars` de la `RunInfo` reçue, preuve de leur
+    // transit intact jusqu'au kind.
+    fixture_kind!(
+        EchoVars,
+        "echo_vars",
+        |run: &RunInfo, _config: Value, _inputs: HashMap<String, Value>| { Ok(run.vars.clone()) }
+    );
 
     /// Achemine un appel de bout en bout : `dispatch` (synchrone, qui choisit le kind ou refuse)
     /// puis exécution du futur rendu, comme le fera le dispatcher interne.
@@ -350,6 +364,7 @@ mod tests {
             run_key: "t".into(),
             step_id: "s".into(),
             depth: 0,
+            vars: json!({}),
         }
     }
 
@@ -710,10 +725,30 @@ mod tests {
             run_key: "r1".to_string(),
             step_id: "s1".to_string(),
             depth: 2,
+            vars: json!({}),
         };
         let rendu = execute(&registry, "echo_run", &run, json!(null), no_inputs())
             .await
             .expect("le kind « echo_run » est enregistré");
         assert_eq!(rendu, json!({ "run_key": "r1", "step_id": "s1", "depth": 2 }));
+    }
+
+    /// Scenario « `RunInfo` porte les vars jusqu'au kind » (2026-10-30, lot B) : `dispatch` avec
+    /// `RunInfo { run_key: "r1", step_id: "s1", depth: 0, vars: {"project": "p1"} }` fait rendre au
+    /// kind les `vars` exactes — le registre ne les lit, ne les normalise ni ne les modifie pas.
+    #[tokio::test]
+    async fn run_info_porte_les_vars_jusqu_au_kind() {
+        let mut registry = StepRegistry::new();
+        registry.register(EchoVars).expect("kind distinct");
+        let run = RunInfo {
+            run_key: "r1".to_string(),
+            step_id: "s1".to_string(),
+            depth: 0,
+            vars: json!({ "project": "p1" }),
+        };
+        let rendu = execute(&registry, "echo_vars", &run, json!(null), no_inputs())
+            .await
+            .expect("le kind « echo_vars » est enregistré");
+        assert_eq!(rendu, json!({ "project": "p1" }));
     }
 }
