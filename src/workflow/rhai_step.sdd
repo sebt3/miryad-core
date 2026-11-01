@@ -324,7 +324,7 @@ Tasks:
     et A4. Un fichier : ./rhai_step.rs.
   [x] A6 (2026-10-30, `dsd/miryad-core/workflow.md` `OI-9`) : écrire le `Scenario` de récursion et le **lancer** ; si le
     processus de test avorte, ne corriger aucun plafond : rapport et STOP (c'est un arbitrage). Un fichier : ./rhai_step.rs.
-  [ ] B6 (2026-10-30, `FR-14`, `CON-8`) : variable `vars` (« Variables de run ») ; `Scenario` « vars ». Après B1 (./step.sdd)
+  [x] B6 (2026-10-30, `FR-14`, `CON-8`) : variable `vars` (« Variables de run ») ; `Scenario` « vars ». Après B1 (./step.sdd)
     et A4. Un fichier : ./rhai_step.rs.
 
 Done when:

@@ -348,6 +348,12 @@ impl MiryadWorkflowStep for RhaiStep {
                     "depth": run.depth,
                 }),
             );
+            // Variables de run (2026-10-30, lot B, `./rhai_step.sdd` « Variables de run », `FR-14`,
+            // `CON-8`) : `run.vars` posée comme variable ORDINAIRE (jamais `push_constant` : une
+            // constante map mutée fait paniquer Rhai avec l'optimiseur par défaut), à côté de
+            // `inputs` et `run`, avant les closures de `setups`. Objet JSON, `{}` sans variables ;
+            // une modification dans un script est locale à l'exécution (moteur neuf à chaque `run`).
+            script.set_dynamic("vars", &run.vars);
             script.set_dynamic("config", &config);
             // Fonction `render` (2026-10-06) : enregistrée AVANT les closures de `setups`, pour
             // qu'une closure de l'app puisse la surcharger. Clones de `run` et `inputs` capturés ;
@@ -1406,6 +1412,55 @@ import_template("zz_module_absent", #{});
                 );
             }
         }
+    }
+
+    /// Scenario « `vars` est lisible, modifiable localement et sans panique » (B6, 2026-10-30,
+    /// lot B, `FR-14`, `CON-8`, « Variables de run ») : `RunInfo.vars` est posée comme variable
+    /// ordinaire `vars` à côté de `inputs` et `run`. Trois temps sur la même instance et le même
+    /// `RunInfo` : lecture (`{"a": "p1"}`), modification locale sans panique — `vars.project = "x"`
+    /// ne doit jamais toucher le piège de la constante map (`set_dynamic`, jamais `push_constant`) —
+    /// puis relecture `p1` au run suivant : le moteur est neuf à chaque exécution, la modification
+    /// ne se propage ni aux autres steps ni au run.
+    #[tokio::test]
+    async fn vars_est_lisible_modifiable_localement_et_sans_panique() {
+        let run = RunInfo {
+            run_key: "r1".into(),
+            step_id: "s1".into(),
+            depth: 0,
+            vars: json!({ "project": "p1" }),
+        };
+        let step = RhaiStep::default();
+        let premier = step
+            .run(&run, json!({ "script": "#{ a: vars.project }" }), no_inputs())
+            .await
+            .expect("la variable `vars` doit être lisible par le script");
+        assert_eq!(
+            premier,
+            json!({ "a": "p1" }),
+            "`vars.project` lu depuis RunInfo.vars"
+        );
+        let second = step
+            .run(
+                &run,
+                json!({ "script": "vars.project = \"x\"; #{ b: vars.project }" }),
+                no_inputs(),
+            )
+            .await
+            .expect("modifier `vars` dans un script est légal (variable ordinaire) : jamais de panique");
+        assert_eq!(
+            second,
+            json!({ "b": "x" }),
+            "la modification est visible dans le script qui la fait"
+        );
+        let troisieme = step
+            .run(&run, json!({ "script": "#{ a: vars.project }" }), no_inputs())
+            .await
+            .expect("un run suivant avec les mêmes `vars` doit relire `p1`");
+        assert_eq!(
+            troisieme,
+            json!({ "a": "p1" }),
+            "la modification est locale à l'exécution : moteur neuf à chaque `run`"
+        );
     }
 
     /// Un événement `tracing` capturé : niveau et champs rendus (`message`, `run_key`, `step_id`).
