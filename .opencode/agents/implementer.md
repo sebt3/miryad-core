@@ -1,7 +1,6 @@
 ---
 description: Implémente une spec précise de miryad-core en TDD strict — tests depuis les Scenario d'abord, puis implémentation minimale dans le périmètre Owns/Can modify.
 mode: subagent
-model: smart/qwen3.8-flash-next-coder-iq1_m
 temperature: 0.7
 color: success
 permission:
