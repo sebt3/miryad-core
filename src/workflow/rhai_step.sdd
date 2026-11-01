@@ -135,10 +135,16 @@ Must:
     local de `vynil-core`, `Script::new_bare` en est le modèle), les quatre fonctions `log_*`, puis `script.add_common()` (shims
     `assert`, `import_run`, `import_template` ; leur chemin de saut appelle `log_debug`, qui doit donc être enregistré avant).
   Liste blanche : ne sont **jamais** enregistrés `core_host_rhai_register` (`get_env` et les `log_*` du processus),
-    `core_sleep_rhai_register` (`sleep` : un sommeil durable existe par `MiryadDurableStep`, ./durable.sdd), ni les registrars
+    `core_sleep_rhai_register`, ni les registrars
     `fs`, `shell`, `password`, `crypto`, `oci`, `http`, `s3`, `k8s`, quelles que soient les features de `vynil-core` activées dans
     le graphe. Un registrar ajouté plus tard par `vynil-core` n'atteint les scripts que par un amendement de cette spec ; la liste
     est relue à chaque montée de `vynil-core`.
+  Substrat accepté (amendé 2026-11-01) : ne pas enregistrer `core_sleep` ne retire pas `sleep(INT)` ni `sleep(FLOAT)`, que
+    **rhai lui-même** enregistre dans son `lang_core` sur tout `Engine::new` (vérifié au source de rhai 1.26.1,
+    `src/packages/lang_core.rs` ; indissociable du cœur sans casser le langage). `sleep` reste donc appelable dans tout script :
+    substrat accepté par le développeur principal (arbitrage du 2026-11-01 sur `dsd/miryad-core/workflow.md` `DEC-8`),
+    bloquant pour le fil de travail, non interrompu par l'annulation coopérative — voir « Durée d'exécution ».
+    Un sommeil durable reste la prérogative de `MiryadDurableStep` (./durable.sdd).
   `log_debug`, `log_info`, `log_warn`, `log_error` : fonctions Rhai `fn(message: ImmutableString)`, enregistrées par ce fichier sur
     chaque moteur neuf, qui émettent `tracing::debug!/info!/warn!/error!` avec les champs structurés `run_key` et `step_id` (clones
     capturés de `run`) et le message ; elles ne font rien d'autre. Le journal est celui du step, pas celui du processus.
@@ -154,6 +160,10 @@ Must:
     @StepError { retryable: false, message: WorkflowError::ScriptTimeout { seconds: t }.to_string() } (`MRD-WORKFLOW-009`), sans
     attendre la fin du fil. Une closure de `setups` non coopérative peut donc survivre à l'erreur le temps de rendre la main ; c'est un
     risque d'app, à documenter dans la rustdoc de `with_setup`. Un script qui échoue pour une autre cause garde son message habituel.
+    `sleep` (substrat rhai, voir « Liste blanche », 2026-11-01) n'est pas coopératif non plus : un `sleep` plus long que le
+    timeout survit à @WorkflowError::ScriptTimeout dans son fil de travail jusqu'à son terme — comportement connu, accepté,
+    seul un sommeil durable (`MiryadDurableStep`, ./durable.sdd) est pilotable ; verrouillé par le `Scenario` « un script
+    bloqué dans sleep rend le timeout sans attendre le fil ».
   Variables de run (amendement 2026-10-30, lot B, `FR-14`, `CON-8`) : `set_dynamic("vars", ..)` avec `run.vars` (objet JSON, `{}` sans
     variables), à côté de `inputs` et `run`, avant les closures de `setups`. `vars`, `inputs`, `run` et `config` sont posées comme
     **variables ordinaires** (`set_dynamic`), jamais comme constantes (`Scope::push_constant`) : modifier une propriété d'une constante
@@ -291,11 +301,12 @@ Tasks:
     Validé 2026-10-13 (validator) : cinq tests nommés verts (20 dans le module), clippy `workflow` sans écart.
     Le premier test simule le rendu du dispatcher par `render_config` ; la preuve côté dispatcher est portée par
     la tâche de ./dispatcher.sdd.
-  [ ] A4 (2026-10-30, `FR-16`, `FR-17`, `DEC-8`) : moteur par liste blanche + `log_*` (« Construction du moteur », « Liste
+  [x] A4 (2026-10-30, `FR-16`, `FR-17`, `DEC-8`) : moteur par liste blanche + `log_*` (« Construction du moteur », « Liste
     blanche ») ; `Scenario` « n'expose ni l'environnement », « fichiers et shell », « helpers purs », « log_info ». Après A1
     (/miryad-core.sdd). Un fichier : ./rhai_step.rs.
   [ ] A5 (2026-10-30, `FR-18`) : `timeout_secs` et annulation coopérative (« Durée d'exécution ») ; `Scenario` « dépasse
-    timeout_secs » et « hors bornes » ; supplante l'arbitrage du 2026-09-24 (« pas de `timeout_ms` »). Après A3 (./error.sdd)
+    timeout_secs », « hors bornes » et « un script bloqué dans sleep rend le timeout sans attendre le fil » (ajouté
+    2026-11-01) ; supplante l'arbitrage du 2026-09-24 (« pas de `timeout_ms` »). Après A3 (./error.sdd)
     et A4. Un fichier : ./rhai_step.rs.
   [ ] A6 (2026-10-30, `dsd/miryad-core/workflow.md` `OI-9`) : écrire le `Scenario` de récursion et le **lancer** ; si le
     processus de test avorte, ne corriger aucun plafond : rapport et STOP (c'est un arbitrage). Un fichier : ./rhai_step.rs.
@@ -434,10 +445,10 @@ Scenario: raw_fields du kind rhai (2026-10-06)
   When `StepRegistry::raw_fields("rhai")` est appelé
   Then le résultat est `Some(&["script"])`
 
-Scenario: le moteur n'expose ni l'environnement du processus ni sleep (2026-10-30)
-  Given le step `rhai` et les `config` `{"script": "#{ v: get_env(\"HOME\") }"}` puis `{"script": "sleep(1); #{}"}`
-  When `run` est appelé pour chacun
-  Then chacun rend @Err(StepError { retryable: false, message }) dont le message désigne une fonction inconnue (`get_env`, `sleep`)
+Scenario: le moteur n'expose ni l'environnement du processus ni les accès hôtes (2026-10-30, amendé 2026-11-01 : `sleep` retiré, substrat rhai accepté — voir « Liste blanche »)
+  Given le step `rhai` et le `config` `{"script": "#{ v: get_env(\"HOME\") }"}`
+  When `run` est appelé
+  Then il rend @Err(StepError { retryable: false, message }) dont le message désigne une fonction inconnue (`get_env`)
 
 Scenario: fichiers et shell restent absents même quand les features de vynil-core sont actives (2026-10-30)
   Given le graphe de test où `vynil-core` est compilé avec `fs` et `shell` (dev-dependency, /miryad-core.sdd tâche A1)
@@ -465,6 +476,13 @@ Scenario: un script qui dépasse timeout_secs est interrompu (2026-10-30)
   When `run` est appelé
   Then le résultat est @Err(StepError { retryable: false, message }), `message` commence par `MRD-WORKFLOW-009`, rendu en moins de
     5 s ; le fil bloquant s'arrête de lui-même peu après
+
+Scenario: un script bloqué dans sleep rend le timeout sans attendre le fil (2026-11-01)
+  Given le step `rhai` et le `config` `{"script": "sleep(10); #{}", "timeout_secs": 1}`
+  When `run` est appelé
+  Then le résultat est @Err(StepError { retryable: false, message }), `message` commence par `MRD-WORKFLOW-009` et le rendu
+    survient en moins de 5 s — le retour n'attend pas le `sleep`, qui survit dans son fil de travail jusqu'à son terme
+    (comportement accepté du substrat, voir « Liste blanche »)
 
 Scenario: timeout_secs hors bornes est une config invalide (2026-10-30)
   Given `config = {"script": "#{}", "timeout_secs": 0}` puis `{"script": "#{}", "timeout_secs": 3601}`

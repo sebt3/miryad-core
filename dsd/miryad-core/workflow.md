@@ -129,8 +129,11 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
 - **FR-16 - MUST:** `RhaiStep` construit son moteur par **liste blanche explicite** : le groupe pur du cœur de
   `vynil-core` (`core_pure_rhai_register`) et les registrars purs `chrono`, `hashes`, `semver`, `yaml` et `glob`. Il
   n'enregistre ni le groupe hôte (`get_env`, `log_*`), ni `sleep`, ni les accès fichiers, `shell`, `http`, `s3`, `oci`
-  ou `k8s`, quelles que soient les features de `vynil-core` activées ailleurs dans le graphe de dépendances.
-    - **Source:** user instruction, 2026-10-30 ; vynil-core `CHANGELOG` 0.9.0 (#18)
+  ou `k8s`, quelles que soient les features de `vynil-core` activées ailleurs dans le graphe de dépendances. L'inscription
+  « ne pas enregistrer » ne couvre pas le substrat de rhai lui-même : `sleep(INT)`/`sleep(FLOAT)` est enregistré par le
+  `lang_core` de rhai sur tout `Engine::new` et reste appelable — substrat accepté (`DEC-8`, amendé le 2026-11-01).
+    - **Source:** user instruction, 2026-10-30 ; vynil-core `CHANGELOG` 0.9.0 (#18) ; substrat `sleep`, vérifié au source
+      de rhai 1.26.1 et arbitré par le développeur principal le 2026-11-01
     - **Rationale:** `Script::new_bare` enregistre tout ce que les features unifiées activent ; un auteur de workflow
       lirait alors l'environnement du processus ou lancerait un shell.
     - **Realized by:** SpecDD /src/workflow/rhai_step.sdd
@@ -274,10 +277,16 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
       `log_*` de la crate, puis `add_common`). Un `log_*` propre à la crate remplace le journal du processus par un
       journal du step.
     - **Alternatives:** garder `new_bare` (écarté : exposition de l'hôte) ; masquer `get_env` et `sleep` par des
-      surcharges qui échouent (écarté : fonctions présentes et appelables) ; demander un constructeur à sélection de
+      surcharges qui échouent (écarté : fonctions présentes et appelables ; impossible pour `sleep` depuis le
+      2026-11-01 — il vient du `lang_core` de rhai, pas d'un registrar `vynil-core`, et une surcharge le laisserait
+      de toute façon appelable sous un autre nom) ; demander un constructeur à sélection de
       groupes à `vynil-core` (non retenu pour ce lot).
     - **Consequences:** la liste de registrars est dupliquée de `new_bare` et doit être relue à chaque montée de
-      `vynil-core`. Un script qui employait `get_env` ou `sleep` casse. Aucun usage dans le code de `vanyline`
+      `vynil-core`. Un script qui employait `get_env` casse. `sleep` **ne casse pas** : correction actée le 2026-11-01,
+      vérifiée au source de rhai 1.26.1 (`src/packages/lang_core.rs`), `sleep(INT)`/`sleep(FLOAT)` est un substrat du langage
+      présent sur tout `Engine::new`, indissociable du cœur sans casser le langage — comportement **accepté** par le
+      développeur principal. Il est bloquant pour le fil de travail et non interrompu par l'annulation coopérative du
+      `FR-18`. Aucun usage dans le code de `vanyline`
       (vérifié le 2026-10-30) ; les scripts écrits par les utilisateurs vivent en base et n'ont pas été examinés.
       Un sommeil durable existe par `MiryadDurableStep`.
     - **Source:** user instruction, 2026-10-30 ; vynil-core 0.9.0 (#18, `src/engine.rs`)
@@ -339,9 +348,10 @@ leurs clients (TBD).
 - **AC-9:** Un run déclenché avec `vars = {"project": "p1"}` rend `p1` pour `{{vars.project}}` dans deux steps de couches
   différentes ; un run déclenché sans `vars` échoue sur cette même variable (mode strict) ; `vars` est vide par défaut.
 - **AC-10:** Une valeur de `vars` qui contient `{{inputs.x}}` est rendue littéralement et jamais évaluée.
-- **AC-11:** Dans un script Rhai, `vars` est lisible et `vars.a = 1` ne panique pas ; `get_env`, `sleep` et les accès
+- **AC-11:** Dans un script Rhai, `vars` est lisible et `vars.a = 1` ne panique pas ; `get_env` et les accès
   fichiers ou `shell` sont introuvables, y compris quand une dépendance de développement active les features `fs` et
-  `shell` de `vynil-core` ; `log_info` répond et émet un événement `tracing` portant `run_key` et `step_id`.
+  `shell` de `vynil-core` ; `log_info` répond et émet un événement `tracing` portant `run_key` et `step_id`. (`sleep`
+  retiré le 2026-11-01 : substrat rhai accepté, `DEC-8`.)
 - **AC-12:** Un script en boucle Rhai pure et un script bloqué dans un appel natif sont interrompus à l'échéance, en
   `MRD-WORKFLOW-009` non retryable.
 - **AC-13:** `{{#jsonnet}}importstr "<fichier réel>"{{/jsonnet}}` rendu par le moteur de template ne produit pas le

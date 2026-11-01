@@ -14,8 +14,13 @@
 //! chaque `run` construit son moteur neuf, aucune variable d'une invocation ne fuit vers
 //! l'autre.
 //!
-//! Ce fichier ne connaît ni accès DB, ni appel HTTP, ni client MCP, et n'enregistre lui-même
-//! aucune fonction Rhai au-delà de ce que `Script::new_bare` fournit et de `render`. Le point d'extension est
+//! Ce fichier ne connaît ni accès DB, ni appel HTTP, ni client MCP. Son moteur Rhai est construit
+//! par liste blanche explicite (amendement 2026-10-30, `DEC-8`) : six registrars purs de
+//! `vynil-core`, quatre fonctions `log_*` propres au step, les shims d'`add_common` et `render` —
+//! jamais `get_env`, les fichiers ou le shell, quelles que soient les features de `vynil-core`
+//! activées ailleurs dans le graphe. Le registrar `sleep` de `vynil-core` n'est pas enregistré,
+//! mais `sleep` reste appelable : substrat du `lang_core` de rhai accepté le 2026-11-01 (`DEC-8`).
+//! Le point d'extension est
 //! [`RhaiStep::with_setup`] (issue sebt3/miryad-core#27) : l'application empile des closures
 //! qui, à chaque exécution, enregistrent leurs fonctions hôte sur le moteur neuf — jamais un
 //! besoin additionnel codé en dur ici.
@@ -28,7 +33,15 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::Value;
-use vynil_core::engine::Script;
+use vynil_core::chrono::chrono_rhai_register;
+use vynil_core::engine::{
+    Engine, FileModuleResolver, ImmutableString, ModuleResolversCollection, Scope, Script,
+    core_pure_rhai_register,
+};
+use vynil_core::glob::glob_rhai_register;
+use vynil_core::hashes::hashes_rhai_register;
+use vynil_core::semver::semver_rhai_register;
+use vynil_core::yaml::yaml_rhai_register;
 use vynil_core::{RhaiRes, rhai_err_str};
 
 use super::step::{MiryadWorkflowStep, RunInfo, StepError};
@@ -69,10 +82,10 @@ pub struct RhaiStep {
 
 impl RhaiStep {
     /// Construit un kind `"rhai"` autorisant l'`import` de modules Rhai depuis `resolver_path`
-    /// (chemins transmis tels quels à [`Script::new_bare`]). Décision explicite de l'app :
-    /// miryad-core n'ajoute lui-même aucun chemin (`Default` rend la liste vide, tout `import`
-    /// échoue alors en erreur catégorisée, jamais en erreur brute). N'ajoute aucune closure de
-    /// setup — le comportement est celui d'avant `with_setup`.
+    /// (un `FileModuleResolver` par chemin, dans l'ordre, posés par `build_script`). Décision
+    /// explicite de l'app : miryad-core n'ajoute lui-même aucun chemin (`Default` rend la liste
+    /// vide, tout `import` échoue alors en erreur catégorisée, jamais en erreur brute). N'ajoute
+    /// aucune closure de setup — le comportement est celui d'avant `with_setup`.
     #[must_use]
     pub fn new(resolver_path: Vec<String>) -> Self {
         Self {
@@ -82,10 +95,10 @@ impl RhaiStep {
     }
 
     /// Empile une closure d'extension appelée à **chaque** exécution, dans le
-    /// `spawn_blocking` de `run`, sur le `Script` neuf de l'exécution — après
-    /// [`Script::new_bare`], la pose du plafond d'opérations et les `set_dynamic` de
-    /// `inputs`/`config`, avant `eval_map_json` : la closure voit les deux variables déjà
-    /// posées et peut enregistrer des fonctions hôte sur `script.engine` (issue
+    /// `spawn_blocking` de `run`, sur le `Script` neuf de l'exécution — après la construction du
+    /// moteur par liste blanche (`build_script`), la pose du plafond d'opérations et les
+    /// `set_dynamic` de `inputs`/`config`, avant `eval_map_json` : la closure voit les deux
+    /// variables déjà posées et peut enregistrer des fonctions hôte sur `script.engine` (issue
     /// sebt3/miryad-core#27, `./rhai_step.sdd` `Must`).
     ///
     /// **Cumulatif, dans l'ordre d'enregistrement** : plusieurs `with_setup` n'écrasent jamais
@@ -135,6 +148,71 @@ impl Default for RhaiStep {
     }
 }
 
+/// Construit le `Script` neuf d'une exécution par la liste blanche explicite de
+/// `./rhai_step.sdd` (« Construction du moteur », amendement 2026-10-30, `dsd/miryad-core/workflow.md`
+/// `DEC-8`, `FR-16`) : `Script` à la main (`Engine::new()`, `Scope::new()`), résolveur de modules =
+/// `ModuleResolversCollection` portant un `FileModuleResolver` par entrée de `resolver_path`, dans
+/// l'ordre (vide ⇒ tout `import` échoue, fail-closed, comme `new_bare`) ; plafonds d'expression et
+/// d'appels de `new_bare` (`256`/`128`, `512`) ; puis, **dans cet ordre exact**, les six registrars
+/// purs de `vynil-core` (`core_pure`, `chrono`, `hashes`, `semver`, `yaml`, `glob`), les quatre
+/// `log_*` du step ([`register_step_logs`]) et les shims de [`Script::add_common`] (`assert`,
+/// `import_run`, `import_template` — leur chemin de saut appelle `log_debug`, enregistré avant).
+/// Ne sont **jamais** enregistrés : le groupe hôte (`get_env`, les `log_*` du processus), le
+/// registrar `core_sleep` de `vynil-core`, ni les registrars `fs`, `shell`, `password`, `crypto`,
+/// `oci`, `http`, `s3`, `k8s` — quelles que soient les features de `vynil-core` activées ailleurs
+/// dans le graphe. Un registrar ajouté plus tard par `vynil-core` n'atteint les scripts que par un
+/// amendement de la spec ; la liste est relue à chaque montée de `vynil-core`. Substrat accepté
+/// (`./rhai_step.sdd` « Liste blanche », arbitrage 2026-11-01) : `sleep(INT)`/`sleep(FLOAT)` est
+/// enregistré par rhai lui-même dans son `lang_core` sur tout `Engine::new` et reste donc
+/// appelable, bloquant pour le fil de travail.
+fn build_script(resolver_path: Vec<String>, run: &RunInfo) -> Script {
+    let mut script = Script {
+        engine: Engine::new(),
+        ctx: Scope::new(),
+    };
+    let mut resolver = ModuleResolversCollection::new();
+    for path in resolver_path {
+        resolver.push(FileModuleResolver::new_with_path(path));
+    }
+    script.engine.set_module_resolver(resolver);
+    script.engine.set_max_expr_depths(256, 128);
+    script.engine.set_max_call_levels(512);
+    core_pure_rhai_register(&mut script.engine);
+    chrono_rhai_register(&mut script.engine);
+    hashes_rhai_register(&mut script.engine);
+    semver_rhai_register(&mut script.engine);
+    yaml_rhai_register(&mut script.engine);
+    glob_rhai_register(&mut script.engine);
+    register_step_logs(&mut script.engine, run);
+    script.add_common();
+    script
+}
+
+/// Enregistre les quatre fonctions Rhai `log_debug`, `log_info`, `log_warn`, `log_error`
+/// (`fn(message: string)`, `./rhai_step.sdd` « Liste blanche », `FR-17`) : chacune émet
+/// `tracing::debug!`/`info!`/`warn!`/`error!` avec les champs structurés `run_key` et `step_id`
+/// (clones capturés de `run`) et le message — le journal est celui du step, pas celui du
+/// processus. Elles ne font rien d'autre. `log_debug` est requis par le chemin de saut des shims
+/// `import_run`/`import_template` d'[`Script::add_common`], d'où l'enregistrement avant celui-ci.
+fn register_step_logs(engine: &mut Engine, run: &RunInfo) {
+    let (run_key, step_id) = (run.run_key.clone(), run.step_id.clone());
+    engine.register_fn("log_debug", move |message: ImmutableString| {
+        tracing::debug!(run_key = %run_key, step_id = %step_id, "{message}");
+    });
+    let (run_key, step_id) = (run.run_key.clone(), run.step_id.clone());
+    engine.register_fn("log_info", move |message: ImmutableString| {
+        tracing::info!(run_key = %run_key, step_id = %step_id, "{message}");
+    });
+    let (run_key, step_id) = (run.run_key.clone(), run.step_id.clone());
+    engine.register_fn("log_warn", move |message: ImmutableString| {
+        tracing::warn!(run_key = %run_key, step_id = %step_id, "{message}");
+    });
+    let (run_key, step_id) = (run.run_key.clone(), run.step_id.clone());
+    engine.register_fn("log_error", move |message: ImmutableString| {
+        tracing::error!(run_key = %run_key, step_id = %step_id, "{message}");
+    });
+}
+
 #[async_trait::async_trait]
 impl MiryadWorkflowStep for RhaiStep {
     fn kind(&self) -> &'static str {
@@ -167,7 +245,7 @@ impl MiryadWorkflowStep for RhaiStep {
         // peut boucler) ; un panic éventuel — y compris une closure de `setups` qui panique — y
         // est confiné et capturé en `JoinError` à l'étape 4.
         tokio::task::spawn_blocking(move || {
-            let mut script = Script::new_bare(resolver_path);
+            let mut script = build_script(resolver_path, &run);
             script.engine.set_max_operations(MAX_OPERATIONS);
             // Conversion infaillible HashMap→Map (pas de `serde_json::to_value` : aucun Result
             // ici). `config` est exposé en entier, `script` compris.
@@ -226,7 +304,7 @@ mod tests {
     use super::super::step::MiryadWorkflowStep;
     use super::super::step::RunInfo;
     use super::super::step::StepRegistry;
-    use super::RhaiStep;
+    use super::{RhaiStep, Script};
     use crate::workflow::template::render_config;
     use serde_json::{Value, json};
     use std::collections::HashMap;
@@ -773,5 +851,301 @@ mod tests {
             .register(RhaiStep::default())
             .expect("l'enregistrement d'un kind neuf ne doit pas échouer");
         assert_eq!(registre.raw_fields("rhai"), Some(&["script"][..]));
+    }
+
+    /// Scenario « le moteur n'expose ni l'environnement du processus ni les accès hôtes »
+    /// (A4, `FR-16`, « Liste blanche » ; amendé 2026-11-01 : la moitié `sleep` est retirée du
+    /// Scenario — `sleep` vient du `lang_core` de rhai, substrat accepté (`DEC-8`), et sera
+    /// verrouillée par le Scenario réservé A5 « un script bloqué dans sleep rend le timeout sans
+    /// attendre le fil ») : `get_env` (groupe hôte `core_host`) n'est jamais enregistré par
+    /// `build_script` — le script échoue en erreur Rhai « fonction inconnue » non retryable.
+    #[tokio::test]
+    async fn le_moteur_n_expose_ni_lenvironnement_du_processus_ni_les_acces_hotes() {
+        let Err(erreur) = RhaiStep::default()
+            .run(
+                &run_info(),
+                json!({ "script": r#"#{ v: get_env("HOME") }"# }),
+                no_inputs(),
+            )
+            .await
+        else {
+            panic!("`get_env` ne doit jamais être atteignable par un script, run devait rendre un Err");
+        };
+        assert!(!erreur.retryable, "fonction inconnue : jamais retryable");
+        assert!(
+            erreur.message.contains("get_env") && erreur.message.to_lowercase().contains("not found"),
+            "`get_env` doit être désignée comme fonction inconnue : {:#?}",
+            erreur.message
+        );
+    }
+
+    /// Scenario « fichiers et shell restent absents même quand les features de `vynil-core` sont
+    /// actives » (A4, `FR-16`) : le graphe de test compile `vynil-core` avec `fs` et `shell`
+    /// (dev-dependency, /miryad-core.sdd tâche A1) ; la liste blanche ne doit jamais appeler leurs
+    /// registrars. La sonde `Script::new_bare` du même test prouve que `is_file` (nom lu au source
+    /// de `fs_fns`) et `shell_run` (source de `shell_fns`) existent bien dans ce graphe — c'est le
+    /// contraste qui attribue leur absence à la liste blanche, non à un défaut de features.
+    #[tokio::test]
+    async fn fichiers_et_shell_resten_absents_meme_quand_les_features_de_vynil_core_sont_actives() {
+        for (script, fonction) in [
+            (
+                r#"#{ v: is_file("/miryad-a4-sentinelle-inexistante") }"#,
+                "is_file",
+            ),
+            (r#"#{ v: shell_run("true") }"#, "shell_run"),
+        ] {
+            let Err(erreur) = RhaiStep::default()
+                .run(&run_info(), json!({ "script": script }), no_inputs())
+                .await
+            else {
+                panic!(
+                    "`{fonction}` ne doit jamais être atteignable par un script, run devait rendre un Err"
+                );
+            };
+            assert!(!erreur.retryable, "fonction inconnue : jamais retryable");
+            assert!(
+                erreur.message.contains(fonction) && erreur.message.to_lowercase().contains("not found"),
+                "`{fonction}` doit être désignée comme fonction inconnue : {:#?}",
+                erreur.message
+            );
+        }
+        // Sonde de contraste : les deux mêmes fonctions répondent sous `Script::new_bare` — elles
+        // sont compilées dans ce graphe (features `fs` et `shell` via la dev-dependency).
+        let mut sonde = Script::new_bare(Vec::new());
+        let present = sonde
+            .eval(r#"is_file("/miryad-a4-sentinelle-inexistante")"#)
+            .expect("le registrar `fs` est compilé dans le graphe de test (dev-dependency `fs`)");
+        assert_eq!(
+            present.as_bool(),
+            Ok(false),
+            "`is_file` doit répondre sous `new_bare`"
+        );
+        let code = sonde
+            .eval(r#"shell_run("true")"#)
+            .expect("le registrar `shell` est compilé dans le graphe de test (dev-dependency `shell`)");
+        assert_eq!(
+            code.as_int(),
+            Ok(0),
+            "`shell_run` doit répondre 0 sous `new_bare` (code de sortie)"
+        );
+    }
+
+    /// Scenario « les helpers purs restent disponibles » (A4, `FR-16`) : la liste blanche garde les
+    /// six registrars purs — au moins une fonction de chacun : `core_pure` (`sha256`), `chrono`
+    /// (`date_now`/`format`), `hashes` (`crc32_hash`), `semver` (`semver_from` et `<`), `yaml`
+    /// (`yaml_encode`), `glob` (`glob`) ; les shims `import_run`/`import_template` d'`add_common`
+    /// sautent silencieusement un module absent (trace `log_debug`, jamais erreur). Test
+    /// d'invariance : vert d'emblée sous le `new_bare` actuel — il rougit si `build_script`
+    /// enregistrait trop peu.
+    #[tokio::test]
+    async fn les_helpers_purs_resten_disponibles() {
+        // `crc32_hash` rend un `u32` rhai que `eval_map_json` ne sait sérialiser qu'en chaîne du
+        // nom de type (et sans `==` mélangé `u32`/`i64`) : sa valeur est rendue via `to_string`.
+        let script = r#"
+import_run("zz_module_absent", #{});
+import_template("zz_module_absent", #{});
+#{
+    sha: sha256("hello"),
+    crc: to_string(crc32_hash("hello")),
+    glob_hit: glob("miryad.txt", "*.txt"),
+    glob_miss: glob("miryad.txt", "*.rs"),
+    yml: yaml_encode(#{ k: 1 }),
+    semver_lt: semver_from("1.2.3") < semver_from("2.0.0"),
+    chrono_type: type_of(date_now()),
+    chrono_year: date_now().format("%Y"),
+}"#;
+        let rendu = RhaiStep::default()
+            .run(&run_info(), json!({ "script": script }), no_inputs())
+            .await
+            .unwrap_or_else(|erreur| {
+                panic!(
+                    "les six registrars purs et les shims devaient tous répondre : {}",
+                    erreur.message
+                )
+            });
+        assert_eq!(
+            rendu["sha"],
+            json!("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"),
+            "`core_pure` : sha256(\"hello\")"
+        );
+        assert_eq!(
+            rendu["crc"],
+            json!("907060870"),
+            "`hashes` : crc32(\"hello\") = 0x3610A686"
+        );
+        assert_eq!(rendu["glob_hit"], json!(true), "`glob` : match de *.txt");
+        assert_eq!(rendu["glob_miss"], json!(false), "`glob` : non-match *.rs");
+        assert_eq!(
+            rendu["yml"],
+            json!("k: 1\n"),
+            "`yaml` : yaml_encode trié, terminé par un saut de ligne"
+        );
+        assert_eq!(rendu["semver_lt"], json!(true), "`semver` : comparaison d'ordres");
+        assert_eq!(
+            rendu["chrono_type"],
+            json!("DateTimeHandler"),
+            "`chrono` : date_now et type enregistré"
+        );
+        let annee: u32 = rendu["chrono_year"]
+            .as_str()
+            .unwrap_or_default()
+            .parse()
+            .expect("l'année rendue par `format(\"%Y\")` est un nombre");
+        assert!(
+            (2020..=2100).contains(&annee),
+            "`chrono` : année plausible, rendu {annee}"
+        );
+    }
+
+    /// Scenario « `log_info` émet un événement `tracing` du step » (A4, `FR-17`) : chaque `log_*`
+    /// émet au niveau qui lui correspond, porte le message et les champs structurés `run_key` et
+    /// `step_id` du step — et rien d'autre.
+    #[tokio::test]
+    async fn log_info_emet_un_evenement_tracing_du_step() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let journal = CaptureJournal::default();
+        // Le garde thread-local de l'idiome `auth/oidc.rs` n'atteindrait pas les événements émis
+        // dans le pool `spawn_blocking` : c'est le subscriber global qui joue le rôle de capture.
+        // Sans effet sur les tests voisins : aucun n'installe de subscriber global (vérifié au
+        // source à l'implémentation A4) et la couche ne retient que la cible de ce fichier.
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry::Registry::default().with(CoucheJournal(journal.clone())),
+        )
+        .expect("aucun autre test de la crate n'installe de subscriber global");
+
+        let run = RunInfo {
+            run_key: "r1".into(),
+            step_id: "s1".into(),
+            depth: 0,
+        };
+
+        let rendu = RhaiStep::default()
+            .run(
+                &run,
+                json!({ "script": r#"log_info("bonjour"); #{ ok: true }"# }),
+                no_inputs(),
+            )
+            .await
+            .unwrap_or_else(|erreur| {
+                panic!(
+                    "log_info ne doit pas faire échouer le script : {}",
+                    erreur.message
+                )
+            });
+        assert_eq!(rendu, json!({ "ok": true }));
+
+        let evenement = trouver_evenement(&journal, "bonjour").expect("un événement de message `bonjour`");
+        assert_eq!(
+            evenement.niveau,
+            tracing::Level::INFO,
+            "log_info doit émettre au niveau INFO"
+        );
+        assert_champs_du_step(&evenement, "r1", "s1");
+
+        // Les trois autres niveaux, chacun le sien (« log_debug, log_warn et log_error émettent
+        // chacun leur niveau »).
+        for (fonction, niveau, message) in [
+            ("log_debug", tracing::Level::DEBUG, "a4-sonde-debug"),
+            ("log_warn", tracing::Level::WARN, "a4-sonde-warn"),
+            ("log_error", tracing::Level::ERROR, "a4-sonde-error"),
+        ] {
+            let script = format!(r#"{fonction}("{message}"); #{{}}"#);
+            let rendu = RhaiStep::default()
+                .run(&run, json!({ "script": script }), no_inputs())
+                .await
+                .unwrap_or_else(|erreur| {
+                    panic!(
+                        "`{fonction}` ne doit pas faire échouer le script : {}",
+                        erreur.message
+                    )
+                });
+            assert_eq!(rendu, json!({}));
+            let evenement = trouver_evenement(&journal, message)
+                .unwrap_or_else(|| panic!("un événement de message `{message}`"));
+            assert_eq!(
+                evenement.niveau, niveau,
+                "`{fonction}` doit émettre au niveau {niveau}"
+            );
+            assert_champs_du_step(&evenement, "r1", "s1");
+        }
+    }
+
+    /// Un événement `tracing` capturé : niveau et champs rendus (`message`, `run_key`, `step_id`).
+    #[derive(Clone, Debug)]
+    struct EvenementCapture {
+        niveau: tracing::Level,
+        champs: Vec<(String, String)>,
+    }
+
+    #[derive(Clone, Default)]
+    struct CaptureJournal(std::sync::Arc<std::sync::Mutex<Vec<EvenementCapture>>>);
+
+    /// Couche de capture à la `CaptureLayer` de `auth/oidc.rs`, étendue au niveau et aux champs
+    /// nommés ; ne retient que les événements de la cible de ce fichier.
+    struct CoucheJournal(CaptureJournal);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CoucheJournal {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+            if !event
+                .metadata()
+                .target()
+                .starts_with("miryad_core::workflow::rhai_step")
+            {
+                return;
+            }
+            let mut visiteur = VisiteurChamps::default();
+            event.record(&mut visiteur);
+            self.0
+                .0
+                .lock()
+                .expect("test mutex is not poisoned")
+                .push(EvenementCapture {
+                    niveau: *event.metadata().level(),
+                    champs: visiteur.champs,
+                });
+        }
+    }
+
+    #[derive(Default)]
+    struct VisiteurChamps {
+        champs: Vec<(String, String)>,
+    }
+
+    impl tracing::field::Visit for VisiteurChamps {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.champs.push((field.name().to_string(), format!("{value:?}")));
+        }
+
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.champs.push((field.name().to_string(), value.to_string()));
+        }
+    }
+
+    fn trouver_evenement(journal: &CaptureJournal, message: &str) -> Option<EvenementCapture> {
+        journal
+            .0
+            .lock()
+            .expect("test mutex is not poisoned")
+            .iter()
+            .find(|evenement| {
+                evenement
+                    .champs
+                    .iter()
+                    .any(|(nom, valeur)| nom == "message" && valeur == message)
+            })
+            .cloned()
+    }
+
+    /// Les deux champs structurés du step, `run_key` et `step_id`, aux valeurs attendues.
+    fn assert_champs_du_step(evenement: &EvenementCapture, run_key: &str, step_id: &str) {
+        for (champ, attendu) in [("run_key", run_key), ("step_id", step_id)] {
+            let rendu = evenement
+                .champs
+                .iter()
+                .find(|(nom, _)| nom == champ)
+                .map(|(_, valeur)| valeur.as_str());
+            assert_eq!(rendu, Some(attendu), "le champ `{champ}` doit valoir `{attendu}`");
+        }
     }
 }
