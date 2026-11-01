@@ -10,7 +10,11 @@
 //!
 //! L'évaluation Rhai est synchrone et son moteur vit exclusivement dans une tâche
 //! `tokio::task::spawn_blocking` : un script lent ne doit pas monopoliser le thread de travail
-//! qui sert les autres invocations concurrentes. Chaque exécution est aussi bornée en durée
+//! qui sert les autres invocations concurrentes. À l'intérieur de cette tâche, l'**évaluation**
+//! est déléguée à un fil dédié à pile dimensionnée (`SCRIPT_STACK_SIZE`, arbitrage `OI-9`
+//! rendu le 2026-11-01, `DEC-10`) : le plafond de 512 niveaux d'appels du moteur est ainsi
+//! épuisé avant la pile native, et une récursion profonde rend l'erreur `Stack overflow` de rhai
+//! au lieu d'avorter le processus. Chaque exécution est aussi bornée en durée
 //! (`timeout_secs`, FR-18) : à l'expiration le moteur annule le script de façon coopérative et
 //! rend `MRD-WORKFLOW-009` sans attendre la fin du fil. Aucun `Script` n'est porté par [`RhaiStep`] —
 //! chaque `run` construit son moteur neuf, aucune variable d'une invocation ne fuit vers
@@ -32,6 +36,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -67,11 +72,44 @@ const DEFAULT_TIMEOUT_SECS: u64 = 300;
 /// `1..=MAX_TIMEOUT_SECS`.
 const MAX_TIMEOUT_SECS: u64 = 3600;
 
+/// Taille de pile du fil dédié d'évaluation, en octets (`./rhai_step.sdd` « Fil d'exécution du
+/// script », arbitrage `dsd/miryad-core/workflow.md` `OI-9` rendu le 2026-11-01, `DEC-10`) :
+/// 256 Mio réservés (engagés à la touche), soit deux fois le pire cas de 125 Mio mesuré par
+/// `lymaille` en release à 512 niveaux d'appels. Sur la pile par défaut (~2 Mio) du fil
+/// `spawn_blocking`, la récursion avortait le processus dès 144 niveaux en debug et entre 256
+/// et 384 en release (mesure A6 du 2026-11-01) ; cette pile garantit que
+/// `set_max_call_levels(512)` — la limite logique — s'épuise avant la pile native.
+const SCRIPT_STACK_SIZE: usize = 256 * 1024 * 1024;
+
 /// Fermeture d'extension posée par [`RhaiStep::with_setup`] : le type exact des éléments de
 /// `RhaiStep::setups`, dicté par `./rhai_step.sdd` `Must` — elle reçoit le `Script` neuf de
 /// l'exécution, puis `config` et `inputs` en lecture seule. Alias privé de lisibilité — le
 /// contrat est ce type, nommé ou non.
 type SetupFn = dyn Fn(&mut Script, &Value, &HashMap<String, Value>) + Send + Sync + 'static;
+
+/// Échec de la **mécanique** du fil dédié d'évaluation (`./rhai_step.sdd` « Fil d'exécution du
+/// script », 2026-11-01), distinct d'une erreur Rhai : traduit à l'étape 4 sous le message
+/// `rhai task panicked: {e}` où `{e}` est le `Display` **brut** de l'erreur sous-jacente — une
+/// seule forme de message, aucune prose ajoutée, comme pour un `JoinError`.
+enum EvalThreadError {
+    /// Panique dans le fil d'évaluation : le sender est tombé sans rien émettre, le canal est
+    /// fermé sans valeur (`Handles`, jointure par canal `mpsc`). Rendu : `Display` de
+    /// `mpsc::RecvError`.
+    ChannelClosed(mpsc::RecvError),
+    /// Le fil d'évaluation n'a pas pu être créé (ressource système) : plié dans le même rendu
+    /// d'étape 4, la spec ne lui donne pas de message propre et le script n'a pas été évalué.
+    /// Rendu : `Display` de l'`io::Error` brut.
+    Spawn(std::io::Error),
+}
+
+impl std::fmt::Display for EvalThreadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ChannelClosed(e) => write!(f, "{e}"),
+            Self::Spawn(e) => write!(f, "{e}"),
+        }
+    }
+}
 
 /// Le `config` du kind `"rhai"`, désérialisé depuis le JSON opaque livré à
 /// [`MiryadWorkflowStep::run`] — deux champs attendus (`script`, `timeout_secs`), les autres clés
@@ -292,7 +330,8 @@ impl MiryadWorkflowStep for RhaiStep {
         let eval_token = token.clone();
         // Étape 2 — évaluation hors du thread de travail tokio (le script, fourni par un admin,
         // peut boucler) ; un panic éventuel — y compris une closure de `setups` qui panique — y
-        // est confiné et capturé en `JoinError` à l'étape 4.
+        // est confiné et capturé en `JoinError` à l'étape 4 ; une panique du fil dédié
+        // d'évaluation l'est par la jointure du canal (même étape, même message).
         let evaluation = tokio::task::spawn_blocking(move || {
             let mut script = build_script(resolver_path, &run);
             script.engine.set_max_operations(MAX_OPERATIONS);
@@ -341,10 +380,36 @@ impl MiryadWorkflowStep for RhaiStep {
                     .is_cancelled()
                     .then(|| Dynamic::from("cancelled: timeout_secs reached"))
             });
-            // Étape 5 — l'évaluation s'exécute dans la portée d'annulation de `vynil-core` :
-            // les appels natifs bloquants qui liraient le jeton rendent `Error::Cancelled` en
-            // 25 ms environ. La `Map` JSON est rendue telle quelle, aucune enveloppe.
-            cancel::scope(&eval_token, || script.eval_map_json(&rhai_config.script))
+            // Fil d'exécution (`./rhai_step.sdd` « Fil d'exécution du script », 2026-11-01,
+            // arbitrage `OI-9` rendu, `DEC-10`) : l'évaluation passe dans un **fil dédié** à pile
+            // de `SCRIPT_STACK_SIZE`, créé ici — dans le `spawn_blocking` — et joint par canal
+            // `mpsc`, afin que `set_max_call_levels(512)` s'épuise avant la pile native (mesure
+            // A6 : avortement dès 144 niveaux en debug sur la pile de ~2 Mio). Le moteur et le
+            // `Scope` (`Script`) passent par mouvement (`Send`, vérifié à la compilation) ; le
+            // jeton d'annulation est un clone partageant le même drapeau (`Send + Sync`) ; les
+            // closures de `setups` et leur contexte runtime restent sur CE fil (`JoinError`
+            // inchangé). `cancel::scope` s'ouvre DANS le fil d'évaluation : le jeton de
+            // `vynil_core::cancel` est porté par le thread-local du fil qui ouvre la portée.
+            let (sender, receiver) = mpsc::channel::<Result<Value, vynil_core::Error>>();
+            let script_source = rhai_config.script;
+            let scope_token = eval_token;
+            let eval_thread = std::thread::Builder::new()
+                .stack_size(SCRIPT_STACK_SIZE)
+                .spawn(move || {
+                    // Étape 5 — l'évaluation s'exécute dans la portée d'annulation de
+                    // `vynil-core` : les appels natifs bloquants qui liraient le jeton rendent
+                    // `Error::Cancelled` en 25 ms environ. La `Map` JSON est rendue telle quelle.
+                    let rendu = cancel::scope(&scope_token, || script.eval_map_json(&script_source));
+                    // Une panique n'atteint pas cet envoi : le sender tombe avec le unwind et le
+                    // canal se ferme sans valeur (étape 4).
+                    let _ = sender.send(rendu);
+                })
+                .map_err(EvalThreadError::Spawn)?;
+            // Jointure par canal : une valeur reçue prouve que le fil a fini d'émettre ; un canal
+            // fermé sans valeur est sa panique — jamais un panic qui remonte (`Handles`). Le
+            // `JoinHandle` n'est pas joint, la jointure du canal le rend redondant.
+            drop(eval_thread);
+            receiver.recv().map_err(EvalThreadError::ChannelClosed)
         });
         // Le futur de la tâche bloquante est attendu sous le plafond de durée (« Durée
         // d'exécution ») : à l'expiration, `run` annule le jeton et rend IMMÉDIATEMENT le rendu
@@ -353,21 +418,32 @@ impl MiryadWorkflowStep for RhaiStep {
         // pas la main) y survit jusqu'à ce qu'il rende la main de lui-même, comportement accepté
         // (`./rhai_step.sdd` « Liste blanche », arbitrage `DEC-8` du 2026-11-01).
         match tokio::time::timeout(Duration::from_secs(timeout_secs), evaluation).await {
-            Ok(joined) => joined
-                // Étape 4 — panic à l'intérieur du bloc bloquant : le `JoinError` le capture, le
-                // thread appelant ne panique jamais.
+            Ok(joined) => match joined
+                // Étape 4 — panic à l'intérieur du bloc bloquant lui-même (thread du
+                // `spawn_blocking`, y compris une closure de `setups` qui panique) : le
+                // `JoinError` le capture, le thread appelant ne panique jamais.
                 .map_err(|e| StepError {
                     message: format!("rhai task panicked: {e}"),
                     retryable: false,
-                })?
+                })? {
+                // Étape 4 bis — panic du fil dédié d'évaluation (canal fermé sans valeur) ou
+                // création de ce fil impossible : même message, aucune traduction dédiée
+                // (`Handles`, 2026-11-01).
+                Err(e) => Err(StepError {
+                    message: format!("rhai task panicked: {e}"),
+                    retryable: false,
+                }),
+                // Étape 5 — valeur JSON rendue par le script, aucune enveloppe.
+                Ok(Ok(rendu)) => Ok(rendu),
                 // Étape 3 — tout échec Rhai (`Error::RhaiError` comme `SerializationError`) est non
                 // retryable : déterministe vis-à-vis de l'entrée, rien à gagner à rejouer ; le
                 // `Display` thiserror de `vynil_core::Error` porte déjà le contexte utile. Un
                 // script qui échoue pour une autre cause que la durée garde son message habituel.
-                .map_err(|e| StepError {
+                Ok(Err(e)) => Err(StepError {
                     message: e.to_string(),
                     retryable: false,
                 }),
+            },
             Err(_elapsed) => {
                 token.cancel();
                 Err(StepError {
@@ -1286,6 +1362,47 @@ import_template("zz_module_absent", #{});
             .await
             .expect("3600 est la borne haute valide : la config doit être acceptée et le script évalué");
         assert_eq!(rendu, json!({ "ok": true }));
+    }
+
+    /// Scenario « une récursion jusqu'au plafond ne fait pas avorter le processus » (A6, 2026-10-30,
+    /// `dsd/miryad-core/workflow.md` `OI-9` ; amendé 2026-11-01 — arbitrage rendu : fil dédié de
+    /// 256 Mio) : le script du Scenario s'appelle lui-même sans cas de base et doit être arrêté
+    /// par `set_max_call_levels(512)` de `build_script` avant que les ~512 couches n'épuisent la
+    /// pile native — la mesure A6 du 2026-11-01 sur la pile de ~2 Mio du `spawn_blocking` faisait
+    /// avorter le processus dès 144 niveaux en debug. Ce test ne corrige aucun plafond. Le message
+    /// attendu désigne le dépassement des niveaux d'appels : rhai 1.26.1 rend ce dépassement sous
+    /// la variante `ErrorStackOverflow` (« Stack overflow », lu au source : `func/script.rs`,
+    /// `types/error.rs`) ; c'est la seule voie d'apparition de ce texte dans ce test, un
+    /// débordement de pile natif n'ayant pas de message — il avorte. Le test tourne dans les
+    /// conditions du step réel : via `RhaiStep::run`, donc dans le fil dédié d'évaluation à pile
+    /// dimensionnée (`SCRIPT_STACK_SIZE`), jamais dans le fil du test.
+    #[tokio::test]
+    async fn une_recursion_jusqu_au_plafond_ne_fait_pas_avorter_le_processus() {
+        let step = RhaiStep::default();
+        let resultat = step
+            .run(
+                &run_info(),
+                json!({ "script": "fn f(n) { f(n + 1) } f(0); #{}" }),
+                no_inputs(),
+            )
+            .await;
+        match resultat {
+            Ok(valeur) => panic!(
+                "une récursion sans cas de base devait échouer sur le plafond d'appels de Rhai, rendu : {valeur}"
+            ),
+            Err(erreur) => {
+                assert!(
+                    !erreur.retryable,
+                    "récursion plafonnée : déterministe vis-à-vis de l'entrée, jamais retryable"
+                );
+                assert!(
+                    erreur.message.to_lowercase().contains("stack overflow"),
+                    "le message doit désigner le dépassement des niveaux d'appels de Rhai \
+                     (`ErrorStackOverflow` sous rhai 1.26.1) : {:#?}",
+                    erreur.message
+                );
+            }
+        }
     }
 
     /// Un événement `tracing` capturé : niveau et champs rendus (`message`, `run_key`, `step_id`).

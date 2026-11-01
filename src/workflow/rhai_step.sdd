@@ -118,7 +118,8 @@ Must:
       {0}"` pour un @RhaiError, vérifié source).
     4. @Err(@tokio::task::JoinError) du `spawn_blocking` lui-même (panic à l'intérieur du bloc
       bloquant, y compris une closure de `setups` qui panique — arbitrage 2026-10-04, aucune
-      traduction dédiée) → @StepError { retryable: false, message: format!("rhai task panicked: {e}") }.
+      traduction dédiée), **ou panique du fil dédié d'évaluation, canal fermé sans valeur**
+      (« Fil d'exécution », 2026-11-01) → @StepError { retryable: false, message: format!("rhai task panicked: {e}") }.
     5. @Ok(valeur) → @Ok(valeur), la @serde_json::Value rendue par `eval_map_json` telle quelle,
       aucune enveloppe.
   Construction du moteur (amendement 2026-10-30, `dsd/miryad-core/workflow.md` `DEC-8`, `FR-16`, `FR-17`) : `RhaiStep` ne passe
@@ -134,6 +135,17 @@ Must:
     `semver_rhai_register`, `yaml_rhai_register`, `glob_rhai_register` (chemins et signatures de la 0.9 à relire dans le source
     local de `vynil-core`, `Script::new_bare` en est le modèle), les quatre fonctions `log_*`, puis `script.add_common()` (shims
     `assert`, `import_run`, `import_template` ; leur chemin de saut appelle `log_debug`, qui doit donc être enregistré avant).
+  Fil d'exécution du script (amendé 2026-11-01, `dsd/miryad-core/workflow.md` `OI-9` tranché par le développeur
+    principal, DEC-10) : l'**évaluation** (`eval_map_json` sous `cancel::scope`, étape 3) s'exécute dans un **fil dédié**
+    créé par `std::thread::Builder::new().stack_size(SCRIPT_STACK_SIZE)` **dans** le `spawn_blocking`, et joint par un
+    canal `std::sync::mpsc` ; `SCRIPT_STACK_SIZE = 256 * 1024 * 1024` (256 Mio réservés, engagés à la touche — deux fois
+    le pire cas de 125 Mio mesuré par `lymaille` en release à 512 niveaux). But : épuiser `set_max_call_levels(512)`
+    **avant** la pile native (mesure A6 du 2026-11-01 sur pile de 2 Mio : avortement dès 144 niveaux en debug, entre 256
+    et 384 en release). Les closures de `setups` et la construction du moteur restent sur le fil du `spawn_blocking`
+    (contexte runtime pour `block_on`, `JoinError` inchangés) ; le moteur et le `Scope` passent au fil par mouvement
+    (`Send`) ; le jeton d'annulation est partagé (`Send + Sync`), `on_progress` inchangé. Panique dans le fil d'évaluation :
+    canal fermé sans valeur — traduite à l'étape 4 sous le même message. Le `Scenario` « une récursion jusqu'au plafond »
+    le verrouille.
   Liste blanche : ne sont **jamais** enregistrés `core_host_rhai_register` (`get_env` et les `log_*` du processus),
     `core_sleep_rhai_register`, ni les registrars
     `fs`, `shell`, `password`, `crypto`, `oci`, `http`, `s3`, `k8s`, quelles que soient les features de `vynil-core` activées dans
@@ -249,7 +261,8 @@ Handles:
     indéfini), remontée par le même chemin — ./rhai_step.rs ne pré-valide pas le script contre le DAG,
     ./interpreter.rs ne lui fournit que les entrées réellement déclarées (./step.sdd).
   Panic à l'intérieur du bloc `spawn_blocking` (bug de `vynil-core`/`rhai`, jamais observé mais non
-    exclu par du code Rust arbitraire chargé dynamiquement) : capturé par `JoinError`, jamais un panic
+    exclu par du code Rust arbitraire chargé dynamiquement), **y compris dans le fil dédié d'évaluation**
+    (canal fermé sans valeur, 2026-11-01) : capturé par `JoinError` ou par la jointure du canal, jamais un panic
     qui remonte au thread appelant — cohérent avec l'isolation par tâche déjà vérifiée pour
     ./dispatcher.rs (spike 2026-09-23, panic isolation).
 
@@ -309,7 +322,7 @@ Tasks:
     timeout_secs », « hors bornes » et « un script bloqué dans sleep rend le timeout sans attendre le fil » (ajouté
     2026-11-01) ; supplante l'arbitrage du 2026-09-24 (« pas de `timeout_ms` »). Après A3 (./error.sdd)
     et A4. Un fichier : ./rhai_step.rs.
-  [ ] A6 (2026-10-30, `dsd/miryad-core/workflow.md` `OI-9`) : écrire le `Scenario` de récursion et le **lancer** ; si le
+  [x] A6 (2026-10-30, `dsd/miryad-core/workflow.md` `OI-9`) : écrire le `Scenario` de récursion et le **lancer** ; si le
     processus de test avorte, ne corriger aucun plafond : rapport et STOP (c'est un arbitrage). Un fichier : ./rhai_step.rs.
   [ ] B6 (2026-10-30, `FR-14`, `CON-8`) : variable `vars` (« Variables de run ») ; `Scenario` « vars ». Après B1 (./step.sdd)
     et A4. Un fichier : ./rhai_step.rs.
@@ -490,13 +503,13 @@ Scenario: timeout_secs hors bornes est une config invalide (2026-10-30)
   When `run` est appelé pour chacun
   Then chacun rend @Err(StepError { retryable: false, message }) dont le message commence par `config rhai invalide`
 
-Scenario: une récursion jusqu'au plafond ne fait pas avorter le processus (2026-10-30, DSD OI-9)
-  Given le step `rhai` exécuté par `RhaiStep::run` (donc dans un `spawn_blocking`, pile par défaut) et le script
+Scenario: une récursion jusqu'au plafond ne fait pas avorter le processus (2026-10-30, DSD OI-9 ; amendé 2026-11-01 — arbitrage OI-9 rendu, fil dédié de 256 Mio)
+  Given le step `rhai` exécuté par `RhaiStep::run` (donc dans le fil dédié à pile de 256 Mio, « Fil d'exécution ») et le script
     `fn f(n) { f(n + 1) } f(0); #{}`
   When `run` est appelé
-  Then le résultat est @Err(StepError { retryable: false, .. }) dont le message désigne le dépassement de niveaux d'appels de Rhai ;
-    si le processus de test avorte (débordement de pile), STOP : ne rien corriger, consigner la sortie et remonter (la réponse —
-    plafonds plus bas ou fil à pile dimensionnée — est un arbitrage)
+  Then le résultat est @Err(StepError { retryable: false, .. }) dont le message désigne le dépassement de niveaux d'appels de Rhai
+    (`Stack overflow` de rhai, jamais un débordement de pile natif) ; le processus de test n'avorte pas — s'il avortait malgré le
+    fil dimensionné, STOP et rapport (la mesure initiale du 2026-11-01 sur pile de 2 Mio reste consignée dans OI-9)
 
 Scenario: vars est lisible, modifiable localement et sans panique (2026-10-30, lot B)
   Given `RunInfo.vars = {"project": "p1"}`

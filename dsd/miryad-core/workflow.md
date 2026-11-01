@@ -304,6 +304,19 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
       (pré-1.0, sans production) ; `vanyline` adapte son appel et peut retirer l'injection de `config._run`.
     - **Source:** user instruction, 2026-10-30
 
+- **DEC-10 - Évaluation Rhai sur un fil dédié à pile dimensionnée**
+    - **Context:** `spawn_blocking` donne une pile de 2 Mio ; le test A6 du 2026-11-01 reproduit `OI-9` sur `RhaiStep` :
+      SIGABRT dès 144 niveaux de récursion en debug, entre 256 et 384 en release — la pile native s'épuise avant le
+      plafond logique de 512 niveaux, et Restate rejouerait à l'infini une invocation avortée.
+    - **Decision:** l'évaluation du script s'exécute dans un fil `std::thread` à pile de 256 Mio (deux fois le pire cas
+      de 125 Mio mesuré par `lymaille`), créé dans le `spawn_blocking` et joint par canal ; les plafonds Rhai restent
+      la seule limite logique.
+    - **Alternatives:** abaisser les plafonds (écarté : casse les scripts légitimes et dépend du profil et de la
+      plateforme) ; différer (écarté : lot A non clos, suite de tests qui avorte sous toute combinaison `workflow`).
+    - **Consequences:** un thread OS et 256 Mio réservés (engagés à la touche) par évaluation ; le fil survit au
+      timeout coopératif comme celui du `spawn_blocking` ; la panique de ce fil rejoint le rendu `JoinError` de l'étape 4.
+    - **Source:** user instruction, 2026-11-01 ; mesures `OI-9` du 2026-11-01
+
 ## Operations and Resilience
 
 - **Rollout :** `force: true` (CON-2) peut, selon l'OpenAPI de l'admin API de Restate, laisser des invocations en cours
@@ -401,6 +414,9 @@ leurs clients (TBD).
 - **OI-9:** **Pile des threads de `RhaiStep`** : `spawn_blocking` donne 2 Mio de pile, alors que `vynil-core` fixe des
   plafonds Rhai de 512 niveaux d'appels et de profondeur d'expression 256 et 128. `lymaille` a mesuré un débordement à
   512 niveaux en débogage et un pire cas construit de 125 Mio en release, ce qui ferait avorter le processus. Restate
-  rejouerait alors l'invocation, d'où une boucle. **Non reproduit sur `RhaiStep`.** **TBD :** test de récursion jusqu'au
-  plafond ; selon le résultat, abaisser les plafonds ou exécuter dans un fil à pile dimensionnée.
-    - **Source:** `lymaille` `dsd/agent-sessions/scratchpad.md`, DEC-3 (amendement du 2026-10-27)
+  rejouerait alors l'invocation, d'où une boucle. **Reproduit sur `RhaiStep` le 2026-11-01** (test A6 : SIGABRT ; survit
+  à 128 niveaux et avorte dès 144 en debug, survit à 256 et avorte dès 384 en release — la pile native s'épuise avant
+  le plafond de 512 dans les deux profils). **Tranché le 2026-11-01 par le développeur principal : fil dédié à pile
+  dimensionnée** (`DEC-10`) ; les plafonds restent la limite logique.
+    - **Source:** `lymaille` `dsd/agent-sessions/scratchpad.md`, DEC-3 (amendement du 2026-10-27) ; mesures du test A6,
+      2026-11-01 ; arbitrage, user instruction, 2026-11-01
