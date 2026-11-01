@@ -128,7 +128,7 @@ Tasks:
     éventuel n'apparaît qu'au retrait de la liste — le consigner dans le rapport. Un fichier : ./template.rs.
     Validé 2026-10-30 : Scenario jsonnet vert d'emblée sous l'ancien code, rouge sous `new_restricted()` seul (le marqueur de la sonde est rendu) ;
     `DENIED_HELPERS = ["jsonnet"]` conservé (à remonter à `vynil-core`, `CON-5`). Tests/clippy `workflow` et `--all-features`, fmt verts.
-  [ ] B2 (2026-10-30, `FR-12`/`FR-13`, `CON-7`) : le contexte de rendu porte `"vars"` (lu dans `run.vars`, ./step.sdd), sans
+  [x] B2 (2026-10-30, `FR-12`/`FR-13`, `CON-7`) : le contexte de rendu porte `"vars"` (lu dans `run.vars`, ./step.sdd), sans
     changer les signatures de @render_config / @render_str ; `Scenario` « vars » ci-dessous. Après B1 (./step.sdd).
     Un fichier : ./template.rs.
   [x] Typage des rendus : `"$json"` explicite, pas d'inférence (arbitré par Sébastien le 2026-10-06) — une

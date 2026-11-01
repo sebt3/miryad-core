@@ -32,7 +32,9 @@ fn engine() -> HandleBars<'static> {
     hbs
 }
 
-/// Contexte de rendu : `{"inputs": <inputs>, "run": {"run_key", "step_id", "depth"}}`.
+/// Contexte de rendu : `{"inputs": <inputs>, "run": {"run_key", "step_id", "depth"},
+/// "vars": <run.vars>}` (`./template.sdd` `Must`, amendement 2026-10-30 lot B ; `vars` est de la
+/// donnée — ses valeurs ne sont jamais rendues comme gabarit, `CON-7`).
 fn context(run: &RunInfo, inputs: &HashMap<String, Value>) -> Value {
     let inputs: serde_json::Map<String, Value> = inputs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     serde_json::json!({
@@ -42,6 +44,7 @@ fn context(run: &RunInfo, inputs: &HashMap<String, Value>) -> Value {
             "step_id": run.step_id,
             "depth": run.depth,
         },
+        "vars": run.vars.clone(),
     })
 }
 
@@ -367,5 +370,50 @@ mod tests {
             ),
             Err(error) => assert!(!error.message.contains(MARQUEUR), "message : {}", error.message),
         }
+    }
+
+    /// Scenario « vars est lisible dans un gabarit » (`template.sdd`, 2026-10-30, lot B).
+    #[test]
+    fn vars_est_lisible_dans_un_gabarit() {
+        let avec_vars = RunInfo {
+            run_key: "t".into(),
+            step_id: "s".into(),
+            depth: 0,
+            vars: json!({"project": "p1"}),
+        };
+        let config = json!({"x": "{{vars.project}}"});
+        let rendu = render_config(&config, &avec_vars, &HashMap::new(), &[]).expect("rendu sans erreur");
+        assert_eq!(rendu, json!({"x": "p1"}));
+        // avec `run.vars = {}` (le `run()` neutre), la même config échoue en mode strict.
+        let error = expect_err(render_config(&config, &run(), &HashMap::new(), &[]));
+        assert!(
+            !error.retryable,
+            "une variable absente de `vars` n'est jamais retryable"
+        );
+    }
+
+    /// Scenario « une valeur de vars n'est jamais rendue comme gabarit » (`template.sdd`,
+    /// 2026-10-30, lot B ; `dsd/miryad-core/workflow.md` `CON-7`/`DEC-9` : une valeur de `vars`
+    /// est de la donnée, jamais un gabarit — pas de récursion de rendu).
+    #[test]
+    fn une_valeur_de_vars_n_est_jamais_rendue_comme_gabarit() {
+        let run = RunInfo {
+            run_key: "t".into(),
+            step_id: "s".into(),
+            depth: 0,
+            vars: json!({"note": "{{inputs.x}}"}),
+        };
+        let inputs = inputs_of(json!({"x": "SECRET"}));
+        let config = json!({"y": "{{vars.note}}"});
+        let rendu = render_config(&config, &run, &inputs, &[]).expect("rendu sans erreur");
+        assert_eq!(
+            rendu,
+            json!({"y": "{{inputs.x}}"}),
+            "la valeur de `vars` est rendue comme littéral, jamais réévaluée"
+        );
+        assert!(
+            !rendu.to_string().contains("SECRET"),
+            "`SECRET` ne doit jamais apparaître dans le rendu"
+        );
     }
 }
