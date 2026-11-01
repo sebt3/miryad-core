@@ -151,7 +151,8 @@ Must:
   Durée d'exécution (amendement 2026-10-30, `FR-18`) : `RhaiConfig` gagne un champ `timeout_secs: Option<u64>` (`#[serde(default)]`,
     en secondes ; absent ⇒ `DEFAULT_TIMEOUT_SECS = 300`) ; hors de `1..=MAX_TIMEOUT_SECS` (`MAX_TIMEOUT_SECS = 3600`) ⇒ @StepError
     { retryable: false, message: "config rhai invalide: timeout_secs doit être compris entre 1 et 3600" }. Valeur par défaut et
-    plafond : **propositions de Claude, à confirmer** par le développeur principal (`dsd/miryad-core/workflow.md` `FR-18`, `TBD`).
+    plafond : `300` et `3600` **confirmés par le développeur principal le 2026-11-01** (propositions Claude du 2026-10-30
+    actées ; le `TBD` de `dsd/miryad-core/workflow.md` `FR-18` est soldé).
     Mécanisme : `run` crée un `vynil_core::cancel::CancelToken` ; l'évaluation, dans le `spawn_blocking`, s'exécute dans
     `cancel::scope(token, ..)` (les appels natifs bloquants de `vynil-core` rendent alors `Error::Cancelled` en 25 ms environ) et le
     moteur pose `engine.on_progress(..)` qui met fin à une boucle Rhai dès que le jeton est annulé (API de `vynil_core::cancel` à lire
@@ -304,7 +305,7 @@ Tasks:
   [x] A4 (2026-10-30, `FR-16`, `FR-17`, `DEC-8`) : moteur par liste blanche + `log_*` (« Construction du moteur », « Liste
     blanche ») ; `Scenario` « n'expose ni l'environnement », « fichiers et shell », « helpers purs », « log_info ». Après A1
     (/miryad-core.sdd). Un fichier : ./rhai_step.rs.
-  [ ] A5 (2026-10-30, `FR-18`) : `timeout_secs` et annulation coopérative (« Durée d'exécution ») ; `Scenario` « dépasse
+  [x] A5 (2026-10-30, `FR-18`) : `timeout_secs` et annulation coopérative (« Durée d'exécution ») ; `Scenario` « dépasse
     timeout_secs », « hors bornes » et « un script bloqué dans sleep rend le timeout sans attendre le fil » (ajouté
     2026-11-01) ; supplante l'arbitrage du 2026-09-24 (« pas de `timeout_ms` »). Après A3 (./error.sdd)
     et A4. Un fichier : ./rhai_step.rs.

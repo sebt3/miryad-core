@@ -10,7 +10,9 @@
 //!
 //! L'évaluation Rhai est synchrone et son moteur vit exclusivement dans une tâche
 //! `tokio::task::spawn_blocking` : un script lent ne doit pas monopoliser le thread de travail
-//! qui sert les autres invocations concurrentes. Aucun `Script` n'est porté par [`RhaiStep`] —
+//! qui sert les autres invocations concurrentes. Chaque exécution est aussi bornée en durée
+//! (`timeout_secs`, FR-18) : à l'expiration le moteur annule le script de façon coopérative et
+//! rend `MRD-WORKFLOW-009` sans attendre la fin du fil. Aucun `Script` n'est porté par [`RhaiStep`] —
 //! chaque `run` construit son moteur neuf, aucune variable d'une invocation ne fuit vers
 //! l'autre.
 //!
@@ -30,12 +32,14 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::Value;
+use vynil_core::cancel::{self, CancelToken};
 use vynil_core::chrono::chrono_rhai_register;
 use vynil_core::engine::{
-    Engine, FileModuleResolver, ImmutableString, ModuleResolversCollection, Scope, Script,
+    Dynamic, Engine, FileModuleResolver, ImmutableString, ModuleResolversCollection, Scope, Script,
     core_pure_rhai_register,
 };
 use vynil_core::glob::glob_rhai_register;
@@ -44,6 +48,7 @@ use vynil_core::semver::semver_rhai_register;
 use vynil_core::yaml::yaml_rhai_register;
 use vynil_core::{RhaiRes, rhai_err_str};
 
+use super::error::WorkflowError;
 use super::step::{MiryadWorkflowStep, RunInfo, StepError};
 use super::template::render_str;
 
@@ -52,6 +57,16 @@ use super::template::render_str;
 /// du pool bloquant indéfiniment (`./rhai_step.sdd` `Must`, étape 2).
 const MAX_OPERATIONS: u64 = 10_000_000;
 
+/// Durée d'exécution par défaut d'un script, en secondes, quand `timeout_secs` est absent
+/// (`./rhai_step.sdd` « Durée d'exécution », `FR-18`, valeur confirmée par le développeur
+/// principal le 2026-11-01).
+const DEFAULT_TIMEOUT_SECS: u64 = 300;
+
+/// Plafond de `timeout_secs`, en secondes (`./rhai_step.sdd` « Durée d'exécution », `FR-18`,
+/// valeur confirmée par le développeur principal le 2026-11-01) : les valeurs valides sont
+/// `1..=MAX_TIMEOUT_SECS`.
+const MAX_TIMEOUT_SECS: u64 = 3600;
+
 /// Fermeture d'extension posée par [`RhaiStep::with_setup`] : le type exact des éléments de
 /// `RhaiStep::setups`, dicté par `./rhai_step.sdd` `Must` — elle reçoit le `Script` neuf de
 /// l'exécution, puis `config` et `inputs` en lecture seule. Alias privé de lisibilité — le
@@ -59,12 +74,18 @@ const MAX_OPERATIONS: u64 = 10_000_000;
 type SetupFn = dyn Fn(&mut Script, &Value, &HashMap<String, Value>) + Send + Sync + 'static;
 
 /// Le `config` du kind `"rhai"`, désérialisé depuis le JSON opaque livré à
-/// [`MiryadWorkflowStep::run`] — un seul champ attendu, les autres clés restent accessibles au
-/// script via la variable `config` (le JSON complet lui est exposé, `script` compris).
+/// [`MiryadWorkflowStep::run`] — deux champs attendus (`script`, `timeout_secs`), les autres clés
+/// restent accessibles au script via la variable `config` (le JSON complet lui est exposé,
+/// `script` compris).
 #[derive(Deserialize)]
 struct RhaiConfig {
     /// Texte source Rhai évalué par [`Script::eval_map_json`].
     script: String,
+    /// Durée d'exécution du script, en secondes (`./rhai_step.sdd` « Durée d'exécution »,
+    /// `FR-18`) : absent ⇒ [`DEFAULT_TIMEOUT_SECS`] ; hors `1..=MAX_TIMEOUT_SECS` ⇒ `StepError`
+    /// non retryable, vérifié avant toute évaluation.
+    #[serde(default)]
+    timeout_secs: Option<u64>,
 }
 
 /// Kind de step `"rhai"` : exécute le script porté par le `config` du step via
@@ -126,6 +147,15 @@ impl RhaiStep {
     /// appeler `script.engine.set_max_operations(..)` elle-même — une surcharge possible mais
     /// volontaire, à la charge de l'app, jamais un défaut de la crate (`./rhai_step.sdd`
     /// `Must`, arbitrage 2026-10-04).
+    ///
+    /// # Durée d'exécution : une closure non coopérative peut survivre au timeout
+    ///
+    /// Chaque exécution est bornée en durée par `timeout_secs` (`./rhai_step.sdd` « Durée
+    /// d'exécution », `FR-18`) et s'exécute dans une portée d'annulation coopérative de
+    /// `vynil-core`. À l'expiration, `run` annule le jeton et rend l'erreur `MRD-WORKFLOW-009`
+    /// **sans attendre la fin du fil** : une closure non coopérative — qui bloque sans rendre la
+    /// main au moteur — peut donc survivre à cette erreur dans son fil du pool bloquant jusqu'à
+    /// ce qu'elle rende la main elle-même. C'est un risque d'app, pas une garantie de la crate.
     #[must_use]
     pub fn with_setup<F>(mut self, f: F) -> Self
     where
@@ -235,16 +265,35 @@ impl MiryadWorkflowStep for RhaiStep {
             message: format!("config rhai invalide: {e}"),
             retryable: false,
         })?;
+        // Étape 1 bis — bornes de `timeout_secs` validées APRÈS la désérialisation et AVANT toute
+        // évaluation (`./rhai_step.sdd` « Durée d'exécution », `FR-18`, dans l'ordre des branches
+        // `Handles`) : absent ⇒ défaut ; hors `1..=MAX_TIMEOUT_SECS` ⇒ erreur de config non
+        // retryable, aucun `Script` n'est construit.
+        let timeout_secs = rhai_config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        if !(1..=MAX_TIMEOUT_SECS).contains(&timeout_secs) {
+            return Err(StepError {
+                message: format!(
+                    "config rhai invalide: timeout_secs doit être compris entre 1 et {MAX_TIMEOUT_SECS}"
+                ),
+                retryable: false,
+            });
+        }
         // Le `resolver_path` et les `Arc` de `setups` sont clonés avant le `move` : la tâche
         // bloquant le thread ne doit rien à `&self`, et un `Script` neuf est construit à chaque
         // exécution — aucun état ne survit d'un `run` à l'autre.
         let resolver_path = self.resolver_path.clone();
         let setups = self.setups.clone();
         let run = run.clone();
+        // Jeton d'annulation coopérative (« Durée d'exécution », `FR-18`) : le clone lu dans le
+        // fil par `on_progress` et par le `cancel::scope` de l'évaluation ; l'original, annulé à
+        // l'expiration du plafond de durée sous `tokio::time::timeout`, interrompt le fil au
+        // prochain point de contrôle sans que `run` l'attende.
+        let token = CancelToken::new();
+        let eval_token = token.clone();
         // Étape 2 — évaluation hors du thread de travail tokio (le script, fourni par un admin,
         // peut boucler) ; un panic éventuel — y compris une closure de `setups` qui panique — y
         // est confiné et capturé en `JoinError` à l'étape 4.
-        tokio::task::spawn_blocking(move || {
+        let evaluation = tokio::task::spawn_blocking(move || {
             let mut script = build_script(resolver_path, &run);
             script.engine.set_max_operations(MAX_OPERATIONS);
             // Conversion infaillible HashMap→Map (pas de `serde_json::to_value` : aucun Result
@@ -279,28 +328,63 @@ impl MiryadWorkflowStep for RhaiStep {
             for setup in &setups {
                 setup(&mut script, &config, &inputs);
             }
-            // Étape 5 — la `Map` JSON est rendue telle quelle, aucune enveloppe.
-            script.eval_map_json(&rhai_config.script)
-        })
-        .await
-        // Étape 4 — panic à l'intérieur du bloc bloquant : le `JoinError` le capture, le thread
-        // appelant ne panique jamais.
-        .map_err(|e| StepError {
-            message: format!("rhai task panicked: {e}"),
-            retryable: false,
-        })?
-        // Étape 3 — tout échec Rhai (`Error::RhaiError` comme `SerializationError`) est non
-        // retryable : déterministe vis-à-vis de l'entrée, rien à gagner à rejouer ; le `Display`
-        // thiserror de `vynil_core::Error` porte déjà le contexte utile.
-        .map_err(|e| StepError {
-            message: e.to_string(),
-            retryable: false,
-        })
+            // Annulation coopérative (« Durée d'exécution », `FR-18`) : `on_progress` est appelé
+            // à chaque point d'opération (arête arrière de boucle, rhai 1.26.1 `Op::Tick`) et
+            // rend Some(valeur) pour mettre fin à l'évaluation dès que le jeton est annulé —
+            // `ErrorTerminated`, le fil s'arrête de lui-même peu après. Le contrôle du plafond
+            // d'opérations est opéré par le moteur avant ce rappel (rhai `track_operation`) :
+            // `on_progress` n'empiète jamais sur `MAX_OPERATIONS` ni sur sa surcharge par une
+            // closure de `setups`.
+            let progress_token = eval_token.clone();
+            script.engine.on_progress(move |_operations: u64| {
+                progress_token
+                    .is_cancelled()
+                    .then(|| Dynamic::from("cancelled: timeout_secs reached"))
+            });
+            // Étape 5 — l'évaluation s'exécute dans la portée d'annulation de `vynil-core` :
+            // les appels natifs bloquants qui liraient le jeton rendent `Error::Cancelled` en
+            // 25 ms environ. La `Map` JSON est rendue telle quelle, aucune enveloppe.
+            cancel::scope(&eval_token, || script.eval_map_json(&rhai_config.script))
+        });
+        // Le futur de la tâche bloquante est attendu sous le plafond de durée (« Durée
+        // d'exécution ») : à l'expiration, `run` annule le jeton et rend IMMÉDIATEMENT le rendu
+        // de `WorkflowError::ScriptTimeout` (`MRD-WORKFLOW-009`), sans attendre la fin du fil —
+        // un fil non coopératif (le `sleep` du substrat rhai, une closure de `setups` qui ne rend
+        // pas la main) y survit jusqu'à ce qu'il rende la main de lui-même, comportement accepté
+        // (`./rhai_step.sdd` « Liste blanche », arbitrage `DEC-8` du 2026-11-01).
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), evaluation).await {
+            Ok(joined) => joined
+                // Étape 4 — panic à l'intérieur du bloc bloquant : le `JoinError` le capture, le
+                // thread appelant ne panique jamais.
+                .map_err(|e| StepError {
+                    message: format!("rhai task panicked: {e}"),
+                    retryable: false,
+                })?
+                // Étape 3 — tout échec Rhai (`Error::RhaiError` comme `SerializationError`) est non
+                // retryable : déterministe vis-à-vis de l'entrée, rien à gagner à rejouer ; le
+                // `Display` thiserror de `vynil_core::Error` porte déjà le contexte utile. Un
+                // script qui échoue pour une autre cause que la durée garde son message habituel.
+                .map_err(|e| StepError {
+                    message: e.to_string(),
+                    retryable: false,
+                }),
+            Err(_elapsed) => {
+                token.cancel();
+                Err(StepError {
+                    message: WorkflowError::ScriptTimeout {
+                        seconds: timeout_secs,
+                    }
+                    .to_string(),
+                    retryable: false,
+                })
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::error::WorkflowError;
     use super::super::step::MiryadWorkflowStep;
     use super::super::step::RunInfo;
     use super::super::step::StepRegistry;
@@ -1069,6 +1153,139 @@ import_template("zz_module_absent", #{});
             );
             assert_champs_du_step(&evenement, "r1", "s1");
         }
+    }
+
+    /// Scenario « un script qui dépasse `timeout_secs` est interrompu » (A5, `FR-18`) : le plafond
+    /// d'opérations est levé par `set_max_operations(0)` (0 = illimité, rhai 1.26.1) — seule la
+    /// durée peut arrêter `loop {}`. Le rendu est un `StepError` non retryable dont le message est
+    /// le rendu de `WorkflowError::ScriptTimeout { seconds: 1 }` (préfixe `MRD-WORKFLOW-009`), en
+    /// moins de 5 s. Le garde externe de 30 s ne doit jamais sonner en vert (rendu à ~1 s) : il
+    /// borne la phase rouge, où `timeout_secs` est ignoré et la boucle file sans fin. Que le fil
+    /// bloquant s'arrête de lui-même peu après est prouvé par la fin du test elle-même : la
+    /// destruction du runtime tokio en attente des tâches bloquantes, un fil qui ne s'arrêterait
+    /// pas ferait suspendre le test plutôt que le passer.
+    #[tokio::test]
+    async fn un_script_qui_depasse_timeout_secs_est_interrompu() {
+        let step = RhaiStep::default().with_setup(|s, _config, _inputs| {
+            s.engine.set_max_operations(0);
+        });
+        let debut = std::time::Instant::now();
+        let resultat = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            step.run(
+                &run_info(),
+                json!({ "script": "loop {}", "timeout_secs": 1 }),
+                no_inputs(),
+            ),
+        )
+        .await
+        .expect("`timeout_secs` devait rendre une erreur en moins de 30 s");
+        let duree = debut.elapsed();
+        match resultat {
+            Ok(valeur) => panic!("une boucle sans plafond ne devait jamais rendre un Ok : {valeur}"),
+            Err(erreur) => {
+                assert!(
+                    !erreur.retryable,
+                    "durée dépassée : rejouer dépasserait de nouveau, jamais retryable"
+                );
+                assert!(
+                    erreur.message.starts_with("MRD-WORKFLOW-009"),
+                    "message attendu préfixé `MRD-WORKFLOW-009` : {:#?}",
+                    erreur.message
+                );
+                assert_eq!(
+                    erreur.message,
+                    WorkflowError::ScriptTimeout { seconds: 1 }.to_string(),
+                    "le message est le rendu de `ScriptTimeout {{ seconds: 1 }}`"
+                );
+                assert!(
+                    duree < std::time::Duration::from_secs(5),
+                    "rendu attendu en moins de 5 s, mesuré {duree:?}"
+                );
+            }
+        }
+    }
+
+    /// Scenario « un script bloqué dans `sleep` rend le timeout sans attendre le fil »
+    /// (A5, `FR-18`, arbitrage `DEC-8` du 2026-11-01) : `sleep` vient du `lang_core` de rhai,
+    /// bloquant pour le fil et non coopératif. Le rendu de l'erreur `ScriptTimeout` doit survenir
+    /// en moins de 5 s alors que le `sleep(10)` survit dans son fil jusqu'à son terme — assertion
+    /// du message à ~1 s puis de la durée, la seule preuve que le retour n'a pas attendu le fil.
+    /// Le test lui-même dure ~10 s : la destruction du runtime tokio en attend le fil survivant,
+    /// comportement accepté et non un échec.
+    #[tokio::test]
+    async fn un_script_bloque_dans_sleep_rend_le_timeout_sans_attendre_le_fil() {
+        let debut = std::time::Instant::now();
+        let resultat = RhaiStep::default()
+            .run(
+                &run_info(),
+                json!({ "script": "sleep(10); #{}", "timeout_secs": 1 }),
+                no_inputs(),
+            )
+            .await;
+        let duree = debut.elapsed();
+        match resultat {
+            Ok(valeur) => {
+                panic!("`sleep(10)` ne devait pas s'achever avant `timeout_secs` 1, rendu : {valeur}")
+            }
+            Err(erreur) => {
+                assert!(!erreur.retryable, "durée dépassée : jamais retryable");
+                assert!(
+                    erreur.message.starts_with("MRD-WORKFLOW-009"),
+                    "message attendu préfixé `MRD-WORKFLOW-009` : {:#?}",
+                    erreur.message
+                );
+                assert_eq!(
+                    erreur.message,
+                    WorkflowError::ScriptTimeout { seconds: 1 }.to_string(),
+                    "le message est le rendu de `ScriptTimeout {{ seconds: 1 }}`"
+                );
+                assert!(
+                    duree < std::time::Duration::from_secs(5),
+                    "le rendu ne doit pas attendre la fin du `sleep` : mesuré {duree:?}"
+                );
+            }
+        }
+    }
+
+    /// Scenario « `timeout_secs` hors bornes est une config invalide » (A5, `FR-18`) : `0` et
+    /// `3601` sont refusés avant toute évaluation, au message exact du `Must` ; `3600` est la
+    /// borne haute valide — la même config est alors acceptée et le script évalué. Le cas absent
+    /// (défaut 300) est verrouillé par tous les autres tests du module, qui n'ont pas de
+    /// `timeout_secs` et doivent rester verts à l'identique.
+    #[tokio::test]
+    async fn timeout_secs_hors_bornes_est_une_config_invalide() {
+        for valeur in [0_u64, 3601] {
+            let config = json!({ "script": "#{}", "timeout_secs": valeur });
+            match RhaiStep::default().run(&run_info(), config, no_inputs()).await {
+                Ok(rendu) => {
+                    panic!(
+                        "`timeout_secs` {valeur} devait être refusé avant toute évaluation, rendu : {rendu}"
+                    )
+                }
+                Err(erreur) => {
+                    assert!(
+                        !erreur.retryable,
+                        "`timeout_secs` {valeur} hors bornes : jamais retryable"
+                    );
+                    assert_eq!(
+                        erreur.message,
+                        "config rhai invalide: timeout_secs doit être compris entre 1 et 3600",
+                        "message exact du `Must` « Durée d'exécution » pour `timeout_secs` {valeur}"
+                    );
+                }
+            }
+        }
+        // 3600 est dans `1..=MAX_TIMEOUT_SECS` : config acceptée, script évalué normalement.
+        let rendu = RhaiStep::default()
+            .run(
+                &run_info(),
+                json!({ "script": "#{ ok: true }", "timeout_secs": 3600 }),
+                no_inputs(),
+            )
+            .await
+            .expect("3600 est la borne haute valide : la config doit être acceptée et le script évalué");
+        assert_eq!(rendu, json!({ "ok": true }));
     }
 
     /// Un événement `tracing` capturé : niveau et champs rendus (`message`, `run_key`, `step_id`).

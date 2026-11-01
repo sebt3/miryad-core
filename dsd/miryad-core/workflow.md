@@ -148,8 +148,9 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
 
 - **FR-18 - MUST:** `RhaiStep` borne la durée réelle d'un script. À l'expiration, l'exécution est annulée (jeton
   d'annulation de `vynil-core` pour les appels natifs bloquants, `on_progress` pour les boucles Rhai) et le step échoue
-  en `MRD-WORKFLOW-009`, non retryable. **TBD :** valeur par défaut, plafond, et champ du `config` qui la surcharge.
-    - **Source:** user instruction, 2026-10-30 ; vynil-core `CHANGELOG` 0.9.0 (#21)
+  en `MRD-WORKFLOW-009`, non retryable. TBD soldé le 2026-11-01 par le développeur principal : valeur par défaut `300` s,
+  plafond `3600` s, surcharge par le champ `timeout_secs` du `config`.
+    - **Source:** user instruction, 2026-10-30 ; vynil-core `CHANGELOG` 0.9.0 (#21) ; arbitrage valeurs, user instruction, 2026-11-01
     - **Realized by:** SpecDD /src/workflow/rhai_step.sdd, SpecDD /src/workflow/error.sdd
     - **Verified by:** `AC-12`
 
