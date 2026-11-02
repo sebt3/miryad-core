@@ -42,7 +42,7 @@ Exposes:
   `SeaAgentStore`, `SeaProfileStore`, `SeaProviderStore` et leurs `impl` de trait
 
 Tasks:
-  [ ] Tests d'abord (SQLite mémoire), puis ./catalog.rs.
+  [x] Tests d'abord (SQLite mémoire), puis ./catalog.rs. Validé 2026-11-02 (validator PASS).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./catalog.rs.
