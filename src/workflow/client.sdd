@@ -248,9 +248,12 @@ Tasks:
     adapter les appels de `trigger_run` des tests de ./client.rs et de ../../tests/workflow_restate.rs (`Can modify`). Après B4
     (./interpreter.sdd, qui porte `RunInput`). Fichiers : ./client.rs et ../../tests/workflow_restate.rs.
 
-  [ ] T5 (2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : paramètre `trigger` de @client::trigger_run, corps `RunInput` avec `trigger`, rustdoc « ingress privé » ;
+  [x] T5 (2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : paramètre `trigger` de @client::trigger_run, corps `RunInput` avec `trigger`, rustdoc « ingress privé » ;
     adapter les appels de `trigger_run` des tests de ./client.rs et de ../../tests/workflow_restate.rs (`Can modify`). Après T4
     (./interpreter.sdd, qui porte `RunInput`). Fichiers : ./client.rs et ../../tests/workflow_restate.rs.
+    Validé 2026-11-02 (validator GO) : test nouveau verrouillant les deux Then (corps avec clé et sans en-tête portant le sujet ;
+    `None` sans clé), patron B5 ; trace de T4 retirée, rustdoc fidèle sans validation inventée ; huit appels adaptés dont le helper
+    `send_run` des intégrations ; batterie ciblée workflow et `--all-features` verte, complète due à la fin du lot 0.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.

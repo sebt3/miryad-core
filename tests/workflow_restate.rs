@@ -308,10 +308,13 @@ impl Stack {
     /// Depuis la tâche B5 (amendement 2026-10-30, lot B), `trigger_run` porte le paramètre `vars`
     /// et c'est lui qui construit le corps `RunInput` (`{"dag": [..steps..], "vars": {}}`) —
     /// l'appel direct à l'ingress que cette fonction postait jusqu'ici n'a plus de raison d'être.
-    /// Les tests n'exercent ici que des `vars` vides ; la recopie des `vars` non vides est
-    /// verrouillée en unitaire dans ./interpreter.rs.
+    /// Depuis la tâche T5 (amendement 2026-11-02, lot 0 lymaille), `trigger_run` porte aussi le
+    /// paramètre `trigger` : `None` ici, ces tests n'exercent pas l'identité du déclencheur — elle
+    /// est verrouillée en unitaire dans ./client.rs et ./interpreter.rs. Les tests n'exercent ici
+    /// que des `vars` vides ; la recopie des `vars` non vides est verrouillée en unitaire dans
+    /// ./interpreter.rs.
     async fn send_run(&self, dag: &DagSteps) -> String {
-        let handle = trigger_run(&self.config, &self.http, dag, &serde_json::Map::new())
+        let handle = trigger_run(&self.config, &self.http, dag, &serde_json::Map::new(), None)
             .await
             .unwrap_or_else(|erreur| panic!("le déclenchement doit être accepté : {erreur}"));
         handle.run_key

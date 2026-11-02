@@ -132,16 +132,24 @@ pub async fn register_deployment(
 
 /// Déclenche une exécution de `DagInterpreter` sans attendre sa complétion : clé de run neuve
 /// (`uuid::Uuid::new_v4`) à chaque appel — jamais réutilisée, jamais d'`Idempotency-Key` — puis
-/// `POST {ingress_url}/DagInterpreter/{run_key}/run/send`, corps = `RunInput { dag, vars }`
-/// sérialisé (./interpreter.sdd « Entrée du run », amendement 2026-10-30, lot B) — `{"dag":
-/// [..steps..], "vars": {..}}`, le DAG sous sa forme de tableau nu, sans autre enveloppe ni
-/// champ ajouté. Un `202` (tout `2xx` en pratique) rend un `RunHandle` dont `invocation_id` est
-/// lu dans le **corps** de réponse, pas dans un en-tête.
+/// `POST {ingress_url}/DagInterpreter/{run_key}/run/send`, corps = `RunInput { dag, vars, trigger }`
+/// sérialisé (./interpreter.sdd « Entrée du run », amendement 2026-10-30 lot B, 2026-11-02 lot 0
+/// lymaille) — `{"dag": [..steps..], "vars": {..}}`, plus `"trigger": "<subject>"` quand le run a
+/// un déclencheur, le DAG sous sa forme de tableau nu, sans autre enveloppe ni champ ajouté. Un
+/// `202` (tout `2xx` en pratique) rend un `RunHandle` dont `invocation_id` est lu dans le **corps**
+/// de réponse, pas dans un en-tête.
 ///
 /// `vars` : variables constantes du run, un objet JSON (passez `&serde_json::Map::new()` si
 /// l'appelant n'en a pas), transmis dans le corps avec le DAG sans transformation ni validation
 /// de contenu. **Elles sont journalisées par Restate avec l'entrée du run et visibles dans son
 /// interface : n'y mettez aucun secret** (`dsd/miryad-core/workflow.md` `CON-6`).
+///
+/// `trigger` : le `subject` de la personne qui déclenche le run, ou `None` pour un déclenchement
+/// sans identité (tâche planifiée, appel interne). Transmis dans le corps (`RunInput.trigger`,
+/// ./interpreter.sdd), jamais en en-tête ; `None` n'y écrit pas la clé. Chaîne opaque que ce
+/// fichier ne valide pas, que le moteur **n'authentifie pas** : sa confiance repose entièrement
+/// sur l'accès à l'ingress Restate, à ne rendre joignable que de l'application (« ingress privé »,
+/// `dsd/miryad-core/lymaille.md` `DEC-12`).
 ///
 /// La cible contractuelle est `&DagSteps` (./definition.rs, ./client.sdd `Exposes`) — rive
 /// effectuée le 2026-09-23 au batch de ./definition.rs : le paramètre est le type réel de la
@@ -166,6 +174,7 @@ pub async fn trigger_run(
     http: &reqwest::Client,
     dag: &DagSteps,
     vars: &serde_json::Map<String, serde_json::Value>,
+    trigger: Option<&str>,
 ) -> Result<RunHandle, WorkflowError> {
     config.validate()?;
     let run_key = Uuid::new_v4().to_string();
@@ -177,8 +186,7 @@ pub async fn trigger_run(
         .json(&RunInput {
             dag: dag.clone(),
             vars: vars.clone(),
-            // T5 (./client.sdd) portera le trigger ; T4 pose le neutre.
-            trigger: None,
+            trigger: trigger.map(str::to_string),
         })
         .send()
         .await
@@ -552,10 +560,10 @@ mod tests {
         let config = stub.config();
         let http = test_http();
         let dag = dag_fixture();
-        let first = trigger_run(&config, &http, &dag, &serde_json::Map::new())
+        let first = trigger_run(&config, &http, &dag, &serde_json::Map::new(), None)
             .await
             .expect("le 202 devait rendre Ok(RunHandle)");
-        let second = trigger_run(&config, &http, &dag, &serde_json::Map::new())
+        let second = trigger_run(&config, &http, &dag, &serde_json::Map::new(), None)
             .await
             .expect("le second 202 devait rendre Ok(RunHandle)");
 
@@ -608,6 +616,7 @@ mod tests {
             &test_http(),
             &dag_fixture(),
             &serde_json::Map::new(),
+            None,
         )
         .await
         else {
@@ -631,6 +640,7 @@ mod tests {
             &test_http(),
             &dag_fixture(),
             &serde_json::Map::new(),
+            None,
         )
         .await
         else {
@@ -657,9 +667,10 @@ mod tests {
     async fn corps_envoye_sans_enveloppe() {
         let stub = StubServer::spawn(202, SEND_ACCEPTED_BODY.to_string());
         let dag = dag_fixture();
-        let handle: RunHandle = trigger_run(&stub.config(), &test_http(), &dag, &serde_json::Map::new())
-            .await
-            .expect("le 202 devait rendre Ok(RunHandle)");
+        let handle: RunHandle =
+            trigger_run(&stub.config(), &test_http(), &dag, &serde_json::Map::new(), None)
+                .await
+                .expect("le 202 devait rendre Ok(RunHandle)");
 
         let requests = stub.requests();
         assert_eq!(requests.len(), 1, "une seule requête était attendue");
@@ -735,10 +746,10 @@ mod tests {
         let dag = dag_fixture_un_step();
         let mut vars = serde_json::Map::new();
         vars.insert("project".to_string(), serde_json::json!("p1"));
-        trigger_run(&config, &http, &dag, &vars)
+        trigger_run(&config, &http, &dag, &vars, None)
             .await
             .expect("le 202 devait rendre Ok(RunHandle)");
-        trigger_run(&config, &http, &dag, &serde_json::Map::new())
+        trigger_run(&config, &http, &dag, &serde_json::Map::new(), None)
             .await
             .expect("le second 202 devait rendre Ok(RunHandle)");
 
@@ -774,6 +785,84 @@ mod tests {
             sans_vars,
             corps_attendu("{}"),
             "vars vide : le corps porte \"vars\": {{}}, jamais le champ retiré"
+        );
+    }
+
+    /// Scenario « `trigger_run` pose le trigger dans le corps, et l'omet sans déclencheur
+    /// (2026-11-02, lot 0 lymaille) » : avec `trigger = Some("sub-42")` et `vars` vides le corps
+    /// capturé est exactement `{"dag": [<le step>], "vars": {}, "trigger": "sub-42"}` — l'ordre
+    /// des clés porté par la sérialisation serde de `RunInput` : dag, vars, trigger
+    /// (./interpreter.sdd) ; avec `trigger = None` le corps est `{"dag": [<le step>], "vars": {}}`
+    /// **sans clé `trigger`** (`skip_serializing_if` de `RunInput`, T4). La chaîne est transmise
+    /// telle quelle dans le corps, jamais en en-tête.
+    #[tokio::test]
+    async fn trigger_run_pose_trigger_dans_corps_et_l_omet_sans_declencheur() {
+        let stub = StubServer::spawn(202, SEND_ACCEPTED_BODY.to_string());
+        let config = stub.config();
+        let http = test_http();
+        let dag = dag_fixture_un_step();
+        trigger_run(&config, &http, &dag, &serde_json::Map::new(), Some("sub-42"))
+            .await
+            .expect("le 202 devait rendre Ok(RunHandle)");
+        trigger_run(&config, &http, &dag, &serde_json::Map::new(), None)
+            .await
+            .expect("le second 202 devait rendre Ok(RunHandle)");
+
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 2, "deux appels = deux requêtes capturées");
+        let dag_bytes = serde_json::to_vec(&dag).expect("le DAG de fixture doit être sérialisable");
+        let avec_trigger = String::from_utf8_lossy(
+            &requests
+                .first()
+                .expect("la première requête capturée doit exister")
+                .body,
+        )
+        .to_string();
+        assert_eq!(
+            avec_trigger,
+            format!(
+                "{{\"dag\":{},\"vars\":{{}},\"trigger\":\"sub-42\"}}",
+                String::from_utf8_lossy(&dag_bytes)
+            ),
+            "le corps doit être exactement dag, vars puis trigger, compacts — l'ordre serde de RunInput"
+        );
+        let premier: serde_json::Value =
+            serde_json::from_str(&avec_trigger).expect("le premier corps capturé doit être un JSON");
+        assert_eq!(
+            premier.get("trigger"),
+            Some(&serde_json::json!("sub-42")),
+            "le trigger est transmis intact dans le corps, jamais en en-tête"
+        );
+        assert!(
+            requests
+                .first()
+                .expect("la première requête capturée doit exister")
+                .headers
+                .iter()
+                .all(|(_, value)| !value.contains("sub-42")),
+            "le trigger voyage dans le corps, jamais dans un en-tête (./client.sdd, amendement T5)"
+        );
+
+        let sans_trigger = String::from_utf8_lossy(
+            &requests
+                .get(1)
+                .expect("la seconde requête capturée doit exister")
+                .body,
+        )
+        .to_string();
+        assert_eq!(
+            sans_trigger,
+            format!(
+                "{{\"dag\":{},\"vars\":{{}}}}",
+                String::from_utf8_lossy(&dag_bytes)
+            ),
+            "trigger None : le corps porte \"vars\": {{}} et aucune clé trigger (skip_serializing_if)"
+        );
+        let second: serde_json::Value =
+            serde_json::from_str(&sans_trigger).expect("le second corps capturé doit être un JSON");
+        assert!(
+            second.get("trigger").is_none(),
+            "aucune clé trigger, pas même nulle, quand le déclencheur est None"
         );
     }
 
@@ -831,7 +920,14 @@ mod tests {
             ingress_url: stub.url(),
             deployment_url: DEPLOYMENT_URL.to_string(),
         };
-        let Err(err) = trigger_run(&config, &test_http(), &dag_fixture(), &serde_json::Map::new()).await
+        let Err(err) = trigger_run(
+            &config,
+            &test_http(),
+            &dag_fixture(),
+            &serde_json::Map::new(),
+            None,
+        )
+        .await
         else {
             panic!("un admin_url de schéma ftp devait rendre Err(InvalidConfig), ingress valide ou non");
         };
