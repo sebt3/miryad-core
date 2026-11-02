@@ -27,7 +27,7 @@ Owns:
 
 Can modify:
   ./dispatcher.rs, ./durable.rs, ./matrix_step.rs, ./rhai_step.rs, ./subworkflow.rs, ./systemone_step.rs, ./template.rs —
-    **uniquement** les littéraux `RunInfo { .. }` de leurs tests (champ `vars`, tâche B1, 2026-10-30) ; aucune autre ligne
+    **uniquement** les littéraux `RunInfo { .. }` de leurs tests (champ `vars`, tâche B1, 2026-10-30 ; champ `trigger`, tâche T1, 2026-11-02) ; aucune autre ligne
 
 References:
   ./dispatcher.sdd (à rédiger) — service Restate `StepDispatcher`, seul consommateur de
@@ -72,7 +72,7 @@ Must:
       qui porte du code ou un contenu qui est lui-même un template destiné à un autre rendu le déclare :
       `"rhai"` → `["script"]` (./rhai_step.sdd), `"subworkflow"` → `["dag"]` (./subworkflow.sdd).
       Le contrat est statique (`'static`) : la liste ne dépend ni de la `config` ni de l'état du kind.
-  @RunInfo — struct `pub`, `#[derive(Debug, Clone, PartialEq)]`, quatre champs `pub` (#26, `vars` ajouté le 2026-10-30,
+  @RunInfo — struct `pub`, `#[derive(Debug, Clone, PartialEq)]`, cinq champs `pub` (#26, `vars` ajouté le 2026-10-30, `trigger` le 2026-11-02,
     2026-10-04), donnée pure sans `restate-sdk` : `run_key: @String` (clé du run en cours, c'est-à-dire
     la clé de workflow Restate de l'invocation de @DagInterpreter qui exécute ce step — pour un run
     enfant, la clé dérivée par le parent, ./durable.sdd) ; `step_id: @String` (`id` du
@@ -81,8 +81,12 @@ Must:
     chaque niveau de sous-workflow, ./subworkflow.sdd). Les trois sont fournis à **tous** les kinds,
     durables ou non. `vars: @serde_json::Value` (2026-10-30, `dsd/miryad-core/workflow.md` `FR-12`, `FR-13`) : les variables
     constantes du run, toujours un `Value::Object` (`{}` sans variables), fournies au déclenchement et inchangées pour tous les steps
-    du run (pour un run enfant : celles du step `subworkflow`, ./subworkflow.sdd) ; lecture seule. Aucune identité de déclencheur dans
-    cette itération (`Tasks` `[?]`) — les `vars` permettent à l'application d'y porter la sienne.
+    du run (pour un run enfant : celles du step `subworkflow`, ./subworkflow.sdd) ; lecture seule. `trigger: @Option<@String>` (lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : le `subject` de la personne qui a déclenché
+    le run, posé par `client::trigger_run` et hérité par les runs enfants (./durable.sdd) ; `None` = run sans identité (appelant
+    interne). Aucun kind existant ne le consulte ; un kind qui exige un principal (futur kind `subagent`) rend un @StepError
+    `retryable: false` quand il vaut `None`, sans repli sur un principal par défaut. Jamais exposé à un template (./template.sdd), jamais
+    écrit dans un message d'erreur ni dans une sortie de step. Son authenticité n'est pas vérifiée par le moteur : elle repose sur
+    l'accès à l'ingress Restate, qui ne doit être joignable que de l'application (`trigger_run` en est l'unique appelant prévu).
   @StepError — struct `pub`, deux champs `pub` : `message: @String`, `retryable: @bool`. `#[derive(Debug,
     thiserror::Error)]` avec `#[error("{message}")]`. `retryable = true` signale un échec transitoire
     (réseau, ressource momentanément indisponible) que ./dispatcher.rs doit laisser au retry Restate ;
@@ -246,12 +250,12 @@ Tasks:
     noms, collision croisée dans les deux sens en @Err(DuplicateStepKind) sans rien insérer (la
     spec dit `Err`, jamais de `panic!` — vérifié) ; deux tests nommés (non-résolution par
     `dispatch`, collision croisée deux sens + sans écraser).
-  [ ] [reporté, approuvé 2026-10-04 : prochaine livraison, non bloquant] Identité du déclencheur dans @RunInfo (#26, point « autorisation ») : aucun identifiant
-    d'utilisateur ne traverse aujourd'hui `client::trigger_run` → `DagInterpreter::run` ; l'enfant
-    d'un sous-workflow ne peut donc pas « hériter des droits » du déclencheur. Recommandation : ne
-    rien faire dans cette itération (le consommateur n'en a pas besoin) ; si le besoin vient, ajouter
-    un champ optionnel `trigger: Option<String>` à @RunInfo transporté comme `depth` (en-tête
-    Restate), pas dans le corps du DAG. À arbitrer par Sébastien.
+  [ ] T1 (2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : ajouter `trigger: Option<String>` à @RunInfo et adapter, **mécaniquement et dans la même tâche**,
+    tous les littéraux `RunInfo { .. }` de tests de la crate (`trigger: None`, ou un helper de test local) dans ./step.rs,
+    ./dispatcher.rs, ./durable.rs, ./matrix_step.rs, ./rhai_step.rs, ./subworkflow.rs, ./systemone_step.rs et ./template.rs
+    (`Can modify`) — sinon la crate ne compile plus entre deux commits. Aucun changement de comportement ; les `Scenario` « RunInfo
+    porte le trigger » sont les seuls tests nouveaux. Seul `RunInfo` change dans le code de production. Reprend la case reportée
+    du 2026-10-04 (« Identité du déclencheur dans @RunInfo »), levée par arbitrage du 2026-11-02. Avant T2 à T6. Un fichier : ./step.rs.
   [x] Codification de @StepError : Sébastien (2026-09-23) — pas de champ `code`, imposer une
     codification des erreurs applicatives de workflow irait trop loin. Décision reflétée dans `Must`,
     définitive.
@@ -381,3 +385,9 @@ Scenario: RunInfo porte les vars jusqu'au kind (2026-10-30, lot B)
     vars: json!({"project": "p1"}) }`
   When `StepRegistry::dispatch("<kind>", &run_info, config, inputs)` puis `.await` du futur rendu
   Then le résultat est @Ok(json!({"project": "p1"}))
+
+Scenario: RunInfo porte le trigger jusqu'au kind (2026-11-02, lot 0 lymaille)
+  Given un kind de fixture dont `run` rend `json!(run.trigger)`, enregistré, et `RunInfo { run_key: "r1", step_id: "s1", depth: 0,
+    vars: json!({{}}), trigger: Some("sub-42".into()) }`
+  When `StepRegistry::dispatch("<kind>", &run_info, config, inputs)` puis `.await` du futur rendu
+  Then le résultat est @Ok(json!("sub-42")) ; avec `trigger: None` il est @Ok(json!(null))

@@ -88,6 +88,8 @@ Must not:
   Enregistrer un helper ou un partial supplémentaire (`register_helper_dir`, `register_partial_dir`,
     `register_template`) : le moteur durci n'a que les helpers de `HandleBars::new_restricted()` (liste
     blanche amont) — une application qui a besoin d'un helper l'obtient par un kind, pas par le moteur central.
+  Exposer `run.trigger` (l'identité du déclencheur, ./step.sdd) dans le contexte de rendu : le contexte reste exactement
+    `{"inputs", "run": {"run_key", "step_id", "depth"}, "vars"}` (lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`).
   Journaliser (`tracing`) un contexte, une sortie rendue ou une valeur d'`inputs` : ils peuvent
     porter des secrets ou des données personnelles ; aucune trace dans ce fichier.
   Appeler Restate : ce fichier est de la logique pure, testable sans serveur ni `restate-sdk`.
@@ -231,3 +233,10 @@ Scenario: une valeur de vars n'est jamais rendue comme gabarit (2026-10-30, lot 
   Given `run.vars = {"note": "{{inputs.x}}"}`, `inputs = {"x": "SECRET"}` et `config = {"y": "{{vars.note}}"}`
   When `render_config` est appelé
   Then `y` vaut `{{inputs.x}}` littéral — la valeur de `vars` n'a pas été évaluée, `SECRET` n'apparaît pas
+
+Scenario: l'identité du déclencheur n'entre pas dans le contexte de rendu (2026-11-02, lot 0 lymaille)
+  Given `run = RunInfo { run_key: "r1", step_id: "s1", depth: 0, vars: json!({}), trigger: Some("sub-42".into()) }` et
+    `config = {"x": "{{run.trigger}}"}`
+  When `render_config` est appelée
+  Then le résultat est une erreur de rendu (variable absente en mode strict, `FR-7`) et le texte `sub-42` n'apparaît ni dans
+    l'erreur ni dans une sortie

@@ -113,13 +113,14 @@ et appels d'MCP externes depuis les scripts.
     - **Source:** `DEC-2`, `DEC-8` ; user instruction, 2026-11-02
     - **Verified by:** `AC-8`
 
-- **FR-10 - MUST:** `RunInfo` transporte l'identité du déclencheur (`subject`, optionnel, en-tête Restate comme `depth`), posée
-    par `trigger_run` et héritée par les runs enfants. Un step qui exige un principal (`subagent`) sans identité de
+- **FR-10 - MUST:** `RunInfo` transporte l'identité du déclencheur (`trigger`, `subject` optionnel, porté par le corps `RunInput` comme
+    `vars`, pas par un en-tête), posée par `trigger_run` et héritée par les runs enfants. Un step qui exige un principal (`subagent`) sans identité de
     déclencheur échoue en `StepError` non retryable, sans repli sur un principal par défaut.
     - **Source:** `DEC-12` ; `src/workflow/step.sdd`, case « Identité du déclencheur dans RunInfo » (reportée le 2026-10-04) ;
       user instruction, 2026-11-02
-    - **Realized by:** aucune spec à ce jour ; `SpecDD /src/workflow/step.sdd`, `/src/workflow/client.sdd`,
-      `/src/workflow/interpreter.sdd` et `/src/workflow/subworkflow.sdd` à amender, avant le step `subagent`
+    - **Realized by:** `SpecDD /src/workflow/step.sdd` (T1), `/src/workflow/template.sdd`, `/src/workflow/dispatcher.sdd` (T3),
+      `/src/workflow/interpreter.sdd` (T4), `/src/workflow/client.sdd` (T5), `/src/workflow/durable.sdd` et
+      `/src/workflow/subworkflow.sdd` (T6), amendées le 2026-11-02, à approuver avant le code
     - **Verified by:** `AC-11`
 
 ## Design Decisions

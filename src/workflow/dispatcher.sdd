@@ -32,14 +32,15 @@ References:
     comme mécanisme de fan-out est référencé ici pour mémoire, pas comme dépendance de code
 
 Must:
-  `StepInvocation` — struct `pub(crate)`, `#[derive(Serialize, Deserialize)]`, sept champs
+  `StepInvocation` — struct `pub(crate)`, `#[derive(Serialize, Deserialize)]`, huit champs
     `pub(crate)` (#26, 2026-10-04 : `run_key`, `step_id`, `depth` ajoutés aux trois d'origine ;
     élargissement ratifié au batch ./interpreter.rs 2026-09-23 : le `Must` étape 2.b de
     ./interpreter.sdd le construit par littéral, et les `Scenario` de cette spec en font autant) :
     `kind: @String`, `config: @serde_json::Value`, `inputs: @HashMap<@String, @serde_json::Value>`,
     `run_key: @String`, `step_id: @String`, `depth: @u32`, `vars: @serde_json::Value` (2026-10-30, lot B, `dsd/miryad-core/workflow.md`
-    `FR-13` : objet JSON, sans `#[serde(default)]`, l'interpréteur le pose toujours ; les quatre derniers composent le
-    @RunInfo de ./step.sdd, reconstruit par ce fichier avant l'appel du kind).
+    `FR-13` : objet JSON, sans `#[serde(default)]`, l'interpréteur le pose toujours), `trigger: @Option<@String>` (2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12` :
+    `#[serde(default)]`, un corps sans `trigger` donne `None`) ; les cinq derniers composent le @RunInfo de ./step.sdd,
+    reconstruit par ce fichier avant l'appel du kind.
     Forme du corps de requête de `StepDispatcher::execute`, consommée via `Json<StepInvocation>`
     (wrapper `restate_sdk::prelude::Json`, requis pour tout type non primitif traversant le protocole
     `restate-sdk`, vérifié au spike : un struct nu sans ce wrapper ne satisfait pas les bornes internes
@@ -179,7 +180,7 @@ Depends on:
   @serde (derive) + @serde_json — forme de `StepInvocation` et du corps de retour
 
 Exposes:
-  `StepInvocation` — struct `pub(crate)`, sept champs, `Serialize` + `Deserialize`
+  `StepInvocation` — struct `pub(crate)`, huit champs, `Serialize` + `Deserialize`
   `StepDispatcher` — struct `pub`, `new` `pub`, champ `registry` privé
   `recommended_options` — `pub fn recommended_options() -> restate_sdk::endpoint::ServiceOptions`,
     sans argument, rend `ServiceOptions::new().retry_policy_max_attempts(5)
@@ -318,6 +319,10 @@ Tasks:
   [x] B3 (2026-10-30, `FR-13`) : `StepInvocation.vars`, recopié tel quel dans le @RunInfo construit par `execute` (branches
     ordinaire et durable) ; `Scenario` « les vars atteignent le kind ordinaire ». Après B1 (./step.sdd). Un fichier : ./dispatcher.rs.
 
+  [ ] T3 (2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : `StepInvocation.trigger` (`#[serde(default)]`), recopié tel quel dans le @RunInfo construit par
+    `execute` (branches ordinaire et durable) ; `Scenario` « le trigger atteint le kind ordinaire ». Après T1 (./step.sdd). Un
+    fichier : ./dispatcher.rs.
+
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow` — périmètre
     borné par le tranchage de Sébastien (2026-09-23, `Tasks`) : les six `Scenario` testables en
@@ -421,3 +426,13 @@ Scenario: les vars atteignent le kind ordinaire (2026-10-30, lot B)
   Given un @StepRegistry avec un kind de fixture dont `run` rend `run.vars.clone()`
   When `run_invocation` est appelé avec `RunInfo { run_key: "r1", step_id: "s1", depth: 0, vars: json!({"project": "p1"}) }`
   Then le résultat est @Ok(Json(json!({"project": "p1"}))) ; avec `vars = {}` il rend `{}`
+
+Scenario: le trigger atteint le kind ordinaire (2026-11-02, lot 0 lymaille)
+  Given un @StepRegistry avec un kind de fixture dont `run` rend `json!(run.trigger)`
+  When `run_invocation` est appelé avec `RunInfo { run_key: "r1", step_id: "s1", depth: 0, vars: json!({}), trigger: Some("sub-42".into()) }`
+  Then le résultat est @Ok(Json(json!("sub-42"))) ; avec `trigger: None` il rend `null`
+
+Scenario: un corps d'invocation sans trigger se désérialise avec trigger absent (2026-11-02, lot 0 lymaille)
+  Given le JSON d'une `StepInvocation` à sept champs, sans clé `trigger`
+  When il est désérialisé
+  Then `trigger` vaut `None` ; avec `"trigger": "sub-42"` il vaut `Some("sub-42")`

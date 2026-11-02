@@ -24,7 +24,7 @@ Owns:
   ./client.rs
 
 Can modify:
-  ../../tests/workflow_restate.rs — appels de `trigger_run` (nouveau paramètre `vars`, tâche B5, 2026-10-30)
+  ../../tests/workflow_restate.rs — appels de `trigger_run` (nouveau paramètre `vars`, tâche B5, 2026-10-30 ; paramètre `trigger`, tâche T5, 2026-11-02)
 
 References:
   ./error.sdd — @WorkflowError et @classify_transport_error, consommés sur chaque `.send()`/`.json()`
@@ -58,10 +58,10 @@ Must:
     est absent du corps JSON est celui d'un `force` à `false` — @client::register_deployment ne se fie
     jamais à un défaut serveur non vérifié à l'exécution, il pose le champ explicitement à chaque appel.
   @client::trigger_run(config: &WorkflowConfig, http: &reqwest::Client, dag: &DagSteps,
-    vars: &serde_json::Map<String, serde_json::Value>) ->
+    vars: &serde_json::Map<String, serde_json::Value>, trigger: Option<&str>) ->
     Result<RunHandle, WorkflowError> : génère `run_key` en @uuid::Uuid::new_v4 (`to_string`, format
     hyphéné standard), puis `POST {config.ingress_url}/DagInterpreter/{run_key}/run/send`, corps JSON
-    = `RunInput { dag, vars }` (./interpreter.sdd, amendement 2026-10-30, lot B) sérialisé par @serde_json, `content-type: application/json`. Vérifié en direct : un
+    = `RunInput { dag, vars, trigger }` (./interpreter.sdd, amendement 2026-10-30, lot B) sérialisé par @serde_json, `content-type: application/json`. Vérifié en direct : un
     statut `202` répond le corps `{"invocationId": "inv_...", "status": "Accepted"}` ; l'en-tête
     `x-restate-id` porte la même valeur que `invocationId` du corps — ./client.rs lit le champ du
     corps, pas l'en-tête, pour ne dépendre que d'un seul mécanisme. Un statut hors `2xx` rend
@@ -101,6 +101,11 @@ Must:
     du run, un objet JSON (`&Map`, vide si l'appelant n'en a pas) transmis dans le corps avec le DAG, sans transformation ni
     validation de contenu. Elles sont journalisées par Restate avec l'entrée du run et visibles dans son interface : la rustdoc de
     `trigger_run` dit qu'il ne faut y mettre **aucun secret**.
+  `trigger` de @client::trigger_run (amendement 2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : le `subject` de la personne qui déclenche le run, `None` pour un
+    déclenchement sans identité (tâche planifiée, appel interne). Transmis dans le corps (`RunInput.trigger`, ./interpreter.sdd), jamais en
+    en-tête ; non validé ici (chaîne opaque, vide acceptée ou non est l'affaire de l'application) et non authentifié par le moteur : sa
+    confiance repose sur l'accès à l'ingress Restate, que la rustdoc dit de ne rendre joignable que de l'application. Le contenu du
+    `trigger` n'est jamais écrit dans une erreur de ce fichier.
 
 Must not:
   Attendre la complétion d'un run dans @client::trigger_run, ni exposer de fonction de lecture de
@@ -139,7 +144,7 @@ Exposes:
   @client::register_deployment — `pub async fn register_deployment(config: &WorkflowConfig, http:
     &reqwest::Client) -> Result<(), WorkflowError>`
   @client::trigger_run — `pub async fn trigger_run(config: &WorkflowConfig, http: &reqwest::Client,
-    dag: &DagSteps, vars: &serde_json::Map<String, serde_json::Value>) -> Result<RunHandle, WorkflowError>`
+    dag: &DagSteps, vars: &serde_json::Map<String, serde_json::Value>, trigger: Option<&str>) -> Result<RunHandle, WorkflowError>`
 
 Accepts:
   @WorkflowConfig : `admin_url` et `ingress_url` sont validées avant tout appel réseau (arbitré par Sébastien le 2026-09-29) — vides,
@@ -243,6 +248,10 @@ Tasks:
     adapter les appels de `trigger_run` des tests de ./client.rs et de ../../tests/workflow_restate.rs (`Can modify`). Après B4
     (./interpreter.sdd, qui porte `RunInput`). Fichiers : ./client.rs et ../../tests/workflow_restate.rs.
 
+  [ ] T5 (2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : paramètre `trigger` de @client::trigger_run, corps `RunInput` avec `trigger`, rustdoc « ingress privé » ;
+    adapter les appels de `trigger_run` des tests de ./client.rs et de ../../tests/workflow_restate.rs (`Can modify`). Après T4
+    (./interpreter.sdd, qui porte `RunInput`). Fichiers : ./client.rs et ../../tests/workflow_restate.rs.
+
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
   Les trois décisions de `Tasks` sont reflétées dans dsd/miryad-core/workflow.md à la clôture de la feature
@@ -303,7 +312,7 @@ Scenario: déclenchement avec réponse au format inattendu
 Scenario: le corps envoyé à trigger_run est le RunInput sans champ superflu (amendé 2026-10-30, tâche B5)
   Given une @DagSteps de fixture à deux steps et des `vars` de fixture
   When @client::trigger_run construit la requête
-  Then le corps JSON capturé par le serveur de test est l'objet à deux clés `dag` et `vars` : `dag` désérialise
+  Then le corps JSON capturé par le serveur de test est l'objet à deux clés `dag` et `vars` (trois avec `trigger`, voir le `Scenario` suivant) : `dag` désérialise
     en la même @DagSteps, `vars` est l'objet transmis, aucun autre champ ajouté (pas de `run_key` dans le corps,
     il ne vit que dans l'URL), aucune enveloppe supplémentaire
 
@@ -331,3 +340,9 @@ Scenario: trigger_run envoie le DAG et les vars (2026-10-30, lot B)
   When @client::trigger_run est appelé avec un DAG d'un step et `vars = {"project": "p1"}`
   Then le corps de la requête capturée est exactement `{"dag": [<le step>], "vars": {"project": "p1"}}` ; avec `vars` vide il porte
     `"vars": {}`
+
+Scenario: trigger_run pose le trigger dans le corps, et l'omet sans déclencheur (2026-11-02, lot 0 lymaille)
+  Given un serveur de test répondant `202` avec `{"invocationId": "inv_1", "status": "Accepted"}` sur `POST /DagInterpreter/<clé>/run/send`
+  When @client::trigger_run est appelé avec un DAG d'un step, `vars` vide et `trigger = Some("sub-42")`, puis avec `trigger = None`
+  Then le premier corps capturé est `{"dag": [<le step>], "vars": {}, "trigger": "sub-42"}` ; le second est `{"dag": [<le step>], "vars": {}}`,
+    sans clé `trigger`

@@ -153,8 +153,10 @@ Tasks:
     l'enfant fait échouer le parent. Une sortie exposant l'échec (`{"error": ...}`) pour une branche de
     repli demande un contrat d'échec dans ./interpreter.sdd (aujourd'hui : tout `Err` interrompt le
     run). Non bloquant ; à rouvrir sur besoin.
-  [ ] [reporté, approuvé 2026-10-04 : prochaine livraison, non bloquant] **Autorisation / droits du déclencheur** (#26) : sans identité dans @RunInfo, l'enfant n'hérite de
-    rien (voir ./step.sdd `Tasks`). Non bloquant.
+  [ ] T6b (2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : **Autorisation / droits du déclencheur** (#26, case reportée du 2026-10-04) : l'enfant hérite de l'identité du
+    déclencheur du parent par `run_child_dag` (./durable.sdd, T6a), sans que le `config` du step `subworkflow` puisse la fixer ni la
+    changer. Intégration `#[ignore]` : un parent déclenché avec `trigger = Some("sub-42")` fait rendre `sub-42` à un kind de fixture du
+    run enfant. Même tâche que T6a. Après T4. Fichiers : ./subworkflow.rs (avec ./durable.rs) et ../../tests/workflow_restate.rs.
   [x] Templating central (2026-10-06) : implémenter `raw_fields` ci-dessus ; test nommé du `Scenario` ci-dessous.
     Validé 2026-10-13 (validator) : `les_templates_d_un_dag_enfant_ne_sont_pas_rendus_par_le_parent` vert.
 
@@ -231,3 +233,9 @@ Scenario: l'enfant n'hérite pas des vars du parent (2026-10-30, lot B)
   Given un `RunInfo` parent dont `vars = {"project": "p1"}` et un `config` sans clé `vars`
   When `prepare` est appelée
   Then les `vars` rendues sont `{}` — celles du parent ne sont pas transmises implicitement
+
+Scenario: l'enfant ne tient pas son identité du config du step (2026-11-02, lot 0 lymaille)
+  Given un `config` `{"dag": [<un step>], "trigger": "intrus"}`
+  When `prepare` est appelée
+  Then la clé `trigger` n'est ni lue ni transmise : `prepare` rend le même résultat que sans elle ; l'identité de l'enfant est celle de
+    `run.trigger` du parent seulement

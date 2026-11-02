@@ -419,5 +419,8 @@ leurs clients (TBD).
 - **OI-10:** **Identité du déclencheur dans `RunInfo`**, arbitrée le 2026-11-02 par la Solution `miryad-core/lymaille`
   (`FR-10`, `DEC-12`) : `trigger_run` transporte le `subject`, hérité par les runs enfants, sans repli par défaut.
   Remplace la case reportée de `src/workflow/step.sdd` et celle des droits de l'enfant de `subworkflow.sdd`, **à réaliser**
-  avant le step `subagent`. **TBD :** nom du champ et de l'en-tête, et sort d'un run lancé sans identité.
+  avant le step `subagent`. Tranché à la rédaction des specs (2026-11-02) : champ `trigger: Option<String>` de `RunInfo`, porté par le corps
+  `RunInput` comme `vars` (pas par un en-tête : un seul canal typé, journalisé avec l'entrée) ; `None` = run sans identité, qu'aucun
+  kind existant ne consulte et que le kind `subagent` refuse. **Piège :** le `trigger` n'est pas authentifié par le moteur, sa
+  confiance repose sur l'accès à l'ingress Restate, qui ne doit être joignable que de l'application. Specs : lot 0 (T1 à T6).
     - **Source:** user instruction, 2026-11-02

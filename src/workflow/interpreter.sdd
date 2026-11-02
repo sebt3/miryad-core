@@ -56,8 +56,9 @@ Must:
     (./client.sdd `Purpose`), pas un canal porté par ce fichier.
   `run(&self, ctx: WorkflowContext<'_>, input: Json<RunInput>) -> Result<Json<HashMap<String,
     serde_json::Value>>, HandlerError>`, corps exact (amendement 2026-10-30, lot B, `FR-12` : l'entrée est `RunInput`, voir « Entrée
-    du run » ; l'étape 0 déstructure `let Json(RunInput { dag, vars }) = input;`, les étapes suivantes lisent `dag` comme avant) :
-    0. `vars` est conservée, intacte, pour tout le run ; `vars: Value::Object(vars)` alimente chaque `StepInvocation` ;
+    du run » ; l'étape 0 déstructure `let Json(RunInput { dag, vars, trigger }) = input;`, les étapes suivantes lisent `dag` comme avant) :
+    0. `vars` est conservée, intacte, pour tout le run ; `vars: Value::Object(vars)` alimente chaque `StepInvocation` ; `trigger` (amendement 2026-11-02, lot 0 de lymaille) est conservé de
+      même, intact, et recopié dans chaque `StepInvocation` ;
     1. `definition::validate_dag(&dag.0)` — @Err(WorkflowError::InvalidDag) converti en
       `TerminalError::new_with_code(400, err.to_string())` (le `to_string()` porte déjà le préfixe
       `MRD-WORKFLOW-004:`, réutilisé tel quel, jamais reconstruit) ; aucun step exécuté si cette
@@ -81,7 +82,7 @@ Must:
         ci-dessous) — une entrée par id de `depends_on`, valeur = `results.get(id)` (toujours @Some à
         ce point, chaque dépendance étant dans `completed`, donc déjà dans `results`) ; construire `StepInvocation {
         kind: step.kind.clone(), config: step.config.clone(), inputs, run_key: ctx.key().to_string(),
-        step_id: step.id.clone(), depth, vars: vars.clone() }` (#26, 2026-10-04 : `run_key` est la clé de workflow Restate
+        step_id: step.id.clone(), depth, vars: vars.clone(), trigger: trigger.clone() }` (#26, 2026-10-04 : `run_key` est la clé de workflow Restate
         de ce run — `WorkflowContext::key()` — et `depth` la profondeur lue **une fois** en tête de
         `run`, étape 1b) et pousser
         `ctx.request::<Json<StepInvocation>, Json<serde_json::Value>>(RequestTarget::Service { name:
@@ -119,15 +120,17 @@ Must:
     testable de la boucle, pas une surface exposée aux appelants autres que ./interpreter.rs.
   Compiler uniquement sous `#[cfg(feature = "workflow")]`.
   Entrée du run (amendement 2026-10-30, lot B, `dsd/miryad-core/workflow.md` `FR-12`, `DEC-9`) : `RunInput` — struct `pub(crate)`,
-    `#[derive(Serialize, Deserialize)]`, deux champs `pub(crate)` : `dag: @DagSteps` et
-    `vars: @serde_json::Map<@String, @serde_json::Value>` (`#[serde(default)]` : un corps sans `vars` donne `{}`). Corps JSON du
-    `POST .../DagInterpreter/{run_key}/run/send` : `{"dag": [..steps..], "vars": {..}}` — **changement cassant** de la forme d'entrée
+    `#[derive(Serialize, Deserialize)]`, trois champs `pub(crate)` : `dag: @DagSteps`,
+    `vars: @serde_json::Map<@String, @serde_json::Value>` (`#[serde(default)]` : un corps sans `vars` donne `{}`) et
+    `trigger: @Option<@String>` (amendement 2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12` : `#[serde(default, skip_serializing_if = "Option::is_none")]`,
+    un corps sans `trigger` donne `None`, un `None` n'est pas écrit). Corps JSON du
+    `POST .../DagInterpreter/{run_key}/run/send` : `{"dag": [..steps..], "vars": {..}}`, plus `"trigger": "<subject>"` quand il y a un déclencheur — **changement cassant** de la forme d'entrée
     (jusqu'ici le tableau de steps nu), assumé : API instable avant 1.0, aucune production. ./client.rs et ./durable.rs
     (`run_child_dag`) construisent ce corps ; ce fichier le lit. Les `vars` sont constantes pour toute la durée du run et journalisées
     par Restate avec l'entrée.
-  `build_invocation(step: &StepDefinition, inputs: HashMap<String, Value>, run_key: &str, depth: u32, vars: &Map<String, Value>) ->
+  `build_invocation(step: &StepDefinition, inputs: HashMap<String, Value>, run_key: &str, depth: u32, vars: &Map<String, Value>, trigger: Option<&str>) ->
     StepInvocation` — `pub(crate)`, fonction pure (amendement 2026-10-30) : l'unique endroit où une `StepInvocation` est assemblée
-    depuis un step ; `vars` y est recopiée en `Value::Object`. Extraction de l'étape 2.b, pour que le passage des `vars` soit testable
+    depuis un step ; `vars` y est recopiée en `Value::Object`, `trigger` en `Option<String>`. Extraction de l'étape 2.b, pour que le passage des `vars` soit testable
     sans contexte Restate.
 
 Must not:
@@ -173,7 +176,7 @@ Exposes:
     `restate-sdk`, par ./client.sdd (déclenchement) et par Restate lui-même (reprise)
 
 Accepts:
-  `run` : un `Json<RunInput>` (`{dag, vars}`) désérialisé par `restate-sdk` depuis le corps envoyé par
+  `run` : un `Json<RunInput>` (`{dag, vars, trigger}`) désérialisé par `restate-sdk` depuis le corps envoyé par
     `client::trigger_run` — peut avoir été validé au moment de sa création/mise à jour
     (./definition.sdd `before_create`/`before_update`) ou pas (un appelant qui construirait un
     `DagSteps` directement sans passer par l'entité stockée) : `run` ne fait aucune hypothèse, il
@@ -262,6 +265,11 @@ Tasks:
     `StepInvocation` ; adapter le corps JSON des tests d'intégration `#[ignore]` de ../../tests/workflow_restate.rs à la forme
     `{"dag", "vars"}` (`Can modify`). Après B3 (./dispatcher.sdd). Fichiers : ./interpreter.rs et ../../tests/workflow_restate.rs.
 
+  [ ] T4 (2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : `RunInput.trigger`, lu à l'étape 0 et recopié dans chaque `StepInvocation` par `build_invocation`
+    (nouveau paramètre `trigger: Option<&str>`) ; adapter les appels de `build_invocation` de ses tests et le corps JSON des tests
+    d'intégration `#[ignore]` de ../../tests/workflow_restate.rs si nécessaire (`Can modify`). Après T3 (./dispatcher.sdd). Fichiers :
+    ./interpreter.rs et ../../tests/workflow_restate.rs.
+
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow` — périmètre
     borné par le tranchage de Sébastien (2026-09-23, `Tasks`) : les cinq décidables sans
@@ -348,3 +356,13 @@ Scenario: un corps sans vars se désérialise avec des vars vides (2026-10-30, l
   When il est désérialisé en `RunInput`
   Then `dag` porte un step `a` et `vars` est vide ; avec `"vars": {"project": "p1"}` elles portent cette valeur ; l'ancienne forme
     (tableau nu de steps) est refusée
+
+Scenario: build_invocation recopie le trigger (2026-11-02, lot 0 lymaille)
+  Given un step `{id: "b", depends_on: [], kind: "echo", config: {}}`, `run_key = "r1"`, `depth = 0`, `vars = {}` et `trigger = Some("sub-42")`
+  When `build_invocation` est appelée
+  Then l'invocation porte `trigger = Some("sub-42")` ; avec `None` elle porte `None`
+
+Scenario: le trigger du RunInput est facultatif et omis quand il est absent (2026-11-02, lot 0 lymaille)
+  Given le JSON `{"dag": [<un step>]}` puis `{"dag": [<un step>], "trigger": "sub-42"}`
+  When ils sont désérialisés en `RunInput`
+  Then `trigger` vaut `None` puis `Some("sub-42")` ; un `RunInput` de `trigger: None` sérialise sans clé `trigger`
