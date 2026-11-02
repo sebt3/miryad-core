@@ -245,6 +245,9 @@ mod tests {
                 PrincipalSource::Session { .. } => "session",
                 PrincipalSource::ApiToken { .. } => "token",
                 PrincipalSource::Bearer { .. } => "bearer",
+                // Bras d'exhaustivité seul : la variante unité (amendement 2026-11-02) n'est
+                // produite par aucun chemin d'extraction.
+                PrincipalSource::Agent => "agent",
             }
         )
     }
@@ -258,6 +261,9 @@ mod tests {
             PrincipalSource::Session { id_token } => format!("session:{id_token}"),
             PrincipalSource::ApiToken { token_id } => format!("token:{token_id}"),
             PrincipalSource::Bearer { jwt } => format!("bearer:{jwt}"),
+            // Bras d'exhaustivité seul : la variante unité (amendement 2026-11-02) n'est
+            // produite par aucun chemin d'extraction, aucune charge utile à rendre.
+            PrincipalSource::Agent => "agent".to_string(),
         };
         format!(
             "{}|{}|{}|{source}",

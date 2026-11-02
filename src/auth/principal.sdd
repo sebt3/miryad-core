@@ -6,8 +6,9 @@ Purpose:
     champs publics @subject, @email, @preferred_username, @source — @preferred_username AJOUT
     REQUIS, Sébastien 2026-09-27, cf. `Tasks` : claim OIDC standard, garanti unique par le
     fournisseur contrairement à @email, qu'une app consommatrice utilise pour dériver un
-    identifiant de ressource stable) et @PrincipalSource (deux variantes, session et
-    token API), derive @Clone et `impl` manuel de @Debug (rédigé sur @id_token, arbitré 2026-09-27)
+    identifiant de ressource stable) et @PrincipalSource (quatre variantes — session, token API,
+    Bearer, Agent ; les comptages antérieurs, dont « deux variantes », sont prévalus par les
+    amendements 2026-10-19 et 2026-11-02 de @Must), derive @Clone et `impl` manuel de @Debug (rédigé sur @id_token, arbitré 2026-09-27)
     uniquement. Le fichier ne contient que ces deux types :
     aucun constructeur, aucune validation, aucune conversion, aucun effet de bord, aucune logique
     d'extraction — celle-ci vit dans ./dual.rs (@impl @FromRequestParts). Le type efface
@@ -313,3 +314,11 @@ Scenario: la variante Bearer se construit par littéral sur toute combinaison (2
   Given la crate compilée `--no-default-features`, puis `--features db`
   When un test construit @PrincipalSource::Bearer { jwt } et @PrincipalSource::ApiToken { token_id: 1 }
   Then les deux littéraux compilent dans les deux builds (aucune des deux n'est gatée)
+
+Scenario: Debug de la source Agent (2026-11-02)
+  Given un @AuthPrincipal dont @source est la variante unité @PrincipalSource::Agent, sans aucun champ
+  When il est formaté par `{:?}`
+  Then le texte rend la source `Agent` seule (le `Debug` manuel écrit `Agent`, sans champ, sans
+    accolade), et ne contient aucun `"[REDACTED]"` — la variante unité n'a rien à rédiger
+  But aucun chemin d'extraction HTTP ne la produit ; son producteur est le module des ressources
+    `lymaille` (../lymaille/resource_module.sdd) et aucun consommateur de la crate ne lit `source`

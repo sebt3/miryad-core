@@ -66,6 +66,11 @@ pub enum PrincipalSource {
         /// JWT brut tel que reçu dans l'en-tête ; jamais reproduit par le `Debug`.
         jwt: String,
     },
+    /// Principal reconstruit pour un accès d'agent `lymaille` (amendement 2026-11-02,
+    /// `auth/principal.sdd`) : seule source non portée par un transport HTTP, sans aucune charge
+    /// utile (producteur : le module des ressources de `lymaille`, `src/lymaille/resource_module.rs`).
+    /// Aucun consommateur de la crate ne lit `source` ; le `Debug` manuel rend `Agent` seul.
+    Agent,
 }
 
 impl std::fmt::Debug for PrincipalSource {
@@ -79,6 +84,9 @@ impl std::fmt::Debug for PrincipalSource {
             Self::ApiToken { token_id } => f.debug_struct("ApiToken").field("token_id", token_id).finish(),
             // `jwt` rédigé (amendement 2026-10-19, principal.sdd) : jamais le JWT brut.
             Self::Bearer { .. } => f.debug_struct("Bearer").field("jwt", &"[REDACTED]").finish(),
+            // Variante unité (amendement 2026-11-02, principal.sdd) : aucune charge utile, rien à
+            // rédiger — `Agent` seul.
+            Self::Agent => f.write_str("Agent"),
         }
     }
 }
@@ -106,7 +114,9 @@ mod tests {
         assert_eq!(principal.preferred_username.as_deref(), Some("alice"));
         let id_token = match &principal.source {
             super::PrincipalSource::Session { id_token } => id_token,
-            super::PrincipalSource::ApiToken { .. } | super::PrincipalSource::Bearer { .. } => {
+            super::PrincipalSource::ApiToken { .. }
+            | super::PrincipalSource::Bearer { .. }
+            | super::PrincipalSource::Agent => {
                 panic!("source construite en Session")
             }
         };
@@ -131,7 +141,9 @@ mod tests {
         assert_eq!(principal.preferred_username, None);
         let token_id = match &principal.source {
             super::PrincipalSource::ApiToken { token_id } => *token_id,
-            super::PrincipalSource::Session { .. } | super::PrincipalSource::Bearer { .. } => {
+            super::PrincipalSource::Session { .. }
+            | super::PrincipalSource::Bearer { .. }
+            | super::PrincipalSource::Agent => {
                 panic!("source construite en ApiToken")
             }
         };
@@ -159,12 +171,16 @@ mod tests {
 
         let charge_sessionne = match &session.source {
             super::PrincipalSource::Session { id_token } => id_token.as_str(),
-            super::PrincipalSource::ApiToken { .. } | super::PrincipalSource::Bearer { .. } => {
+            super::PrincipalSource::ApiToken { .. }
+            | super::PrincipalSource::Bearer { .. }
+            | super::PrincipalSource::Agent => {
                 panic!("premier principal en Session")
             }
         };
         let charge_api = match &api.source {
-            super::PrincipalSource::Session { .. } | super::PrincipalSource::Bearer { .. } => {
+            super::PrincipalSource::Session { .. }
+            | super::PrincipalSource::Bearer { .. }
+            | super::PrincipalSource::Agent => {
                 panic!("second principal en ApiToken")
             }
             super::PrincipalSource::ApiToken { token_id } => *token_id,
@@ -192,7 +208,9 @@ mod tests {
         assert_eq!(copie.preferred_username, original.preferred_username);
         let id_token_de_la_copie = match &copie.source {
             super::PrincipalSource::Session { id_token } => id_token.clone(),
-            super::PrincipalSource::ApiToken { .. } | super::PrincipalSource::Bearer { .. } => {
+            super::PrincipalSource::ApiToken { .. }
+            | super::PrincipalSource::Bearer { .. }
+            | super::PrincipalSource::Agent => {
                 panic!("copie en Session")
             }
         };
@@ -205,7 +223,9 @@ mod tests {
         assert_eq!(original.subject, "alice");
         let id_token_originale = match &original.source {
             super::PrincipalSource::Session { id_token } => id_token.as_str(),
-            super::PrincipalSource::ApiToken { .. } | super::PrincipalSource::Bearer { .. } => {
+            super::PrincipalSource::ApiToken { .. }
+            | super::PrincipalSource::Bearer { .. }
+            | super::PrincipalSource::Agent => {
                 panic!("original en Session")
             }
         };
@@ -379,6 +399,34 @@ mod tests {
         assert!(
             !rendu.contains("bbb"),
             "aucun fragment du JWT dans le `Debug` : {rendu}"
+        );
+    }
+
+    /// `Scenario` (2026-11-02) : « Debug de la source Agent » — variante unité (aucun champ,
+    /// motif d'appariement sans accolades), seule source non portée par un transport HTTP
+    /// (producteur : le module des ressources `lymaille`). Le `Debug` rend `Agent` seul : aucune
+    /// charge utile, donc rien à rédiger et rien de plus sur la source.
+    #[test]
+    fn principal_source_agent_debug_renders_agent_only() {
+        let principal = super::AuthPrincipal {
+            subject: "agent-sujet".to_string(),
+            email: None,
+            preferred_username: None,
+            source: super::PrincipalSource::Agent,
+        };
+        assert!(
+            matches!(principal.source, super::PrincipalSource::Agent),
+            "variante unité : l'appariement n'écrit aucun champ"
+        );
+
+        let rendu = format!("{principal:?}");
+        assert!(
+            rendu.ends_with("source: Agent }"),
+            "le `Debug` rend `Agent` seul, sans champ ni accolade après la variante : {rendu}"
+        );
+        assert!(
+            !rendu.contains("REDACTED"),
+            "variante unité sans charge utile : le `Debug` ne rédige rien : {rendu}"
         );
     }
 
