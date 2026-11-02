@@ -51,7 +51,9 @@ Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`, `DEFAULT_RENDER_CAP_CHARS`, `check_toolset` (`pub(crate)`)
 
 Tasks:
-  [ ] Tests d'abord (hooks purs, politiques), puis ./toolset.rs.
+  [x] Tests d'abord (hooks purs, politiques), puis ./toolset.rs. Validé 2026-11-02 (validator PASS, batterie ciblée).
+  [?] Deux couvertures demandées par la validation, sans Scenario qui les fixe : test de succès « active + draft présents
+    → `version` pris de l'`active` », et message exact asserté dans le Scenario « deux noms différents » ? En attente.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./toolset.rs.
