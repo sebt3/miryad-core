@@ -31,7 +31,7 @@ Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`
 
 Tasks:
-  [ ] Tests d'abord (hooks purs, politiques), puis ./profile.rs.
+  [x] Tests d'abord (hooks purs, politiques), puis ./profile.rs. Validé 2026-11-02 (validator PASS, batterie ciblée).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./profile.rs.
