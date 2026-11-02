@@ -63,6 +63,7 @@ et appels d'MCP externes depuis les scripts.
     `read_policy`, `write_policy`, `owner_column` et hooks de cycle de vie que REST et MCP. Le canal agent est une
     troisième surface au sens de la parité ; un écart y est une erreur de contrat, pas une dette.
     - **Source:** `miryad-core#FR-1` ; user instruction, 2026-11-01
+    - **Lot 1 (`DEC-15`) :** lecture seule (`describe`, `list`, `get`) ; les écritures suivent dans un lot ultérieur.
     - **Verified by:** `AC-3`
 
 - **FR-3 - MUST:** Les traits de store de `lymaille` nécessaires au lot 1 sont implémentés sur SeaORM, dans des tables
@@ -111,7 +112,9 @@ et appels d'MCP externes depuis les scripts.
     propriétaire pourrait lui-même utiliser ; le refus a lieu à la sauvegarde et, en défense en profondeur, à l'appel
     (`FR-4`).
     - **Source:** `DEC-2`, `DEC-8` ; user instruction, 2026-11-02
-    - **Verified by:** `AC-8`
+    - **Lot :** la session de configuration interactive est livrée au lot 2 (`DEC-13`) ; le contrôle de droits à la sauvegarde d'une
+      définition (`DEC-14`) l'est dès le lot 1.
+    - **Verified by:** `AC-8` (lot 2)
 
 - **FR-10 - MUST:** `RunInfo` transporte l'identité du déclencheur (`trigger`, `subject` optionnel, porté par le corps `RunInput` comme
     `vars`, pas par un en-tête), posée par `trigger_run` et héritée par les runs enfants. Un step qui exige un principal (`subagent`) sans identité de
@@ -172,9 +175,11 @@ et appels d'MCP externes depuis les scripts.
     - **Consequences:** `miryad-core#CON-3` et `CON-6` listent ces noms au prochain amendement du Domain.
     - **Source:** proposition Claude, 2026-11-02, non contestée par le développeur principal
 
-- **DEC-6 - Lots de réalisation**
-    - **Decision:** lot 0 = identité du déclencheur dans `RunInfo` (`FR-10`, `DEC-12`, côté `workflow`). Lot 1 = socle
-      (feature, dépendance, rustls, migration, stores) + module Rhai des ressources + kind `subagent`. Lot 2 = glue `matrix` (`OI-5`). Lot 3 = kind `pad`, après une release de `lymaille` qui livre
+- **DEC-6 - Lots de réalisation** (amendé le 2026-11-02, `DEC-13`)
+    - **Decision:** lot 0 = identité du déclencheur dans `RunInfo` (`FR-10`, `DEC-12`, côté `workflow`). Lot 1 = socle (feature,
+      dépendance, rustls, migration, stores de l'exécution), définitions en `MiryadResource` (`DEC-14`), module des ressources en
+      lecture seule (`DEC-15`) et kind `subagent`, en batch. Lot 2 = sessions interactives et de configuration avec leur surface,
+      glue `matrix` (`OI-5`), écritures du module des ressources. Lot 3 = kind `pad`, après une release de `lymaille` qui livre
       `PW-1` à `PW-5` (`OI-3`).
     - **Source:** user instruction, 2026-11-02
 
@@ -254,6 +259,36 @@ et appels d'MCP externes depuis les scripts.
       `subagent` ; les droits de l'enfant d'un sous-workflow (case reportée de `subworkflow.sdd`) se règlent du même coup.
     - **Source:** user instruction, 2026-11-02
 
+- **DEC-13 - Le lot 1 est batch seul ; les sessions interactives viennent avec leur surface**
+    - **Context:** une session de configuration est interactive et réclame une surface de conversation (routes, flux ou
+      Matrix) que le step `subagent` n'exige pas.
+    - **Decision:** lot 1 = step `subagent` en batch, module des ressources, stores de l'exécution. Lot 2 = sessions
+      interactives et de configuration, avec leur surface et le glue Matrix (`OI-5`).
+    - **Alternatives:** une surface REST/SSE dès le lot 1 (écarté : double le lot et touche `rest-api`).
+    - **Consequences:** `DraftStore` et `SessionIndex` attendent le lot 2 ; `AC-8` aussi.
+    - **Source:** user instruction, 2026-11-02
+
+- **DEC-14 - Les définitions sont des `MiryadResource`**
+    - **Context:** sans session de configuration, il faut un moyen de créer et de modifier agents, toolsets et profils ; la
+      crate sait déjà exposer des entités en REST et MCP avec propriétaire, politiques et hooks.
+    - **Decision:** les tables de définitions `miryad_lymaille_*` sont déclarées par `MiryadResource` : CRUD REST et MCP par
+      le moteur existant, propriétaire par `owner_column`, préfixe `G_` (`DEC-9`) et publication au catalogue contrôlés par
+      les hooks `before_create`/`before_update`. Les stores de `lymaille` lisent ces mêmes tables.
+    - **Alternatives:** stores seuls, définitions fournies par l'application (écarté : `DEC-7` à `DEC-9` n'auraient aucun point
+      d'application dans la crate).
+    - **Consequences:** la validation d'une définition (`AgentDefinition::validate`, droits du propriétaire, `FR-9`) vit dans
+      les hooks ; les tables internes de l'exécution (sessions, mémoires) restent hors du CRUD.
+    - **Source:** user instruction, 2026-11-02
+
+- **DEC-15 - Module des ressources générique, en lecture seule au lot 1**
+    - **Decision:** un seul module Rhai, ressource en argument (`describe()`, `list(<ressource>, <filtre>)`,
+      `get(<ressource>, <id>)`), dont le contexte initial est constant (`agent-sessions#BO-2`) ; les ressources visibles sont
+      celles que le principal peut lire. Les écritures (`create`, `update`, `delete`) sont hors lot 1.
+    - **Alternatives:** un module par ressource (écarté : le contexte croît avec l'application) ; écriture dès le lot 1 (écarté :
+      exposerait l'effet de bord rejoué de `DEC-11` à des écritures réelles).
+    - **Consequences:** `AC-3` ne vise que la lecture au lot 1 ; les écritures reprendront `write_policy`, `owner_column` et hooks.
+    - **Source:** user instruction, 2026-11-02
+
 ## Constraints and Pitfalls
 
 - `lymaille` épingle exactement `rmcp =3.8.0` et `rig-core =0.43.0` : leurs versions dans le graphe du consommateur
@@ -267,10 +302,11 @@ et appels d'MCP externes depuis les scripts.
 
 ## SpecDD Realization
 
-Aucune spec écrite à ce jour. Lot 1 (`DEC-6`), noms provisoires, **un fichier source = une spec** :
+Specs du lot 0 écrites le 2026-11-02. Lot 1 (`DEC-6`, `DEC-13` à `DEC-15`), noms provisoires, **un fichier source = une spec** :
 `SpecDD /Cargo.toml` (feature, dépendance, relais), `SpecDD /src/lymaille/mod.sdd`, `/src/lymaille/error.sdd`
 (`MRD-LYMAILLE-*`), `/src/lymaille/tls.sdd` (`FR-5`), `/src/lymaille/identity.sdd` (`FR-4`, `FR-8`, `FR-9`),
-`/src/lymaille/store/*.sdd` (`FR-3`, un fichier par groupe de traits), `/src/lymaille/resource_module.sdd` (`FR-2`),
+`/src/lymaille/store/*.sdd` (`FR-3`, un fichier par groupe de traits), `/src/lymaille/definitions/*.sdd` (entités
+`MiryadResource` et hooks de `DEC-14`), `/src/lymaille/resource_module.sdd` (`FR-2`, lecture seule),
 `/src/migration/` (migration interne), `/src/workflow/subagent_step.sdd` (`FR-6`). Lot 0, préalable : amendements de
 `/src/workflow/step.sdd`, `client.sdd`, `interpreter.sdd` et `subworkflow.sdd` (`FR-10`). Lot 3 : `/src/workflow/pad_step.sdd`.
 
@@ -281,8 +317,7 @@ Aucune spec écrite à ce jour. Lot 1 (`DEC-6`), noms provisoires, **un fichier 
 - **AC-2:** `cargo tree --no-default-features --features lymaille -e normal -i sea-orm` imprime une ligne (la feature
   implique `db`), et `lymaille` absent du graphe par défaut. À poser avec la première spec.
 
-- **AC-3:** Un utilisateur sans droit de lecture d'une ressource ne la lit pas par le module des ressources d'une session
-  productive ; mêmes refus que REST et MCP pour `read_policy`, `write_policy`, `owner_column` et hooks.
+- **AC-3:** Un utilisateur sans droit de lecture d'une ressource ne la lit pas par le module des ressources (lecture seule au lot 1) ; mêmes refus que REST et MCP pour `read_policy`, `write_policy`, `owner_column` et hooks.
 - **AC-4:** Une session sauvegardée par les stores SeaORM puis rechargée est identique, sur SQLite et PostgreSQL.
 - **AC-5:** Un utilisateur retiré du groupe admin entre deux appels voit le second appel d'un module réservé à l'admin
   refusé, dans une session `Work` comme `Config` ; un utilisateur non-admin n'a jamais ces modules, quelle que soit la
@@ -291,8 +326,8 @@ Aucune spec écrite à ce jour. Lot 1 (`DEC-6`), noms provisoires, **un fichier 
 
 - **AC-7:** Deux utilisateurs ne voient jamais les agents, toolsets, skills, brouillons ni sessions l'un de l'autre ; tous
   deux voient le catalogue partagé, que seul un admin modifie.
-- **AC-8:** Un non-admin ouvre une session de configuration, écrit et active un sous-agent ; sa définition qui accorde un
-  module réservé à l'admin est refusée à la sauvegarde.
+- **AC-8 (lot 2) :** Un non-admin ouvre une session de configuration, écrit et active un sous-agent ; sa définition qui accorde un
+  module réservé à l'admin est refusée à la sauvegarde. Dès le lot 1, la même définition envoyée par REST ou MCP est refusée par le hook.
 
 - **AC-9:** Un utilisateur, admin compris, qui crée dans son espace privé un identifiant commençant par `G_` ou `g_` est
   refusé ; un admin qui publie `G_x` alors qu'un utilisateur a un agent `x` réussit, et l'utilisateur voit les deux sans
@@ -309,10 +344,12 @@ Aucune spec écrite à ce jour. Lot 1 (`DEC-6`), noms provisoires, **un fichier 
 - **OI-1:** **Relais de features** : proposition Claude à confirmer : garder les défauts de `lymaille` (`mcp-http`, `rig`),
   nécessaires au lot 1 (inférence et MCP distants), sans les relayer en sous-features miryad tant qu'aucun hôte ne les
   désactive ; `fs`/`shell` : jamais (Constraints). **TBD.**
-- **OI-2:** **Traits de store du lot 1** : sur 23 traits publics de `lymaille`, lesquels le lot 1 implémente-t-il ?
-  Candidats : `SessionStore`, `AgentStore`, `ProfileStore`, `ProviderStore`, `ToolsetStore`, `ContextTypeStore`,
-  `ContextStore`, `MemoryStore`. Les autres (`DraftStore`, `SessionIndex`, `EventSource`, `RequestCounter`…) à qualifier.
-  Tous cloisonnés par propriétaire (`DEC-7`), stores construits par principal. **TBD** à la rédaction de la spec `store`.
+- **OI-2:** **Stores du lot 1** (`DEC-13`) : huit traits, `SessionStore`, `AgentStore`, `ProfileStore`, `ProviderStore`,
+  `ToolsetStore`, `ContextTypeStore`, `ContextStore`, `MemoryStore`, cloisonnés par propriétaire (`DEC-7`), stores construits
+  par principal. `DraftStore`, `SessionIndex` : lot 2. **TBD :** parmi ces tables, lesquelles sont des `MiryadResource`
+  (agents, profils, providers, toolsets, types de contexte et contextes, vraisemblablement) et lesquelles restent internes
+  (sessions, mémoires) ; niveau d'accès des providers (`ProviderLevel`, qui ne portent que des références, jamais de secret :
+  Observed in: `lymaille/src/agents/provider.rs`, 2026-11-02, admin seul vraisemblablement). **TBD** à la spec `store`.
 - **OI-3:** **Pad de workflow** : `PW-1` à `PW-5` ne sont pas dans `lymaille` 0.1.0. À faire côté `lymaille` d'abord
   (nature `Workflow` de `SessionState`, cycle de vie sans tour, instantané JSON). Le kind `pad` (`FR-7`) attend cette
   release. **TBD :** versionnage de la demande côté `lymaille`.
@@ -323,9 +360,9 @@ Aucune spec écrite à ce jour. Lot 1 (`DEC-6`), noms provisoires, **un fichier 
 - **OI-5:** **Glue Matrix** (`matrix` + `lymaille`) : mapping salle ↔ session, dédoublonnage des messages remis deux
   fois après bascule de bail, mise en forme des sorties longues, annuaire mxid → principal (inexistant :
   `miryad_matrix_tracked_users` est le store crypto E2EE du bot, pas un annuaire). **TBD** — lot 2.
-- **OI-6:** **Granularité du module des ressources** (`FR-2`) : une fonction Rhai par opération et par ressource
-  (`list`, `get`, `create`, `update`, `delete`), schéma découvrable, pagination et filtres de `src/query.rs`. À
-  qualifier avec la spec `resource_module.sdd`. **TBD.**
+- **OI-6:** **Contrat du module des ressources** (`DEC-15`) : forme de `describe()` (champs, types, filtres permis), syntaxe du
+  `<filtre>` de `list` (celle de `src/query.rs`), pagination et plafond de taille d'une réponse au LLM (rendu par
+  `src/mcp/format.rs` ?). **TBD** à la spec `resource_module.sdd`.
 
 ## References
 
