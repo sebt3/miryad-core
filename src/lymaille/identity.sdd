@@ -49,7 +49,8 @@ Exposes:
   `CallerPrincipal`, `Identity::{new, resolve}`, `IdKind`, `classify`, `check_write`, `check_grants`
 
 Tasks:
-  [ ] Tests d'abord (SQLite mémoire pour `resolve`, tests purs pour le reste), puis ./identity.rs.
+  [x] Tests d'abord (SQLite mémoire pour `resolve`, tests purs pour le reste), puis ./identity.rs. Validé 2026-11-02
+    (validator PASS, batterie ciblée ; batterie complète de `tooling.sdd` à la clôture du lot).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./identity.rs.
