@@ -45,6 +45,25 @@ et appels d'MCP externes depuis les scripts.
   public `MatrixEventHandler::on_message` (harnais chatbot de `src/matrix/sync.sdd`) et `MatrixClient::send`. Le DSD de
   lymaille cite une « application de réception d'alertes avec agent Matrix » comme hôte type.
 
+- **Surface de `lymaille` 0.1.0 pour le lot 1** (Observed in: `lymaille/src/**`, lecture du 2026-11-02) :
+    - Les traits de store sont `async` (futures `Send`), **sans listing ni suppression** (« elles appartiennent à l'hôte »), utilisés par
+      paramètre générique, jamais en objet-trait : `SessionStore` (`load`, `save`), `AgentStore` (`get_agent`, `put_agent`),
+      `ProfileStore` (`get_profile`, `put_profile`), `ProviderStore` (`get_provider`, `put_provider`), `ToolsetStore` (`get_active`,
+      `get_draft`, `put_draft`), `ContextTypeStore` (`get_type`, `put_type`), `ContextStore` (`get_context`, `put_context`),
+      `MemoryStore` (`list`, `get`, `put`, `delete`, clé = portée `MemoryScope` puis identifiant).
+    - `put_agent` et `put_draft` **valident** (`AgentDefinition::validate`, contrat du source, gabarits de skill, plafond de rendu) ;
+      une implémentation hôte applique les mêmes contrôles.
+    - Les objets lymaille sont `#[non_exhaustive]` et sérialisables en JSON ; les stores mémoire gardent le **texte JSON**, pas l'objet
+      (un rechargement passe par le même format qu'un vrai stockage).
+    - `Provider` ne porte que des références (`name`, `kind`, `address`, `auth: Option<String>`, `ProviderLevel::{User, Project}`) ; la
+      résolution de `auth` en secret est à la charge de l'hôte (`DEC-16`). `AgentDefinition` désigne son modèle par un **nom de profil**,
+      jamais un provider.
+    - Un run de sous-agent batch s'assemble côté hôte : `ScratchpadEngine::builder(limits, grants)` avec les `Grants` produits par
+      `assemble(toolsets, modules, dépendances, contexte, limites)`, `result_module(Arc<ResultCollector>)` (`submit`, `fail`),
+      `restore_session(store, id, engine, provenance)` pour la reprise, `TurnRunner::new(provider, strategy, profile, context, pad,
+      store, state, config)`, puis `run_batch(runner, task, collector, cancel, max_turns)`. `CancelHandle` est coopératif.
+    - Le module de délégation n'existe pas pour un sous-agent (garanti par le type, `delegation#FR-2`).
+
 ## Applicable Domain Requirements
 
 `miryad-core#FR-1` (parité des surfaces — le canal agent devient un consommateur des politiques), `miryad-core#CON-3`
@@ -167,7 +186,8 @@ et appels d'MCP externes depuis les scripts.
     - **Context:** `ring` et `aws-lc-rs` sont tous deux dans le graphe (Observed in: `Cargo.lock`, 2026-11-02), donc rustls
       0.23 ne choisit pas seul ; `lymaille` avorte sans provider.
     - **Decision:** le montage de l'état installe un provider si aucun ne l'est, sans échec si un autre l'a déjà fait.
-      Le choix du provider (`ring` ou `aws-lc-rs`) est fixé à la spec.
+      **Arbitré le 2026-11-02 : `ring`** (plus léger, sans toolchain C/cmake ; `ring` et `aws-lc-rs` sont tous deux tirés par rustls 0.23.43 via
+      `reqwest`/`matrix-sdk`, Observed in: `cargo tree --all-features -e normal -i ring`, 2026-11-02, donc aucune dépendance ajoutée).
     - **Alternatives:** laisser le template `miryad` s'en charger (écarté : un hôte qui oublie fait avorter le processus ;
       contraire à l'autoconfiguration de Kydah).
     - **Source:** user instruction, 2026-11-02
@@ -181,8 +201,9 @@ et appels d'MCP externes depuis les scripts.
 - **DEC-6 - Lots de réalisation** (amendé le 2026-11-02, `DEC-13`)
     - **Decision:** lot 0 = identité du déclencheur dans `RunInfo` (`FR-10`, `DEC-12`, côté `workflow`). Lot 1 = socle (feature,
       dépendance, rustls, migration, stores de l'exécution), définitions en `MiryadResource` (`DEC-14`), module des ressources en
-      lecture seule (`DEC-15`) et kind `subagent`, en batch. Lot 2 = sessions interactives et de configuration avec leur surface,
-      glue `matrix` (`OI-5`), écritures du module des ressources. Lot 3 = kind `pad`, après une release de `lymaille` qui livre
+      lecture seule (`DEC-15`) et kind `subagent`, en batch. **Lot 1 livré d'un bloc (arbitré le 2026-11-02 : l'exécution est
+      déléguée à un modèle dédié, la durée n'est pas une contrainte).** Lot 2 = sessions interactives et de configuration avec **leurs deux
+      surfaces, REST+SSE et Matrix** (arbitré le 2026-11-02, specs indépendantes par canal), glue `matrix` (`OI-5`), écritures du module des ressources. Lot 3 = kind `pad`, après une release de `lymaille` qui livre
       `PW-1` à `PW-5` (`OI-3`).
     - **Source:** user instruction, 2026-11-02
 
@@ -293,6 +314,58 @@ et appels d'MCP externes depuis les scripts.
     - **Consequences:** `AC-3` ne vise que la lecture au lot 1 ; les écritures reprendront `write_policy`, `owner_column` et hooks.
     - **Source:** user instruction, 2026-11-02
 
+- **DEC-16 - Les références d'authentification des providers sont résolues par un trait de l'hôte, défaut environnement**
+    - **Context:** `Provider` ne porte que des références (`auth`), jamais de secret ; lymaille ne les résout pas, et le secret ne doit
+      figurer ni en base, ni en erreur, ni en log, ni dans une session.
+    - **Decision:** un trait `SecretResolver` (nom provisoire) fourni par l'application au montage de l'état ; l'implémentation par défaut
+      lit une variable d'environnement dont le nom est la référence. Le secret n'est résolu qu'à la construction du client d'inférence, vit
+      dans un `Zeroizing`, et ne traverse aucune erreur.
+    - **Alternatives:** variable d'environnement seule, sans trait (écarté : ferme la porte à Vault ou aux fichiers montés) ; chemin de
+      fichier (écarté : convention moins courante pour une clé d'API).
+    - **Consequences:** une référence introuvable est une erreur `MRD-LYMAILLE-*` qui ne cite pas la valeur ; spec `src/lymaille/secret.sdd`.
+    - **Source:** user instruction, 2026-11-02
+
+- **DEC-17 - Définitions stockées en colonnes clés plus colonnes JSON**
+    - **Context:** `AgentDefinition` et consorts portent de l'imbriqué (modules, toolsets, sampling, sandbox, délégables, schéma de sortie) ;
+      REST et MCP filtrent sur des colonnes typées ; les traits relèvent par identifiant.
+    - **Decision:** chaque table de définition porte des colonnes typées pour ce qui se filtre ou se contrôle (identifiant, propriétaire,
+      nature, nom de profil…) et des colonnes JSON pour l'imbriqué. Un objet lymaille est reconstruit depuis les colonnes et le JSON, et
+      repasse par sa validation.
+    - **Alternatives:** tout normalisé (écarté : lourd, et chaque champ ajouté par lymaille impose une migration) ; document JSON unique
+      (écarté : REST/MCP ne valident ni ne filtrent l'interne).
+    - **Consequences:** la migration interne reste stable quand lymaille ajoute un champ optionnel ; le JSON stocké est celui de lymaille
+      (`non_exhaustive`, tolérant).
+    - **Source:** user instruction, 2026-11-02
+
+- **DEC-18 - Toolset : source active et brouillon dans la même ligne**
+    - **Context:** `ToolsetStore` distingue version active et brouillon ; l'activation est une action de l'hôte (`DEC-8`) ; au lot 1 les
+      toolsets s'écrivent par CRUD (`DEC-14`), sans session de configuration.
+    - **Decision:** la ligne `MiryadResource` du toolset porte la source active et une source brouillon nullable. `put_draft` écrit le
+      brouillon ; `get_active` ne lit jamais le brouillon ; l'activation (self-service du propriétaire, admin pour `G_…`) copie le brouillon
+      dans l'actif par une action contrôlée par hook. Le lot 2 branche `DraftStore` sur le même stockage.
+    - **Alternatives:** table de brouillons séparée (écarté : l'activation devient une opération inter-tables sans surface CRUD) ; version
+      active seule (écarté : perd la garantie que le LLM ne voit jamais un brouillon).
+    - **Consequences:** les hooks portent aussi le contrôle d'activation ; `get_active`/`get_draft` se lisent sur une seule ligne.
+    - **Source:** user instruction, 2026-11-02
+
+## Contour du lot 2
+
+Le lot 2 est **posé, non spécifié** : aucune tâche n'est ouverte, aucune spec n'est écrite. Il avancera sur arbitrage de la prochaine
+séance, après le retour du lot 1. Son périmètre (arbitré le 2026-11-02, `DEC-6`, `DEC-13`) :
+
+- **Socle commun d'une session interactive** : ouvrir (nature `Work` ou `Config`), envoyer un message, suivre les événements
+  (`EventSink`), annuler, reprendre. Indépendant du canal : REST+SSE et Matrix le consomment tous deux, sans décalage fonctionnel.
+- **Surface REST + SSE** : routes de conversation et flux d'événements. Touche `rest-api`. **TBD :** ces routes ne sont pas des
+  `MiryadResource` ; la règle de parité des ressources ne les vise pas, mais l'exemption (comme `/auth/*`) est à nommer par le
+  développeur principal.
+- **Surface Matrix** : mapping salle ↔ session, dédoublonnage des messages remis deux fois après bascule de bail, mise en forme des
+  sorties longues, annuaire mxid → principal (`OI-5`, bloquant).
+- **Session de configuration** (`FR-9`, `AC-8`) : `DraftStore` et `SessionIndex` branchés sur le stockage du lot 1 (`DEC-18`), activation
+  self-service.
+- **Écritures du module des ressources** (`create`, `update`, `delete`, `DEC-15`) : proposition à arbitrer, les réserver aux sessions
+  interactives (non rejouées par Restate) et les interdire au step batch (`DEC-11`). **TBD.**
+- **Hors lot 2 :** kind `pad` (lot 3, `OI-3`).
+
 ## Constraints and Pitfalls
 
 - `lymaille` épingle exactement `rmcp =3.8.0` et `rig-core =0.43.0` : leurs versions dans le graphe du consommateur
@@ -306,7 +379,7 @@ et appels d'MCP externes depuis les scripts.
 
 ## SpecDD Realization
 
-Specs du lot 0 écrites le 2026-11-02. Lot 1 (`DEC-6`, `DEC-13` à `DEC-15`), noms provisoires, **un fichier source = une spec** :
+Specs du lot 0 écrites le 2026-11-02. `/src/lymaille/secret.sdd` (`DEC-16`) s'ajoute à la liste ci-dessous. Lot 2 : contour posé, aucune spec ni tâche. Lot 1 (`DEC-6`, `DEC-13` à `DEC-15`), noms provisoires, **un fichier source = une spec** :
 `SpecDD /Cargo.toml` (feature, dépendance, relais), `SpecDD /src/lymaille/mod.sdd`, `/src/lymaille/error.sdd`
 (`MRD-LYMAILLE-*`), `/src/lymaille/tls.sdd` (`FR-5`), `/src/lymaille/identity.sdd` (`FR-4`, `FR-8`, `FR-9`),
 `/src/lymaille/store/*.sdd` (`FR-3`, un fichier par groupe de traits), `/src/lymaille/definitions/*.sdd` (entités
@@ -346,15 +419,14 @@ Specs du lot 0 écrites le 2026-11-02. Lot 1 (`DEC-6`, `DEC-13` à `DEC-15`), no
 
 ## Open Issues
 
-- **OI-1:** **Relais de features** : proposition Claude à confirmer : garder les défauts de `lymaille` (`mcp-http`, `rig`),
-  nécessaires au lot 1 (inférence et MCP distants), sans les relayer en sous-features miryad tant qu'aucun hôte ne les
-  désactive ; `fs`/`shell` : jamais (Constraints). **TBD.**
+- **OI-1:** **Soldé le 2026-11-02 (user instruction)** : garder les défauts de `lymaille` (`mcp-http`, `rig`), nécessaires au lot 1
+  (inférence et MCP distants), sans les relayer en sous-features miryad tant qu'aucun hôte ne les désactive ; `fs`/`shell` : jamais
+  (Constraints, avec `Scenario` de preuve type A1).
 - **OI-2:** **Stores du lot 1** (`DEC-13`) : huit traits, `SessionStore`, `AgentStore`, `ProfileStore`, `ProviderStore`,
   `ToolsetStore`, `ContextTypeStore`, `ContextStore`, `MemoryStore`, cloisonnés par propriétaire (`DEC-7`), stores construits
-  par principal. `DraftStore`, `SessionIndex` : lot 2. **TBD :** parmi ces tables, lesquelles sont des `MiryadResource`
-  (agents, profils, providers, toolsets, types de contexte et contextes, vraisemblablement) et lesquelles restent internes
-  (sessions, mémoires) ; niveau d'accès des providers (`ProviderLevel`, qui ne portent que des références, jamais de secret :
-  Observed in: `lymaille/src/agents/provider.rs`, 2026-11-02, admin seul vraisemblablement). **TBD** à la spec `store`.
+  par principal. `DraftStore`, `SessionIndex` : lot 2. **Arbitré le 2026-11-02 (user instruction) :** agents, profils, toolsets, types de
+  contexte et contextes sont des `MiryadResource` ; les providers aussi, **réservés aux admins** (`ProviderLevel` : références, jamais de
+  secret, Observed in: `lymaille/src/agents/provider.rs`, 2026-11-02) ; sessions et mémoires restent internes, hors CRUD.
 - **OI-3:** **Pad de workflow** : `PW-1` à `PW-5` ne sont pas dans `lymaille` 0.1.0. À faire côté `lymaille` d'abord
   (nature `Workflow` de `SessionState`, cycle de vie sans tour, instantané JSON). Le kind `pad` (`FR-7`) attend cette
   release. **TBD :** versionnage de la demande côté `lymaille`.
@@ -382,6 +454,13 @@ Specs du lot 0 écrites le 2026-11-02. Lot 1 (`DEC-6`, `DEC-13` à `DEC-15`), no
 - **OI-6:** **Contrat du module des ressources** (`DEC-15`) : forme de `describe()` (champs, types, filtres permis), syntaxe du
   `<filtre>` de `list` (celle de `src/query.rs`), pagination et plafond de taille d'une réponse au LLM (rendu par
   `src/mcp/format.rs` ?). **TBD** à la spec `resource_module.sdd`.
+
+- **OI-7:** **Rétention des sessions de step** : une session `Sub` par (clé du workflow, step) s'accumule dans `miryad_lymaille_sessions`
+  (le trait n'a pas de suppression, `Faits vérifiés`). **TBD :** purge, rattachée au cycle de vie du workflow ou à une durée ; sans
+  incidence sur la correction du lot 1, à arbitrer avant une mise en production.
+- **OI-8:** **Fingerprint et reprise** : `restore_session` compare la `Provenance` sauvegardée à l'actuelle (empreinte de la définition,
+  versions de toolsets) et rend des avis si elles diffèrent. Si l'agent est modifié entre deux tentatives d'un step, la reprise continue
+  avec ces avis. **TBD :** acceptable tel quel, ou erreur non retryable ? À qualifier à la spec `subagent_step.sdd`.
 
 ## References
 
