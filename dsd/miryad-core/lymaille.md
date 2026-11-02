@@ -89,7 +89,9 @@ et appels d'MCP externes depuis les scripts.
     sortie structurée comme sortie de step (`agent-sessions#DEC-4`). Le run s'exécute **dans un seul `ctx.run`** sur une
     session de nom déterministe, dérivé de la clé du workflow et de l'identifiant du step ; à un rejeu, la session
     sauvegardée est reprise (`resume` de `lymaille`), jamais recommencée. Le step tourne sous le principal du
-    déclencheur (`FR-10`). Un échec du run est un `StepError` ; le contenu des sessions et des secrets n'y figure jamais.
+    déclencheur (`FR-10`) et porte un plafond de durée `max_secs` dans son `config` (défaut 480 s), appliqué par l'annulation
+    coopérative de `lymaille` (`CancelHandle`), strictement inférieur à la borne `ctx.run` du service (`OI-4`) : l'agent s'arrête
+    de lui-même au lieu d'être coupé en plein tour. Un échec du run est un `StepError` ; le contenu des sessions et des secrets n'y figure jamais.
     - **Source:** `agent-sessions#DEC-4` ; `DEC-10`, `DEC-11` ; user instruction, 2026-11-02
     - **Verified by:** `AC-10`
 
@@ -232,7 +234,8 @@ et appels d'MCP externes depuis les scripts.
       résultat se journalise une fois, à la fin.
     - **Alternatives:** un `ctx.run` par tour (écarté : couple le kind à l'API de tour de `lymaille` et alourdit le journal) ;
       lancement détaché et awakeable (écarté : exige l'awakeable reporté et une reprise au démarrage du processus).
-    - **Consequences:** la durée d'un run est bornée par celle d'une fermeture `ctx.run` (`OI-4`) ; le kind est ordinaire
+    - **Consequences:** la durée d'un run est bornée par celle d'une fermeture `ctx.run`, soit ≈ 11 min par défaut, réglable (spike
+      `OI-4`) ; le kind est ordinaire
       (`MiryadWorkflowStep`), pas durable, tant que cette borne convient ; une session de step est une session `Sub`.
     - **Source:** user instruction, 2026-11-02
 
@@ -353,10 +356,24 @@ Specs du lot 0 écrites le 2026-11-02. Lot 1 (`DEC-6`, `DEC-13` à `DEC-15`), no
 - **OI-3:** **Pad de workflow** : `PW-1` à `PW-5` ne sont pas dans `lymaille` 0.1.0. À faire côté `lymaille` d'abord
   (nature `Workflow` de `SessionState`, cycle de vie sans tour, instantané JSON). Le kind `pad` (`FR-7`) attend cette
   release. **TBD :** versionnage de la demande côté `lymaille`.
-- **OI-4:** **Durée d'un run dans un `ctx.run`** (`DEC-10`) : les délais d'inactivité et d'abandon de Restate ne sont pas
-  lus ici. **TBD :** spike à faire avant la spec `subagent_step.sdd` (durée maximale tenue, comportement à l'expiration,
-  réglage du service) ; si la borne ne convient pas, le kind passe en durable par tour ou en awakeable (`DEC-10`,
-  alternatives).
+- **OI-4:** **Soldé le 2026-11-02 par spike** (durée d'un run dans un `ctx.run`, `DEC-10`). Banc : `tests/workflow_restate.rs`
+  (vrai `restate-server`, image `latest` du 2026-09-28, `restate-sdk` 0.12.1), un step ordinaire qui dort dans son unique
+  `ctx.run`, réglages par défaut sauf mention :
+
+  | Durée du step | Réglage | Résultat |
+  |---|---|---|
+  | 30 s, 2 min, 5 min | défaut | terminé, un seul `start`, aucun rejeu |
+  | 12 min | défaut | **coupé** : « the invocation stream was closed after the 'abort timeout' (10m) fired », relance (`RT0001`), le step repart de zéro |
+  | 90 s | `inactivity_timeout` 10 s, `abort_timeout` 20 s | coupé à 20 s après l'inactivité, relances en boucle : le réglage s'applique |
+  | 12 min | `inactivity_timeout` 600 s, `abort_timeout` 900 s | terminé en 12 min, un seul `start`, aucun rejeu |
+
+  Conclusions : (1) la borne par défaut d'un `ctx.run` est d'environ 11 minutes (coupure observée à ≈ 11 min après le début ; le
+  message de Restate cite un `abort timeout` de 10 minutes) ; (2) elle se règle par service ou par handler
+  (`ServiceOptions::inactivity_timeout` / `abort_timeout`, Observed in: `restate-sdk-0.12.1/src/endpoint/builder.rs`) ; (3) au-delà,
+  Restate relance la fermeture **depuis zéro**, ce qui confirme le besoin de reprise sur session déterministe (`DEC-10`) ; (4) le
+  réglage vit sur le service `StepDispatcher`, donc il s'applique à tous les kinds : le relever retarde aussi la détection d'un
+  step ordinaire bloqué. Reste à décider en spec : réglage global de `recommended_options()` ou service dédié (`FR-6`).
+    - **Source:** spike du 2026-11-02, résultats ci-dessus ; user instruction, 2026-11-02
 - **OI-5:** **Glue Matrix** (`matrix` + `lymaille`) : mapping salle ↔ session, dédoublonnage des messages remis deux
   fois après bascule de bail, mise en forme des sorties longues, annuaire mxid → principal (inexistant :
   `miryad_matrix_tracked_users` est le store crypto E2EE du bot, pas un annuaire). **TBD** — lot 2.
