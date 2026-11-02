@@ -420,4 +420,37 @@ mod tests {
             "`SECRET` ne doit jamais apparaître dans le rendu"
         );
     }
+
+    /// Scenario « l'identité du déclencheur n'entre pas dans le contexte de rendu »
+    /// (`template.sdd`, 2026-11-02, lot 0 lymaille, `FR-10`/`DEC-12`) : `RunInfo.trigger` est
+    /// porté jusqu'au kind (./step.sdd) mais le contexte de rendu reste exactement
+    /// `{"inputs", "run": {"run_key", "step_id", "depth"}, "vars"}` — `{{run.trigger}}` est une
+    /// variable absente (erreur en mode strict) et l'identité ne fuit ni dans l'erreur ni dans une
+    /// sortie.
+    #[test]
+    fn l_identite_du_declencheur_n_entre_pas_dans_le_contexte_de_rendu() {
+        let run = RunInfo {
+            run_key: "r1".into(),
+            step_id: "s1".into(),
+            depth: 0,
+            vars: json!({}),
+            trigger: Some("sub-42".into()),
+        };
+        let config = json!({"x": "{{run.trigger}}"});
+        let error = expect_err(render_config(&config, &run, &HashMap::new(), &[]));
+        assert!(
+            !error.retryable,
+            "une variable absente en mode strict n'est jamais retryable"
+        );
+        assert!(
+            error.message.starts_with("template invalide à /x:"),
+            "message : {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("sub-42"),
+            "l'identité du déclencheur ne doit jamais apparaître dans l'erreur : {}",
+            error.message
+        );
+    }
 }
