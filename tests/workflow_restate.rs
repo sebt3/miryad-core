@@ -204,6 +204,28 @@ impl MiryadDurableStep for DurableConfig {
     }
 }
 
+/// Kind ordinaire de fixture `"echo_trigger"` (tâche ./subworkflow.sdd T6b, 2026-11-02, lot 0
+/// lymaille) : rend son `RunInfo.trigger` (`json!(run.trigger)`), écho nu de l'identité du
+/// déclencheur du run qui l'exécute. Kind **ordinaire** : dans le DAG enfant d'un subworkflow,
+/// c'est le `DagInterpreter` enfant qui le dispatche, donc l'écho prouve la traversée complète
+/// `run_child_dag` → `RunInput.trigger` → `StepInvocation` → `RunInfo` (./durable.rs T6a).
+struct EchoTrigger;
+
+#[async_trait::async_trait]
+impl MiryadWorkflowStep for EchoTrigger {
+    fn kind(&self) -> &'static str {
+        "echo_trigger"
+    }
+    async fn run(
+        &self,
+        run: &RunInfo,
+        _config: Value,
+        _inputs: HashMap<String, Value>,
+    ) -> Result<Value, StepError> {
+        Ok(json!(run.trigger))
+    }
+}
+
 /// Pile de test : Restate en conteneur + endpoint applicatif en tâche tokio, déploiement
 /// enregistré. `_container` garde le conteneur vivant jusqu'à la fin du test.
 struct Stack {
@@ -254,6 +276,7 @@ impl Stack {
             .register(Record(Arc::clone(&log)))
             .and_then(|r| r.register(Fail))
             .and_then(|r| r.register(Flaky(Arc::clone(&flaky_calls))))
+            .and_then(|r| r.register(EchoTrigger))
             .and_then(|r| r.register_durable(DurableSleeper))
             .and_then(|r| r.register_durable(DurableConfig))
             .and_then(|r| r.register_durable(SubWorkflowStep::new(max_depth)))
@@ -304,25 +327,28 @@ impl Stack {
     }
 
     /// Déclenche `dag` par `trigger_run` (./client.rs — clé de run neuve, `POST
-    /// {ingress}/DagInterpreter/{run_key}/run/send`) avec `vars` vides et rend sa clé de run.
-    /// Depuis la tâche B5 (amendement 2026-10-30, lot B), `trigger_run` porte le paramètre `vars`
-    /// et c'est lui qui construit le corps `RunInput` (`{"dag": [..steps..], "vars": {}}`) —
-    /// l'appel direct à l'ingress que cette fonction postait jusqu'ici n'a plus de raison d'être.
-    /// Depuis la tâche T5 (amendement 2026-11-02, lot 0 lymaille), `trigger_run` porte aussi le
-    /// paramètre `trigger` : `None` ici, ces tests n'exercent pas l'identité du déclencheur — elle
-    /// est verrouillée en unitaire dans ./client.rs et ./interpreter.rs. Les tests n'exercent ici
-    /// que des `vars` vides ; la recopie des `vars` non vides est verrouillée en unitaire dans
-    /// ./interpreter.rs.
-    async fn send_run(&self, dag: &DagSteps) -> String {
-        let handle = trigger_run(&self.config, &self.http, dag, &serde_json::Map::new(), None)
+    /// {ingress}/DagInterpreter/{run_key}/run/send`) avec `vars` vides, l'identité du déclencheur
+    /// `trigger` transmise telle quelle, et rend sa clé de run. Depuis la tâche B5 (amendement
+    /// 2026-10-30, lot B), `trigger_run` porte le paramètre `vars` et c'est lui qui construit le
+    /// corps `RunInput` (`{"dag": [..steps..], "vars": {}}`) — l'appel direct à l'ingress que
+    /// cette fonction postait jusqu'ici n'a plus de raison d'être. Depuis la tâche T5 (amendement
+    /// 2026-11-02, lot 0 lymaille), `trigger_run` porte aussi le paramètre `trigger` : les tests
+    /// de fan-out passent `None` (ils n'exercent pas l'identité du déclencheur — verrouillée en
+    /// unitaire dans ./client.rs et ./interpreter.rs) ; seul le Scenario T6b de
+    /// `subworkflow_lenfant_hérite_du_trigger_du_parent` en pose une, pour prouver l'héritage
+    /// parent → enfant. Les tests n'exercent ici que des `vars` vides ; la recopie des `vars` non
+    /// vides est verrouillée en unitaire dans ./interpreter.rs.
+    async fn send_run(&self, dag: &DagSteps, trigger: Option<&str>) -> String {
+        let handle = trigger_run(&self.config, &self.http, dag, &serde_json::Map::new(), trigger)
             .await
             .unwrap_or_else(|erreur| panic!("le déclenchement doit être accepté : {erreur}"));
         handle.run_key
     }
 
-    /// Déclenche `dag` puis attend sa complétion (`attach`) : `(statut HTTP, corps JSON)`.
-    async fn run_to_completion(&self, dag: &DagSteps) -> (u16, Value) {
-        let run_key = self.send_run(dag).await;
+    /// Déclenche `dag` (avec l'identité `trigger`, voir [`Self::send_run`]) puis attend sa
+    /// complétion (`attach`) : `(statut HTTP, corps JSON)`.
+    async fn run_to_completion(&self, dag: &DagSteps, trigger: Option<&str>) -> (u16, Value) {
+        let run_key = self.send_run(dag, trigger).await;
         let response = self
             .http
             .get(format!(
@@ -372,7 +398,7 @@ async fn losange_fan_out_fan_in() {
         step("C", &["A"], "record", json!({ "id": "C", "sleep_ms": 1000 })),
         step("D", &["B", "C"], "record", json!({ "id": "D" })),
     ]);
-    let (status, body) = stack.run_to_completion(&dag).await;
+    let (status, body) = stack.run_to_completion(&dag, None).await;
     assert_eq!(status, 200, "corps : {body}");
     let results = body.as_object().expect("table id → sortie");
     assert_eq!(results.len(), 4, "quatre sorties attendues : {body}");
@@ -409,7 +435,7 @@ async fn premier_echec_de_couche_interrompt_sans_attendre_les_freres() {
         step("Y", &[], "record", json!({ "id": "Y", "sleep_ms": 20000 })),
     ]);
     let started = Instant::now();
-    let (status, body) = stack.run_to_completion(&dag).await;
+    let (status, body) = stack.run_to_completion(&dag, None).await;
     assert!(
         status >= 400,
         "un échec de step doit échouer le run : {status} {body}"
@@ -432,7 +458,7 @@ async fn premier_echec_de_couche_interrompt_sans_attendre_les_freres() {
 async fn dag_invalide_est_rejete_en_400_avant_tout_step() {
     let stack = Stack::start().await;
     let dag = DagSteps(vec![step("A", &["absent"], "record", json!({ "id": "A" }))]);
-    let (status, body) = stack.run_to_completion(&dag).await;
+    let (status, body) = stack.run_to_completion(&dag, None).await;
     assert_eq!(status, 400, "corps : {body}");
     assert!(
         body.to_string().contains("MRD-WORKFLOW-004:"),
@@ -452,7 +478,7 @@ async fn step_transitoire_rejoue_sans_rejouer_les_steps_termines() {
         step("A", &[], "record", json!({ "id": "A" })),
         step("F", &["A"], "flaky", json!({})),
     ]);
-    let (status, body) = stack.run_to_completion(&dag).await;
+    let (status, body) = stack.run_to_completion(&dag, None).await;
     assert_eq!(status, 200, "corps : {body}");
     assert_eq!(body["F"]["flaky"], "ok");
     assert_eq!(
@@ -480,7 +506,7 @@ async fn step_transitoire_rejoue_sans_rejouer_les_steps_termines() {
 async fn un_kind_durable_dort_durablement_et_reçoit_son_run_info() {
     let stack = Stack::start().await;
     let dag = DagSteps(vec![step("D", &[], "durable_sleep", json!({}))]);
-    let run_key = stack.send_run(&dag).await;
+    let run_key = stack.send_run(&dag, None).await;
     let response = stack
         .http
         .get(format!(
@@ -522,7 +548,7 @@ async fn un_kind_durable_recoit_sa_config_rendue() {
         "durable_config",
         json!({ "m": "{{run.run_key}}" }),
     )]);
-    let run_key = stack.send_run(&dag).await;
+    let run_key = stack.send_run(&dag, None).await;
     let response = stack
         .http
         .get(format!(
@@ -569,7 +595,7 @@ async fn subworkflow_nominal_rend_les_sorties_enfant() {
             }),
         ),
     ]);
-    let (status, body) = stack.run_to_completion(&dag).await;
+    let (status, body) = stack.run_to_completion(&dag, None).await;
     assert_eq!(status, 200, "corps : {body}");
     let results = body.as_object().expect("table id → sortie");
     assert_eq!(results.len(), 2, "deux sorties parent : A et S : {body}");
@@ -611,7 +637,7 @@ async fn subworkflow_echec_enfant_fait_échouer_le_parent_message_conservé() {
         "subworkflow",
         json!({ "dag": [step("F", &[], "fail", json!({ "id": "F" }))] }),
     )]);
-    let (status, body) = stack.run_to_completion(&dag).await;
+    let (status, body) = stack.run_to_completion(&dag, None).await;
     assert!(
         status >= 400,
         "l'échec de l'enfant doit échouer le run parent : {status} {body}"
@@ -645,7 +671,7 @@ async fn subworkflow_garde_de_profondeur_échoue_en_niveaux_bornés() {
         }),
     )]);
     let started = Instant::now();
-    let (status, body) = stack.run_to_completion(&dag).await;
+    let (status, body) = stack.run_to_completion(&dag, None).await;
     let elapsed = started.elapsed();
     assert!(
         status >= 400,
@@ -659,5 +685,37 @@ async fn subworkflow_garde_de_profondeur_échoue_en_niveaux_bornés() {
     assert!(
         elapsed < Duration::from_secs(30),
         "deux niveaux de run exactement, sans emballement : {elapsed:?}"
+    );
+}
+
+/// Scenario (./subworkflow.sdd `Tasks` T6b, 2026-11-02, lot 0 lymaille, `FR-10`/`DEC-12`)
+/// « un parent déclenché avec `trigger = Some("sub-42")` fait rendre `sub-42` à un kind de
+/// fixture du run enfant » : parent d'un unique step `S` (`subworkflow`) dont le DAG enfant est
+/// un step `E` du kind ordinaire `echo_trigger`, qui rend son `RunInfo.trigger`. L'identité ne
+/// transite que par le canal autorisé — `run_child_dag` poste un `RunInput` dont `trigger` est
+/// `self.run.trigger` du parent (./durable.rs, T6a) ; le `config` du step n'en porte aucune et
+/// l'enfant ne peut pas la tenir de là (verrou unitaire dans ./subworkflow.rs). Avant T6a,
+/// l'écho était `null` (`trigger: None` posté) ; ce rouge n'est observable qu'en jeu contre
+/// `restate-server` — aucun `Context` virtualisable en unitaire (borne ./durable.sdd, intégration
+/// exigée par la spec).
+#[tokio::test]
+#[ignore = "exige podman et l'image restate"]
+async fn subworkflow_lenfant_hérite_du_trigger_du_parent() {
+    let stack = Stack::start().await;
+    let dag = DagSteps(vec![step(
+        "S",
+        &[],
+        "subworkflow",
+        // Le config du step ne porte AUCUNE identité : l'enfant ne peut tenir `sub-42` que du
+        // parent, par `run_child_dag`.
+        json!({ "dag": [step("E", &[], "echo_trigger", json!({}))] }),
+    )]);
+    let (status, body) = stack.run_to_completion(&dag, Some("sub-42")).await;
+    assert_eq!(status, 200, "corps : {body}");
+    let sorties_enfant = body["S"].as_object().expect("S rend la table des sorties enfant");
+    assert_eq!(
+        sorties_enfant["E"],
+        json!("sub-42"),
+        "l'enfant doit rendre le trigger hérité du parent, pas null : {body}"
     );
 }

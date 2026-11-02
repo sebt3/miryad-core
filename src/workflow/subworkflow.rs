@@ -24,8 +24,10 @@
 //! déterministes : un [`StepError`] `retryable: false` à chaque fois, l'échec d'un enfant
 //! également (ses retries éventuels se jouent *dans* l'enfant). Seules les `vars` du `config` du
 //! step sont transmises à l'enfant (déjà rendues par le parent) : les `inputs` du parent ne sont
-//! **pas** transmis et l'enfant n'hérite d'aucune autre donnée du parent (./subworkflow.sdd
-//! `Tasks`).
+//! **pas** transmis et l'enfant n'hérite d'aucune autre donnée du `config`. La seule donnée qu'il
+//! hérite du parent est l'identité du déclencheur, portée par [`StepContext::run_child_dag`]
+//! (./durable.rs, T6a) — le `config` du step ne peut ni la fixer ni la changer, une clé
+//! `trigger` y est ignorée (./subworkflow.sdd, T6b).
 //!
 //! [`StepContext::run_child_dag`]: super::durable::StepContext::run_child_dag
 
@@ -85,8 +87,10 @@ struct SubWorkflowConfig {
     dag: DagSteps,
     /// Les variables de l'enfant (`#[serde(default)]` : sans clé `vars`, `{}`). `vars` n'est
     /// **pas** un champ brut (`raw_fields` reste `["dag"]`) : ses `string` sont des gabarits du
-    /// **parent**, déjà rendus quand cette valeur arrive ici. L'enfant n'hérite d'aucune autre
-    /// donnée du parent (./subworkflow.sdd, 2026-10-30, lot B).
+    /// **parent**, déjà rendus quand cette valeur arrive ici. Par le `config`, l'enfant n'hérite
+    /// d'aucune autre donnée du parent ; la seule qu'il hérite est l'identité du déclencheur,
+    /// portée par `run_child_dag` seul (./durable.rs, T6a/T6b) — une clé `trigger` du `config`
+    /// est une inconnue ignorée, jamais lue.
     #[serde(default)]
     vars: serde_json::Map<String, Value>,
 }
@@ -149,8 +153,10 @@ impl MiryadDurableStep for SubWorkflowStep {
     /// idempotent au rejeu (clé enfant `{run_key}:{step_id}`, profondeur incrémentée, portées par
     /// ./durable.rs, jamais calculées ici). Sortie : la table des sorties de l'enfant en objet
     /// JSON sans enveloppe. Les `vars` transmises à l'enfant sont celles du `config` du step
-    /// (déjà rendues par le parent) ; les `inputs` du parent ne sont pas transmis, l'enfant
-    /// n'hérite d'aucune autre donnée du parent (./subworkflow.sdd `Tasks`). L'échec de l'enfant
+    /// (déjà rendues par le parent) ; les `inputs` du parent ne sont pas transmis. La seule
+    /// donnée héritée du parent hors `config` est l'identité du déclencheur, portée par
+    /// [`StepContext::run_child_dag`] (./durable.rs, T6a) — le `config` ne peut ni la fixer ni la
+    /// changer (T6b, ./subworkflow.sdd). L'échec de l'enfant
     /// fait échouer ce step donc le parent, message conservé verbatim — pas de branche de repli
     /// dans cette itération.
     async fn run(
@@ -389,10 +395,43 @@ mod tests {
         );
     }
 
+    /// Scenario « l'enfant ne tient pas son identité du config du step » (2026-11-02, lot 0
+    /// lymaille, T6b) : un `config` portant `"trigger": "intrus"` en plus du `dag` — la clé est
+    /// une inconnue de `SubWorkflowConfig`, `prepare` ne la lit ni ne la transmet : le résultat
+    /// est identique à celui rendu sans elle (DAG et `vars` à l'égalité). L'identité de l'enfant
+    /// est celle de `run.trigger` du parent seulement, portée par `run_child_dag` (./durable.rs,
+    /// T6a) — aucune donnée d'identité ne transite par le retour de `prepare`, dont le type
+    /// `((DagSteps, Map))` ne sait même pas la porter. Verrou structurel de non-régression :
+    /// `SubWorkflowConfig` ignorant les clés inconnues, ce test est vert d'emblée et le reste —
+    /// il interdit qu'un futur champ `trigger` apparaisse dans le `config` et permette de fixer
+    /// ou changer l'identité de l'enfant.
+    #[test]
+    fn lenfant_ne_tient_pas_son_identite_du_config_du_step() {
+        let sans_cle = prepare(&run(0), config_valide(), 4)
+            .expect("un config valide sans clé « trigger » doit être accepté");
+        let avec_intrus = prepare(
+            &run(0),
+            json!({
+                "dag": [{ "id": "a", "depends_on": [], "kind": "x", "config": {} }],
+                "trigger": "intrus"
+            }),
+            4,
+        )
+        .expect("la clé inconnue « trigger » doit être ignorée, jamais rejetée");
+        assert_eq!(
+            avec_intrus.0, sans_cle.0,
+            "le DAG enfant ne doit pas dépendre d'une clé « trigger » du config"
+        );
+        assert_eq!(
+            avec_intrus.1, sans_cle.1,
+            "les vars de l'enfant ne doivent pas dépendre d'une clé « trigger » du config"
+        );
+    }
+
     /// Scenario « l'enfant n'hérite pas des vars du parent » (2026-10-30, lot B) : un `RunInfo`
     /// parent dont `vars = {"project": "p1"}` et un `config` sans clé `vars` → les vars rendues
     /// sont `{}` — celles du parent ne sont pas transmises implicitement (l'enfant n'hérite
-    /// d'aucune autre donnée du parent).
+    /// d'aucune autre donnée du `config`).
     #[test]
     fn lenfant_n_hérite_pas_des_vars_du_parent() {
         let parent = RunInfo {

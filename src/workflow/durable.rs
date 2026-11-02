@@ -109,8 +109,8 @@ impl<'a> StepContext<'a> {
         Self { ctx, run }
     }
 
-    /// L'identité du run en cours, en lecture seule (`run_key`, `step_id`, `depth` tels que
-    /// transmis par le dispatcher, ./dispatcher.sdd).
+    /// L'identité du run en cours, en lecture seule (`run_key`, `step_id`, `depth`, `vars`,
+    /// `trigger` tels que transmis par le dispatcher, ./dispatcher.sdd).
     #[must_use]
     pub fn run_info(&self) -> &RunInfo {
         &self.run
@@ -179,10 +179,12 @@ impl<'a> StepContext<'a> {
     /// déjà démarré (jamais de doublon). L'en-tête `DEPTH_HEADER` porte la profondeur incrémentée
     /// (`run.depth + 1` en `saturating_add`).
     ///
-    /// Le corps de la requête est un `RunInput` `{ dag, vars }` (./interpreter.rs, amendement
-    /// lot B, ./interpreter.sdd) : `vars` sont les variables constantes de l'enfant, telles
-    /// quelles (le subworkflow les a déjà fait rendre par son parent, il n'y a pas de second
-    /// rendu ici).
+    /// Le corps de la requête est un `RunInput` `{ dag, vars, trigger }` (./interpreter.rs,
+    /// amendements lot B et lot 0 lymaille, ./interpreter.sdd) : `vars` sont les variables
+    /// constantes de l'enfant, telles quelles (le subworkflow les a déjà fait rendre par son
+    /// parent, il n'y a pas de second rendu ici) ; `trigger` est **hérité du parent** —
+    /// `self.run.trigger` cloné (amendement 2026-11-02, `FR-10`/`DEC-12`) : le run enfant a
+    /// l'identité du déclencheur du parent, sans autre canal ni paramètre.
     ///
     /// `dag` n'est pas pré-validé ici : `DagInterpreter::run` revalide systématiquement (un DAG
     /// invalide échoue en `400` `MRD-WORKFLOW-004`, ./interpreter.sdd).
@@ -205,8 +207,7 @@ impl<'a> StepContext<'a> {
                 Json(RunInput {
                     dag: dag.clone(),
                     vars: vars.clone(),
-                    // T6a (./durable.sdd) propagera le trigger à l'enfant ; T4 pose le neutre.
-                    trigger: None,
+                    trigger: self.run.trigger.clone(),
                 }),
             )
             .header(
