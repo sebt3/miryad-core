@@ -47,6 +47,10 @@ Must:
     (`../matrix/store/migration.sdd`) : le store garde ses migrations hors de `src/migration/` pour rester
     déplaçable, l'hôte les assemble ici. Le suivi reste la table `seaql_migrations_miryad_core`. `down` les défait
     en tête (ordre inverse, règle ci-dessous inchangée).
+  **Amendement 2026-11-02 (`lymaille`)** : sous `#[cfg(feature = "lymaille")]`, @migrations **ajoute en fin de liste** (après les entrées
+    `matrix` éventuelles, jamais avant une entrée existante) les migrations rendues par `crate::lymaille::migrations()`
+    (`../lymaille/migration.sdd`, `m20261103_000001_create_lymaille_tables`) : le module garde ses migrations hors de `src/migration/`,
+    l'hôte les assemble ici. Même table de suivi `seaql_migrations_miryad_core` ; `down` les défait en tête (ordre inverse).
   Ordre d'application = ordre du @Vec écrit ici, vérifié au source de sea-orm-migration 2.0.2 :
     @get_migration_files préserve l'ordre de @migrations, @exec_up_with itère les pending dans cet
     ordre, aucun tri ni graphe de dépendance n'existe (@MigrationOrder a disparu en 2.x) — toute

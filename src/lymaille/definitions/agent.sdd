@@ -1,0 +1,81 @@
+Spec: agent — entité `lymaille_catalog_agents`, définition d'agent du catalogue
+
+Purpose:
+  Porter l'entité @MiryadResource des définitions d'agent (table `miryad_lymaille_catalog_agents`) : l'admin crée, lit, modifie et supprime les
+    agents du catalogue par REST et MCP, sans redéploiement. La colonne `definition` (JSON) est la **source de vérité** (une
+    `AgentDefinition` de `lymaille` complète) ; `agent_id`, `kind` et `profile` sont des copies **dérivées par les hooks** pour le
+    filtrage et le libellé (DSD `DEC-17`). Les hooks valident la définition (`AgentDefinition::validate`) et imposent le préfixe `G_`
+    (DSD `DEC-9`). Fichier neuf, conception.
+
+Owns:
+  ./agent.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `FR-8`, `FR-9`, `DEC-9`, `DEC-14`, `DEC-17`, `AC-9`
+  ../identity.sdd — `classify`, `IdKind`
+  ../migration.sdd — table `miryad_lymaille_catalog_agents` (la table privée `miryad_lymaille_agents` n'a pas d'entité au lot 1, DSD `DEC-19`)
+  /src/resource.sdd — @MiryadResource, @HookError (erreur applicative sans code `MRD-*`)
+  ../../workflow/definition.sdd — précédent d'une entité à hooks de validation
+
+Must:
+  `Entity`/`Model`/`ActiveModel` via `DeriveEntityModel`, `#[sea_orm(table_name = "miryad_lymaille_catalog_agents")]`, `Model` : `id: i32`
+    (`primary_key`), `agent_id: String`, `kind: String`, `profile: String`, `definition: serde_json::Value`
+    (colonne `Json`), `created_at: DateTimeUtc`. Mêmes noms que la migration ./../migration.sdd.
+  `impl MiryadResource for Entity` : `resource_name()` = `"lymaille_catalog_agents"` ; `read_policy()` = `Public` (le catalogue est lisible par tout
+    utilisateur authentifié, DSD `FR-8`) ; `write_policy()` = `AdminOnly` ; `owner_column()` = `None` ; `filter_column()` = `Some(Column::Kind)` ;
+    `label_column()` = `Some(Column::AgentId)`.
+  `before_create(active, principal)` dans cet ordre (premier échec interrompt) :
+    1. `definition` absent (`NotSet`) ou non objet JSON → `HookError::new("agent definition is required")` ;
+    2. désérialiser en `lymaille::AgentDefinition` (`serde_json::from_value`) ; échec → `HookError::new("invalid agent definition: {e}")` ;
+    3. `AgentDefinition::validate()` ; échec → `HookError::new("invalid agent definition: {e}")` ;
+    4. `identity::classify(def.id())` doit rendre `Catalog` ; `Private` ou `ReservedPrefix` →
+      `HookError::new("agent id must start with G_ (catalog)")` ;
+    5. poser `agent_id = Set(def.id())`, `kind`/`profile` dérivés de `def`, `created_at = Set(now)` si `NotSet`.
+  `before_update(active, existing, principal)` : mêmes étapes 1 à 5 sur la nouvelle `definition`, plus : `def.id()` doit égaler
+    `existing.agent_id` (renommer un agent change son identité) sinon `HookError::new("agent id cannot change")` ; `created_at`
+    reste celui de `existing`.
+  `before_delete` : défaut (aucun contrôle d'usage au lot 1).
+  Les `HookError` n'ont **aucun code** (`code: None`) et ne citent jamais le prompt ni un secret.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Accepter une ligne dont le `definition.id` diffère de `agent_id` après le hook (les colonnes dérivées sont toujours réécrites).
+  Donner un code `MRD-*` à un `HookError`.
+  Contrôler en base l'existence du profil référencé (un hook est synchrone et sans connexion) : la résolution a lieu à l'exécution.
+
+Depends on:
+  ../identity.rs, @sea_orm, @serde_json, `lymaille::AgentDefinition`
+
+Exposes:
+  `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`
+
+Tasks:
+  [ ] Tests d'abord (hooks purs sur des `ActiveModel` construits en test, politiques), puis ./agent.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./agent.rs.
+
+Scenario: une définition valide du catalogue est acceptée et ses colonnes dérivées
+  Given une définition `G_triage` de nature `sub` pointant le profil `qwen`, avec des colonnes `agent_id`/`kind`/`profile` fausses dans l'`ActiveModel`
+  When `before_create` est appelé
+  Then le résultat est `Ok` et `agent_id = "G_triage"`, `kind = "sub"`, `profile = "qwen"`
+
+Scenario: un identifiant privé ou en casse réservée est refusé
+  Given une définition d'id `triage`, puis `g_triage`
+  When `before_create` est appelé pour chacune
+  Then chaque résultat est `Err(HookError)` sans code, message `agent id must start with G_ (catalog)`
+
+Scenario: une définition invalide est refusée avec la cause de lymaille
+  Given une définition que `AgentDefinition::validate` refuse
+  When `before_create` est appelé
+  Then le résultat est `Err(HookError)` dont le message commence par `invalid agent definition:` et ne contient pas le prompt
+
+Scenario: renommer un agent est refusé
+  Given une ligne existante `G_triage` et une nouvelle `definition` d'id `G_other`
+  When `before_update` est appelé
+  Then le résultat est `Err(HookError)` « agent id cannot change »
+
+Scenario: politiques du catalogue
+  Given l'entité
+  When on lit `read_policy`, `write_policy`, `owner_column`
+  Then `Public`, `AdminOnly`, `None`

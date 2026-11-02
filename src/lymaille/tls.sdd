@@ -1,0 +1,44 @@
+Spec: tls — installation idempotente du provider rustls
+
+Purpose:
+  `lymaille` avorte si l'hôte n'a pas installé de provider rustls avant le premier appel `rig` ou MCP (DSD `FR-5`, `DEC-4`) ; `ring` et
+    `aws-lc-rs` sont tous deux dans le graphe de la crate, donc rustls 0.23 ne choisit pas seul. Ce fichier installe `ring`
+    (arbitré 2026-11-02) de façon idempotente, sans jamais échouer si un provider est déjà posé. Fichier neuf, conception.
+
+Owns:
+  ./tls.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `FR-5`, `DEC-4`, `AC-6`
+  ./mod.sdd — dépendance `rustls` (features `ring`, `std`) et ré-export
+
+Must:
+  `pub fn install_crypto_provider()` — appelle `rustls::crypto::ring::default_provider().install_default()` et **ignore** le résultat
+    (`Err` quand un provider est déjà installé par une autre partie du processus) ; n'émet qu'une trace `tracing::debug!` du cas
+    « déjà installé ». Appelable autant de fois qu'on veut, depuis plusieurs threads, sans panic.
+  Être appelée par le montage de l'état de l'application (documenté dans le bloc `//!` de ./mod.sdd) avant tout appel d'inférence ou
+    MCP ; le step `subagent` la ré-appelle à la construction du client d'inférence (défense en profondeur, idempotente).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Paniquer si un provider est déjà installé ; installer `aws-lc-rs` ; poser un état global autre que celui du `CryptoProvider` de
+    rustls.
+
+Exposes:
+  `install_crypto_provider`
+
+Tasks:
+  [ ] Tests d'abord (appels répétés, provider préinstallé), puis ./tls.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./tls.rs.
+
+Scenario: deux appels successifs réussissent
+  Given aucun provider installé
+  When `install_crypto_provider()` est appelé deux fois
+  Then aucun panic et `rustls::crypto::CryptoProvider::get_default()` rend `Some`
+
+Scenario: un provider déjà installé n'est pas une erreur
+  Given un provider installé par le test avant l'appel
+  When `install_crypto_provider()` est appelé
+  Then aucun panic et le provider par défaut reste celui du test

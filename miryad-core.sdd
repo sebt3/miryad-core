@@ -77,6 +77,10 @@ Must:
     `0.19`, spike 2026-10-06 — voir `./src/matrix/store/mod.sdd`) et sa feature `sqlite` n'est jamais activée.
     Le diff de `./Cargo.toml` est documenté par `./src/systemone/mod.sdd` et `./src/matrix/mod.sdd`,
     `[package.metadata.docs.rs].features` y ajoute `systemone` et `matrix`, `./README.md` nomme les huit features.
+  **Amendement 2026-11-02 (`lymaille`)** : le graphe de features compte une entrée de plus, `lymaille` (implique `db`, **hors défaut**), qui
+    ajoute les dépendances optionnelles `lymaille`, `rustls` (provider `ring`) et `rhai` ; ses versions `rmcp` et `rig-core` sont dictées par
+    `lymaille` et ses features `fs`/`shell` ne sont jamais activées. Le diff de `./Cargo.toml` est documenté par `./src/lymaille/mod.sdd`,
+    `[package.metadata.docs.rs].features` y ajoute `lymaille`, `./README.md` nomme la feature. Solution : `dsd/miryad-core/lymaille.md`.
   Garder les gating de features tels que déclarés dans `Cargo.toml` : `static-frontend` activée
     par défaut (dépendance légère, attendue par la quasi-totalité des applications), `mcp`
     n'embarquant `vynil-core` qu'en `hbs` (`default-features = false`) — la feature `crypto` en est purgée

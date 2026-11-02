@@ -1,0 +1,80 @@
+Spec: identity — principal reconstruit par appel, préfixe réservé `G_`, droits d'accord de modules
+
+Purpose:
+  Porter la chaîne d'identité de l'hôte (DSD `FR-4`, `FR-8`, `FR-9`, `DEC-3`, `DEC-9`) : une session ne persiste que le `subject` de son
+    utilisateur ; à **chaque appel** d'un module de l'hôte ou d'un store, le principal est reconstruit depuis la table des utilisateurs
+    (appartenance au groupe admin à jour). Un module réservé à l'admin n'est accordé et exécuté que si ce principal est admin au moment
+    de l'appel ; la nature de la session (`Work`/`Config`) n'ajoute ni n'ôte aucun droit. Porte aussi la classification des
+    identifiants (`G_` = catalogue, DSD `DEC-9`) et le contrôle d'accord de modules d'une définition. Fichier neuf, conception.
+
+Owns:
+  ./identity.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `FR-4`, `FR-8`, `FR-9`, `DEC-2`, `DEC-3`, `DEC-9`, `AC-5`, `AC-7`, `AC-9`
+  ../users/user.sdd — entité `miryad_users` (colonne `subject` unique), `Model::id: i32`
+  ../users/group.sdd — `is_admin(db, user_id)`
+  ./error.sdd — `UnknownSubject`, `Forbidden`, `ReservedPrefix`, `Store`
+
+Must:
+  `pub struct CallerPrincipal` — `Clone`, `Debug`, champs `pub` : `user_id: i32`, `subject: String`, `is_admin: bool`. Valeur d'un instant :
+    jamais mise en cache entre deux appels de module.
+  `pub struct Identity` — `Clone`, un champ privé `db: DatabaseConnection`. `pub fn new(db: DatabaseConnection) -> Self`.
+  `pub async fn resolve(&self, subject: &str) -> Result<CallerPrincipal, LymailleError>` : cherche la ligne `miryad_users` dont
+    `subject` est égal (**sans la créer**, à la différence de `resolve_user`) puis `is_admin(db, user_id)` ; aucune ligne →
+    `UnknownSubject` (jamais un principal vide ni par défaut) ; `DbErr` → `Store(<texte du DbErr>)`. Un utilisateur retiré du groupe
+    admin entre deux appels est non-admin au second (DSD `AC-5`).
+  `pub enum IdKind { Catalog, Private }` et `pub fn classify(id: &str) -> Result<IdKind, LymailleError>` (pure) :
+    1. identifiant vide ou contenant un caractère hors `[A-Za-z0-9_]` → `InvalidDefinition("invalid identifier")` (un identifiant est un
+      identifiant Rhai valide, DSD `DEC-9`) ;
+    2. commence par `G_` (majuscule exacte) → `Catalog` ;
+    3. commence par `g_` ou toute autre casse de `G_` (comparaison ASCII insensible à la casse) → `ReservedPrefix(id)` ;
+    4. sinon → `Private`.
+  `pub fn check_write(caller: &CallerPrincipal, id: &str) -> Result<IdKind, LymailleError>` (pure) : `classify(id)` puis `Catalog` exige
+    `caller.is_admin` (sinon `Forbidden("catalog write requires admin")`) ; `Private` est accepté pour tout appelant.
+  `pub fn check_grants(caller: &CallerPrincipal, granted: &[String], admin_only: &[&str]) -> Result<(), LymailleError>` (pure) : si
+    un module de `granted` figure dans `admin_only` et que `caller` n'est pas admin → `Forbidden("module reserved to admins: <nom>")` ;
+    sinon `Ok`. Une définition ne peut accorder que des modules que son propriétaire pourrait utiliser lui-même (DSD `FR-9`).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Persister, mettre en cache ou sérialiser un `CallerPrincipal` (la session ne garde que le `subject`).
+  Créer un compte local pour un `subject` inconnu ; retomber sur un principal par défaut ou admin.
+  Dépendre de la nature de la session (`Work`/`Config`) pour décider d'un droit.
+
+Depends on:
+  ./error.rs, ../users/user.rs, ../users/group.rs, @sea_orm
+
+Exposes:
+  `CallerPrincipal`, `Identity::{new, resolve}`, `IdKind`, `classify`, `check_write`, `check_grants`
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire pour `resolve`, tests purs pour le reste), puis ./identity.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./identity.rs.
+
+Scenario: un subject sans compte est refusé
+  Given une base sans utilisateur `ghost`
+  When `resolve("ghost")` est appelé
+  Then le résultat est `Err(UnknownSubject)` et aucune ligne `miryad_users` n'est créée
+
+Scenario: le droit admin est relu à chaque appel
+  Given l'utilisateur `alice` membre du groupe admin
+  When `resolve("alice")` est appelé, puis `alice` est retirée du groupe, puis `resolve("alice")` est rappelé
+  Then le premier résultat a `is_admin = true` et le second `is_admin = false`
+
+Scenario: la classification des identifiants
+  Given `G_triage`, `g_triage`, `G-x`, `triage`, `mon_agent`, ``, `a b`
+  When `classify` est appelé sur chacun
+  Then les résultats sont `Catalog`, `ReservedPrefix`, `InvalidDefinition`, `Private`, `Private`, `InvalidDefinition`, `InvalidDefinition`
+
+Scenario: seul un admin écrit au catalogue
+  Given un appelant non-admin et un appelant admin
+  When `check_write` est appelé avec `G_x` puis avec `x` pour chacun
+  Then le non-admin est `Forbidden` sur `G_x` et `Ok(Private)` sur `x`, l'admin est `Ok(Catalog)` sur `G_x`
+
+Scenario: un module réservé à l'admin n'est pas accordé à un non-admin
+  Given `admin_only = ["secrets"]` et un appelant non-admin
+  When `check_grants` est appelé avec `["resources", "secrets"]`, puis avec `["resources"]`
+  Then le premier résultat est `Forbidden`, le second `Ok`

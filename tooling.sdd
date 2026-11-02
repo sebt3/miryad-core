@@ -38,6 +38,11 @@ Must:
     (`static-frontend`), `--no-default-features`, `swagger-ui`, `mcp`,
     `workflow` (amendement 2026-09-23, moteur de workflow — roadmap 9), `--all-features`. **Amendement 2026-10-06** : s'y ajoutent `systemone`, `matrix`, et les deux croisements `workflow,systemone` et
     `workflow,matrix` (les steps croisés ne compilent que sous le croisement, ./src/workflow/mod.sdd).
+    **Amendement 2026-11-02 (`lymaille`)** : s'y ajoutent `lymaille` et le croisement `workflow,lymaille` (le step `subagent` ne compile que
+    sous le croisement, ./src/workflow/mod.sdd) — soit **quinze** combinaisons de tests et quinze de clippy — ainsi que deux contrôles de
+    graphe : `cargo tree --no-default-features -e normal -i lymaille` (sortie vide : la bibliothèque est absente sans la feature) et
+    `cargo tree --no-default-features --features lymaille -e normal -i sea-orm` (une ligne : la feature implique `db`). `./AGENTS.md` amendé le 2026-11-02 (accord du développeur principal) ;
+    `./.github/workflows/ci.yml` et `workflows.sdd` restent à amender (tâche de `src/lymaille/mod.sdd`).
     **Amendement 2026-10-19** : `graphql` et `graphiql` sortent de la batterie avec la suppression de la
     surface GraphQL — soit **dix** combinaisons de tests et dix de clippy, toutes en
     `--no-default-features --features <liste>` hors défaut et `--all-features`. Les

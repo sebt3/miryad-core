@@ -1,0 +1,73 @@
+Spec: catalog — SeaAgentStore, SeaProfileStore, SeaProviderStore
+
+Purpose:
+  Implémenter `lymaille::AgentStore`, `ProfileStore` et `ProviderStore` sur les tables `miryad_lymaille_catalog_agents` et `_agents` (catalogue et privé), `_profiles`, `_providers`.
+    Les agents suivent les règles de définitions de ./mod.sdd (cloisonnement par propriétaire, catalogue `G_`, droit relu à l'appel) ;
+    profils et providers sont **globaux** (configuration administrée, sans propriétaire). Les objets sont reconstruits depuis la colonne
+    JSON (DSD `DEC-17`) puis repassent par leur validation. Fichier neuf, conception.
+
+Owns:
+  ./catalog.rs
+
+References:
+  ./mod.sdd — règles communes ; ../definitions/agent.sdd, profile.sdd, provider.sdd — mêmes tables (catalogue) et mêmes dérivations de colonnes ; la table privée `agents` n'a pas d'entité
+  ../identity.sdd — `check_write`, `classify`
+  `lymaille::agents::catalog` — traits `AgentStore` (`get_agent`, `put_agent`), `ProfileStore` (`get_profile`, `put_profile`,
+    `resolve_profile` à implémentation par défaut), `ProviderStore` (`get_provider`, `put_provider`)
+
+Must:
+  `pub struct SeaAgentStore` / `SeaProfileStore` / `SeaProviderStore` — `Clone`, créés par `LymailleStores`.
+  `impl AgentStore for SeaAgentStore` :
+    `get_agent(id)` : règle 3 de ./mod.sdd ; ligne trouvée → `serde_json::from_value::<AgentDefinition>(definition)` ; échec de
+      désérialisation → `AgentsError::Store(texte expurgé)`.
+    `put_agent(def)` : `AgentDefinition::validate()` (refus → `AgentsError::InvalidDefinition`), `check_write(caller, def.id())`, puis upsert
+      selon la règle 4 dans la table du catalogue (`Catalog`) ou dans la table privée avec `owner_id = user_id` (`Private`) ; les colonnes
+      `agent_id`, `kind`, `profile` sont réécrites depuis `def` ; refus de l'hôte → `AgentsError::Store("MRD-LYMAILLE-…")` (règle 5).
+  `impl ProfileStore for SeaProfileStore` : `get_profile(name)` (ligne par `name` → `ModelProfile`), `put_profile(profile)` (upsert par
+    `name`, **réservé aux admins** : un non-admin est refusé `Forbidden`, la configuration de modèle étant administrée) ; `resolve_profile`
+    garde l'implémentation par défaut du trait.
+  `impl ProviderStore for SeaProviderStore` : `get_provider(name)`, `put_provider(provider)` (upsert par `name`, réservé aux admins ; un
+    `Provider` ne porte que des références, aucune écriture de secret). La lecture par un store ne vérifie pas l'admin (le moteur de
+    `lymaille` lit les providers pour tourner) ; le droit de **lire la liste** vit dans la politique `AdminOnly` de l'entité.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Rendre un agent privé d'un autre utilisateur ; écrire `G_…` sans admin ; accepter un `Provider` non validé ; inclure prompt, adresse ou
+    référence d'authentification dans une erreur ou une trace.
+
+Depends on:
+  ./mod.rs, ../identity.rs, ../definitions/{agent,profile,provider}.rs, @sea_orm, `lymaille::{AgentStore, ProfileStore, ProviderStore, AgentDefinition, ModelProfile, Provider, AgentsError}`
+
+Exposes:
+  `SeaAgentStore`, `SeaProfileStore`, `SeaProviderStore` et leurs `impl` de trait
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire), puis ./catalog.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./catalog.rs.
+
+Scenario: un agent privé reste privé, le catalogue est partagé
+  Given `alice` qui écrit l'agent `x`, un admin qui écrit `G_y`
+  When `bob` lit `x` puis `G_y`
+  Then `None` puis la définition de `G_y`
+
+Scenario: une définition invalide est refusée avant l'écriture
+  Given une définition que `AgentDefinition::validate` refuse
+  When `put_agent`
+  Then `AgentsError::InvalidDefinition` et aucune ligne écrite
+
+Scenario: un non-admin n'écrit pas un profil ni un provider
+  Given un store lié à un non-admin
+  When `put_profile` puis `put_provider`
+  Then deux erreurs `AgentsError::Store` dont le texte contient `MRD-LYMAILLE-002`
+
+Scenario: profil et provider font l'aller-retour
+  Given un admin qui écrit un `ModelProfile` `qwen` et un `Provider` `local`
+  When chacun est relu par nom
+  Then les objets relus sont égaux aux originaux et `resolve_profile("qwen", detected)` rend le profil résolu
+
+Scenario: un nom absent est None
+  Given une base vide
+  When `get_profile("zzz")`, `get_provider("zzz")`, `get_agent("zzz")`
+  Then `Ok(None)` trois fois

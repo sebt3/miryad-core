@@ -1,0 +1,66 @@
+Spec: error — @LymailleError, erreurs de l'hôte lymaille
+
+Purpose:
+  Porter l'erreur interne du module `lymaille` : un code `MRD-LYMAILLE-NNN` par variante et la décision de retryabilité consommée par
+    le step `subagent` (../workflow/subagent_step.sdd). L'erreur ne contient aucun secret, aucun contenu de session ni de prompt :
+    les causes sont transportées en `String` déjà expurgée. Un `DbErr` n'est pas une erreur miryad (contrat transverse,
+    `.specdd/bootstrap.project.md`) : les stores le traduisent en variante `Store` des erreurs de `lymaille`
+    (./store/mod.sdd), `LymailleError` ne le porte pas. Fichier neuf, conception.
+
+Owns:
+  ./error.rs
+
+References:
+  ./identity.sdd, ./secret.sdd, ./store/mod.sdd, ./definitions/mod.sdd — émetteurs
+  ../workflow/subagent_step.sdd — consommateur de `retryable()`
+  ../matrix/error.sdd — précédent de forme (table variante → code → Display)
+
+Must:
+  @LymailleError — `pub enum`, `#[derive(Debug, thiserror::Error)]`, `#[non_exhaustive]` :
+    `UnknownSubject` → `MRD-LYMAILLE-001` → `MRD-LYMAILLE-001: no local account for this session subject` (DSD `DEC-3` : un `subject`
+      sans compte local est un refus, jamais un principal vide)
+    `Forbidden(String)` → `MRD-LYMAILLE-002` → `MRD-LYMAILLE-002: forbidden: {0}` (droit manquant à l'appel : module réservé à
+      l'admin, écriture au catalogue)
+    `ReservedPrefix(String)` → `MRD-LYMAILLE-003` → `MRD-LYMAILLE-003: identifier uses the reserved catalog prefix: {0}` (DSD
+      `DEC-9` ; `{0}` = l'identifiant, jamais un secret)
+    `InvalidDefinition(String)` → `MRD-LYMAILLE-004` → `MRD-LYMAILLE-004: invalid definition: {0}`
+    `SecretUnresolved(String)` → `MRD-LYMAILLE-005` → `MRD-LYMAILLE-005: secret reference could not be resolved: {0}` (`{0}` = la
+      **référence**, nom de variable par défaut, jamais la valeur)
+    `Inference(String)` → `MRD-LYMAILLE-006` → `MRD-LYMAILLE-006: inference error: {0}` (construction du client d'inférence)
+    `Run { message: String, retryable: bool }` → `MRD-LYMAILLE-007` → `MRD-LYMAILLE-007: agent run failed: {message}` (échec du run
+      batch ; `message` expurgé)
+    `Config(String)` → `MRD-LYMAILLE-008` → `MRD-LYMAILLE-008: invalid configuration: {0}`
+    `Store(String)` → `MRD-LYMAILLE-009` → `MRD-LYMAILLE-009: store error: {0}` (panne d'une opération de stockage hors trait de
+      `lymaille`, texte expurgé)
+  `pub fn retryable(&self) -> bool` (`#[must_use]`) : `Run { retryable, .. }` → `retryable` ; `Store(_)` → `true` ;
+    `Inference(_)` → `false` ; toutes les autres variantes → `false`.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Embarquer une clé d'API, un jeton, un prompt, un message de session ou un contenu de ressource dans un message d'erreur ou un
+    `Debug`.
+  Porter un `DbErr` ou un type de `lymaille` : les causes sont des `String` (stabilité d'API).
+
+Exposes:
+  `LymailleError`, `retryable`.
+
+Tasks:
+  [ ] Tests d'abord (codes, retryabilité), puis ./error.rs.
+
+Done when:
+  Les `Scenario` sont verts ; la spec est relue et approuvée avant ./error.rs.
+
+Scenario: les codes sont stables
+  Given une variante de chaque sorte
+  When `to_string()` est appelé
+  Then chaque message commence par `MRD-LYMAILLE-001` à `-009`
+
+Scenario: la retryabilité suit la variante
+  Given `Run { retryable: true }`, `Run { retryable: false }`, `Store`, `Inference`, `Forbidden`, `SecretUnresolved`
+  When `retryable()` est appelé
+  Then les résultats sont `true`, `false`, `true`, `false`, `false`, `false`
+
+Scenario: aucune valeur secrète dans l'erreur
+  Given `SecretUnresolved("LLM_API_KEY")`
+  When `to_string()` et `format!("{:?}")` sont appelés
+  Then le texte contient la référence `LLM_API_KEY` et rien d'autre que ce que l'appelant a fourni

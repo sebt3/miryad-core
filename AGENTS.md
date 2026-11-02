@@ -85,6 +85,8 @@ cargo test --no-default-features --features systemone
 cargo test --no-default-features --features workflow,systemone
 cargo test --no-default-features --features matrix
 cargo test --no-default-features --features workflow,matrix
+cargo test --no-default-features --features lymaille
+cargo test --no-default-features --features workflow,lymaille
 cargo test --all-features
 cargo clippy --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
@@ -98,17 +100,21 @@ cargo clippy --no-default-features --features systemone --all-targets -- -D warn
 cargo clippy --no-default-features --features workflow,systemone --all-targets -- -D warnings
 cargo clippy --no-default-features --features matrix --all-targets -- -D warnings
 cargo clippy --no-default-features --features workflow,matrix --all-targets -- -D warnings
+cargo clippy --no-default-features --features lymaille --all-targets -- -D warnings
+cargo clippy --no-default-features --features workflow,lymaille --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo fmt --check
 cargo tree --no-default-features -e normal -i sea-orm
 cargo tree --no-default-features --features swagger-ui -e normal -i sea-orm
 cargo tree --no-default-features --features static-frontend,swagger-ui -e normal -i sea-orm
+cargo tree --no-default-features -e normal -i lymaille
+cargo tree --no-default-features --features lymaille -e normal -i sea-orm
 ```
 
-Les treize combinaisons de tests et de clippy sont celles de `tooling.sdd` (amendement 2026-10-19,
-feature `db`). Les trois `cargo tree … -e normal -i sea-orm` prouvent que `sea-orm` n'est plus dans
+Les quinze combinaisons de tests et de clippy sont celles de `tooling.sdd` (amendements 2026-10-19,
+feature `db`, et 2026-11-02, feature `lymaille`). Les trois `cargo tree … -e normal -i sea-orm` prouvent que `sea-orm` n'est plus dans
 le graphe sans `db` : sans `db` leur sortie standard doit être vide (cargo imprime « nothing to
-print » et rend 0) ; une ligne `sea-orm v…` en sortie fait échouer la vérification.
+print » et rend 0) ; une ligne `sea-orm v…` en sortie fait échouer la vérification. Deux contrôles de plus pour `lymaille` : `cargo tree --no-default-features -e normal -i lymaille` doit imprimer « nothing to print » (la bibliothèque est absente sans la feature), et `cargo tree --no-default-features --features lymaille -e normal -i sea-orm` doit imprimer une ligne (la feature implique `db`).
 
 Le harnais doit tourner sur **toutes** ces combinaisons : des lints `pedantic`
 (`must_use_candidate`, `missing_errors_doc`) dépendent du graphe de features et peuvent ne se

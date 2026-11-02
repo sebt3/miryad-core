@@ -1,0 +1,62 @@
+Spec: session — SeaSessionStore, persistance des sessions
+
+Purpose:
+  Implémenter `lymaille::SessionStore` (`load`, `save`) sur la table `miryad_lymaille_sessions` (DSD `FR-3`, `AC-4`). L'état d'une session est
+    stocké comme **texte JSON** produit par `SessionState::to_json` et relu par `SessionState::from_json` : un état rechargé passe par le
+    même format qu'un vrai stockage. La session est clé par `(subject, session_id)` : un `subject` ne lit ni n'écrase la session d'un
+    autre (DSD `DEC-7`, `AC-7`). Le dernier `save` l'emporte (aucun jeton de version, `session#DEC-1` de `lymaille`). Fichier neuf,
+    conception.
+
+Owns:
+  ./session.rs
+
+References:
+  ./mod.sdd — règles communes (cloisonnement, traduction de `DbErr`) ; ../migration.sdd — table `miryad_lymaille_sessions`
+  `lymaille::session::store` — trait `SessionStore` (`load`, `save` ; futures `Send` ; usage générique)
+  /dsd/miryad-core/lymaille.md — `FR-3`, `DEC-3`, `AC-4`
+
+Must:
+  `pub struct SeaSessionStore` — `Clone`, champs privés `db`, `subject`. Créé par `LymailleStores::sessions()`.
+  `impl SessionStore for SeaSessionStore` :
+    `load(&self, id)` : `SELECT state … WHERE subject = ? AND session_id = ?` ; absente → `Ok(None)` ; présente → `SessionState::from_json`
+      (erreur de format → l'erreur `SessionError` du format, jamais un état par défaut) ; `DbErr` → `SessionError::Store(db_text)`.
+    `save(&self, state)` : `state.to_json()` (échec → `SessionError::Serialization`), puis upsert sur `(subject, state.id())` avec
+      `kind` = nature de `state` (`work`/`config`/`sub`), `state` = le texte, `updated_at` = maintenant ; `DbErr` → `SessionError::Store`.
+  Le `session_id` stocké est `SessionId::as_str()` ; la clé ne dépend que de `subject` et de l'identifiant (jamais de l'agent).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Lire ou écrire hors du `subject` du store ; journaliser ou inclure dans une erreur le texte de l'état ; garder l'objet vivant plutôt que
+    son texte JSON.
+
+Depends on:
+  ./mod.rs, @sea_orm, `lymaille::{SessionStore, SessionState, SessionId, SessionError}`
+
+Exposes:
+  `SeaSessionStore`, `impl SessionStore`
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire ; PostgreSQL derrière `MIRYAD_TEST_PG_URL`, ignoré si absent), puis ./session.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./session.rs.
+
+Scenario: save puis load restitue l'état
+  Given un `SessionState` avec historique, variable et fonction
+  When `save` puis `load` du même identifiant
+  Then l'état relu est égal à l'original (SQLite, et PostgreSQL si `MIRYAD_TEST_PG_URL`)
+
+Scenario: le dernier save l'emporte
+  Given deux `save` successifs du même identifiant avec des variables différentes
+  When `load`
+  Then l'état relu est celui du second `save` et une seule ligne existe
+
+Scenario: deux sujets ne partagent pas un identifiant
+  Given `alice` et `bob` qui enregistrent chacun une session d'identifiant `s-1` avec des états différents
+  When chacun charge `s-1`
+  Then chacun relit son propre état
+
+Scenario: une session absente est None
+  Given une base vide
+  When `load` d'un identifiant inconnu
+  Then `Ok(None)`

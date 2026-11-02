@@ -1,0 +1,154 @@
+Spec: subagent_step — kind natif `"subagent"`, sous-agent `lymaille` en run batch depuis un workflow
+
+Purpose:
+  Porter le `impl MiryadWorkflowStep` (./step.sdd) qui exécute un sous-agent `lymaille` en run batch autonome et rend sa sortie
+    structurée comme sortie de step (DSD `FR-6`, `DEC-10` à `DEC-12`). Disponible seulement sous `workflow` **et** `lymaille` ; comme
+    `MatrixSendStep`, l'application l'enregistre elle-même (`StepRegistry::register(SubagentStep::new(deps))`).
+  **Un seul `ctx.run`** : le kind est ordinaire (non durable) ; le run entier est la fermeture du `ctx.run` du dispatcher. La session a un
+    **nom déterministe** dérivé de `(run_key, step_id)` : à un rejeu (Restate relance la fermeture depuis zéro après une coupure), la
+    session sauvegardée est reprise (`restore_session`), jamais recommencée — les tours terminés ne sont pas refaits.
+  **Identité** : le step tourne sous le `subject` du déclencheur (`RunInfo::trigger`, DSD `FR-10`/`DEC-12`) ; sans identité, il échoue en
+    `StepError` non retryable, sans repli sur un principal par défaut. Le principal est reconstruit depuis la table des utilisateurs à
+    l'exécution (droits à jour).
+  **Durée** (DSD `OI-4`, soldé par spike) : la borne d'un `ctx.run` est ≈ 11 min par défaut ; le step porte un plafond `max_secs`
+    (défaut 480, **maximum 540**) appliqué par l'annulation coopérative de `lymaille` (`CancelHandle`), strictement inférieur à cette
+    borne : l'agent s'arrête de lui-même au lieu d'être coupé en plein tour. Le lot 1 **ne modifie pas** les options du service
+    `StepDispatcher` (décision : `recommended_options()` inchangé).
+  Effets de bord (DSD `DEC-11`) : « au moins une fois » sur le seul tour interrompu ; le step est donc `retryable: false` dès que le run
+    a commencé. Fichier neuf, conception ; la construction exacte des objets `lymaille` est à confirmer en source à l'implémentation
+    (marquée `[?]`).
+
+Owns:
+  ./subagent_step.rs
+
+References:
+  ./step.sdd — @MiryadWorkflowStep, @StepError, @RunInfo (`trigger`) ; ./template.sdd — rendu de `config` avant `run` ; ./dispatcher.sdd — `ctx.run`
+  ./matrix_step.sdd — précédent de forme (kind conditionné par une seconde feature, couture de test privée)
+  /dsd/miryad-core/lymaille.md — `FR-6`, `FR-10`, `DEC-3`, `DEC-10`, `DEC-11`, `DEC-12`, `OI-4`, `OI-8`, `AC-10`, `AC-11`
+  ../lymaille/identity.sdd, ../lymaille/store/mod.sdd, ../lymaille/secret.sdd, ../lymaille/tls.sdd, ../lymaille/resource_module.sdd,
+    ../lymaille/error.sdd — briques assemblées
+  `lymaille` : `run_batch`, `ResultCollector`, `result_module`, `restore_session`, `TurnRunner`, `TurnConfig`, `assemble`,
+    `ScratchpadEngine::builder`, `RigConfig`/`RigProvider`, `CancelHandle`, `SessionState` — API à relire en source (`[?]`)
+
+Must:
+  `SubagentStep` — struct `pub`. `pub struct SubagentDeps { pub db: DatabaseConnection, pub secrets: Arc<dyn SecretResolver>, pub readers:
+    Arc<ResourceReaders> }` (les trois dépendances que l'application fournit). `pub fn new(deps: SubagentDeps) -> Self`.
+    `#[cfg(test)] fn with_inference(deps, factory: Arc<dyn InferenceFactory>) -> Self` : `InferenceFactory` est un trait **privé** (couture de
+    test : un `ScriptedProvider` de `lymaille` remplace `RigProvider`, aucun réseau).
+  `impl MiryadWorkflowStep` : `kind()` rend `"subagent"` ; `raw_fields()` garde son défaut (`&[]`).
+  `SubagentConfig` — struct privée, `#[derive(Deserialize)]`, `#[serde(deny_unknown_fields)]` : `agent: String`, `task: String`,
+    `max_secs: Option<u64>`, `max_turns: Option<u32>`. `task` est rendu par ./template.sdd avant `run` (peut référencer `inputs`).
+  `run(&self, run, config, _inputs)` dans cet ordre ; tout échec est un `StepError` dont le message **ne contient jamais** un prompt, un
+    secret, un contenu de session ou de ressource ; `retryable` = `LymailleError::retryable()` pour les étapes 1 à 8 (rien n'a encore été
+    exécuté), `false` pour les étapes 9 à 11 (le run peut avoir eu des effets) :
+    1. `serde_json::from_value::<SubagentConfig>(config)` ; échec → `StepError { retryable: false, message: "config subagent invalide: …" }`.
+      Validation pure avant tout accès : `agent` non vide ; `task` non vide après `trim` ; `max_secs` (défaut `DEFAULT_MAX_SECS = 480`) dans
+      `1..=MAX_SECS_CEILING` avec `MAX_SECS_CEILING = 540` ; `max_turns` (défaut `DEFAULT_BATCH_MAX_TURNS` de `lymaille`) ≥ 1.
+    2. `run.trigger` absent → `StepError { retryable: false, message: "subagent step requires a trigger identity" }` (DSD `FR-10`).
+    3. `install_crypto_provider()` (idempotent) ; `Identity::resolve(trigger)` → `UnknownSubject`/`Forbidden` non retryable.
+    4. `LymailleStores::new(db, trigger)` ; `agents().get_agent(agent)` : absent → non retryable « unknown agent » ; sa nature doit être `Sub`
+      (sinon « agent is not a sub-agent ») et son `output_schema` présent (sinon « sub-agent has no output schema »).
+    5. `check_grants(caller, definition.modules, ADMIN_ONLY_MODULES)` (`ADMIN_ONLY_MODULES` : constante vide au lot 1, mécanisme présent ;
+      défense en profondeur de DSD `FR-9`).
+    6. Profil : `profiles().resolve_profile(definition.profile, None)` ; provider : `providers().get_provider(<nom du profil>)` ; absents ou
+      taille de contexte inconnue → non retryable. Secret : `secrets.resolve(provider.auth)` si `auth` est défini (`SecretUnresolved` non
+      retryable) ; client d'inférence : `RigProvider::new(&RigConfig::new(address, api_key))` (`[?]`). Le secret est enregistré auprès du
+      `Redactor` de la session (`[?]`) et n'en sort jamais.
+    7. Toolsets : `toolsets().get_active(name)` pour chaque nom de `definition.toolsets` (absent → non retryable) ; modules accordés : seul le
+      nom `resources` (`resources_module(readers, db, trigger)`) est connu au lot 1, plus `todo` et `memory` de `lymaille` **si** leur
+      construction ne demande que des objets déjà disponibles (`[?]`, l'implémenteur lève une question sinon) ; un autre nom →
+      non retryable « unknown module: <nom> ». `assemble(…)` produit les `Grants` ; une panne d'assemblage d'un toolset est non retryable.
+    8. Session : `SessionId` déterministe `"wf-"` + 32 premiers hexadécimaux de `sha256(run_key + "\0" + step_id)` (`sha2`, `hex`) ;
+      `sessions().load(id)` : présente → `restore_session` (reprise ; les avis de provenance de `lymaille` sont transmis à l'agent, DSD
+      `OI-8` : **accepté au lot 1**, pas d'échec sur empreinte différente) ; absente → nouvel état de nature `Sub`.
+    9. Moteur : `ScratchpadEngine::builder(limits, grants)` avec `result_module(collector)` (`ResultCollector::new(agent, schema, corrections)`),
+      puis `TurnRunner::new(…)` avec le store de session du principal.
+    10. Plafond : une tâche `tokio` déclenche `cancel.cancel()` après `max_secs` (abandonnée dès la fin du run) ; `run_batch(runner, task, &collector,
+      &cancel, max_turns)`.
+    11. Résultat : outcome `Valid` → la **valeur soumise et validée** (JSON conforme au schéma de sortie) est la sortie du step ; `Cancelled`
+      (plafond atteint) → `StepError { retryable: false, message: "agent run exceeded max_secs" }` ; `Failed` ou erreur de run →
+      `StepError { retryable: false, message: "agent run failed: <raison fixe de lymaille>" }`.
+  Aucune session n'est supprimée par le step (rétention : DSD `OI-7`).
+  Compiler uniquement sous `#[cfg(all(feature = "workflow", feature = "lymaille"))]`.
+
+Must not:
+  Utiliser un principal par défaut, ou le `subject` d'une autre source que `RunInfo::trigger` ; relire le `trigger` depuis `config` ou `inputs`.
+  Rendre `retryable: true` après le début du run (étapes 9 à 11).
+  Journaliser ou inclure dans une erreur ou une sortie le prompt, la tâche rendue, un secret, un message de session ou une ressource lue.
+  Activer les modules `fs`/`shell` ; accorder un module inconnu.
+  Utiliser la délégation (le type de session `Sub` ne la porte pas, `delegation#FR-2`).
+
+Forbids:
+  `restate_sdk::*` dans ./subagent_step.rs (kind ordinaire, ./step.sdd)
+
+Depends on:
+  ./step.rs, ../lymaille/{identity,error,secret,tls,resource_module}.rs, ../lymaille/store/mod.rs, @sha2, @hex, @serde, @serde_json, @tokio, `lymaille`
+
+Exposes:
+  `SubagentStep`, `SubagentDeps`, `DEFAULT_MAX_SECS`, `MAX_SECS_CEILING` ; ré-exporté `miryad_core::workflow::{SubagentStep, SubagentDeps}` sous
+    `all(workflow, lymaille)` (./mod.sdd).
+
+Accepts:
+  `config` : `{"agent", "task", "max_secs"?, "max_turns"?}` après rendu.
+
+Returns:
+  La valeur JSON validée soumise par le sous-agent, ou @StepError.
+
+Handles:
+  Rejeu après coupure : même session, tours terminés non refaits, résultat journalisé une fois à la fin.
+  Plafond `max_secs` atteint : annulation coopérative, session sauvegardée, `StepError` non retryable.
+
+Tasks:
+  [ ] Amender ./mod.sdd (déclaration gated `all(workflow, lymaille)`, ré-exports `SubagentStep`, `SubagentDeps`) et ./mod.rs dans le même lot.
+  [ ] Tests d'abord depuis les `Scenario` (couture `InferenceFactory` + `ScriptedProvider`, SQLite mémoire), puis ./subagent_step.rs.
+  [ ] Preuve de reprise (DSD `AC-10`) : test `#[ignore]` contre `restate-server` par la méthode du spike de `workflow#AC-8`
+    (`tests/workflow_restate.rs`, fichier rattaché à ./dispatcher.sdd : à citer en `Can modify` après accord) ; non verrouillée par la CI.
+
+Done when:
+  Les `Scenario` unitaires sont verts sous `all(workflow, lymaille)` et `--all-features` ; les specs de ../lymaille/ sont approuvées avant
+    ou avec celle-ci ; la spec est relue et approuvée avant ./subagent_step.rs.
+
+Scenario: sans identité du déclencheur le step échoue sans repli
+  Given un `RunInfo` dont `trigger` est `None`
+  When `run` est appelé
+  Then `Err(StepError { retryable: false })` « subagent step requires a trigger identity » et aucune requête d'inférence
+
+Scenario: une config invalide ne touche ni la base ni l'inférence
+  Given `agent = ""`, puis `task = "  "`, puis `max_secs = 0`, puis `max_secs = 541`, puis une clé inconnue
+  When `run` est appelé pour chacune
+  Then chaque résultat est `Err(StepError { retryable: false })` préfixé `config subagent invalide:`
+
+Scenario: un agent inconnu ou qui n'est pas un sous-agent est refusé
+  Given un trigger valide et un agent absent, puis un agent de nature `work`, puis un sous-agent sans schéma de sortie
+  When `run` est appelé pour chacun
+  Then trois `Err(StepError { retryable: false })` distincts
+
+Scenario: un sous-agent rend sa sortie validée
+  Given un sous-agent dont le `ScriptedProvider` soumet `{"verdict": "ok"}` conforme au schéma
+  When `run` est appelé
+  Then le résultat est `Ok({"verdict": "ok"})` et la session `wf-…` est sauvegardée sous le `subject` du déclencheur
+
+Scenario: le nom de session est déterministe
+  Given deux `RunInfo` identiques `(run_key, step_id)` puis un troisième de `step_id` différent
+  When le nom de session est dérivé
+  Then les deux premiers sont égaux, commencent par `wf-` et font 35 caractères ; le troisième diffère
+
+Scenario: un rejeu reprend la session sauvegardée
+  Given une session `wf-…` déjà sauvegardée avec un tour terminé, et un `ScriptedProvider` qui soumet le résultat au tour suivant
+  When `run` est appelé
+  Then le tour déjà terminé n'est pas refait (le provider reçoit une seule requête) et le résultat est rendu
+
+Scenario: le plafond max_secs arrête l'agent
+  Given un provider qui ne soumet jamais de résultat et `max_secs = 1` (horloge accélérée en test)
+  When `run` est appelé
+  Then `Err(StepError { retryable: false })` « agent run exceeded max_secs » et la session reste sauvegardée
+
+Scenario: aucun secret ni prompt dans les erreurs
+  Given un provider dont l'inférence échoue, une clé `s3cret` résolue, un prompt `PROMPT-X`
+  When `run` échoue
+  Then ni `s3cret` ni `PROMPT-X` ne figurent dans `message` ni dans `Debug` du `StepError`
+
+Scenario: les droits sont ceux du déclencheur
+  Given un déclencheur non-admin et un sous-agent qui lit une ressource `AdminOnly` par le module `resources`
+  When `run` est appelé
+  Then la lecture échoue `forbidden` dans le script de l'agent (l'agent n'a jamais plus de droits que le déclencheur)

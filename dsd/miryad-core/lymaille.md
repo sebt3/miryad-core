@@ -293,16 +293,22 @@ et appels d'MCP externes depuis les scripts.
     - **Consequences:** `DraftStore` et `SessionIndex` attendent le lot 2 ; `AC-8` aussi.
     - **Source:** user instruction, 2026-11-02
 
-- **DEC-14 - Les définitions sont des `MiryadResource`**
+- **DEC-14 - Les définitions administrées sont des `MiryadResource`** (amendé le 2026-11-02)
     - **Context:** sans session de configuration, il faut un moyen de créer et de modifier agents, toolsets et profils ; la
       crate sait déjà exposer des entités en REST et MCP avec propriétaire, politiques et hooks.
-    - **Decision:** les tables de définitions `miryad_lymaille_*` sont déclarées par `MiryadResource` : CRUD REST et MCP par
-      le moteur existant, propriétaire par `owner_column`, préfixe `G_` (`DEC-9`) et publication au catalogue contrôlés par
-      les hooks `before_create`/`before_update`. Les stores de `lymaille` lisent ces mêmes tables.
+    - **Decision:** seules les tables qu'un admin administre à la main au lot 1 sont des `MiryadResource` : **agents, toolsets, profils et
+      providers**. CRUD REST et MCP par le moteur existant ; le préfixe `G_` (`DEC-9`) et la validation de la définition sont contrôlés par
+      les hooks `before_create`/`before_update`. Les stores de `lymaille` lisent ces mêmes tables. Les autres tables (sessions, mémoires,
+      types de contexte, contextes) sont **internes**, sans CRUD.
+    - **Amendement 2026-11-02 (remarque du développeur principal : « est-ce utile pour tout ? ») :** au lot 1 seuls les admins écrivent
+      (`FR-9` : un non-admin n'écrit des définitions qu'en session de configuration, lot 2). Les lignes `MiryadResource` du lot 1 sont donc
+      toutes du **catalogue** : `owner_column() = None`, politique de lecture `Public` (agents, toolsets, profils ; `AdminOnly` pour les
+      providers) et d'écriture `AdminOnly`, identifiant `G_…` imposé par hook. L'expression « privé + catalogue » est tranchée par
+      `DEC-19` : une paire de ressources et deux tables par type, sans toucher au moteur d'accès ; les entités privées arrivent au lot 2.
     - **Alternatives:** stores seuls, définitions fournies par l'application (écarté : `DEC-7` à `DEC-9` n'auraient aucun point
       d'application dans la crate).
     - **Consequences:** la validation d'une définition (`AgentDefinition::validate`, droits du propriétaire, `FR-9`) vit dans
-      les hooks ; les tables internes de l'exécution (sessions, mémoires) restent hors du CRUD.
+      les hooks ; les tables internes de l'exécution (sessions, mémoires, types de contexte, contextes) restent hors du CRUD.
     - **Source:** user instruction, 2026-11-02
 
 - **DEC-15 - Module des ressources générique, en lecture seule au lot 1**
@@ -345,8 +351,23 @@ et appels d'MCP externes depuis les scripts.
       dans l'actif par une action contrôlée par hook. Le lot 2 branche `DraftStore` sur le même stockage.
     - **Alternatives:** table de brouillons séparée (écarté : l'activation devient une opération inter-tables sans surface CRUD) ; version
       active seule (écarté : perd la garantie que le LLM ne voit jamais un brouillon).
-    - **Consequences:** les hooks portent aussi le contrôle d'activation ; `get_active`/`get_draft` se lisent sur une seule ligne.
+    - **Consequences:** `get_active`/`get_draft` se lisent sur une seule ligne. **Précision du 2026-11-02 :** au lot 1 l'activation est l'écriture de
+      `active` par un admin via l'entité (`DEC-14`) ; l'activation self-service du propriétaire et le contrôle de hook associé arrivent avec le lot 2.
     - **Source:** user instruction, 2026-11-02
+
+- **DEC-19 - Catalogue et privé : une paire de ressources, deux tables, aucune union**
+    - **Context:** `AccessPolicy` est statique par entité ; « mes définitions + le catalogue » ne s'y exprime pas (une ligne sans propriétaire
+      est refusée hors admin sous `OwnerOnly`). Une vue union n'a pas de sens : elle ignore l'appelant, et sa variante « catalogue × utilisateurs »
+      donne N copies de chaque entrée (clé primaire à synthétiser, coût en nombre d'utilisateurs).
+    - **Decision:** agents et toolsets existent en deux tables, `miryad_lymaille_catalog_*` (catalogue `G_…`, `AdminOnly` en écriture, `Public` en
+      lecture) et `miryad_lymaille_*` (privé, `owner_id NOT NULL`, `OwnerOnly`), chacune exposée par sa propre `MiryadResource` aux droits
+      distincts. Le préfixe `G_` (`DEC-9`) décide de la table : une résolution est une requête sur une table, jamais une union. À l'API REST/MCP,
+      ce sont deux ressources distinctes.
+    - **Alternatives:** variante d'`AccessPolicy` « propriétaire ou sans propriétaire » (écarté : change le moteur d'accès pour toutes les
+      ressources) ; vue union (écarté, ci-dessus).
+    - **Consequences:** unicité par simples contraintes (`UNIQUE(agent_id)` au catalogue, `UNIQUE(owner_id, agent_id)` au privé, plus d'index
+      partiel) ; les tables privées existent dès le lot 1 (les stores les écrivent) mais leurs entités arrivent au lot 2.
+    - **Source:** user instruction, 2026-11-02 (paire de ressources) ; vue écartée par le développeur principal le 2026-11-02
 
 ## Contour du lot 2
 
@@ -362,6 +383,9 @@ séance, après le retour du lot 1. Son périmètre (arbitré le 2026-11-02, `DE
   sorties longues, annuaire mxid → principal (`OI-5`, bloquant).
 - **Session de configuration** (`FR-9`, `AC-8`) : `DraftStore` et `SessionIndex` branchés sur le stockage du lot 1 (`DEC-18`), activation
   self-service.
+- **Définitions privées** : les entités `OwnerOnly` des tables privées `agents` et `toolsets` (seconde ressource de la paire, `DEC-19`), avec les
+  hooks du préfixe réservé (`G_`/`g_` refusés) et du contrôle des droits d'accord de modules du propriétaire (`FR-9`). Les stores y accèdent
+  déjà au lot 1.
 - **Écritures du module des ressources** (`create`, `update`, `delete`, `DEC-15`) : proposition à arbitrer, les réserver aux sessions
   interactives (non rejouées par Restate) et les interdire au step batch (`DEC-11`). **TBD.**
 - **Hors lot 2 :** kind `pad` (lot 3, `OI-3`).
@@ -379,13 +403,14 @@ séance, après le retour du lot 1. Son périmètre (arbitré le 2026-11-02, `DE
 
 ## SpecDD Realization
 
-Specs du lot 0 écrites le 2026-11-02. `/src/lymaille/secret.sdd` (`DEC-16`) s'ajoute à la liste ci-dessous. Lot 2 : contour posé, aucune spec ni tâche. Lot 1 (`DEC-6`, `DEC-13` à `DEC-15`), noms provisoires, **un fichier source = une spec** :
-`SpecDD /Cargo.toml` (feature, dépendance, relais), `SpecDD /src/lymaille/mod.sdd`, `/src/lymaille/error.sdd`
-(`MRD-LYMAILLE-*`), `/src/lymaille/tls.sdd` (`FR-5`), `/src/lymaille/identity.sdd` (`FR-4`, `FR-8`, `FR-9`),
-`/src/lymaille/store/*.sdd` (`FR-3`, un fichier par groupe de traits), `/src/lymaille/definitions/*.sdd` (entités
-`MiryadResource` et hooks de `DEC-14`), `/src/lymaille/resource_module.sdd` (`FR-2`, lecture seule),
-`/src/migration/` (migration interne), `/src/workflow/subagent_step.sdd` (`FR-6`). Lot 0, préalable : amendements de
-`/src/workflow/step.sdd`, `client.sdd`, `interpreter.sdd` et `subworkflow.sdd` (`FR-10`). Lot 3 : `/src/workflow/pad_step.sdd`.
+Specs du lot 0 écrites et livrées le 2026-11-02. **Specs du lot 1 rédigées le 2026-11-02, en attente d'approbation** (`DEC-6`, `DEC-13` à
+`DEC-18`), un fichier source = une spec : `/src/lymaille/mod.sdd` (feature et diff `Cargo.toml`, `FR-1`), `error.sdd` (`MRD-LYMAILLE-*`),
+`tls.sdd` (`FR-5`), `secret.sdd` (`DEC-16`), `migration.sdd` (`FR-3`), `identity.sdd` (`FR-4`, `FR-8`, `FR-9`), `store/mod.sdd`, `store/session.sdd`,
+`store/catalog.sdd`, `store/toolset.sdd`, `store/memory.sdd` (`FR-3`, huit traits), `definitions/mod.sdd`, `definitions/agent.sdd`,
+`definitions/toolset.sdd`, `definitions/profile.sdd`, `definitions/provider.sdd` (`DEC-14`, `DEC-17`, `DEC-18`), `resource_module.sdd` (`FR-2`,
+lecture seule), `/src/workflow/subagent_step.sdd` (`FR-6`, `FR-10`). Amendements d'accompagnement : `/src/lib.sdd`, `/src/migration/mod.sdd`,
+`/src/workflow/mod.sdd`, `/src/auth/principal.sdd` (variante `PrincipalSource::Agent`), `/miryad-core.sdd`, `/tooling.sdd` ; `/AGENTS.md`, la CI et
+`workflows.sdd` restent à amender avec accord. Lot 2 : contour posé, aucune spec ni tâche. Lot 3 : `/src/workflow/pad_step.sdd`.
 
 ## Acceptance Criteria
 
@@ -404,7 +429,7 @@ Specs du lot 0 écrites le 2026-11-02. `/src/lymaille/secret.sdd` (`DEC-16`) s'a
 - **AC-7:** Deux utilisateurs ne voient jamais les agents, toolsets, skills, brouillons ni sessions l'un de l'autre ; tous
   deux voient le catalogue partagé, que seul un admin modifie.
 - **AC-8 (lot 2) :** Un non-admin ouvre une session de configuration, écrit et active un sous-agent ; sa définition qui accorde un
-  module réservé à l'admin est refusée à la sauvegarde. Dès le lot 1, la même définition envoyée par REST ou MCP est refusée par le hook.
+  module réservé à l'admin est refusée à la sauvegarde. Au lot 1, un non-admin est refusé dès la politique d'écriture `AdminOnly` des définitions ; le hook valide les droits du propriétaire pour les lignes privées du lot 2.
 
 - **AC-9:** Un utilisateur, admin compris, qui crée dans son espace privé un identifiant commençant par `G_` ou `g_` est
   refusé ; un admin qui publie `G_x` alors qu'un utilisateur a un agent `x` réussit, et l'utilisateur voit les deux sans
@@ -424,9 +449,10 @@ Specs du lot 0 écrites le 2026-11-02. `/src/lymaille/secret.sdd` (`DEC-16`) s'a
   (Constraints, avec `Scenario` de preuve type A1).
 - **OI-2:** **Stores du lot 1** (`DEC-13`) : huit traits, `SessionStore`, `AgentStore`, `ProfileStore`, `ProviderStore`,
   `ToolsetStore`, `ContextTypeStore`, `ContextStore`, `MemoryStore`, cloisonnés par propriétaire (`DEC-7`), stores construits
-  par principal. `DraftStore`, `SessionIndex` : lot 2. **Arbitré le 2026-11-02 (user instruction) :** agents, profils, toolsets, types de
-  contexte et contextes sont des `MiryadResource` ; les providers aussi, **réservés aux admins** (`ProviderLevel` : références, jamais de
-  secret, Observed in: `lymaille/src/agents/provider.rs`, 2026-11-02) ; sessions et mémoires restent internes, hors CRUD.
+  par principal. `DraftStore`, `SessionIndex` : lot 2. **Arbitré le 2026-11-02 (user instruction), révisé le même jour
+  (`DEC-14`) :** agents, toolsets, profils et providers sont des `MiryadResource` (providers **réservés aux admins** : `ProviderLevel`,
+  références, jamais de secret, Observed in: `lymaille/src/agents/provider.rs`, 2026-11-02) ; sessions, mémoires, types de contexte et
+  contextes restent internes, hors CRUD (aucune surface ne les écrit au lot 1, `OI-9`).
 - **OI-3:** **Pad de workflow** : `PW-1` à `PW-5` ne sont pas dans `lymaille` 0.1.0. À faire côté `lymaille` d'abord
   (nature `Workflow` de `SessionState`, cycle de vie sans tour, instantané JSON). Le kind `pad` (`FR-7`) attend cette
   release. **TBD :** versionnage de la demande côté `lymaille`.
@@ -446,7 +472,7 @@ Specs du lot 0 écrites le 2026-11-02. `/src/lymaille/secret.sdd` (`DEC-16`) s'a
   (`ServiceOptions::inactivity_timeout` / `abort_timeout`, Observed in: `restate-sdk-0.12.1/src/endpoint/builder.rs`) ; (3) au-delà,
   Restate relance la fermeture **depuis zéro**, ce qui confirme le besoin de reprise sur session déterministe (`DEC-10`) ; (4) le
   réglage vit sur le service `StepDispatcher`, donc il s'applique à tous les kinds : le relever retarde aussi la détection d'un
-  step ordinaire bloqué. Reste à décider en spec : réglage global de `recommended_options()` ou service dédié (`FR-6`).
+  step ordinaire bloqué. **Décidé dans `subagent_step.sdd` (en attente d'approbation) :** `recommended_options()` inchangé au lot 1 ; `max_secs` plafonné à 540 s, défaut 480 s.
     - **Source:** spike du 2026-11-02, résultats ci-dessus ; user instruction, 2026-11-02
 - **OI-5:** **Glue Matrix** (`matrix` + `lymaille`) : mapping salle ↔ session, dédoublonnage des messages remis deux
   fois après bascule de bail, mise en forme des sorties longues, annuaire mxid → principal (inexistant :
@@ -455,12 +481,16 @@ Specs du lot 0 écrites le 2026-11-02. `/src/lymaille/secret.sdd` (`DEC-16`) s'a
   `<filtre>` de `list` (celle de `src/query.rs`), pagination et plafond de taille d'une réponse au LLM (rendu par
   `src/mcp/format.rs` ?). **TBD** à la spec `resource_module.sdd`.
 
+- **OI-9:** **Types de contexte, contextes et serveurs MCP** : au lot 1 aucune surface n'écrit les types de contexte ni les contextes (tables
+  internes, lues par les stores) ; un toolset qui exige un contexte ne tourne que si l'application l'a posé par les stores. Les définitions de
+  serveurs MCP (`McpClientConfig` est fourni par l'hôte, sans trait de store dans `lymaille` 0.1.0) ne sont dans aucun lot. **TBD :** un
+  `MiryadResource` `mcp_servers` (admin) au lot 2 ou plus tôt ; qui écrit types et contextes avant la session de configuration.
 - **OI-7:** **Rétention des sessions de step** : une session `Sub` par (clé du workflow, step) s'accumule dans `miryad_lymaille_sessions`
   (le trait n'a pas de suppression, `Faits vérifiés`). **TBD :** purge, rattachée au cycle de vie du workflow ou à une durée ; sans
   incidence sur la correction du lot 1, à arbitrer avant une mise en production.
 - **OI-8:** **Fingerprint et reprise** : `restore_session` compare la `Provenance` sauvegardée à l'actuelle (empreinte de la définition,
   versions de toolsets) et rend des avis si elles diffèrent. Si l'agent est modifié entre deux tentatives d'un step, la reprise continue
-  avec ces avis. **TBD :** acceptable tel quel, ou erreur non retryable ? À qualifier à la spec `subagent_step.sdd`.
+  avec ces avis. **Tranché provisoirement dans `subagent_step.sdd` (en attente d'approbation) :** la reprise continue avec les avis de `lymaille`, sans échec sur empreinte différente.
 
 ## References
 

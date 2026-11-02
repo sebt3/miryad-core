@@ -1,0 +1,85 @@
+Spec: mod — LymailleStores, stores SeaORM des traits hôte de lymaille, construits par principal
+
+Purpose:
+  Implémenter sur SeaORM les huit traits de store du lot 1 de `lymaille` (DSD `FR-3`, `DEC-1`, `OI-2`) : `SessionStore`, `AgentStore`,
+    `ProfileStore`, `ProviderStore`, `ToolsetStore`, `ContextTypeStore`, `ContextStore`, `MemoryStore`. Les traits de `lymaille` ne prennent
+    aucun propriétaire en paramètre (DSD `DEC-7`) : les stores sont donc **construits par principal**, liés à un `subject`, jamais partagés.
+    `LymailleStores` est la fabrique ; chaque store qu'elle rend lit et écrit les tables `miryad_lymaille_*` (../migration.sdd) en
+    appliquant le cloisonnement par propriétaire et la règle du préfixe `G_` (../identity.sdd). Ce fichier porte aussi les conventions
+    communes (traduction de `DbErr`, horodatage). Fichier neuf, conception.
+
+Owns:
+  ./mod.rs
+
+References:
+  ./session.sdd, ./catalog.sdd, ./toolset.sdd, ./memory.sdd — enfants
+  ../identity.sdd — `Identity`, `CallerPrincipal`, `classify`, `check_write`
+  ../migration.sdd — tables ; ../definitions/mod.sdd — entités des tables de définitions (les stores les lisent et les écrivent)
+  /dsd/miryad-core/lymaille.md — `FR-3`, `FR-4`, `FR-8`, `DEC-3`, `DEC-7`, `DEC-9`, `AC-4`, `AC-7`
+  ../../matrix/store/mod.sdd — précédent d'un store SeaORM de module (tests SQLite en mémoire, PostgreSQL via `MIRYAD_TEST_PG_URL`)
+
+Must:
+  `pub struct LymailleStores` — `Clone`, champs privés `db: DatabaseConnection`, `identity: Identity`, `subject: String`.
+    `pub fn new(db: DatabaseConnection, subject: impl Into<String>) -> Self`.
+    Accesseurs qui rendent un store `Clone` lié à ce `subject` (chacun un type `pub` des enfants) :
+    `sessions() -> SeaSessionStore`, `agents() -> SeaAgentStore`, `profiles() -> SeaProfileStore`, `providers() -> SeaProviderStore`,
+    `toolsets() -> SeaToolsetStore`, `context_types() -> SeaContextTypeStore`, `contexts() -> SeaContextStore`, `memories() -> SeaMemoryStore`.
+    `pub fn subject(&self) -> &str`.
+  **Règles communes à tous les stores** :
+    1. Le `subject` fixe le cloisonnement : une lecture ou une écriture ne touche jamais la ligne privée d'un autre `subject`
+      (DSD `AC-7`). Le catalogue (tables `catalog_agents`, `catalog_toolsets`) est lisible de tous ; le privé (tables `agents`, `toolsets`, `owner_id`) n'est lisible que de son propriétaire.
+    2. Les stores de **définitions** (agents, toolsets) résolvent le principal par `Identity::resolve(subject)` **à chaque opération**
+      (DSD `DEC-3`) : `UnknownSubject` pour un `subject` sans compte ; l'`owner_id` d'une ligne privée est `CallerPrincipal::user_id`.
+      Sessions et mémoires sont clés par `subject` et ne résolvent pas le principal.
+    3. Résolution d'un identifiant de définition : `classify(id)` → `Catalog` : ligne de la table `catalog_*` ; `Private` : ligne de la table
+      privée avec `owner_id = user_id` ; `ReservedPrefix` ou identifiant invalide à la **lecture** : `Ok(None)`, jamais une erreur. Une
+      résolution = **une** requête sur **une** table (le préfixe tranche, aucune union, DSD `DEC-19`).
+    4. Écriture d'une définition : `check_write(caller, id)` (../identity.sdd) — `Catalog` exige un admin, `ReservedPrefix` refusé ; l'objet
+      passe par la validation de `lymaille` (`AgentDefinition::validate`, `check_toolset`) avant tout `INSERT`/`UPDATE` ; l'écriture est un
+      upsert sur la clé de la table visée (`identifiant` pour le catalogue, `(owner_id, identifiant)` pour le privé) et réécrit les colonnes dérivées comme les hooks (../definitions/agent.sdd).
+    5. Un refus de l'hôte (`Forbidden`, `ReservedPrefix`, `UnknownSubject`, `InvalidDefinition`) est rendu à `lymaille` par la variante
+      `Store(<Display de la LymailleError, code MRD-LYMAILLE-NNN compris>)` de l'erreur du trait (aucune variante dédiée n'existe côté
+      `lymaille`) ; un `DbErr` devient `Store(<texte du DbErr sans paramètre de requête>)` ; **jamais** un secret ni le contenu d'un
+      objet dans ce texte.
+    6. Les horodatages (`updated_at`, `created_at`) sont posés par le store à l'heure UTC courante.
+  `pub(crate) fn db_text(error: &DbErr) -> String` — texte expurgé d'un `DbErr` pour la règle 5.
+  Déclarer `pub mod session; pub mod catalog; pub mod toolset; pub mod memory;` et ré-exporter à plat les huit types de store.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Partager un store entre deux `subject` ; mettre en cache un `CallerPrincipal` ; écrire un secret en base ; formater un état de
+    session, un prompt ou une définition dans une trace ou une erreur.
+  Appliquer une migration (l'hôte assemble `lymaille::migrations()`).
+
+Depends on:
+  ../identity.rs, ../error.rs, ../definitions/*.rs, ./session.rs, ./catalog.rs, ./toolset.rs, ./memory.rs, @sea_orm
+
+Exposes:
+  `LymailleStores`, `LymailleStores::{new, subject, sessions, agents, profiles, providers, toolsets, context_types, contexts, memories}`,
+    `db_text` (`pub(crate)`), et les huit types de store ré-exportés.
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire : cloisonnement et règles 1 à 6 sur un store de test), puis ./mod.rs en dernier du dossier.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./mod.rs.
+
+Scenario: deux sujets ne se voient pas, le catalogue est commun
+  Given deux utilisateurs `alice` et `bob`, un agent privé `x` d'`alice` et un agent `G_y` du catalogue écrit par un admin
+  When `bob` lit `x` puis `G_y`, et `alice` lit `G_y`
+  Then `bob` obtient `None` pour `x` et la définition pour `G_y`, `alice` obtient `G_y`
+
+Scenario: un identifiant de casse réservée n'est ni lu ni écrit
+  Given un store lié à un utilisateur non-admin
+  When il lit `g_x` puis écrit un agent `g_x`
+  Then la lecture rend `Ok(None)` et l'écriture une erreur `Store` dont le texte contient `MRD-LYMAILLE-003`
+
+Scenario: l'écriture au catalogue exige un admin au moment de l'appel
+  Given `alice` admin qui écrit `G_a` avec succès, puis retirée du groupe admin
+  When elle écrit `G_b`
+  Then l'écriture est refusée avec un texte contenant `MRD-LYMAILLE-002`
+
+Scenario: un subject sans compte est refusé
+  Given un store lié à `ghost` sans compte local
+  When il lit un agent
+  Then l'erreur est de la variante `Store` et le texte contient `MRD-LYMAILLE-001`

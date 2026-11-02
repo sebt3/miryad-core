@@ -1,0 +1,85 @@
+Spec: mod — agrégation du module `lymaille`, gating, graphe Cargo
+
+Purpose:
+  Contrat d'agrégation de `src/lymaille/` : miryad-core est l'**hôte** de la bibliothèque `lymaille` (agent LLM durable, sessions
+    persistées, pad Rhai, toolsets). Le module fournit à `lymaille` ce qu'elle laisse à l'hôte — stockage SeaORM de ses objets,
+    identité et droits de l'appelant, installation du provider TLS, résolution des références de secret — et l'expose aux LLM
+    (module Rhai des ressources). Le kind de workflow `subagent` vit dans ../workflow/subagent_step.sdd et n'existe que sous
+    `workflow` **et** `lymaille`.
+  La feature `lymaille` **implique `db`** (`lymaille = ["db", …]`) : tout build qui compile ce module compile aussi `sea-orm`,
+    @resource, @rbac, @users et @migration. Aucun `cfg(feature = "db")` n'est posé dans ce module (l'implication suffit).
+  Solution de référence : `dsd/miryad-core/lymaille.md` (FR-1 à FR-10, DEC-1 à DEC-18). L'API publique n'expose aucun type de
+    `rustls` ; les types de `lymaille` y figurent là où l'hôte doit les nommer (traits de store implémentés), la montée de version de
+    `lymaille` étant une décision de la crate (versions `rmcp`/`rig-core` dictées par `lymaille`, DSD `Constraints and Pitfalls`).
+
+Owns:
+  ./mod.rs
+
+References:
+  ./error.sdd, ./tls.sdd, ./secret.sdd, ./migration.sdd, ./identity.sdd, ./store/mod.sdd, ./definitions/mod.sdd,
+    ./resource_module.sdd — enfants
+  ../workflow/subagent_step.sdd — consommateur interne sous `workflow` + `lymaille`
+  /src/lib.sdd — amendée : `#[cfg(feature = "lymaille")] pub mod lymaille;`
+  /src/migration/mod.sdd — ajoute `lymaille::migrations()` sous `lymaille`
+  /miryad-core.sdd — `Owns: ./Cargo.toml` ; ce fichier documente le diff attendu sans le posséder
+  /dsd/miryad-core/lymaille.md — Solution (pourquoi, arbitrages, Open Issues)
+
+Must:
+  Déclarer `pub mod error;`, `pub mod secret;`, `pub mod store;`, `pub mod definitions;`, `pub mod identity;`,
+    `pub mod resource_module;` et les modules privés `tls`, `migration`. Ré-exporter à plat, `pub use`, exactement :
+    `error::LymailleError`, `secret::{SecretResolver, EnvSecretResolver}`, `identity::{Identity, CallerPrincipal}`,
+    `store::LymailleStores`, `migration::migrations`, `tls::install_crypto_provider`. `store` et `definitions` restent
+    atteignables par leur chemin (entités et stores nommés par l'application).
+  Compiler sous `#[cfg(feature = "lymaille")]`, posé dans `/src/lib.rs`.
+  Documenter dans le bloc `//!` : la promesse du module, le déploiement requis (base présente, migrations
+    `lymaille::migrations()` appliquées via `miryad_core::migration::Migrator`, provider TLS installé par le montage de l'état),
+    les limites du lot 1 (batch seul, module des ressources en lecture, aucune session interactive) et le renvoi vers
+    `dsd/miryad-core/lymaille.md`.
+  Documenter dans `/Cargo.toml` (hors `Owns`, diff imposé) exactement :
+    `lymaille = ["db", "dep:lymaille", "dep:rustls", "dep:zeroize", "dep:tokio", "dep:vynil-core", "dep:rhai"]` (`zeroize`, `tokio` et
+    `vynil-core` sont déjà des dépendances optionnelles partagées avec `matrix` et `workflow` ; `vynil-core` fournit `rt::block_on`, le pont
+    sync/async de `lymaille` pour ses modules Rhai) ;
+    `rhai = { version = "1.27", default-features = false, features = ["std", "sync"], optional = true }` (pour construire le `Module` du
+    module des ressources ; version unifiée avec celle de `lymaille`, un seul exemplaire dans le graphe) ;
+    `lymaille = { version = "0.1.0", optional = true }` (features par défaut conservées : `mcp-http`, `rig` ; **jamais** `fs` ni
+    `shell`, DSD `OI-1`) ;
+    `rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }` (provider `ring`,
+    DSD `DEC-4` ; déjà dans le graphe, aucune dépendance de fond ajoutée).
+    La feature n'est **pas** dans `default` ; `[package.metadata.docs.rs].features` y ajoute `lymaille`.
+  Rester **sans état global** autre que l'installation idempotente du provider TLS de ./tls.sdd.
+
+Must not:
+  Activer les features `fs` ou `shell` de `lymaille` (relais de `vynil-core`), directement ou par un relais miryad.
+  Monter une route `axum` : le lot 1 n'ajoute aucune surface HTTP propre (les définitions sont exposées par le moteur générique
+    de @resource, ./definitions/mod.sdd).
+  Exposer un type de `rustls` ou un secret dans l'API publique.
+
+Depends on:
+  ./error.rs, ./tls.rs, ./secret.rs, ./migration.rs, ./identity.rs, ./store/mod.rs, ./definitions/mod.rs, ./resource_module.rs
+
+Exposes:
+  `LymailleError`, `SecretResolver`, `EnvSecretResolver`, `Identity`, `CallerPrincipal`, `LymailleStores`, `migrations`,
+    `install_crypto_provider`, modules `store`, `definitions`, `resource_module`.
+
+Tasks:
+  [ ] `mod.rs` en dernier du lot (après tous les enfants) ; test de chemins plats.
+  [ ] Amender /src/lib.rs, /Cargo.toml, ../migration/mod.rs, ../workflow/mod.rs, /tooling.sdd, /AGENTS.md et la CI dans le même lot
+    (fichiers hors périmètre d'une tâche : amendement soumis au développeur principal avant d'y toucher).
+  [ ] Prouver le graphe : `cargo tree --no-default-features -e normal -i lymaille` imprime « nothing to print » ; avec
+    `--features lymaille`, `cargo tree -e normal -i sea-orm` imprime une ligne (DSD `AC-2`) ; un seul `rhai`, un seul `tokio`
+    et un seul `rustls` dans `cargo tree --all-features` (DSD `AC-1`) ; la bascule `rhai` 1.26.1 → 1.27.0 est prouvée par la batterie
+    `workflow` du moment de l'ajout (DSD `Constraints and Pitfalls`).
+
+Done when:
+  Les `Scenario` sont verts ; `cargo build --no-default-features --features lymaille` et `--all-features` compilent sans
+    avertissement ; la spec est relue et approuvée avant ./mod.rs.
+
+Scenario: les chemins plats existent
+  Given la feature `lymaille`
+  When un test importe `crate::lymaille::{LymailleError, SecretResolver, EnvSecretResolver, Identity, CallerPrincipal, LymailleStores, migrations, install_crypto_provider}`
+  Then le test compile
+
+Scenario: la feature implique db
+  Given la crate compilée avec `--no-default-features --features lymaille`
+  When un test importe `crate::resource::MiryadResource` et `crate::lymaille::LymailleStores`
+  Then le test compile

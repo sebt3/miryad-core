@@ -1,0 +1,82 @@
+Spec: toolset — entité `lymaille_catalog_toolsets`, toolsets du catalogue (active et brouillon)
+
+Purpose:
+  Porter l'entité @MiryadResource des toolsets (table `miryad_lymaille_catalog_toolsets`) : une ligne porte la version **active** et le **brouillon**
+    d'un toolset (DSD `DEC-18`). Au lot 1, l'admin écrit `active` et `draft` directement par REST/MCP (il n'existe pas de session de
+    configuration) ; l'activation d'un brouillon est l'écriture de `active` par un admin. Le store ne lit jamais `draft` pour
+    `get_active` (garantie : le LLM ne voit jamais un brouillon). L'activation en self-service du propriétaire arrive avec le lot 2.
+    Fichier neuf, conception.
+
+Owns:
+  ./toolset.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `FR-8`, `DEC-8`, `DEC-9`, `DEC-14`, `DEC-18`
+  ../identity.sdd — `classify` ; ../migration.sdd — table `miryad_lymaille_catalog_toolsets` (la table privée `miryad_lymaille_toolsets` n'a pas d'entité au lot 1, DSD `DEC-19`)
+  ../store/toolset.sdd — lecteur de `active`/`draft`
+  ./agent.sdd — précédent de forme (hooks, colonnes dérivées)
+
+Must:
+  `Entity`/`Model`/`ActiveModel` via `DeriveEntityModel`, `#[sea_orm(table_name = "miryad_lymaille_catalog_toolsets")]`, `Model` : `id: i32`
+    (`primary_key`), `toolset_id: String`, `version: String`, `active: Option<serde_json::Value>`,
+    `draft: Option<serde_json::Value>`, `created_at: DateTimeUtc`.
+  `impl MiryadResource for Entity` : `resource_name()` = `"lymaille_catalog_toolsets"` ; `read_policy()` = `Public` ; `write_policy()` = `AdminOnly` ;
+    `owner_column()` = `None` ; `filter_column()` = `None` ; `label_column()` = `Some(Column::ToolsetId)`.
+  `before_create` / `before_update(active, existing, principal)` dans cet ordre :
+    1. `active` et `draft` ne sont pas tous deux absents/`null` → sinon `HookError::new("a toolset needs an active version or a draft")` ;
+    2. chaque version présente se désérialise en `lymaille::Toolset` et passe les contrôles de `ToolsetStore::put_draft` (contrat du source
+      extractible, gabarits de skill compilables, plafond de rendu `DEFAULT_RENDER_CAP_CHARS`) ; échec →
+      `HookError::new("invalid toolset: {e}")` ;
+    3. si les deux versions sont présentes, elles portent le **même** `name` ; l'identifiant est ce `name`, et `classify(name)` doit rendre
+      `Catalog` sinon `HookError::new("toolset id must start with G_ (catalog)")` ;
+    4. dérivés : `toolset_id = name`, `version` = version de la version `active` si présente, sinon du brouillon ;
+      `created_at = Set(now)` si `NotSet` (création).
+    5. (`before_update` seulement) `toolset_id` ne change pas, sinon `HookError::new("toolset id cannot change")`.
+  `pub(crate) fn check_toolset(toolset: &lymaille::Toolset) -> Result<(), String>` — les contrôles de l'étape 2 (contrat extractible, gabarits
+    de skill compilables, plafond de rendu), **partagés** avec ../store/toolset.sdd (`put_draft` applique les mêmes contrôles que le hook) ;
+    l'`Err` est un texte expurgé (jamais le source).
+  `pub const DEFAULT_RENDER_CAP_CHARS: u64` — plafond de rendu d'un corps ou d'une annexe de skill ; valeur = celle du plafond par défaut
+    de `ScratchpadLimits::new()` de `lymaille` (valeur exacte à relire en source à l'implémentation ; l'implémenteur lève un `[?]` si elle
+    n'est pas atteignable).
+  Les `HookError` n'ont **aucun code** et ne citent jamais le source d'un module.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Citer la source Rhai d'un toolset dans une erreur ; laisser un `toolset_id` incohérent avec le `name` des versions.
+
+Depends on:
+  ../identity.rs, @sea_orm, @serde_json, `lymaille::Toolset`
+
+Exposes:
+  `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`, `DEFAULT_RENDER_CAP_CHARS`, `check_toolset` (`pub(crate)`)
+
+Tasks:
+  [ ] Tests d'abord (hooks purs, politiques), puis ./toolset.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./toolset.rs.
+
+Scenario: un toolset sans version est refusé
+  Given `active` et `draft` absents
+  When `before_create` est appelé
+  Then le résultat est `Err(HookError)` « a toolset needs an active version or a draft »
+
+Scenario: un brouillon seul est accepté, colonnes dérivées
+  Given un `draft` valide de nom `G_git`, version `1.0.0`, sans `active`
+  When `before_create` est appelé
+  Then `toolset_id = "G_git"`, `version = "1.0.0"`, `active` reste vide
+
+Scenario: un nom privé ou deux noms différents sont refusés
+  Given un `draft` de nom `git`, puis un `active` `G_a` avec un `draft` `G_b`
+  When `before_create` est appelé pour chacun
+  Then le premier est refusé « toolset id must start with G_ (catalog) », le second pour des noms différents
+
+Scenario: un toolset invalide est refusé sans fuite de source
+  Given une version dont le source ne donne pas de contrat
+  When `before_create` est appelé
+  Then le résultat est `Err(HookError)` « invalid toolset: … » ne contenant pas le source
+
+Scenario: politiques du catalogue
+  Given l'entité
+  When on lit `read_policy`, `write_policy`, `owner_column`
+  Then `Public`, `AdminOnly`, `None`

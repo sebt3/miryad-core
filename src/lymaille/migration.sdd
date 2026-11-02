@@ -1,0 +1,80 @@
+Spec: migration — migrations SeaORM internes du module lymaille
+
+Purpose:
+  Livrer le schéma des tables `miryad_lymaille_*` sous forme de migrations que **l'hôte assemble** (le module ne les applique jamais lui-même) :
+    `migrations() -> Vec<Box<dyn MigrationTrait>>`. Les migrations vivent ici (module autoportant, comme `matrix::store::migration`) ;
+    ../migration/mod.sdd les ajoute à la fin de @Migrator::migrations sous `lymaille`, jamais avant une entrée existante.
+    Chaque migration committée est immuable : un changement de schéma ajoute une `Migration` suivante. Fichier neuf, conception.
+
+Owns:
+  ./migration.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `FR-3`, `FR-8`, `DEC-1`, `DEC-5`, `DEC-7`, `DEC-17`, `DEC-18`
+  ../matrix/store/migration.sdd — précédent d'une migration de module (forme, tests `has_table`/`has_column`)
+  ../migration/m20260923_000001_create_workflow_definitions.sdd — précédent de la
+    sonde de test
+  ./definitions/mod.sdd, ./store/mod.sdd — consommateurs des tables
+
+Must:
+  `pub fn migrations() -> Vec<Box<dyn sea_orm_migration::MigrationTrait>>` rend `[Box::new(m20261103_000001_create_lymaille_tables::Migration)]`.
+  `up` crée les dix tables suivantes (préfixe `miryad_lymaille_`), `IF NOT EXISTS` comme les migrations existantes, types portables
+    SQLite/Postgres (`ColumnDef`, jamais de SQL brut spécifique à un backend), JSON en `ColumnDef::json()` (jamais `json_binary()`),
+    aucune contrainte `FOREIGN KEY` (couplage lâche, comme `owner_id` de `miryad_workflow_definitions`) :
+    Agents et toolsets existent en **deux tables chacun** (DSD `DEC-14`, `DEC-19`) : le **catalogue** (identifiants `G_…`, écrit par les admins,
+      sans propriétaire) et le **privé** (écrit par les stores, une ligne par utilisateur). Chaque table est exposée par sa propre
+      `MiryadResource` aux droits distincts ; le préfixe `G_` dit dans quelle table chercher, il n'y a jamais d'union.
+    `catalog_agents` — `id` INTEGER PK auto-incrémenté ; `agent_id` TEXT NOT NULL **UNIQUE** (identifiant lymaille, `G_…`) ; `kind` TEXT NOT
+      NULL (`work`|`config`|`sub`) ; `profile` TEXT NOT NULL ; `definition` JSON NOT NULL (la `AgentDefinition` complète, source de vérité,
+      DSD `DEC-17`) ; `created_at` TIMESTAMP WITH TIME ZONE NOT NULL.
+    `agents` — mêmes colonnes que `catalog_agents` plus `owner_id` INTEGER **NOT NULL** (`users.id`, sans `FOREIGN KEY`) ; `agent_id` n'est pas
+      seul unique : contrainte `UNIQUE(owner_id, agent_id)`. Table sans entité ni CRUD au lot 1 (écrite par les stores ; entité au lot 2).
+    `catalog_toolsets` — `id` PK auto ; `toolset_id` TEXT NOT NULL **UNIQUE** (le `name` du toolset, `G_…`) ; `version` TEXT NOT NULL ; `active` JSON
+      NULL (le `Toolset` actif) ; `draft` JSON NULL (le brouillon, DSD `DEC-18`) ; `created_at`. Une ligne a `active` ou `draft` non nul (jamais
+      les deux nuls : contrôle des hooks et du store, pas une contrainte `CHECK`).
+    `toolsets` — mêmes colonnes que `catalog_toolsets` plus `owner_id` INTEGER **NOT NULL** ; `UNIQUE(owner_id, toolset_id)`. Sans entité au lot 1.
+    `profiles` — `id` PK auto ; `name` TEXT NOT NULL UNIQUE ; `profile` JSON NOT NULL ; `created_at`.
+    `providers` — `id` PK auto ; `name` TEXT NOT NULL UNIQUE ; `kind` TEXT NOT NULL ; `level` TEXT NOT NULL (`user`|`project`) ;
+      `provider` JSON NOT NULL (références seules, jamais de secret) ; `created_at`.
+    `context_types` — `name` TEXT PK ; `context_type` JSON NOT NULL.
+    `contexts` — `name` TEXT PK ; `context` JSON NOT NULL.
+    `sessions` — PK(`subject`, `session_id`) ; `kind` TEXT NOT NULL (`work`|`config`|`sub`) ; `state` TEXT NOT NULL (le **texte JSON** de
+      `SessionState`, tel que produit par `SessionState::to_json`) ; `updated_at` TIMESTAMP WITH TIME ZONE NOT NULL ; index
+      (`subject`, `updated_at`). `subject` : TEXT, le `subject` du propriétaire (DSD `DEC-3`).
+    `memories` — PK(`subject`, `level`, `reference`, `memory_id`) ; `memory` JSON NOT NULL. `level` TEXT (`MemoryLevel` sérialisé),
+      `reference` TEXT (la référence de portée), `memory_id` TEXT.
+  `down` supprime toutes les tables dans l'ordre inverse de `up`. `up` sur une base où une table existe déjà est idempotent
+    (`create_table` avec `if_not_exists`) ; `down` est strict, non idempotent (règle de ../migration/mod.sdd).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Poser une contrainte `FOREIGN KEY` ; poser un défaut côté serveur sur `created_at`/`updated_at` (le peuplement incombe au
+    consommateur) ; stocker un secret dans `providers.provider`.
+  Modifier la migration `m20261103_000001` une fois committée sans exception tracée dans `/AGENTS.md` (feature jamais déployée à ce
+    jour : une exception du même type que `matrix` pourra être actée par le développeur principal ; sans elle, un ajout passe par une
+    nouvelle `Migration`).
+
+Exposes:
+  `migrations`
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire, motif `has_table`/`has_column`/`has_index`), puis ./migration.rs.
+  [ ] Amender ../migration/mod.sdd et mod.rs (ajout conditionnel `lymaille` en fin de liste) dans le même lot.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./migration.rs.
+
+Scenario: up crée les dix tables avec le préfixe
+  Given une base SQLite en mémoire
+  When le @Migrator d'un test exécute `up` avec `migrations()`
+  Then les dix tables `miryad_lymaille_*` existent avec leurs colonnes déclarées
+
+Scenario: down les supprime toutes
+  Given les migrations appliquées
+  When `down` est exécuté
+  Then plus aucune table `miryad_lymaille_*` n'existe
+
+Scenario: l'unicité de agent_id est par table, et par propriétaire pour le privé
+  Given les migrations appliquées
+  When on insère deux agents `x` de même `owner_id` dans `agents`, puis `x` chez deux propriétaires différents, puis deux `G_x` dans `catalog_agents`
+  Then le second `x` du même propriétaire échoue, les propriétaires différents réussissent, le second `G_x` du catalogue échoue

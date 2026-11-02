@@ -88,6 +88,11 @@ Must:
     chemin @AuthPrincipal porte @subject, @email, @preferred_username issus des claims vérifiés. Le `Debug` manuel rédige
     @jwt en `"[REDACTED]"`, comme @id_token de @PrincipalSource::Session. La variante @ApiToken reste présente sur toute
     combinaison de features (aucun type `sea_orm`) mais n'est produite que sous `db` (./token.sdd).
+  **Amendement 2026-11-02 (`lymaille`)** — `PrincipalSource` gagne une variante unité **`Agent`** : principal reconstruit pour un accès
+    d'agent `lymaille` (module des ressources, `../lymaille/resource_module.sdd`), qui ne vient d'aucun transport HTTP. Le `Debug` manuel
+    la rend `Agent`, sans champ. Aucune surface existante ne la produit ni ne la lit (la crate ne lit pas `source`) ; la variante est
+    déclarée inconditionnellement (pas de `cfg`), les `match` exhaustifs du fichier sont mis à jour. Prévaut sur « trois variantes » en cas de
+    contradiction de comptage.
 
 Must not:
   Porter un champ d'appartenance (@is_admin, @groups, identifiant utilisateur) : la fraîcheur de

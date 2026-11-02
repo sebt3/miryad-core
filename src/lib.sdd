@@ -38,6 +38,12 @@ Must:
     `workflow` + `matrix` (kind `matrix_send`), sans les présenter comme des features. Dépendances optionnelles
     à ajouter à la liste « Déclarer hors de son `#[cfg]` protecteur » : `matrix-sdk`, `matrix-sdk-crypto`,
     `matrix-sdk-store-encryption` via `./matrix/mod.rs` ; `systemone` n'ajoute aucune dépendance.
+  **Amendement 2026-11-02 (`lymaille`)** — complète `Must` sans le réécrire ; en cas de contradiction de comptage, cet amendement prévaut :
+    la racine déclare un module gated de plus, `#[cfg(feature = "lymaille")] pub mod lymaille;` (./lymaille/mod.sdd) ; le tableau de la doc
+    racine ajoute la ligne `lymaille` (« implique `db` » ; hôte de la bibliothèque `lymaille` : stores SeaORM, module des ressources, kind
+    `subagent` avec `workflow`), la doc nomme le croisement `workflow` + `lymaille` (kind `subagent`) sans le présenter comme une feature.
+    Dépendances optionnelles à ajouter à la liste « Déclarer hors de son `#[cfg]` protecteur » : `lymaille`, `rustls`, `rhai`, via
+    `./lymaille/mod.rs`.
   Ne poser aucun gating de feature au niveau racine pour `swagger-ui` : cette feature ne change
     rien à la surface racine ; son `#[cfg(feature = ...)]` vit dans `./rest/openapi.rs`.
   **Amendement 2026-10-19 (suppression de GraphQL)** — prévaut sur toute mention contraire de ce

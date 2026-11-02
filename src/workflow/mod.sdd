@@ -72,6 +72,11 @@ Must:
     ./matrix_step.sdd — sont déjà directes).
     L'application enregistre elle-même ces kinds (`StepRegistry::register(SystemOneStep::new(..))`,
     `register(MatrixSendStep::new(..))`), comme `RhaiStep` ; la rustdoc du module le documente.
+  **Amendement 2026-11-02 (`lymaille`)** — complète `Must` sans le réécrire ; en cas de contradiction de comptage, cet amendement prévaut :
+    `#[cfg(all(feature = "workflow", feature = "lymaille"))] pub mod subagent_step;` — module supplémentaire, **gated par le croisement**
+    des deux features (le step n'existe que si le moteur et l'hôte `lymaille` sont compilés), avec les ré-exports `subagent_step::{SubagentStep,
+    SubagentDeps}` sous le même `cfg`. `lymaille` n'est **pas** une dépendance de `workflow` (ni l'inverse). L'application enregistre
+    elle-même le kind (`StepRegistry::register(SubagentStep::new(deps))`) ; la rustdoc du module le documente (./subagent_step.sdd).
   `definition::validate_dag` reste `pub(crate)` (./definition.sdd) : non ré-exporté, jamais atteint
     depuis l'extérieur de la crate — seul `WorkflowDefinition::before_create`/`before_update`
     l'utilise en interne.

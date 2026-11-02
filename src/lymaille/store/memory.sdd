@@ -1,0 +1,49 @@
+Spec: memory — SeaMemoryStore
+
+Purpose:
+  Implémenter `lymaille::MemoryStore` (`list`, `get`, `put`, `delete`) sur la table `miryad_lymaille_memories`. La clé d'une Memory est le
+    `subject` du store, la portée (`MemoryScope` : niveau et référence), puis l'identifiant : un `subject` ne lit ni n'écrase les Memory d'un
+    autre (DSD `DEC-7`, `AC-7`). Table interne, sans CRUD. Fichier neuf, conception.
+
+Owns:
+  ./memory.rs
+
+References:
+  ./mod.sdd — règles communes ; ../migration.sdd — table `miryad_lymaille_memories`
+  `lymaille::modules::memory` — trait `MemoryStore` et `MemoryScope`, `MemoryLevel`, `Memory`, `MemorySummary`
+
+Must:
+  `pub struct SeaMemoryStore` — `Clone`, créé par `LymailleStores::memories()`.
+  `impl MemoryStore for SeaMemoryStore` (erreurs : `ModulesError::Store(db_text)`) :
+    `list(scope)` : résumés (`MemorySummary::from(&memory)`) des Memory de `(subject, scope.level, scope.reference)`, **triés par identifiant
+      croissant**, sans corps.
+    `get(scope, id)` : la Memory ou `None`.
+    `put(scope, memory)` : upsert sur `(subject, level, reference, memory.id)` ; l'objet est stocké en JSON.
+    `delete(scope, id)` : `true` si la ligne existait, `false` sinon.
+  Le niveau (`level`) est stocké sous sa forme sérialisée de `MemoryLevel` ; la `reference` telle que fournie par `MemoryScope::reference()`.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Lire ou supprimer hors du `subject` du store ; inclure le corps d'une Memory dans une erreur ou une trace.
+
+Depends on:
+  ./mod.rs, @sea_orm, `lymaille::{MemoryStore, MemoryScope, Memory, MemorySummary, ModulesError}`
+
+Exposes:
+  `SeaMemoryStore`, `impl MemoryStore`
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire), puis ./memory.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./memory.rs.
+
+Scenario: put, get, list, delete
+  Given trois Memory `c`, `a`, `b` dans une portée
+  When `list`, `get("b")`, `delete("b")`, `delete("b")`
+  Then `list` rend `a`, `b`, `c` dans cet ordre, `get` la Memory, puis `true` puis `false`
+
+Scenario: deux sujets ne partagent pas une portée
+  Given `alice` et `bob` qui écrivent chacun une Memory `m` dans la même portée
+  When chacun lit `m` et liste la portée
+  Then chacun ne voit que la sienne

@@ -1,0 +1,73 @@
+Spec: toolset — SeaToolsetStore, SeaContextTypeStore, SeaContextStore
+
+Purpose:
+  Implémenter `lymaille::ToolsetStore` (`get_active`, `get_draft`, `put_draft`), `ContextTypeStore` (`get_type`, `put_type`) et
+    `ContextStore` (`get_context`, `put_context`). Un toolset est une ligne de `miryad_lymaille_catalog_toolsets` (catalogue `G_…`) ou de `miryad_lymaille_toolsets` (privé, `owner_id`) portant sa version **active** et son
+    **brouillon** (DSD `DEC-18`) : `get_active` ne lit jamais le brouillon. Types de contexte et contextes sont **globaux et internes** au
+    lot 1 (tables `miryad_lymaille_context_types` et `_contexts`, sans CRUD, DSD `OI-9`). Fichier neuf, conception.
+
+Owns:
+  ./toolset.rs
+
+References:
+  ./mod.sdd — règles communes ; ../definitions/toolset.sdd — même table (catalogue), `check_toolset`, dérivations
+  ../identity.sdd — `check_write`, `classify`
+  `lymaille::toolsets::store` — traits `ToolsetStore`, `ContextTypeStore`, `ContextStore` (pas de listing ni de suppression ; **aucune
+    opération d'activation** dans le trait : l'activation est une action de l'hôte)
+
+Must:
+  `pub struct SeaToolsetStore` / `SeaContextTypeStore` / `SeaContextStore` — `Clone`, créés par `LymailleStores`.
+  `impl ToolsetStore for SeaToolsetStore` :
+    `get_active(name)` : règle 3 de ./mod.sdd sur `toolset_id` ; ligne dont `active` est non nul → `Toolset` ; sinon `Ok(None)` (un brouillon
+      seul n'est **jamais** rendu).
+    `get_draft(name)` : idem sur `draft`.
+    `put_draft(toolset)` : `check_toolset` (refus → `ToolsetsError::InvalidToolset`/`Template`/`SkillTooLarge` selon la cause, les mêmes que
+      `lymaille`), `check_write(caller, name)`, puis upsert qui écrit **uniquement** la colonne `draft` (et crée la ligne avec
+      `active = NULL` si absente) ; `toolset_id` et `version` sont dérivés comme dans ../definitions/toolset.sdd ; la table est celle du catalogue (`Catalog`)
+      ou la table privée avec `owner_id = user_id` (`Private`).
+    Aucun code du store n'écrit `active` : l'activation est l'écriture de `active` par un admin via l'entité (lot 1) ou par le lot 2.
+  `impl ContextTypeStore for SeaContextTypeStore` : `get_type(name)`, `put_type(t)` (upsert par `name` ; validation `InvalidContextType` de
+    `lymaille` appliquée avant l'écriture — mêmes contrôles que `InMemoryToolsets::put_type`, à relire en source à l'implémentation ;
+    écriture réservée aux admins, `Forbidden` sinon).
+  `impl ContextStore for SeaContextStore` : `get_context(name)`, `put_context(c)` (upsert par `name`, écriture réservée aux admins).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Rendre un brouillon par `get_active` ; écrire `active` dans `put_draft` ; inclure le source d'un toolset dans une erreur ou une trace.
+
+Depends on:
+  ./mod.rs, ../identity.rs, ../definitions/toolset.rs, @sea_orm, `lymaille::{ToolsetStore, ContextTypeStore, ContextStore, Toolset, ContextType, ToolsetContext, ToolsetsError}`
+
+Exposes:
+  `SeaToolsetStore`, `SeaContextTypeStore`, `SeaContextStore` et leurs `impl` de trait
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire), puis ./toolset.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./toolset.rs.
+
+Scenario: un brouillon n'est jamais actif
+  Given un admin qui écrit un brouillon `G_git` par `put_draft`
+  When `get_active("G_git")` puis `get_draft("G_git")`
+  Then `None` puis le brouillon
+
+Scenario: la version active reste visible quand un brouillon la suit
+  Given une ligne `G_git` avec `active` v1 (écrite via l'entité), puis `put_draft` d'un brouillon v2
+  When `get_active` et `get_draft`
+  Then v1 et v2
+
+Scenario: un toolset invalide est refusé sans écriture
+  Given un toolset dont le source ne donne pas de contrat
+  When `put_draft`
+  Then une erreur `ToolsetsError` d'invalidité et aucune ligne écrite
+
+Scenario: écrire un toolset du catalogue exige un admin
+  Given un non-admin
+  When `put_draft` d'un toolset `G_x`
+  Then `ToolsetsError::Store` dont le texte contient `MRD-LYMAILLE-002`
+
+Scenario: types de contexte et contextes font l'aller-retour
+  Given un admin qui écrit un type et un contexte
+  When ils sont relus par nom
+  Then ils sont égaux aux originaux
