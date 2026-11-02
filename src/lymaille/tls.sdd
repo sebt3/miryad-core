@@ -28,7 +28,7 @@ Exposes:
   `install_crypto_provider`
 
 Tasks:
-  [ ] Tests d'abord (appels répétés, provider préinstallé), puis ./tls.rs.
+  [x] Tests d'abord (appels répétés, provider préinstallé), puis ./tls.rs. Validé 2026-11-02 (validator PASS après renforcement des Then ; limitation du verrou global du provider documentée dans tls.rs).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./tls.rs.
