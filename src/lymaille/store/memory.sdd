@@ -20,7 +20,7 @@ Must:
     `get(scope, id)` : la Memory ou `None`.
     `put(scope, memory)` : upsert sur `(subject, level, reference, memory.id)` ; l'objet est stocké en JSON.
     `delete(scope, id)` : `true` si la ligne existait, `false` sinon.
-  Le niveau (`level`) est stocké sous sa forme sérialisée de `MemoryLevel` ; la `reference` telle que fournie par `MemoryScope::reference()`.
+  Le niveau (`level`) est stocké sous son texte canonique `as_str()` de `MemoryLevel` (pas de serde côté `lymaille`) ; la `reference` telle que fournie par `MemoryScope::reference()`.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -33,7 +33,9 @@ Exposes:
   `SeaMemoryStore`, `impl MemoryStore`
 
 Tasks:
-  [ ] Tests d'abord (SQLite mémoire), puis ./memory.rs.
+  [x] Tests d'abord (SQLite mémoire), puis ./memory.rs. Validé 2026-11-02 (validator PASS). Wording : `MemoryLevel`
+    n'a pas de serde dans `lymaille` 0.1.0 — la « forme sérialisée » est le texte canonique `as_str()`
+    (`user`/`project`/`session`), épinglé par test. La ligne du `Must` ci-dessus a été reformulée en ce sens.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./memory.rs.
