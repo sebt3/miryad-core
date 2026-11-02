@@ -78,6 +78,12 @@ pub struct RunInfo {
     /// Conséquence de ce champ : `Eq` est retiré des derives de `RunInfo`, `serde_json::Value`
     /// n'étant pas `Eq` — `PartialEq` reste.
     pub vars: serde_json::Value,
+    /// Le `subject` de la personne qui a déclenché le run, posé par `client::trigger_run` et
+    /// hérité par les runs enfants (2026-11-02, lot 0 lymaille, ./durable.sdd) ; `None` = run
+    /// sans identité (appelant interne). Aucun kind existant ne le consulte ; jamais exposé à un
+    /// template (./template.sdd), jamais écrit dans un message d'erreur ni dans une sortie de
+    /// step. Son authenticité repose sur l'accès à l'ingress Restate, réservé à l'application.
+    pub trigger: Option<String>,
 }
 
 /// Échec d'un step tel que le rend [`MiryadWorkflowStep::run`].
@@ -225,6 +231,7 @@ mod tests {
     struct PanicsInRun;
     struct RunIdentity;
     struct EchoVars;
+    struct EchoTrigger;
 
     macro_rules! fixture_kind {
         ($ty:ty, $kind:literal, $body:expr) => {
@@ -337,6 +344,13 @@ mod tests {
         "echo_vars",
         |run: &RunInfo, _config: Value, _inputs: HashMap<String, Value>| { Ok(run.vars.clone()) }
     );
+    // Kind du Scenario lot 0 lymaille (2026-11-02) : rend le `trigger` de la `RunInfo` reçue
+    // (`Some(subject)` → la chaîne, `None` → `null`), preuve de son transit intact jusqu'au kind.
+    fixture_kind!(
+        EchoTrigger,
+        "echo_trigger",
+        |run: &RunInfo, _config: Value, _inputs: HashMap<String, Value>| { Ok(json!(run.trigger)) }
+    );
 
     /// Achemine un appel de bout en bout : `dispatch` (synchrone, qui choisit le kind ou refuse)
     /// puis exécution du futur rendu, comme le fera le dispatcher interne.
@@ -365,6 +379,7 @@ mod tests {
             step_id: "s".into(),
             depth: 0,
             vars: json!({}),
+            trigger: None,
         }
     }
 
@@ -726,6 +741,7 @@ mod tests {
             step_id: "s1".to_string(),
             depth: 2,
             vars: json!({}),
+            trigger: None,
         };
         let rendu = execute(&registry, "echo_run", &run, json!(null), no_inputs())
             .await
@@ -745,10 +761,44 @@ mod tests {
             step_id: "s1".to_string(),
             depth: 0,
             vars: json!({ "project": "p1" }),
+            trigger: None,
         };
         let rendu = execute(&registry, "echo_vars", &run, json!(null), no_inputs())
             .await
             .expect("le kind « echo_vars » est enregistré");
         assert_eq!(rendu, json!({ "project": "p1" }));
+    }
+
+    /// Scenario « `RunInfo` porte le trigger jusqu'au kind » (2026-11-02, lot 0 lymaille) :
+    /// `dispatch` avec `trigger: Some("sub-42")` fait rendre au kind `"sub-42"` ; avec
+    /// `trigger: None` (run sans identité, appelant interne), le kind rend `null`. Le registre
+    /// ne lit jamais le champ — transit intact dans les deux branches.
+    #[tokio::test]
+    async fn run_info_porte_le_trigger_jusqu_au_kind() {
+        let mut registry = StepRegistry::new();
+        registry.register(EchoTrigger).expect("kind distinct");
+        let run = RunInfo {
+            run_key: "r1".to_string(),
+            step_id: "s1".to_string(),
+            depth: 0,
+            vars: json!({}),
+            trigger: Some("sub-42".into()),
+        };
+        let rendu = execute(&registry, "echo_trigger", &run, json!(null), no_inputs())
+            .await
+            .expect("le kind « echo_trigger » est enregistré");
+        assert_eq!(rendu, json!("sub-42"));
+        // Seconde branche du Scenario : `None` = run sans identité, rendu `null` par le kind.
+        let run_sans_identité = RunInfo { trigger: None, ..run };
+        let rendu = execute(
+            &registry,
+            "echo_trigger",
+            &run_sans_identité,
+            json!(null),
+            no_inputs(),
+        )
+        .await
+        .expect("le kind « echo_trigger » est enregistré");
+        assert_eq!(rendu, json!(null));
     }
 }

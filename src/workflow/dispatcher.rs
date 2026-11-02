@@ -83,6 +83,8 @@ impl StepDispatcher {
             step_id,
             depth,
             vars,
+            // Tâche T3 (./dispatcher.sdd) : `StepInvocation.trigger` remplacera ce neutre posé par T1.
+            trigger: None,
         };
         // Étape 1b (#26, 2026-10-04) — branche durable : un kind durable consulté avant le
         // registre ordinaire, appelé **sans** `ctx.run()` englobant (l'envelopper interdirait tout
@@ -407,6 +409,7 @@ mod tests {
             step_id: "s".into(),
             depth: 0,
             vars: json!({}),
+            trigger: None,
         }
     }
 
@@ -570,6 +573,7 @@ mod tests {
                 step_id: "s1".to_string(),
                 depth: 3,
                 vars: json!({}),
+                trigger: None,
             },
             Value::Null,
             HashMap::new(),
@@ -601,6 +605,7 @@ mod tests {
                 step_id: "s1".to_string(),
                 depth: 0,
                 vars: json!({ "project": "p1" }),
+                trigger: None,
             },
             Value::Null,
             HashMap::new(),
@@ -621,6 +626,7 @@ mod tests {
                 step_id: "s1".to_string(),
                 depth: 0,
                 vars: json!({}),
+                trigger: None,
             },
             Value::Null,
             HashMap::new(),

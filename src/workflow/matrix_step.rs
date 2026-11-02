@@ -246,6 +246,7 @@ mod tests {
             step_id: "s".into(),
             depth: 0,
             vars: json!({}),
+            trigger: None,
         }
     }
 
@@ -257,6 +258,7 @@ mod tests {
             step_id: "s".into(),
             depth: 0,
             vars: json!({}),
+            trigger: None,
         };
         let b = a.clone();
         let (ida, idb) = (txn_id(&a), txn_id(&b));
@@ -274,18 +276,21 @@ mod tests {
                 step_id: "s".into(),
                 depth: 0,
                 vars: json!({}),
+                trigger: None,
             }),
             txn_id(&RunInfo {
                 run_key: "r2".into(),
                 step_id: "s".into(),
                 depth: 0,
                 vars: json!({}),
+                trigger: None,
             }),
             txn_id(&RunInfo {
                 run_key: "r1".into(),
                 step_id: "s2".into(),
                 depth: 0,
                 vars: json!({}),
+                trigger: None,
             }),
         ];
         assert_ne!(ids[0], ids[1]);

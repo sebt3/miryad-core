@@ -167,6 +167,7 @@ mod tests {
             step_id: "s".into(),
             depth: 0,
             vars: json!({}),
+            trigger: None,
         }
     }
 
@@ -323,6 +324,7 @@ mod tests {
             step_id: "s1".into(),
             depth: 2,
             vars: json!({}),
+            trigger: None,
         };
         let config = json!({"x": "{{run.run_key}}/{{run.step_id}}/{{run.depth}}"});
         let rendu = render_config(&config, &run, &HashMap::new(), &[]).expect("rendu sans erreur");
@@ -380,6 +382,7 @@ mod tests {
             step_id: "s".into(),
             depth: 0,
             vars: json!({"project": "p1"}),
+            trigger: None,
         };
         let config = json!({"x": "{{vars.project}}"});
         let rendu = render_config(&config, &avec_vars, &HashMap::new(), &[]).expect("rendu sans erreur");
@@ -402,6 +405,7 @@ mod tests {
             step_id: "s".into(),
             depth: 0,
             vars: json!({"note": "{{inputs.x}}"}),
+            trigger: None,
         };
         let inputs = inputs_of(json!({"x": "SECRET"}));
         let config = json!({"y": "{{vars.note}}"});

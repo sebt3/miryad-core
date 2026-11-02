@@ -318,6 +318,7 @@ mod tests {
             step_id: "step".into(),
             depth: 0,
             vars: json!({}),
+            trigger: None,
         }
     }
 

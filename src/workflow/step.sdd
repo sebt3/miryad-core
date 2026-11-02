@@ -250,12 +250,15 @@ Tasks:
     noms, collision croisée dans les deux sens en @Err(DuplicateStepKind) sans rien insérer (la
     spec dit `Err`, jamais de `panic!` — vérifié) ; deux tests nommés (non-résolution par
     `dispatch`, collision croisée deux sens + sans écraser).
-  [ ] T1 (2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : ajouter `trigger: Option<String>` à @RunInfo et adapter, **mécaniquement et dans la même tâche**,
+  [x] T1 (2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : ajouter `trigger: Option<String>` à @RunInfo et adapter, **mécaniquement et dans la même tâche**,
     tous les littéraux `RunInfo { .. }` de tests de la crate (`trigger: None`, ou un helper de test local) dans ./step.rs,
     ./dispatcher.rs, ./durable.rs, ./matrix_step.rs, ./rhai_step.rs, ./subworkflow.rs, ./systemone_step.rs et ./template.rs
     (`Can modify`) — sinon la crate ne compile plus entre deux commits. Aucun changement de comportement ; les `Scenario` « RunInfo
     porte le trigger » sont les seuls tests nouveaux. Seul `RunInfo` change dans le code de production. Reprend la case reportée
     du 2026-10-04 (« Identité du déclencheur dans @RunInfo »), levée par arbitrage du 2026-11-02. Avant T2 à T6. Un fichier : ./step.rs.
+    Validé 2026-11-02 (validator GO) : test nouveau `run_info_porte_le_trigger_jusqu_au_kind` (branches `Some`/`None` assertées),
+    23 littéraux adaptés dans 7 fichiers (`durable.rs` : aucun littéral), production réduite au champ plus la trace `None` du
+    dispatcher citant T3 (motif B1) ; batterie ciblée workflow et `--all-features` verte (tests, clippy `-D warnings`, fmt).
   [x] Codification de @StepError : Sébastien (2026-09-23) — pas de champ `code`, imposer une
     codification des erreurs applicatives de workflow irait trop loin. Décision reflétée dans `Must`,
     définitive.

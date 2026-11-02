@@ -191,6 +191,7 @@ mod tests {
             step_id: "s".to_string(),
             depth,
             vars: json!({}),
+            trigger: None,
         }
     }
 
@@ -399,6 +400,7 @@ mod tests {
             step_id: "s".to_string(),
             depth: 0,
             vars: json!({ "project": "p1" }),
+            trigger: None,
         };
         let (_dag, vars) = prepare(&parent, config_valide(), 4)
             .expect("un config sans clé « vars » est valide quel que soit le RunInfo parent");

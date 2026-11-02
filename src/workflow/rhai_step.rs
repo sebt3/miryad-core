@@ -487,6 +487,7 @@ mod tests {
             step_id: "s".into(),
             depth: 0,
             vars: json!({}),
+            trigger: None,
         }
     }
 
@@ -958,6 +959,7 @@ mod tests {
             step_id: "s1".into(),
             depth: 2,
             vars: json!({}),
+            trigger: None,
         };
         let rendu = RhaiStep::default()
             .run(
@@ -1187,6 +1189,7 @@ import_template("zz_module_absent", #{});
             step_id: "s1".into(),
             depth: 0,
             vars: json!({}),
+            trigger: None,
         };
 
         let rendu = RhaiStep::default()
@@ -1428,6 +1431,7 @@ import_template("zz_module_absent", #{});
             step_id: "s1".into(),
             depth: 0,
             vars: json!({ "project": "p1" }),
+            trigger: None,
         };
         let step = RhaiStep::default();
         let premier = step
