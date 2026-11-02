@@ -416,3 +416,8 @@ leurs clients (TBD).
   renvoi des specs et du code.
     - **Source:** `lymaille` `dsd/agent-sessions/scratchpad.md`, DEC-3 (amendement du 2026-10-27) ; mesures du test A6,
       2026-11-01 ; arbitrage, user instruction, 2026-11-01
+- **OI-10:** **Identité du déclencheur dans `RunInfo`**, arbitrée le 2026-11-02 par la Solution `miryad-core/lymaille`
+  (`FR-10`, `DEC-12`) : `trigger_run` transporte le `subject`, hérité par les runs enfants, sans repli par défaut.
+  Remplace la case reportée de `src/workflow/step.sdd` et celle des droits de l'enfant de `subworkflow.sdd`, **à réaliser**
+  avant le step `subagent`. **TBD :** nom du champ et de l'en-tête, et sort d'un run lancé sans identité.
+    - **Source:** user instruction, 2026-11-02

@@ -69,8 +69,8 @@ contenus d'origine restent consultables par Git :
   production n'existe.
     - **Source:** `AGENTS.md`, « Conventions de code »
 
-- **CON-6 - MUST:** Toute table interne est préfixée `miryad_` (`miryad_matrix_` et `miryad_workflow_` pour les features
-  correspondantes), pour ne jamais collisionner avec le schéma de l'application.
+- **CON-6 - MUST:** Toute table interne est préfixée `miryad_` (`miryad_matrix_`, `miryad_workflow_` et `miryad_lymaille_` pour les
+  features correspondantes), pour ne jamais collisionner avec le schéma de l'application.
     - **Source:** `arch@c62a184`, « Migrations », « Conventions transverses »
 
 - **CON-7 - MUST:** Toute fonction qui doit pouvoir être appelée depuis une migration est générique sur
@@ -115,7 +115,7 @@ contenus d'origine restent consultables par Git :
 - `miryad-core/frontend` : IR du frontend et service statique.
 
 - `miryad-core/lymaille` : hôte de la bibliothèque `lymaille` — modules LLM sur les ressources, pad de workflow,
-  sous-agents. Ouverte le 2026-11-01, rien d'implémenté ; préalable : première release de `lymaille`. La réserve de
+  sous-agents. Ouverte le 2026-11-01, rien d'implémenté ; `lymaille` 0.1.0 publiée, lot 1 arbitré le 2026-11-02. La réserve de
   `miryad-core/workflow#OI-8` y est rattachée.
 
 Relations : `rest-api`, `mcp` et `frontend` consomment `resource-model` et `access-control` ; `auth` produit le principal
