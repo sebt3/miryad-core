@@ -1,8 +1,9 @@
 //! Service Restate `DagInterpreter` (feature `workflow`) : marche générique d'un DAG de workflow,
 //! de bout en bout (contrat porté par `./interpreter.sdd`).
 //!
-//! Unique `#[workflow]` de la crate : reçoit un `RunInput` (`{"dag", "vars"}` — amendement
-//! 2026-10-30, lot B) dont le [`DagSteps`] (./definition.rs) est revalidé structurellement
+//! Unique `#[workflow]` de la crate : reçoit un `RunInput` (`{"dag", "vars", "trigger"}` —
+//! `trigger` facultatif, omis à la sérialisation quand absent ; amendements 2026-10-30 lot B et
+//! 2026-11-02 lot 0 lymaille) dont le [`DagSteps`] (./definition.rs) est revalidé structurellement
 //! (`validate_dag` — `pub(crate)`, ./definition.rs — aucune hypothèse sur sa
 //! provenance), puis marche le graphe
 //! par couches topologiques. Le fan-out d'une couche passe uniquement par
@@ -35,8 +36,10 @@ use super::durable::DEPTH_HEADER;
 /// `results`) vit local au handler `run`, rejoué depuis le journal Restate à la reprise.
 pub struct DagInterpreter;
 
-/// Corps JSON de l'entrée du run (amendement 2026-10-30, lot B, `FR-12`) :
-/// `{"dag": [..steps..], "vars": {..}}` — changement cassant de la forme d'entrée (jusqu'ici le
+/// Corps JSON de l'entrée du run (amendement 2026-10-30, lot B, `FR-12` ; troisième champ
+/// `trigger` : amendement 2026-11-02, lot 0 lymaille, `FR-10`/`DEC-12`) :
+/// `{"dag": [..steps..], "vars": {..}}`, plus `"trigger": "<subject>"` quand le run a un
+/// déclencheur — changement cassant de la forme d'entrée (jusqu'ici le
 /// tableau de steps nu), assumé : API instable avant `1.0`, aucune production. ./client.rs et
 /// ./durable.rs (`run_child_dag`) construisent ce corps ; ./interpreter.rs le lit
 /// (`./interpreter.sdd` `Must`, « Entrée du run »).
@@ -49,6 +52,12 @@ pub(crate) struct RunInput {
     /// un corps sans `vars` donne `{}`.
     #[serde(default)]
     pub(crate) vars: serde_json::Map<String, serde_json::Value>,
+    /// `subject` de la personne qui a déclenché le run (amendement 2026-11-02, lot 0 lymaille,
+    /// `FR-10`/`DEC-12`) : conservé intact pour tout le run et recopié dans chaque
+    /// `StepInvocation`. `#[serde(default, skip_serializing_if = "Option::is_none")]` : un corps
+    /// sans `trigger` donne `None`, un `None` n'est pas écrit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) trigger: Option<String>,
 }
 
 /// Profondeur du run lue depuis la valeur brute de l'en-tête [`DEPTH_HEADER`] : un `u32` valide
@@ -84,12 +93,14 @@ impl DagInterpreter {
         ctx: WorkflowContext<'_>,
         input: Json<RunInput>,
     ) -> Result<Json<HashMap<String, serde_json::Value>>, HandlerError> {
-        // Étape 0 (amendement 2026-10-30, lot B, `FR-12`) — déstructuration du wrapper `Json` :
-        // `vars` est conservée intacte pour tout le run et alimente chaque `StepInvocation` via
-        // [`build_invocation`] (recopiée en `Value::Object`) ; `dag` est la liste des steps, comme
-        // avant. Le `to_string()` de `WorkflowError::InvalidDag` porte déjà le préfixe
-        // `MRD-WORKFLOW-004:` — réutilisé verbatim à l'étape 1, jamais reconstruit.
-        let Json(RunInput { dag, vars }) = input;
+        // Étape 0 (amendement 2026-10-30, lot B, `FR-12` ; `trigger` : amendement 2026-11-02, lot 0
+        // lymaille, `FR-10`/`DEC-12`) — déstructuration du wrapper `Json` : `vars` et `trigger` sont
+        // conservés intacts pour tout le run et alimentent chaque `StepInvocation` via
+        // [`build_invocation`] (les unes recopiées en `Value::Object`, l'autre en `Option<String>`) ;
+        // `dag` est la liste des steps, comme avant. Le `to_string()` de `WorkflowError::InvalidDag`
+        // porte déjà le préfixe `MRD-WORKFLOW-004:` — réutilisé verbatim à l'étape 1, jamais
+        // reconstruit.
+        let Json(RunInput { dag, vars, trigger }) = input;
         // Étape 1 — revalidation structurelle systématique, avant tout step : ./client.rs a beau
         // être le déclencheur usuel (DAG passé par `before_create`), le corps reçu est traité
         // sans aucune hypothèse (`Accepts`).
@@ -123,9 +134,16 @@ impl DagInterpreter {
                 // du step, profondeur lue une fois à l'étape 1b. B4 (lot B, `FR-12`) : les
                 // `vars` du run, lues une fois à l'étape 0, sont recopiées dans chaque
                 // invocation par `build_invocation` (seul endroit de la crate où une
-                // `StepInvocation` est assemblée).
-                let invocation =
-                    build_invocation(step, build_inputs(step, &results), ctx.key(), depth, &vars);
+                // `StepInvocation` est assemblée). T4 (amendement 2026-11-02, `FR-10`) : le
+                // `trigger` du run, lu à l'étape 0, y est recopié de même.
+                let invocation = build_invocation(
+                    step,
+                    build_inputs(step, &results),
+                    ctx.key(),
+                    depth,
+                    &vars,
+                    trigger.as_deref(),
+                );
                 futures.push(
                     ctx.request::<Json<StepInvocation>, Json<serde_json::Value>>(
                         RequestTarget::Service {
@@ -203,6 +221,7 @@ pub(crate) fn build_invocation(
     run_key: &str,
     depth: u32,
     vars: &serde_json::Map<String, serde_json::Value>,
+    trigger: Option<&str>,
 ) -> StepInvocation {
     StepInvocation {
         kind: step.kind.clone(),
@@ -212,8 +231,9 @@ pub(crate) fn build_invocation(
         step_id: step.id.clone(),
         depth,
         vars: serde_json::Value::Object(vars.clone()),
-        // Tâche T4 (./interpreter.sdd) : le run propagera son trigger ici ; T3 pose le neutre.
-        trigger: None,
+        // T4 (amendement 2026-11-02, lot 0 lymaille, FR-10/DEC-12) : le trigger du run, recopié
+        // tel quel, `None` rendu `None`.
+        trigger: trigger.map(str::to_string),
     }
 }
 
@@ -224,6 +244,7 @@ mod tests {
     use super::build_invocation;
     use super::parse_depth;
     use super::ready_steps;
+    use crate::workflow::definition::DagSteps;
     use crate::workflow::definition::StepDefinition;
     use serde_json::json;
     use std::collections::HashMap;
@@ -382,6 +403,7 @@ mod tests {
             "r1",
             2,
             &vars,
+            None,
         );
 
         assert_eq!(invocation.kind, "echo", "le `kind` du step, cloné");
@@ -438,6 +460,92 @@ mod tests {
         assert!(
             corps_nu_refuse,
             "l'ancienne forme (tableau nu de steps) ne doit plus être acceptée"
+        );
+    }
+
+    /// Scenario « `build_invocation` recopie le trigger » (2026-11-02, lot 0 lymaille, T4,
+    /// `FR-10`/`DEC-12`) : le `trigger` passé à l'unique assembleur de `StepInvocation` traverse
+    /// en `Option<String>` tel quel — `Some("sub-42")` rendu `Some("sub-42")`, `None` (run sans
+    /// identité) rendu `None`, jamais une chaîne vide fabriquée.
+    #[test]
+    fn build_invocation_recopie_le_trigger() {
+        let etape = StepDefinition {
+            id: "b".to_string(),
+            depends_on: Vec::new(),
+            kind: "echo".to_string(),
+            config: json!({}),
+        };
+
+        let declenche = build_invocation(
+            &etape,
+            HashMap::new(),
+            "r1",
+            0,
+            &serde_json::Map::new(),
+            Some("sub-42"),
+        );
+        assert_eq!(
+            declenche.trigger.as_deref(),
+            Some("sub-42"),
+            "le trigger du run doit être recopié tel quel dans l'invocation"
+        );
+
+        let neutre = build_invocation(&etape, HashMap::new(), "r1", 0, &serde_json::Map::new(), None);
+        assert_eq!(
+            neutre.trigger, None,
+            "un run sans trigger donne une invocation sans trigger, jamais une chaîne vide"
+        );
+    }
+
+    /// Scenario « le trigger du `RunInput` est facultatif et omis quand il est absent »
+    /// (2026-11-02, lot 0 lymaille, T4, `FR-10`/`DEC-12`) : les volets du `Then` — un corps
+    /// `{"dag": [a]}` sans clé `trigger` se désérialise en `None` (`#[serde(default)]`, les corps
+    /// d'avant T4 et ceux de `trigger_run` avant T5 restent acceptés) ; `"trigger": "sub-42"`
+    /// porte cette valeur ; et un `RunInput` de `trigger: None` ne réécrit pas la clé
+    /// (`skip_serializing_if`), un `Some` l'écrit telle quelle.
+    #[test]
+    fn le_trigger_du_run_input_est_facultatif_et_omis_quand_il_est_absent() {
+        let sans_trigger: RunInput = serde_json::from_value(json!({
+            "dag": [{ "id": "a", "depends_on": [], "kind": "echo", "config": {} }]
+        }))
+        .expect("`{\"dag\": [a]}` doit se désérialiser en `RunInput`");
+        assert_eq!(
+            sans_trigger.trigger, None,
+            "un corps sans clé `trigger` donne None"
+        );
+
+        let avec_trigger: RunInput = serde_json::from_value(json!({
+            "dag": [{ "id": "a", "depends_on": [], "kind": "echo", "config": {} }],
+            "trigger": "sub-42"
+        }))
+        .expect("`{\"dag\": [a], \"trigger\": \"sub-42\"}` doit se désérialiser en `RunInput`");
+        assert_eq!(
+            avec_trigger.trigger.as_deref(),
+            Some("sub-42"),
+            "le `trigger` du corps doit traverser tel quel"
+        );
+
+        let corps_sans_declencheur = serde_json::to_value(RunInput {
+            dag: DagSteps(vec![etape("a", &[])]),
+            vars: serde_json::Map::new(),
+            trigger: None,
+        })
+        .expect("un `RunInput` se sérialise");
+        assert!(
+            corps_sans_declencheur.get("trigger").is_none(),
+            "un `trigger: None` ne doit pas être écrit : {corps_sans_declencheur}"
+        );
+
+        let corps_declenche = serde_json::to_value(RunInput {
+            dag: DagSteps(vec![etape("a", &[])]),
+            vars: serde_json::Map::new(),
+            trigger: Some("sub-42".to_string()),
+        })
+        .expect("un `RunInput` se sérialise");
+        assert_eq!(
+            corps_declenche.get("trigger"),
+            Some(&json!("sub-42")),
+            "un `Some` s'écrit sous la clé `trigger`, verbatim : {corps_declenche}"
         );
     }
 }

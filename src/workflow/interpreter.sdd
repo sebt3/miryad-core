@@ -265,10 +265,14 @@ Tasks:
     `StepInvocation` ; adapter le corps JSON des tests d'intégration `#[ignore]` de ../../tests/workflow_restate.rs à la forme
     `{"dag", "vars"}` (`Can modify`). Après B3 (./dispatcher.sdd). Fichiers : ./interpreter.rs et ../../tests/workflow_restate.rs.
 
-  [ ] T4 (2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : `RunInput.trigger`, lu à l'étape 0 et recopié dans chaque `StepInvocation` par `build_invocation`
+  [x] T4 (2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : `RunInput.trigger`, lu à l'étape 0 et recopié dans chaque `StepInvocation` par `build_invocation`
     (nouveau paramètre `trigger: Option<&str>`) ; adapter les appels de `build_invocation` de ses tests et le corps JSON des tests
     d'intégration `#[ignore]` de ../../tests/workflow_restate.rs si nécessaire (`Can modify`). Après T3 (./dispatcher.sdd). Fichiers :
     ./interpreter.rs et ../../tests/workflow_restate.rs.
+    Validé 2026-11-02 (validator GO) : deux tests nommés (recopie Some/None ; absent→None, présent→Some, `None` non écrit, `Some`
+    verbatim) ; trace de T3 retirée ; ../../tests/workflow_restate.rs non repris — justifié, les neuf intégrations compilent et le
+    corps sans `trigger` reste valide ; traces d'une ligne posées à ./client.rs (T5, ./client.sdd) et ./durable.rs (T6a, ./durable.sdd),
+    motif B5/B7 ; batterie ciblée workflow et `--all-features` verte, complète due à la fin du lot 0.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow` — périmètre

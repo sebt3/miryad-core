@@ -177,6 +177,8 @@ pub async fn trigger_run(
         .json(&RunInput {
             dag: dag.clone(),
             vars: vars.clone(),
+            // T5 (./client.sdd) portera le trigger ; T4 pose le neutre.
+            trigger: None,
         })
         .send()
         .await

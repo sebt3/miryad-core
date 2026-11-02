@@ -205,6 +205,8 @@ impl<'a> StepContext<'a> {
                 Json(RunInput {
                     dag: dag.clone(),
                     vars: vars.clone(),
+                    // T6a (./durable.sdd) propagera le trigger à l'enfant ; T4 pose le neutre.
+                    trigger: None,
                 }),
             )
             .header(
