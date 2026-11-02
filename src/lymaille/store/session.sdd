@@ -36,7 +36,9 @@ Exposes:
   `SeaSessionStore`, `impl SessionStore`
 
 Tasks:
-  [ ] Tests d'abord (SQLite mémoire ; PostgreSQL derrière `MIRYAD_TEST_PG_URL`, ignoré si absent), puis ./session.rs.
+  [x] Tests d'abord (SQLite mémoire ; PostgreSQL derrière `MIRYAD_TEST_PG_URL`, ignoré si absent), puis ./session.rs.
+    Validé 2026-11-02 (validator PASS après corrections). Le repli silencieux `kind` → `work` est devenu un refus
+    explicite `SessionError::Store` (branche normalement unreachable des trois natures connues).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./session.rs.
