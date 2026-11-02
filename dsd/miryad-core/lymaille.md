@@ -22,7 +22,7 @@ et appels d'MCP externes depuis les scripts.
 
 ## Current State and Target State
 
-- **Actuel :** rien dans la crate ; aucune spec. La feature était réservée par `miryad-core/workflow#OI-8`. `lymaille`
+- **Actuel :** lot 0 livré le 2026-11-02 (`FR-10` : le moteur de workflow transporte l'identité du déclencheur — `trigger_run` → `RunInput` → `StepInvocation` → `RunInfo`, héritée par les runs enfants ; commits `667518c` → `1de97e6`, treize combinaisons vertes). Sinon rien : aucune feature `lymaille`, aucun `src/lymaille/`, aucune spec. La feature était réservée par `miryad-core/workflow#OI-8`. `lymaille`
   0.1.0 est disponible (dépendance par `path` ou crates.io).
 - **Cible :** feature `lymaille`, modules sous `src/lymaille/` (stores SeaORM des traits hôte, module Rhai des ressources,
   kind de step sous-agent ; ensuite kind de step pad et glue vers `matrix`), migrations internes `miryad_lymaille_*`.
@@ -125,7 +125,8 @@ et appels d'MCP externes depuis les scripts.
       user instruction, 2026-11-02
     - **Realized by:** `SpecDD /src/workflow/step.sdd` (T1), `/src/workflow/template.sdd` (T2), `/src/workflow/dispatcher.sdd` (T3),
       `/src/workflow/interpreter.sdd` (T4), `/src/workflow/client.sdd` (T5), `/src/workflow/durable.sdd` et
-      `/src/workflow/subworkflow.sdd` (T6), amendées le 2026-11-02, à approuver avant le code
+      `/src/workflow/subworkflow.sdd` (T6), amendées le 2026-11-02 et approuvées par Sébastien ce jour — **livré le 2026-11-02**
+      (commits `667518c` → `1de97e6`, une tâche par commit, validator GO à chaque tâche et batterie complète à la clôture)
     - **Verified by:** `AC-11`
 
 ## Design Decisions
@@ -341,6 +342,7 @@ Specs du lot 0 écrites le 2026-11-02. Lot 1 (`DEC-6`, `DEC-13` à `DEC-15`), no
   spike de `workflow#AC-8` (non verrouillée par la CI).
 - **AC-11:** Un run déclenché par un utilisateur A donne à ses steps et à ses runs enfants le `subject` de A ; un run sans
   identité fait échouer un step `subagent` en `StepError` non retryable.
+  - État 2026-11-02 (lot 0) : première moitié prouvée (tests nommés de T1–T6 et intégration `subworkflow_lenfant_hérite_du_trigger_du_parent` rejouée contre `restate-server`) ; le step `subagent` est du lot 1 (`DEC-13`) et verrouillera la seconde.
 
 ## Open Issues
 
