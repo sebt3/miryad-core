@@ -34,7 +34,7 @@ Exposes:
   modules `agent`, `toolset`, `profile`, `provider`
 
 Tasks:
-  [ ] `mod.rs` en dernier du dossier (après les quatre enfants) ; test de chemins.
+  [x] `mod.rs` en dernier du dossier (après les quatre enfants) ; test de chemins. Validé 2026-11-02 (validator PASS).
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.

@@ -13,6 +13,10 @@ pub mod secret;
 /// d'accord de modules (`src/lymaille/identity.sdd`).
 pub mod identity;
 
+/// Ressources de définition administrées par l'admin au lot 1 : agents et toolsets du catalogue,
+/// profils de modèle, providers (`src/lymaille/definitions/mod.sdd`).
+pub mod definitions;
+
 /// Migrations SeaORM internes du module (`src/lymaille/migration.sdd`). `mod.sdd` veut ce module
 /// privé et le ré-export `pub use migration::migrations` seulement en fin de lot : `pub(crate)`
 /// en attendant, pour que `crate::migration::Migrator` assemble déjà les migrations sous
