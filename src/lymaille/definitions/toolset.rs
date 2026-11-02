@@ -176,24 +176,21 @@ impl MiryadResource for Entity {
 }
 
 /// Les contrôles de la version d'un toolset, partagés avec `../store/toolset.rs` (`put_draft`
-/// applique les mêmes, ./toolset.sdd `Must`) : contrat extractible du module Rhai
+/// appelle **cette fonction**, ./toolset.sdd `Must`) : contrat extractible du module Rhai
 /// (`lymaille::extract_contract`, qui compile sans jamais l'exécuter), gabarits de skill
 /// compilables ([`lymaille::check_template`]) et plafond de rendu [`DEFAULT_RENDER_CAP_CHARS`]
-/// ([`lymaille::Skill::check_size`]). L'`Err` est le texte de la cause, que la bibliothèque
-/// n'établit jamais à partir d'un fragment de source.
-pub(crate) fn check_toolset(toolset: &::lymaille::Toolset) -> Result<(), String> {
-    ::lymaille::extract_contract(toolset.source()).map_err(|cause| cause.to_string())?;
+/// ([`lymaille::Skill::check_size`]). L'`Err` est la variante typée de `lymaille` rendue par ces
+/// fonctions amont — le store la propage, le hook [`Entity`] la convertit en `HookError` depuis
+/// son affichage, que la bibliothèque n'établit jamais à partir d'un fragment de source.
+pub(crate) fn check_toolset(toolset: &::lymaille::Toolset) -> ::lymaille::ToolsetsResult<()> {
+    ::lymaille::extract_contract(toolset.source())?;
     for skill in toolset.skills().values() {
-        skill
-            .check_size(DEFAULT_RENDER_CAP_CHARS)
-            .map_err(|cause| cause.to_string())?;
+        skill.check_size(DEFAULT_RENDER_CAP_CHARS)?;
         ::lymaille::check_template(
             &format!("skill {} description", skill.name()),
             skill.description(),
-        )
-        .map_err(|cause| cause.to_string())?;
-        ::lymaille::check_template(&format!("skill {} body", skill.name()), skill.body())
-            .map_err(|cause| cause.to_string())?;
+        )?;
+        ::lymaille::check_template(&format!("skill {} body", skill.name()), skill.body())?;
     }
     Ok(())
 }
@@ -378,9 +375,9 @@ mod tests {
         }
     }
 
-    /// `Must` étape 2 : la fonction [`check_toolset`] est le contrat partagé de `put_draft` —
-    /// le plafond de rendu est celui de la bibliothèque, un toolset sain passe, un module qui ne
-    /// compile pas est refusé sans citer sa source.
+    /// `Must` étape 2 : la fonction [`check_toolset`] est le contrat partagé de `put_draft` — elle
+    /// rend la variante typée de `lymaille`, le plafond de rendu est celui de la bibliothèque, un
+    /// toolset sain passe, un module qui ne compile pas est refusé sans citer sa source.
     #[test]
     fn check_toolset_applique_le_contrat_partage() {
         assert_eq!(
@@ -393,7 +390,7 @@ mod tests {
         let cause = check_toolset(&toolset("G_casse", "1.0.0", &format!("let x = {marque}(((")))
             .expect_err("un module qui ne compile pas est refusé");
         assert!(
-            !cause.contains(marque),
+            !cause.to_string().contains(marque),
             "le source ne figure pas dans la cause : {cause}"
         );
     }

@@ -32,9 +32,9 @@ Must:
     4. dérivés : `toolset_id = name`, `version` = version de la version `active` si présente, sinon du brouillon ;
       `created_at = Set(now)` si `NotSet` (création).
     5. (`before_update` seulement) `toolset_id` ne change pas, sinon `HookError::new("toolset id cannot change")`.
-  `pub(crate) fn check_toolset(toolset: &lymaille::Toolset) -> Result<(), String>` — les contrôles de l'étape 2 (contrat extractible, gabarits
-    de skill compilables, plafond de rendu), **partagés** avec ../store/toolset.sdd (`put_draft` applique les mêmes contrôles que le hook) ;
-    l'`Err` est un texte expurgé (jamais le source).
+  `pub(crate) fn check_toolset(toolset: &lymaille::Toolset) -> lymaille::ToolsetsResult<()>` — les contrôles de l'étape 2 (contrat extractible, gabarits
+    de skill compilables, plafond de rendu), **partagés** avec ../store/toolset.sdd : `put_draft` **appelle cette fonction** et propage sa
+    variante typée, le hook la convertit en `HookError` depuis son affichage ; le texte rendu est expurgé (jamais le source).
   `pub const DEFAULT_RENDER_CAP_CHARS: u64` — plafond de rendu d'un corps ou d'une annexe de skill ; valeur = celle du plafond par défaut
     de `ScratchpadLimits::new()` de `lymaille` (valeur exacte à relire en source à l'implémentation ; l'implémenteur lève un `[?]` si elle
     n'est pas atteignable).

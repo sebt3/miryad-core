@@ -42,7 +42,8 @@ Exposes:
   `SeaToolsetStore`, `SeaContextTypeStore`, `SeaContextStore` et leurs `impl` de trait
 
 Tasks:
-  [ ] Tests d'abord (SQLite mémoire), puis ./toolset.rs.
+  [x] Tests d'abord (SQLite mémoire), puis ./toolset.rs. Validé 2026-11-02 (validator PASS après partage littéral
+    de `check_toolset` : le store appelle la fonction typée de ../definitions/toolset.sdd, zéro duplication).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./toolset.rs.
