@@ -9,16 +9,10 @@
 
 use sea_orm::entity::prelude::*;
 
+use crate::lymaille::store::db_text;
 use crate::users::{group, user};
 
 use super::error::LymailleError;
-
-/// Texte expurgé d'un `DbErr`, au plus simple en attendant `store::db_text`
-/// (`src/lymaille/store/mod.sdd`, règle 5) : à remplacer par cet import quand
-/// `src/lymaille/store/mod.rs` existera.
-pub(crate) fn db_text(error: &DbErr) -> String {
-    error.to_string()
-}
 
 /// Principal d'un appel, reconstruit depuis la base à chaque appel de module (DSD `DEC-3`) :
 /// valeur d'un instant, jamais persisté ni mis en cache entre deux appels — la session ne garde

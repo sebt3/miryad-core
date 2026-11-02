@@ -59,7 +59,8 @@ Exposes:
     `db_text` (`pub(crate)`), et les huit types de store ré-exportés.
 
 Tasks:
-  [ ] Tests d'abord (SQLite mémoire : cloisonnement et règles 1 à 6 sur un store de test), puis ./mod.rs en dernier du dossier.
+  [x] Tests d'abord (SQLite mémoire : cloisonnement et règles 1 à 6 sur un store de test), puis ./mod.rs en dernier du
+    dossier. Validé 2026-11-02 (validator PASS ; `db_text` de ../identity.rs basculé sur `store::db_text`).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./mod.rs.

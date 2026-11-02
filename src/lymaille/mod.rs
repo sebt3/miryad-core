@@ -13,6 +13,10 @@ pub mod secret;
 /// d'accord de modules (`src/lymaille/identity.sdd`).
 pub mod identity;
 
+/// Stores SeaORM des traits hôte de `lymaille` : huit stores liés à un `subject`, fabriqués par
+/// `LymailleStores` (`src/lymaille/store/mod.sdd`).
+pub mod store;
+
 /// Ressources de définition administrées par l'admin au lot 1 : agents et toolsets du catalogue,
 /// profils de modèle, providers (`src/lymaille/definitions/mod.sdd`).
 pub mod definitions;
