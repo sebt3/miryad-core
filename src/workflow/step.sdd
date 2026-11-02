@@ -27,7 +27,7 @@ Owns:
 
 Can modify:
   ./dispatcher.rs, ./durable.rs, ./matrix_step.rs, ./rhai_step.rs, ./subworkflow.rs, ./systemone_step.rs, ./template.rs —
-    **uniquement** les littéraux `RunInfo { .. }` de leurs tests (champ `vars`, tâche B1, 2026-10-30 ; champ `trigger`, tâche T1, 2026-11-02) ; aucune autre ligne
+    **uniquement** les littéraux `RunInfo { .. }` de leurs tests, ainsi que le littéral de production de `./dispatcher.rs` (champ `vars`, tâche B1, 2026-10-30 ; champ `trigger`, tâche T1, 2026-11-02 ; amendement de wording 2026-11-02) ; aucune autre ligne
 
 References:
   ./dispatcher.sdd (à rédiger) — service Restate `StepDispatcher`, seul consommateur de

@@ -98,7 +98,8 @@ Exposes:
 
 Accepts:
   `run` : un `config` de la forme `{"dag": [ {id, depends_on, kind, config}, ... ], "vars": {..}}` (`vars` optionnel) ; tout autre
-    contenu est rejeté par `prepare` (étape 1). `inputs` ignoré.
+    contenu est rejeté par `prepare` (étape 1), à l'exception d'une clé `trigger`, ignorée sans effet (jamais lue ni transmise ; l'identité de
+    l'enfant vient de `run.trigger` du parent seulement, cf. Scenario T6b). `inputs` ignoré.
 
 Returns:
   `run` : un objet JSON `{ id du step enfant: sortie }` ou @StepError toujours `retryable: false`.
