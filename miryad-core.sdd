@@ -130,7 +130,7 @@ Depends on:
   ./tooling.sdd
 
 Tasks:
-  [ ] Lots A et B du moteur de workflow (2026-10-30, `dsd/miryad-core/workflow.md` `FR-12` à `FR-18`, `DEC-7` à `DEC-9`) : treize
+  [x] Lots A et B du moteur de workflow (2026-10-30, `dsd/miryad-core/workflow.md` `FR-12` à `FR-18`, `DEC-7` à `DEC-9`) : treize
     tâches, **une à la fois, dans cet ordre exact**, chacune dans sa spec (`Tasks`, case non cochée du même identifiant) ; un
     commit par tâche vérifiée (batterie ciblée verte avant le commit, batterie complète de `./tooling.sdd` à la fin de chaque lot).
     Lot A (vynil-core 0.9, liste blanche, timeout) :
