@@ -17,6 +17,10 @@ pub mod identity;
 /// `LymailleStores` (`src/lymaille/store/mod.sdd`).
 pub mod store;
 
+/// Module Rhai `resources` : lecture seule des `MiryadResource` par les agents, délégation
+/// intégrale à `rest::core` (`src/lymaille/resource_module.sdd`).
+pub mod resource_module;
+
 /// Ressources de définition administrées par l'admin au lot 1 : agents et toolsets du catalogue,
 /// profils de modèle, providers (`src/lymaille/definitions/mod.sdd`).
 pub mod definitions;

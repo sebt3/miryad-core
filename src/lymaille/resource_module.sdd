@@ -61,10 +61,12 @@ Exposes:
   `ResourceReaders::{new, register}`, `resources_module`, `LLM_MAX_PER_PAGE`, `LLM_DEFAULT_PER_PAGE`
 
 Tasks:
-  [ ] Amender ../auth/principal.sdd et principal.rs : variante `PrincipalSource::Agent` (unité, `Debug` « Agent »), seule variante
+  [x] Amender ../auth/principal.sdd et principal.rs : variante `PrincipalSource::Agent` (unité, `Debug` « Agent »), seule variante
     non rendue par un transport HTTP ; aucun consommateur ne la lit (la crate ne lit pas `source`). Amendement soumis au développeur
-    principal avant d'y toucher (hors périmètre de ce fichier).
-  [ ] Tests d'abord (SQLite mémoire, entités de test comme ../mcp/registry.sdd), puis ./resource_module.rs.
+    principal avant d'y toucher (hors périmètre de ce fichier). Validé 2026-11-03 (validator PASS ; deux bras `cfg(test)` d'exhaustivité
+    ajoutés à ../auth/dual.rs, aucun match de production sur `source`).
+  [x] Tests d'abord (SQLite mémoire, entités de test comme ../mcp/registry.sdd), puis ./resource_module.rs. Validé 2026-11-03
+    (validator PASS, scripts Rhai réels, parité chiffrée avec `rest::core::list`).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./resource_module.rs.
@@ -77,7 +79,7 @@ Scenario: describe ne liste que les ressources lisibles
 Scenario: list et get suivent les mêmes politiques que REST
   Given une ressource `OwnerOnly` avec des lignes de deux propriétaires
   When le script de l'un d'eux appelle `list` puis `get` sur une ligne de l'autre
-  Then `list` ne rend que ses lignes et `get` échoue `not found` comme `rest::core::get`
+  Then `list` ne rend que ses lignes et `get` échoue `forbidden` comme `rest::core::get`
 
 Scenario: une ressource inconnue ou interdite ne fuit pas
   Given une ressource `AdminOnly` et un appelant non-admin
