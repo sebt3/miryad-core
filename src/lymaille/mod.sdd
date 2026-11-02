@@ -69,6 +69,9 @@ Tasks:
     `--features lymaille`, `cargo tree -e normal -i sea-orm` imprime une ligne (DSD `AC-2`) ; un seul `rhai`, un seul `tokio`
     et un seul `rustls` dans `cargo tree --all-features` (DSD `AC-1`) ; la bascule `rhai` 1.26.1 → 1.27.0 est prouvée par la batterie
     `workflow` du moment de l'ajout (DSD `Constraints and Pitfalls`).
+  [?] Wording de la preuve ci-dessus : sur cargo 1.99, `cargo tree --no-default-features -e normal -i lymaille` rend 101
+    (« package ID specification did not match ») et non « nothing to print » — l'absence est bien prouvée, la formulation
+    est inexacte (constat validator 2026-11-02). Corriger la formulation (ici et `tooling.sdd`) ou accepter le rendu non nul ?
 
 Done when:
   Les `Scenario` sont verts ; `cargo build --no-default-features --features lymaille` et `--all-features` compilent sans

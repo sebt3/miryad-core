@@ -84,6 +84,15 @@ matrix-sdk-crypto = { version = "0.18", optional = true }
 matrix-sdk-store-encryption = { version = "0.18", optional = true }
 # `Zeroizing<String>` apparaît dans la signature du trait CryptoStore (secrets de la boîte) ; déjà dans le graphe.
 zeroize = { version = "1", optional = true }
+# Hôte de la bibliothèque `lymaille` (src/lymaille/mod.sdd) : features par défaut conservées
+# (`mcp-http`, `rig`) ; `fs` et `shell` ne sont jamais activés (relais de `vynil-core`, DSD `OI-1`).
+lymaille = { version = "0.1.0", optional = true }
+# Provider `ring` du provider TLS de src/lymaille/tls.sdd (DSD `DEC-4`) ; `rustls` est déjà dans
+# le graphe via `reqwest`, aucune dépendance de fond nouvelle.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+# `Module` Rhai du module des ressources (src/lymaille/resource_module.sdd) ; version unifiée
+# avec celle de `lymaille`, un seul exemplaire dans le graphe.
+rhai = { version = "1.27", default-features = false, features = ["std", "sync"], optional = true }
 
 [features]
 default = ["static-frontend", "db"]
@@ -100,6 +109,8 @@ workflow = ["db", "dep:restate-sdk", "dep:uuid", "dep:vynil-core", "vynil-core?/
 systemone = []
 # Client Matrix de bot (src/matrix/mod.sdd), hors `default` (arbitrage 2026-10-06).
 matrix = ["db", "dep:matrix-sdk", "dep:matrix-sdk-crypto", "dep:matrix-sdk-store-encryption", "dep:zeroize", "dep:tokio"]
+# Hôte de la bibliothèque `lymaille` (src/lymaille/mod.sdd), hors `default` (arbitrage 2026-11-02) ; implique `db`.
+lymaille = ["db", "dep:lymaille", "dep:rustls", "dep:zeroize", "dep:tokio", "dep:vynil-core", "dep:rhai"]
 
 [dev-dependencies]
 sea-orm = { version = "2", features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "macros", "mock"] }
@@ -132,5 +143,5 @@ vynil-core = { version = "0.9", default-features = false, features = ["hbs", "fs
 
 [package.metadata.docs.rs]
 all-features = false
-features = ["static-frontend", "db", "swagger-ui", "mcp", "workflow", "systemone", "matrix"]
+features = ["static-frontend", "db", "swagger-ui", "mcp", "workflow", "systemone", "matrix", "lymaille"]
 rustdoc-args = ["--cfg", "docsrs"]

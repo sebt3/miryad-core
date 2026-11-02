@@ -107,6 +107,7 @@
 //! | `workflow` | Moteur de workflow DAG sur Restate (implique `db`) — **aucune** route sur le `axum::Router` de l'app (services liés par l'app elle-même, `Endpoint::builder()` ; voir `dsd/miryad-core/workflow.md`) | `restate-sdk`, `uuid`, `tokio`, `vynil-core` (`rhai`) |
 //! | `systemone` | Client HTTP vers l'API System One (`POST /v1/systemone`) — **aucune** route, aucun état | aucune (`reqwest` déjà présent) |
 //! | `matrix` | Client Matrix de bot sur `matrix-sdk` 0.18 (E2EE, store `SeaORM`), hors défaut ; implique `db` | `matrix-sdk`, `matrix-sdk-crypto`, `matrix-sdk-store-encryption`, `zeroize`, `tokio` |
+//! | `lymaille` | Hôte de la bibliothèque `lymaille` : stores `SeaORM` de ses objets, module des ressources, kind `subagent` avec `workflow` ; implique `db` | `lymaille`, `rhai`, `rustls`, `zeroize`, `tokio`, `vynil-core` |
 //!
 //! Voir aussi la bibliothèque [`dsd/`](https://github.com/sebt3/miryad-core/tree/main/dsd) : le Domain
 //! [`miryad-core`](https://github.com/sebt3/miryad-core/blob/main/dsd/miryad-core.md) et une Solution par
@@ -194,6 +195,12 @@ pub mod systemone;
 /// de chiffrement dans la base de l'application.
 #[cfg(feature = "matrix")]
 pub mod matrix;
+
+/// Hôte de la bibliothèque `lymaille` (feature `lymaille`, désactivée par défaut) : stores SeaORM
+/// de ses objets, identité de l'appelant, module des ressources exposé aux LLM ; avec `workflow`,
+/// kind `subagent`. Implique `db` ; voir `dsd/miryad-core/lymaille.md`.
+#[cfg(feature = "lymaille")]
+pub mod lymaille;
 
 /// Gestion utilisateurs/groupes (résolution, synchronisation OIDC, comptes de service ; feature
 /// `db`).
