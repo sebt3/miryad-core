@@ -143,7 +143,7 @@ Tasks:
     (3) (validée par le validator, à confirmer à Sébastien) : « DAG qui se rappelle lui-même » ≈
     nesting fini d'approximation, la garde d'exécution coupant avant toute lecture plus loin — le
     cycle inter-définitions littéral n'est pas représentable en JSON fini.
-  [ ] [reporté, approuvé 2026-10-04 : prochaine livraison, non bloquant] **Propager les `inputs` du parent vers l'enfant** (#26) : en v1 l'enfant ne reçoit rien du parent
+  [x] Soldé par le lot B (B7, 2026-10-30, `FR-15`) : le `config` du step `subworkflow` porte `vars`, rendu depuis `inputs` du parent. Énoncé d'origine : **Propager les `inputs` du parent vers l'enfant** (#26) : en v1 l'enfant ne reçoit rien du parent
     (ses steps racine ont `inputs` vide) ; l'application fabrique le DAG enfant en y embarquant les
     valeurs utiles dans les `config`. Recommandation : ne rien ajouter tant qu'un besoin réel ne
     l'impose pas ; si besoin, passer par un champ optionnel `inputs` du `config` du step copié dans la

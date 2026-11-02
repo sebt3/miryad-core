@@ -305,7 +305,7 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
     - **Source:** user instruction, 2026-10-30
 
 - **DEC-10 - Évaluation Rhai sur un fil dédié à pile dimensionnée**
-    - **Context:** `spawn_blocking` donne une pile de 2 Mio ; le test A6 du 2026-11-01 reproduit `OI-9` sur `RhaiStep` :
+    - **Context:** `spawn_blocking` donne une pile de 2 Mio ; le test A6 du 2026-11-01 reproduit sur `RhaiStep` le débordement mesuré par `lymaille` :
       SIGABRT dès 144 niveaux de récursion en debug, entre 256 et 384 en release — la pile native s'épuise avant le
       plafond logique de 512 niveaux, et Restate rejouerait à l'infini une invocation avortée.
     - **Decision:** l'évaluation du script s'exécute dans un fil `std::thread` à pile de 256 Mio (deux fois le pire cas
@@ -315,7 +315,7 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
       plateforme) ; différer (écarté : lot A non clos, suite de tests qui avorte sous toute combinaison `workflow`).
     - **Consequences:** un thread OS et 256 Mio réservés (engagés à la touche) par évaluation ; le fil survit au
       timeout coopératif comme celui du `spawn_blocking` ; la panique de ce fil rejoint le rendu `JoinError` de l'étape 4.
-    - **Source:** user instruction, 2026-11-01 ; mesures `OI-9` du 2026-11-01
+    - **Source:** user instruction, 2026-11-01 ; mesures du test A6, 2026-11-01 ; `lymaille` `dsd/agent-sessions/scratchpad.md`, DEC-3 (amendement du 2026-10-27)
 
 ## Operations and Resilience
 
@@ -379,11 +379,10 @@ leurs clients (TBD).
 
 ## Open Issues
 
-- **OI-1:** **Montée de `vynil-core` 0.7.7 vers 0.9.0, décidée le 2026-10-30, à réaliser** : `DEC-7`, `DEC-8`,
-  `FR-16` à `FR-18`, `CON-5`. `sebt3/vynil-core#13` est livrée (0.8.0, puis liste blanche en 0.9.0) mais `Cargo.toml`
-  pin encore 0.7.7. Si `AC-13` échoue (`jsonnet` lit des fichiers), `new_restricted()` doit lui-même retirer `jsonnet`
-  en amont, ou la crate garde une désinscription ciblée de ce seul helper. Tâches ouvertes concernées :
-  `SpecDD /src/workflow/template.sdd` et `SpecDD /src/workflow/rhai_step.sdd`.
+- **OI-1:** **`jsonnet` reste désinscrit côté crate** : la montée à `vynil-core` 0.9.0 est livrée (lot A, A1), mais
+  `AC-13` a échoué (`jsonnet` lit des fichiers par `importstr`), d'où `DENIED_HELPERS = ["jsonnet"]` dans
+  `src/workflow/template.rs` (`DEC-8`). **TBD :** correction en amont dans `vynil-core` (`new_restricted()` devrait
+  retirer `jsonnet` lui-même), après quoi `DENIED_HELPERS` disparaît.
 - **OI-2:** AC-8 (reprise sur crash) n'a pas de test automatisable. Une preuve par spike est à refaire à toute évolution
   majeure de `restate-sdk`. **TBD :** décider si un test d'intégration en cluster de CI est souhaitable.
 - **OI-3:** Pilotage d'un run par awakeable : reporté par arbitrage tant qu'aucun besoin réel ne l'impose (le
@@ -411,12 +410,9 @@ leurs clients (TBD).
       user instruction, 2026-10-30
     - La Solution `miryad-core/lymaille` est ouverte depuis le 2026-11-01 et rattache cette réserve ; le **TBD**
       persistant reste à trancher dans cette Solution.
-- **OI-9:** **Pile des threads de `RhaiStep`** : `spawn_blocking` donne 2 Mio de pile, alors que `vynil-core` fixe des
-  plafonds Rhai de 512 niveaux d'appels et de profondeur d'expression 256 et 128. `lymaille` a mesuré un débordement à
-  512 niveaux en débogage et un pire cas construit de 125 Mio en release, ce qui ferait avorter le processus. Restate
-  rejouerait alors l'invocation, d'où une boucle. **Reproduit sur `RhaiStep` le 2026-11-01** (test A6 : SIGABRT ; survit
-  à 128 niveaux et avorte dès 144 en debug, survit à 256 et avorte dès 384 en release — la pile native s'épuise avant
-  le plafond de 512 dans les deux profils). **Tranché le 2026-11-01 par le développeur principal : fil dédié à pile
-  dimensionnée** (`DEC-10`) ; les plafonds restent la limite logique.
+- **OI-9:** **Soldé le 2026-11-02** (lot A, A6) : pile des threads de `RhaiStep`. `spawn_blocking` (2 Mio) avortait le
+  processus avant le plafond Rhai de 512 niveaux (SIGABRT dès 144 niveaux en debug, 384 en release) ; Restate aurait
+  rejoué l'invocation en boucle. Tranché le 2026-11-01 : fil dédié à pile de 256 Mio, voir `DEC-10`. Conservé comme
+  renvoi des specs et du code.
     - **Source:** `lymaille` `dsd/agent-sessions/scratchpad.md`, DEC-3 (amendement du 2026-10-27) ; mesures du test A6,
       2026-11-01 ; arbitrage, user instruction, 2026-11-01
