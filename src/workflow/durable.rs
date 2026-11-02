@@ -26,6 +26,7 @@ use restate_sdk::prelude::{
 use serde_json::Value;
 
 use super::definition::DagSteps;
+use super::interpreter::RunInput;
 use super::step::{RunInfo, StepError};
 
 /// Nom de l'en-tête de requête qui porte la profondeur d'imbrication d'un run enfant : écrit par
@@ -178,6 +179,11 @@ impl<'a> StepContext<'a> {
     /// déjà démarré (jamais de doublon). L'en-tête `DEPTH_HEADER` porte la profondeur incrémentée
     /// (`run.depth + 1` en `saturating_add`).
     ///
+    /// Le corps de la requête est un `RunInput` `{ dag, vars }` (./interpreter.rs, amendement
+    /// lot B, ./interpreter.sdd) : `vars` sont les variables constantes de l'enfant, telles
+    /// quelles (le subworkflow les a déjà fait rendre par son parent, il n'y a pas de second
+    /// rendu ici).
+    ///
     /// `dag` n'est pas pré-validé ici : `DagInterpreter::run` revalide systématiquement (un DAG
     /// invalide échoue en `400` `MRD-WORKFLOW-004`, ./interpreter.sdd).
     ///
@@ -186,13 +192,20 @@ impl<'a> StepContext<'a> {
     /// [`StepError`] `retryable: false` dont le message est celui de l'erreur terminale de
     /// l'enfant (DAG invalide, step en échec, annulation), conservé verbatim — un échec de
     /// l'enfant fait échouer le parent, le rejeu donnerait le même échec.
-    pub async fn run_child_dag(&self, dag: &DagSteps) -> Result<HashMap<String, Value>, StepError> {
+    pub async fn run_child_dag(
+        &self,
+        dag: &DagSteps,
+        vars: &serde_json::Map<String, Value>,
+    ) -> Result<HashMap<String, Value>, StepError> {
         let enfant = child_run_key(&self.run.run_key, &self.run.step_id);
         let Json(sorties) = self
             .ctx
-            .request::<Json<DagSteps>, Json<HashMap<String, Value>>>(
+            .request::<Json<RunInput>, Json<HashMap<String, Value>>>(
                 RequestTarget::workflow("DagInterpreter", enfant, "run"),
-                Json(dag.clone()),
+                Json(RunInput {
+                    dag: dag.clone(),
+                    vars: vars.clone(),
+                }),
             )
             .header(
                 DEPTH_HEADER.to_string(),

@@ -6,7 +6,8 @@
 //! compris) ; sa sortie est la table des sorties du DAG enfant (clé = id du step enfant, valeur =
 //! sa sortie), sans enveloppe.
 //!
-//! Le DAG enfant est **en ligne dans le `config`** du step (`{"dag": [...]}`) : la crate ne charge
+//! Le DAG enfant est **en ligne dans le `config`** du step (`{"dag": [...], "vars": {..}}`,
+//! `vars` optionnel) : la crate ne charge
 //! jamais de définition en base dans le moteur (règle de déterminisme de ./interpreter.sdd), et le
 //! cas du consommateur est justement un DAG fabriqué par run. Une application qui veut « lancer la
 //! définition stockée X » écrit son propre kind durable (elle charge X, puis
@@ -21,8 +22,10 @@
 //!
 //! Les trois causes d'échec du step (config invalide, profondeur, DAG enfant invalide) sont
 //! déterministes : un [`StepError`] `retryable: false` à chaque fois, l'échec d'un enfant
-//! également (ses retries éventuels se jouent *dans* l'enfant). Les `inputs` du parent ne sont
-//! **pas** transmis à l'enfant dans cette itération (./subworkflow.sdd `Tasks`).
+//! également (ses retries éventuels se jouent *dans* l'enfant). Seules les `vars` du `config` du
+//! step sont transmises à l'enfant (déjà rendues par le parent) : les `inputs` du parent ne sont
+//! **pas** transmis et l'enfant n'hérite d'aucune autre donnée du parent (./subworkflow.sdd
+//! `Tasks`).
 //!
 //! [`StepContext::run_child_dag`]: super::durable::StepContext::run_child_dag
 
@@ -74,12 +77,18 @@ impl Default for SubWorkflowStep {
     }
 }
 
-/// Le `config` du kind `"subworkflow"` : le DAG enfant, en ligne. Un seul champ attendu, tout
-/// autre contenu est rejeté par [`prepare`] (étape 1).
+/// Le `config` du kind `"subworkflow"` : le DAG enfant, en ligne, et ses `vars` optionnelles.
+/// Tout autre contenu est rejeté par [`prepare`] (étape 1).
 #[derive(Deserialize)]
 struct SubWorkflowConfig {
     /// Le DAG enfant, dans la même forme JSON que la colonne `steps` d'une `WorkflowDefinition`.
     dag: DagSteps,
+    /// Les variables de l'enfant (`#[serde(default)]` : sans clé `vars`, `{}`). `vars` n'est
+    /// **pas** un champ brut (`raw_fields` reste `["dag"]`) : ses `string` sont des gabarits du
+    /// **parent**, déjà rendus quand cette valeur arrive ici. L'enfant n'hérite d'aucune autre
+    /// donnée du parent (./subworkflow.sdd, 2026-10-30, lot B).
+    #[serde(default)]
+    vars: serde_json::Map<String, Value>,
 }
 
 /// Tout ce que [`SubWorkflowStep::run`] décide avant d'appeler le moteur, en fonction pure —
@@ -91,11 +100,17 @@ struct SubWorkflowConfig {
 ///    (`MRD-WORKFLOW-008`) ;
 /// 3. `validate_dag` sur le DAG enfant — échec avant tout appel, pas après le démarrage d'un
 ///    run enfant condamné (`MRD-WORKFLOW-004` verbatim) ;
-/// 4. le DAG validé.
+/// 4. le DAG validé et les `vars` du config, valeur déjà **rendue** par le parent (`vars` n'est
+///    pas un champ brut : `raw_fields` reste `["dag"]`, ./subworkflow.sdd 2026-10-30) — sans clé
+///    `vars`, la table vide ; les vars du parent ne sont jamais transmises implicitement.
 ///
 /// Les trois échecs sont des [`StepError`] `retryable: false` : config, profondeur et DAG invalide
 /// sont déterministes, les retries des steps enfants se jouent *dans* l'enfant.
-fn prepare(run: &RunInfo, config: Value, max_depth: u32) -> Result<DagSteps, StepError> {
+fn prepare(
+    run: &RunInfo,
+    config: Value,
+    max_depth: u32,
+) -> Result<(DagSteps, serde_json::Map<String, Value>), StepError> {
     let etape = serde_json::from_value::<SubWorkflowConfig>(config).map_err(|erreur| StepError {
         message: format!("config subworkflow invalide: {erreur}"),
         retryable: false,
@@ -115,7 +130,7 @@ fn prepare(run: &RunInfo, config: Value, max_depth: u32) -> Result<DagSteps, Ste
         message: erreur.to_string(),
         retryable: false,
     })?;
-    Ok(etape.dag)
+    Ok((etape.dag, etape.vars))
 }
 
 #[async_trait::async_trait]
@@ -133,17 +148,19 @@ impl MiryadDurableStep for SubWorkflowStep {
     /// Prépare (`prepare`) puis lance le DAG enfant via [`StepContext::run_child_dag`] —
     /// idempotent au rejeu (clé enfant `{run_key}:{step_id}`, profondeur incrémentée, portées par
     /// ./durable.rs, jamais calculées ici). Sortie : la table des sorties de l'enfant en objet
-    /// JSON sans enveloppe. Les `inputs` du parent ne sont pas transmis (./subworkflow.sdd
-    /// `Tasks`). L'échec de l'enfant fait échouer ce step donc le parent, message conservé
-    /// verbatim — pas de branche de repli dans cette itération.
+    /// JSON sans enveloppe. Les `vars` transmises à l'enfant sont celles du `config` du step
+    /// (déjà rendues par le parent) ; les `inputs` du parent ne sont pas transmis, l'enfant
+    /// n'hérite d'aucune autre donnée du parent (./subworkflow.sdd `Tasks`). L'échec de l'enfant
+    /// fait échouer ce step donc le parent, message conservé verbatim — pas de branche de repli
+    /// dans cette itération.
     async fn run(
         &self,
         ctx: &StepContext<'_>,
         config: Value,
         _inputs: HashMap<String, Value>,
     ) -> Result<Value, StepError> {
-        let dag = prepare(ctx.run_info(), config, self.max_depth)?;
-        let sorties = ctx.run_child_dag(&dag).await?;
+        let (dag, vars) = prepare(ctx.run_info(), config, self.max_depth)?;
+        let sorties = ctx.run_child_dag(&dag, &vars).await?;
         Ok(Value::Object(sorties.into_iter().collect()))
     }
 }
@@ -185,11 +202,11 @@ mod tests {
 
     /// Extrait le [`StepError`] d'un `Err`, faute distincte marquée rouge explicitement sinon.
     fn erreur_rendue(
-        resultat: Result<super::DagSteps, crate::workflow::StepError>,
+        resultat: Result<(super::DagSteps, serde_json::Map<String, Value>), crate::workflow::StepError>,
     ) -> crate::workflow::StepError {
         match resultat {
             Err(erreur) => erreur,
-            Ok(dag) => panic!("attendu un Err, rendu Ok({dag:?})"),
+            Ok((dag, vars)) => panic!("attendu un Err, rendu Ok(({dag:?}, {vars:?}))"),
         }
     }
 
@@ -197,7 +214,7 @@ mod tests {
     /// un `config` portant un seul step `"a"` → `Ok(DagSteps)` d'un seul step d'id `"a"`.
     #[test]
     fn prepare_rend_le_dag_dun_config_valide() {
-        let dag = prepare(&run(0), config_valide(), 4).expect("un config valide doit être accepté");
+        let (dag, _vars) = prepare(&run(0), config_valide(), 4).expect("un config valide doit être accepté");
         assert_eq!(dag.0.len(), 1, "un seul step attendu");
         assert_eq!(dag.0[0].id, "a");
     }
@@ -326,5 +343,68 @@ mod tests {
         let rendu = render_config(&config, &run(0), &HashMap::new(), raw)
             .expect("le DAG enfant ne doit pas être rendu par le parent");
         assert_eq!(rendu, config, "le template enfant doit rester intact");
+    }
+
+    /// Scenario « les vars du step deviennent celles de l'enfant » (2026-10-30, lot B) : un
+    /// `config` portant `"vars": {"project": "p1"}` (valeur déjà rendue par le parent, car `vars`
+    /// n'est pas un champ brut — `raw_fields` reste `["dag"]`) rend `Ok((dag, vars))` avec ces
+    /// vars ; sans clé `vars` il rend `{}` ; `"vars": [1]` (non objet) est une erreur de
+    /// désérialisation du `config`, message `config subworkflow invalide: …`, `retryable: false`.
+    #[test]
+    fn les_vars_du_step_deviennent_celles_de_lenfant() {
+        let config = json!({
+            "dag": [{ "id": "a", "depends_on": [], "kind": "x", "config": {} }],
+            "vars": { "project": "p1" }
+        });
+        let (dag, vars) =
+            prepare(&run(0), config, 4).expect("un config avec « vars » valides doit être accepté");
+        assert_eq!(dag.0.len(), 1, "le DAG est rendu inchangé");
+        let attendu = json!({ "project": "p1" });
+        assert_eq!(
+            &vars,
+            attendu.as_object().expect("fixture : un objet"),
+            "les vars du step deviennent celles de l'enfant"
+        );
+
+        let (_dag, sans) =
+            prepare(&run(0), config_valide(), 4).expect("un config sans clé « vars » doit être accepté");
+        assert!(
+            sans.is_empty(),
+            "sans clé « vars » l'enfant reçoit {{}} : {sans:?}"
+        );
+
+        let non_objet = json!({
+            "dag": [{ "id": "a", "depends_on": [], "kind": "x", "config": {} }],
+            "vars": [1]
+        });
+        let erreur = erreur_rendue(prepare(&run(0), non_objet, 4));
+        assert!(
+            erreur.message.starts_with("config subworkflow invalide"),
+            "des « vars » non objets sont une erreur de désérialisation du config : {erreur}"
+        );
+        assert!(
+            !erreur.retryable,
+            "la désérialisation est déterministe, jamais retryable"
+        );
+    }
+
+    /// Scenario « l'enfant n'hérite pas des vars du parent » (2026-10-30, lot B) : un `RunInfo`
+    /// parent dont `vars = {"project": "p1"}` et un `config` sans clé `vars` → les vars rendues
+    /// sont `{}` — celles du parent ne sont pas transmises implicitement (l'enfant n'hérite
+    /// d'aucune autre donnée du parent).
+    #[test]
+    fn lenfant_n_hérite_pas_des_vars_du_parent() {
+        let parent = RunInfo {
+            run_key: "r".to_string(),
+            step_id: "s".to_string(),
+            depth: 0,
+            vars: json!({ "project": "p1" }),
+        };
+        let (_dag, vars) = prepare(&parent, config_valide(), 4)
+            .expect("un config sans clé « vars » est valide quel que soit le RunInfo parent");
+        assert!(
+            vars.is_empty(),
+            "les vars du parent ne sont jamais transmises implicitement : {vars:?}"
+        );
     }
 }

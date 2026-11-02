@@ -158,7 +158,7 @@ Tasks:
   [x] Templating central (2026-10-06) : implémenter `raw_fields` ci-dessus ; test nommé du `Scenario` ci-dessous.
     Validé 2026-10-13 (validator) : `les_templates_d_un_dag_enfant_ne_sont_pas_rendus_par_le_parent` vert.
 
-  [ ] B7a (2026-10-30, `FR-15`) : `SubWorkflowConfig.vars`, `prepare` rend `(DagSteps, Map)`, `run` appelle `run_child_dag(&dag, &vars)` ;
+  [x] B7a (2026-10-30, `FR-15`) : `SubWorkflowConfig.vars`, `prepare` rend `(DagSteps, Map)`, `run` appelle `run_child_dag(&dag, &vars)` ;
     adapter les tests existants de `prepare` à la nouvelle valeur de retour ; `Scenario` « vars de l'enfant ». `vars` n'est **pas** un
     champ brut : `raw_fields` reste `["dag"]`, le parent rend `vars` (ses `string` sont des gabarits du parent). L'enfant n'hérite
     d'aucune autre donnée du parent. Même tâche que B7b de ./durable.sdd. Après B4. Fichiers : ./subworkflow.rs (avec ./durable.rs).

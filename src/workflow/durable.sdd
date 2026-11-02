@@ -29,7 +29,8 @@ References:
     le trait que le registre stocke
   ./dispatcher.sdd — seul appelant de @MiryadDurableStep::run (branche durable de `execute`, étape 1b)
     et seul constructeur de @StepContext
-  ./interpreter.sdd — lit l'en-tête `DEPTH_HEADER` que @StepContext::run_child_dag pose
+  ./interpreter.sdd — lit l'en-tête `DEPTH_HEADER` que @StepContext::run_child_dag pose, et fournit
+    @RunInput que `run_child_dag` poste (amendement 2026-10-30, lot B)
   ./definition.sdd — @DagSteps (sous-DAG remis à @StepContext::run_child_dag)
   ./subworkflow.sdd — premier (et seul, à la rédaction) `impl` de @MiryadDurableStep fourni par la crate
   `restate-sdk` `0.12.1` : `Context`, `ContextTimers::sleep`, `ContextClient::request`,
@@ -181,7 +182,7 @@ Tasks:
     Validé 2026-10-13 (validator) : trois tests nommés verts (step.rs ×2, durable.rs ×1), clippy workflow sans écart.
     `StepRegistry::raw_fields` porte un `#[allow(dead_code)]` jusqu'à la tâche dispatcher du même lot.
 
-  [ ] B7b (2026-10-30, `FR-15`) : `run_child_dag(&self, dag, vars)` envoie un `RunInput` (./interpreter.sdd, amendement lot B) ;
+  [x] B7b (2026-10-30, `FR-15`) : `run_child_dag(&self, dag, vars)` envoie un `RunInput` (./interpreter.sdd, amendement lot B) ;
     même tâche que B7a de ./subworkflow.sdd (le seul appelant) — les deux fichiers ensemble. Après B4. Fichiers : ./durable.rs
     (avec ./subworkflow.rs).
 
