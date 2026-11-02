@@ -123,7 +123,7 @@ et appels d'MCP externes depuis les scripts.
     déclencheur échoue en `StepError` non retryable, sans repli sur un principal par défaut.
     - **Source:** `DEC-12` ; `src/workflow/step.sdd`, case « Identité du déclencheur dans RunInfo » (reportée le 2026-10-04) ;
       user instruction, 2026-11-02
-    - **Realized by:** `SpecDD /src/workflow/step.sdd` (T1), `/src/workflow/template.sdd`, `/src/workflow/dispatcher.sdd` (T3),
+    - **Realized by:** `SpecDD /src/workflow/step.sdd` (T1), `/src/workflow/template.sdd` (T2), `/src/workflow/dispatcher.sdd` (T3),
       `/src/workflow/interpreter.sdd` (T4), `/src/workflow/client.sdd` (T5), `/src/workflow/durable.sdd` et
       `/src/workflow/subworkflow.sdd` (T6), amendées le 2026-11-02, à approuver avant le code
     - **Verified by:** `AC-11`
