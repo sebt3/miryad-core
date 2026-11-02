@@ -22,8 +22,9 @@ use super::template::render_config;
 /// ./interpreter.rs via le protocole `restate-sdk`.
 // Champs `pub(crate)` : construit par littéral depuis ./interpreter.rs (`Must` étape 2.b de
 // ./interpreter.sdd), comme l'impliquent déjà `Exposes`/`Accepts` de ./dispatcher.sdd.
-// `run_key`/`step_id`/`depth` (#26, 2026-10-04) et `vars` (B3, 2026-10-30, FR-13) composent le
-// [`RunInfo`] de ./step.rs, reconstruit par ce fichier avant l'appel du kind.
+// `run_key`/`step_id`/`depth` (#26, 2026-10-04), `vars` (B3, 2026-10-30, FR-13) et `trigger`
+// (T3, 2026-11-02, FR-10/DEC-12) composent le [`RunInfo`] de ./step.rs, reconstruit par ce
+// fichier avant l'appel du kind.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct StepInvocation {
     pub(crate) kind: String,
@@ -36,6 +37,12 @@ pub(crate) struct StepInvocation {
     /// [`RunInfo`] construit par `execute`, sans validation ni interprétation ici — la validation
     /// éventuelle des vars d'un run vit au client (tâche B4, ./interpreter.sdd).
     pub(crate) vars: Value,
+    /// `subject` de la personne qui a déclenché le run (T3, 2026-11-02, FR-10/DEC-12) : recopié
+    /// tel quel dans le [`RunInfo`] construit par `execute`, sans validation ni interprétation
+    /// ici. `#[serde(default)]` : un corps sans `trigger` — émis par un ./interpreter.rs d'avant
+    /// T4 — donne `None`, le run sans identité.
+    #[serde(default)]
+    pub(crate) trigger: Option<String>,
 }
 
 /// L'unique service Restate du module : résout un kind dans le registre de l'app et enveloppe
@@ -73,18 +80,19 @@ impl StepDispatcher {
             step_id,
             depth,
             vars,
+            trigger,
         }) = req;
-        // Étape 1 (#26, 2026-10-04 ; `vars` : B3, 2026-10-30, FR-13) — reconstruction de l'identité
-        // du run à partir du corps reçu. `vars` est recopiée telle quelle depuis `StepInvocation`,
-        // dans les deux branches ci-dessous : aucune validation ni interprétation ici (elle vit au
-        // client, tâche B4).
+        // Étape 1 (#26, 2026-10-04 ; `vars` : B3, 2026-10-30, FR-13 ; `trigger` : T3, 2026-11-02,
+        // FR-10/DEC-12) — reconstruction de l'identité du run à partir du corps reçu. `vars` et
+        // `trigger` sont recopiés tels quels depuis `StepInvocation`, dans les deux branches
+        // ci-dessous — ce `RunInfo` unique y est relayé intact (`StepContext::new` pour la
+        // durable, `run_invocation` pour l'ordinaire) : aucune validation ni interprétation ici.
         let run_info = RunInfo {
             run_key,
             step_id,
             depth,
             vars,
-            // Tâche T3 (./dispatcher.sdd) : `StepInvocation.trigger` remplacera ce neutre posé par T1.
-            trigger: None,
+            trigger,
         };
         // Étape 1b (#26, 2026-10-04) — branche durable : un kind durable consulté avant le
         // registre ordinaire, appelé **sans** `ctx.run()` englobant (l'envelopper interdirait tout
@@ -386,6 +394,26 @@ mod tests {
         }
     }
 
+    /// Kind dont le `run` rend `json!(run.trigger)` (scenario « le trigger atteint le kind
+    /// ordinaire », 2026-11-02, lot 0 lymaille T3) : prouve la traversée du `trigger` de la
+    /// `RunInfo` jusqu'au kind — `Some(subject)` rendu en chaîne, `None` rendu `null`.
+    struct EchoTrigger;
+
+    #[async_trait::async_trait]
+    impl MiryadWorkflowStep for EchoTrigger {
+        fn kind(&self) -> &'static str {
+            "echo_trigger"
+        }
+        async fn run(
+            &self,
+            run: &RunInfo,
+            _config: Value,
+            _inputs: HashMap<String, Value>,
+        ) -> Result<Value, StepError> {
+            Ok(json!(run.trigger))
+        }
+    }
+
     #[async_trait::async_trait]
     impl crate::workflow::durable::MiryadDurableStep for DurableD {
         fn kind(&self) -> &'static str {
@@ -658,12 +686,105 @@ mod tests {
             step_id: "s1".to_string(),
             depth: 0,
             vars: json!({ "project": "p1" }),
+            trigger: None,
         };
         let corps = serde_json::to_value(&invocation).expect("StepInvocation est sérialisable");
         assert_eq!(
             corps.get("vars"),
             Some(&json!({ "project": "p1" })),
             "le corps de requête doit transporter les vars du run, corps : {corps}"
+        );
+    }
+
+    /// Scenario « le trigger atteint le kind ordinaire » (2026-11-02, lot 0 lymaille, T3) :
+    /// `run_invocation` appelé avec `RunInfo { …, trigger: Some("sub-42") }` fait rendre au kind
+    /// `"sub-42"` — le seam relaie le `trigger` du `RunInfo` jusqu'au `run` sans le lire. Seconde
+    /// branche du Scenario : `trigger: None` (run sans identité) rend `null`. La moitié « corps →
+    /// `RunInfo` » est l'affectation directe de `execute` (non testable en unitaire, borne
+    /// `restate-sdk` actée en `Tasks`), verrouillée par le test de désérialisation ci-dessous.
+    #[tokio::test]
+    async fn le_trigger_atteint_le_kind_ordinaire() {
+        let mut registry = StepRegistry::new();
+        registry.register(EchoTrigger).expect("kind distinct");
+        let rendu = run_invocation(
+            &registry,
+            "echo_trigger".to_string(),
+            RunInfo {
+                run_key: "r1".to_string(),
+                step_id: "s1".to_string(),
+                depth: 0,
+                vars: json!({}),
+                trigger: Some("sub-42".to_string()),
+            },
+            Value::Null,
+            HashMap::new(),
+        )
+        .await
+        .expect("le kind de fixture `echo_trigger` est enregistré");
+        let Json(valeur) = rendu;
+        assert_eq!(
+            valeur,
+            json!("sub-42"),
+            "le trigger doit parvenir au kind tel qu'émis, recopié telle quelle"
+        );
+        let rendu_absent = run_invocation(
+            &registry,
+            "echo_trigger".to_string(),
+            RunInfo {
+                run_key: "r1".to_string(),
+                step_id: "s1".to_string(),
+                depth: 0,
+                vars: json!({}),
+                trigger: None,
+            },
+            Value::Null,
+            HashMap::new(),
+        )
+        .await
+        .expect("le kind de fixture `echo_trigger` est enregistré");
+        let Json(valeur_absente) = rendu_absent;
+        assert_eq!(
+            valeur_absente,
+            json!(null),
+            "un run sans identité (trigger None) rend null, jamais une chaîne vide"
+        );
+    }
+
+    /// Scenario « un corps d'invocation sans trigger se désérialise avec trigger absent »
+    /// (2026-11-02, lot 0 lymaille, T3) : `#[serde(default)]` sur le huitième champ — un JSON de
+    /// `StepInvocation` à sept champs, sans clé `trigger`, se désérialise avec `trigger == None`
+    /// (corps d'un ./interpreter.rs d'avant T4) ; la clé présente est recueillie telle quelle.
+    #[test]
+    fn un_corps_d_invocation_sans_trigger_se_désérialise_avec_trigger_absent() {
+        let invocation: StepInvocation = serde_json::from_value(json!({
+            "kind": "echo_trigger",
+            "config": null,
+            "inputs": {},
+            "run_key": "r1",
+            "step_id": "s1",
+            "depth": 0,
+            "vars": {}
+        }))
+        .expect("un corps à sept champs doit se désérialiser grâce à `#[serde(default)]`");
+        assert!(
+            invocation.trigger.is_none(),
+            "sans clé `trigger`, le champ doit valoir None"
+        );
+        let invocation: StepInvocation = serde_json::from_value(json!({
+            "kind": "echo_trigger",
+            "config": null,
+            "inputs": {},
+            "run_key": "r1",
+            "step_id": "s1",
+            "depth": 0,
+            "vars": {},
+            "trigger": "sub-42"
+        }))
+        .expect("un corps avec clé `trigger` doit se désérialiser");
+        assert_eq!(
+            invocation.trigger.as_deref(),
+            Some("sub-42"),
+            "le `trigger` du corps doit être recueilli tel quel"
         );
     }
 

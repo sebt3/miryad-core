@@ -212,6 +212,8 @@ pub(crate) fn build_invocation(
         step_id: step.id.clone(),
         depth,
         vars: serde_json::Value::Object(vars.clone()),
+        // Tâche T4 (./interpreter.sdd) : le run propagera son trigger ici ; T3 pose le neutre.
+        trigger: None,
     }
 }
 

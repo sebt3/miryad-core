@@ -319,9 +319,13 @@ Tasks:
   [x] B3 (2026-10-30, `FR-13`) : `StepInvocation.vars`, recopié tel quel dans le @RunInfo construit par `execute` (branches
     ordinaire et durable) ; `Scenario` « les vars atteignent le kind ordinaire ». Après B1 (./step.sdd). Un fichier : ./dispatcher.rs.
 
-  [ ] T3 (2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : `StepInvocation.trigger` (`#[serde(default)]`), recopié tel quel dans le @RunInfo construit par
+  [x] T3 (2026-11-02, lot 0 de `dsd/miryad-core/lymaille.md`, `FR-10`, `DEC-12`) : `StepInvocation.trigger` (`#[serde(default)]`), recopié tel quel dans le @RunInfo construit par
     `execute` (branches ordinaire et durable) ; `Scenario` « le trigger atteint le kind ordinaire ». Après T1 (./step.sdd). Un
     fichier : ./dispatcher.rs.
+    Validé 2026-11-02 (validator GO) : deux tests nommés (Some/None assertés ; corps sans clé → `None`), placeholder de T1 retiré,
+    `RunInfo` unique relayé intact dans les deux branches ; trace de 2 lignes dans ./interpreter.rs (`trigger: None` citant T4,
+    champ requis — obligation de compilation, motif B1/B3) ; batterie ciblée workflow et `--all-features` verte, complète due à la
+    fin du lot 0.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow` — périmètre
