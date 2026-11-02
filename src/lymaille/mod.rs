@@ -13,8 +13,17 @@ pub mod secret;
 /// d'accord de modules (`src/lymaille/identity.sdd`).
 pub mod identity;
 
+/// Migrations SeaORM internes du module (`src/lymaille/migration.sdd`). `mod.sdd` veut ce module
+/// privé et le ré-export `pub use migration::migrations` seulement en fin de lot : `pub(crate)`
+/// en attendant, pour que `crate::migration::Migrator` assemble déjà les migrations sous
+/// `lymaille` (`src/migration/mod.sdd`, amendement 2026-11-02). À passer à `pub use` avec les
+/// autres ré-exports à plat.
+mod migration;
+
 /// Installation idempotente du provider TLS `rustls` (`src/lymaille/tls.sdd`).
 /// `mod.sdd` veut ce module privé : temporairement `pub` en attendant le ré-export à plat et
 /// l'appel par le montage de l'état (fin de lot), sans quoi `dead_code` frapperait
 /// `install_crypto_provider`. À replonger privé avec les ré-exports.
 pub mod tls;
+
+pub(crate) use migration::migrations;

@@ -365,3 +365,9 @@ Scenario: sous matrix, le Migrator applique aussi les tables du store (2026-10-0
   Given une base SQLite en mémoire et la feature `matrix`
   When `Migrator::up(&db, None)` est exécuté
   Then les tables `miryad_matrix_*` existent après les tables historiques, puis `down` les retire en premier
+
+Scenario: sous lymaille, le Migrator applique aussi les tables du module (2026-11-02)
+  Given une base SQLite en mémoire et la feature `lymaille`
+  When `Migrator::up(&db, None)` est exécuté
+  Then les tables `miryad_lymaille_*` existent après les tables historiques (et les `miryad_matrix_*` éventuelles),
+    et `down(Some(1))` les retire en premier, sans toucher aux tables historiques

@@ -58,8 +58,11 @@ Exposes:
   `migrations`
 
 Tasks:
-  [ ] Tests d'abord (SQLite mémoire, motif `has_table`/`has_column`/`has_index`), puis ./migration.rs.
-  [ ] Amender ../migration/mod.sdd et mod.rs (ajout conditionnel `lymaille` en fin de liste) dans le même lot.
+  [x] Tests d'abord (SQLite mémoire, motif `has_table`/`has_column`/`has_index`), puis ./migration.rs. Validé 2026-11-02
+    (validator PASS après rejeu d'idempotence en direct ; batterie ciblée verte).
+  [x] Amender ../migration/mod.sdd et mod.rs (ajout conditionnel `lymaille` en fin de liste) dans le même lot. Validé
+    2026-11-02 ; Scenario d'ordre ajouté à ../migration/mod.sdd (miroir du précédent matrix) et Scenario
+    « ordre d'enregistrement » de ../migration/m20260930_000001_index_api_tokens_subject.sdd amendé d'une ligne.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./migration.rs.

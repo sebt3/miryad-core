@@ -35,10 +35,19 @@ impl sea_orm_migration::MigratorTrait for Migrator {
             Box::new(m20260930_000001_index_api_tokens_subject::Migration),
         ];
         // Amendement 2026-10-06 (`matrix`) : fin de liste, jamais avant une entrée existante.
+        // Le type est annoté : sous `lymaille` un second `collect()` enchaîne dessus et
+        // l'inférence ne remonte plus le `dyn` depuis l'expression de retour.
         #[cfg(feature = "matrix")]
-        let migrations = migrations
+        let migrations: Vec<Box<dyn sea_orm_migration::MigrationTrait>> = migrations
             .into_iter()
             .chain(crate::matrix::store::migrations())
+            .collect();
+        // Amendement 2026-11-02 (`lymaille`) : fin de liste, après les entrées `matrix`
+        // éventuelles, jamais avant une entrée existante.
+        #[cfg(feature = "lymaille")]
+        let migrations = migrations
+            .into_iter()
+            .chain(crate::lymaille::migrations())
             .collect();
         migrations
     }
@@ -125,6 +134,8 @@ mod tests {
         stems.push("m20260930_000001_index_api_tokens_subject");
         #[cfg(feature = "matrix")]
         stems.push("m20261006_000001_create_matrix_store");
+        #[cfg(feature = "lymaille")]
+        stems.push("m20261103_000001_create_lymaille_tables");
         stems
     }
 
@@ -352,8 +363,11 @@ mod tests {
             .pop()
             .expect("the registration list is never empty");
         // Sous `matrix`, la dernière entrée enregistrée est la migration du store (amendement
-        // 2026-10-06, en fin de liste) : c'est elle que `down(Some(1))` défait.
-        let expected_last = if cfg!(feature = "matrix") {
+        // 2026-10-06, en fin de liste) ; sous `lymaille`, c'est celle du module, ajoutée après
+        // toutes les autres (amendement 2026-11-02). C'est elle que `down(Some(1))` défait.
+        let expected_last = if cfg!(feature = "lymaille") {
+            "m20261103_000001_create_lymaille_tables"
+        } else if cfg!(feature = "matrix") {
             "m20261006_000001_create_matrix_store"
         } else {
             "m20260930_000001_index_api_tokens_subject"
@@ -459,8 +473,10 @@ mod tests {
     }
 
     /// Scenario (amendement 2026-10-06) : « sous matrix, le Migrator applique aussi les tables du
-    /// store ». Les tables `miryad_matrix_*` existent après les historiques, et `down(Some(1))`
-    /// les retire en premier, sans toucher aux tables historiques.
+    /// store ». Les tables `miryad_matrix_*` existent après les historiques, et `down` les retire
+    /// avant elles, sans toucher aux tables historiques. Sous `lymaille` (amendement 2026-11-02,
+    /// en fin de liste après `matrix`), la migration du module est dernière et défaite en premier
+    /// : le store devient l'avant-dernière, retirée au deuxième pas.
     #[cfg(feature = "matrix")]
     #[tokio::test]
     async fn matrix_store_tables_are_applied_last_and_removed_first() {
@@ -476,20 +492,69 @@ mod tests {
                 .expect("has_table probe succeeds"),
             "les tables miryad_matrix_* existent après up"
         );
+        let expected_last: &str = if cfg!(feature = "lymaille") {
+            "m20261103_000001_create_lymaille_tables"
+        } else {
+            "m20261006_000001_create_matrix_store"
+        };
+        let steps_to_reach_the_store: u32 = u32::from(cfg!(feature = "lymaille")) + 1;
         assert_eq!(
             dedicated_versions(&db).await.last().map(String::as_str),
-            Some("m20261006_000001_create_matrix_store"),
-            "la migration du store est la dernière entrée du tracking"
+            Some(expected_last),
+            "la dernière entrée du tracking est la dernière ajoutée en fin de liste"
         );
-        Migrator::down(&db, Some(1))
+        Migrator::down(&db, Some(steps_to_reach_the_store))
             .await
-            .expect("down Some(1) undoes the matrix store first");
+            .expect("down défait le store avant les tables historiques");
         assert!(
             !manager
                 .has_table("miryad_matrix_kv")
                 .await
                 .expect("has_table probe succeeds"),
-            "down retire d'abord les tables miryad_matrix_*"
+            "down retire les tables miryad_matrix_* avant les historiques"
+        );
+        assert!(
+            manager
+                .has_table("miryad_api_tokens")
+                .await
+                .expect("has_table probe succeeds"),
+            "les tables historiques ne sont pas touchées"
+        );
+    }
+
+    /// Scenario (amendement 2026-11-02) : « sous lymaille, le Migrator applique aussi les tables
+    /// du module ». Les tables `miryad_lymaille_*` existent en dernier (après les historiques et
+    /// les `miryad_matrix_*` éventuelles), et `down(Some(1))` les retire en premier, sans toucher
+    /// aux tables historiques.
+    #[cfg(feature = "lymaille")]
+    #[tokio::test]
+    async fn lymaille_tables_are_applied_last_and_removed_first() {
+        let db = fresh_db().await;
+        Migrator::up(&db, None)
+            .await
+            .expect("up applies the historical migrations and the lymaille module");
+        let manager = SchemaManager::new(&db);
+        assert!(
+            manager
+                .has_table("miryad_lymaille_catalog_agents")
+                .await
+                .expect("has_table probe succeeds"),
+            "les tables miryad_lymaille_* existent après up"
+        );
+        assert_eq!(
+            dedicated_versions(&db).await.last().map(String::as_str),
+            Some("m20261103_000001_create_lymaille_tables"),
+            "la migration du module est la dernière entrée du tracking"
+        );
+        Migrator::down(&db, Some(1))
+            .await
+            .expect("down Some(1) undoes the lymaille module first");
+        assert!(
+            !manager
+                .has_table("miryad_lymaille_catalog_agents")
+                .await
+                .expect("has_table probe succeeds"),
+            "down retire d'abord les tables miryad_lymaille_*"
         );
         assert!(
             manager
