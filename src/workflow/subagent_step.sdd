@@ -10,10 +10,10 @@ Purpose:
   **Identité** : le step tourne sous le `subject` du déclencheur (`RunInfo::trigger`, DSD `FR-10`/`DEC-12`) ; sans identité, il échoue en
     `StepError` non retryable, sans repli sur un principal par défaut. Le principal est reconstruit depuis la table des utilisateurs à
     l'exécution (droits à jour).
-  **Durée** (DSD `OI-4`, soldé par spike) : la borne d'un `ctx.run` est ≈ 11 min par défaut ; le step porte un plafond `max_secs`
-    (défaut 480, **maximum 540**) appliqué par l'annulation coopérative de `lymaille` (`CancelHandle`), strictement inférieur à cette
-    borne : l'agent s'arrête de lui-même au lieu d'être coupé en plein tour. Le lot 1 **ne modifie pas** les options du service
-    `StepDispatcher` (décision : `recommended_options()` inchangé).
+  **Durée** (DSD `OI-4`, `OI-11`, `DEC-29`) : le step est exécuté par le handler dédié `execute_long` de ./dispatcher.sdd, dont les bornes Restate sont relevées. Il porte un plafond
+    `max_secs` (défaut 480) appliqué par l'annulation coopérative de `lymaille` (`CancelHandle`), borné par un **plafond d'application** `max_secs_ceiling` (défaut
+    `DEFAULT_LONG_CEILING_SECS = 3600`, maximum `LONG_CEILING_MAX_SECS = 14400`, réglable par `with_max_secs_ceiling`), strictement inférieur à la borne du handler : l'agent s'arrête de
+    lui-même au lieu d'être coupé en plein tour. L'application qui change ce plafond lie `recommended_options_for(<même valeur>)`. (Lot 1 : plafond figé à 540 s sur `execute` ; amendé le 2026-11-03.)
   Effets de bord (DSD `DEC-11`) : « au moins une fois » sur le seul tour interrompu ; le step est donc `retryable: false` dès que le run
     a commencé. Fichier neuf, conception ; la construction exacte des objets `lymaille` est à confirmer en source à l'implémentation
     (marquée `[?]`).
@@ -22,9 +22,10 @@ Owns:
   ./subagent_step.rs
 
 References:
-  ./step.sdd — @MiryadWorkflowStep, @StepError, @RunInfo (`trigger`) ; ./template.sdd — rendu de `config` avant `run` ; ./dispatcher.sdd — `ctx.run`
+  ./step.sdd — @MiryadWorkflowStep, @StepError, @RunInfo (`trigger`) ; ./template.sdd — rendu de `config` avant `run` ; ./dispatcher.sdd — `ctx.run`, `DEFAULT_LONG_CEILING_SECS`, `LONG_CEILING_MAX_SECS`,
+    `recommended_options_for`, `handler_name` ; ../lymaille/host.sdd — @SharedHost ; ../lymaille/mcp_access.sdd — `resolve_role`
   ./matrix_step.sdd — précédent de forme (kind conditionné par une seconde feature, couture de test privée)
-  /dsd/miryad-core/lymaille.md — `FR-6`, `FR-10`, `DEC-3`, `DEC-10`, `DEC-11`, `DEC-12`, `OI-4`, `OI-8`, `AC-10`, `AC-11`
+  /dsd/miryad-core/lymaille.md — `FR-6`, `FR-10`, `DEC-3`, `DEC-10`, `DEC-11`, `DEC-12`, `DEC-27`, `DEC-29`, `OI-4`, `OI-8`, `OI-11`, `AC-10`, `AC-11`, `AC-18`
   ../lymaille/identity.sdd, ../lymaille/store/mod.sdd, ../lymaille/secret.sdd, ../lymaille/tls.sdd, ../lymaille/resource_module.sdd,
     ../lymaille/error.sdd — briques assemblées
   `lymaille` : `run_batch`, `ResultCollector`, `result_module`, `restore_session`, `TurnRunner`, `TurnConfig`, `assemble`,
@@ -32,7 +33,9 @@ References:
 
 Must:
   `SubagentStep` — struct `pub`. `pub struct SubagentDeps { pub db: DatabaseConnection, pub secrets: Arc<dyn SecretResolver>, pub readers:
-    Arc<ResourceReaders> }` (les trois dépendances que l'application fournit). `pub fn new(deps: SubagentDeps) -> Self`.
+    Arc<ResourceReaders>, pub host: Option<SharedHost> }` (les dépendances que l'application fournit ; `host` : amendement DEC-27, `None` par défaut). `pub fn new(deps: SubagentDeps) -> Self`.
+    `pub fn with_max_secs_ceiling(self, ceiling: u64) -> Result<Self, LymailleError>` (amendement DEC-29) : `ceiling` dans `1..=LONG_CEILING_MAX_SECS`, sinon
+    `InvalidDefinition("max_secs ceiling out of range")` ; sans appel, `DEFAULT_LONG_CEILING_SECS`.
     `#[cfg(test)] fn with_inference(deps, factory: Arc<dyn InferenceFactory>) -> Self` : `InferenceFactory` est un trait **privé** (couture de
     test : un `ScriptedProvider` de `lymaille` remplace `RigProvider`, aucun réseau).
   `impl MiryadWorkflowStep` : `kind()` rend `"subagent"` ; `raw_fields()` garde son défaut (`&[]`).
@@ -43,7 +46,7 @@ Must:
     exécuté), `false` pour les étapes 9 à 11 (le run peut avoir eu des effets) :
     1. `serde_json::from_value::<SubagentConfig>(config)` ; échec → `StepError { retryable: false, message: "config subagent invalide: …" }`.
       Validation pure avant tout accès : `agent` non vide ; `task` non vide après `trim` ; `max_secs` (défaut `DEFAULT_MAX_SECS = 480`) dans
-      `1..=MAX_SECS_CEILING` avec `MAX_SECS_CEILING = 540` ; `max_turns` (défaut `DEFAULT_BATCH_MAX_TURNS` de `lymaille`) ≥ 1.
+      `1..=ceiling` où `ceiling` est le `max_secs_ceiling` de l'application (défaut 3600, `DEC-29`) ; `max_turns` (défaut `DEFAULT_BATCH_MAX_TURNS` de `lymaille`) ≥ 1.
     2. `run.trigger` absent → `StepError { retryable: false, message: "subagent step requires a trigger identity" }` (DSD `FR-10`).
     3. `install_crypto_provider()` (idempotent) ; `Identity::resolve(trigger)` → `UnknownSubject`/`Forbidden` non retryable.
     4. `LymailleStores::new(db, trigger)` ; `agents().get_agent(agent)` : absent → non retryable « unknown agent » ; sa nature doit être `Sub`
@@ -54,7 +57,8 @@ Must:
       taille de contexte inconnue → non retryable. Secret : `secrets.resolve(provider.auth)` si `auth` est défini (`SecretUnresolved` non
       retryable) ; client d'inférence : `RigProvider::new(&RigConfig::new(address, api_key))` (`[?]`). Le secret est enregistré auprès du
       `Redactor` de la session (`[?]`) et n'en sort jamais.
-    7. Toolsets : `toolsets().get_active(name)` pour chaque nom de `definition.toolsets` (absent → non retryable) ; modules accordés : seul le
+    7. Toolsets (amendement DEC-27 : les rôles MCP de ces toolsets sont résolus par `resolve_role(deps.host, db, caller, <contexte>, <rôle>, <serveur lié>)` de ../lymaille/mcp_access.sdd sous le principal du
+      déclencheur ; un refus (`Forbidden`) ou un `forward` est un `StepError` **non retryable**, sans repli ; le jeton de l'hôte n'est jamais persisté) : `toolsets().get_active(name)` pour chaque nom de `definition.toolsets` (absent → non retryable) ; modules accordés : seul le
       nom `resources` (`resources_module(readers, db, trigger)`) est connu au lot 1, plus `todo` et `memory` de `lymaille` **si** leur
       construction ne demande que des objets déjà disponibles (`[?]`, l'implémenteur lève une question sinon) ; un autre nom →
       non retryable « unknown module: <nom> ». `assemble(…)` produit les `Grants` ; une panne d'assemblage d'un toolset est non retryable.
@@ -106,8 +110,8 @@ Handles:
   Plafond `max_secs` atteint : annulation coopérative, session sauvegardée, `StepError` non retryable.
 
 Tasks:
-  [ ] Réalignement R15 (DSD `DEC-27, DEC-29`, 2026-11-03) : Après R14 : `max_secs` plafonné par la configuration de l'application (défaut 480 s inchangé) ; rôles MCP résolus par `resolve_mcp` sous le `subject` du
-    déclencheur. `OI-11` soldé (spike vert sur 40 min, `lymaille#OI-11`). Spec seule.
+  [ ] Réalignement R15 (DSD `DEC-27, DEC-29`, 2026-11-03) : spec amendée (plafond d'application `max_secs_ceiling` de 3600 s par défaut, `with_max_secs_ceiling`, `SubagentDeps::host`, rôles MCP par `resolve_role`),
+    **en attente d'approbation**. `OI-11` soldé (spike vert sur 40 min). Code : tests d'abord puis ./subagent_step.rs, après ./dispatcher.rs (R14), ../lymaille/host.rs et ../lymaille/mcp_access.rs.
   [ ] Amendement lot 2 : `ResourceRegistry` + `WriteScope`, rôles MCP via `mcp_access`, scenarios (rejeu sans doublon d'écriture, `forward` refusé) d'abord, puis ./subagent_step.rs. Après ../lymaille/resource_module.rs et ../lymaille/mcp_access.rs.
   [x] Amender ./mod.sdd (déclaration gated `all(workflow, lymaille)`, ré-exports `SubagentStep`, `SubagentDeps`) et ./mod.rs dans le même lot.
     Validé 2026-11-03 (validator PASS, batterie ciblée workflow,lymaille + all-features).
@@ -176,3 +180,13 @@ Scenario: les droits sont ceux du déclencheur
   Given un déclencheur non-admin et un sous-agent qui lit une ressource `AdminOnly` par le module `resources`
   When `run` est appelé
   Then la lecture échoue `forbidden` dans le script de l'agent (l'agent n'a jamais plus de droits que le déclencheur)
+
+Scenario: le plafond d'application borne max_secs (DEC-29)
+  Given un `SubagentStep` par défaut, puis un autre `with_max_secs_ceiling(7200)`
+  When `max_secs = 3600`, `3601` puis `7200` sont demandés dans chacun
+  Then par défaut `3600` est accepté et `3601` refusé (`config subagent invalide:`), avec le plafond 7200 `7200` est accepté ; `with_max_secs_ceiling(0)` et `with_max_secs_ceiling(14401)` sont refusés
+
+Scenario: un rôle MCP fourni par l'hôte est résolu sous le déclencheur (DEC-27)
+  Given un hôte qui accorde le rôle `sandbox` au subject `alice` et le refuse à `bob`, et un step déclenché par `alice` puis par `bob`
+  When le step est exécuté dans chaque cas
+  Then pour `alice` le serveur de l'hôte est utilisé ; pour `bob` le step échoue (`retryable: false`) sans message de l'hôte

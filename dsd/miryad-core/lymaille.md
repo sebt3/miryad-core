@@ -503,7 +503,8 @@ et appels d'MCP externes depuis les scripts.
     - **Context:** un agent de code qui compile et teste dure de 30 à 45 minutes ; la borne par défaut d'un `ctx.run` est d'environ 11 minutes, et le
       réglage par service retarderait la détection des steps ordinaires bloqués (`OI-4`, conclusion 4).
     - **Decision:** le step `subagent` est dispatché par un handler Restate dédié, aux bornes `inactivity_timeout` et `abort_timeout` relevées ; le
-      plafond `max_secs` se règle par l'application (défaut inchangé à 480 s). Le step reste `retryable: false` et la reprise sur session
+      plafond `max_secs` du step reste à 480 s par défaut, borné par un plafond d'application de 3600 s par défaut (4 h au maximum), réglable ; les bornes Restate
+      du handler suivent (inactivité = plafond + 5 min, abandon = inactivité + 5 min). Routage par une liste fixe de kinds longs (`subagent`), arbitré le 2026-11-03. Le step reste `retryable: false` et la reprise sur session
       déterministe (`DEC-10`) est inchangée.
     - **Alternatives:** relever les bornes du service `StepDispatcher` (écarté : tous les kinds en pâtissent).
     - **Consequences:** amende `dispatcher.sdd` et `subagent_step.sdd`. Le réglage par handler est prouvé sur 40 minutes (`OI-11`, spike du 2026-11-03) ; le kill du processus en cours de run reste couvert par `AC-10`.

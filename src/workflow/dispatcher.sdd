@@ -57,7 +57,7 @@ Must:
     cette borne ils violeraient l'`Exposes` (« aucune fonction `pub` de logique métier en dehors de
     la forme service ») et la liste fermée de ré-exports de ./mod.sdd, et un `#[allow(missing_docs)]`
     n'aurait qu'éteint le diagnostic en laissant la fuite. Nom du service et handler inchangés —
-    le fil du protocole est `StepDispatcher`/`execute` en toutes circonstances. Un seul handler :
+    le fil du protocole est `StepDispatcher`/`execute` en toutes circonstances. Handler `execute` (le second, `execute_long`, est décrit plus bas, `DEC-29`) :
     `async fn execute(&self, ctx: Context<'_>, req: Json<StepInvocation>) -> Result<Json<@serde_json::Value>,
     HandlerError>`. Corps exact :
     1. Décompose `req` en `kind`, `config`, `inputs` et construit le @RunInfo (`run_key`, `step_id`,
@@ -135,6 +135,18 @@ Must:
     politique lui-même. Il expose `recommended_options() -> restate_sdk::endpoint::ServiceOptions`
     (`pub fn`, sans argument, `retry_policy_max_attempts(5).retry_policy_pause_on_max_attempts()`) que
     l'app peut utiliser telle quelle, ignorer, ou surcharger — jamais appliquée automatiquement.
+  **Amendement DEC-29 (2026-11-03) — handler dédié aux kinds longs** (DSD `lymaille#DEC-29`, `OI-4`, `OI-11`) :
+    `StepDispatcher` porte un **second handler**, `execute_long`, de signature et de corps **identiques** à `execute` (les deux appellent une même fonction privée
+    `run_step(&self, ctx, req)` : branche durable, `ctx.run` unique, traduction d'erreur inchangés). Seule change la **configuration Restate** que l'application lui pose :
+    ses bornes `inactivity_timeout` et `abort_timeout` sont relevées **sur ce handler seul**, de sorte que la détection d'un step ordinaire bloqué (`execute`) n'est pas retardée.
+    Le fil du protocole devient `StepDispatcher`/`execute_long` pour ces kinds ; `StepDispatcher`/`execute` est inchangé.
+  `pub(crate) const LONG_RUNNING_KINDS: &[&str] = &["subagent"]` et `pub(crate) fn handler_name(kind: &str) -> &'static str` (pure) : `"execute_long"` si `kind` figure dans
+    `LONG_RUNNING_KINDS` (comparaison exacte), sinon `"execute"`. Liste fixe, arbitrée le 2026-11-03 : un kind d'application ne peut pas être long sans modifier la crate.
+  `pub const DEFAULT_LONG_CEILING_SECS: u64 = 3600` et `pub const LONG_CEILING_MAX_SECS: u64 = 14_400` : le plafond de durée par défaut d'un step long, et son maximum absolu.
+  `pub fn recommended_options_for(ceiling: Duration) -> restate_sdk::endpoint::ServiceOptions` : `recommended_options()` de base (retry plafonné, pause) **plus**
+    `.handler("execute_long", HandlerOptions::new().inactivity_timeout(c + 5 min).abort_timeout(c + 10 min))` où `c = min(ceiling, LONG_CEILING_MAX_SECS)` (une valeur nulle est
+    portée à 1 s) : inactivité = plafond + 5 min, abandon = inactivité + 5 min. `recommended_options()` devient `recommended_options_for(Duration::from_secs(DEFAULT_LONG_CEILING_SECS))` :
+    le handler `execute` garde les bornes par défaut du serveur. Convenience pure ; l'application qui relève le plafond de `SubagentStep` (./subagent_step.sdd) y passe la **même** valeur.
   Rester silencieux : aucun @tracing, @println!, @eprintln!, @dbg! — cohérent avec ./step.sdd et
     ./error.sdd, le contrat transverse.
   Compiler uniquement sous `#[cfg(feature = "workflow")]`.
@@ -182,9 +194,11 @@ Depends on:
 Exposes:
   `StepInvocation` — struct `pub(crate)`, huit champs, `Serialize` + `Deserialize`
   `StepDispatcher` — struct `pub`, `new` `pub`, champ `registry` privé
+  `DEFAULT_LONG_CEILING_SECS`, `LONG_CEILING_MAX_SECS` (`pub const`), `recommended_options_for` (`pub fn`, amendement DEC-29), `handler_name` et `LONG_RUNNING_KINDS` (`pub(crate)`) ;
+    le handler `execute_long` du service.
   `recommended_options` — `pub fn recommended_options() -> restate_sdk::endpoint::ServiceOptions`,
-    sans argument, rend `ServiceOptions::new().retry_policy_max_attempts(5)
-    .retry_policy_pause_on_max_attempts()`. Convenience pure (aucun effet de bord, aucun état) : l'app
+    sans argument, rend `recommended_options_for(3600 s)` : `ServiceOptions::new().retry_policy_max_attempts(5)
+    .retry_policy_pause_on_max_attempts()` plus les bornes du handler `execute_long` (amendement DEC-29). Convenience pure (aucun effet de bord, aucun état) : l'app
     l'utilise à son `bind()` (`StepDispatcher::new(registry).into_service_definition()
     .options(recommended_options())`) ou construit la sienne — ./dispatcher.rs ne l'applique jamais
     lui-même, il n'a pas la main sur l'`Endpoint`.
@@ -248,8 +262,10 @@ Handles:
     affectée.
 
 Tasks:
-  [ ] Réalignement R14 (DSD `DEC-29`, 2026-11-03) : Router le kind `subagent` vers un handler Restate dédié aux bornes `inactivity_timeout` et `abort_timeout` relevées ; `recommended_options` du service
-    ordinaire inchangé. Spec seule ; le spike de `OI-11` est fait (vert).
+  [ ] Réalignement R14 (DSD `DEC-29`, 2026-11-03) : spec amendée (handler `execute_long`, `handler_name`, `recommended_options_for`), **en attente d'approbation**. Routage par liste
+    fixe et plafond par défaut de 3600 s : arbitrés le 2026-11-03.
+  [ ] Après approbation de R14 : tests d'abord, puis ./dispatcher.rs, puis ./interpreter.rs (cible `handler_name(&step.kind)`), puis la preuve d'intégration `#[ignore]` du dernier `Scenario`
+    (`../../tests/workflow_restate.rs`). Après ce fichier : R15 (./subagent_step.sdd).
   [x] Spike OI-11 (DSD `lymaille#OI-11`, 2026-11-03) : `un_step_de_40_minutes_survit_aux_bornes_relevees_du_handler` dans `tests/workflow_restate.rs` (`#[ignore]`, podman) :
     step ordinaire de 40 minutes, `HandlerOptions` du handler `execute` à 50 min (inactivité) et 55 min (abandon) ; vert en 2402 s, un seul `start`, aucun rejeu.
     Le kill du processus service n'est pas couvert par ce banc (serveur dans le processus du test) : la reprise reste celle de `lymaille#AC-10`.
@@ -445,3 +461,24 @@ Scenario: un corps d'invocation sans trigger se désérialise avec trigger absen
   Given le JSON d'une `StepInvocation` à sept champs, sans clé `trigger`
   When il est désérialisé
   Then `trigger` vaut `None` ; avec `"trigger": "sub-42"` il vaut `Some("sub-42")`
+
+Scenario: le kind subagent est routé vers le handler dédié (DEC-29)
+  Given les kinds `subagent`, `record` et `durable_sleep`
+  When `handler_name` est appelé sur chacun
+  Then `"execute_long"`, `"execute"`, `"execute"`
+
+Scenario: les options recommandées bornent le handler long, pas le handler ordinaire (DEC-29)
+  Given `recommended_options_for(Duration::from_secs(3600))` puis `recommended_options_for(Duration::from_secs(100_000))`
+  When leur rendu @Debug est inspecté
+  Then le premier contient une entrée de handler `execute_long` avec une inactivité de 65 minutes et un abandon de 70 minutes, le second la même entrée plafonnée à `LONG_CEILING_MAX_SECS`
+    (4 h 05 et 4 h 10) ; aucune des deux ne contient d'entrée pour `execute`
+
+Scenario: le service se lie avec les options longues sans paniquer (DEC-29)
+  Given un `StepDispatcher` et `recommended_options()`
+  When le service est lié à un `Endpoint` (`.bind(…into_service_definition().options(…))`)
+  Then la construction réussit (`bind` panique si un handler nommé par les options n'existe pas)
+
+Scenario: un step subagent est exécuté par execute_long (DEC-29, preuve d'intégration)
+  Given un `restate-server`, un kind de fixture nommé `subagent` (journalisant `start`/`end`) et `recommended_options()`
+  When un DAG à un step `subagent` est exécuté, puis la table `sys_invocation` de l'admin API est lue
+  Then le run réussit et l'invocation de ce step cible le handler `execute_long` ; un step `record` cible `execute`

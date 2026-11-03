@@ -86,7 +86,7 @@ Must:
         de ce run — `WorkflowContext::key()` — et `depth` la profondeur lue **une fois** en tête de
         `run`, étape 1b) et pousser
         `ctx.request::<Json<StepInvocation>, Json<serde_json::Value>>(RequestTarget::Service { name:
-        "StepDispatcher".into(), handler: "execute".into() }, Json(invocation)).call()` dans un
+        "StepDispatcher".into(), handler: handler_name(&step.kind).into() }, Json(invocation)).call()` (amendement DEC-29, 2026-11-03 : `handler_name` de ./dispatcher.rs rend `"execute_long"` pour les kinds longs, `"execute"` sinon) dans un
         `DurableFuturesUnordered` construit pour cette couche — jamais `futures::future::join_all`,
         jamais un deuxième `DurableFuturesUnordered` partagé entre deux couches (`Must not`).
       c. `while let Some((idx, result)) = futures.next().await?` — `idx` est l'index de poussée
@@ -163,7 +163,7 @@ Depends on:
   ./definition.rs — `DagSteps`, `StepDefinition`, `validate_dag`
   ./durable.rs — constante `DEPTH_HEADER` (nom de l'en-tête de profondeur, #26)
   ./dispatcher.rs — `StepInvocation` (champs `kind`/`config`/`inputs`/`run_key`/`step_id`/`depth`), noms de service/handler
-    `"StepDispatcher"`/`"execute"`
+    `"StepDispatcher"`/`"execute"`, `handler_name` (amendement DEC-29)
   @std::collections::{HashMap, HashSet} — aucune dépendance externe
 
 Exposes:
