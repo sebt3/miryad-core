@@ -74,6 +74,7 @@ let app = axum::Router::new()
 | `workflow` | Moteur de workflow (DAG, Restate, steps Rhai, templating Handlebars central) ; implique `db` | `restate-sdk`, `vynil-core`, `tokio`, `uuid` |
 | `systemone` | Client System One (`POST /v1/systemone`) ; kind de workflow `systemone` avec `workflow` | aucune |
 | `matrix` | Client Matrix de bot (E2EE, store SeaORM), hors défaut ; implique `db` | `matrix-sdk`, `matrix-sdk-crypto`, `matrix-sdk-store-encryption`, `zeroize`, `tokio` |
+| `lymaille` | Hôte de la bibliothèque `lymaille` : stores SeaORM de ses objets, définitions, module Rhai des ressources en lecture, kind de workflow `subagent` avec `workflow` ; implique `db` | `lymaille`, `rhai`, `rustls`, `zeroize`, `tokio`, `vynil-core` |
 
 ```bash
 cargo doc --open --features mcp,swagger-ui

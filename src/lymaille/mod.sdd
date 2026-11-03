@@ -62,7 +62,7 @@ Exposes:
     `install_crypto_provider`, modules `store`, `definitions`, `resource_module`.
 
 Tasks:
-  [ ] `mod.rs` en dernier du lot (après tous les enfants) ; test de chemins plats.
+  [x] `mod.rs` en dernier du lot (après tous les enfants) ; test de chemins plats. Validé 2026-11-03 (validator PASS, batterie ciblée lymaille + workflow,lymaille + all-features).
   [ ] Amender /src/lib.rs, /Cargo.toml, ../migration/mod.rs, ../workflow/mod.rs, /tooling.sdd, /AGENTS.md et la CI dans le même lot
     (fichiers hors périmètre d'une tâche : amendement soumis au développeur principal avant d'y toucher).
   [ ] Prouver le graphe : `cargo tree --no-default-features -e normal -i lymaille` imprime « nothing to print » ; avec
