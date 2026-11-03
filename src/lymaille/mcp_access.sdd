@@ -7,14 +7,15 @@ Purpose:
     Il implémente `lymaille::McpAuth` en deux modes : `static` (en-tête `Authorization: Bearer <secret>` résolu par le @SecretResolver à
     chaque connexion) et `forward` (jeton de l'utilisateur d'une session **interactive**, jamais persisté). Les hooks `MiryadResource` sont
     synchrones et sans connexion : le refus « à la sauvegarde » ne peut donc pas vivre dans un hook de `user_context` ; le **contrôle
-    d'autorité** est celui-ci, à l'assemblage et à l'appel (défense en profondeur de `FR-9`). Fichier neuf, conception.
+    d'autorité** est celui-ci, à l'assemblage et à l'appel (défense en profondeur de `FR-9`). Amendé le 2026-11-03 (`DEC-27`) : un serveur peut aussi être fourni par
+    l'hôte (./host.sdd), sans ligne `mcp_servers` ; l'hôte tranche alors l'autorité et rend URL et jeton frais. Fichier neuf, conception.
 
 Owns:
   ./mcp_access.rs
 
 References:
-  /dsd/miryad-core/lymaille.md — `DEC-16`, `DEC-20`, `FR-4`, `FR-9`, `AC-12`
-  ./identity.sdd — @Identity, @CallerPrincipal ; ./secret.sdd — @SecretResolver ; ./definitions/mcp_server.sdd — `Model`, `client_config`
+  /dsd/miryad-core/lymaille.md — `DEC-16`, `DEC-20`, `DEC-27`, `FR-4`, `FR-9`, `AC-12`, `AC-18`
+  ./host.sdd — @LymailleHost, @McpDecision, @McpGrant ; ./identity.sdd — @Identity, @CallerPrincipal ; ./secret.sdd — @SecretResolver ; ./definitions/mcp_server.sdd — `Model`, `client_config`
   ../users/group.sdd — `is_admin(db, user_id)`, `is_member(db, user_id, group)`
   `lymaille::modules::mcp_client` — trait `McpAuth` (`headers() -> Result<McpHeaders, McpError>`), `McpHeaders`
 
@@ -31,23 +32,32 @@ Must:
   `pub fn build_auth(model, resolver, interactive_token: Option<Zeroizing<String>>) -> Result<Option<SeaMcpAuth>, LymailleError>` : `Forward` sans jeton
     interactif (step batch, ou session sans jeton) → `Forbidden("forward auth needs an interactive session")`, **erreur non retryable** côté
     `subagent` (traduite en `StepError` non retryable par ../workflow/subagent_step.sdd).
+  **Amendement DEC-27 (2026-11-03) — serveur fourni par l'hôte :**
+  `pub enum RoleBinding { Host(McpGrant), Table(mcp_server::Model) }`.
+  `pub async fn resolve_role(host: Option<&dyn LymailleHost>, db, caller: &CallerPrincipal, context: &str, role: &str, bound_server: Option<&str>) -> Result<RoleBinding, LymailleError>` :
+    avec un hôte, `resolve_mcp(McpRequest { context, role }, caller)` : `Granted(g)` non expiré → `Host(g)` ; `Denied`, jeton expiré ou `Err(HostError)` →
+    `Forbidden("mcp server unavailable")` (même texte que `server_for`, **échec fermé**, sans repli ; la panne de l'hôte est tracée par une phrase
+    fixe, sans texte de l'hôte) ; `Unprovided` → repli sur la liaison classique ci-dessous. Liaison classique : `bound_server` est `Some(nom)` →
+    `Table(server_for(db, caller, nom)?)` ; `None` → `Forbidden("mcp server unavailable")`. Sans hôte : liaison classique seule.
+  `pub struct SeaHostMcpAuth` — implémente `McpAuth` : `new(host: SharedHost, identity: Identity, subject: String, context: String, role: String)`.
+    À **chaque appel de `headers()`** : `Identity::resolve(subject)` (principal relu, `FR-4`), puis `resolve_mcp` ; `Granted` non expiré → `Authorization:
+    Bearer <jeton>` ; tout autre résultat (`Unprovided` compris : le rôle n'est plus pourvu), expiration ou erreur → `McpError` fixe (« mcp host denied »),
+    sans texte de l'hôte. Aucun jeton n'est gardé entre deux appels. `Debug` opaque. L'URL du client vient de `Host(g).url` lue à l'assemblage.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
-  Mettre en cache le droit ou le jeton entre deux appels ; persister un jeton (base, session, journal Restate, trace) ; distinguer « absent » et
+  Mettre en cache le droit ou le jeton (de l'utilisateur ou de l'hôte) entre deux appels ; persister un jeton (base, session, journal Restate, trace) ; distinguer « absent » et
     « non autorisé » dans l'erreur ; renvoyer le jeton d'un utilisateur à un autre serveur que celui du rôle lié.
 
 Depends on:
-  ./identity.rs, ./secret.rs, ./error.rs, ./definitions/mcp_server.rs, ../users/group.rs, @zeroize, @sea_orm, `lymaille::{McpAuth, McpHeaders, McpError}`
+  ./host.rs, ./identity.rs, ./secret.rs, ./error.rs, ./definitions/mcp_server.rs, ../users/group.rs, @zeroize, @sea_orm, `lymaille::{McpAuth, McpHeaders, McpError}`
 
 Exposes:
-  `server_for`, `McpAuthMode`, `SeaMcpAuth`, `build_auth`
+  `server_for`, `McpAuthMode`, `SeaMcpAuth`, `build_auth`, `RoleBinding`, `resolve_role`, `SeaHostMcpAuth`
 
 Tasks:
-  [ ] Réalignement R6 (DSD `DEC-27`, 2026-11-03) : Introduire le trait `LymailleHost` (`resolve_mcp(contexte, rôle, principal)` → `Refusé | Accordé{url, jeton, expiration}`, `resolve_context`) : précédence
-    sur `mcp_servers` rôle par rôle, repli sur la liaison classique, échec fermé sur panne de l'hôte, jeton jamais persisté ni tracé, batch sans `subject`
-    en `StepError` non retryable. Hôte factice pour les `Scenario`. Spec seule ; le fichier du trait (spec neuve) est à décider à l'ouverture.
-  [ ] Tests d'abord (SQLite mémoire, `ScriptedResolver` de test), puis ./mcp_access.rs.
+  [ ] Réalignement R6 (DSD `DEC-27`, 2026-11-03) : spec amendée (`resolve_role`, `RoleBinding`, `SeaHostMcpAuth`) et trait créé dans ./host.sdd ; **en attente d'approbation**.
+  [ ] Tests d'abord (SQLite mémoire, `ScriptedResolver` de test, hôte factice de ./host.sdd), puis ./mcp_access.rs, après ./host.rs.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./mcp_access.rs.
@@ -86,3 +96,43 @@ Scenario: Debug est opaque
   Given un `SeaMcpAuth` portant un jeton
   When `format!("{:?}")`
   Then la sortie ne contient pas le jeton
+
+Scenario: l'hôte pourvoit le rôle, il a la priorité sur la table
+  Given un hôte qui accorde `https://sbx/mcp` et un jeton pour le rôle `sandbox`, et un serveur de table lié au même rôle
+  When `resolve_role` est appelé
+  Then le résultat est `Host` avec l'URL et le jeton de l'hôte ; la table n'est pas lue
+
+Scenario: un rôle non pourvu retombe sur la liaison classique
+  Given un hôte qui répond `Unprovided` et un serveur `allowed_groups = ["all"]` lié au rôle
+  When `resolve_role` est appelé
+  Then le résultat est `Table(serveur)` ; avec `bound_server = None`, `Forbidden("mcp server unavailable")`
+
+Scenario: un refus de l'hôte n'a pas de repli
+  Given un hôte qui répond `Denied` et un serveur de table autorisé lié au rôle
+  When `resolve_role` est appelé
+  Then `Forbidden("mcp server unavailable")` ; la table n'est pas consultée
+
+Scenario: la panne de l'hôte refuse et ne fuit pas
+  Given un hôte qui répond `Err(HostError)`
+  When `resolve_role` est appelé
+  Then `Forbidden("mcp server unavailable")`, identique à un serveur absent, et aucun texte de l'hôte dans l'erreur ni la trace
+
+Scenario: un jeton déjà expiré est refusé
+  Given un hôte qui accorde un `McpGrant` dont `expires_at` est passé
+  When `resolve_role` puis `SeaHostMcpAuth::headers()` sont appelés
+  Then `Forbidden` puis `McpError` fixe
+
+Scenario: le jeton est redemandé à chaque appel
+  Given un hôte dont le jeton change à chaque `resolve_mcp`
+  When `headers()` est appelé deux fois
+  Then les deux en-têtes portent chacun le jeton courant ; aucun n'est gardé
+
+Scenario: l'autorité de l'hôte est relue à chaque appel
+  Given un hôte qui accorde puis, au second appel, répond `Denied`
+  When `headers()` est appelé deux fois
+  Then `Ok` puis `McpError` fixe
+
+Scenario: Debug de SeaHostMcpAuth est opaque
+  Given un `SeaHostMcpAuth` et un jeton accordé
+  When `format!("{:?}")`
+  Then la sortie ne contient ni jeton ni URL

@@ -42,6 +42,7 @@ Exposes:
   `SeaAgentStore`, `SeaProfileStore`, `SeaProviderStore` et leurs `impl` de trait
 
 Tasks:
+  [ ] Amendement DEC-27 (2026-11-03) : `IdKind::Host` dans les `match` de `get_agent` et `put_agent` (lecture `Ok(None)` sans requête, écriture refusée par `check_write`) ; test d'abord, puis ./catalog.rs. Après ../identity.rs.
   [x] Tests d'abord (SQLite mémoire), puis ./catalog.rs. Validé 2026-11-02 (validator PASS).
 
 Done when:
@@ -71,3 +72,8 @@ Scenario: un nom absent est None
   Given une base vide
   When `get_profile("zzz")`, `get_provider("zzz")`, `get_agent("zzz")`
   Then `Ok(None)` trois fois
+
+Scenario: un identifiant hôte n'atteint aucune table
+  Given un store lié à un administrateur
+  When il lit l'agent `H_sbx` puis tente d'écrire un agent `H_sbx`
+  Then la lecture rend `Ok(None)` sans requête ; l'écriture est une erreur `Store` dont le texte contient le code du refus `Forbidden`

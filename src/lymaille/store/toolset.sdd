@@ -11,7 +11,7 @@ Owns:
 
 References:
   ./mod.sdd — règles communes ; ../definitions/toolset.sdd — même table (catalogue), `check_toolset`, dérivations
-  ../identity.sdd — `check_write`, `classify`
+  ../identity.sdd — `check_write`, `classify` ; ../host.sdd — `resolve_context`
   `lymaille::toolsets::store` — traits `ToolsetStore`, `ContextTypeStore`, `ContextStore` (pas de listing ni de suppression ; **aucune
     opération d'activation** dans le trait : l'activation est une action de l'hôte)
 
@@ -39,6 +39,9 @@ Must:
     `ToolsetsError::Store("MRD-LYMAILLE-002…")` (chemin de la session de configuration ; le chemin REST/MCP des entités ne contrôle pas ici, hook
     synchrone — le contrôle d'autorité reste à l'assemblage et à l'appel). Le niveau `Session` d'un contexte reste interne (aucune table).
 
+  **Amendement DEC-27 (2026-11-03)** : `get_context(H_…)` (`IdKind::Host`) délègue à `LymailleHost::resolve_context(id, caller)` avec le principal relu, sans table ; sans hôte, ou si l'hôte répond `None` ou `Err`, `Ok(None)`.
+    `put_context(H_…)` est refusé par `check_write` (`ToolsetsError::Store(<Display>)`). `get_active`, `get_draft` et `put_draft` d'un nom `H_…` : lecture `Ok(None)`, écriture refusée, sans accès table.
+
 Must not:
   Rendre un brouillon par `get_active` ; écrire `active` dans `put_draft` ; inclure le source d'un toolset dans une erreur ou une trace.
 
@@ -49,6 +52,7 @@ Exposes:
   `SeaToolsetStore`, `SeaContextTypeStore`, `SeaContextStore` et leurs `impl` de trait
 
 Tasks:
+  [ ] Amendement DEC-27 (2026-11-03) : `IdKind::Host` dans `read_version` et l'écriture d'un toolset (lecture `Ok(None)`, écriture refusée), `get_context(H_…)` délégué à l'hôte (`SharedHost` porté par `LymailleStores`, ../store/mod.sdd), `put_context(H_…)` refusé ; tests d'abord, puis ./toolset.rs. Après ../host.rs et ./mod.rs.
   [ ] Amendement lot 2 : routage des contextes (catalogue/privé) et contrôle des serveurs liés, nouveaux scenarios d'abord, puis ./toolset.rs.
   [x] Tests d'abord (SQLite mémoire), puis ./toolset.rs. Validé 2026-11-02 (validator PASS après partage littéral
     de `check_toolset` : le store appelle la fonction typée de ../definitions/toolset.sdd, zéro duplication).
@@ -80,3 +84,18 @@ Scenario: types de contexte et contextes font l'aller-retour
   Given un admin qui écrit un type et un contexte
   When ils sont relus par nom
   Then ils sont égaux aux originaux
+
+Scenario: un contexte hôte est résolu par l'hôte pour le principal courant
+  Given un hôte qui rend un contexte pour `H_sbx` à `alice` et `None` à `bob`
+  When un store lié à `alice` puis un store lié à `bob` lisent `H_sbx`
+  Then `alice` obtient le contexte, `bob` obtient `Ok(None)` ; aucune table n'est lue
+
+Scenario: sans hôte, un contexte hôte est absent
+  Given un `LymailleStores` sans `with_host`
+  When `get_context("H_sbx")` est appelé
+  Then `Ok(None)` ; avec un hôte en panne, également `Ok(None)`
+
+Scenario: un contexte hôte ne s'écrit pas
+  Given un store lié à un administrateur
+  When `put_context` est appelé avec un contexte nommé `H_sbx`
+  Then une erreur `Store` dont le texte contient le code du refus `Forbidden`

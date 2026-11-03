@@ -1,0 +1,71 @@
+Spec: host — LymailleHost, extension de l'application hôte (serveurs MCP et contextes)
+
+Purpose:
+  Définir le **seul** point d'extension par lequel l'application consommatrice fournit à miryad-core ce qu'elle seule connaît (DSD `DEC-27`,
+    `FR-14`) : le serveur MCP propre à un contexte (URL, jeton frais de courte durée, décision d'autorité) et les contextes de niveau projet
+    (identifiants `H_…`, jamais stockés). Un hôte typique : une sandbox dont l'URL est créée et détruite dynamiquement, dont le jeton est minté à
+    la demande et dont l'autorité est un lien utilisateur↔propriétaire que miryad-core ne connaît pas. Le trait est optionnel : sans lui,
+    le comportement est celui de `DEC-20` seul. Ce fichier ne porte que le trait et ses types ; leur emploi est dans ./mcp_access.sdd et
+    ./store/toolset.sdd. Fichier neuf, conception.
+
+Owns:
+  ./host.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `DEC-27`, `FR-14`, `FR-4`, `AC-18`
+  ./identity.sdd — @CallerPrincipal ; ./mcp_access.sdd — emploi de `resolve_mcp` ; ./store/toolset.sdd — emploi de `resolve_context`
+  `lymaille::ToolsetContext`
+
+Must:
+  `#[async_trait] pub trait LymailleHost: Send + Sync` (objet-trait : l'application le fournit en `Arc<dyn LymailleHost>`), deux méthodes avec une
+    implémentation **par défaut** (l'hôte n'implémente que ce qu'il fournit) :
+    `async fn resolve_mcp(&self, request: &McpRequest<'_>, caller: &CallerPrincipal) -> Result<McpDecision, HostError>` — défaut `Ok(Unprovided)`.
+    `async fn resolve_context(&self, id: &str, caller: &CallerPrincipal) -> Result<Option<ToolsetContext>, HostError>` — défaut `Ok(None)` ;
+      `id` est un identifiant `Host` (`H_…`, ./identity.sdd) ; l'hôte y tranche aussi l'autorité de `caller` sur ce contexte (`None` = absent
+      **ou** interdit).
+  `pub struct McpRequest<'a> { pub context: &'a str, pub role: &'a str }` — l'identifiant du contexte de la session et le rôle MCP demandé par un
+    toolset accordé. `Clone`, `Copy`, `Debug`.
+  `pub enum McpDecision { Unprovided, Denied, Granted(McpGrant) }` — `Unprovided` : l'hôte ne pourvoit pas ce rôle (repli sur la liaison classique de
+    `mcp_servers`) ; `Denied` : refus d'autorité, **sans repli** ; `Granted` : serveur et jeton à employer.
+  `pub struct McpGrant { pub url: String, pub token: Zeroizing<String>, pub expires_at: Option<DateTime<Utc>> }` : `Clone`, `Debug` **opaque** (ni
+    l'URL ni le jeton n'y figurent) ; `pub fn is_expired(&self, now: DateTime<Utc>) -> bool` : vrai si `expires_at` est présent et `<= now`.
+  `pub struct HostError` — erreur de l'hôte **sans contenu** : l'hôte journalise lui-même sa panne ; miryad-core n'en propage ni n'en trace aucun texte.
+    `Debug`, `Clone`, `Copy`, `Display` fixe (« host resolution failed »).
+  `pub type SharedHost = std::sync::Arc<dyn LymailleHost>`.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Mettre en cache, persister ou tracer le jeton ou l'URL d'un `McpGrant` ; faire porter à `HostError` un texte venu de l'hôte ; passer une connexion
+    à la base à l'hôte (il applique ses propres règles) ; imposer à l'hôte d'implémenter les deux méthodes.
+
+Depends on:
+  ./identity.rs, @async_trait, @zeroize, @chrono, `lymaille::ToolsetContext`
+
+Exposes:
+  `LymailleHost`, `McpRequest`, `McpDecision`, `McpGrant`, `HostError`, `SharedHost`
+
+Tasks:
+  [ ] Tests d'abord (hôte factice : défauts, `is_expired`, `Debug` opaque), puis ./host.rs. Après approbation de cette spec.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./host.rs.
+
+Scenario: un hôte vide ne pourvoit rien
+  Given un hôte qui n'implémente aucune méthode
+  When `resolve_mcp` puis `resolve_context` sont appelés
+  Then `Ok(Unprovided)` puis `Ok(None)`
+
+Scenario: l'expiration est exclusive
+  Given un `McpGrant` dont `expires_at` vaut `t`
+  When `is_expired(t - 1 s)`, `is_expired(t)` puis `is_expired(t + 1 s)` sont appelés
+  Then `false`, `true`, `true` ; sans `expires_at`, toujours `false`
+
+Scenario: Debug ne divulgue ni jeton ni URL
+  Given un `McpGrant` d'URL `https://sbx.example/mcp` et de jeton `s3cret`
+  When `format!("{:?}")`
+  Then la sortie ne contient ni `s3cret` ni `sbx.example`
+
+Scenario: HostError ne porte aucun texte
+  Given un `HostError`
+  When `format!("{}")` et `format!("{:?}")`
+  Then la sortie est fixe et ne contient rien venu de l'hôte

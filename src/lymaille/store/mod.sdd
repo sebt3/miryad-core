@@ -13,7 +13,7 @@ Owns:
 
 References:
   ./session.sdd, ./catalog.sdd, ./toolset.sdd, ./memory.sdd — enfants
-  ../identity.sdd — `Identity`, `CallerPrincipal`, `classify`, `check_write`
+  ../identity.sdd — `Identity`, `CallerPrincipal`, `classify`, `check_write` ; ../host.sdd — `SharedHost`, `resolve_context`
   ../migration.sdd — tables ; ../definitions/mod.sdd — entités des tables de définitions (les stores les lisent et les écrivent)
   /dsd/miryad-core/lymaille.md — `FR-3`, `FR-4`, `FR-8`, `DEC-3`, `DEC-7`, `DEC-9`, `AC-4`, `AC-7`
   ../../matrix/store/mod.sdd — précédent d'un store SeaORM de module (tests SQLite en mémoire, PostgreSQL via `MIRYAD_TEST_PG_URL`)
@@ -21,6 +21,7 @@ References:
 Must:
   `pub struct LymailleStores` — `Clone`, champs privés `db: DatabaseConnection`, `identity: Identity`, `subject: String`.
     `pub fn new(db: DatabaseConnection, subject: impl Into<String>) -> Self`.
+    `pub fn with_host(self, host: SharedHost) -> Self` (amendement DEC-27, ci-dessous) : champ privé `host: Option<SharedHost>`, `None` par défaut.
     Accesseurs qui rendent un store `Clone` lié à ce `subject` (chacun un type `pub` des enfants) :
     `sessions() -> SeaSessionStore`, `agents() -> SeaAgentStore`, `profiles() -> SeaProfileStore`, `providers() -> SeaProviderStore`,
     `toolsets() -> SeaToolsetStore`, `context_types() -> SeaContextTypeStore`, `contexts() -> SeaContextStore`, `memories() -> SeaMemoryStore`.
@@ -48,6 +49,12 @@ Must:
     `catalog_contexts`, un nom privé dans `user_contexts` avec `owner_id = user_id` (jamais dans la table d'un autre) ; types de contexte : table
     `catalog_context_types` (écriture admin).
 
+  **Amendement DEC-27 (2026-11-03) — identifiants `Host`** : un identifiant `H_…` (`classify` → `Host`, ../identity.sdd) n'atteint **jamais** une table.
+    Règle 3 : à la lecture, un store de **définitions** (agents, toolsets) rend `Ok(None)` ; `contexts().get_context(H_…)` délègue à
+    `host.resolve_context(id, caller)` (../host.sdd) avec le principal relu, et rend `Ok(None)` sans hôte, ou si l'hôte répond `None` ou `Err` (échec
+    fermé, indiscernable d'un contexte absent). Règle 4 : toute écriture d'un identifiant `Host` est refusée par `check_write` (règle 5 :
+    `Store(<Display de la LymailleError>)`).
+
   `pub(crate) fn db_text(error: &DbErr) -> String` — texte expurgé d'un `DbErr` pour la règle 5.
     Traçabilité : la réduction en phrase fixe est implantée par sonde sur la chaîne de l'erreur (`format!("…:?")`, motifs `ColumnDecode` /
     `Decode(`) parce que le chemin sqlx exact varie selon le graphe de features ; le pass-through d'un texte non-JSON est assumé, la
@@ -64,10 +71,11 @@ Depends on:
   ../identity.rs, ../error.rs, ../definitions/*.rs, ./session.rs, ./catalog.rs, ./toolset.rs, ./memory.rs, @sea_orm
 
 Exposes:
-  `LymailleStores`, `LymailleStores::{new, subject, sessions, agents, profiles, providers, toolsets, context_types, contexts, memories}`,
+  `LymailleStores`, `LymailleStores::{new, with_host, subject, sessions, agents, profiles, providers, toolsets, context_types, contexts, memories}`,
     `db_text` (`pub(crate)`), et les huit types de store ré-exportés.
 
 Tasks:
+  [ ] Amendement DEC-27 (2026-11-03) : `with_host`, champ `host` propagé aux stores de contextes, règles 3 et 4 pour `Host` ; tests d'abord, puis ./mod.rs en dernier. Après ../host.rs et ../identity.rs.
   [ ] Amendement lot 2 : accesseurs `drafts` et `session_index`, déclaration des enfants du lot 2, tests de chemins plats d'abord, puis ./mod.rs en dernier.
   [x] Tests d'abord (SQLite mémoire : cloisonnement et règles 1 à 6 sur un store de test), puis ./mod.rs en dernier du
     dossier. Validé 2026-11-02 (validator PASS ; `db_text` de ../identity.rs basculé sur `store::db_text`).
