@@ -38,6 +38,7 @@ Exposes:
 
 Tasks:
   [ ] Tests d'abord (hooks purs), puis ./context_type.rs.
+  [?] Arbitrage de nommage `G_` bloquant : `lymaille` 0.1.0 (`toolsets/context_type.rs`) n'accepte comme nom de `ContextType` que `[a-z0-9-]+` — un nom `G_…` ne se désérialise pas, alors que le `Must` exige à la fois la désérialisation en `lymaille::ContextType` et `classify(name) == Catalog`. Aucun type ne peut passer les deux portes : le Scenario « un type valide du catalogue est accepté » est infaisable tel quel et le Scenario « un nom privé est refusé » ne prouve plus la porte `G_` (tout nom est refusé). Options : (a) retirer la porte `classify` pour cette entité (le `G_` n'est plus que convention, garanti par `AdminOnly`) ; (b) double nommage — colonne `name = "G_" + nom lymaille`, dérivation au hook et re-préfixage dans `SeaContextTypeStore::get_type` (amendement de ../store/toolset.sdd) ; (c) élargir la grammaire des noms en amont `lymaille` (dépend d'une release). En attente : le test du Scenario 1 tourne `#[ignore]` avec pointeur vers cette ligne ; la tâche reste ouverte.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./context_type.rs.

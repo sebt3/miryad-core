@@ -37,6 +37,9 @@ pub mod profile;
 /// Moteurs d'inférence, références seules (`src/lymaille/definitions/provider.sdd`).
 pub mod provider;
 
+/// Types de contexte du catalogue (`src/lymaille/definitions/context_type.sdd`).
+pub mod context_type;
+
 #[cfg(test)]
 mod tests {
     use super::agent;
