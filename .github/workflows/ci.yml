@@ -41,6 +41,10 @@ jobs:
             args: "--no-default-features --features matrix"
           - name: workflow-matrix
             args: "--no-default-features --features workflow,matrix"
+          - name: lymaille
+            args: "--no-default-features --features lymaille"
+          - name: workflow-lymaille
+            args: "--no-default-features --features workflow,lymaille"
           - name: all-features
             args: "--all-features"
     steps:
@@ -103,6 +107,10 @@ jobs:
             args: "--no-default-features --features matrix"
           - name: workflow-matrix
             args: "--no-default-features --features workflow,matrix"
+          - name: lymaille
+            args: "--no-default-features --features lymaille"
+          - name: workflow-lymaille
+            args: "--no-default-features --features workflow,lymaille"
           - name: all-features
             args: "--all-features"
     steps:
@@ -138,3 +146,16 @@ jobs:
             echo "cargo tree $args -e normal -i sea-orm"
             out=$(cargo tree $args -e normal -i sea-orm) ; status=$? ; if [ "$status" -ne 0 ] || [ -n "$out" ]; then echo "sea-orm est dans le graphe sans db :" ; echo "$out" ; exit 1 ; fi
           done
+
+      - name: cargo tree -i lymaille doit être vide sans la feature
+        shell: bash
+        run: |
+          out=$(cargo tree --no-default-features -e normal -i lymaille 2>/dev/null) || true
+          if [ -n "$out" ]; then echo "lymaille est dans le graphe sans la feature :" ; echo "$out" ; exit 1 ; fi
+
+      - name: la feature lymaille implique db
+        shell: bash
+        run: |
+          out=$(cargo tree --no-default-features --features lymaille -e normal -i sea-orm) || exit 1
+          if [ -z "$out" ]; then echo "la feature lymaille ne tire pas sea-orm : sortie vide" ; exit 1 ; fi
+          echo "$out"

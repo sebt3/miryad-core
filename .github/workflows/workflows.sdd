@@ -57,6 +57,18 @@ Must:
     supplémentaire exécute `cargo tree --no-default-features -e normal -i sea-orm` et exige que sa sortie standard soit vide (cargo imprime « nothing to print » sur stderr et rend le code 0 ; preuve que `sea-orm` n'est
     plus dans le graphe sans `db`), chaque commande en `--no-default-features`, `--no-default-features --features swagger-ui` et
     `--no-default-features --features static-frontend,swagger-ui`.
+  **Amendement 2026-11-03 (feature `lymaille`)** — complète l'amendement 2026-10-19 sans le réécrire ; en cas de
+    contradiction de comptage, cet amendement prévaut : les matrices de test et de clippy de `./ci.yml` portent les
+    quinze combinaisons de `../../tooling.sdd` — les treize ci-dessus plus `lymaille` (`--no-default-features --features lymaille`)
+    et `workflow-lymaille` (`--no-default-features --features workflow,lymaille`), toutes bloquantes. Le job de preuve de
+    graphe gagne deux contrôles `lymaille` : `cargo tree --no-default-features -e normal -i lymaille` dont la **sortie
+    standard doit être vide** — la bibliothèque est absente du graphe sans la feature ; quand le paquet ne figure dans
+    aucun graphe résolu, cargo rend un code non nul (« package ID specification did not match ») qui n'est **pas** un
+    échec : le critère est la sortie vide, pas le code de sortie (convention de `../../tooling.sdd`, « le test est la
+    SORTIE vide », mesuré 2026-11-03 sur cargo 1.99 — là où `sea-orm` sans `db` rend « nothing to print » et le code 0,
+    `lymaille` rendu 101 par l'absence du nom) ; et `cargo tree --no-default-features --features lymaille -e normal -i sea-orm`
+    dont la sortie doit **contenir une ligne** `sea-orm` (la feature implique `db`, DSD `AC-2`) — le pas échoue si cargo
+    rend un code non nul ou si la sortie est vide.
 
 Must not:
   Publier alors que les tests ou le harnais ont échoué.
@@ -121,6 +133,18 @@ Tasks:
   [ ] Confirmer que le job clippy garde `-- -D warnings` dès que `../../tooling.sdd` est à zéro
     dette : le harnais est en `deny` à l'adoption, donc la CI est rouge tant que la purge n'est
     pas finie — c'est l'effet voulu, pas une raison de retirer le drapeau.
+  [x] Amendement 2026-11-03 (`lymaille`) : dans `./ci.yml`, passer chaque matrice à quinze entrées nommées (les treize de
+    l'amendement 2026-10-19 plus `lymaille` et `workflow-lymaille`) et ajouter au job de preuve de graphe les deux contrôles
+    de l'amendement `lymaille` du `Must` (sortie vide exigée pour `-i lymaille` sans la feature, code de sortie non bloquant
+    sur ce contrôle seul ; ligne `sea-orm` exigée avec `--features lymaille`). Une tâche par fichier : ./ci.yml seul.
+    Validé 2026-11-03 (validator PASS) : matrices 15/15 vérifiées par yaml.safe_load, Scenario rejoué pas à pas
+    (les deux branches de succès et d'échec), les deux combinaisons vertes test + clippy `-- -D warnings`.
+  [x] Confirmer que le job clippy garde `-- -D warnings` dès que `../../tooling.sdd` est à zéro
+    dette : le harnais est en `deny` à l'adoption, donc la CI est rouge tant que la purge n'est
+    pas finie — c'est l'effet voulu, pas une raison de retirer le drapeau.
+    Confirmé 2026-11-03 (validator PASS) : le drapeau est porté par l'unique step partagé du job clippy
+    (`cargo clippy --all-targets ${{ matrix.args }} -- -D warnings`), donc sur les quinze entrées ; `tooling.sdd`
+    est à zéro dette (dernière batterie complète prouvée sur 5bd049f).
   [ ] Décider s'il faut séparer `test`, `fmt` et `clippy` en jobs dédiés dès que la matrice est
     jouée (parallélisme, lisibilité des échecs).
   [x] Tension matrice complète / carve-out du pont : arbitré par Sébastien le 2026-10-03, option
@@ -144,3 +168,13 @@ Scenario: sea-orm absent du graphe sans db (2026-10-19)
   When il exécute `cargo tree --no-default-features -e normal -i sea-orm`
   Then sa sortie standard est vide (stderr : « nothing to print », code de sortie 0) et le job réussit
   And si la sortie contenait une ligne `sea-orm v…` (sea-orm présent), le job échouerait et bloquerait le merge
+
+Scenario: graphe lymaille (2026-11-03)
+  Given le job de preuve de graphe amendé
+  When il exécute `cargo tree --no-default-features -e normal -i lymaille`
+  Then sa sortie standard est vide — cargo peut rendre un code non nul (« package ID specification did not
+    match ») du fait de l'absence du nom, que le pas ne compte pas comme un échec — et le job réussit
+  When il exécute `cargo tree --no-default-features --features lymaille -e normal -i sea-orm`
+  Then sa sortie contient une ligne `sea-orm` (la feature implique `db`) et le job réussit
+  And une sortie non vide au premier contrôle, ou une sortie vide au second, ferait échouer le job et
+    bloquerait le merge

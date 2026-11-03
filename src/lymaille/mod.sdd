@@ -71,7 +71,10 @@ Tasks:
     `workflow` du moment de l'ajout (DSD `Constraints and Pitfalls`).
   [?] Wording de la preuve ci-dessus : sur cargo 1.99, `cargo tree --no-default-features -e normal -i lymaille` rend 101
     (« package ID specification did not match ») et non « nothing to print » — l'absence est bien prouvée, la formulation
-    est inexacte (constat validator 2026-11-02). Corriger la formulation (ici et `tooling.sdd`) ou accepter le rendu non nul ?
+    est inexacte (constat validator 2026-11-02). Tranché au montage : le critère retenu est la **sortie vide**, pas le code
+    de sortie — la convention de `tooling.sdd` (« le test est la SORTIE vide, pas le code de sortie ») ; formulation écrite
+    dans l'amendement 2026-11-03 de /.github/workflows/workflows.sdd. À relire avec Sébastien (le texte de `mod.sdd` ci-dessus
+    garde « nothing to print », qui reste la formulation exacte pour `sea-orm` sans `db`).
 
 Done when:
   Les `Scenario` sont verts ; `cargo build --no-default-features --features lymaille` et `--all-features` compilent sans
