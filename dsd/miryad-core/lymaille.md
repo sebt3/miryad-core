@@ -12,6 +12,8 @@ et appels d'MCP externes depuis les scripts.
 - Feature **optionnelle, hors défaut, impliquant `db`** (DEC-1). miryad-core est l'**hôte** au sens de `lymaille` : elle
   implémente les traits de stockage sur SeaORM, résout les références, porte la chaîne d'identité et la parité de
   surface.
+- **Extensions de l'hôte applicatif :** les modules Rhai fournis par l'application et l'exécution de script sans tour de LLM sont
+  conçus dans `miryad-core/scripts-hote` ; les hooks de ressource asynchrones, dans `miryad-core/hooks-async`.
 - **Non-goal :** la conception des sessions, du scratchpad, des toolsets, de la délégation et de l'inférence. Elle vit
   dans le DSD de `lymaille` (`agent-sessions`) et n'est pas à redéduire ni à dupliquer ici.
 - **Préalable levé le 2026-11-02 :** `lymaille` 0.1.0 est publiée sur crates.io (Observed in: `lymaille` commit
@@ -108,8 +110,8 @@ et appels d'MCP externes depuis les scripts.
     sortie structurée comme sortie de step (`agent-sessions#DEC-4`). Le run s'exécute **dans un seul `ctx.run`** sur une
     session de nom déterministe, dérivé de la clé du workflow et de l'identifiant du step ; à un rejeu, la session
     sauvegardée est reprise (`resume` de `lymaille`), jamais recommencée. Le step tourne sous le principal du
-    déclencheur (`FR-10`) et porte un plafond de durée `max_secs` dans son `config` (défaut 480 s), appliqué par l'annulation
-    coopérative de `lymaille` (`CancelHandle`), strictement inférieur à la borne `ctx.run` du service (`OI-4`) : l'agent s'arrête
+    déclencheur (`FR-10`) et porte un plafond de durée `max_secs` dans son `config` (défaut 480 s, plafond relevable par l'application, `DEC-29`), appliqué par l'annulation
+    coopérative de `lymaille` (`CancelHandle`), strictement inférieur à la borne `ctx.run` du handler dédié (`DEC-29`) : l'agent s'arrête
     de lui-même au lieu d'être coupé en plein tour. Un échec du run est un `StepError` ; le contenu des sessions et des secrets n'y figure jamais.
     - **Source:** `agent-sessions#DEC-4` ; `DEC-10`, `DEC-11` ; user instruction, 2026-11-02
     - **Verified by:** `AC-10`
@@ -144,15 +146,15 @@ et appels d'MCP externes depuis les scripts.
       user instruction, 2026-11-02
     - **Realized by:** `SpecDD /src/workflow/step.sdd` (T1), `/src/workflow/template.sdd` (T2), `/src/workflow/dispatcher.sdd` (T3),
       `/src/workflow/interpreter.sdd` (T4), `/src/workflow/client.sdd` (T5), `/src/workflow/durable.sdd` et
-      `/src/workflow/subworkflow.sdd` (T6), amendées le 2026-11-02 et approuvées par Sébastien ce jour — **livré le 2026-11-02**
+      `/src/workflow/subworkflow.sdd` (T6), amendées le 2026-11-02 et approuvées par le développeur principal ce jour — **livré le 2026-11-02**
       (commits `667518c` → `1de97e6`, une tâche par commit, validator GO à chaque tâche et batterie complète à la clôture)
     - **Verified by:** `AC-11`
 
-- **FR-11 - MUST:** Un utilisateur ouvre, suit, annule, reprend et ferme une session interactive (`Work` ou `Config`) ; au plus un tour actif par
-    session et par processus ; un tour survit à la déconnexion du client ; les événements sont diffusés à tous les abonnés de la session ; chaque
+- **FR-11 - MUST:** Un utilisateur ouvre, suit, annule, reprend et ferme une session interactive **dans un contexte** (la nature `Work` ou `Config` et l'agent par défaut
+    découlent du type du contexte, `DEC-28`) ; au plus un tour actif par session (application mono-réplique, `DEC-24`) ; un tour survit à la déconnexion du client ; les événements sont diffusés à tous les abonnés de la session ; chaque
     appel relit le principal. Le socle est indépendant du canal.
-    - **Source:** `DEC-6`, `DEC-13`, `DEC-24` ; user instruction, 2026-11-03
-    - **Verified by:** `AC-15`
+    - **Source:** `DEC-6`, `DEC-13`, `DEC-24`, `DEC-28` ; user instruction, 2026-11-03
+    - **Verified by:** `AC-15`, `AC-19`
 
 - **FR-12 - MUST:** Les sessions interactives sont servies en REST+SSE sous `/api/v1/lymaille`, exemptées de la parité des ressources (comme `/auth/*`) ;
     l'envoi d'un message répond `202` sans attendre le tour.
@@ -163,6 +165,16 @@ et appels d'MCP externes depuis les scripts.
     événement remis deux fois ne déclenche qu'un tour ; les sorties longues sont découpées.
     - **Source:** `DEC-23`, `DEC-26` ; user instruction, 2026-11-03
     - **Verified by:** `AC-17`
+
+- **FR-14 - MUST:** L'application hôte fournit, par un trait unique `LymailleHost`, ce que miryad-core n'a pas : le serveur MCP propre à un
+    contexte (URL, jeton frais, décision d'autorité) et les contextes de niveau projet. Sans ce trait, le comportement est celui de `DEC-20` seul.
+    - **Source:** `DEC-27` ; `NOTE-vanyline-orientation-lymaille.md` §7 (B1, B3) ; user instruction, 2026-11-03
+    - **Verified by:** `AC-18`
+
+- **FR-15 - MUST:** Les événements d'une session interactive sont typés et exportables vers TypeScript, extensibles par l'hôte sans que la crate en
+    interprète le contenu, et l'historique d'une session se relit par une route dédiée.
+    - **Source:** `DEC-30` ; user instruction, 2026-11-03
+    - **Verified by:** `AC-20`
 
 ## Design Decisions
 
@@ -254,7 +266,7 @@ et appels d'MCP externes depuis les scripts.
     - **Decision:** tout identifiant du catalogue (agents, toolsets) commence par `G_` ; aucun utilisateur, admin compris
       dans son espace privé, ne crée un identifiant commençant par `G_`, sans tenir compte de la casse. Seuls les admins
       écrivent un identifiant `G_…`, dans le catalogue. La résolution d'un identifiant est sans ambiguïté : `G_…` va au
-      catalogue, le reste à l'espace du propriétaire. Les skills suivent leur toolset.
+      catalogue, le reste à l'espace du propriétaire. Les skills suivent leur toolset. **Amendé le 2026-11-03 (`DEC-27`) :** un préfixe `H_` désigne un contexte résolu par l'hôte, jamais stocké.
     - **Alternatives:** refus de création quand un nom public existe (écarté : ne couvre que le sens
       utilisateur-après-public) ; masquage du public par le privé (écarté : faux-ami silencieux) ; préfixe `G-` (écarté :
       le tiret n'est pas un caractère valide d'un identifiant Rhai, donc d'un nom de toolset ou de module — Observed in:
@@ -274,7 +286,7 @@ et appels d'MCP externes depuis les scripts.
       lancement détaché et awakeable (écarté : exige l'awakeable reporté et une reprise au démarrage du processus).
     - **Consequences:** la durée d'un run est bornée par celle d'une fermeture `ctx.run`, soit ≈ 11 min par défaut, réglable (spike
       `OI-4`) ; le kind est ordinaire
-      (`MiryadWorkflowStep`), pas durable, tant que cette borne convient ; une session de step est une session `Sub`.
+      (`MiryadWorkflowStep`), pas durable, tant que cette borne convient ; une session de step est une session `Sub`. **Amendé le 2026-11-03 :** la borne devient celle d'un handler dédié, voir `DEC-29`.
     - **Source:** user instruction, 2026-11-02
 
 - **DEC-11 - Effets de bord de l'agent : au moins une fois, sur le seul tour interrompu**
@@ -388,18 +400,18 @@ et appels d'MCP externes depuis les scripts.
 - **DEC-20 - Types de contexte, contextes et serveurs MCP : qui écrit, qui peut lier** (2026-11-03, séance de questions)
     - **Context:** `OI-9`. Un toolset à rôles MCP exige un contexte ; un contexte lie un rôle à un serveur MCP ; `lymaille` 0.1.0 ne fournit aucun
       store de définitions de serveur (`McpClientConfig` = URL + délais, `McpAuth` = en-têtes, tous deux de l'hôte).
-    - **Decision:** (1) **types de contexte** : `MiryadResource` du catalogue, lecture `Public`, écriture `AdminOnly`. (2) **contextes** : paire de
-      ressources comme `DEC-19` ; niveau `User` = `OwnerOnly`, niveau `Project` (= partagé par toute l'instance : miryad-core n'a pas d'entité
+    - **Decision:** (1) **types de contexte** : `MiryadResource` du catalogue, lecture `Public`, écriture `AdminOnly` ; ils portent la nature, l'agent par défaut et les agents autorisés (`DEC-28`). (2) **contextes** : paire de
+      ressources comme `DEC-19` ; niveau `User` = `OwnerOnly`, niveau `Shared` (ex-`Project`, renommé le 2026-11-03 : « projet » est le mot de l'hôte ; partagé par toute l'instance, miryad-core n'a pas d'entité
       projet) = catalogue `AdminOnly` ; niveau `Session` interne, sans CRUD. (3) **`mcp_servers`** : `MiryadResource` admin (nom, URL, délais,
       `auth_ref`, mode d'auth, `allowed_groups`) ; la référence d'auth est résolue par le `SecretResolver` de `DEC-16`, le secret n'est jamais en base.
       (4) **droit d'usage** : `allowed_groups` liste des noms de groupes, plus les valeurs réservées `all` (tout authentifié) et `admin` ; le contrôle d'autorité
       est fait **à l'assemblage de la session et à l'appel** (`mcp_access`), et à `ContextStore::put_context` pour la session de configuration. **Correction
       du 2026-11-03 :** un hook `MiryadResource` est synchrone et sans connexion, il ne peut ni relire les groupes ni l'état admin ; le refus « à la sauvegarde »
       par REST/MCP n'existe donc pas (même limite pour `check_grants` des agents et toolsets privés, `FR-9`) ; un accord excessif échoue à l'usage, il n'élève jamais un droit.
-      Lever cette limite demanderait des hooks asynchrones dans le moteur de ressources : hors lot 2, à arbitrer (`OI-10`) ; l'appartenance est relue en base à chaque appel, jamais mise en cache. (5) **modes d'auth** : `static`
+      Lever cette limite demanderait des hooks asynchrones dans le moteur de ressources : hors lot 2, arbitré le 2026-11-03 : `miryad-core/hooks-async` ; l'appartenance est relue en base à chaque appel, jamais mise en cache. (5) **modes d'auth** : `static`
       (référence de secret, compte de service) et `forward` (le serveur reçoit le jeton de l'utilisateur) ; `forward` n'est valable qu'en
       session interactive, avec le jeton frais de la requête, jamais persisté ; un step batch qui lie un serveur `forward` échoue en `StepError`
-      non retryable.
+      non retryable. **Amendé le 2026-11-03 (`DEC-27`) :** un serveur MCP propre à un contexte est fourni par l'hôte, sans ligne `mcp_servers` ni mode d'auth supplémentaire.
     - **Alternatives:** serveurs en configuration d'application (écarté : pas de modification à chaud, la session de configuration n'y touche pas) ;
       `forward` en batch par échange de jeton RFC 8693 (écarté : dépend de l'IdP, hors périmètre ; à rouvrir) ou par refresh token stocké (écarté :
       secret longue durée au repos) ; contextes `User` à liaison libre (écarté : un utilisateur se brancherait sur un serveur à compte de service puissant).
@@ -436,7 +448,10 @@ et appels d'MCP externes depuis les scripts.
       appel de l'agent. Les erreurs de script sont persistées par un `AuditWriter` pour `SessionIndex::script_errors`.
     - **Alternatives:** tour attaché à la requête (écarté : un onglet fermé tuerait le tour) ; rejeu d'événements par `Last-Event-ID` (écarté : les événements
       ne sont pas persistés ; l'état de la session l'est).
-    - **Consequences:** pas de coordination entre processus (`session#DEC-1` de `lymaille`).
+    - **Consequences:** pas de coordination entre processus (`session#DEC-1` de `lymaille`). **Limite assumée le 2026-11-03 :** l'application est
+      **mono-réplique** pour les sessions interactives : le hub d'événements est en mémoire (un abonné SSE d'une autre réplique ne verrait rien) et un
+      tour actif n'est protégé qu'au sein du processus. Un verrou en base n'est rouvert qu'avec un besoin de haute disponibilité. L'ouverture se fait
+      par contexte (`DEC-28`).
     - **Source:** proposition Claude, 2026-11-03, à approuver
 
 - **DEC-25 - REST+SSE : routeur auto-monté, exempté de la parité** (2026-11-03)
@@ -446,10 +461,64 @@ et appels d'MCP externes depuis les scripts.
     - **Source:** user instruction (exemption), 2026-11-03
 
 - **DEC-26 - Matrix : un pont `MatrixEventHandler`, salle directe, dédoublonnage en base** (2026-11-03)
-    - **Decision:** `ChatBridge` implémente `MatrixEventHandler` ; une salle = un utilisateur lié = une session `Work` (`!new`, `!agent`, `!cancel`, `!resume`,
+    - **Decision:** `ChatBridge` implémente `MatrixEventHandler` ; une salle = un utilisateur lié = une session ouverte dans un contexte (`DEC-28`) (`!new <contexte> [agent]`, `!cancel`, `!resume`,
       `!activate`, `!link`, `!help`) ; dédoublonnage par `event_id` en base, fenêtre 7 jours ; événements plus vieux que 5 minutes ignorés ; réponse
       en messages de 4000 caractères maximum, huit au plus ; pas d'édition de message.
     - **Source:** proposition Claude, 2026-11-03, à approuver
+
+- **DEC-27 - `LymailleHost` : serveurs MCP et contextes fournis par l'application** (2026-11-03)
+    - **Context:** l'application `vanyline` lie un contexte à une sandbox dont l'URL MCP est créée et détruite dynamiquement, dont le jeton est
+      minté à la demande (API `TokenRequest` de Kubernetes, courte durée) et dont l'autorité est un lien utilisateur↔propriétaire connu de
+      l'application seule. Ni `static` ni `forward` (`DEC-20`) ne couvrent ce cas ; un « projet » est de plus une entité réelle de l'application.
+    - **Decision:** (1) un trait unique `LymailleHost`, fourni par l'application au montage et optionnel. (2) `resolve_mcp(contexte, rôle, principal)`
+      rend `Refusé` ou `Accordé{url, jeton, expiration}` ; il est appelé à l'assemblage **et** à chaque appel d'outil. Aucune liaison n'est stockée
+      en table ; un rôle que l'hôte ne pourvoit pas retombe sur la liaison de contexte classique (`mcp_servers`, `DEC-20`). Le cache du jeton est
+      l'affaire de l'hôte : miryad-core ne garde ni ne persiste aucun jeton. En batch, l'autorité est tranchée sous le `subject` du déclencheur
+      (`FR-10`) ; sans `subject`, le step échoue en `StepError` non retryable. Pas de contrôle à la sauvegarde (hooks synchrones, `DEC-20`) : un accord
+      excessif échoue à l'usage. La session `Config` voit ces liaisons en lecture seule, à titre informatif, sans les éditer et sans monter de client.
+      (3) `resolve_context(id, principal)` rend `Option<ToolsetContext>` pour un identifiant de préfixe `H_` : jamais stocké, jamais écrit par REST,
+      MCP ni la session `Config`, aiguillé vers le trait par `identity::classify`. (4) Une panne de l'hôte est un refus (échec fermé).
+    - **Alternatives:** troisième mode d'auth `host` dans `mcp_servers` (écarté : une ligne administrée par sandbox dynamique) ; deux traits
+      distincts pour MCP et contextes (écarté : deux points d'extension à enregistrer) ; `authorize` et `mint_token` séparés (écarté : fenêtre entre
+      l'autorité et le jeton) ; cache de jeton dans miryad-core (écarté : un jeton survivrait à une révocation).
+    - **Consequences:** amende `identity.sdd` (variante de `classify`), `mcp_access.sdd`, `interactive/assemble.sdd`, `definitions/user_context.sdd` et
+      `mod.sdd` (montage) ; tests avec un hôte factice. L'hôte garde seul la définition de « cet utilisateur peut agir sur ce propriétaire ».
+    - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B1, B3) ; user instruction, 2026-11-03
+
+- **DEC-28 - Le contexte pilote la session** (2026-11-03, amende `FR-11`, `DEC-24`, `DEC-26`)
+    - **Context:** l'utilisateur choisit un contexte de travail, pas un agent parmi N ; la nature de la session en découle.
+    - **Decision:** l'ouverture prend `(contexte, agent optionnel)`. Le **type de contexte** porte la nature (`Work` ou `Config`), l'agent par défaut et
+      l'ensemble des agents autorisés. Le contexte est persisté dans la session et immuable. Un agent explicite hors de l'ensemble autorisé est
+      refusé par une erreur typée `MRD-LYMAILLE-*`. Ouvrir une session `Config` suit le droit de l'utilisateur sur le contexte, sans statut admin
+      implicite. Le niveau de contexte `Project` devient `Shared`. Sous Matrix, `!new <contexte> [agent]` remplace `!agent`.
+    - **Alternatives:** règle fournie par l'hôte (écarté : ni administrable ni lisible par la session `Config`) ; ouverture `Config` réservée aux admins
+      (écarté : la configuration d'un projet par un non-admin est voulue, `FR-9`).
+    - **Consequences:** trois champs de plus sur la ressource des types de contexte, donc sur la table de la migration `m20261104_000001`, non encore
+      déployée (modification en place à actualiser dans les exceptions d'`AGENTS.md`, ou migration suivante). **ASSUMPTION :** ces champs vivent en
+      colonnes de miryad-core et non dans l'objet `ContextType` de `lymaille` ; à vérifier contre `ContextTypeStore`. Le renommage `Shared` est à
+      signaler à `lymaille` (`ProviderLevel` et niveau de contexte).
+    - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B2, B3) ; user instruction, 2026-11-03
+
+- **DEC-29 - Handler Restate dédié au step `subagent`** (2026-11-03, amende `DEC-10`, `FR-6`, `OI-4`)
+    - **Context:** un agent de code qui compile et teste dure de 30 à 45 minutes ; la borne par défaut d'un `ctx.run` est d'environ 11 minutes, et le
+      réglage par service retarderait la détection des steps ordinaires bloqués (`OI-4`, conclusion 4).
+    - **Decision:** le step `subagent` est dispatché par un handler Restate dédié, aux bornes `inactivity_timeout` et `abort_timeout` relevées ; le
+      plafond `max_secs` se règle par l'application (défaut inchangé à 480 s). Le step reste `retryable: false` et la reprise sur session
+      déterministe (`DEC-10`) est inchangée.
+    - **Alternatives:** relever les bornes du service `StepDispatcher` (écarté : tous les kinds en pâtissent).
+    - **Consequences:** amende `dispatcher.sdd` et `subagent_step.sdd`. **Risque assumé :** aucun spike ne couvre une durée de 30 à 45 minutes (`OI-11`).
+    - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B4) ; user instruction, 2026-11-03
+
+- **DEC-30 - Événements de session typés, extensibles, relisibles** (2026-11-03, amende `DEC-24`, `DEC-25`)
+    - **Decision:** les événements du flux sont un enum `SessionEvent` exportable vers TypeScript, avec une variante `Host{kind, payload}` que
+      l'application type de son côté ; la crate n'interprète jamais le `payload` et n'emploie aucun générique. Une route de lecture rend l'état
+      persisté de la session (messages, appels d'outil) sous les mêmes types ; le client lit l'historique puis s'abonne au SSE. Les événements `Host` ne
+      sont pas rejoués, et `Last-Event-ID` reste écarté (`DEC-24`).
+    - **Alternatives:** enum générique `SessionEvent<H>` (écarté : propage un paramètre de type dans le hub, le gestionnaire et les routes) ;
+      journal d'événements rejouables (écarté : volumétrie et rétention, déjà écarté par `DEC-24`).
+    - **Consequences:** amende `http/routes.sdd`, `http/sse.sdd`, `interactive/hub.sdd` ; une route de plus que les neuf de `AC-16`. L'outil d'export
+      TypeScript reste à choisir (`OI-12`).
+    - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B7) ; user instruction, 2026-11-03
 
 ## Contour du lot 2
 
@@ -468,7 +537,10 @@ aucune tâche n'est ouverte, aucune spec n'est écrite. Périmètre (`DEC-6`, `D
 - **Types de contexte, contextes, serveurs MCP** (`DEC-20`, solde `OI-9`).
 - **Écritures du module des ressources**, interactives et batch idempotentes (`DEC-21`).
 - **Rétention des sessions** (`DEC-22`, solde `OI-7`).
-- **Hors lot 2 :** kind `pad` (lot 3, `OI-3`) ; `forward` de jeton en batch (`DEC-20`).
+- **Hôte applicatif** : `LymailleHost` (`DEC-27`), ouverture par contexte (`DEC-28`), handler dédié du step `subagent` (`DEC-29`), événements typés et
+  historique (`DEC-30`).
+- **Hors lot 2 :** kind `pad` (lot 3, `OI-3`) ; `forward` de jeton en batch (`DEC-20`) ; hooks asynchrones (`miryad-core/hooks-async`) ; modules
+  d'hôte et exécuteur de script (`miryad-core/scripts-hote`).
 
 ## Constraints and Pitfalls
 
@@ -491,6 +563,10 @@ Specs du lot 0 écrites et livrées le 2026-11-02. **Specs du lot 1 rédigées l
 lecture seule), `/src/workflow/subagent_step.sdd` (`FR-6`, `FR-10`). Amendements d'accompagnement : `/src/lib.sdd`, `/src/migration/mod.sdd`,
 `/src/workflow/mod.sdd`, `/src/auth/principal.sdd` (variante `PrincipalSource::Agent`), `/miryad-core.sdd`, `/tooling.sdd` ; `/AGENTS.md`, la CI et
 `workflows.sdd` restent à amender avec accord. **Lot 2 : specs rédigées le 2026-11-03, en attente d'approbation** (`FR-11` à `FR-13`, `DEC-20` à `DEC-26`) : `/src/lymaille/interactive/{mod,hub,manager,assemble,activation}.sdd`, `/src/lymaille/http/{mod,routes,sse}.sdd`, `/src/lymaille/chat/{mod,link,render,bridge}.sdd`, `/src/lymaille/mcp_access.sdd`, `/src/lymaille/definitions/{mcp_server,context_type,catalog_context,user_context,private_agent,private_toolset}.sdd`, `/src/lymaille/store/{draft,session_index,audit,purge,write_journal}.sdd` ; amendements : `error.sdd`, `migration.sdd`, `store/{mod,toolset}.sdd`, `definitions/mod.sdd`, `resource_module.sdd`, `mod.sdd`, `/src/workflow/subagent_step.sdd`. Lot 3 : `/src/workflow/pad_step.sdd`.
+
+**Réalignement du 2026-11-03 (`DEC-27` à `DEC-30`) :** le code du lot 2 est à l'arrêt le temps de l'amendement. Specs à ré-aligner avant approbation : `identity.sdd`,
+`mcp_access.sdd`, `definitions/{context_type,user_context}.sdd`, `interactive/{mod,hub,manager,assemble}.sdd`, `http/{routes,sse}.sdd`, `chat/{bridge,link}.sdd`,
+`migration.sdd`, `mod.sdd`, `/src/workflow/{dispatcher,subagent_step}.sdd`.
 
 ## Acceptance Criteria
 
@@ -531,9 +607,20 @@ lecture seule), `/src/workflow/subagent_step.sdd` (`FR-6`, `FR-10`). Amendements
 - **AC-16:** Les neuf routes REST+SSE répondent comme spécifié ; une déconnexion SSE n'annule pas le tour ; `lagged` signale un abonné lent.
 - **AC-17:** Un message Matrix d'un mxid lié ouvre une session et reçoit la réponse ; un mxid non lié n'a aucun droit ; un événement remis deux fois ne fait qu'un tour.
 
+- **AC-18:** Avec un hôte factice, un rôle MCP pourvu par l'hôte rend l'URL et un jeton frais à chaque appel ; un refus de l'hôte, ou sa panne, refuse l'appel ;
+  un rôle non pourvu retombe sur `mcp_servers` ; en batch, un step sans `subject` échoue en `StepError` non retryable ; aucun jeton n'est écrit en base, en erreur ni en trace ;
+  un identifiant `H_…` ne peut être écrit par aucune surface.
+- **AC-19:** Une session s'ouvre sur un contexte : nature et agent par défaut viennent du type ; le contexte est immuable ; un agent hors ensemble est refusé par une erreur typée ;
+  une session `Config` s'ouvre sans être admin si le contexte est utilisable.
+- **AC-20:** Les événements du flux et l'historique partagent les mêmes types exportés ; un rechargement retrouve la conversation ; un événement `Host` traverse le hub sans être interprété.
+
 ## Open Issues
 
-- **OI-10:** **Hooks asynchrones ou contrôle de droits à la sauvegarde REST/MCP** : les hooks de `MiryadResource` sont synchrones, sans connexion ni état admin ; les contrôles `check_grants` (agents, toolsets privés) et le droit d'usage des serveurs MCP (contextes) ne se font qu'à l'assemblage, à l'appel et par les stores. **TBD :** tolérer cette limite, ou étendre le moteur de ressources (hook asynchrone avec connexion), changement transversal à toutes les ressources.
+- **OI-11:** **Durée réelle d'un sous-agent** (`DEC-29`) : aucun spike ne couvre 30 à 45 minutes, reprise déterministe comprise. **TBD :** banc de `tests/workflow_restate.rs`
+  étendu avant la spec `subagent_step.sdd`, ou acceptation du risque.
+- **OI-12:** **Export TypeScript des événements** (`DEC-30`) : `ts-rs` n'est pas une dépendance de la crate. **TBD :** `ts-rs` derrière la feature `lymaille` (dépendance nouvelle à acter, `CON-4`), ou schémas
+  `utoipa` déjà présents pour OpenAPI.
+- **OI-10:** **Hooks asynchrones ou contrôle de droits à la sauvegarde REST/MCP** : les hooks de `MiryadResource` sont synchrones, sans connexion ni état admin ; les contrôles `check_grants` (agents, toolsets privés) et le droit d'usage des serveurs MCP (contextes) ne se font qu'à l'assemblage, à l'appel et par les stores. **Soldé le 2026-11-03 (user instruction) :** extension du moteur de ressources par des hooks asynchrones avec connexion, hors lot 2 ; voir `miryad-core/hooks-async`.
 
 - **OI-1:** **Soldé le 2026-11-02 (user instruction)** : garder les défauts de `lymaille` (`mcp-http`, `rig`), nécessaires au lot 1
   (inférence et MCP distants), sans les relayer en sous-features miryad tant qu'aucun hôte ne les désactive ; `fs`/`shell` : jamais
@@ -563,7 +650,7 @@ lecture seule), `/src/workflow/subagent_step.sdd` (`FR-6`, `FR-10`). Amendements
   (`ServiceOptions::inactivity_timeout` / `abort_timeout`, Observed in: `restate-sdk-0.12.1/src/endpoint/builder.rs`) ; (3) au-delà,
   Restate relance la fermeture **depuis zéro**, ce qui confirme le besoin de reprise sur session déterministe (`DEC-10`) ; (4) le
   réglage vit sur le service `StepDispatcher`, donc il s'applique à tous les kinds : le relever retarde aussi la détection d'un
-  step ordinaire bloqué. **Décidé dans `subagent_step.sdd` (en attente d'approbation) :** `recommended_options()` inchangé au lot 1 ; `max_secs` plafonné à 540 s, défaut 480 s.
+  step ordinaire bloqué. **Décidé dans `subagent_step.sdd` (en attente d'approbation) :** `recommended_options()` inchangé au lot 1 ; `max_secs` plafonné à 540 s, défaut 480 s. **Amendé le 2026-11-03 : handler dédié, `DEC-29`.**
     - **Source:** spike du 2026-11-02, résultats ci-dessus ; user instruction, 2026-11-02
 - **OI-5:** **Glue Matrix** (`matrix` + `lymaille`) : mapping salle ↔ session, dédoublonnage des messages remis deux
   fois après bascule de bail, mise en forme des sorties longues, annuaire mxid → principal (inexistant :

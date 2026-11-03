@@ -117,10 +117,12 @@ contenus d'origine restent consultables par Git :
 - `miryad-core/lymaille` : hôte de la bibliothèque `lymaille` — modules LLM sur les ressources, pad de workflow,
   sous-agents. Ouverte le 2026-11-01, rien d'implémenté ; `lymaille` 0.1.0 publiée, lot 1 arbitré le 2026-11-02. La réserve de
   `miryad-core/workflow#OI-8` y est rattachée.
+- `miryad-core/hooks-async` : hooks de ressource asynchrones avec connexion (ouverte le 2026-11-03, rien d'implémenté).
+- `miryad-core/scripts-hote` : modules Rhai fournis par l'application hôte et exécution de script sans LLM (ouverte le 2026-11-03, rien d'implémenté).
 
 Relations : `rest-api`, `mcp` et `frontend` consomment `resource-model` et `access-control` ; `auth` produit le principal
 que `rest-api` et `mcp` consomment ; `systemone` et `matrix` fournissent des kinds à `workflow` ; `lymaille` (cible)
-consomme `resource-model`, `access-control` et `auth`, et fournit moteur LLM et pad à `workflow` et au glue `matrix`.
+consomme `resource-model`, `access-control` et `auth`, et fournit moteur LLM et pad à `workflow` et au glue `matrix`. `hooks-async` amende `resource-model` ; `scripts-hote` étend `lymaille`.
 
 ## Acceptance Criteria
 
