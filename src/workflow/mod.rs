@@ -9,7 +9,8 @@
 //!
 //! Les kinds natifs à dépendance externe ne sont **pas** enregistrés par le moteur : l'application les
 //! enregistre elle-même dans son `StepRegistry`, comme `RhaiStep` — `register(SystemOneStep::new(client))`
-//! sous `workflow` + `systemone`, `register(MatrixSendStep::new(client))` sous `workflow` + `matrix`.
+//! sous `workflow` + `systemone`, `register(MatrixSendStep::new(client))` sous `workflow` + `matrix`,
+//! `register(SubagentStep::new(deps))` sous `workflow` + `lymaille` (./subagent_step.sdd).
 
 pub mod client;
 pub mod definition;
@@ -21,6 +22,8 @@ pub mod interpreter;
 pub mod matrix_step;
 pub mod rhai_step;
 pub mod step;
+#[cfg(all(feature = "workflow", feature = "lymaille"))]
+pub mod subagent_step;
 pub mod subworkflow;
 #[cfg(all(feature = "workflow", feature = "systemone"))]
 pub mod systemone_step;
@@ -45,6 +48,8 @@ pub use interpreter::DagInterpreter;
 pub use matrix_step::MatrixSendStep;
 pub use rhai_step::RhaiStep;
 pub use step::{MiryadWorkflowStep, RunInfo, StepError, StepRegistry};
+#[cfg(all(feature = "workflow", feature = "lymaille"))]
+pub use subagent_step::{SubagentDeps, SubagentStep};
 pub use subworkflow::SubWorkflowStep;
 #[cfg(all(feature = "workflow", feature = "systemone"))]
 pub use systemone_step::SystemOneStep;
@@ -111,6 +116,13 @@ mod tests {
     #[test]
     fn matrix_send_step_est_importable_sous_son_croisement() {
         fn witness(_: Option<crate::workflow::MatrixSendStep>) {}
+        witness(None);
+    }
+
+    #[cfg(all(feature = "workflow", feature = "lymaille"))]
+    #[test]
+    fn subagent_step_est_importable_sous_son_croisement() {
+        fn witness(_: Option<(crate::workflow::SubagentStep, crate::workflow::SubagentDeps)>) {}
         witness(None);
     }
 }

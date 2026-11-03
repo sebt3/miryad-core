@@ -99,10 +99,14 @@ Handles:
   Plafond `max_secs` atteint : annulation coopérative, session sauvegardée, `StepError` non retryable.
 
 Tasks:
-  [ ] Amender ./mod.sdd (déclaration gated `all(workflow, lymaille)`, ré-exports `SubagentStep`, `SubagentDeps`) et ./mod.rs dans le même lot.
-  [ ] Tests d'abord depuis les `Scenario` (couture `InferenceFactory` + `ScriptedProvider`, SQLite mémoire), puis ./subagent_step.rs.
+  [x] Amender ./mod.sdd (déclaration gated `all(workflow, lymaille)`, ré-exports `SubagentStep`, `SubagentDeps`) et ./mod.rs dans le même lot.
+    Validé 2026-11-03 (validator PASS, batterie ciblée workflow,lymaille + all-features).
+  [x] Tests d'abord depuis les `Scenario` (couture `InferenceFactory` + `ScriptedProvider`, SQLite mémoire), puis ./subagent_step.rs.
+    Validé 2026-11-03 (validator PASS, batterie ciblée workflow,lymaille + all-features).
   [ ] Preuve de reprise (DSD `AC-10`) : test `#[ignore]` contre `restate-server` par la méthode du spike de `workflow#AC-8`
     (`tests/workflow_restate.rs`, fichier rattaché à ./dispatcher.sdd : à citer en `Can modify` après accord) ; non verrouillée par la CI.
+  [?] L'état `Interrupted` de lymaille est traité comme une erreur définitive (render permanent) : la spec ne le nommait pas ; et la spec
+    ne dit rien du `max_turns=0` au-delà de la normalisation. À relire avec Sébastien.
 
 Done when:
   Les `Scenario` unitaires sont verts sous `all(workflow, lymaille)` et `--all-features` ; les specs de ../lymaille/ sont approuvées avant

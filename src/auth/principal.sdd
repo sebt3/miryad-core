@@ -208,7 +208,8 @@ Tasks:
     (le second est un test ordinaire, sa preuve sans `db` est le run `--no-default-features`).
 
 Done when:
-  Les neuf `Scenario` (huit originaux, un nouveau sur la rédaction `Debug`) ont chacun au moins un
+  Les douze `Scenario` (les neuf d'origine — huit originaux, un nouveau sur la rédaction `Debug` —
+    et trois ajoutés par les amendements : deux `Bearer` 2026-10-19, `Agent` 2026-11-02) ont chacun un
     test distinct et vert dans le `mod tests` de ./principal.rs (neuf minimum contre zéro
     aujourd'hui), et le fichier ne contient toujours aucune @use, aucun `#[cfg(feature = ...)]`,
     aucun @tracing, aucun code `MRD-*`.
