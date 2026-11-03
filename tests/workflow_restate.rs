@@ -245,6 +245,15 @@ impl Stack {
     /// `max_depth` (`DEFAULT_MAX_DEPTH` par [`Self::start`] ; `1` pour le Scenario de garde de
     /// profondeur).
     async fn start_with_max_depth(max_depth: u32) -> Self {
+        Self::start_with_options(max_depth, recommended_options()).await
+    }
+
+    /// Pile complète avec les options de service `options` posées au `bind()` du
+    /// `StepDispatcher` (spike `OI-11` : bornes de handler relevées).
+    async fn start_with_options(
+        max_depth: u32,
+        options: restate_sdk::endpoint::ServiceOptions,
+    ) -> Self {
         let (ingress, admin, node, app) = (free_port(), free_port(), free_port(), free_port());
         let name = format!("miryad-restate-test-{app}");
         let started = Command::new("podman")
@@ -286,7 +295,7 @@ impl Stack {
             .bind(
                 StepDispatcher::new(registry)
                     .into_service_definition()
-                    .options(recommended_options()),
+                    .options(options),
             )
             .build();
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", app))
@@ -718,4 +727,67 @@ async fn subworkflow_lenfant_hérite_du_trigger_du_parent() {
         json!("sub-42"),
         "l'enfant doit rendre le trigger hérité du parent, pas null : {body}"
     );
+}
+
+/// Spike `OI-11` (DSD `lymaille#OI-11`, `DEC-29`) : un step ordinaire d'environ 40 minutes, dans l'unique
+/// `ctx.run` de `execute`, survit quand `inactivity_timeout` et `abort_timeout` sont relevés **sur le handler**
+/// `execute` (`HandlerOptions`, le mécanisme d'un handler dédié) : un seul `start`, aucun rejeu, résultat rendu.
+///
+/// Durée : environ 40 minutes. Lancement explicite et isolé :
+/// `cargo test --no-default-features --features workflow --test workflow_restate un_step_de_40_minutes -- --ignored --nocapture`.
+/// Hors preuve (le serveur de test vit dans le processus du test, voir l'en-tête) : la reprise après kill du
+/// processus service reste couverte par `AC-10` de `lymaille`, via la session déterministe.
+#[tokio::test]
+#[ignore = "exige podman et l'image restate ; dure environ 40 minutes"]
+async fn un_step_de_40_minutes_survit_aux_bornes_relevees_du_handler() {
+    use restate_sdk::endpoint::HandlerOptions;
+    use restate_sdk::endpoint::ServiceOptions;
+    let options = recommended_options_pour_spike(
+        ServiceOptions::new().handler(
+            "execute",
+            HandlerOptions::new()
+                .inactivity_timeout(Duration::from_mins(50))
+                .abort_timeout(Duration::from_mins(55)),
+        ),
+    );
+    let stack = Stack::start_with_options(DEFAULT_MAX_DEPTH, options).await;
+    let debut = Instant::now();
+    let dag = DagSteps(vec![step(
+        "L",
+        &[],
+        "record",
+        json!({ "id": "L", "sleep_ms": 40 * 60 * 1000 }),
+    )]);
+    let run_key = stack.send_run(&dag, None).await;
+    let response = stack
+        .http
+        .get(format!(
+            "{}/restate/workflow/DagInterpreter/{}/attach",
+            stack.config.ingress_url, run_key
+        ))
+        .timeout(Duration::from_mins(60))
+        .send()
+        .await
+        .expect("l'attache au workflow doit répondre");
+    let status = response.status().as_u16();
+    let body = response.json::<Value>().await.unwrap_or(Value::Null);
+    let duree = debut.elapsed();
+    println!("OI-11 : statut {status}, durée mesurée {duree:?}, journal {:?}", stack.journal());
+    assert_eq!(status, 200, "corps : {body}");
+    assert!(duree >= Duration::from_mins(40), "le step a dormi {duree:?}");
+    let journal = stack.journal();
+    assert_eq!(
+        journal.iter().filter(|e| e.as_str() == "start:L").count(),
+        1,
+        "aucun rejeu : {journal:?}"
+    );
+    assert_eq!(journal.iter().filter(|e| e.as_str() == "end:L").count(), 1);
+}
+
+/// Ajoute les réglages du spike `OI-11` au `ServiceOptions` de base (retry plafonné) : les options de
+/// handler portent les bornes de durée, celles de service la politique de retry.
+fn recommended_options_pour_spike(
+    base: restate_sdk::endpoint::ServiceOptions,
+) -> restate_sdk::endpoint::ServiceOptions {
+    base.retry_policy_max_attempts(5).retry_policy_pause_on_max_attempts()
 }
