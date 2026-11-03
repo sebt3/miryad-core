@@ -516,8 +516,8 @@ et appels d'MCP externes depuis les scripts.
       sont pas rejoués, et `Last-Event-ID` reste écarté (`DEC-24`).
     - **Alternatives:** enum générique `SessionEvent<H>` (écarté : propage un paramètre de type dans le hub, le gestionnaire et les routes) ;
       journal d'événements rejouables (écarté : volumétrie et rétention, déjà écarté par `DEC-24`).
-    - **Consequences:** amende `http/routes.sdd`, `http/sse.sdd`, `interactive/hub.sdd` ; une route de plus que les neuf de `AC-16`. L'outil d'export
-      TypeScript reste à choisir (`OI-12`).
+    - **Consequences:** amende `http/routes.sdd`, `http/sse.sdd`, `interactive/hub.sdd` ; une route de plus que les neuf de `AC-16`. L'export TypeScript se fait par `ts-rs`
+      (`OI-12`).
     - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B7) ; user instruction, 2026-11-03
 
 ## Contour du lot 2
@@ -622,8 +622,8 @@ lecture seule), `/src/workflow/subagent_step.sdd` (`FR-6`, `FR-10`). Amendements
   statut 200, durée mesurée 2402 s, un seul `start`, un seul `end`, aucun rejeu. **Conclusion :** le réglage par handler tient sur 40 minutes. **Non couvert :** le kill du
   processus service en cours de route (le serveur de test vit dans le processus du test) ; la reprise reste portée par la session déterministe (`AC-10`).
     - **Source:** spike du 2026-11-03, résultat ci-dessus ; user instruction, 2026-11-03
-- **OI-12:** **Export TypeScript des événements** (`DEC-30`) : `ts-rs` n'est pas une dépendance de la crate. **TBD :** `ts-rs` derrière la feature `lymaille` (dépendance nouvelle à acter, `CON-4`), ou schémas
-  `utoipa` déjà présents pour OpenAPI.
+- **OI-12:** **Soldé le 2026-11-03 (user instruction)** : `ts-rs`, dépendance optionnelle derrière la feature `lymaille` (`DEC-30`). Reste à faire dans `mod.sdd` : l'ajouter aux
+  dépendances de la feature (amendement `Cargo.toml`, `CON-4`) et à la batterie de features de `tooling.sdd`.
 - **OI-10:** **Hooks asynchrones ou contrôle de droits à la sauvegarde REST/MCP** : les hooks de `MiryadResource` sont synchrones, sans connexion ni état admin ; les contrôles `check_grants` (agents, toolsets privés) et le droit d'usage des serveurs MCP (contextes) ne se font qu'à l'assemblage, à l'appel et par les stores. **Soldé le 2026-11-03 (user instruction) :** extension du moteur de ressources par des hooks asynchrones avec connexion, hors lot 2 ; voir `miryad-core/hooks-async`.
 
 - **OI-1:** **Soldé le 2026-11-02 (user instruction)** : garder les défauts de `lymaille` (`mcp-http`, `rig`), nécessaires au lot 1

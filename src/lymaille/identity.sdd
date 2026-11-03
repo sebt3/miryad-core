@@ -5,13 +5,14 @@ Purpose:
     utilisateur ; à **chaque appel** d'un module de l'hôte ou d'un store, le principal est reconstruit depuis la table des utilisateurs
     (appartenance au groupe admin à jour). Un module réservé à l'admin n'est accordé et exécuté que si ce principal est admin au moment
     de l'appel ; la nature de la session (`Work`/`Config`) n'ajoute ni n'ôte aucun droit. Porte aussi la classification des
-    identifiants (`G_` = catalogue, DSD `DEC-9`) et le contrôle d'accord de modules d'une définition. Fichier neuf, conception.
+    identifiants (`G_` = catalogue, `H_` = résolu par l'hôte, DSD `DEC-9`, `DEC-27`) et le contrôle d'accord de modules d'une définition. Fichier neuf, conception ;
+    amendé le 2026-11-03 pour le préfixe `H_`.
 
 Owns:
   ./identity.rs
 
 References:
-  /dsd/miryad-core/lymaille.md — `FR-4`, `FR-8`, `FR-9`, `DEC-2`, `DEC-3`, `DEC-9`, `AC-5`, `AC-7`, `AC-9`
+  /dsd/miryad-core/lymaille.md — `FR-4`, `FR-8`, `FR-9`, `DEC-2`, `DEC-3`, `DEC-9`, `DEC-27`, `AC-5`, `AC-7`, `AC-9`, `AC-18`
   ../users/user.sdd — entité `miryad_users` (colonne `subject` unique), `Model::id: i32`
   ../users/group.sdd — `is_admin(db, user_id)`
   ./error.sdd — `UnknownSubject`, `Forbidden`, `ReservedPrefix`, `Store`
@@ -24,14 +25,17 @@ Must:
     `subject` est égal (**sans la créer**, à la différence de `resolve_user`) puis `is_admin(db, user_id)` ; aucune ligne →
     `UnknownSubject` (jamais un principal vide ni par défaut) ; `DbErr` → `Store(<texte du DbErr>)`. Un utilisateur retiré du groupe
     admin entre deux appels est non-admin au second (DSD `AC-5`).
-  `pub enum IdKind { Catalog, Private }` et `pub fn classify(id: &str) -> Result<IdKind, LymailleError>` (pure) :
+  `pub enum IdKind { Catalog, Private, Host }` et `pub fn classify(id: &str) -> Result<IdKind, LymailleError>` (pure) :
     1. identifiant vide ou contenant un caractère hors `[A-Za-z0-9_]` → `InvalidDefinition("invalid identifier")` (un identifiant est un
       identifiant Rhai valide, DSD `DEC-9`) ;
     2. commence par `G_` (majuscule exacte) → `Catalog` ;
-    3. commence par `g_` ou toute autre casse de `G_` (comparaison ASCII insensible à la casse) → `ReservedPrefix(id)` ;
-    4. sinon → `Private`.
+    3. commence par `H_` (majuscule exacte) → `Host` : identifiant d'un contexte résolu par l'hôte (`LymailleHost::resolve_context`, DSD `DEC-27`), jamais
+      stocké en table, donc jamais aiguillé vers un store de table ;
+    4. commence par `g_`, `h_` ou toute autre casse de `G_` ou `H_` (comparaison ASCII insensible à la casse) → `ReservedPrefix(id)` ;
+    5. sinon → `Private`.
   `pub fn check_write(caller: &CallerPrincipal, id: &str) -> Result<IdKind, LymailleError>` (pure) : `classify(id)` puis `Catalog` exige
-    `caller.is_admin` (sinon `Forbidden("catalog write requires admin")`) ; `Private` est accepté pour tout appelant.
+    `caller.is_admin` (sinon `Forbidden("catalog write requires admin")`) ; `Private` est accepté pour tout appelant ; `Host` est **toujours** refusé, admin compris
+    (`Forbidden("host identifiers are not writable")`) : aucune surface (REST, MCP, module des ressources, session de configuration) n'écrit un identifiant `H_…`.
   `pub fn check_grants(caller: &CallerPrincipal, granted: &[String], admin_only: &[&str]) -> Result<(), LymailleError>` (pure) : si
     un module de `granted` figure dans `admin_only` et que `caller` n'est pas admin → `Forbidden("module reserved to admins: <nom>")` ;
     sinon `Ok`. Une définition ne peut accorder que des modules que son propriétaire pourrait utiliser lui-même (DSD `FR-9`).
@@ -41,6 +45,7 @@ Must not:
   Persister, mettre en cache ou sérialiser un `CallerPrincipal` (la session ne garde que le `subject`).
   Créer un compte local pour un `subject` inconnu ; retomber sur un principal par défaut ou admin.
   Dépendre de la nature de la session (`Work`/`Config`) pour décider d'un droit.
+  Accepter l'écriture d'un identifiant `Host`, pour quelque appelant que ce soit, ou le traiter comme `Private`.
 
 Depends on:
   ./error.rs, ../users/user.rs, ../users/group.rs, @sea_orm
@@ -49,8 +54,13 @@ Exposes:
   `CallerPrincipal`, `Identity::{new, resolve}`, `IdKind`, `classify`, `check_write`, `check_grants`
 
 Tasks:
-  [ ] Réalignement R5 (DSD `DEC-27`, 2026-11-03) : Spec déjà livrée (`[x]` ci-dessus) : amender `classify` avec une variante pour le préfixe `H_` (contexte résolu par l'hôte, jamais stocké),
-    `Scenario` de classification et de refus d'écriture ; puis ré-ouvrir le code dans une tâche à part. Spec seule.
+  [ ] Réalignement R5 (DSD `DEC-27`, 2026-11-03) : spec amendée le 2026-11-03 (variante `IdKind::Host`, préfixe `H_`, refus d'écriture, `Scenario` ci-dessous),
+    **en attente d'approbation**.
+  [ ] Après approbation de R5 : tests d'abord pour `Host` et `h_`, puis amender ./identity.rs (variante `IdKind::Host`, `classify`, `check_write`) ; les `match` exhaustifs sur `IdKind`
+    de ./store/catalog.rs (trois sites) et ./store/toolset.rs (deux sites) cessent de compiler : `Host` y est une erreur (`NotFound` en lecture, `Forbidden` en écriture, aucun
+    accès table). Ces deux fichiers appartiennent à `store/catalog.sdd` et `store/toolset.sdd` : leur amendement (une ligne de `Must` + un `Scenario` chacun) est une tâche à part, avant celle-ci.
+  [?] Le nom d'un contexte `H_…` doit passer la validation de `lymaille` (même restriction que `G_`, [lymaille#5](https://github.com/sebt3/lymaille/issues/5)) :
+    à vérifier à la sortie de la correction, sans effet sur ce fichier.
   [x] Tests d'abord (SQLite mémoire pour `resolve`, tests purs pour le reste), puis ./identity.rs. Validé 2026-11-02
     (validator PASS, batterie ciblée ; batterie complète de `tooling.sdd` à la clôture du lot).
 
@@ -68,9 +78,14 @@ Scenario: le droit admin est relu à chaque appel
   Then le premier résultat a `is_admin = true` et le second `is_admin = false`
 
 Scenario: la classification des identifiants
-  Given `G_triage`, `g_triage`, `G-x`, `triage`, `mon_agent`, ``, `a b`
+  Given `G_triage`, `g_triage`, `H_sandbox`, `h_sandbox`, `G-x`, `triage`, `mon_agent`, ``, `a b`
   When `classify` est appelé sur chacun
-  Then les résultats sont `Catalog`, `ReservedPrefix`, `InvalidDefinition`, `Private`, `Private`, `InvalidDefinition`, `InvalidDefinition`
+  Then les résultats sont `Catalog`, `ReservedPrefix`, `Host`, `ReservedPrefix`, `InvalidDefinition`, `Private`, `Private`, `InvalidDefinition`, `InvalidDefinition`
+
+Scenario: un identifiant hôte n'est écrit par personne
+  Given un appelant non-admin et un appelant admin
+  When `check_write` est appelé avec `H_sandbox` pour chacun
+  Then les deux résultats sont `Err(Forbidden)`, et `check_write` avec `h_sandbox` rend `ReservedPrefix` pour les deux
 
 Scenario: seul un admin écrit au catalogue
   Given un appelant non-admin et un appelant admin
