@@ -51,7 +51,8 @@ Exposes:
   `LymailleError`, `retryable`.
 
 Tasks:
-  [ ] Amendement lot 2 (DSD `DEC-24`) : variantes `NotFound` et `Conflict`, tests des codes `-010` et `-011` d'abord, puis ./error.rs.
+  [x] Amendement lot 2 (DSD `DEC-24`) : variantes `NotFound` et `Conflict`, tests des codes `-010` et `-011` d'abord, puis ./error.rs. Validé 2026-11-03
+    (validator PASS : codes uniques et stables, retryabilité `false`, Display/`Debug` verrouillés par assert exact ; cibles vertes).
   [x] Tests d'abord (codes, retryabilité), puis ./error.rs. Validé 2026-11-02 (validator PASS, batterie ciblée).
   [?] `Scenario` « aucune valeur secrète » : le `Debug` n'est asserté que par `contains` ; verrouiller par un assert exact
     (`format!("{:?}", e)` == `SecretUnresolved("LLM_API_KEY")`) ? Question posée à la validation, en attente d'arbitrage.
