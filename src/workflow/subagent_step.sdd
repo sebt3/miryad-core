@@ -104,7 +104,7 @@ Tasks:
   [x] Tests d'abord depuis les `Scenario` (couture `InferenceFactory` + `ScriptedProvider`, SQLite mémoire), puis ./subagent_step.rs.
     Validé 2026-11-03 (validator PASS, batterie ciblée workflow,lymaille + all-features).
   [ ] Preuve de reprise (DSD `AC-10`) : test `#[ignore]` contre `restate-server` par la méthode du spike de `workflow#AC-8`
-    (`tests/workflow_restate.rs`, fichier rattaché à ./dispatcher.sdd : à citer en `Can modify` après accord) ; non verrouillée par la CI.
+    (`../../tests/workflow_restate.rs`, `Can modify` accordé le 2026-11-03 ; fichier rattaché à ./dispatcher.sdd) ; non verrouillée par la CI. Le rejeu en mémoire (test n°6) ne solde pas cette tâche : il ne prouve pas le journal Restate.
   [?] L'état `Interrupted` de lymaille est traité comme une erreur définitive (render permanent) : la spec ne le nommait pas ; et la spec
     ne dit rien du `max_turns=0` au-delà de la normalisation. À relire avec Sébastien.
 
