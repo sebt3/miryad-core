@@ -48,9 +48,17 @@ Must:
     La feature n'est **pas** dans `default` ; `[package.metadata.docs.rs].features` y ajoute `lymaille`.
   Rester **sans état global** autre que l'installation idempotente du provider TLS de ./tls.sdd.
 
+  **Amendement lot 2 (2026-11-03)** : déclarer en plus `pub mod interactive;`, `pub mod http;`, le module privé `mcp_access` (ré-exporté `server_for`,
+    `SeaMcpAuth`), et `#[cfg(all(feature = "lymaille", feature = "matrix"))] pub mod chat;`. Ré-exports plats ajoutés : `interactive::{SessionManager,
+    ManagerDeps, EventHub}`, `http::conversations_router`, `store::{purge_sessions, PurgeReport, AuditWriter}`. Le bloc `//!` documente les
+    surfaces du lot 2 (REST+SSE, Matrix), la rétention (`purge_sessions` planifiée par l'application), le montage des routeurs, et remplace « aucune
+    session interactive » ; `Cargo.toml` : `lymaille = [..., "dep:sha2", "dep:getrandom", "dep:subtle", "dep:futures", "dep:uuid"]` (versions déjà au graphe
+    à vérifier, sinon amendement soumis à accord). La combinaison `lymaille,matrix` s'ajoute à la batterie (/tooling.sdd, /.github/workflows/workflows.sdd,
+    /AGENTS.md) : tests, clippy `-D warnings` ; `cargo tree --features lymaille,matrix -e normal -i matrix-sdk` doit imprimer une ligne.
+
 Must not:
   Activer les features `fs` ou `shell` de `lymaille` (relais de `vynil-core`), directement ou par un relais miryad.
-  Monter une route `axum` : le lot 1 n'ajoute aucune surface HTTP propre (les définitions sont exposées par le moteur générique
+  Monter une route `axum` (lot 2 : les routeurs sont fournis par ./http et ./chat, montés par l'application, jamais par ce module ; lot 1 : aucune surface HTTP propre ; définitions exposées par le moteur générique
     de @resource, ./definitions/mod.sdd).
   Exposer un type de `rustls` ou un secret dans l'API publique.
 
@@ -62,6 +70,8 @@ Exposes:
     `install_crypto_provider`, modules `store`, `definitions`, `resource_module`.
 
 Tasks:
+  [ ] Amendement lot 2 : `mod.rs` re-déclaré **en dernier du lot 2** (après ./interactive, ./http, ./chat, ./mcp_access, ./store, ./definitions), tests de chemins plats étendus.
+  [ ] Amendement lot 2 : /Cargo.toml, /tooling.sdd, /AGENTS.md, /.github/workflows/workflows.sdd et ci.yml pour la combinaison `lymaille,matrix` et les dépendances (fichiers hors périmètre : amendement soumis au développeur principal avant d'y toucher).
   [x] `mod.rs` en dernier du lot (après tous les enfants) ; test de chemins plats. Validé 2026-11-03 (validator PASS, batterie ciblée lymaille + workflow,lymaille + all-features).
   [x] Amender /src/lib.rs, /Cargo.toml, ../migration/mod.rs, ../workflow/mod.rs, /tooling.sdd, /AGENTS.md et la CI dans le même lot
     (fichiers hors périmètre d'une tâche : amendement soumis au développeur principal avant d'y toucher).

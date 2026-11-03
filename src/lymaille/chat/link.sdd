@@ -1,0 +1,91 @@
+Spec: link — annuaire mxid → principal, liaison par code à usage unique
+
+Purpose:
+  Porter l'**annuaire** que la surface Matrix exige (DSD `DEC-23`, solde `OI-5`) : relier un identifiant Matrix (`@alice:serveur`) au `subject` d'un
+    utilisateur miryad, **sans confiance implicite dans le nom Matrix**. Procédure : l'utilisateur, authentifié en OIDC sur l'API, demande un
+    code (`POST /api/v1/lymaille/matrix/link-codes`) ; il envoie `!link <code>` au bot depuis son compte Matrix ; le bot consomme le code et
+    écrit la liaison. Un mxid non lié n'a aucun droit. Le code est à usage unique, court (10 minutes) et **haché en base** (jamais en clair).
+    Ce fichier porte le stockage, la logique et la petite route de génération du code. Fichier neuf, conception.
+
+Owns:
+  ./link.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `FR-13`, `DEC-23`, `OI-5`, `AC-17`
+  ../migration.sdd — tables `miryad_lymaille_matrix_links` et `miryad_lymaille_matrix_link_codes` ; ../identity.sdd — `Identity::resolve`
+  ../../matrix/sync.sdd — `MatrixMessage.sender` ; ../http/mod.sdd — précédent de routeur auto-monté ; ./bridge.sdd — consommateur
+
+Must:
+  Tables : `miryad_lymaille_matrix_links` — `mxid` TEXT PK, `subject` TEXT NOT NULL, `created_at` (un compte Matrix ↔ un compte miryad ; un compte miryad
+    peut avoir plusieurs mxid) ; `miryad_lymaille_matrix_link_codes` — `code_hash` TEXT PK (SHA-256 hexadécimal), `subject`, `expires_at`.
+  `pub async fn issue_code(db, caller: &CallerPrincipal, now) -> Result<IssuedCode, LymailleError>` : code aléatoire de 12 caractères (alphabet sans
+    ambiguïté, entropie ≥ 60 bits, source `getrandom`), stocké haché avec `expires_at = now + 10 min` ; au plus **3 codes vivants** par utilisateur
+    (le plus ancien est supprimé) ; rend `IssuedCode { code, expires_at }` (le seul moment où le code est en clair).
+  `pub async fn consume_code(db, mxid: &str, code: &str, now) -> Result<String, LymailleError>` (rend le `subject`) : cherche le haché, refuse si absent
+    ou expiré (`Forbidden("invalid or expired link code")`, **même** erreur pour les deux) ; en une transaction : supprime le code, insère la liaison
+    (`mxid` déjà lié au même `subject` → succès idempotent ; lié à un **autre** `subject` → `Conflict("mxid already linked")`, le code n'est pas consommé) ;
+    comparaison du haché en temps constant.
+  `pub async fn resolve(db, mxid: &str) -> Result<Option<String>, LymailleError>` : le `subject` lié ou `None` ; le principal complet est reconstruit
+    ensuite par `Identity::resolve` (compte supprimé → `None` effectif).
+  `pub async fn unlink(db, caller, mxid) -> Result<bool, LymailleError>` : l'utilisateur délie un de **ses** mxid (jamais celui d'un autre) ;
+    `pub async fn purge_expired(db, now) -> Result<u64, LymailleError>` supprime les codes expirés (appelée opportunément par `issue_code`).
+  `pub fn link_code_router<S>() -> Router<S>` : `POST /api/v1/lymaille/matrix/link-codes` → `201` `{ "code", "expires_at" }` (authentifié, @AuthPrincipal) ;
+    `DELETE /api/v1/lymaille/matrix/links/{mxid}` → `204`/`404`. Monté par l'application, jamais par ./../http/mod.sdd.
+  Limite de débit : 5 tentatives de `consume_code` échouées par mxid sur 10 minutes, puis `Forbidden("too many attempts")` (compteur en mémoire du processus).
+  Compiler sous `#[cfg(all(feature = "lymaille", feature = "matrix"))]`.
+
+Must not:
+  Stocker un code en clair ; distinguer « code inconnu » et « expiré » ; lier un mxid sans code valide ; faire confiance au nom d'affichage ou au
+    domaine d'un mxid ; journaliser un code ou un mxid avec son subject (`tracing` ne reçoit que le résultat) ; coder un `MRD-*` sans l'enregistrer.
+
+Depends on:
+  ../identity.rs, ../error.rs, ../../auth/principal.rs, @sea_orm, @sha2, @getrandom, @axum, @subtle
+
+Exposes:
+  `issue_code`, `consume_code`, `resolve`, `unlink`, `purge_expired`, `link_code_router`, `IssuedCode`
+
+Tasks:
+  [ ] Dépendances `sha2`, `getrandom`, `subtle` (amendement `Cargo.toml` avec accord si absentes du graphe) ; tests d'abord (SQLite mémoire, horloge injectée) ; puis ./link.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille,matrix` ; la spec est relue et approuvée avant ./link.rs.
+
+Scenario: liaison de bout en bout
+  Given `alice` qui obtient un code
+  When `consume_code("@alice:srv", code)`
+  Then le `subject` de `alice` est rendu et `resolve("@alice:srv")` le rend aussi
+
+Scenario: usage unique
+  Given un code consommé
+  When il est rejoué
+  Then `Forbidden("invalid or expired link code")`
+
+Scenario: expiration, même erreur qu'un code inconnu
+  Given un code de plus de 10 minutes, puis un code jamais émis
+  When `consume_code` pour chacun
+  Then deux erreurs identiques
+
+Scenario: un mxid ne se lie pas à deux comptes
+  Given `@alice:srv` liée à `alice`, et un code de `bob`
+  When `consume_code("@alice:srv", code_de_bob)`
+  Then `Conflict("mxid already linked")` et le code de `bob` reste valide
+
+Scenario: codes limités et hachés
+  Given quatre codes émis pour `alice`
+  When on compte les lignes et on lit la base
+  Then trois lignes, aucun code en clair
+
+Scenario: débit
+  Given cinq tentatives fausses depuis un mxid
+  When une sixième, même correcte
+  Then `Forbidden("too many attempts")`
+
+Scenario: un compte supprimé n'a plus de principal
+  Given une liaison dont le compte miryad a disparu
+  When le bridge appelle `resolve` puis `Identity::resolve`
+  Then le principal n'est pas reconstruit
+
+Scenario: délier
+  Given une liaison de `alice`
+  When `bob` tente `unlink`, puis `alice`
+  Then `false`, puis `true`

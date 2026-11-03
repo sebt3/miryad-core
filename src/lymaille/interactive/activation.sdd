@@ -1,0 +1,77 @@
+Spec: activation — activation self-service des définitions du propriétaire (action de l'hôte)
+
+Purpose:
+  Porter l'**activation** que `lymaille` laisse à l'hôte (`DEC-8`, `FR-9`, `AC-8`) : promouvoir le brouillon d'un toolset (ou d'un type de contexte
+    privé) du propriétaire en version `active`. Aucun trait de `lymaille` ne l'active ; la session de configuration **propose**, l'hôte
+    **exécute** sur demande explicite de l'utilisateur (route REST ou commande Matrix, jamais un appel de l'agent `Config`, qui n'active rien,
+    `agent-sessions#BR-8`). Une définition ne peut accorder que des modules que son propriétaire pourrait lui-même employer : le contrôle
+    `check_grants` est fait **ici** (état admin relu en base), pas dans un hook. Publier au **catalogue** (`G_…`) reste réservé aux admins par
+    l'entité (`AdminOnly`). Fichier neuf, conception.
+
+Owns:
+  ./activation.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `FR-9`, `DEC-8`, `DEC-18`, `DEC-19`, `AC-8`
+  ../identity.sdd — `check_write`, `check_grants` ; ../store/toolset.sdd, ../store/draft.sdd ; ../definitions/private_toolset.sdd
+
+Must:
+  `pub async fn activate_toolset(db, caller: &CallerPrincipal, name: &str) -> Result<ActivationReport, LymailleError>` :
+    1. `classify(name)` = `Private` (le catalogue n'est pas activable ici : `Forbidden("catalog publication requires admin")` pour un non-admin ; pour un
+      admin, l'activation d'un `G_…` est permise par cette fonction comme équivalent de l'écriture de `active` par l'entité) ;
+    2. lit la ligne du propriétaire (`owner_id = caller.user_id`) ; pas de brouillon → `NotFound("no draft to activate")` ;
+    3. `check_toolset` (mêmes contrôles que `put_draft`) puis `check_grants(caller, modules du toolset, ADMIN_ONLY)` ; refus → `Forbidden` nommant le
+      module réservé, jamais le source ;
+    4. dans **une transaction** : `active ← draft`, `draft ← NULL`, `version` dérivée ; rend `ActivationReport { name, version, previous_version }`.
+  `pub async fn activate_agent(...)` n'existe pas : un agent privé est actif dès son écriture (pas de brouillon, `DEC-8`) ; cette spec ne couvre que
+    toolsets et types de contexte.
+  `pub async fn discard_draft(db, caller, kind, name) -> Result<bool, LymailleError>` : supprime le brouillon (équivalent de `DraftStore::delete_draft`).
+  Une session déjà ouverte garde la version avec laquelle elle a été assemblée ; la suivante prend la nouvelle (la `Provenance` de reprise signale la
+    différence, `OI-8`).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Activer pour le compte d'un autre utilisateur ; activer sans `check_grants` ; laisser une ligne à moitié promue (transaction) ; être appelée par
+    un module Rhai de l'agent ; citer le source d'un toolset dans une erreur.
+
+Depends on:
+  ../identity.rs, ../definitions/private_toolset.rs, ../definitions/toolset.rs, @sea_orm
+
+Exposes:
+  `activate_toolset`, `discard_draft`, `ActivationReport`
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire), puis ./activation.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./activation.rs.
+
+Scenario: le propriétaire active son brouillon
+  Given un toolset privé avec `draft` v2 et `active` v1
+  When `activate_toolset`
+  Then `active` = v2, `draft` nul, `previous_version = v1`
+
+Scenario: un module réservé à l'admin bloque l'activation d'un non-admin
+  Given un brouillon qui accorde un module `admin_only`
+  When un non-admin l'active
+  Then `Forbidden` et la ligne est inchangée
+
+Scenario: pas de brouillon
+  Given une ligne sans brouillon
+  When `activate_toolset`
+  Then `NotFound("no draft to activate")`
+
+Scenario: on n'active pas le toolset d'un autre
+  Given un brouillon de `alice`
+  When `bob` active un toolset du même nom
+  Then `NotFound` (sa propre ligne n'existe pas)
+
+Scenario: le catalogue exige un admin
+  Given un brouillon `G_git`
+  When un non-admin puis un admin appellent `activate_toolset("G_git")`
+  Then `Forbidden`, puis succès
+
+Scenario: atomicité
+  Given une panne simulée entre les deux écritures
+  When `activate_toolset`
+  Then la ligne est restée dans son état initial

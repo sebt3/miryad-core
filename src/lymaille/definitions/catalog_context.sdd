@@ -1,0 +1,62 @@
+Spec: catalog_context — entité `lymaille_catalog_contexts`, contextes de niveau `Project` (partagés par l'instance)
+
+Purpose:
+  Porter l'entité @MiryadResource des contextes de toolset partagés (table `miryad_lymaille_catalog_contexts`, DSD `DEC-20`). `Project` signifie ici
+    « partagé par toute l'instance » (miryad-core n'a pas d'entité projet). Écriture `AdminOnly`, lecture `Public`, identifiants `G_…` (même
+    règle que ./agent.sdd). Un `ToolsetContext` est un ensemble nommé de paramètres, de liaisons rôle → nom de serveur MCP et de surcharges par
+    toolset ; il **ne contient aucun secret** (`lymaille` refuse une valeur qui en a l'air). Les liaisons ne sont pas contrôlées ici
+    (hook synchrone et sans connexion) : le droit d'usage du serveur est contrôlé à l'assemblage et à l'appel (../mcp_access.sdd). Fichier neuf,
+    conception.
+
+Owns:
+  ./catalog_context.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `DEC-9`, `DEC-19`, `DEC-20`, `AC-12` ; ./user_context.sdd — la seconde ressource de la paire ;
+  ./agent.sdd — précédent ; ../identity.sdd — `classify` ; ../mcp_access.sdd
+
+Must:
+  `Entity`/`Model`/`ActiveModel`, `table_name = "miryad_lymaille_catalog_contexts"`, `Model` : `id: i32` (PK), `name: String` (unique, `G_…`),
+    `context: serde_json::Value`, `created_at: DateTimeUtc`.
+  `impl MiryadResource` : `resource_name()` = `"lymaille_catalog_contexts"` ; lecture `Public` ; écriture `AdminOnly` ; `owner_column()` = `None` ;
+    `filter_column()` = `None` ; `label_column()` = `Some(Column::Name)`.
+  `before_create` / `before_update` (`HookError` sans code) : `context` objet JSON, désérialisable en `lymaille::ToolsetContext` (constructeur
+    qui applique le détecteur de secrets ; un secret détecté → « context holds a secret-like value », jamais la valeur) ; `level` du contexte
+    égal à `Project` sinon « catalog contexts have level project » ; `classify(name)` = `Catalog` ; `name` réécrit depuis le contexte ;
+    `before_update` : `name` ne change pas.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Contrôler en base l'existence ou l'autorisation d'un serveur lié ; citer une valeur de paramètre dans une erreur ; coder un `MRD-*`.
+
+Depends on:
+  ../identity.rs, @sea_orm, @serde_json, `lymaille::{ToolsetContext, ContextLevel}`
+
+Exposes:
+  `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`
+
+Tasks:
+  [ ] Tests d'abord (hooks purs), puis ./catalog_context.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./catalog_context.rs.
+
+Scenario: un contexte Project valide est accepté
+  Given un `ToolsetContext` `G_prod` de niveau `project` avec un paramètre `namespace`
+  When `before_create`
+  Then `Ok` et `name = "G_prod"`
+
+Scenario: un secret est refusé sans l'écho
+  Given un paramètre `api_key = "sk-abcdef"`
+  When `before_create`
+  Then `Err` « secret-like value » ne contenant pas `sk-abcdef`
+
+Scenario: un niveau user est refusé au catalogue
+  Given un contexte de niveau `user`
+  When `before_create`
+  Then `Err(HookError)`
+
+Scenario: un non-admin n'écrit pas au catalogue
+  Given la ressource enregistrée
+  When un non-admin crée
+  Then refus (`AdminOnly`)

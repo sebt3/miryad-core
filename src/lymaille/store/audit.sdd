@@ -1,0 +1,63 @@
+Spec: audit — AuditWriter, journal des erreurs de script
+
+Purpose:
+  Persister ce que `lymaille` laisse au journal d'audit de l'hôte (`SessionIndex::script_errors` : « read from the host audit log ») : les
+    **erreurs de script** (événements `EventKind::Script` en erreur), masquées par le @Redactor de la session avant d'arriver ici (le texte
+    stocké est déjà expurgé). `EventSink::emit` est synchrone, sans échec vers la bibliothèque, et ne bloque pas : le writer reçoit les
+    enregistrements par un canal `tokio::sync::mpsc` borné et les écrit dans `miryad_lymaille_script_errors` depuis une tâche dédiée. Un
+    débordement du canal **perd** l'enregistrement (compteur `dropped`, journal `warn`) plutôt que de bloquer un tour. Fichier neuf, conception.
+
+Owns:
+  ./audit.rs
+
+References:
+  ./session_index.sdd — lecteur ; ../interactive/hub.sdd — producteur (le hub y pousse les événements `Script` en erreur)
+  `lymaille::session::{EventKind, Event, ScriptRecord}` ; /dsd/miryad-core/lymaille.md — `FR-3`, `AC-8`
+
+Must:
+  `pub struct AuditWriter` — `Clone`, fournit `pub fn spawn(db: DatabaseConnection)` : démarre la tâche et rend l'écrivain ;
+    `pub fn record(&self, subject: &str, event: &Event)` (synchrone, non bloquant, `try_send`) : ne retient que `EventKind::Script` dont le
+    record est en erreur ; ignore tout autre événement ; capacité du canal 1024.
+  Table `miryad_lymaille_script_errors` : `id` PK auto, `subject`, `session_id`, `turn` (entier), `class` (texte), `text` (déjà masqué), `at` ;
+    index (`session_id`). Le texte est tronqué à 2000 caractères.
+  `pub async fn purge_before(db, cutoff) -> Result<u64, LymailleError>` : supprime les lignes plus anciennes que `cutoff` (appelée par
+    ./purge.sdd).
+  La tâche d'écriture s'arrête quand tous les `AuditWriter` sont détruits ; une `DbErr` est journalisée (`warn`, sans le texte) et
+    n'arrête pas la tâche.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Bloquer `record` ; stocker un texte non masqué (l'appelant masque, ce fichier ne le détecte pas — il tronque seulement) ; écrire un événement
+    qui n'est pas une erreur de script ; journaliser le contenu d'un enregistrement.
+
+Depends on:
+  ./mod.rs, @sea_orm, @tokio, `lymaille::{Event, EventKind}`
+
+Exposes:
+  `AuditWriter::{spawn, record}`, `purge_before`
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire, temps tokio), puis ./audit.rs. La table est créée par la migration du lot 2 (../migration.sdd).
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./audit.rs.
+
+Scenario: une erreur de script est persistée
+  Given un `AuditWriter` et un événement `Script` en erreur
+  When `record` puis la tâche draine
+  Then une ligne existe, texte tronqué à 2000
+
+Scenario: un événement qui n'est pas une erreur est ignoré
+  Given un événement `TokenUsage` et un événement `Script` réussi
+  When `record` pour chacun
+  Then aucune ligne
+
+Scenario: record ne bloque jamais
+  Given un canal plein (tâche suspendue)
+  When 2000 appels à `record`
+  Then ils reviennent immédiatement et `dropped` croît
+
+Scenario: purge_before
+  Given trois lignes d'âges différents
+  When `purge_before(cutoff)`
+  Then seules les lignes plus anciennes disparaissent, leur nombre est rendu

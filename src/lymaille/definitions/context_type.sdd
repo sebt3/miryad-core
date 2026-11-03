@@ -1,0 +1,63 @@
+Spec: context_type — entité `lymaille_catalog_context_types`, types de contexte du catalogue
+
+Purpose:
+  Porter l'entité @MiryadResource des types de contexte (table `miryad_lymaille_catalog_context_types`, DSD `DEC-20`) : un `ContextType` de `lymaille` est
+    un schéma JSON versionné des paramètres et des rôles MCP d'un environnement, vocabulaire partagé par les auteurs de toolsets. Seul
+    l'admin les écrit (catalogue : identifiants `G_…`, lecture `Public`, écriture `AdminOnly`), comme les agents et toolsets du catalogue
+    (./agent.sdd). La colonne `context_type` (JSON) est la source de vérité ; `name` et `version` sont dérivés par les hooks. Les colonnes
+    `active` et `draft` suivent `DEC-18` (version active, brouillon de la session de configuration). Remplace la table interne `context_types`
+    du lot 1 (../migration.sdd). Fichier neuf, conception.
+
+Owns:
+  ./context_type.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `DEC-9`, `DEC-14`, `DEC-18`, `DEC-20`, `AC-12`
+  ./agent.sdd — précédent exact (hooks, dérivation de colonnes) ; ../identity.sdd — `classify` ; ../migration.sdd
+
+Must:
+  `Entity`/`Model`/`ActiveModel`, `table_name = "miryad_lymaille_catalog_context_types"`, `Model` : `id: i32` (PK), `name: String` (unique, `G_…`),
+    `version: String` (semver), `active: Option<serde_json::Value>`, `draft: Option<serde_json::Value>`, `created_at: DateTimeUtc`.
+  `impl MiryadResource` : `resource_name()` = `"lymaille_catalog_context_types"` ; lecture `Public` ; écriture `AdminOnly` ; `owner_column()` = `None` ;
+    `filter_column()` = `None` ; `label_column()` = `Some(Column::Name)`.
+  `before_create` / `before_update` (premier échec interrompt, `HookError` sans code) : au moins un de `active`/`draft` non nul ; chaque colonne
+    non nulle se désérialise en `lymaille::ContextType` (le constructeur compile le schéma : un schéma invalide est refusé avec le message de
+    `lymaille`, jamais le schéma) ; `classify(name)` doit rendre `Catalog` sinon « context type name must start with G_ (catalog) » ; `name` et
+    `version` sont réécrits depuis `active` (sinon `draft`) ; `before_update` : `name` ne change pas.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Accepter un `ContextType` dont un paramètre ressemble à un secret (la validation de `lymaille` le refuse, la propager telle quelle) ;
+    donner un code `MRD-*` à un `HookError` ; citer le schéma dans un message.
+
+Depends on:
+  ../identity.rs, @sea_orm, @serde_json, `lymaille::ContextType`
+
+Exposes:
+  `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`
+
+Tasks:
+  [ ] Tests d'abord (hooks purs), puis ./context_type.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./context_type.rs.
+
+Scenario: un type valide du catalogue est accepté, ses colonnes dérivées
+  Given un `ContextType` `G_cluster` 1.0.0 en `active`, avec `name`/`version` faux dans l'`ActiveModel`
+  When `before_create`
+  Then `Ok`, `name = "G_cluster"`, `version = "1.0.0"`
+
+Scenario: ni active ni draft
+  Given les deux colonnes nulles
+  When `before_create`
+  Then `Err(HookError)`
+
+Scenario: un schéma invalide est refusé
+  Given un JSON dont le schéma ne compile pas
+  When `before_create`
+  Then `Err(HookError)` dont le message ne cite pas le schéma
+
+Scenario: un nom privé est refusé
+  Given un type nommé `cluster`
+  When `before_create`
+  Then `Err(HookError)` « must start with G_ »

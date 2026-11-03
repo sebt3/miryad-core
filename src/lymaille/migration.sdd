@@ -47,6 +47,25 @@ Must:
     (`create_table` avec `if_not_exists`) ; `down` est strict, non idempotent (règle de ../migration/mod.sdd).
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
+  **Amendement lot 2 (2026-11-03)** : `migrations()` rend désormais `[m20261103_000001_create_lymaille_tables, m20261104_000001_lymaille_lot2]` (la première
+    migration committée reste **immuable**, règle de `/AGENTS.md`). `up` de la seconde, mêmes conventions que ci-dessus (préfixe `miryad_lymaille_`,
+    `if_not_exists`, JSON `json()`, aucune `FOREIGN KEY`, aucun défaut serveur d'horodatage) :
+    supprime les tables internes du lot 1 `context_types` et `contexts` (aucune donnée de production, la feature n'est pas déployée ; remplacées ci-dessous :
+      `ContextTypeStore` et `ContextStore` lisent désormais les tables à identifiant entier, ../store/toolset.sdd) ;
+    `catalog_context_types` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** (`G_…`) ; `version` TEXT NOT NULL ; `active` JSON NULL ; `draft` JSON NULL ; `created_at`.
+    `catalog_contexts` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** (`G_…`) ; `context` JSON NOT NULL ; `created_at` (contextes de niveau `Project`).
+    `user_contexts` — `id` PK auto ; `owner_id` INTEGER NOT NULL ; `name` TEXT NOT NULL ; `context` JSON NOT NULL ; `created_at` ; `UNIQUE(owner_id, name)`.
+    `mcp_servers` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** ; `url` TEXT NOT NULL ; `request_timeout_secs` INTEGER NOT NULL ; `connect_timeout_secs`
+      INTEGER NOT NULL ; `auth_mode` TEXT NOT NULL ; `auth_ref` TEXT NULL ; `allowed_groups` JSON NOT NULL ; `created_at`.
+    `write_journal` — PK(`run_key`, `step_key`, `op_key`) ; `result` JSON NOT NULL ; `created_at` (../store/write_journal.sdd).
+    `script_errors` — `id` PK auto ; `subject` ; `session_id` ; `turn` INTEGER ; `class` TEXT ; `text` TEXT ; `at` ; index (`session_id`) (../store/audit.sdd).
+    `matrix_links` — `mxid` TEXT PK ; `subject` TEXT NOT NULL ; `created_at` ; index (`subject`) (../chat/link.sdd).
+    `matrix_link_codes` — `code_hash` TEXT PK ; `subject` TEXT NOT NULL ; `expires_at` ; index (`subject`).
+    `matrix_rooms` — `room_id` TEXT PK ; `subject` ; `session_id` ; `agent_id` ; `updated_at` (../chat/bridge.sdd).
+    `matrix_events` — `event_id` TEXT PK ; `seen_at` ; index (`seen_at`).
+    Les tables `matrix_*` sont créées même sans la feature `matrix` (le schéma ne dépend pas des features, comme les autres migrations de la crate).
+    `down` supprime les tables du lot 2 dans l'ordre inverse **sans** recréer `context_types` ni `contexts`.
+
 Must not:
   Poser une contrainte `FOREIGN KEY` ; poser un défaut côté serveur sur `created_at`/`updated_at` (le peuplement incombe au
     consommateur) ; stocker un secret dans `providers.provider`.
@@ -58,6 +77,7 @@ Exposes:
   `migrations`
 
 Tasks:
+  [ ] Amendement lot 2 : seconde `Migration` `m20261104_000001_lymaille_lot2`, scenarios d'ordre et de `down` étendus, tests `has_table`/`has_index` d'abord, puis ./migration.rs ; amender ../migration/mod.sdd si le nombre d'entrées est asserté.
   [x] Tests d'abord (SQLite mémoire, motif `has_table`/`has_column`/`has_index`), puis ./migration.rs. Validé 2026-11-02
     (validator PASS après rejeu d'idempotence en direct ; batterie ciblée verte).
   [x] Amender ../migration/mod.sdd et mod.rs (ajout conditionnel `lymaille` en fin de liste) dans le même lot. Validé

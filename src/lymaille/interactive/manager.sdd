@@ -1,0 +1,107 @@
+Spec: manager — SessionManager, cycle de vie des sessions interactives (socle commun REST+SSE et Matrix)
+
+Purpose:
+  Porter le **socle commun** d'une session interactive (DSD `FR-11`, `DEC-24`) : ouvrir (nature `Work` ou `Config`), envoyer un message, suivre les
+    événements, annuler, reprendre, fermer. Il est indépendant du canal : ./http (REST+SSE) et ../chat (Matrix) l'appellent et n'ont aucune
+    logique de conversation propre, d'où aucun décalage fonctionnel entre canaux (`DEC-6`). Une session ne persiste que le `subject` de son
+    utilisateur ; le principal est reconstruit à **chaque appel** (../identity.sdd). Au plus **un tour actif par session et par processus**
+    (`TurnGate` de `lymaille`) ; aucun conflit n'est détecté entre processus (`session#DEC-1` de `lymaille`, dernier `save` gagne). Un tour est une
+    tâche `tokio` détachée de la requête qui l'a lancé : fermer le client SSE n'annule pas le tour. Fichier neuf, conception.
+
+Owns:
+  ./manager.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `FR-4`, `FR-9`, `FR-11`, `DEC-3`, `DEC-24`, `AC-8`, `AC-15`
+  ./hub.sdd — diffusion ; ./assemble.sdd — construction du moteur et du `TurnRunner` ; ../identity.sdd ; ../store/mod.sdd (`LymailleStores`)
+  `lymaille::{TurnRunner, TurnOutput, CancelHandle, TurnGate, SessionId, SessionKind, SessionError, restore_session}`
+
+Must:
+  `pub struct SessionManager` — `Clone` (état partagé), créé par `SessionManager::new(deps: ManagerDeps)` où `ManagerDeps` regroupe : la connexion,
+    @EventHub, `Arc<ResourceReaders>` / écrivains, `Arc<dyn SecretResolver>`, la fabrique d'inférence (`InferenceFactory` de ../workflow/subagent_step.sdd
+    réutilisée), `TurnGate`, l'horloge, les limites (`max_open_per_user` défaut 8, `idle_ttl` défaut 30 min avant déchargement mémoire).
+  `open(&self, subject: &str, kind: SessionKind, agent_id: &str) -> Result<SessionHandle, LymailleError>` : `Identity::resolve` ; `kind = Sub` →
+    `InvalidDefinition("sub sessions are not interactive")` ; l'agent doit être résoluble pour ce principal (`AgentStore::get_agent`) et sa
+    nature égale à `kind` (`work` ↔ `Work`, `config` ↔ `Config`) ; une session `Config` n'est ouverte que si l'agent est de nature `config` ;
+    plafond `max_open_per_user` (admin exempté) sinon `Forbidden("too many open sessions")` ; crée un identifiant opaque (UUID v4), sauvegarde
+    l'état initial, rend `SessionHandle { id, kind, agent_id }`.
+  `send(&self, subject, id, text: String, token: Option<Zeroizing<String>>) -> Result<(), LymailleError>` : cloisonne (la session doit appartenir à
+    `subject`, sinon `NotFound` indiscernable d'une session absente) ; `TurnGate::try_begin` immédiat, `TurnActive` → `Conflict("turn active")` ; lance le
+    tour en tâche détachée (`run_turn` avec son `CancelHandle` enfant) et revient sans attendre ; `token` n'est vivant que pendant ce tour
+    (consommé par ../mcp_access.sdd pour `forward`, jamais persisté ni journalisé). Le résultat arrive par le hub (`TurnEnded`).
+  `subscribe(&self, subject, id) -> Result<Subscription, LymailleError>` : cloisonne puis `EventHub::subscribe`.
+  `cancel(&self, subject, id) -> Result<bool, LymailleError>` : cloisonne ; annule le tour actif (coopératif) ; `true` si un tour était actif.
+  `resume(&self, subject, id) -> Result<SessionHandle, LymailleError>` : recharge l'état depuis le store (`SessionStore::load`) et le restaure via
+    `restore_session` ; les avis de `lymaille` (empreinte de l'agent ou version de toolset changée, `OI-8`) sont **rendus à l'appelant** (`notices`), la
+    reprise continue (même règle que ../../workflow/subagent_step.sdd).
+  `close(&self, subject, id)` : annule un tour actif, ferme le hub, décharge la mémoire ; l'état persisté demeure (purge : ../store/purge.sdd).
+  `list(&self, subject, filter) -> Vec<SessionSummary>` : via ../store/session_index.sdd, résumés expurgés (titre masqué).
+  Une session non utilisée depuis `idle_ttl` est déchargée de la mémoire (pas de l'état persisté) ; la session suivante est restaurée à la demande.
+  Chaque appel relit le principal en base ; un compte retiré entre deux appels fait échouer l'appel (`UnknownSubject` → `Forbidden`).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Attendre la fin d'un tour dans `send` ; lier un tour à la vie d'un client HTTP ou Matrix ; persister ou journaliser `token` ; révéler l'existence
+    d'une session d'un autre utilisateur ; décider d'un droit de ressource (délégué à `rest::core`, ../resource_module.sdd) ; accepter `Sub`.
+
+Depends on:
+  ./hub.rs, ./assemble.rs, ../identity.rs, ../store/*.rs, ../error.rs, @tokio, @zeroize, @uuid, `lymaille`
+
+Exposes:
+  `SessionManager::{new, open, send, subscribe, cancel, resume, close, list}`, `ManagerDeps`, `SessionHandle`
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire, `ScriptedProvider` de lymaille, horloge injectée), puis ./manager.rs. Après ./hub.rs et ./assemble.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./manager.rs.
+
+Scenario: ouvrir, envoyer, recevoir la réponse par le hub
+  Given un utilisateur et un agent `work` scripté
+  When `open`, `subscribe`, `send("bonjour")`
+  Then les événements `TurnStarted`, `TextDelta…`, `TurnEnded` arrivent dans l'ordre et l'état est sauvegardé
+
+Scenario: un second tour est refusé
+  Given un tour actif
+  When `send` de nouveau
+  Then `Conflict("turn active")` et le premier tour poursuit
+
+Scenario: les sessions sont cloisonnées
+  Given une session de `alice`
+  When `bob` appelle `send`, `subscribe`, `cancel`, `resume`
+  Then quatre `NotFound` identiques à celui d'un identifiant inconnu
+
+Scenario: un tour survit à la déconnexion du client
+  Given un tour lancé puis l'abonné détruit
+  When le tour se termine
+  Then l'état est sauvegardé et `TurnEnded` a été émis
+
+Scenario: annuler
+  Given un tour long
+  When `cancel`
+  Then `true`, le tour se termine `Cancelled`, `cancel` rend `false` ensuite
+
+Scenario: reprendre après redémarrage
+  Given une session sauvegardée, gestionnaire neuf
+  When `resume` puis `send`
+  Then l'historique précédent est présent
+
+Scenario: reprise avec avis
+  Given l'agent modifié depuis le dernier tour
+  When `resume`
+  Then la reprise réussit et `notices` est non vide
+
+Scenario: une session Config exige un agent config, Sub est refusée
+  Given un agent `work`
+  When `open(Config)` avec lui, puis `open(Sub)`
+  Then deux erreurs
+
+Scenario: plafond de sessions ouvertes
+  Given `max_open_per_user = 2` et deux sessions ouvertes
+  When un non-admin ouvre une troisième
+  Then `Forbidden("too many open sessions")` ; un admin y parvient
+
+Scenario: le jeton n'est jamais persisté
+  Given un `send` avec un jeton
+  When le tour est terminé
+  Then ni l'état sauvegardé, ni les événements, ni les traces ne contiennent le jeton

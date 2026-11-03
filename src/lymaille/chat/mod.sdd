@@ -1,0 +1,46 @@
+Spec: mod — agrégation du module `chat` (surface Matrix des sessions interactives)
+
+Purpose:
+  Contrat d'agrégation de `src/lymaille/chat/` (DSD `FR-13`, `DEC-26`) : la glue entre la feature `matrix` et la feature `lymaille`. Le module
+    n'existe que sous `all(feature = "lymaille", feature = "matrix")`. Il réunit l'annuaire mxid → principal (./link.sdd), la mise en forme pure
+    (./render.sdd) et le pont (./bridge.sdd). Aucune logique propre : ré-exports et documentation.
+
+Owns:
+  ./mod.rs
+
+References:
+  ./link.sdd, ./render.sdd, ./bridge.sdd — enfants ; ../mod.sdd — déclare `#[cfg(all(feature = "lymaille", feature = "matrix"))] pub mod chat;`
+  /dsd/miryad-core/lymaille.md — `FR-13`, `DEC-26`, `AC-17`
+
+Must:
+  Déclarer `pub mod link;`, `pub mod bridge;` et le module privé `render`. Ré-exporter à plat : `bridge::{ChatBridge, ChatConfig}`,
+    `link::{link_code_router, issue_code, consume_code, resolve, unlink}`.
+  Documenter dans le bloc `//!` : le déploiement (migrations `lymaille::migrations()` appliquées, `MatrixClient` connecté, `ChatBridge` passé à
+    `MatrixClient::run_sync`, `link_code_router` monté par l'application), le modèle d'identité (liaison par code, aucun droit sans liaison), les
+    limites du lot 2 (salle directe, pas d'édition de message, pas de `forward`).
+  Compiler sous `#[cfg(all(feature = "lymaille", feature = "matrix"))]`, posé dans ../mod.rs.
+
+Must not:
+  Monter une route ou démarrer une tâche ; contenir de logique.
+
+Depends on:
+  ./link.rs, ./render.rs, ./bridge.rs
+
+Exposes:
+  `ChatBridge`, `ChatConfig`, `link_code_router`, `issue_code`, `consume_code`, `resolve`, `unlink`, modules `link`, `bridge`
+
+Tasks:
+  [ ] `mod.rs` en dernier du dossier ; test de chemins plats.
+
+Done when:
+  Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.
+
+Scenario: les chemins plats existent
+  Given les features `lymaille` et `matrix`
+  When un test importe `crate::lymaille::chat::{ChatBridge, ChatConfig, link_code_router}`
+  Then le test compile
+
+Scenario: absent sans matrix
+  Given la feature `lymaille` seule
+  When on compile
+  Then `crate::lymaille::chat` n'existe pas

@@ -42,6 +42,12 @@ Must:
       `lymaille`) ; un `DbErr` devient `Store(<texte du DbErr sans paramètre de requête>)` ; **jamais** un secret ni le contenu d'un
       objet dans ce texte.
     6. Les horodatages (`updated_at`, `created_at`) sont posés par le store à l'heure UTC courante.
+  **Amendement lot 2 (2026-11-03)** : trois accesseurs de plus, `drafts() -> SeaDraftStore` (./draft.sdd), `session_index() -> SeaSessionIndex`
+    (./session_index.sdd) ; modules enfants `draft`, `session_index`, `audit`, `purge`, `write_journal` déclarés et ré-exportés (`SeaDraftStore`,
+    `SeaSessionIndex`, `AuditWriter`, `purge_sessions`, `PurgeReport`, `WriteScope`). Règle 3 étendue aux contextes : un nom `G_…` est cherché dans
+    `catalog_contexts`, un nom privé dans `user_contexts` avec `owner_id = user_id` (jamais dans la table d'un autre) ; types de contexte : table
+    `catalog_context_types` (écriture admin).
+
   `pub(crate) fn db_text(error: &DbErr) -> String` — texte expurgé d'un `DbErr` pour la règle 5.
     Traçabilité : la réduction en phrase fixe est implantée par sonde sur la chaîne de l'erreur (`format!("…:?")`, motifs `ColumnDecode` /
     `Decode(`) parce que le chemin sqlx exact varie selon le graphe de features ; le pass-through d'un texte non-JSON est assumé, la
@@ -62,6 +68,7 @@ Exposes:
     `db_text` (`pub(crate)`), et les huit types de store ré-exportés.
 
 Tasks:
+  [ ] Amendement lot 2 : accesseurs `drafts` et `session_index`, déclaration des enfants du lot 2, tests de chemins plats d'abord, puis ./mod.rs en dernier.
   [x] Tests d'abord (SQLite mémoire : cloisonnement et règles 1 à 6 sur un store de test), puis ./mod.rs en dernier du
     dossier. Validé 2026-11-02 (validator PASS ; `db_text` de ../identity.rs basculé sur `store::db_text`).
 

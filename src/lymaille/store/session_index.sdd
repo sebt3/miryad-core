@@ -1,0 +1,70 @@
+Spec: session_index — SeaSessionIndex, index des sessions et erreurs de script
+
+Purpose:
+  Implémenter `lymaille::SessionIndex` (`list`, `script_errors`) pour la session de configuration (module Rhai `sessions`) et pour les
+    routes de conversation (liste des sessions d'un utilisateur). `list(filter)` énumère les identifiants de sessions de `miryad_lymaille_sessions`
+    selon agent, nature, drapeau de revue et limite ; `script_errors(id)` relit les erreurs de script d'une session depuis la table d'audit
+    alimentée par ../interactive/hub.sdd (`miryad_lymaille_script_errors`, ../store/audit.sdd), car l'état d'une session ne les garde pas. Le
+    store est lié à un `subject` : il ne voit que **ses** sessions ; un admin voit celles de tous (DSD `FR-9`, inspection de session). Fichier
+    neuf, conception.
+
+Owns:
+  ./session_index.rs
+
+References:
+  ./mod.sdd — règles communes ; ./session.sdd — même table ; ./audit.sdd — table d'audit
+  `lymaille::toolsets::config` — trait `SessionIndex`, `SessionFilter`, `ScriptError`
+  /dsd/miryad-core/lymaille.md — `FR-3`, `FR-9`, `DEC-3`, `AC-4`, `AC-8`
+
+Must:
+  `pub struct SeaSessionIndex` — `Clone`, créé par `LymailleStores::session_index()`.
+  `impl SessionIndex for SeaSessionIndex` :
+    `list(filter)` : sélectionne `session_id` de `miryad_lymaille_sessions` ; `WHERE subject = ?` sauf admin (relu en base à chaque appel) ;
+      `kind` si le filtre en porte ; l'agent et le drapeau « revue demandée » se lisent dans l'état JSON de la ligne (les colonnes ne
+      les dérivent pas) : le filtre s'applique donc **après** la lecture de l'état, la limite s'appliquant au résultat filtré ; tri par
+      `updated_at` décroissant ; `limit` par défaut 50, plafonné à 200 ; une ligne dont l'état est illisible est ignorée (journal `warn`
+      sans contenu), jamais l'échec de la liste.
+    `script_errors(id)` : lignes d'audit de la session `id` (même règle de propriétaire) → `Vec<ScriptError>` triées par tour ; le texte est le
+      texte **déjà masqué** stocké par l'audit.
+  Erreurs : `DbErr` → `SessionError::Store(texte expurgé)`.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Lister la session d'un autre utilisateur pour un non-admin ; renvoyer un état, un historique ou une variable ; mettre en cache le droit admin.
+
+Depends on:
+  ./mod.rs, ./session.rs, ./audit.rs, ../identity.rs, @sea_orm, `lymaille::{SessionIndex, SessionFilter, ScriptError, SessionId}`
+
+Exposes:
+  `SeaSessionIndex`, `impl SessionIndex`
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire), puis ./session_index.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./session_index.rs.
+
+Scenario: un utilisateur ne liste que ses sessions
+  Given des sessions de `alice` et de `bob`
+  When `alice` appelle `list` sans filtre
+  Then uniquement ses identifiants
+
+Scenario: un admin les voit toutes
+  Given les mêmes sessions et un admin
+  When il appelle `list`
+  Then les identifiants de `alice` et de `bob`
+
+Scenario: filtres agent, nature, limite
+  Given cinq sessions de deux agents et deux natures
+  When `list` avec `with_agent`, `with_kind` puis `with_limit(2)`
+  Then les résultats respectent le filtre et la limite, triés du plus récent
+
+Scenario: un état illisible ne casse pas la liste
+  Given une ligne dont `state` n'est pas du JSON valide
+  When `list`
+  Then les autres sessions sont rendues
+
+Scenario: script_errors est cloisonné
+  Given des erreurs de script d'une session de `alice`
+  When `bob` (non-admin) appelle `script_errors` sur cet identifiant
+  Then liste vide

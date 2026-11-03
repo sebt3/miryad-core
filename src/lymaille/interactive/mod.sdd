@@ -1,0 +1,41 @@
+Spec: mod — agrégation du module `interactive` (sessions interactives, canal-agnostiques)
+
+Purpose:
+  Contrat d'agrégation de `src/lymaille/interactive/` (DSD `FR-11`, `DEC-24`) : le **socle commun** des sessions interactives, consommé par la surface
+    REST+SSE (../http/mod.sdd) et par la surface Matrix (../chat/mod.sdd). Il réunit la diffusion d'événements (./hub.sdd), l'assemblage du moteur
+    d'une session (./assemble.sdd), le gestionnaire de cycle de vie (./manager.sdd) et l'activation self-service (./activation.sdd). Aucune logique
+    propre : déclarations, ré-exports, documentation.
+
+Owns:
+  ./mod.rs
+
+References:
+  ./hub.sdd, ./assemble.sdd, ./manager.sdd, ./activation.sdd — enfants ; ../mod.sdd — déclare `pub mod interactive;` ; /dsd/miryad-core/lymaille.md — `FR-11`, `DEC-24`
+
+Must:
+  Déclarer `pub mod hub;`, `pub mod manager;`, `pub mod activation;` et le module privé `assemble`. Ré-exporter à plat : `hub::EventHub`,
+    `manager::{SessionManager, ManagerDeps, SessionHandle}`, `activation::{activate_toolset, discard_draft, ActivationReport}`.
+  Documenter dans le bloc `//!` : le modèle (un tour actif par session et par processus, tour détaché du client, principal relu à chaque appel,
+    jeton `forward` en mémoire pour un seul tour), l'assemblage attendu de l'application (`SessionManager::new(ManagerDeps…)` partagé), les limites du lot 2
+    (pas de rejeu d'événements, pas de coordination entre processus).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Contenir de logique ; démarrer une tâche ; monter une route.
+
+Depends on:
+  ./hub.rs, ./assemble.rs, ./manager.rs, ./activation.rs
+
+Exposes:
+  `EventHub`, `SessionManager`, `ManagerDeps`, `SessionHandle`, `activate_toolset`, `discard_draft`, `ActivationReport`, modules `hub`, `manager`, `activation`
+
+Tasks:
+  [ ] `mod.rs` en dernier du dossier ; test de chemins plats.
+
+Done when:
+  Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.
+
+Scenario: les chemins plats existent
+  Given la feature `lymaille`
+  When un test importe `crate::lymaille::interactive::{EventHub, SessionManager, ManagerDeps, SessionHandle, activate_toolset}`
+  Then le test compile

@@ -1,0 +1,75 @@
+Spec: sse — flux d'événements `text/event-stream` d'une conversation
+
+Purpose:
+  Porter `GET /api/v1/lymaille/conversations/{id}/events` (DSD `FR-12`, `DEC-25`) : un flux SSE alimenté par une `Subscription` du @EventHub
+    (../interactive/hub.sdd), cloisonnée par `subject` par @SessionManager avant l'abonnement. Le flux **reste ouvert entre les tours** (un
+    onglet suit toute la conversation) et se ferme quand la session est fermée. Se déconnecter n'annule pas le tour en cours
+    (../interactive/manager.sdd). La sérialisation d'un événement réutilise la forme sérialisable de `lymaille` (`Event` : `serde`, déjà masqué).
+    Fichier neuf, conception.
+
+Owns:
+  ./sse.rs
+
+References:
+  ./mod.sdd ; ../interactive/hub.sdd — `Subscription::recv` (`Lagged`, `Closed`) ; ../interactive/manager.sdd — `subscribe`
+  /dsd/miryad-core/lymaille.md — `FR-12`, `DEC-25`, `AC-16` ; `lymaille::session::Event`
+
+Must:
+  `pub(super) async fn events(…) -> Sse<impl Stream<Item = Result<sse::Event, Infallible>>>` : appelle `manager.subscribe(subject, id)` ; session inconnue ou
+    d'un autre → `404` (avant tout en-tête SSE) ; sinon `200`, `Content-Type: text/event-stream`, `Cache-Control: no-cache`.
+  Format d'un événement : `event:` = nom de la variante d'`EventKind` en `snake_case` (`turn_started`, `text_delta`, `turn_ended`, `script`, …), `data:` = JSON
+    de l'`Event` complet, `id:` = compteur croissant **propre à la connexion** (pas de rejeu : `Last-Event-ID` est ignoré, un abonné qui revient
+    relit l'état par `resume`/`GET` ; voir `Tasks`).
+  `Lagged(n)` → un événement `event: lagged` `data: {"missed": n}` puis le flux continue ; `Closed` → le flux se termine.
+  Battement : un commentaire SSE (`: keepalive`) toutes les 15 s tant qu'aucun événement n'arrive.
+  Une erreur de sérialisation d'un événement → l'événement est remplacé par `event: error` `data: {"code":"MRD-LYMAILLE-…"}`, le flux continue.
+  Aucune donnée n'est ajoutée aux événements : ni secret, ni jeton, ni prompt.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Annuler un tour à la déconnexion ; garder la connexion de base de données ouverte pendant le flux (le flux ne touche pas la base) ; rejouer
+    des événements passés sans l'avoir spécifié ; interpréter le contenu d'un événement.
+
+Depends on:
+  ../interactive/manager.rs, ../interactive/hub.rs, @axum (`response::sse`), @futures
+
+Exposes:
+  `events` (`pub(super)`)
+
+Tasks:
+  [ ] Tests d'abord (flux lu en mémoire, horloge tokio en pause), puis ./sse.rs.
+  [?] `Last-Event-ID` / rejeu des événements manqués : écarté au lot 2 (les événements ne sont pas persistés ; l'état de la session l'est). À rouvrir si un
+    client se déconnecte souvent pendant un tour.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./sse.rs.
+
+Scenario: les événements arrivent dans l'ordre avec leur nom
+  Given un abonné et un tour scripté
+  When le flux est lu
+  Then `turn_started`, des `text_delta`, `turn_ended`, ids croissants
+
+Scenario: la déconnexion n'annule pas le tour
+  Given un tour actif et un client qui ferme le flux
+  When le tour se termine
+  Then l'état est sauvegardé
+
+Scenario: session d'un autre
+  Given une session de `alice`
+  When `bob` ouvre le flux
+  Then `404` sans en-tête `text/event-stream`
+
+Scenario: retard
+  Given un abonné qui ne lit pas pendant 300 événements (capacité 256)
+  When il reprend la lecture
+  Then un événement `lagged` avec `missed > 0` puis le flux continue
+
+Scenario: battement
+  Given un flux sans événement pendant 20 s (horloge en pause)
+  When le temps avance
+  Then un commentaire `: keepalive` est émis
+
+Scenario: fin de session
+  Given un flux ouvert
+  When la session est fermée
+  Then le flux se termine

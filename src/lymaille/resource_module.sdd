@@ -7,7 +7,7 @@ Purpose:
     REST et MCP, **sans décision d'accès propre** (précédent : ../mcp/registry.sdd, délégation structurelle). Le principal est
     reconstruit à **chaque appel** depuis le `subject` de la session (DSD `FR-4`, `DEC-3`). Le contexte initial du module est constant
     (`agent-sessions#BO-2`) : les ressources visibles se découvrent par `describe()`, jamais par injection au démarrage. Lecture seule
-    au lot 1 : `create`, `update`, `delete` n'existent pas (DSD `DEC-15`, `DEC-11`). Fichier neuf, conception.
+    au lot 1 (`DEC-15`) ; **écritures au lot 2** (`DEC-21`, amendement ci-dessous). Fichier neuf, conception.
 
 Owns:
   ./resource_module.rs
@@ -45,12 +45,30 @@ Must:
     ressource non enregistrée → `unknown resource: <nom>` ; `NotFound` → `not found` ; `Forbidden` → `forbidden` ; compte absent →
     `no account for this session` ; toute autre → `internal error` (détail en `tracing::warn!`, sans contenu de ligne). L'oracle d'existence
     de `rest::core` est préservé : une ligne interdite et une ligne absente ne se distinguent pas plus que sur REST.
+  **Amendement lot 2 (2026-11-03, DSD `DEC-21`, `AC-14`)** : le module gagne les écritures, ouvertes aux sessions interactives **et** aux steps batch.
+    Registre : `ResourceReaders` devient `ResourceRegistry` (alias `ResourceReaders` conservé, `#[deprecated]`) ; `register::<E>()` enregistre la lecture
+      et l'écriture d'une entité ; `register_read_only::<E>()` n'enregistre que la lecture. Chaque écriture délègue à `rest::core::{create, update, delete}`
+      (mêmes `write_policy`, `owner_column`, hooks que REST et MCP, **sans décision d'accès propre**), principal reconstruit à chaque appel, corps
+      `Map` Rhai converti en JSON puis en `E::Model` (champ inconnu ou type invalide → `invalid body`).
+    `pub fn resources_module(registry, db, subject, scope: Option<WriteScope>) -> rhai::Module` ; `scope = None` : session interactive, pas de
+      journal ; `scope = Some(WriteScope { run_key, step_key })` : step batch, **idempotence** par ../store/write_journal.sdd.
+    Fonctions ajoutées : `create(resource, body) -> Map`, `update(resource, id, body) -> Map`, `delete(resource, id) -> Map` (`#{ deleted: true }`).
+      `describe()` ajoute `writable: bool` (le principal peut écrire d'après `rbac`, sans lire de ligne).
+    Idempotence en batch (ordre imposé) : `op_key` (contenu canonique) → `replay` : un résultat journalisé est **rendu tel quel** sans écrire ; sinon écrire, puis
+      `record` du résultat. `create` qui échoue sur une violation d'unicité, journal absent (fenêtre entre l'écriture et `record` après un crash) :
+      relire la ligne par `label_column` ; si tous les champs du corps sont égaux à la ligne → succès et journalisation ; sinon erreur `conflict`.
+      `update` et `delete` sont naturellement idempotents (`delete` d'une ligne déjà absente après journal manquant → `not found` traité comme succès
+      **seulement** si le journal l'atteste ; sinon `not found`).
+    Une écriture batch sans `subject` de déclencheur échoue `no account for this session` (jamais d'identité par défaut, `FR-10`).
+    Erreurs d'écriture (messages fixes, `RestError` jamais cité) : `invalid body`, `forbidden`, `not found`, `conflict`, `hook refused: <message du HookError>` (le
+      message d'un `HookError` est un texte applicatif sans code et sans contenu de ligne ; il est rendu tel quel), `internal error`.
+    Plafond : `max_writes_per_run` = 100 écritures par session ou par step (au-delà : `write limit reached`), pour borner un agent qui s'emballe.
   La taille d'une réponse est bornée par la pagination (`LLM_MAX_PER_PAGE`) et par le plafond de rendu d'une sortie du bac à sable de
     `lymaille` (`SandboxLimits`), pas par un second plafond ici (DSD `OI-6` : arbitrage de fond, reste ouvert pour le lot 2).
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
-  Exposer `create`, `update`, `delete` ni aucune écriture ; décider d'un accès par une règle propre au lieu de déléguer à `rest::core` ;
+  Exposer une écriture qui ne passe pas par `rest::core` ; décider d'un accès par une règle propre au lieu de déléguer à `rest::core` ;
     mettre un principal en cache entre deux appels ; inclure le contenu d'une ligne dans un message d'erreur ou une trace.
   Enregistrer par défaut les tables internes de `lymaille` (`sessions`, `memories`…) : elles n'ont pas d'entité.
 
@@ -61,6 +79,7 @@ Exposes:
   `ResourceReaders::{new, register}`, `resources_module`, `LLM_MAX_PER_PAGE`, `LLM_DEFAULT_PER_PAGE`
 
 Tasks:
+  [ ] Amendement lot 2 (`DEC-21`) : registre lecture/écriture, `WriteScope`, scenarios ci-dessus d'abord, puis ./resource_module.rs ; dépend de ./store/write_journal.rs.
   [x] Amender ../auth/principal.sdd et principal.rs : variante `PrincipalSource::Agent` (unité, `Debug` « Agent »), seule variante
     non rendue par un transport HTTP ; aucun consommateur ne la lit (la crate ne lit pas `source`). Amendement soumis au développeur
     principal avant d'y toucher (hors périmètre de ce fichier). Validé 2026-11-03 (validator PASS ; deux bras `cfg(test)` d'exhaustivité
@@ -96,7 +115,37 @@ Scenario: le droit est relu à chaque appel
   When le script rappelle `list` dans la même session
   Then le second appel échoue `forbidden`
 
-Scenario: aucune écriture n'existe
-  Given le module construit
-  When un script appelle `resources::create(...)` ou `update` ou `delete`
-  Then Rhai signale une fonction inconnue
+Scenario: une écriture suit les mêmes politiques que REST
+  Given une ressource `AdminOnly` en écriture et un appelant non-admin
+  When le script appelle `create("res", #{…})`
+  Then l'erreur est `forbidden` et aucune ligne n'est créée
+
+Scenario: un hook refuse avec son message
+  Given une entité dont `before_create` refuse un libellé vide
+  When le script appelle `create` avec un libellé vide
+  Then l'erreur est `hook refused: <message>`
+
+Scenario: un step rejoué ne duplique pas un create
+  Given un `WriteScope` et un `create` déjà exécuté et journalisé
+  When le même script rejoue le même `create`
+  Then une seule ligne existe et le même résultat est rendu
+
+Scenario: une fenêtre de crash est rattrapée par relecture
+  Given une ligne créée mais non journalisée (crash simulé) et un `create` identique
+  When le script rejoue le `create`
+  Then succès sans doublon ; avec un corps différent, `conflict`
+
+Scenario: la session interactive n'écrit pas dans le journal
+  Given `scope = None`
+  When le script écrit
+  Then la table du journal reste vide
+
+Scenario: plafond d'écritures
+  Given `max_writes_per_run = 100`
+  When le script écrit 101 fois
+  Then la 101e échoue `write limit reached`
+
+Scenario: describe indique writable
+  Given une ressource lisible mais non inscriptible pour l'appelant
+  When `describe()`
+  Then `writable = false`

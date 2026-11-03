@@ -71,6 +71,13 @@ Must:
   Aucune session n'est supprimée par le step (rétention : DSD `OI-7`).
   Compiler uniquement sous `#[cfg(all(feature = "workflow", feature = "lymaille"))]`.
 
+  **Amendement lot 2 (2026-11-03, DSD `DEC-20`, `DEC-21`)** : (1) `SubagentDeps.readers` devient `registry: Arc<ResourceRegistry>` (../lymaille/resource_module.sdd) ;
+    le module `resources` du step est construit avec `scope = Some(WriteScope { run_key, step_key })` : le step peut **écrire** des ressources, de façon
+    idempotente au rejeu (../lymaille/store/write_journal.sdd) ; `run_key` et `step_key` sont ceux de la session `Sub`. (2) Les rôles MCP du contexte lié passent par
+    ../lymaille/mcp_access.sdd (`server_for`, `build_auth`) avec `interactive_token = None` : un serveur `forward` fait échouer le step en `StepError`
+    **non retryable** (« forward auth needs an interactive session »), un serveur refusé en `Forbidden` non retryable. (3) Les avis de reprise
+    de `lymaille` (`OI-8`) restent sans échec. (4) `max_writes_per_run` borne les écritures du step.
+
 Must not:
   Utiliser un principal par défaut, ou le `subject` d'une autre source que `RunInfo::trigger` ; relire le `trigger` depuis `config` ou `inputs`.
   Rendre `retryable: true` après le début du run (étapes 9 à 11).
@@ -99,6 +106,7 @@ Handles:
   Plafond `max_secs` atteint : annulation coopérative, session sauvegardée, `StepError` non retryable.
 
 Tasks:
+  [ ] Amendement lot 2 : `ResourceRegistry` + `WriteScope`, rôles MCP via `mcp_access`, scenarios (rejeu sans doublon d'écriture, `forward` refusé) d'abord, puis ./subagent_step.rs. Après ../lymaille/resource_module.rs et ../lymaille/mcp_access.rs.
   [x] Amender ./mod.sdd (déclaration gated `all(workflow, lymaille)`, ré-exports `SubagentStep`, `SubagentDeps`) et ./mod.rs dans le même lot.
     Validé 2026-11-03 (validator PASS, batterie ciblée workflow,lymaille + all-features).
   [x] Tests d'abord depuis les `Scenario` (couture `InferenceFactory` + `ScriptedProvider`, SQLite mémoire), puis ./subagent_step.rs.
@@ -111,6 +119,16 @@ Tasks:
 Done when:
   Les `Scenario` unitaires sont verts sous `all(workflow, lymaille)` et `--all-features` ; les specs de ../lymaille/ sont approuvées avant
     ou avec celle-ci ; la spec est relue et approuvée avant ./subagent_step.rs.
+
+Scenario: un serveur MCP en forward fait échouer le step sans retry
+  Given un contexte qui lie un rôle à un serveur `auth_mode = forward`
+  When le step s'exécute
+  Then `StepError` non retryable « forward auth needs an interactive session »
+
+Scenario: un rejeu n'écrit pas deux fois
+  Given un step qui crée une ressource puis est rejoué avec la session restaurée
+  When le même `create` est ré-émis
+  Then une seule ligne existe
 
 Scenario: sans identité du déclencheur le step échoue sans repli
   Given un `RunInfo` dont `trigger` est `None`

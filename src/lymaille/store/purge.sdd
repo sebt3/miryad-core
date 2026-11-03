@@ -1,0 +1,69 @@
+Spec: purge — `purge_sessions`, rétention des sessions et de leurs traces
+
+Purpose:
+  Livrer la **fonction de purge** de la rétention (DSD `DEC-22`, solde `OI-7`) : le trait `SessionStore` de `lymaille` n'a pas de suppression, et une
+    session `Sub` par (clé du workflow, step) s'accumule dans `miryad_lymaille_sessions`. `purge_sessions(db, now, retention)` supprime les sessions
+    dont `updated_at` précède `now - retention`, quelle que soit leur nature, ainsi que les traces qui les accompagnent : erreurs de script
+    (./audit.sdd) et journal d'écritures de ressources (./write_journal.sdd) plus anciens que le même seuil. L'application **planifie** l'appel
+    (cron, workflow, tâche de fond) ; la crate ne démarre rien. La durée est fournie par l'application, défaut proposé 30 jours. Fichier neuf,
+    conception.
+
+Owns:
+  ./purge.rs
+
+References:
+  ./session.sdd — table `miryad_lymaille_sessions` ; ./audit.sdd (`purge_before`) ; ./write_journal.sdd (`purge_before`)
+  /dsd/miryad-core/lymaille.md — `DEC-22`, `OI-7`, `AC-13`
+
+Must:
+  `pub const DEFAULT_RETENTION: Duration` = 30 jours.
+  `pub struct PurgeReport { pub sessions: u64, pub script_errors: u64, pub write_journal: u64 }` (`Debug`, `Clone`, `PartialEq`).
+  `pub async fn purge_sessions(db: &DatabaseConnection, now: DateTimeUtc, retention: Duration) -> Result<PurgeReport, LymailleError>` :
+    1. `retention` nulle → `InvalidDefinition("retention must be positive")` (une rétention nulle viderait tout) ;
+    2. `cutoff = now - retention` (arithmétique vérifiée : un dépassement → erreur, jamais de panique) ;
+    3. supprime les sessions `updated_at < cutoff`, puis les erreurs de script et les entrées de journal d'écritures `< cutoff` ; chaque
+      suppression dans sa propre requête (pas de transaction englobante : une purge partielle reste valide) ;
+    4. rend le nombre de lignes supprimées par table ; idempotente (un second appel immédiat rend des zéros).
+  L'heure `now` est **un paramètre** (jamais `Utc::now()` dans la fonction) : tests déterministes.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Démarrer une tâche ou une horloge ; supprimer une session plus récente que le seuil ; purger les agents, toolsets, contextes ou
+    mémoires (hors de la rétention des sessions) ; journaliser des identifiants de session.
+
+Depends on:
+  ./audit.rs, ./write_journal.rs, ./mod.rs, @sea_orm, @chrono
+
+Exposes:
+  `purge_sessions`, `PurgeReport`, `DEFAULT_RETENTION`
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire), puis ./purge.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./purge.rs.
+
+Scenario: seules les sessions anciennes disparaissent
+  Given trois sessions de 1, 20 et 40 jours et une rétention de 30 jours
+  When `purge_sessions`
+  Then la session de 40 jours disparaît, `PurgeReport.sessions = 1`
+
+Scenario: les traces suivent
+  Given des erreurs de script et des entrées de journal de 40 jours et de 1 jour
+  When `purge_sessions` (30 jours)
+  Then seules celles de 40 jours disparaissent
+
+Scenario: idempotence
+  Given une purge déjà faite
+  When un second appel
+  Then trois zéros
+
+Scenario: rétention nulle refusée
+  Given `retention = 0`
+  When `purge_sessions`
+  Then `InvalidDefinition` et rien n'est supprimé
+
+Scenario: les autres tables sont intactes
+  Given des agents, des toolsets et des mémoires anciens
+  When `purge_sessions`
+  Then ils existent encore

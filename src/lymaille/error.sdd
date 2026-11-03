@@ -36,6 +36,12 @@ Must:
     `Inference(_)` → `false` ; toutes les autres variantes → `false`.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
+  **Amendement lot 2 (2026-11-03)** : deux variantes ajoutées (même forme, `#[non_exhaustive]` les absorbe) :
+    `NotFound(String)` → `MRD-LYMAILLE-010` → `MRD-LYMAILLE-010: not found: {0}` (session, brouillon ou serveur introuvable **ou non visible** pour
+      l'appelant ; le texte ne distingue jamais les deux)
+    `Conflict(String)` → `MRD-LYMAILLE-011` → `MRD-LYMAILLE-011: conflict: {0}` (tour déjà actif, mxid déjà lié)
+    `retryable()` : `NotFound`, `Conflict` → `false`. Le scenario « codes stables » couvre désormais `-001` à `-011`.
+
 Must not:
   Embarquer une clé d'API, un jeton, un prompt, un message de session ou un contenu de ressource dans un message d'erreur ou un
     `Debug`.
@@ -45,6 +51,7 @@ Exposes:
   `LymailleError`, `retryable`.
 
 Tasks:
+  [ ] Amendement lot 2 (DSD `DEC-24`) : variantes `NotFound` et `Conflict`, tests des codes `-010` et `-011` d'abord, puis ./error.rs.
   [x] Tests d'abord (codes, retryabilité), puis ./error.rs. Validé 2026-11-02 (validator PASS, batterie ciblée).
   [?] `Scenario` « aucune valeur secrète » : le `Debug` n'est asserté que par `contains` ; verrouiller par un assert exact
     (`format!("{:?}", e)` == `SecretUnresolved("LLM_API_KEY")`) ? Question posée à la validation, en attente d'arbitrage.

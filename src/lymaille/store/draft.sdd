@@ -1,0 +1,75 @@
+Spec: draft — SeaDraftStore, brouillons de la session de configuration
+
+Purpose:
+  Implémenter `lymaille::DraftStore` (`list_drafts`, `delete_draft`, `put_type_draft`, `get_type_draft`) sur les colonnes `draft` des tables de
+    toolsets (catalogue et privé) et de types de contexte (DSD `DEC-18`, lot 2). Le trait complète `ToolsetStore` (qui sait déjà lire et écrire un
+    brouillon de toolset) : lister, supprimer un brouillon et tenir les brouillons de **types de contexte**, que `ContextTypeStore` ignore. Le store
+    est lié à un `subject` : il ne liste et ne supprime que les brouillons **de cet utilisateur** (toolsets privés) et les brouillons du catalogue
+    seulement pour un admin. Il n'active jamais : **aucune opération du trait n'écrit `active`** (l'activation vit dans
+    ../interactive/activation.sdd, action de l'hôte). Fichier neuf, conception.
+
+Owns:
+  ./draft.rs
+
+References:
+  ./mod.sdd — règles communes ; ./toolset.sdd — les mêmes tables ; ../definitions/context_type.sdd — colonne `draft` des types
+  ../identity.sdd — `check_write`, `classify` ; `lymaille::toolsets::builder` — trait `DraftStore`, `DraftEntry`, `DraftKind`
+  /dsd/miryad-core/lymaille.md — `DEC-8`, `DEC-18`, `FR-9`, `AC-8`
+
+Must:
+  `pub struct SeaDraftStore` — `Clone`, créé par `LymailleStores::drafts()`.
+  `impl DraftStore for SeaDraftStore` :
+    `list_drafts()` : une `DraftEntry` par ligne dont `draft` est non nul : toolsets privés de l'appelant, types de contexte du catalogue ;
+      toolsets du catalogue seulement si l'appelant est admin ; triées par (`DraftKind`, nom) ; jamais le brouillon d'un autre utilisateur.
+    `delete_draft(kind, name)` : met `draft` à NULL ; si la ligne n'a plus ni `active` ni `draft`, la supprime (invariant de ../migration.sdd) ;
+      rend `true` si un brouillon existait. Écriture du catalogue → `check_write` (admin) ; **jamais** `active` modifié.
+    `put_type_draft(t)` : validation `ContextType` de `lymaille` (déjà valide par construction) puis `check_write(caller, t.name())` ; écrit
+      uniquement la colonne `draft` de la ligne du type (la crée avec `active = NULL` si absente) ; type du catalogue → admin.
+    `get_type_draft(name)` : lit `draft` ; absent → `Ok(None)`.
+  Erreurs : `DbErr` → `ToolsetsError::Store(texte expurgé)` ; refus de droit → `ToolsetsError::Store("MRD-LYMAILLE-…")` (règle 5 de ./mod.sdd).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Écrire ou effacer `active` ; lister ou supprimer le brouillon d'un autre utilisateur ; inclure un corps de toolset dans une erreur ou une trace.
+
+Depends on:
+  ./mod.rs, ../identity.rs, @sea_orm, `lymaille::{DraftStore, DraftEntry, DraftKind, ContextType, ToolsetsError}`
+
+Exposes:
+  `SeaDraftStore`, `impl DraftStore`
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire), puis ./draft.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./draft.rs.
+
+Scenario: on ne liste que ses brouillons
+  Given `alice` et `bob` avec chacun un brouillon de toolset privé
+  When `alice` appelle `list_drafts`
+  Then une seule entrée, la sienne
+
+Scenario: un non-admin ne voit pas les brouillons du catalogue
+  Given un brouillon `G_git` du catalogue
+  When un non-admin puis un admin appellent `list_drafts`
+  Then l'entrée n'apparaît que pour l'admin
+
+Scenario: supprimer un brouillon épargne l'actif
+  Given une ligne avec `active` v1 et `draft` v2
+  When `delete_draft`
+  Then `true`, `get_active` rend v1, `get_draft` rend `None`
+
+Scenario: la dernière version supprimée retire la ligne
+  Given une ligne avec `draft` seul
+  When `delete_draft`
+  Then `true` et la ligne n'existe plus
+
+Scenario: un non-admin n'écrit pas un type du catalogue
+  Given un store lié à un non-admin
+  When `put_type_draft` d'un type `G_x`
+  Then erreur `ToolsetsError::Store` dont le texte contient `MRD-LYMAILLE-002`
+
+Scenario: un brouillon de type fait l'aller-retour
+  Given un admin qui écrit `put_type_draft`
+  When `get_type_draft`
+  Then le type relu égale l'original, `active` reste nul

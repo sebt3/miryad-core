@@ -1,0 +1,68 @@
+Spec: write_journal — journal d'idempotence des écritures de ressources faites par un step batch
+
+Purpose:
+  Rendre idempotentes les écritures (`create`, `update`, `delete`) du module `resources` quand un step batch est **rejoué** par Restate (DSD `DEC-21`).
+    Le step est rejoué avec la session restaurée ; le modèle peut alors reproduire les mêmes appels (ou d'autres). Une clé d'ordre « n-ième appel »
+    ne désigne pas la même opération d'un rejeu à l'autre ; la clé retenue est donc **dérivée du contenu** : `op_key = SHA-256(opération,
+    ressource, id éventuel, corps JSON canonique)`. Le journal est rangé par `(run_key, step_key)` (clé du workflow et du step, ceux de la session
+    `Sub`). Un second appel de même `op_key` dans le même (run, step) ne réécrit rien et rend le **résultat journalisé**. Conséquence assumée :
+    deux `create` rigoureusement identiques dans un même step n'en font qu'un. Les sessions interactives (non rejouées) n'utilisent pas le
+    journal. Fichier neuf, conception.
+
+Owns:
+  ./write_journal.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `DEC-11`, `DEC-21`, `AC-14` ; ../resource_module.sdd — consommateur ; ./purge.sdd — purge
+  ../../workflow/subagent_step.sdd — fournit `run_key` et `step_key`
+
+Must:
+  Table `miryad_lymaille_write_journal` : PK(`run_key`, `step_key`, `op_key`) ; `result` JSON NOT NULL (la réponse rendue au script, déjà
+    expurgée comme le module la rend) ; `created_at`.
+  `pub struct WriteScope { pub run_key: String, pub step_key: String }`.
+  `pub fn op_key(op: Op, resource: &str, id: Option<i32>, body: &serde_json::Value) -> String` (pure) : SHA-256 hexadécimal du JSON canonique
+    (clés triées, sans espace) ; deux corps égaux à l'ordre des clés près donnent la même clé.
+  `pub async fn replay(db, scope, op_key) -> Result<Option<serde_json::Value>, LymailleError>` : le résultat journalisé, ou `None`.
+  `pub async fn record(db, scope, op_key, result) -> Result<(), LymailleError>` : insère ; une violation d'unicité (concurrence) est
+    un **succès** (le premier gagne, comme `replay` le montrera).
+  `pub async fn purge_before(db, cutoff) -> Result<u64, LymailleError>` (appelée par ./purge.sdd).
+  Ordre imposé aux appelants (documenté, testé dans ../resource_module.sdd) : `replay` ; sinon exécuter l'écriture ; puis `record`. Une
+    panne entre l'écriture et `record` rejoue l'écriture au rejeu suivant : `update` et `delete` sont naturellement idempotents ; `create` doit
+    tolérer le doublon (voir ../resource_module.sdd).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Journaliser le corps de la requête ou le contenu des lignes (seul le résultat expurgé, borné à 64 Ko) ; utiliser l'heure ou un compteur
+    dans `op_key` ; échouer sur une violation d'unicité de `record`.
+
+Depends on:
+  ./mod.rs, @sea_orm, @serde_json, @sha2, @hex
+
+Exposes:
+  `WriteScope`, `Op`, `op_key`, `replay`, `record`, `purge_before`
+
+Tasks:
+  [ ] Ajouter la dépendance `sha2` (déjà dans le graphe ? sinon `Cargo.toml` amendé avec accord) puis tests d'abord (SQLite mémoire), puis ./write_journal.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./write_journal.rs.
+
+Scenario: la clé est dérivée du contenu, pas de l'ordre
+  Given deux corps JSON identiques à l'ordre des clés près
+  When `op_key`
+  Then les deux clés sont égales ; un champ différent donne une clé différente
+
+Scenario: un rejeu rend le résultat journalisé
+  Given une écriture journalisée sous (run, step, op_key)
+  When `replay` avec la même clé, puis avec un autre step
+  Then le résultat, puis `None`
+
+Scenario: l'enregistrement concurrent est un succès
+  Given deux `record` simultanés de la même clé
+  When ils s'exécutent
+  Then les deux rendent `Ok` et une seule ligne existe
+
+Scenario: purge_before
+  Given des entrées anciennes et récentes
+  When `purge_before(cutoff)`
+  Then seules les anciennes disparaissent

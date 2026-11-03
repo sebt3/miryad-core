@@ -1,0 +1,79 @@
+Spec: routes — handlers JSON des conversations interactives
+
+Purpose:
+  Porter les handlers JSON de ./mod.sdd (DSD `FR-12`, `DEC-25`) : chacun reçoit @AuthPrincipal, `Path`/`Json`, appelle une méthode de @SessionManager
+    (../interactive/manager.sdd) ou de ../interactive/activation.sdd et rend la réponse. L'envoi d'un message **n'attend pas** la fin du tour :
+    `202 Accepted`, le résultat arrive par le flux ./sse.sdd. Les erreurs sont traduites en @RestError (codes `MRD-REST-*`/`MRD-LYMAILLE-*`),
+    jamais un texte brut. Fichier neuf, conception.
+
+Owns:
+  ./routes.rs
+
+References:
+  ./mod.sdd — montage ; ./sse.sdd — flux ; ../interactive/manager.sdd ; ../interactive/activation.sdd ; ../error.sdd — `LymailleError` ;
+  ../../rest/error.sdd — @RestError ; /dsd/miryad-core/lymaille.md — `FR-12`, `DEC-25`, `AC-16`
+
+Must:
+  `POST /conversations` : corps `{ "kind": "work"|"config", "agent_id": "…" }` → `201` `{ "id", "kind", "agent_id" }` ; `kind` autre (dont `sub`) → `422`.
+  `GET /conversations?agent=&kind=&limit=` → `200` `{ "items": [ { id, title, agent, kind, turns, review } ] }` (résumés expurgés de `SessionSummary`).
+  `POST /conversations/{id}/messages` : corps `{ "text": "…" }`, `text` non vide et ≤ 32 Ko → `202` vide ; tour actif → `409` ; session inconnue ou
+    d'un autre → `404` identique ; le jeton Bearer de la requête, s'il existe, est transmis à `send` (usage `forward`, jamais journalisé) ;
+    une requête authentifiée par cookie n'en transmet aucun.
+  `POST /conversations/{id}/cancel` → `200` `{ "cancelled": bool }`.
+  `POST /conversations/{id}/resume` → `200` `{ "id", "kind", "agent_id", "notices": [..] }`.
+  `DELETE /conversations/{id}` → `204`.
+  `POST /toolsets/{name}/activate` → `200` `ActivationReport` ; `DELETE /toolsets/{name}/draft` → `204` (si un brouillon existait, sinon `404`).
+  Traduction d'erreur : `UnknownSubject`/`Forbidden` → `403`, `NotFound` → `404`, `Conflict` → `409`, `InvalidDefinition` → `422`, `Store`/autre → `500`
+    avec code `MRD-LYMAILLE-*` ; message à texte fixe, jamais le contenu d'un message, d'un jeton, d'un prompt ni d'une URL.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Attendre la fin d'un tour ; renvoyer le texte d'un message utilisateur dans une erreur ou une trace ; distinguer « absent » et « d'un autre » ;
+    journaliser le jeton ; accepter un `subject` du corps.
+
+Depends on:
+  ../interactive/manager.rs, ../interactive/activation.rs, ../error.rs, ../../rest/error.rs, ../../auth/principal.rs, @axum, @serde
+
+Exposes:
+  les handlers `pub(super)` consommés par ./mod.rs
+
+Tasks:
+  [ ] Tests d'abord (`tower::ServiceExt::oneshot`, SQLite mémoire, `ScriptedProvider`), puis ./routes.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./routes.rs.
+
+Scenario: ouvrir puis envoyer rend 202 sans attendre
+  Given un agent work scripté et lent
+  When `POST /conversations` puis `POST …/messages`
+  Then `201` puis `202` immédiat
+
+Scenario: deux envois concurrents
+  Given un tour actif
+  When un second `POST …/messages`
+  Then `409`
+
+Scenario: la session d'un autre est introuvable
+  Given une conversation de `alice`
+  When `bob` appelle `messages`, `cancel`, `resume`, `DELETE`
+  Then quatre `404` identiques à celui d'un identifiant inconnu
+
+Scenario: nature interdite
+  Given `kind = "sub"`
+  When `POST /conversations`
+  Then `422`
+
+Scenario: erreur sans fuite
+  Given un envoi dont le texte contient un secret factice et qui échoue
+  When la réponse d'erreur est lue
+  Then elle ne contient pas le secret
+
+Scenario: le jeton Bearer est transmis, le cookie non
+  Given un `SessionManager` espion
+  When un envoi par Bearer puis un envoi par cookie
+  Then `token` est `Some` puis `None`
+
+Scenario: activer son brouillon
+  Given un toolset privé avec brouillon
+  When `POST /toolsets/{name}/activate`
+  Then `200` et l'`ActivationReport`

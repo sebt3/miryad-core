@@ -1,0 +1,72 @@
+Spec: render — mise en forme des sorties d'agent pour Matrix
+
+Purpose:
+  Porter la partie **pure** de la surface Matrix (DSD `FR-13`, `DEC-26`) : transformer la réponse finale d'un tour et les avis de l'hôte en messages
+    Matrix. Un événement Matrix est limité (≈ 65 Ko ; on vise 4000 caractères par message pour la lisibilité) et la sortie d'un agent peut être
+    longue : découpe sur des frontières naturelles, jamais au milieu d'un bloc de code, en numérotant les parties. Aucun I/O, aucune horloge :
+    tout est testable sans client Matrix. Fichier neuf, conception.
+
+Owns:
+  ./render.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `FR-13`, `DEC-26`, `AC-17` ; ./bridge.sdd — consommateur ; ../../matrix/client.sdd — `MatrixClient::send`
+
+Must:
+  `pub const MAX_PART_CHARS: usize = 4000` ; `pub const MAX_PARTS: usize = 8`.
+  `pub fn split_message(text: &str) -> Vec<String>` (pure) : texte vide → un vecteur vide ; ≤ `MAX_PART_CHARS` → une partie sans numérotation ;
+    sinon découpe, dans cet ordre de préférence, à la fin d'un bloc de code fermé, à une ligne vide, à une fin de ligne, à une espace, en dernier
+    recours au caractère (jamais au milieu d'un point de code UTF-8) ; un bloc de code ouvert qui traverse une coupure est **refermé** en fin de partie
+    et **rouvert** (même langage) en début de la suivante ; chaque partie reçoit le préfixe `(i/n)` ; au-delà de `MAX_PARTS`, la dernière partie
+    est tronquée et se termine par `… (sortie tronquée, N caractères omis)`.
+  `pub fn format_notice(notices: &[String]) -> Option<String>` : les avis de reprise (`OI-8`) en une ligne `Reprise : …` ; vide → `None`.
+  `pub fn format_error(code: &str) -> String` : message fixe `Échec du tour (code <code>).` — jamais le texte d'une erreur interne.
+  `pub fn help_text() -> String` : l'aide des commandes de ./bridge.sdd (`!new`, `!agent`, `!cancel`, `!link`, `!activate`, `!help`).
+  Aucune partie ne dépasse `MAX_PART_CHARS` caractères, préfixe de numérotation compris.
+  Compiler sous `#[cfg(all(feature = "lymaille", feature = "matrix"))]`.
+
+Must not:
+  Paniquer sur une coupure (indexation gardée, `char_indices`) ; produire un message vide ; inclure dans `format_error` autre chose que le code ;
+    interpréter ou « nettoyer » le Markdown de l'agent au-delà de la gestion des blocs de code.
+
+Depends on:
+  aucune dépendance interne
+
+Exposes:
+  `split_message`, `format_notice`, `format_error`, `help_text`, `MAX_PART_CHARS`, `MAX_PARTS`
+
+Tasks:
+  [ ] Tests d'abord (purs, dont un test de propriété : concaténation des parties ≈ texte à la numérotation et aux marqueurs près), puis ./render.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille,matrix` ; la spec est relue et approuvée avant ./render.rs.
+
+Scenario: un texte court reste entier
+  Given 100 caractères
+  When `split_message`
+  Then une partie, sans numérotation
+
+Scenario: un texte long est découpé sur une ligne vide
+  Given 9000 caractères en paragraphes
+  When `split_message`
+  Then trois parties numérotées `(1/3)` à `(3/3)`, chacune ≤ 4000, coupures sur lignes vides
+
+Scenario: un bloc de code traversant une coupure est refermé puis rouvert
+  Given un bloc ```rust de 6000 caractères
+  When `split_message`
+  Then chaque partie contient un nombre pair de ``` et la seconde rouvre ```rust
+
+Scenario: ne jamais couper un caractère multi-octets
+  Given 5000 caractères `é` sans espace
+  When `split_message`
+  Then aucune panique, toutes les parties sont de l'UTF-8 valide
+
+Scenario: troncature
+  Given 100 000 caractères
+  When `split_message`
+  Then `MAX_PARTS` parties, la dernière indique le nombre omis
+
+Scenario: format_error ne cite que le code
+  Given `format_error("MRD-LYMAILLE-007")`
+  When on lit le résultat
+  Then il contient le code et rien d'autre de variable

@@ -1,0 +1,73 @@
+Spec: hub — EventHub, diffusion des événements d'une session vers ses abonnés
+
+Purpose:
+  Porter le `EventSink` des sessions interactives (DSD `FR-11`, `DEC-24`) : `lymaille` émet ses événements (`TurnStarted`, `TextDelta`, `Script`,
+    `McpCall`, `TurnEnded`…) vers un `EventSink` synchrone qui ne bloque pas et ne peut pas échouer. Le hub les **diffuse** à zéro, un ou
+    plusieurs abonnés de la **même** session (REST+SSE, Matrix, plusieurs onglets) par `tokio::sync::broadcast`, et pousse les erreurs de script
+    vers l'@AuditWriter (../store/audit.sdd). Un abonné lent est décroché proprement (`Lagged`) sans ralentir le tour. Les événements portent
+    déjà des noms, compteurs et enregistrements masqués (jamais un secret, `lymaille` garantit le masquage) : le hub n'y ajoute aucune
+    donnée. Fichier neuf, conception.
+
+Owns:
+  ./hub.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `FR-11`, `DEC-24`, `AC-15` ; ../store/audit.sdd — `AuditWriter` ; ./manager.sdd — propriétaire du hub
+  `lymaille::session::{EventSink, Event, SessionId}`
+
+Must:
+  `pub struct EventHub` — `Clone` (état partagé `Arc`), `impl EventSink` : `emit(event)` retrouve le canal de `event.session()`, `send` sans attendre ;
+    aucun abonné → l'événement est abandonné (pas d'accumulation) ; l'erreur `SendError` est ignorée.
+  `pub fn new(audit: Option<AuditWriter>, capacity: usize) -> Self` : `capacity` borne la file de chaque session (défaut conseillé 256, borné [16, 4096]).
+  `pub fn register(&self, id: &SessionId, subject: &str)` : associe la session à son `subject` (appelé par ./manager.sdd à l'ouverture et à la reprise) ;
+    l'audit y lit le `subject` ; une session non enregistrée n'est pas auditée (journal `warn`, jamais un événement perdu pour les abonnés).
+  `pub fn subscribe(&self, subject: &str, id: &SessionId) -> Subscription` : crée le canal au besoin ; `Subscription` expose `recv()` async qui rend
+    `Ok(Event)`, `Err(Lagged(n))` (n événements perdus) ou `Err(Closed)`. Le cloisonnement du `subject` est fait par ./manager.sdd **avant** l'abonnement.
+  `pub fn close(&self, id: &SessionId)` : ferme le canal (les abonnés reçoivent `Closed`) ; appelé quand le gestionnaire retire la session.
+  Les canaux de sessions sans abonné ni tour actif sont libérés (pas de fuite pour N sessions ouvertes un jour).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Bloquer ou paniquer dans `emit` ; retenir des événements sans abonné ; mélanger les événements de deux sessions ; modifier ou enrichir un événement.
+
+Depends on:
+  ../store/audit.rs, @tokio, `lymaille::{EventSink, Event, SessionId}`
+
+Exposes:
+  `EventHub::{new, subscribe, close}`, `Subscription::recv`, `impl EventSink`
+
+Tasks:
+  [ ] Tests d'abord (temps tokio), puis ./hub.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./hub.rs.
+
+Scenario: deux abonnés reçoivent la même suite
+  Given deux abonnés d'une même session
+  When trois événements sont émis
+  Then chacun reçoit les trois, dans l'ordre
+
+Scenario: les sessions ne se mélangent pas
+  Given un abonné de `s1`
+  When un événement est émis pour `s2`
+  Then rien n'est reçu
+
+Scenario: un abonné lent est décroché sans bloquer
+  Given une capacité de 16 et un abonné qui ne lit pas
+  When 100 événements sont émis
+  Then `emit` ne bloque jamais et `recv` rend `Lagged(n)` avec n ≥ 84
+
+Scenario: sans abonné, rien ne s'accumule
+  Given une session sans abonné
+  When 1000 événements sont émis
+  Then la mémoire du hub reste bornée (aucun canal retenu)
+
+Scenario: les erreurs de script partent à l'audit
+  Given un hub avec un `AuditWriter`
+  When un événement `Script` en erreur est émis
+  Then `record` est appelé une fois
+
+Scenario: close
+  Given un abonné
+  When `close(id)`
+  Then `recv` rend `Closed`

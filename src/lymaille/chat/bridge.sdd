@@ -1,0 +1,112 @@
+Spec: bridge — pont Matrix ↔ sessions interactives (`MatrixEventHandler`)
+
+Purpose:
+  Porter la surface Matrix des sessions interactives (DSD `FR-13`, `DEC-26`, `OI-5`) : un @MatrixEventHandler (../../matrix/sync.sdd) qui relie une
+    **salle** à une **session** de @SessionManager (../interactive/manager.sdd), donc aux mêmes comportements que REST+SSE (aucun décalage
+    fonctionnel, `DEC-6`). Il traduit : un message de salle devient un `send` ; la réponse finale du tour revient en messages (./render.sdd) ; des
+    commandes `!…` pilotent la session. Identité : le `sender` est résolu par l'annuaire (./link.sdd) ; un mxid non lié n'a **aucun droit**. Le
+    bail de `run_sync` peut basculer entre processus et remettre deux fois un même événement : le pont **dédoublonne par `event_id`** en base.
+    Fichier neuf, conception.
+
+Owns:
+  ./bridge.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `FR-13`, `DEC-23`, `DEC-24`, `DEC-26`, `OI-5`, `AC-17`
+  ../../matrix/sync.sdd — `MatrixMessage` (`room_id`, `event_id`, `sender`, `body`), `MatrixEventHandler::on_message` ; ../../matrix/client.sdd — `send`
+  ./link.sdd ; ./render.sdd ; ../interactive/manager.sdd ; ../interactive/hub.sdd ; ../interactive/activation.sdd ; ../migration.sdd
+
+Must:
+  Tables : `miryad_lymaille_matrix_rooms` — `room_id` PK, `subject`, `session_id`, `agent_id`, `updated_at` ; `miryad_lymaille_matrix_events` — `event_id` PK,
+    `seen_at`. Une salle accueille **un seul utilisateur lié** (salle directe) ; une salle où un mxid autre que le propriétaire de la session écrit
+    est ignorée avec un seul message d'avertissement (pas de session partagée au lot 2).
+  `pub struct ChatBridge` — `new(db, manager: SessionManager, client: Arc<dyn ChatSender>, config: ChatConfig)` ; `ChatConfig { default_agent: String,
+    max_event_age: Duration (défaut 5 min), dedupe_window: Duration (défaut 7 jours) }`. `ChatSender` est un trait privé minimal
+    (`send(room_id, body) -> Result<String, …>`) implémenté pour @MatrixClient et par un espion de test ; aucune dépendance directe à `matrix-sdk`.
+  `impl MatrixEventHandler for ChatBridge` : `on_message(msg)` dans cet ordre :
+    1. **dédoublonnage** : insère `event_id` dans `miryad_lymaille_matrix_events` ; déjà présent → return silencieux ; événements plus vieux que
+      `max_event_age` ignorés (rattrapage de synchronisation, pas de réponse tardive à l'historique) ;
+    2. si `body` commence par `!link ` : `consume_code` ; succès → « Compte lié. » ; échec → message fixe ; **toute autre commande** exige un mxid lié ;
+    3. `link::resolve(sender)` ; `None` → une seule réponse « Ce compte n'est pas lié : demandez un code sur l'API, puis `!link <code>`. » (au plus une par
+      salle et par heure) et aucune session ; sinon le principal est reconstruit à chaque message (`Identity::resolve`) ;
+    4. commandes : `!help`, `!new [agent]` (ferme la session de la salle, en ouvre une `Work`), `!agent <id>` (idem avec l'agent), `!cancel`,
+      `!activate <toolset>` (appelle ../interactive/activation.sdd, le résultat est rendu en une ligne), `!resume` (rend les avis) ;
+    5. sinon, texte libre : session de la salle (ouverte à la demande avec `default_agent`, restaurée si déjà persistée) → `send(subject, id, body, None)` ;
+      tour actif → « Un tour est en cours. » (aucun envoi) ;
+    6. la réponse : abonnement au hub **avant** l'envoi ; le pont accumule les `text_delta`, et à `turn_ended` envoie `split_message(réponse)` (une
+      partie = un message, `txn_id` = `event_id` + rang pour l'idempotence d'envoi) ; issue `Failed` → `format_error` ; `Cancelled` → « Annulé. » ;
+      les avis de reprise (`notices`) précèdent la réponse (`format_notice`). Aucun streaming par édition au lot 2 (`Tasks`).
+  Aucun jeton n'existe côté Matrix : un serveur MCP en mode `forward` n'est pas disponible dans ces sessions (`mcp_access` renvoie
+    `Forbidden("forward auth needs an interactive session")`).
+  Tout échec interne répond par `format_error(code)` ; le contenu du message de l'utilisateur n'est jamais journalisé ni cité.
+  La table des événements vus est élaguée (> `dedupe_window`) opportunément (au plus une fois par heure).
+  Compiler sous `#[cfg(all(feature = "lymaille", feature = "matrix"))]`.
+
+Must not:
+  Répondre à ses propres messages (`sender` = compte du bot, déjà filtré par `should_deliver`, redoublé ici) ; créer une session pour un mxid non lié ;
+    partager une session entre deux utilisateurs ; attendre la fin d'un tour dans `on_message` au-delà de la collecte de la réponse (le handler tourne
+    dans une tâche par message, jamais sur le fil de la boucle de synchronisation) ; journaliser le corps d'un message ; envoyer une réponse à l'historique.
+
+Depends on:
+  ./link.rs, ./render.rs, ../interactive/{manager,hub,activation}.rs, ../identity.rs, ../../matrix/{sync,client}.rs, @sea_orm, @tokio
+
+Exposes:
+  `ChatBridge::new`, `ChatConfig`, `impl MatrixEventHandler`, `ChatSender` (`pub(crate)`)
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire, `ChatSender` espion, `ScriptedProvider`, horloge injectée), puis ./bridge.rs. Après ./link.rs et ./render.rs.
+  [?] Mise à jour d'un message par édition (streaming) et salles multi-utilisateurs : hors lot 2.
+  [?] Le banc live (`tests/matrix_live.rs`, cluster media-test) pourra porter un test `#[ignore]` de bout en bout ; non exigé par ce lot.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille,matrix` ; la spec est relue et approuvée avant ./bridge.rs.
+
+Scenario: un mxid non lié n'a aucun droit
+  Given `@eve:srv` non liée
+  When elle écrit deux fois dans l'heure
+  Then une seule réponse d'invitation à lier, aucune session créée
+
+Scenario: la liaison puis la conversation
+  Given `alice` avec un code
+  When `!link <code>` puis « bonjour » depuis `@alice:srv`
+  Then « Compte lié. », une session `Work` est ouverte et la réponse revient en message
+
+Scenario: un événement remis deux fois ne déclenche qu'un tour
+  Given le même `event_id` remis deux fois (bascule de bail)
+  When `on_message` est appelé deux fois
+  Then un seul `send` et une seule réponse
+
+Scenario: une réponse longue est découpée
+  Given une réponse de 9000 caractères
+  When le tour se termine
+  Then trois messages numérotés `(1/3)…(3/3)`
+
+Scenario: l'historique n'appelle pas de réponse
+  Given un événement plus vieux que `max_event_age`
+  When `on_message`
+  Then aucune réponse, mais `event_id` est enregistré
+
+Scenario: un tour actif
+  Given un tour en cours
+  When un nouveau message de la salle
+  Then « Un tour est en cours. » et aucun `send`
+
+Scenario: !new ferme et rouvre
+  Given une session de la salle
+  When `!new`
+  Then l'ancienne est fermée, une nouvelle ouverte, le contexte repart de zéro
+
+Scenario: une erreur interne ne fuit pas
+  Given un fournisseur qui échoue avec un message contenant un secret factice
+  When le tour se termine `Failed`
+  Then la réponse est `format_error(code)` sans le secret
+
+Scenario: un autre utilisateur dans la salle
+  Given une salle liée à `alice` où `@bob:srv` (lié) écrit
+  When `on_message`
+  Then un avertissement unique, pas de `send`
+
+Scenario: le droit est relu à chaque message
+  Given `alice` retirée du groupe admin entre deux messages
+  When le second appelle un module réservé à l'admin
+  Then l'appel est refusé

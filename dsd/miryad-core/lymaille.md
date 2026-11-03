@@ -148,6 +148,22 @@ et appels d'MCP externes depuis les scripts.
       (commits `667518c` → `1de97e6`, une tâche par commit, validator GO à chaque tâche et batterie complète à la clôture)
     - **Verified by:** `AC-11`
 
+- **FR-11 - MUST:** Un utilisateur ouvre, suit, annule, reprend et ferme une session interactive (`Work` ou `Config`) ; au plus un tour actif par
+    session et par processus ; un tour survit à la déconnexion du client ; les événements sont diffusés à tous les abonnés de la session ; chaque
+    appel relit le principal. Le socle est indépendant du canal.
+    - **Source:** `DEC-6`, `DEC-13`, `DEC-24` ; user instruction, 2026-11-03
+    - **Verified by:** `AC-15`
+
+- **FR-12 - MUST:** Les sessions interactives sont servies en REST+SSE sous `/api/v1/lymaille`, exemptées de la parité des ressources (comme `/auth/*`) ;
+    l'envoi d'un message répond `202` sans attendre le tour.
+    - **Source:** `DEC-25` ; user instruction, 2026-11-03
+    - **Verified by:** `AC-16`
+
+- **FR-13 - MUST:** Les sessions interactives sont servies par Matrix : une salle directe = une session ; un mxid non lié n'a aucun droit ; un
+    événement remis deux fois ne déclenche qu'un tour ; les sorties longues sont découpées.
+    - **Source:** `DEC-23`, `DEC-26` ; user instruction, 2026-11-03
+    - **Verified by:** `AC-17`
+
 ## Design Decisions
 
 - **DEC-1 - Le stockage des objets de lymaille est porté par la BDD de miryad-core**
@@ -376,9 +392,11 @@ et appels d'MCP externes depuis les scripts.
       ressources comme `DEC-19` ; niveau `User` = `OwnerOnly`, niveau `Project` (= partagé par toute l'instance : miryad-core n'a pas d'entité
       projet) = catalogue `AdminOnly` ; niveau `Session` interne, sans CRUD. (3) **`mcp_servers`** : `MiryadResource` admin (nom, URL, délais,
       `auth_ref`, mode d'auth, `allowed_groups`) ; la référence d'auth est résolue par le `SecretResolver` de `DEC-16`, le secret n'est jamais en base.
-      (4) **droit d'usage** : `allowed_groups` liste des noms de groupes, plus les valeurs réservées `all` (tout authentifié) et `admin` ; un hook
-      refuse à la sauvegarde d'un contexte une liaison de rôle vers un serveur non autorisé à son propriétaire, et l'appel revalide
-      (défense en profondeur, `FR-9`) ; l'appartenance est relue en base à chaque appel, jamais mise en cache. (5) **modes d'auth** : `static`
+      (4) **droit d'usage** : `allowed_groups` liste des noms de groupes, plus les valeurs réservées `all` (tout authentifié) et `admin` ; le contrôle d'autorité
+      est fait **à l'assemblage de la session et à l'appel** (`mcp_access`), et à `ContextStore::put_context` pour la session de configuration. **Correction
+      du 2026-11-03 :** un hook `MiryadResource` est synchrone et sans connexion, il ne peut ni relire les groupes ni l'état admin ; le refus « à la sauvegarde »
+      par REST/MCP n'existe donc pas (même limite pour `check_grants` des agents et toolsets privés, `FR-9`) ; un accord excessif échoue à l'usage, il n'élève jamais un droit.
+      Lever cette limite demanderait des hooks asynchrones dans le moteur de ressources : hors lot 2, à arbitrer (`OI-10`) ; l'appartenance est relue en base à chaque appel, jamais mise en cache. (5) **modes d'auth** : `static`
       (référence de secret, compte de service) et `forward` (le serveur reçoit le jeton de l'utilisateur) ; `forward` n'est valable qu'en
       session interactive, avec le jeton frais de la requête, jamais persisté ; un step batch qui lie un serveur `forward` échoue en `StepError`
       non retryable.
@@ -410,6 +428,28 @@ et appels d'MCP externes depuis les scripts.
     - **Decision:** l'utilisateur, connecté en OIDC, génère un code à usage unique et le renvoie au bot par Matrix ; la liaison mxid↔subject est
       stockée dans une table dédiée. Un mxid non lié n'a aucun droit. Une revendication OIDC portant le mxid pourra compléter la liaison plus tard.
     - **Source:** user instruction, 2026-11-03
+
+- **DEC-24 - Sessions interactives : gestionnaire, hub d'événements, tour détaché** (2026-11-03)
+    - **Decision:** un `SessionManager` partagé porte le cycle de vie (ouvrir, envoyer, suivre, annuler, reprendre, fermer) ; un `EventHub` (`broadcast` par
+      session) diffuse les événements de `lymaille` ; le tour est une tâche `tokio` détachée de la requête. Le jeton d'une session `forward` n'existe
+      qu'en mémoire pour un tour. `Config` ne monte aucun client MCP. L'activation d'un toolset est une action de l'hôte (route ou commande), jamais un
+      appel de l'agent. Les erreurs de script sont persistées par un `AuditWriter` pour `SessionIndex::script_errors`.
+    - **Alternatives:** tour attaché à la requête (écarté : un onglet fermé tuerait le tour) ; rejeu d'événements par `Last-Event-ID` (écarté : les événements
+      ne sont pas persistés ; l'état de la session l'est).
+    - **Consequences:** pas de coordination entre processus (`session#DEC-1` de `lymaille`).
+    - **Source:** proposition Claude, 2026-11-03, à approuver
+
+- **DEC-25 - REST+SSE : routeur auto-monté, exempté de la parité** (2026-11-03)
+    - **Decision:** `conversations_router` sous `/api/v1/lymaille`, monté par l'application ; JSON pour les commandes, SSE pour le flux ; aucune décision
+      de droit propre. Le jeton Bearer de la requête est transmis à `send` (usage `forward`) ; une requête par cookie n'en transmet aucun.
+    - **Consequences:** `forward` n'est donc utilisable que par un client authentifié par Bearer ; ni un navigateur par cookie, ni Matrix.
+    - **Source:** user instruction (exemption), 2026-11-03
+
+- **DEC-26 - Matrix : un pont `MatrixEventHandler`, salle directe, dédoublonnage en base** (2026-11-03)
+    - **Decision:** `ChatBridge` implémente `MatrixEventHandler` ; une salle = un utilisateur lié = une session `Work` (`!new`, `!agent`, `!cancel`, `!resume`,
+      `!activate`, `!link`, `!help`) ; dédoublonnage par `event_id` en base, fenêtre 7 jours ; événements plus vieux que 5 minutes ignorés ; réponse
+      en messages de 4000 caractères maximum, huit au plus ; pas d'édition de message.
+    - **Source:** proposition Claude, 2026-11-03, à approuver
 
 ## Contour du lot 2
 
@@ -450,7 +490,7 @@ Specs du lot 0 écrites et livrées le 2026-11-02. **Specs du lot 1 rédigées l
 `definitions/toolset.sdd`, `definitions/profile.sdd`, `definitions/provider.sdd` (`DEC-14`, `DEC-17`, `DEC-18`), `resource_module.sdd` (`FR-2`,
 lecture seule), `/src/workflow/subagent_step.sdd` (`FR-6`, `FR-10`). Amendements d'accompagnement : `/src/lib.sdd`, `/src/migration/mod.sdd`,
 `/src/workflow/mod.sdd`, `/src/auth/principal.sdd` (variante `PrincipalSource::Agent`), `/miryad-core.sdd`, `/tooling.sdd` ; `/AGENTS.md`, la CI et
-`workflows.sdd` restent à amender avec accord. Lot 2 : contour posé, aucune spec ni tâche. Lot 3 : `/src/workflow/pad_step.sdd`.
+`workflows.sdd` restent à amender avec accord. **Lot 2 : specs rédigées le 2026-11-03, en attente d'approbation** (`FR-11` à `FR-13`, `DEC-20` à `DEC-26`) : `/src/lymaille/interactive/{mod,hub,manager,assemble,activation}.sdd`, `/src/lymaille/http/{mod,routes,sse}.sdd`, `/src/lymaille/chat/{mod,link,render,bridge}.sdd`, `/src/lymaille/mcp_access.sdd`, `/src/lymaille/definitions/{mcp_server,context_type,catalog_context,user_context,private_agent,private_toolset}.sdd`, `/src/lymaille/store/{draft,session_index,audit,purge,write_journal}.sdd` ; amendements : `error.sdd`, `migration.sdd`, `store/{mod,toolset}.sdd`, `definitions/mod.sdd`, `resource_module.sdd`, `mod.sdd`, `/src/workflow/subagent_step.sdd`. Lot 3 : `/src/workflow/pad_step.sdd`.
 
 ## Acceptance Criteria
 
@@ -482,7 +522,18 @@ lecture seule), `/src/workflow/subagent_step.sdd` (`FR-6`, `FR-10`). Amendements
   identité fait échouer un step `subagent` en `StepError` non retryable.
   - État 2026-11-02 (lot 0) : première moitié prouvée (tests nommés de T1–T6 et intégration `subworkflow_lenfant_hérite_du_trigger_du_parent` rejouée contre `restate-server`) ; le step `subagent` est du lot 1 (`DEC-13`) et verrouillera la seconde.
 
+- **AC-12:** Un utilisateur ne lie ni n'appelle un serveur MCP hors de ses groupes ; absent et interdit sont indiscernables ; l'appartenance est relue à chaque
+  appel ; `forward` est refusé hors session interactive ; le secret `static` est résolu à chaque connexion et n'apparaît jamais en base, en erreur ni en trace.
+- **AC-13:** `purge_sessions` supprime sessions, erreurs de script et journal d'écritures plus anciens que la rétention, rien d'autre, et est idempotente.
+- **AC-14:** Un step batch rejoué par `restate-server` ne duplique aucune écriture de ressource ; les écritures suivent les politiques de REST et MCP.
+- **AC-15:** Une session interactive ouverte, alimentée, annulée puis reprise après redémarrage conserve son historique ; un second tour concurrent est refusé ;
+  une session d'un autre est introuvable.
+- **AC-16:** Les neuf routes REST+SSE répondent comme spécifié ; une déconnexion SSE n'annule pas le tour ; `lagged` signale un abonné lent.
+- **AC-17:** Un message Matrix d'un mxid lié ouvre une session et reçoit la réponse ; un mxid non lié n'a aucun droit ; un événement remis deux fois ne fait qu'un tour.
+
 ## Open Issues
+
+- **OI-10:** **Hooks asynchrones ou contrôle de droits à la sauvegarde REST/MCP** : les hooks de `MiryadResource` sont synchrones, sans connexion ni état admin ; les contrôles `check_grants` (agents, toolsets privés) et le droit d'usage des serveurs MCP (contextes) ne se font qu'à l'assemblage, à l'appel et par les stores. **TBD :** tolérer cette limite, ou étendre le moteur de ressources (hook asynchrone avec connexion), changement transversal à toutes les ressources.
 
 - **OI-1:** **Soldé le 2026-11-02 (user instruction)** : garder les défauts de `lymaille` (`mcp-http`, `rig`), nécessaires au lot 1
   (inférence et MCP distants), sans les relayer en sous-features miryad tant qu'aucun hôte ne les désactive ; `fs`/`shell` : jamais

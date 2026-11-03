@@ -1,0 +1,65 @@
+Spec: mod — routeur `conversations_router`, surface REST+SSE des sessions interactives
+
+Purpose:
+  Agréger et monter la surface HTTP des sessions interactives de `lymaille` (DSD `FR-12`, `DEC-25`) : un routeur `axum` que l'application consommatrice
+    monte elle-même (comme `me_router`/`tokens_router`, jamais par `resource_router`). Ces routes **ne sont pas des `MiryadResource`** et sont
+    exemptées de la règle de parité des ressources, comme `/auth/*` (acté le 2026-11-03) ; tout droit passe pourtant par ../identity.sdd, le
+    @AuthPrincipal du dual-auth et `rest::core` (aucune décision d'accès propre). Les handlers ne contiennent aucune logique de conversation : ils
+    extraient, appellent ../interactive/manager.sdd (@SessionManager) et traduisent (JSON ou SSE). Préfixe figé `/api/v1/lymaille`. Fichier neuf,
+    conception.
+
+Structure:
+  ./routes.rs — handlers JSON (ouverture, liste, envoi, annulation, reprise, fermeture, activation) ; sa spec propre
+  ./sse.rs — flux d'événements `text/event-stream` ; sa spec propre
+
+Owns:
+  ./mod.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `FR-11`, `FR-12`, `DEC-25`, `AC-16`
+  ../interactive/manager.sdd — @SessionManager ; ../../rest/me.sdd — précédent de forme d'un routeur auto-monté ; ../../auth/dual.sdd — @AuthPrincipal
+  ../../rest/error.sdd — @RestError ; ../../rest/openapi.sdd — l'OpenAPI des routes CRUD (celles-ci n'y figurent pas, `Tasks`)
+
+Must:
+  `pub fn conversations_router<S>(manager: SessionManager) -> Router<S>` où `S` porte le @MiryadAuthState nécessaire à l'extracteur @AuthPrincipal
+    (même borne que `me_router`) ; `manager` est un `Extension`/état propre du routeur (jamais un état global).
+  Routes exactes (aucun slash final normalisé) sous `/api/v1/lymaille` :
+    `POST /conversations` · `GET /conversations` · `POST /conversations/{id}/messages` · `GET /conversations/{id}/events` ·
+    `POST /conversations/{id}/cancel` · `POST /conversations/{id}/resume` · `DELETE /conversations/{id}` ·
+    `POST /toolsets/{name}/activate` · `DELETE /toolsets/{name}/draft`.
+  Toutes exigent un @AuthPrincipal (401 sinon, rendu de ../../auth/error.sdd). Corps JSON uniquement (`Content-Type: application/json`) ; taille de corps
+    bornée à 64 Ko par `DefaultBodyLimit` posé ici.
+  Documenter dans le bloc `//!` : le montage (`app.merge(conversations_router(manager))`), l'exemption de parité, le cloisonnement par `subject`,
+    et que ces routes n'apparaissent pas dans l'OpenAPI générique.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Contenir de logique de conversation ou de droit ; monter une route hors du préfixe figé ; utiliser un état global ; accepter un identifiant
+    d'utilisateur du client (la cible est toujours le `subject` du @AuthPrincipal).
+
+Depends on:
+  ./routes.rs, ./sse.rs, ../interactive/manager.rs, @axum
+
+Exposes:
+  `conversations_router`
+
+Tasks:
+  [ ] `mod.rs` en dernier du dossier ; test d'agrégation de routes (table de routes exacte, méthodes servies).
+
+Done when:
+  Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.
+
+Scenario: les routes exactes existent, rien d'autre
+  Given le routeur monté
+  When on énumère ses chemins et méthodes
+  Then exactement les neuf routes ci-dessus
+
+Scenario: un appel anonyme est refusé
+  Given le routeur monté sans identifiant
+  When `POST /api/v1/lymaille/conversations`
+  Then `401`
+
+Scenario: slash final non normalisé
+  Given le routeur
+  When `GET /api/v1/lymaille/conversations/`
+  Then `404`

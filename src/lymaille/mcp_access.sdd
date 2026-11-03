@@ -1,0 +1,85 @@
+Spec: mcp_access — droit d'un utilisateur d'employer un serveur MCP, et en-têtes d'authentification
+
+Purpose:
+  Porter le contrôle d'**usage** des serveurs MCP et la production de leurs en-têtes d'authentification (DSD `DEC-20`, `FR-9`, `FR-4`).
+    Un serveur (../definitions/mcp_server.sdd) porte `allowed_groups` ; ce fichier décide, **à chaque appel et sur une relecture en base**, si un
+    `subject` peut le lier ou l'appeler (`all` = tout authentifié, `admin` = admin, sinon appartenance à l'un des groupes ; aucun cache).
+    Il implémente `lymaille::McpAuth` en deux modes : `static` (en-tête `Authorization: Bearer <secret>` résolu par le @SecretResolver à
+    chaque connexion) et `forward` (jeton de l'utilisateur d'une session **interactive**, jamais persisté). Les hooks `MiryadResource` sont
+    synchrones et sans connexion : le refus « à la sauvegarde » ne peut donc pas vivre dans un hook de `user_context` ; le **contrôle
+    d'autorité** est celui-ci, à l'assemblage et à l'appel (défense en profondeur de `FR-9`). Fichier neuf, conception.
+
+Owns:
+  ./mcp_access.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `DEC-16`, `DEC-20`, `FR-4`, `FR-9`, `AC-12`
+  ./identity.sdd — @Identity, @CallerPrincipal ; ./secret.sdd — @SecretResolver ; ./definitions/mcp_server.sdd — `Model`, `client_config`
+  ../users/group.sdd — `is_admin(db, user_id)`, `is_member(db, user_id, group)`
+  `lymaille::modules::mcp_client` — trait `McpAuth` (`headers() -> Result<McpHeaders, McpError>`), `McpHeaders`
+
+Must:
+  `pub async fn server_for(db, caller: &CallerPrincipal, name: &str) -> Result<mcp_server::Model, LymailleError>` : cherche le serveur par `name` ;
+    absent **ou** non autorisé → la **même** erreur `Forbidden("mcp server unavailable")` (pas d'oracle d'existence) ; autorisé : `allowed_groups`
+    contient `all`, ou contient `admin` et `caller.is_admin`, ou le caller est membre d'un des groupes (relu en base ; une `DbErr` → `Store`).
+  `pub enum McpAuthMode { None, Static, Forward }` (pur, depuis `auth_mode`).
+  `pub struct SeaMcpAuth` — implémente `McpAuth` : `new_static(resolver: Arc<dyn SecretResolver>, auth_ref: String)` résout la référence **à chaque
+    appel de `headers()`** (jeton renouvelé pris en compte) et rend `Authorization: Bearer …` ; une référence introuvable → `McpError` fixe
+    (« mcp auth reference unresolved »), sans la valeur ni le nom de la référence. `new_forward(token: Zeroizing<String>)` rend le même en-tête
+    avec le jeton fourni. `None` → en-têtes vides. Le secret vit dans un `Zeroizing`, n'entre dans aucune erreur ni trace, et son `Debug`
+    est opaque.
+  `pub fn build_auth(model, resolver, interactive_token: Option<Zeroizing<String>>) -> Result<Option<SeaMcpAuth>, LymailleError>` : `Forward` sans jeton
+    interactif (step batch, ou session sans jeton) → `Forbidden("forward auth needs an interactive session")`, **erreur non retryable** côté
+    `subagent` (traduite en `StepError` non retryable par ../workflow/subagent_step.sdd).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Mettre en cache le droit ou le jeton entre deux appels ; persister un jeton (base, session, journal Restate, trace) ; distinguer « absent » et
+    « non autorisé » dans l'erreur ; renvoyer le jeton d'un utilisateur à un autre serveur que celui du rôle lié.
+
+Depends on:
+  ./identity.rs, ./secret.rs, ./error.rs, ./definitions/mcp_server.rs, ../users/group.rs, @zeroize, @sea_orm, `lymaille::{McpAuth, McpHeaders, McpError}`
+
+Exposes:
+  `server_for`, `McpAuthMode`, `SeaMcpAuth`, `build_auth`
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire, `ScriptedResolver` de test), puis ./mcp_access.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./mcp_access.rs.
+
+Scenario: un groupe autorise, l'appartenance est relue
+  Given un serveur `allowed_groups = ["ops"]`, `alice` membre de `ops`
+  When `server_for` puis `alice` est retirée du groupe puis `server_for` de nouveau
+  Then `Ok` puis `Forbidden("mcp server unavailable")`
+
+Scenario: absent et non autorisé se confondent
+  Given un serveur `admin` et un appelant non-admin
+  When `server_for("admin_srv")` puis `server_for("inexistant")`
+  Then deux erreurs identiques
+
+Scenario: all et admin
+  Given un serveur `["all"]` et un serveur `["admin"]`
+  When un non-admin authentifié les demande
+  Then le premier est accordé, le second refusé
+
+Scenario: le secret statique est résolu à chaque connexion
+  Given un `ScriptedResolver` dont la valeur change entre deux appels
+  When `headers()` est appelé deux fois
+  Then les deux en-têtes portent chacun la valeur courante
+
+Scenario: une référence introuvable ne fuit pas
+  Given une référence que le résolveur ne connaît pas
+  When `headers()`
+  Then `McpError` fixe sans le nom de la référence
+
+Scenario: forward refuse hors session interactive
+  Given un serveur `auth_mode = forward`
+  When `build_auth(model, resolver, None)`
+  Then `Forbidden("forward auth needs an interactive session")`
+
+Scenario: Debug est opaque
+  Given un `SeaMcpAuth` portant un jeton
+  When `format!("{:?}")`
+  Then la sortie ne contient pas le jeton

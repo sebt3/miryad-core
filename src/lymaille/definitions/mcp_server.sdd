@@ -1,0 +1,82 @@
+Spec: mcp_server — entité `lymaille_mcp_servers`, définition d'un serveur MCP que les agents peuvent appeler
+
+Purpose:
+  Porter l'entité @MiryadResource des serveurs MCP (table `miryad_lymaille_mcp_servers`, DSD `DEC-20`) : l'admin déclare un serveur (nom, URL, délais,
+    mode d'authentification, groupes autorisés) par REST et MCP, sans redéploiement. `lymaille` 0.1.0 ne fournit aucun store de ces
+    définitions (`McpClientConfig` est construit par l'hôte) : cette table en est la source. Le **secret n'est jamais en base** : `auth_ref` est
+    une référence résolue par le @SecretResolver (../secret.sdd, DSD `DEC-16`). La ressource est `AdminOnly` en lecture et en écriture
+    (l'URL peut porter un jeton en requête, `McpClientConfig` ne l'affiche pas). Fichier neuf, conception.
+
+Owns:
+  ./mcp_server.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `DEC-16`, `DEC-20`, `OI-9` (soldé), `AC-12`
+  ../secret.sdd — @SecretResolver ; ../mcp_access.sdd — contrôle d'usage par groupes ; ../migration.sdd — table `miryad_lymaille_mcp_servers`
+  /src/resource.sdd — @MiryadResource, @HookError
+  ./agent.sdd — précédent d'une entité à hooks de validation
+
+Must:
+  `Entity`/`Model`/`ActiveModel` via `DeriveEntityModel`, `#[sea_orm(table_name = "miryad_lymaille_mcp_servers")]`, `Model` : `id: i32` (`primary_key`),
+    `name: String` (unique), `url: String`, `request_timeout_secs: i32`, `connect_timeout_secs: i32`, `auth_mode: String`
+    (`none` | `static` | `forward`), `auth_ref: Option<String>`, `allowed_groups: serde_json::Value` (tableau JSON de noms), `created_at: DateTimeUtc`.
+  `impl MiryadResource for Entity` : `resource_name()` = `"lymaille_mcp_servers"` ; `read_policy()` = `AdminOnly` ; `write_policy()` = `AdminOnly` ;
+    `owner_column()` = `None` ; `filter_column()` = `Some(Column::AuthMode)` ; `label_column()` = `Some(Column::Name)`.
+  `before_create` / `before_update` (mêmes contrôles, premier échec interrompt ; `HookError` sans code, jamais l'URL ni `auth_ref` dans le message) :
+    1. `name` conforme à `[A-Za-z0-9_]+` (un nom de rôle MCP est un identifiant Rhai) ;
+    2. `url` : schéma `http` ou `https` uniquement, sinon `HookError("mcp server url must be http or https")` ;
+    3. délais : `request_timeout_secs` ∈ [1, 600] et `connect_timeout_secs` ∈ [1, 60] ;
+    4. `auth_mode` ∈ {`none`, `static`, `forward`} ; `static` exige `auth_ref` non vide ; `none` et `forward` exigent `auth_ref` absent ;
+    5. `allowed_groups` : tableau JSON non vide de chaînes ; chaque élément est `all`, `admin` ou un nom de groupe `[A-Za-z0-9_.-]+` ;
+      `all` ou `admin` ne se combinent avec aucun autre élément. Le **liste vide** est refusée (refus par défaut : une ligne sans
+      groupe n'est utilisable par personne, on le dit à la sauvegarde plutôt qu'en silence) ;
+    6. `before_update` : `name` ne change pas (les contextes y renvoient par nom) ; `created_at` reste celui de `existing`.
+  `pub fn client_config(model: &Model) -> McpClientConfig` (pure) : `McpClientConfig::new(url)` avec les deux délais.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Stocker un secret ou un jeton dans une colonne autre que l'URL tel que fournie par l'admin ; inclure `url`, `auth_ref` ou un en-tête dans un message
+    d'erreur ou une trace ; vérifier en base l'existence d'un groupe (un hook est synchrone et sans connexion : le droit est relu à l'usage,
+    ../mcp_access.sdd) ; donner un code `MRD-*` à un `HookError`.
+
+Depends on:
+  @sea_orm, @serde_json, `lymaille::McpClientConfig`
+
+Exposes:
+  `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`, `client_config`
+
+Tasks:
+  [ ] Tests d'abord (hooks purs sur des `ActiveModel` construits en test, politiques), puis ./mcp_server.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./mcp_server.rs.
+
+Scenario: un serveur statique valide est accepté
+  Given un serveur `kubectl`, `https://mcp.example/`, `auth_mode = static`, `auth_ref = "KUBECTL_TOKEN"`, `allowed_groups = ["ops"]`
+  When `before_create`
+  Then `Ok`
+
+Scenario: static sans référence, none avec référence
+  Given `auth_mode = static` sans `auth_ref`, puis `auth_mode = none` avec `auth_ref`
+  When `before_create` pour chacun
+  Then deux `Err(HookError)` sans code
+
+Scenario: un schéma non http est refusé sans citer l'URL
+  Given `url = "file:///etc/passwd"`
+  When `before_create`
+  Then `Err` dont le message ne contient pas l'URL
+
+Scenario: groupes autorisés
+  Given `allowed_groups = []`, puis `["all", "ops"]`, puis `["admin"]`
+  When `before_create` pour chacun
+  Then les deux premiers sont refusés, le troisième accepté
+
+Scenario: le nom ne change pas
+  Given une ligne `kubectl` existante
+  When `before_update` avec `name = "autre"`
+  Then `Err(HookError)`
+
+Scenario: la ressource n'est lisible que par un admin
+  Given la ressource enregistrée
+  When un non-admin liste puis crée
+  Then deux refus (`AdminOnly`)

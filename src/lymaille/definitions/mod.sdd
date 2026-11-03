@@ -24,6 +24,11 @@ Must:
     `lymaille_providers`), leurs politiques, la règle `G_`, et que les secrets n'y figurent jamais.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
+  **Amendement lot 2 (2026-11-03)** : modules enfants ajoutés et ré-exportés : `private_agent`, `private_toolset`, `context_type`, `catalog_context`,
+    `user_context`, `mcp_server` (DSD `DEC-19`, `DEC-20`). `Exposes` devient : modules `agent`, `toolset`, `profile`, `provider`, `private_agent`,
+    `private_toolset`, `context_type`, `catalog_context`, `user_context`, `mcp_server`. L'application enregistre ces ressources dans son registre
+    REST/MCP comme celles du lot 1 ; aucune n'est enregistrée par défaut.
+
 Must not:
   Déclarer d'entité pour sessions, mémoires, types de contexte ou contextes (DSD `DEC-14`).
 
@@ -34,6 +39,7 @@ Exposes:
   modules `agent`, `toolset`, `profile`, `provider`
 
 Tasks:
+  [ ] Amendement lot 2 : déclaration des six enfants, test de chemins étendu d'abord, puis ./mod.rs en dernier.
   [x] `mod.rs` en dernier du dossier (après les quatre enfants) ; test de chemins. Validé 2026-11-02 (validator PASS).
 
 Done when:
