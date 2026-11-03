@@ -51,6 +51,8 @@ Exposes:
   `assemble_session`, `AssembleDeps`, `AssembledSession`
 
 Tasks:
+  [ ] Réalignement R9 (DSD `DEC-27, DEC-28`, 2026-11-03) : Après R1, R5, R6, R8 : résoudre contexte (`G_`, privé, `H_` par `resolve_context`) et rôles MCP (`resolve_mcp` puis repli) à l'assemblage ; nature et agent
+    par défaut issus du type de contexte ; la session `Config` voit les liaisons de l'hôte en lecture seule, sans client MCP. Spec seule.
   [ ] Tests d'abord (SQLite mémoire, `ScriptedProvider`, serveur MCP factice de `lymaille` si disponible, sinon `McpAuth` espion), puis ./assemble.rs.
   [?] À vérifier à l'ouverture de la tâche dans le source de `lymaille` : la voie exacte pour injecter des clients MCP par rôle dans
     `assemble(...)`/`ScratchpadEngine::builder` et la construction de `TurnRunner` pour une session non batch (le lot 1 n'a assemblé que le batch).

@@ -506,7 +506,7 @@ et appels d'MCP externes depuis les scripts.
       plafond `max_secs` se règle par l'application (défaut inchangé à 480 s). Le step reste `retryable: false` et la reprise sur session
       déterministe (`DEC-10`) est inchangée.
     - **Alternatives:** relever les bornes du service `StepDispatcher` (écarté : tous les kinds en pâtissent).
-    - **Consequences:** amende `dispatcher.sdd` et `subagent_step.sdd`. **Risque assumé :** aucun spike ne couvre une durée de 30 à 45 minutes (`OI-11`).
+    - **Consequences:** amende `dispatcher.sdd` et `subagent_step.sdd`. Le réglage par handler est prouvé sur 40 minutes (`OI-11`, spike du 2026-11-03) ; le kill du processus en cours de run reste couvert par `AC-10`.
     - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B4) ; user instruction, 2026-11-03
 
 - **DEC-30 - Événements de session typés, extensibles, relisibles** (2026-11-03, amende `DEC-24`, `DEC-25`)
@@ -616,8 +616,12 @@ lecture seule), `/src/workflow/subagent_step.sdd` (`FR-6`, `FR-10`). Amendements
 
 ## Open Issues
 
-- **OI-11:** **Durée réelle d'un sous-agent** (`DEC-29`) : aucun spike ne couvre 30 à 45 minutes, reprise déterministe comprise. **TBD :** banc de `tests/workflow_restate.rs`
-  étendu avant la spec `subagent_step.sdd`, ou acceptation du risque.
+- **OI-11:** **Soldé le 2026-11-03 par spike** (durée réelle d'un sous-agent, `DEC-29`). Banc : `tests/workflow_restate.rs`,
+  `un_step_de_40_minutes_survit_aux_bornes_relevees_du_handler` (`#[ignore]`, vrai `restate-server`, image `latest`, `restate-sdk` 0.12.1) : un step ordinaire
+  de 40 minutes dans l'unique `ctx.run` de `execute`, avec `inactivity_timeout` 50 min et `abort_timeout` 55 min posés **sur le handler** (`HandlerOptions`). Résultat :
+  statut 200, durée mesurée 2402 s, un seul `start`, un seul `end`, aucun rejeu. **Conclusion :** le réglage par handler tient sur 40 minutes. **Non couvert :** le kill du
+  processus service en cours de route (le serveur de test vit dans le processus du test) ; la reprise reste portée par la session déterministe (`AC-10`).
+    - **Source:** spike du 2026-11-03, résultat ci-dessus ; user instruction, 2026-11-03
 - **OI-12:** **Export TypeScript des événements** (`DEC-30`) : `ts-rs` n'est pas une dépendance de la crate. **TBD :** `ts-rs` derrière la feature `lymaille` (dépendance nouvelle à acter, `CON-4`), ou schémas
   `utoipa` déjà présents pour OpenAPI.
 - **OI-10:** **Hooks asynchrones ou contrôle de droits à la sauvegarde REST/MCP** : les hooks de `MiryadResource` sont synchrones, sans connexion ni état admin ; les contrôles `check_grants` (agents, toolsets privés) et le droit d'usage des serveurs MCP (contextes) ne se font qu'à l'assemblage, à l'appel et par les stores. **Soldé le 2026-11-03 (user instruction) :** extension du moteur de ressources par des hooks asynchrones avec connexion, hors lot 2 ; voir `miryad-core/hooks-async`.

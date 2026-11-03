@@ -44,6 +44,9 @@ Exposes:
   `server_for`, `McpAuthMode`, `SeaMcpAuth`, `build_auth`
 
 Tasks:
+  [ ] Réalignement R6 (DSD `DEC-27`, 2026-11-03) : Introduire le trait `LymailleHost` (`resolve_mcp(contexte, rôle, principal)` → `Refusé | Accordé{url, jeton, expiration}`, `resolve_context`) : précédence
+    sur `mcp_servers` rôle par rôle, repli sur la liaison classique, échec fermé sur panne de l'hôte, jeton jamais persisté ni tracé, batch sans `subject`
+    en `StepError` non retryable. Hôte factice pour les `Scenario`. Spec seule ; le fichier du trait (spec neuve) est à décider à l'ouverture.
   [ ] Tests d'abord (SQLite mémoire, `ScriptedResolver` de test), puis ./mcp_access.rs.
 
 Done when:

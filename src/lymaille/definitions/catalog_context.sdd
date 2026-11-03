@@ -36,6 +36,8 @@ Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`
 
 Tasks:
+  [ ] Réalignement R3 (DSD `DEC-28`, 2026-11-03) : Renommer le niveau `Project` en `Shared` (doc, `Must`, `Scenario`) ; code `catalog_context.rs` en cours (non commité) à reprendre après approbation.
+    Spec seule.
   [ ] Tests d'abord (hooks purs), puis ./catalog_context.rs.
 
 Done when:

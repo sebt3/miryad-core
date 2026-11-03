@@ -38,6 +38,8 @@ Exposes:
   les handlers `pub(super)` consommés par ./mod.rs
 
 Tasks:
+  [ ] Réalignement R12 (DSD `DEC-28, DEC-30`, 2026-11-03) : Après R10 et R11 : corps d'ouverture `(contexte, agent optionnel)` ; dixième route de lecture de l'historique (état persisté, mêmes types) ;
+    types exportés. Spec seule.
   [ ] Tests d'abord (`tower::ServiceExt::oneshot`, SQLite mémoire, `ScriptedProvider`), puis ./routes.rs.
 
 Done when:

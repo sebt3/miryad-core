@@ -37,6 +37,7 @@ Exposes:
   `events` (`pub(super)`)
 
 Tasks:
+  [ ] Réalignement R11 (DSD `DEC-30`, 2026-11-03) : Après R8 : le flux sérialise `SessionEvent` ; `Scenario` d'un événement `Host`. Spec seule.
   [ ] Tests d'abord (flux lu en mémoire, horloge tokio en pause), puis ./sse.rs.
   [?] `Last-Event-ID` / rejeu des événements manqués : écarté au lot 2 (les événements ne sont pas persistés ; l'état de la session l'est). À rouvrir si un
     client se déconnecte souvent pendant un tour.

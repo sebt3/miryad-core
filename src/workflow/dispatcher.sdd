@@ -248,6 +248,11 @@ Handles:
     affectée.
 
 Tasks:
+  [ ] Réalignement R14 (DSD `DEC-29`, 2026-11-03) : Router le kind `subagent` vers un handler Restate dédié aux bornes `inactivity_timeout` et `abort_timeout` relevées ; `recommended_options` du service
+    ordinaire inchangé. Spec seule ; le spike de `OI-11` est fait (vert).
+  [x] Spike OI-11 (DSD `lymaille#OI-11`, 2026-11-03) : `un_step_de_40_minutes_survit_aux_bornes_relevees_du_handler` dans `tests/workflow_restate.rs` (`#[ignore]`, podman) :
+    step ordinaire de 40 minutes, `HandlerOptions` du handler `execute` à 50 min (inactivité) et 55 min (abandon) ; vert en 2402 s, un seul `start`, aucun rejeu.
+    Le kill du processus service n'est pas couvert par ce banc (serveur dans le processus du test) : la reprise reste celle de `lymaille#AC-10`.
   [x] #26 lot A (2026-10-04) : élargir `StepInvocation` (`run_key`, `step_id`, `depth`), construire le
     @RunInfo dans `execute`, le faire passer à `run_invocation` puis à `dispatch` ; adapter les
     tests existants à la nouvelle signature de `run_invocation`.

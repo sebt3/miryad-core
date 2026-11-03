@@ -70,6 +70,9 @@ Exposes:
     `install_crypto_provider`, modules `store`, `definitions`, `resource_module`.
 
 Tasks:
+  [ ] Réalignement R7 (DSD `DEC-27, DEC-30`, 2026-11-03) : Après R6 : exposer le trait `LymailleHost` au montage de l'état (optionnel) ; acter ou non la dépendance d'export TypeScript (`OI-12`, `[?]` ci-dessous).
+    Spec seule.
+  [?] Export TypeScript des événements (DSD `OI-12`) : `ts-rs` (dépendance nouvelle derrière la feature `lymaille`, à acter) ou schémas `utoipa` déjà présents. Bloque R7 et R8.
   [ ] Amendement lot 2 : `mod.rs` re-déclaré **en dernier du lot 2** (après ./interactive, ./http, ./chat, ./mcp_access, ./store, ./definitions), tests de chemins plats étendus.
   [ ] Amendement lot 2 : /Cargo.toml, /tooling.sdd, /AGENTS.md, /.github/workflows/workflows.sdd et ci.yml pour la combinaison `lymaille,matrix` et les dépendances (fichiers hors périmètre : amendement soumis au développeur principal avant d'y toucher).
   [x] `mod.rs` en dernier du lot (après tous les enfants) ; test de chemins plats. Validé 2026-11-03 (validator PASS, batterie ciblée lymaille + workflow,lymaille + all-features).

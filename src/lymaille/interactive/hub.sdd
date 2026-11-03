@@ -37,6 +37,8 @@ Exposes:
   `EventHub::{new, subscribe, close}`, `Subscription::recv`, `impl EventSink`
 
 Tasks:
+  [ ] Réalignement R8 (DSD `DEC-30`, 2026-11-03) : Remplacer les événements de `lymaille` diffusés tels quels par l'enum `SessionEvent` typée avec la variante `Host{kind, payload}` ; `Scenario` d'un
+    événement `Host` qui traverse sans être interprété. Spec seule.
   [ ] Tests d'abord (temps tokio), puis ./hub.rs.
 
 Done when:

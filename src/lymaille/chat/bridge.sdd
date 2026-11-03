@@ -54,6 +54,7 @@ Exposes:
   `ChatBridge::new`, `ChatConfig`, `impl MatrixEventHandler`, `ChatSender` (`pub(crate)`)
 
 Tasks:
+  [ ] Réalignement R13 (DSD `DEC-28`, 2026-11-03) : Après R10 : `!new <contexte> [agent]` remplace `!agent` ; `Scenario` d'un contexte inconnu ou refusé et d'un agent hors ensemble. Spec seule.
   [ ] Tests d'abord (SQLite mémoire, `ChatSender` espion, `ScriptedProvider`, horloge injectée), puis ./bridge.rs. Après ./link.rs et ./render.rs.
   [?] Mise à jour d'un message par édition (streaming) et salles multi-utilisateurs : hors lot 2.
   [?] Le banc live (`tests/matrix_live.rs`, cluster media-test) pourra porter un test `#[ignore]` de bout en bout ; non exigé par ce lot.

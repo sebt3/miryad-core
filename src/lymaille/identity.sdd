@@ -49,6 +49,8 @@ Exposes:
   `CallerPrincipal`, `Identity::{new, resolve}`, `IdKind`, `classify`, `check_write`, `check_grants`
 
 Tasks:
+  [ ] Réalignement R5 (DSD `DEC-27`, 2026-11-03) : Spec déjà livrée (`[x]` ci-dessus) : amender `classify` avec une variante pour le préfixe `H_` (contexte résolu par l'hôte, jamais stocké),
+    `Scenario` de classification et de refus d'écriture ; puis ré-ouvrir le code dans une tâche à part. Spec seule.
   [x] Tests d'abord (SQLite mémoire pour `resolve`, tests purs pour le reste), puis ./identity.rs. Validé 2026-11-02
     (validator PASS, batterie ciblée ; batterie complète de `tooling.sdd` à la clôture du lot).
 

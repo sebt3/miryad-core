@@ -135,6 +135,9 @@ la syntaxe `.sdd`, `specdd resolve <cible>` vérifie la chaîne de specs avant d
   place pour #28 ; la règle reprend dès la première mise en production.
   Exception actée le 2026-10-17 (feature `matrix` jamais déployée) : `m20261006_000001` est modifiée en
   place (`payload` sur `tracked_users`, table `rooms_pending_key_bundle`) ; même clause de sortie.
+  Exception actée le 2026-11-03 (feature `lymaille` jamais déployée) : `m20261104_000001` est modifiée en
+  place (nature, agent par défaut et agents autorisés sur la table des types de contexte, DSD `lymaille#DEC-28`) ; même
+  clause de sortie.
 
 ## Git
 

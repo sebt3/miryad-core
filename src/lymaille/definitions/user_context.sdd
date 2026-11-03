@@ -35,6 +35,8 @@ Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`
 
 Tasks:
+  [ ] Réalignement R4 (DSD `DEC-27, DEC-28`, 2026-11-03) : Renommer `Project` en `Shared` ; un identifiant `H_…` n'est jamais écrit par cette ressource (`Scenario` de refus) ; contrat inchangé pour le reste.
+    Spec seule.
   [ ] Tests d'abord (hooks purs, politiques sur SQLite mémoire), puis ./user_context.rs.
 
 Done when:

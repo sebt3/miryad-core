@@ -106,6 +106,8 @@ Handles:
   Plafond `max_secs` atteint : annulation coopérative, session sauvegardée, `StepError` non retryable.
 
 Tasks:
+  [ ] Réalignement R15 (DSD `DEC-27, DEC-29`, 2026-11-03) : Après R14 : `max_secs` plafonné par la configuration de l'application (défaut 480 s inchangé) ; rôles MCP résolus par `resolve_mcp` sous le `subject` du
+    déclencheur. `OI-11` soldé (spike vert sur 40 min, `lymaille#OI-11`). Spec seule.
   [ ] Amendement lot 2 : `ResourceRegistry` + `WriteScope`, rôles MCP via `mcp_access`, scenarios (rejeu sans doublon d'écriture, `forward` refusé) d'abord, puis ./subagent_step.rs. Après ../lymaille/resource_module.rs et ../lymaille/mcp_access.rs.
   [x] Amender ./mod.sdd (déclaration gated `all(workflow, lymaille)`, ré-exports `SubagentStep`, `SubagentDeps`) et ./mod.rs dans le même lot.
     Validé 2026-11-03 (validator PASS, batterie ciblée workflow,lymaille + all-features).
