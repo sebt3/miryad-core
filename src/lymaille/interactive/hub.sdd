@@ -2,7 +2,8 @@ Spec: hub — EventHub, diffusion des événements d'une session vers ses abonn�
 
 Purpose:
   Porter le `EventSink` des sessions interactives (DSD `FR-11`, `DEC-24`) : `lymaille` émet ses événements (`TurnStarted`, `TextDelta`, `Script`,
-    `McpCall`, `TurnEnded`…) vers un `EventSink` synchrone qui ne bloque pas et ne peut pas échouer. Le hub les **diffuse** à zéro, un ou
+    `McpCall`, `TurnEnded`…) vers un `EventSink` synchrone qui ne bloque pas et ne peut pas échouer. Amendé le 2026-11-03 (`DEC-30`) : le hub diffuse des `SessionEvent` typés (./event.sdd), convertis depuis l'événement amont, et expose `publish_host` pour les événements de l'hôte.
+    Le hub les **diffuse** à zéro, un ou
     plusieurs abonnés de la **même** session (REST+SSE, Matrix, plusieurs onglets) par `tokio::sync::broadcast`, et pousse les erreurs de script
     vers l'@AuditWriter (../store/audit.sdd). Un abonné lent est décroché proprement (`Lagged`) sans ralentir le tour. Les événements portent
     déjà des noms, compteurs et enregistrements masqués (jamais un secret, `lymaille` garantit le masquage) : le hub n'y ajoute aucune
@@ -12,34 +13,36 @@ Owns:
   ./hub.rs
 
 References:
-  /dsd/miryad-core/lymaille.md — `FR-11`, `DEC-24`, `AC-15` ; ../store/audit.sdd — `AuditWriter` ; ./manager.sdd — propriétaire du hub
+  /dsd/miryad-core/lymaille.md — `FR-11`, `FR-15`, `DEC-24`, `DEC-30`, `AC-15`, `AC-20` ; ./event.sdd — @SessionEvent ; ../store/audit.sdd — `AuditWriter` ; ./manager.sdd — propriétaire du hub
   `lymaille::session::{EventSink, Event, SessionId}`
 
 Must:
-  `pub struct EventHub` — `Clone` (état partagé `Arc`), `impl EventSink` : `emit(event)` retrouve le canal de `event.session()`, `send` sans attendre ;
+  `pub struct EventHub` — `Clone` (état partagé `Arc`), `impl EventSink` : `emit(event)` pousse d'abord les erreurs de script à l'audit **depuis l'événement amont** (l'enregistrement complet), puis le convertit par `SessionEvent::from(&event)` ; retrouve le canal de `event.session`, `send` sans attendre ;
     aucun abonné → l'événement est abandonné (pas d'accumulation) ; l'erreur `SendError` est ignorée.
   `pub fn new(audit: Option<AuditWriter>, capacity: usize) -> Self` : `capacity` borne la file de chaque session (défaut conseillé 256, borné [16, 4096]).
   `pub fn register(&self, id: &SessionId, subject: &str)` : associe la session à son `subject` (appelé par ./manager.sdd à l'ouverture et à la reprise) ;
     l'audit y lit le `subject` ; une session non enregistrée n'est pas auditée (journal `warn`, jamais un événement perdu pour les abonnés).
   `pub fn subscribe(&self, subject: &str, id: &SessionId) -> Subscription` : crée le canal au besoin ; `Subscription` expose `recv()` async qui rend
-    `Ok(Event)`, `Err(Lagged(n))` (n événements perdus) ou `Err(Closed)`. Le cloisonnement du `subject` est fait par ./manager.sdd **avant** l'abonnement.
+    `Ok(SessionEvent)`, `Err(Lagged(n))` (n événements perdus) ou `Err(Closed)`. Le cloisonnement du `subject` est fait par ./manager.sdd **avant** l'abonnement.
   `pub fn close(&self, id: &SessionId)` : ferme le canal (les abonnés reçoivent `Closed`) ; appelé quand le gestionnaire retire la session.
+  `pub fn publish_host(&self, id: &SessionId, kind: &str, payload: serde_json::Value) -> Result<(), LymailleError>` (amendement DEC-30) : diffuse `SessionEventKind::Host { kind, payload }` aux abonnés
+    de `id`, avec l'horodatage courant ; `kind` vide ou `payload` dont la forme sérialisée dépasse `HOST_PAYLOAD_MAX = 65536` octets → `InvalidDefinition("host event invalid")`, rien n'est diffusé ;
+    la crate **n'interprète pas** le `payload`. Sans abonné, l'événement est abandonné comme les autres. Pas d'audit.
   Les canaux de sessions sans abonné ni tour actif sont libérés (pas de fuite pour N sessions ouvertes un jour).
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
-  Bloquer ou paniquer dans `emit` ; retenir des événements sans abonné ; mélanger les événements de deux sessions ; modifier ou enrichir un événement.
+  Bloquer ou paniquer dans `emit` ; retenir des événements sans abonné ; mélanger les événements de deux sessions ; enrichir un événement ; interpréter le `payload` d'un événement `Host`.
 
 Depends on:
-  ../store/audit.rs, @tokio, `lymaille::{EventSink, Event, SessionId}`
+  ./event.rs, ../store/audit.rs, ../error.rs, @tokio, @serde_json, `lymaille::{EventSink, Event, SessionId}`
 
 Exposes:
-  `EventHub::{new, subscribe, close}`, `Subscription::recv`, `impl EventSink`
+  `EventHub::{new, register, subscribe, close, publish_host}`, `HOST_PAYLOAD_MAX`, `Subscription::recv`, `impl EventSink`
 
 Tasks:
-  [ ] Réalignement R8 (DSD `DEC-30`, 2026-11-03) : Remplacer les événements de `lymaille` diffusés tels quels par l'enum `SessionEvent` typée avec la variante `Host{kind, payload}` ; `Scenario` d'un
-    événement `Host` qui traverse sans être interprété. Spec seule.
-  [ ] Tests d'abord (temps tokio), puis ./hub.rs.
+  [ ] Réalignement R8 (DSD `DEC-30`, 2026-11-03) : spec amendée (diffusion de `SessionEvent`, `publish_host`) avec la spec neuve ./event.sdd ; **en attente d'approbation**.
+  [ ] Tests d'abord (temps tokio), puis ./hub.rs. Après ./event.rs.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./hub.rs.
@@ -73,3 +76,23 @@ Scenario: close
   Given un abonné
   When `close(id)`
   Then `recv` rend `Closed`
+
+Scenario: les abonnés reçoivent des SessionEvent typés
+  Given un abonné et un événement amont `TurnStarted`
+  When l'événement est émis
+  Then `recv()` rend un `SessionEvent` de `kind` `turn_started`, identique à `SessionEvent::from(&event)`
+
+Scenario: publish_host diffuse sans interpréter
+  Given un abonné de `s1`
+  When `publish_host(s1, "dashboard.show", {"w":"chart"})`
+  Then l'abonné reçoit `Host { kind: "dashboard.show", payload: {"w":"chart"} }` identique ; un abonné de `s2` ne reçoit rien
+
+Scenario: un événement Host invalide est refusé
+  Given un abonné
+  When `publish_host` est appelé avec un `kind` vide, puis avec un `payload` de plus de 65536 octets
+  Then deux `Err(InvalidDefinition)` et rien n'est reçu
+
+Scenario: l'audit lit l'événement amont complet
+  Given un hub avec un `AuditWriter`
+  When un événement amont `Script` en erreur est émis
+  Then `record` reçoit l'enregistrement complet (texte de script compris) alors que l'abonné reçoit le résumé sans texte

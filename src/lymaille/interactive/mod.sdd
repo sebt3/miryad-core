@@ -10,10 +10,10 @@ Owns:
   ./mod.rs
 
 References:
-  ./hub.sdd, ./assemble.sdd, ./manager.sdd, ./activation.sdd — enfants ; ../mod.sdd — déclare `pub mod interactive;` ; /dsd/miryad-core/lymaille.md — `FR-11`, `DEC-24`
+  ./event.sdd, ./hub.sdd, ./assemble.sdd, ./manager.sdd, ./activation.sdd — enfants ; ../mod.sdd — déclare `pub mod interactive;` ; /dsd/miryad-core/lymaille.md — `FR-11`, `DEC-24`
 
 Must:
-  Déclarer `pub mod hub;`, `pub mod manager;`, `pub mod activation;` et le module privé `assemble`. Ré-exporter à plat : `hub::EventHub`,
+  Déclarer `pub mod event;` (amendement DEC-30), `pub mod hub;`, `pub mod manager;`, `pub mod activation;` et le module privé `assemble`. Ré-exporter à plat : `event::{SessionEvent, SessionEventKind, SessionOutcome}`, `hub::EventHub`,
     `manager::{SessionManager, ManagerDeps, SessionHandle}`, `activation::{activate_toolset, discard_draft, ActivationReport}`.
   Documenter dans le bloc `//!` : le modèle (un tour actif par session et par processus, tour détaché du client, principal relu à chaque appel,
     jeton `forward` en mémoire pour un seul tour), l'assemblage attendu de l'application (`SessionManager::new(ManagerDeps…)` partagé), les limites du lot 2
@@ -24,10 +24,10 @@ Must not:
   Contenir de logique ; démarrer une tâche ; monter une route.
 
 Depends on:
-  ./hub.rs, ./assemble.rs, ./manager.rs, ./activation.rs
+  ./event.rs, ./hub.rs, ./assemble.rs, ./manager.rs, ./activation.rs
 
 Exposes:
-  `EventHub`, `SessionManager`, `ManagerDeps`, `SessionHandle`, `activate_toolset`, `discard_draft`, `ActivationReport`, modules `hub`, `manager`, `activation`
+  `SessionEvent`, `SessionEventKind`, `SessionOutcome`, `EventHub`, `SessionManager`, `ManagerDeps`, `SessionHandle`, `activate_toolset`, `discard_draft`, `ActivationReport`, modules `hub`, `manager`, `activation`
 
 Tasks:
   [ ] `mod.rs` en dernier du dossier ; test de chemins plats.

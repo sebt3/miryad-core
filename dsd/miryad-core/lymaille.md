@@ -512,7 +512,9 @@ et appels d'MCP externes depuis les scripts.
 
 - **DEC-30 - Événements de session typés, extensibles, relisibles** (2026-11-03, amende `DEC-24`, `DEC-25`)
     - **Decision:** les événements du flux sont un enum `SessionEvent` exportable vers TypeScript, avec une variante `Host{kind, payload}` que
-      l'application type de son côté ; la crate n'interprète jamais le `payload` et n'emploie aucun générique. Une route de lecture rend l'état
+      l'application type de son côté ; la crate n'interprète jamais le `payload` et n'emploie aucun générique. Les types de `lymaille` étant `#[non_exhaustive]` et étrangers à `ts-rs`, `SessionEvent` est un **miroir** de la partie utile
+      au client (arbitré le 2026-11-03 : `Script` et `McpCall` en résumé, sans texte de script ni arguments ; une variante amont non reflétée devient `Other{name}`) ; l'hôte publie par
+      `EventHub::publish_host` (charge bornée à 64 Kio) ; l'export TypeScript est **côté hôte** (arbitré le 2026-11-03) : la crate fournit `export_typescript(dir)`, sans commiter de `.ts`. Une route de lecture rend l'état
       persisté de la session (messages, appels d'outil) sous les mêmes types ; le client lit l'historique puis s'abonne au SSE. Les événements `Host` ne
       sont pas rejoués, et `Last-Event-ID` reste écarté (`DEC-24`).
     - **Alternatives:** enum générique `SessionEvent<H>` (écarté : propage un paramètre de type dans le hub, le gestionnaire et les routes) ;

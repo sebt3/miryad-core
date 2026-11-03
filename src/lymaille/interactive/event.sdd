@@ -1,0 +1,90 @@
+Spec: event — SessionEvent, événements de session typés, exportables en TypeScript, extensibles par l'hôte
+
+Purpose:
+  Définir le **contrat de fil** des événements d'une session interactive (DSD `FR-15`, `DEC-30`) : un enum `SessionEvent` que le hub diffuse (./hub.sdd), que le flux
+    SSE sérialise (../http/sse.sdd), que le pont Matrix rend en texte (../chat/render.sdd) et que `ts-rs` exporte vers TypeScript pour remplacer un `ChatEvent`
+    écrit à la main. Les types de `lymaille` (`Event`, `EventKind`, `ScriptRecord`, `McpRecord`) sont `#[non_exhaustive]` et ne peuvent pas porter `ts-rs` (règle des
+    traits étrangers) : ce fichier est un **miroir** de la partie utile à un client, plus une variante d'extension `Host{kind, payload}` que l'application type de son
+    côté et dont la crate n'interprète jamais le contenu. **Arbitré le 2026-11-03 :** les enregistrements `Script` et `McpCall` sont réduits à un **résumé** (ni texte de
+    script, ni arguments MCP) ; le détail reste lisible par la route d'historique (../http/routes.sdd) sous le droit du propriétaire. Fichier neuf, conception.
+
+Owns:
+  ./event.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `FR-15`, `DEC-24`, `DEC-30`, `AC-20` ; ./hub.sdd — diffusion et `publish_host` ; ../http/sse.sdd — sérialisation ; ../http/routes.sdd — historique
+  `lymaille::session::{Event, EventKind, Outcome, ScriptRecord, McpRecord}` — API à relire en source (`[?]`, variantes et champs)
+
+Must:
+  `pub struct SessionEvent { pub session: String, pub at: String, pub kind: SessionEventKind }` : `session` = identifiant de la session, `at` = instant de l'événement en
+    **RFC 3339 UTC** (`[?]` conversion du `Timestamp` de `lymaille`, à confirmer en source). `Clone`, `Debug`, `PartialEq`, `Serialize`, `Deserialize`, `ts_rs::TS`.
+  `pub enum SessionEventKind` — `#[serde(tag = "type", rename_all = "snake_case")]`, mêmes dérives. Variantes **typées**, champs `u64` annotés `#[ts(type = "number")]` (`ts-rs`
+    exporte `u64` en `bigint` alors que JSON porte un nombre : l'annotation évite un contrat TS faux) :
+    `TurnStarted { turn }`, `TextDelta { turn, text }`, `TurnEnded { turn, outcome: SessionOutcome, response }`, `RunEnded { run: String, outcome }`,
+    `TokenUsage { prompt, completion }`, `TodoChanged`, `TitleChanged { title }`, `ReviewRequested { reason }`,
+    `Script { agent, duration_ms, result, truncated, error: Option<String> }` (**sans** texte de script), `McpCall { role, function, status, duration_ms }` (**sans** arguments),
+    `McpReconnect { role, attempt, delay_ms }`, `InferenceRetry { attempt, delay_ms, error_class }`, `Overrun { elapsed_ms }`, `ResponseTruncated { has_text, has_tool_calls }`,
+    `Other { name: String }` (tout événement amont non reflété : `MemoryChanged`, `TargetOpened`, `RunInterrupted`, et toute variante future — `name` est le nom de variante tel que `lymaille`
+      le sérialise ; aucun contenu),
+    `Host { kind: String, payload: serde_json::Value }` (`payload` exporté `#[ts(type = "unknown")]` ; émis seulement par l'hôte, ./hub.sdd).
+  `pub enum SessionOutcome { Valid, Failed, Cancelled }` — miroir de `Outcome` (`snake_case`), mêmes dérives.
+  `impl From<&Event> for SessionEvent` — **infaillible** : variante amont reflétée → variante typée équivalente ; autre variante → `Other { name }`. Les champs textuels sont recopiés tels
+    quels (déjà masqués par `lymaille`, jamais un secret) ; le `result` d'un `Script` est celui, déjà tronqué, de `ScriptRecord::result`.
+  Export TypeScript **côté hôte** (arbitré le 2026-11-03) : la crate ne commite ni ne publie aucun fichier `.ts` ; elle fournit l'outillage. `pub fn export_typescript(dir: &Path) -> Result<Vec<PathBuf>, LymailleError>` écrit
+    dans `dir` un fichier `.ts` par type exporté (`SessionEvent`, `SessionEventKind`, `SessionOutcome`) et rend les chemins écrits ; `dir` est créé au besoin ; échec d'entrée-sortie →
+    `Store(<texte sans chemin hors de dir>)`. L'application l'appelle depuis son `build.rs`, un test ou un binaire d'outillage, et choisit où versionner le résultat. Les types dérivent `ts_rs::TS`
+    sans `#[ts(export)]` (aucun fichier n'est écrit au `cargo test` de la crate).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Reprendre dans un événement le texte d'un script, les arguments d'un appel MCP, un secret, le corps d'une mémoire ou un contenu de session autre que le texte du tour ; interpréter,
+    valider ou modifier le `payload` d'un événement `Host` ; faire échouer ou paniquer la conversion `From<&Event>`.
+
+Depends on:
+  @ts_rs (dépendance optionnelle derrière la feature `lymaille`, `OI-12`), @serde, @serde_json, `lymaille::session::{Event, EventKind, Outcome}`
+
+Exposes:
+  `SessionEvent`, `SessionEventKind`, `SessionOutcome`, `impl From<&Event> for SessionEvent`, `export_typescript`
+
+Tasks:
+  [ ] Dépendance `ts-rs` (optionnelle, feature `lymaille`) : amendement de `/Cargo.toml` et `/tooling.sdd`, déjà prévu dans `../mod.sdd` (R7), à faire avant cette tâche.
+  [ ] Tests d'abord (conversion de chaque variante, `Other`, sérialisation `type`, `export_typescript` dans un répertoire temporaire), puis ./event.rs. Après approbation de cette spec et de R7.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./event.rs.
+
+Scenario: un événement de tour est typé
+  Given un `Event` amont `TextDelta { turn: 3, text: "bon" }` pour la session `s1`
+  When `SessionEvent::from(&event)` est sérialisé en JSON
+  Then le JSON est `{"session":"s1","at":"…","kind":{"type":"text_delta","turn":3,"text":"bon"}}` et `turn` est un nombre
+
+Scenario: un script est résumé sans son texte
+  Given un `Event` amont `Script` dont le `ScriptRecord` a un texte `secret_looking_script()`, un résultat tronqué et une erreur
+  When il est converti puis sérialisé
+  Then le JSON contient `agent`, `duration_ms`, `result`, `truncated`, `error` et **ne contient pas** le texte du script
+
+Scenario: un appel MCP est résumé sans ses arguments
+  Given un `Event` amont `McpCall` aux arguments `{"token_like":"x"}`
+  When il est converti puis sérialisé
+  Then le JSON contient `role`, `function`, `status`, `duration_ms` et ne contient pas les arguments
+
+Scenario: une variante non reflétée devient Other
+  Given un `Event` amont `MemoryChanged { level: "user", id: "m1" }`
+  When il est converti
+  Then `kind` vaut `Other { name: "MemoryChanged" }` sans `level` ni `id`
+
+Scenario: un événement Host traverse tel quel
+  Given un `SessionEventKind::Host { kind: "dashboard.show", payload: {"a":[1,2]} }`
+  When il est sérialisé puis désérialisé
+  Then `kind` et `payload` sont identiques bit à bit
+
+Scenario: l'export TypeScript est produit par l'outillage de la crate
+  Given un répertoire temporaire inexistant
+  When `export_typescript(dir)` est appelé, puis une seconde fois
+  Then trois fichiers `.ts` sont écrits (`SessionEvent`, `SessionEventKind`, `SessionOutcome`), le second appel rend les mêmes chemins et les mêmes contenus ; `turn`, `duration_ms` et `delay_ms`
+    y sont typés `number` (jamais `bigint`), `payload` est `unknown`, et aucun texte de script ni d'arguments n'y apparaît
+
+Scenario: un répertoire d'export inutilisable est une erreur
+  Given un `dir` qui est un fichier existant
+  When `export_typescript(dir)` est appelé
+  Then `Err(Store(…))` et aucun fichier n'est écrit
