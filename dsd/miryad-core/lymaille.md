@@ -203,7 +203,7 @@ et appels d'MCP externes depuis les scripts.
       dépendance, rustls, migration, stores de l'exécution), définitions en `MiryadResource` (`DEC-14`), module des ressources en
       lecture seule (`DEC-15`) et kind `subagent`, en batch. **Lot 1 livré d'un bloc (arbitré le 2026-11-02 : l'exécution est
       déléguée à un modèle dédié, la durée n'est pas une contrainte).** Lot 2 = sessions interactives et de configuration avec **leurs deux
-      surfaces, REST+SSE et Matrix** (arbitré le 2026-11-02, specs indépendantes par canal), glue `matrix` (`OI-5`), écritures du module des ressources. Lot 3 = kind `pad`, après une release de `lymaille` qui livre
+      surfaces, REST+SSE et Matrix** (arbitré le 2026-11-02, specs indépendantes par canal), glue `matrix` (`OI-5`, `DEC-23`), écritures du module des ressources (`DEC-21`), contextes et serveurs MCP (`DEC-20`), rétention (`DEC-22`) ; **un seul lot, sans sous-découpage (2026-11-03)**. Lot 3 = kind `pad`, après une release de `lymaille` qui livre
       `PW-1` à `PW-5` (`OI-3`).
     - **Source:** user instruction, 2026-11-02
 
@@ -369,26 +369,66 @@ et appels d'MCP externes depuis les scripts.
       partiel) ; les tables privées existent dès le lot 1 (les stores les écrivent) mais leurs entités arrivent au lot 2.
     - **Source:** user instruction, 2026-11-02 (paire de ressources) ; vue écartée par le développeur principal le 2026-11-02
 
+- **DEC-20 - Types de contexte, contextes et serveurs MCP : qui écrit, qui peut lier** (2026-11-03, séance de questions)
+    - **Context:** `OI-9`. Un toolset à rôles MCP exige un contexte ; un contexte lie un rôle à un serveur MCP ; `lymaille` 0.1.0 ne fournit aucun
+      store de définitions de serveur (`McpClientConfig` = URL + délais, `McpAuth` = en-têtes, tous deux de l'hôte).
+    - **Decision:** (1) **types de contexte** : `MiryadResource` du catalogue, lecture `Public`, écriture `AdminOnly`. (2) **contextes** : paire de
+      ressources comme `DEC-19` ; niveau `User` = `OwnerOnly`, niveau `Project` (= partagé par toute l'instance : miryad-core n'a pas d'entité
+      projet) = catalogue `AdminOnly` ; niveau `Session` interne, sans CRUD. (3) **`mcp_servers`** : `MiryadResource` admin (nom, URL, délais,
+      `auth_ref`, mode d'auth, `allowed_groups`) ; la référence d'auth est résolue par le `SecretResolver` de `DEC-16`, le secret n'est jamais en base.
+      (4) **droit d'usage** : `allowed_groups` liste des noms de groupes, plus les valeurs réservées `all` (tout authentifié) et `admin` ; un hook
+      refuse à la sauvegarde d'un contexte une liaison de rôle vers un serveur non autorisé à son propriétaire, et l'appel revalide
+      (défense en profondeur, `FR-9`) ; l'appartenance est relue en base à chaque appel, jamais mise en cache. (5) **modes d'auth** : `static`
+      (référence de secret, compte de service) et `forward` (le serveur reçoit le jeton de l'utilisateur) ; `forward` n'est valable qu'en
+      session interactive, avec le jeton frais de la requête, jamais persisté ; un step batch qui lie un serveur `forward` échoue en `StepError`
+      non retryable.
+    - **Alternatives:** serveurs en configuration d'application (écarté : pas de modification à chaud, la session de configuration n'y touche pas) ;
+      `forward` en batch par échange de jeton RFC 8693 (écarté : dépend de l'IdP, hors périmètre ; à rouvrir) ou par refresh token stocké (écarté :
+      secret longue durée au repos) ; contextes `User` à liaison libre (écarté : un utilisateur se brancherait sur un serveur à compte de service puissant).
+    - **Consequences:** `mcp_servers`, `context_types`, contextes User et Project sont des ressources du lot 2 ; la session de configuration
+      peut écrire des contextes `User` sous les mêmes hooks. Voir `DEC-21` pour l'écriture par l'agent.
+    - **Source:** user instruction, 2026-11-03
+
+- **DEC-21 - Écritures du module des ressources : aussi en batch, idempotentes** (2026-11-03, amende `DEC-11` et `DEC-15`)
+    - **Context:** `DEC-15` limitait le module à la lecture ; `DEC-11` rejoue un step batch.
+    - **Decision:** `create`, `update` et `delete` existent aussi dans le module du step batch, avec les mêmes `write_policy`, `owner_column` et
+      hooks que REST et MCP (parité, `FR-1`), sous l'identité du déclencheur. Idempotence obligatoire : une clé d'idempotence dérivée du run, du
+      step et du rang de l'appel d'outil dans la session restaurée.
+    - **Pitfall (signalé par Claude, à traiter en spec) :** au rejeu le modèle peut émettre d'autres appels que la première fois ; le rang d'appel
+      ne garantit donc pas l'identité d'une opération. À spécifier : `update`/`delete` naturellement idempotents ; `create` exige un identifiant
+      fourni (ou dérivé du contenu) et un échec de doublon traité comme un succès si le contenu est identique ; journal des écritures du step pour
+      qu'une reprise restaurée ne les refasse pas. Une écriture dont le `subject` du déclencheur manque échoue (`FR-10`).
+    - **Consequences:** `resource_module.sdd` (lot 1) est amendé, et `DEC-11` doit être relu ; tests de rejeu contre `restate-server`.
+    - **Source:** user instruction, 2026-11-03
+
+- **DEC-22 - Rétention des sessions : durée configurable et fonction de purge** (2026-11-03, solde `OI-7`)
+    - **Decision:** une durée de rétention fournie par l'application (défaut proposé : 30 jours après la dernière activité) et une fonction
+      `purge_sessions(db, now)` livrée par la crate, que l'application planifie ; aucun couplage au cycle de vie des workflows. Livrée au lot 2.
+    - **Source:** user instruction, 2026-11-03
+
+- **DEC-23 - Annuaire mxid → principal : liaison explicite à code à usage unique** (2026-11-03, solde `OI-5` pour la liaison)
+    - **Decision:** l'utilisateur, connecté en OIDC, génère un code à usage unique et le renvoie au bot par Matrix ; la liaison mxid↔subject est
+      stockée dans une table dédiée. Un mxid non lié n'a aucun droit. Une revendication OIDC portant le mxid pourra compléter la liaison plus tard.
+    - **Source:** user instruction, 2026-11-03
+
 ## Contour du lot 2
 
-Le lot 2 est **posé, non spécifié** : aucune tâche n'est ouverte, aucune spec n'est écrite. Il avancera sur arbitrage de la prochaine
-séance, après le retour du lot 1. Son périmètre (arbitré le 2026-11-02, `DEC-6`, `DEC-13`) :
+Le lot 2 est **un seul lot, sans sous-découpage** (arbitré le 2026-11-03 : la spec Matrix n'a pas besoin du code REST). Il est **posé, non spécifié** :
+aucune tâche n'est ouverte, aucune spec n'est écrite. Périmètre (`DEC-6`, `DEC-13`, `DEC-20` à `DEC-23`) :
 
 - **Socle commun d'une session interactive** : ouvrir (nature `Work` ou `Config`), envoyer un message, suivre les événements
-  (`EventSink`), annuler, reprendre. Indépendant du canal : REST+SSE et Matrix le consomment tous deux, sans décalage fonctionnel.
-- **Surface REST + SSE** : routes de conversation et flux d'événements. Touche `rest-api`. **TBD :** ces routes ne sont pas des
-  `MiryadResource` ; la règle de parité des ressources ne les vise pas, mais l'exemption (comme `/auth/*`) est à nommer par le
-  développeur principal.
-- **Surface Matrix** : mapping salle ↔ session, dédoublonnage des messages remis deux fois après bascule de bail, mise en forme des
-  sorties longues, annuaire mxid → principal (`OI-5`, bloquant).
-- **Session de configuration** (`FR-9`, `AC-8`) : `DraftStore` et `SessionIndex` branchés sur le stockage du lot 1 (`DEC-18`), activation
-  self-service.
-- **Définitions privées** : les entités `OwnerOnly` des tables privées `agents` et `toolsets` (seconde ressource de la paire, `DEC-19`), avec les
-  hooks du préfixe réservé (`G_`/`g_` refusés) et du contrôle des droits d'accord de modules du propriétaire (`FR-9`). Les stores y accèdent
-  déjà au lot 1.
-- **Écritures du module des ressources** (`create`, `update`, `delete`, `DEC-15`) : proposition à arbitrer, les réserver aux sessions
-  interactives (non rejouées par Restate) et les interdire au step batch (`DEC-11`). **TBD.**
-- **Hors lot 2 :** kind `pad` (lot 3, `OI-3`).
+  (`EventSink`), annuler, reprendre. Indépendant du canal.
+- **Surface REST + SSE** : routes de conversation et flux d'événements. Ces routes ne sont pas des `MiryadResource` ; elles sont **exemptées de la
+  règle de parité des ressources, comme `/auth/*`** (acté le 2026-11-03).
+- **Surface Matrix** : mapping salle ↔ session, dédoublonnage des messages remis deux fois après bascule de bail, mise en forme des sorties longues,
+  annuaire mxid → principal (`DEC-23`).
+- **Session de configuration** (`FR-9`, `AC-8`) : `DraftStore` et `SessionIndex` branchés sur le stockage du lot 1 (`DEC-18`), activation self-service.
+- **Définitions privées** : entités `OwnerOnly` des tables privées `agents` et `toolsets` (`DEC-19`), hooks du préfixe réservé et du contrôle des
+  droits d'accord de modules du propriétaire (`FR-9`).
+- **Types de contexte, contextes, serveurs MCP** (`DEC-20`, solde `OI-9`).
+- **Écritures du module des ressources**, interactives et batch idempotentes (`DEC-21`).
+- **Rétention des sessions** (`DEC-22`, solde `OI-7`).
+- **Hors lot 2 :** kind `pad` (lot 3, `OI-3`) ; `forward` de jeton en batch (`DEC-20`).
 
 ## Constraints and Pitfalls
 
@@ -477,17 +517,13 @@ lecture seule), `/src/workflow/subagent_step.sdd` (`FR-6`, `FR-10`). Amendements
 - **OI-5:** **Glue Matrix** (`matrix` + `lymaille`) : mapping salle ↔ session, dédoublonnage des messages remis deux
   fois après bascule de bail, mise en forme des sorties longues, annuaire mxid → principal (inexistant :
   `miryad_matrix_tracked_users` est le store crypto E2EE du bot, pas un annuaire). **TBD** — lot 2.
+  **Annuaire soldé le 2026-11-03 : `DEC-23`.** Restent à spécifier : mapping salle ↔ session, dédoublonnage, sorties longues.
 - **OI-6:** **Contrat du module des ressources** (`DEC-15`) : forme de `describe()` (champs, types, filtres permis), syntaxe du
   `<filtre>` de `list` (celle de `src/query.rs`), pagination et plafond de taille d'une réponse au LLM (rendu par
   `src/mcp/format.rs` ?). **TBD** à la spec `resource_module.sdd`.
 
-- **OI-9:** **Types de contexte, contextes et serveurs MCP** : au lot 1 aucune surface n'écrit les types de contexte ni les contextes (tables
-  internes, lues par les stores) ; un toolset qui exige un contexte ne tourne que si l'application l'a posé par les stores. Les définitions de
-  serveurs MCP (`McpClientConfig` est fourni par l'hôte, sans trait de store dans `lymaille` 0.1.0) ne sont dans aucun lot. **TBD :** un
-  `MiryadResource` `mcp_servers` (admin) au lot 2 ou plus tôt ; qui écrit types et contextes avant la session de configuration.
-- **OI-7:** **Rétention des sessions de step** : une session `Sub` par (clé du workflow, step) s'accumule dans `miryad_lymaille_sessions`
-  (le trait n'a pas de suppression, `Faits vérifiés`). **TBD :** purge, rattachée au cycle de vie du workflow ou à une durée ; sans
-  incidence sur la correction du lot 1, à arbitrer avant une mise en production.
+- **OI-9:** **Soldé le 2026-11-03 (user instruction)** : `DEC-20`. Reste hors lot 2 : `forward` de jeton en batch (échange RFC 8693 à rouvrir).
+- **OI-7:** **Soldé le 2026-11-03 (user instruction)** : `DEC-22` (durée configurable et `purge_sessions`, lot 2).
 - **OI-8:** **Fingerprint et reprise** : `restore_session` compare la `Provenance` sauvegardée à l'actuelle (empreinte de la définition,
   versions de toolsets) et rend des avis si elles diffèrent. Si l'agent est modifié entre deux tentatives d'un step, la reprise continue
   avec ces avis. **Tranché provisoirement dans `subagent_step.sdd` (en attente d'approbation) :** la reprise continue avec les avis de `lymaille`, sans échec sur empreinte différente.
