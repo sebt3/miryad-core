@@ -43,6 +43,9 @@ Must:
       objet dans ce texte.
     6. Les horodatages (`updated_at`, `created_at`) sont posés par le store à l'heure UTC courante.
   `pub(crate) fn db_text(error: &DbErr) -> String` — texte expurgé d'un `DbErr` pour la règle 5.
+    Traçabilité : la réduction en phrase fixe est implantée par sonde sur la chaîne de l'erreur (`format!("…:?")`, motifs `ColumnDecode` /
+    `Decode(`) parce que le chemin sqlx exact varie selon le graphe de features ; le pass-through d'un texte non-JSON est assumé, la
+    confidentialité ne dépend pas de cette fonction — les logs ne contiennent que des bornes fixes, contrat ../error.sdd.
   Déclarer `pub mod session; pub mod catalog; pub mod toolset; pub mod memory;` et ré-exporter à plat les huit types de store.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 

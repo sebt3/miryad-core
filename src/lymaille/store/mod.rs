@@ -47,7 +47,6 @@ pub use toolset::{SeaContextStore, SeaContextTypeStore, SeaToolsetStore};
 
 use sea_orm::DatabaseConnection;
 use sea_orm::DbErr;
-use sea_orm::RuntimeErr;
 
 use super::identity::Identity;
 
@@ -132,23 +131,25 @@ impl LymailleStores {
 /// paramètres liés n'apparaissent que dans le `Debug`. Seule réserve : une erreur de
 /// décodage d'une colonne peut avoir sa cause (le texte serde) qui cite la valeur décodée —
 /// elle est réduite à une phrase fixe.
+///
+/// La détection du décodage se fait par sonde sur le `Debug` de l'erreur : les variantes
+/// de décodage du pilote sqlx (`ColumnDecode`, `Decode`) y laissent leur nom de variante
+/// (`Debug` dérivé, `RuntimeErr`/`DbErr` le propagent). Aucun chemin d'import sqlx n'est écrit
+/// ici à dessein : `sea_orm::sqlx` et la variante sqlx de `RuntimeErr` n'existent que
+/// derrière la feature `sqlx-dep` de `sea-orm`, que notre `Cargo.toml` n'active pas — une
+/// correspondance structurelle sur ces variantes rendrait ce fichier incompilable selon le
+/// graphe de features. Angle mort assumé : un futur erreur de décodage dont le `Debug` ne
+/// porterait aucun de ces marqueurs (autre moteur, renommage amont) passerait en pass-through
+/// de son `Display` ; les erreurs de syntaxe `serde_json` ne citent pas la valeur brute,
+/// l'exposition y est limitée. Une fausse correspondance (le texte d'une erreur quelconque
+/// contenant ces marqueurs) réduit à la phrase fixe : c'est perdant en précision, jamais en
+/// confidentialité.
 pub(crate) fn db_text(error: &DbErr) -> String {
-    let runtime = match error {
-        DbErr::Exec(runtime) | DbErr::Query(runtime) | DbErr::Conn(runtime) => runtime,
-        other => return other.to_string(),
-    };
-    let decode_failure = matches!(
-        runtime,
-        RuntimeErr::SqlxError(inner)
-            if matches!(
-                inner.as_ref(),
-                sea_orm::sqlx::Error::ColumnDecode { .. } | sea_orm::sqlx::Error::Decode(_)
-            )
-    );
-    if decode_failure {
+    let debug_probe = format!("{error:?}");
+    if debug_probe.contains("ColumnDecode") || debug_probe.contains("Decode(") {
         "database failed to decode a stored column".to_owned()
     } else {
-        runtime.to_string()
+        error.to_string()
     }
 }
 
@@ -227,6 +228,7 @@ mod tests {
     use ::lymaille::AgentDefinition;
     use ::lymaille::AgentKind;
     use ::lymaille::AgentStore as _;
+    use sea_orm::ConnectionTrait as _;
     use sea_orm::DatabaseConnection;
     use sea_orm::entity::prelude::*;
 
@@ -400,5 +402,46 @@ mod tests {
             .await
             .expect("relecture de miryad_users");
         assert!(rows.is_empty(), "la résolution ne crée aucun compte : {rows:?}");
+    }
+
+    /// Règle 5, branche « erreur de décodage » de `db_text` : une colonne JSON corrompue en base
+    /// est rendue à `lymaille` par la phrase fixe — ni le texte serde, ni la valeur de la colonne
+    /// (le secret ci-dessous) ne doivent apparaître dans l'erreur.
+    ///
+    /// Exercé sur SQLite seulement : la colonne `definition` y est un `TEXT` (affinité SQLite,
+    /// pas de contrôle JSON) que l'on peut corrompre par un `UPDATE` brut ; PostgreSQL stocke un
+    /// vrai `json` et refuserait la corruption au `UPDATE`, il n'y a donc là-bas aucun
+    /// `ColumnDecode` à exercer — le tester sur PG serait un faux test.
+    #[tokio::test]
+    async fn a_corrupt_json_column_is_reduced_to_a_fixed_sentence() {
+        let db = test_db().await;
+        if !matches!(db.get_database_backend(), sea_orm::DatabaseBackend::Sqlite) {
+            return;
+        }
+        user(&db, "root", true).await;
+        let agents = LymailleStores::new(db.clone(), "root").agents();
+        agents
+            .put_agent(&agent("G_x"))
+            .await
+            .expect("la fixture écrit `G_x` au catalogue");
+        db.execute_unprepared(
+            "UPDATE miryad_lymaille_catalog_agents SET definition = '{\"prompt\":\"SECRET-dans-la-colonne\"'",
+        )
+        .await
+        .expect("SQLite accepte la colonne corrompue (JSON tronqué, pas de contrôle)");
+
+        let refused = agents
+            .get_agent("G_x")
+            .await
+            .expect_err("la colonne corrompue ne se décode pas");
+        let text = refused.to_string();
+        assert!(
+            text.ends_with("database failed to decode a stored column"),
+            "le décodage raté est réduit à la phrase fixe, préfixe de `Store` compris (règle 5) : {text}"
+        );
+        assert!(
+            !text.contains("SECRET"),
+            "la valeur de la colonne ne fuit pas dans l'erreur : {text}"
+        );
     }
 }
