@@ -56,6 +56,14 @@ Must:
     à vérifier, sinon amendement soumis à accord). La combinaison `lymaille,matrix` s'ajoute à la batterie (/tooling.sdd, /.github/workflows/workflows.sdd,
     /AGENTS.md) : tests, clippy `-D warnings` ; `cargo tree --features lymaille,matrix -e normal -i matrix-sdk` doit imprimer une ligne.
 
+  **Amendement DEC-27 et DEC-30 (2026-11-03)** : déclarer en plus `pub mod host;` (./host.sdd). Ré-exports plats ajoutés : `host::{LymailleHost, McpRequest, McpDecision, McpGrant, HostError,
+    SharedHost}`, `interactive::{SessionEvent, SessionEventKind, SessionOutcome}`, `interactive::event::export_typescript` ; `mcp_access::{resolve_role, RoleBinding, SeaHostMcpAuth}`
+    (en plus de `server_for` et `SeaMcpAuth`). Le bloc `//!` documente l'hôte applicatif : l'application fournit un `SharedHost` (optionnel) à `LymailleStores::with_host`, à `SubagentDeps::host`
+    et au gestionnaire de sessions (`ManagerDeps`), et l'export TypeScript se fait **côté application** par `export_typescript(dir)` (aucun `.ts` n'est livré avec la crate). `Cargo.toml` :
+    `lymaille = [..., "dep:chrono", "dep:ts-rs"]` (`chrono` : `McpGrant::expires_at`, déjà une dépendance optionnelle de la crate) ;
+    `ts-rs = { version = "12", optional = true }` (features par défaut, `serde-compat` ; aucune feature d'implémentation de type tiers : `at` est un `String`, `payload` est exporté `unknown`). Preuve de
+    graphe de plus : `cargo tree --no-default-features -e normal -i ts-rs` n'imprime rien (la dépendance n'existe que sous `lymaille`).
+
 Must not:
   Activer les features `fs` ou `shell` de `lymaille` (relais de `vynil-core`), directement ou par un relais miryad.
   Monter une route `axum` (lot 2 : les routeurs sont fournis par ./http et ./chat, montés par l'application, jamais par ce module ; lot 1 : aucune surface HTTP propre ; définitions exposées par le moteur générique
@@ -63,16 +71,17 @@ Must not:
   Exposer un type de `rustls` ou un secret dans l'API publique.
 
 Depends on:
-  ./error.rs, ./tls.rs, ./secret.rs, ./migration.rs, ./identity.rs, ./store/mod.rs, ./definitions/mod.rs, ./resource_module.rs
+  ./error.rs, ./tls.rs, ./secret.rs, ./migration.rs, ./identity.rs, ./host.rs, ./store/mod.rs, ./definitions/mod.rs, ./resource_module.rs, ./interactive/mod.rs, ./mcp_access.rs
 
 Exposes:
   `LymailleError`, `SecretResolver`, `EnvSecretResolver`, `Identity`, `CallerPrincipal`, `LymailleStores`, `migrations`,
-    `install_crypto_provider`, modules `store`, `definitions`, `resource_module`.
+    `install_crypto_provider`, modules `store`, `definitions`, `resource_module`, `host` (amendement DEC-27/DEC-30 : ré-exports ci-dessus).
 
 Tasks:
-  [ ] Réalignement R7 (DSD `DEC-27, DEC-30`, 2026-11-03) : Après R6 : exposer le trait `LymailleHost` au montage de l'état (optionnel) ; déclarer et ré-exporter `host` (`LymailleHost`, `McpRequest`, `McpDecision`, `McpGrant`, `HostError`, `SharedHost`) ; ajouter `ts-rs` aux dépendances de la feature (`OI-12` soldé), `Cargo.toml` et `tooling.sdd`.
-    Spec seule.
-  [x] Export TypeScript des événements (DSD `OI-12`, soldé le 2026-11-03) : `ts-rs`, dépendance optionnelle derrière la feature `lymaille` ; à ajouter à `Cargo.toml` et à `tooling.sdd` dans R7.
+  [ ] Réalignement R7 (DSD `DEC-27, DEC-30`, 2026-11-03) : spec amendée (déclaration et ré-exports de `host`, `SessionEvent`, `export_typescript`, `resolve_role`, `SeaHostMcpAuth` ; `Cargo.toml` : `dep:chrono`,
+    `dep:ts-rs` ; contrôle de graphe de `ts-rs`), **en attente d'approbation**.
+  [x] Export TypeScript des événements (DSD `OI-12`, soldé le 2026-11-03) : `ts-rs`, dépendance optionnelle derrière la feature `lymaille` ; amendement de `Cargo.toml` : voir la tâche « Amendement DEC-27/DEC-30 » ci-dessous.
+  [ ] Amendement DEC-27/DEC-30 : /Cargo.toml (`ts-rs`, `dep:chrono`), /tooling.sdd, /AGENTS.md (commande `cargo tree --no-default-features -e normal -i ts-rs`, sortie vide), /.github/workflows/workflows.sdd et ci.yml (même contrôle) ; fichiers hors périmètre : amendement soumis au développeur principal avant d'y toucher. Avant ./interactive/event.rs.
   [ ] Amendement lot 2 : `mod.rs` re-déclaré **en dernier du lot 2** (après ./interactive, ./http, ./chat, ./mcp_access, ./store, ./definitions), tests de chemins plats étendus.
   [ ] Amendement lot 2 : /Cargo.toml, /tooling.sdd, /AGENTS.md, /.github/workflows/workflows.sdd et ci.yml pour la combinaison `lymaille,matrix` et les dépendances (fichiers hors périmètre : amendement soumis au développeur principal avant d'y toucher).
   [x] `mod.rs` en dernier du lot (après tous les enfants) ; test de chemins plats. Validé 2026-11-03 (validator PASS, batterie ciblée lymaille + workflow,lymaille + all-features).
