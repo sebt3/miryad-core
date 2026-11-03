@@ -102,8 +102,9 @@ Scenario: la migration suit l'ordre d'enregistrement attendu
     les trois internes de base ; sous feature `workflow` elle en contient cinq ; sous feature `matrix`
     elle en contient une de plus, `m20261006_000001_create_matrix_store`, **en dernière position**
     (après l'index, amendement 2026-10-15 arbitré par Sébastien) ; sous feature `lymaille` elle en contient
-    encore une de plus, `m20261103_000001_create_lymaille_tables`, **en dernière position** (après celle de
-    `matrix`, amendement 2026-11-02 de `/src/migration/mod.sdd`) — soit de quatre à sept selon `workflow`,
+    deux de plus, `m20261103_000001_create_lymaille_tables` puis `m20261104_000001_lymaille_lot2` (amendement
+    lot 2 du 2026-11-03), la seconde **fermant la liste** (après celle de `matrix`, amendement 2026-11-02 de
+    `/src/migration/mod.sdd`) — soit de quatre à huit selon `workflow`,
     `matrix` et `lymaille`
 
 Done when:

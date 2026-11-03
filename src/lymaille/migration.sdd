@@ -78,6 +78,8 @@ Exposes:
 
 Tasks:
   [ ] Amendement lot 2 : seconde `Migration` `m20261104_000001_lymaille_lot2`, scenarios d'ordre et de `down` étendus, tests `has_table`/`has_index` d'abord, puis ./migration.rs ; amender ../migration/mod.sdd si le nombre d'entrées est asserté.
+    Réalisé et validé conforme (validator : spec ↔ code ↔ tests PASS) mais **non coché** : la batterie ciblée `lymaille` est rouge de 3 échecs hors périmètre — voir la question `[?]` ci-dessous.
+  [?] Arbitrage lot 2 : le `up` de `m20261104_000001` supprime `context_types`/`contexts` que le `down` de `m20261103_000001` (immuable) re-supprime strictement — la chaîne `down` complète est brisée sous `lymaille` et les trois tests de remontée complète de `../migration/m20260822_000001`/`m20260822_000002`/`m20260822_000003` échouent sous cette feature. Options : exception tracée dans `/AGENTS.md` (précédent `m20261006_000001`, feature jamais déployée) amendement en place de `m20261103_000001` qui ne créerait plus ces deux tables, ou branche `cfg` dans les trois tests (motif du contournement déjà consigné dans le test matrix de `../migration/mod.rs`). Les scénarios « down les supprime toutes » et « up crée les dix tables » ont un libellé inatteignable en chaîne complète sous `lymaille` : à ratifier ou amender avec l'arbitrage.
   [x] Tests d'abord (SQLite mémoire, motif `has_table`/`has_column`/`has_index`), puis ./migration.rs. Validé 2026-11-02
     (validator PASS après rejeu d'idempotence en direct ; batterie ciblée verte).
   [x] Amender ../migration/mod.sdd et mod.rs (ajout conditionnel `lymaille` en fin de liste) dans le même lot. Validé

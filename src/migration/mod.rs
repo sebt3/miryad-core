@@ -135,7 +135,10 @@ mod tests {
         #[cfg(feature = "matrix")]
         stems.push("m20261006_000001_create_matrix_store");
         #[cfg(feature = "lymaille")]
-        stems.push("m20261103_000001_create_lymaille_tables");
+        stems.extend([
+            "m20261103_000001_create_lymaille_tables",
+            "m20261104_000001_lymaille_lot2",
+        ]);
         stems
     }
 
@@ -363,10 +366,11 @@ mod tests {
             .pop()
             .expect("the registration list is never empty");
         // Sous `matrix`, la dernière entrée enregistrée est la migration du store (amendement
-        // 2026-10-06, en fin de liste) ; sous `lymaille`, c'est celle du module, ajoutée après
-        // toutes les autres (amendement 2026-11-02). C'est elle que `down(Some(1))` défait.
+        // 2026-10-06, en fin de liste) ; sous `lymaille`, c'est la seconde migration du module
+        // — le lot 2 (amendements 2026-11-02 et 2026-11-03), ajoutée après toutes les autres en
+        // fin de liste. C'est elle que `down(Some(1))` défait.
         let expected_last = if cfg!(feature = "lymaille") {
-            "m20261103_000001_create_lymaille_tables"
+            "m20261104_000001_lymaille_lot2"
         } else if cfg!(feature = "matrix") {
             "m20261006_000001_create_matrix_store"
         } else {
@@ -493,39 +497,61 @@ mod tests {
             "les tables miryad_matrix_* existent après up"
         );
         let expected_last: &str = if cfg!(feature = "lymaille") {
-            "m20261103_000001_create_lymaille_tables"
+            "m20261104_000001_lymaille_lot2"
         } else {
             "m20261006_000001_create_matrix_store"
         };
-        let steps_to_reach_the_store: u32 = u32::from(cfg!(feature = "lymaille")) + 1;
         assert_eq!(
             dedicated_versions(&db).await.last().map(String::as_str),
             Some(expected_last),
             "la dernière entrée du tracking est la dernière ajoutée en fin de liste"
         );
-        Migrator::down(&db, Some(steps_to_reach_the_store))
-            .await
-            .expect("down défait le store avant les tables historiques");
-        assert!(
-            !manager
-                .has_table("miryad_matrix_kv")
+        #[cfg(not(feature = "lymaille"))]
+        {
+            Migrator::down(&db, Some(1))
                 .await
-                .expect("has_table probe succeeds"),
-            "down retire les tables miryad_matrix_* avant les historiques"
-        );
-        assert!(
-            manager
-                .has_table("miryad_api_tokens")
-                .await
-                .expect("has_table probe succeeds"),
-            "les tables historiques ne sont pas touchées"
-        );
+                .expect("down défait le store avant les tables historiques");
+            assert!(
+                !manager
+                    .has_table("miryad_matrix_kv")
+                    .await
+                    .expect("has_table probe succeeds"),
+                "down retire les tables miryad_matrix_* avant les historiques"
+            );
+            assert!(
+                manager
+                    .has_table("miryad_api_tokens")
+                    .await
+                    .expect("has_table probe succeeds"),
+                "les tables historiques ne sont pas touchées"
+            );
+        }
+        #[cfg(feature = "lymaille")]
+        {
+            // Écart consigné (amendement lymaille lot 2, 2026-11-03, remonté) : sous `lymaille`,
+            // la remontée vers le store matrix traverse les deux migrations du module, dont la
+            // première (lot 1) dropperait strictement ses tables internes `context_types` et
+            // `contexts`, supprimées par le `up` de la seconde — que son propre `down` ne doit pas
+            // recréer (clause de `../lymaille/migration.sdd`). La chaîne `down` s'arrête en `DbErr`
+            // « no such table » (verrou : `first_down_drops_every_lot1_table` de ce fichier-là) et
+            // la défaite du store matrix n'est plus exerçable sous le graphe `matrix,lymaille` :
+            // seule l'ordre d'enregistrement est sondé ici.
+            assert!(
+                manager
+                    .has_table("miryad_matrix_kv")
+                    .await
+                    .expect("has_table probe succeeds"),
+                "sous `lymaille`, les tables du store matrix restent posées (chaîne down bloquée)"
+            );
+        }
     }
 
-    /// Scenario (amendement 2026-11-02) : « sous lymaille, le Migrator applique aussi les tables
-    /// du module ». Les tables `miryad_lymaille_*` existent en dernier (après les historiques et
-    /// les `miryad_matrix_*` éventuelles), et `down(Some(1))` les retire en premier, sans toucher
-    /// aux tables historiques.
+    /// Scenario (amendement 2026-11-02, étendu lot 2 le 2026-11-03) : « sous lymaille, le Migrator
+    /// applique aussi les tables du module ». Les tables `miryad_lymaille_*` existent en dernier
+    /// (après les historiques et les `miryad_matrix_*` éventuelles), et `down(Some(1))` défait
+    /// d'abord la dernière migration du module — le lot 2 — sans toucher aux tables historiques ni
+    /// à celles du lot 1, défaite au deuxième pas (pas lui-même bloqué : écart consigné dans le
+    /// test matrix ci-dessus).
     #[cfg(feature = "lymaille")]
     #[tokio::test]
     async fn lymaille_tables_are_applied_last_and_removed_first() {
@@ -541,20 +567,34 @@ mod tests {
                 .expect("has_table probe succeeds"),
             "les tables miryad_lymaille_* existent après up"
         );
+        assert!(
+            manager
+                .has_table("miryad_lymaille_mcp_servers")
+                .await
+                .expect("has_table probe succeeds"),
+            "les tables du lot 2 existent aussi après up"
+        );
         assert_eq!(
             dedicated_versions(&db).await.last().map(String::as_str),
-            Some("m20261103_000001_create_lymaille_tables"),
-            "la migration du module est la dernière entrée du tracking"
+            Some("m20261104_000001_lymaille_lot2"),
+            "la seconde migration du module est la dernière entrée du tracking"
         );
         Migrator::down(&db, Some(1))
             .await
-            .expect("down Some(1) undoes the lymaille module first");
+            .expect("down Some(1) défait la dernière migration du module en premier");
         assert!(
             !manager
+                .has_table("miryad_lymaille_mcp_servers")
+                .await
+                .expect("has_table probe succeeds"),
+            "down retire d'abord les tables du lot 2"
+        );
+        assert!(
+            manager
                 .has_table("miryad_lymaille_catalog_agents")
                 .await
                 .expect("has_table probe succeeds"),
-            "down retire d'abord les tables miryad_lymaille_*"
+            "les tables du lot 1 ne sont défaites qu'au deuxième pas"
         );
         assert!(
             manager

@@ -49,8 +49,12 @@ Must:
     en tête (ordre inverse, règle ci-dessous inchangée).
   **Amendement 2026-11-02 (`lymaille`)** : sous `#[cfg(feature = "lymaille")]`, @migrations **ajoute en fin de liste** (après les entrées
     `matrix` éventuelles, jamais avant une entrée existante) les migrations rendues par `crate::lymaille::migrations()`
-    (`../lymaille/migration.sdd`, `m20261103_000001_create_lymaille_tables`) : le module garde ses migrations hors de `src/migration/`,
+    (`../lymaille/migration.sdd` ; deux entrées depuis l'amendement lot 2 du 2026-11-03, `m20261103_000001_create_lymaille_tables`
+    puis `m20261104_000001_lymaille_lot2`) : le module garde ses migrations hors de `src/migration/`,
     l'hôte les assemble ici. Même table de suivi `seaql_migrations_miryad_core` ; `down` les défait en tête (ordre inverse).
+    Écart consigné (2026-11-03, remonté) : sous `lymaille`, un `down` complet traverse le `down` du lot 1 lymaille, qui dropperait
+    strictement ses tables internes `context_types`/`contexts` supprimées par le `up` du lot 2 — la remontée au-delà du lot 2
+    rend un @DbErr « no such table » ; les tests de remontée complète du graphe `lymaille` ne franchissent plus cette frontière.
   Ordre d'application = ordre du @Vec écrit ici, vérifié au source de sea-orm-migration 2.0.2 :
     @get_migration_files préserve l'ordre de @migrations, @exec_up_with itère les pending dans cet
     ordre, aucun tri ni graphe de dépendance n'existe (@MigrationOrder a disparu en 2.x) — toute
@@ -370,4 +374,5 @@ Scenario: sous lymaille, le Migrator applique aussi les tables du module (2026-1
   Given une base SQLite en mémoire et la feature `lymaille`
   When `Migrator::up(&db, None)` est exécuté
   Then les tables `miryad_lymaille_*` existent après les tables historiques (et les `miryad_matrix_*` éventuelles),
-    et `down(Some(1))` les retire en premier, sans toucher aux tables historiques
+    et `down(@Some(@1))` défait en premier la dernière migration du module — `m20261104_000001_lymaille_lot2`
+    (amendement lot 2 du 2026-11-03) — sans toucher aux tables historiques ni aux tables lot 1 du module

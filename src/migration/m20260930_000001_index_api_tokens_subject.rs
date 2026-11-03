@@ -173,7 +173,8 @@ mod tests {
 
     /// `Scenario` : « la migration suit l'ordre d'enregistrement attendu » — quatre entrées
     /// après les trois internes ; une de plus sous `workflow` (004), une de plus sous `matrix`
-    /// puis sous `lymaille` (amendements 2026-10-06 et 2026-11-02, chacune en dernier).
+    /// puis deux sous `lymaille` (amendements 2026-10-06, 2026-11-02 et lot 2 2026-11-03,
+    /// chacune en dernier).
     #[tokio::test]
     async fn get_migration_files_registers_the_index_migration_after_the_three_internals() {
         let files = Migrator::get_migration_files();
@@ -190,13 +191,16 @@ mod tests {
         #[cfg(feature = "matrix")]
         expected.push("m20261006_000001_create_matrix_store");
         #[cfg(feature = "lymaille")]
-        expected.push("m20261103_000001_create_lymaille_tables");
+        expected.extend([
+            "m20261103_000001_create_lymaille_tables",
+            "m20261104_000001_lymaille_lot2",
+        ]);
 
         assert_eq!(
             names, expected,
             "l'index s'inscrit après les internes et la 004 gatée ; en fin de liste, hors \
-             `lymaille`, la migration matrix est dernière, et sous `lymaille` c'est la migration \
-             du module qui ferme la liste (amendements 2026-10-06 et 2026-11-02)"
+             `lymaille`, la migration matrix est dernière, et sous `lymaille` c'est le lot 2 qui \
+             ferme la liste (amendements 2026-10-06, 2026-11-02 et 2026-11-03)"
         );
     }
 }
