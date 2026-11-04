@@ -21,7 +21,9 @@ Must:
   `impl MiryadResource` : `resource_name()` = `"lymaille_contexts"` ; lecture `OwnerOnly` ; écriture `OwnerOnly` ; `owner_column()` = `Some(Column::OwnerId)` ;
     `filter_column()` = `None` ; `label_column()` = `Some(Column::Name)`. `owner_id` est posé par le moteur (injection du propriétaire).
   `before_create` / `before_update` (`HookError` sans code) : `context` désérialisable en `ToolsetContext` sans secret ; `level` = `User` ;
-    `name` ne commence ni par `G_` ni par `g_` (`classify` = `Private`, sinon « user context name cannot use the catalog prefix ») ; `name`
+    `name` ne commence ni par `G_` ni par `g_` (`classify` = `Private`, sinon « user context name cannot use the catalog prefix ») ; un
+    identifiant `H_…` (résolu par l'hôte, DSD `DEC-27`) n'est jamais écrit par cette ressource, `classify` = `Host` (ou préfixe `h_`) →
+    « user context name cannot use the host prefix » ; `name`
     réécrit depuis le contexte ; `before_update` : `name` ne change pas.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
@@ -35,9 +37,9 @@ Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`
 
 Tasks:
-  [ ] Réalignement R4 (DSD `DEC-27, DEC-28`, 2026-11-03) : Renommer `Project` en `Shared` ; un identifiant `H_…` n'est jamais écrit par cette ressource (`Scenario` de refus) ; contrat inchangé pour le reste.
-    Spec seule.
-  [ ] Tests d'abord (hooks purs, politiques sur SQLite mémoire), puis ./user_context.rs.
+  [x] Réalignement R4 (DSD `DEC-27, DEC-28`, 2026-11-03) : Renommer `Project` en `Shared` ; un identifiant `H_…` n'est jamais écrit par cette ressource (`Scenario` de refus ajouté) ;
+    contrat inchangé pour le reste. Approuvé le 2026-11-04.
+  [x] Tests d'abord (hooks purs, politiques sur SQLite mémoire), puis ./user_context.rs. Validé 2026-11-04 (validator PASS checkpoint R1–R5).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./user_context.rs.
@@ -52,8 +54,8 @@ Scenario: le préfixe catalogue est refusé
   When `before_create`
   Then `Err(HookError)`
 
-Scenario: un niveau project est refusé dans la table privée
-  Given un contexte de niveau `project`
+Scenario: un niveau shared est refusé dans la table privée
+  Given un contexte de niveau `shared` (nom amont `project`, jeton JSON `project`)
   When `before_create`
   Then `Err(HookError)`
 
@@ -61,3 +63,8 @@ Scenario: un secret est refusé sans écho
   Given un paramètre dont la valeur ressemble à un secret
   When `before_create`
   Then `Err` sans la valeur
+
+Scenario: un identifiant hôte n'est jamais écrit
+  Given un contexte de niveau `user` nommé `H_sandbox`
+  When `before_create`
+  Then `Err(HookError)`

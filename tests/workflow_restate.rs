@@ -250,10 +250,7 @@ impl Stack {
 
     /// Pile complète avec les options de service `options` posées au `bind()` du
     /// `StepDispatcher` (spike `OI-11` : bornes de handler relevées).
-    async fn start_with_options(
-        max_depth: u32,
-        options: restate_sdk::endpoint::ServiceOptions,
-    ) -> Self {
+    async fn start_with_options(max_depth: u32, options: restate_sdk::endpoint::ServiceOptions) -> Self {
         let (ingress, admin, node, app) = (free_port(), free_port(), free_port(), free_port());
         let name = format!("miryad-restate-test-{app}");
         let started = Command::new("podman")
@@ -772,7 +769,10 @@ async fn un_step_de_40_minutes_survit_aux_bornes_relevees_du_handler() {
     let status = response.status().as_u16();
     let body = response.json::<Value>().await.unwrap_or(Value::Null);
     let duree = debut.elapsed();
-    println!("OI-11 : statut {status}, durée mesurée {duree:?}, journal {:?}", stack.journal());
+    println!(
+        "OI-11 : statut {status}, durée mesurée {duree:?}, journal {:?}",
+        stack.journal()
+    );
     assert_eq!(status, 200, "corps : {body}");
     assert!(duree >= Duration::from_mins(40), "le step a dormi {duree:?}");
     let journal = stack.journal();
@@ -789,5 +789,6 @@ async fn un_step_de_40_minutes_survit_aux_bornes_relevees_du_handler() {
 fn recommended_options_pour_spike(
     base: restate_sdk::endpoint::ServiceOptions,
 ) -> restate_sdk::endpoint::ServiceOptions {
-    base.retry_policy_max_attempts(5).retry_policy_pause_on_max_attempts()
+    base.retry_policy_max_attempts(5)
+        .retry_policy_pause_on_max_attempts()
 }

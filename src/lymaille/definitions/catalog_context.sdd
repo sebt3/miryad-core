@@ -1,7 +1,8 @@
-Spec: catalog_context — entité `lymaille_catalog_contexts`, contextes de niveau `Project` (partagés par l'instance)
+Spec: catalog_context — entité `lymaille_catalog_contexts`, contextes de niveau `Shared` (partagés par l'instance)
 
 Purpose:
-  Porter l'entité @MiryadResource des contextes de toolset partagés (table `miryad_lymaille_catalog_contexts`, DSD `DEC-20`). `Project` signifie ici
+  Porter l'entité @MiryadResource des contextes de toolset partagés (table `miryad_lymaille_catalog_contexts`, DSD `DEC-20`). `Shared` (nom amont
+  `ContextLevel::Project` dans `lymaille` 0.1.0, DSD `DEC-28`) signifie ici
     « partagé par toute l'instance » (miryad-core n'a pas d'entité projet). Écriture `AdminOnly`, lecture `Public`, identifiants `G_…` (même
     règle que ./agent.sdd). Un `ToolsetContext` est un ensemble nommé de paramètres, de liaisons rôle → nom de serveur MCP et de surcharges par
     toolset ; il **ne contient aucun secret** (`lymaille` refuse une valeur qui en a l'air). Les liaisons ne sont pas contrôlées ici
@@ -22,7 +23,8 @@ Must:
     `filter_column()` = `None` ; `label_column()` = `Some(Column::Name)`.
   `before_create` / `before_update` (`HookError` sans code) : `context` objet JSON, désérialisable en `lymaille::ToolsetContext` (constructeur
     qui applique le détecteur de secrets ; un secret détecté → « context holds a secret-like value », jamais la valeur) ; `level` du contexte
-    égal à `Project` sinon « catalog contexts have level project » ; `classify(name)` = `Catalog` ; `name` réécrit depuis le contexte ;
+    égal à `Shared` (nom amont `Project`, jeton JSON `project` sous `lymaille` 0.1.0) sinon « catalog contexts have level project » ;
+    `classify(name)` = `Catalog` ; `name` réécrit depuis le contexte ;
     `before_update` : `name` ne change pas.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
@@ -36,15 +38,15 @@ Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`
 
 Tasks:
-  [ ] Réalignement R3 (DSD `DEC-28`, 2026-11-03) : Renommer le niveau `Project` en `Shared` (doc, `Must`, `Scenario`) ; code `catalog_context.rs` en cours (non commité) à reprendre après approbation.
-    Spec seule.
-  [ ] Tests d'abord (hooks purs), puis ./catalog_context.rs.
+  [x] Réalignement R3 (DSD `DEC-28`, 2026-11-03) : Renommer le niveau `Project` en `Shared` (doc, `Must`, `Scenario`) ; code `catalog_context.rs` en cours (non commité) repris et validé.
+    Approuvé le 2026-11-04.
+  [x] Tests d'abord (hooks purs), puis ./catalog_context.rs. Validé 2026-11-04 (validator PASS checkpoint R1–R5 ; les 7 rouges du WIP sont verts).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./catalog_context.rs.
 
-Scenario: un contexte Project valide est accepté
-  Given un `ToolsetContext` `G_prod` de niveau `project` avec un paramètre `namespace`
+Scenario: un contexte Shared valide est accepté
+  Given un `ToolsetContext` `G_prod` de niveau `project` (le niveau `Shared`, jeton amont) avec un paramètre `namespace`
   When `before_create`
   Then `Ok` et `name = "G_prod"`
 

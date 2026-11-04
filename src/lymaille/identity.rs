@@ -4,7 +4,8 @@
 //! de l'hôte, le principal est reconstruit depuis la table des utilisateurs — appartenance au
 //! groupe admin à jour, jamais mise en cache (DSD `AC-5`). La nature de la session
 //! (`Work`/`Config`) n'ajoute ni n'ôte aucun droit. Porte aussi la classification des
-//! identifiants (`G_` = catalogue, DSD `DEC-9`) et le contrôle d'accord de modules d'une
+//! identifiants (`G_` = catalogue, `H_` = résolu par l'hôte, DSD `DEC-9`, `DEC-27`) et le contrôle
+//! d'accord de modules d'une
 //! définition (DSD `FR-9`).
 
 use sea_orm::entity::prelude::*;
@@ -68,23 +69,27 @@ impl Identity {
     }
 }
 
-/// Nature d'un identifiant de définition, tranchée par le préfixe seul (DSD `DEC-9`).
+/// Nature d'un identifiant de définition, tranchée par le préfixe seul (DSD `DEC-9`, `DEC-27`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdKind {
     /// Préfixe `G_` exact : le catalogue, commun à tous, en écriture réservé à l'admin.
     Catalog,
     /// Tout autre identifiant valide : le privé de son propriétaire.
     Private,
+    /// Préfixe `H_` exact : un contexte résolu par l'hôte (`LymailleHost::resolve_context`,
+    /// DSD `DEC-27`), jamais stocké en table, donc jamais écrit.
+    Host,
 }
 
-/// Classe un identifiant (DSD `DEC-9`) : un identifiant est un identifiant Rhai valide.
+/// Classe un identifiant (DSD `DEC-9`, `DEC-27`) : un identifiant est un identifiant Rhai valide.
 ///
 /// # Errors
 ///
 /// - [`LymailleError::InvalidDefinition`] : identifiant vide ou portant un caractère hors
 ///   `[A-Za-z0-9_]`.
-/// - [`LymailleError::ReservedPrefix`] : préfixe `g_` sous une casse autre que `G_` exacte —
-///   la casse est significative, `G_` seul désigne le catalogue.
+/// - [`LymailleError::ReservedPrefix`] : préfixe `g_` ou `h_` sous une casse autre que `G_` ou
+///   `H_` exacte — la casse est significative, `G_` seul désigne le catalogue, `H_` seul le
+///   résolu par l'hôte.
 pub fn classify(id: &str) -> Result<IdKind, LymailleError> {
     if id.is_empty()
         || !id
@@ -96,9 +101,12 @@ pub fn classify(id: &str) -> Result<IdKind, LymailleError> {
     if id.starts_with("G_") {
         return Ok(IdKind::Catalog);
     }
+    if id.starts_with("H_") {
+        return Ok(IdKind::Host);
+    }
     if id
         .get(..2)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("g_"))
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("g_") || prefix.eq_ignore_ascii_case("h_"))
     {
         return Err(LymailleError::ReservedPrefix(id.to_string()));
     }
@@ -106,14 +114,19 @@ pub fn classify(id: &str) -> Result<IdKind, LymailleError> {
 }
 
 /// Contrôle d'écriture d'une définition : `Catalog` exige un admin, `Private` est accepté pour
-/// tout appelant.
+/// tout appelant, `Host` est toujours refusé (DSD `DEC-27`) — aucune surface n'écrit un
+/// identifiant `H_…`, admin compris.
 ///
 /// # Errors
 ///
-/// - [`LymailleError::Forbidden`] : écriture au catalogue par un non-admin.
+/// - [`LymailleError::Forbidden`] : écriture au catalogue par un non-admin, ou tentative
+///   d'écriture d'un identifiant hôte.
 /// - Les erreurs de [`classify`] (identifiant invalide ou préfixe réservé).
 pub fn check_write(caller: &CallerPrincipal, id: &str) -> Result<IdKind, LymailleError> {
     match classify(id)? {
+        IdKind::Host => Err(LymailleError::Forbidden(
+            "host identifiers are not writable".to_string(),
+        )),
         IdKind::Catalog if !caller.is_admin => Err(LymailleError::Forbidden(
             "catalog write requires admin".to_string(),
         )),
@@ -222,32 +235,46 @@ mod tests {
         );
     }
 
-    /// `Scenario` : « la classification des identifiants » — table complète verrouillée.
+    /// `Scenario` : « la classification des identifiants » — table complète verrouillée,
+    /// amendement R5 (DSD `DEC-27`) : `H_sandbox` est `Host`, `h_sandbox` un préfixe réservé.
     #[test]
     fn classify_follows_the_classification_table() {
-        let outcomes: Vec<String> = ["G_triage", "g_triage", "G-x", "triage", "mon_agent", "", "a b"]
-            .iter()
-            .map(|id| match classify(id) {
-                Ok(IdKind::Catalog) => "Catalog".to_string(),
-                Ok(IdKind::Private) => "Private".to_string(),
-                Err(LymailleError::ReservedPrefix(payload)) => {
-                    assert_eq!(
-                        payload, *id,
-                        "`ReservedPrefix` porte l'identifiant, jamais un secret"
-                    );
-                    "ReservedPrefix".to_string()
-                }
-                Err(LymailleError::InvalidDefinition(payload)) => {
-                    assert_eq!(payload, "invalid identifier", "`Must` règle 1");
-                    "InvalidDefinition".to_string()
-                }
-                Err(other) => format!("Unexpected({other})"),
-            })
-            .collect();
+        let outcomes: Vec<String> = [
+            "G_triage",
+            "g_triage",
+            "H_sandbox",
+            "h_sandbox",
+            "G-x",
+            "triage",
+            "mon_agent",
+            "",
+            "a b",
+        ]
+        .iter()
+        .map(|id| match classify(id) {
+            Ok(IdKind::Catalog) => "Catalog".to_string(),
+            Ok(IdKind::Private) => "Private".to_string(),
+            Ok(IdKind::Host) => "Host".to_string(),
+            Err(LymailleError::ReservedPrefix(payload)) => {
+                assert_eq!(
+                    payload, *id,
+                    "`ReservedPrefix` porte l'identifiant, jamais un secret"
+                );
+                "ReservedPrefix".to_string()
+            }
+            Err(LymailleError::InvalidDefinition(payload)) => {
+                assert_eq!(payload, "invalid identifier", "`Must` règle 1");
+                "InvalidDefinition".to_string()
+            }
+            Err(other) => format!("Unexpected({other})"),
+        })
+        .collect();
         assert_eq!(
             outcomes,
             [
                 "Catalog",
+                "ReservedPrefix",
+                "Host",
                 "ReservedPrefix",
                 "InvalidDefinition",
                 "Private",
@@ -257,6 +284,41 @@ mod tests {
             ],
             "table du Scenario « la classification des identifiants »"
         );
+    }
+
+    /// `Scenario` (réalignement R5, DSD `DEC-27`) : « un identifiant hôte n'est écrit par
+    /// personne » — `H_…` est refusé par `check_write` admin compris, et `h_…` relève de
+    /// `ReservedPrefix` avant toute décision d'écriture.
+    #[test]
+    fn check_write_refuses_host_identifiers_for_everyone() {
+        let admin = CallerPrincipal {
+            user_id: 1,
+            subject: "admin".to_string(),
+            is_admin: true,
+        };
+        let non_admin = CallerPrincipal {
+            user_id: 2,
+            subject: "alice".to_string(),
+            is_admin: false,
+        };
+
+        for caller in [&admin, &non_admin] {
+            let denied = check_write(caller, "H_sandbox");
+            assert!(
+                matches!(&denied, Err(LymailleError::Forbidden(message))
+                    if message == "host identifiers are not writable"),
+                "`H_sandbox` n'est écrit par personne (admin compris), ici {:?} : {denied:?}",
+                caller.is_admin
+            );
+            let lowercase = check_write(caller, "h_sandbox");
+            assert!(
+                matches!(&lowercase, Err(LymailleError::ReservedPrefix(payload))
+                    if payload == "h_sandbox"),
+                "`h_sandbox` est un préfixe réservé avant toute décision d'écriture, \
+                 ici {:?} : {lowercase:?}",
+                caller.is_admin
+            );
+        }
     }
 
     /// `Scenario` : « seul un admin écrit au catalogue ».

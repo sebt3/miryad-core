@@ -40,6 +40,12 @@ pub mod provider;
 /// Types de contexte du catalogue (`src/lymaille/definitions/context_type.sdd`).
 pub mod context_type;
 
+/// Contextes de toolset du catalogue (`src/lymaille/definitions/catalog_context.sdd`).
+pub mod catalog_context;
+
+/// Contextes de toolset personnels, `OwnerOnly` (`src/lymaille/definitions/user_context.sdd`).
+pub mod user_context;
+
 #[cfg(test)]
 mod tests {
     use super::agent;

@@ -35,6 +35,19 @@ pub struct Model {
     /// Version sémantique de la version active (à défaut du brouillon), copie dérivée par les
     /// hooks.
     pub version: String,
+    /// Nature des sessions ouvertes par ce type (`work` | `config`, DSD `DEC-28`) — colonne miryad,
+    /// ces champs ne vivent pas dans l'objet `ContextType` de `lymaille` (`ContextTypeStore`
+    /// vérifié, amendement R1). Les hooks refusent toute autre valeur, `sub` compris : un type du
+    /// catalogue n'ouvre que du travail ou de la configuration.
+    pub kind: String,
+    /// Agent par défaut à l'ouverture d'une session dans un contexte de ce type (DSD `DEC-28`).
+    /// Colonne nullable en base, exigée posée par les hooks — motif des toolsets : le contrôle est
+    /// celui des hooks, pas une contrainte `CHECK`.
+    pub default_agent: Option<String>,
+    /// Ensemble des agents autorisés à l'ouverture, tableau JSON d'identifiants (DSD `DEC-28`) :
+    /// l'agent par défaut doit en être, un agent explicite hors de l'ensemble est refusé à
+    /// l'ouverture (`mcp_access`/`assemble`, hors de cette entité).
+    pub allowed_agents: serde_json::Value,
     /// Le `lymaille::ContextType` actif, colonne JSON nullable — `None` tant qu'aucune version
     /// n'est activée (DSD `DEC-18`).
     pub active: Option<serde_json::Value>,
@@ -86,12 +99,49 @@ impl Entity {
             .ok_or_else(|| HookError::new(format!("invalid context type: no `{champ}` in the stored form")))
     }
 
+    /// Porte des trois colonnes DEC-28 (réalignement R1 de `./context_type.sdd`) : nature parmi
+    /// `work`/`config` (`sub` et toute autre valeur sont refusés), agent par défaut posé, agent
+    /// par défaut membre de l'ensemble autorisé. Les valeurs `NotSet` comptent comme absentes :
+    /// la porte refuse, le `NotSet` n'atteint jamais la base. Elle est placée avant les portes
+    /// JSON : les colonnes sont indépendantes de `active`/`draft`, et l'arbitrage `[?]` du
+    /// nommage `G_` ouvert rendrait la moindre des portes JSON infranchissable avec un nom du
+    /// catalogue.
+    fn valider_champs_pilotes(active: &ActiveModel) -> Result<(), HookError> {
+        let nature = match &active.kind {
+            ActiveValue::Set(nature) | ActiveValue::Unchanged(nature) => nature.as_str(),
+            ActiveValue::NotSet => "",
+        };
+        if !matches!(nature, "work" | "config") {
+            return Err(HookError::new("context type kind must be work or config"));
+        }
+        let defaut = match &active.default_agent {
+            ActiveValue::Set(defaut) | ActiveValue::Unchanged(defaut) => defaut.as_ref(),
+            ActiveValue::NotSet => None,
+        };
+        let Some(defaut) = defaut else {
+            return Err(HookError::new("a context type needs a default agent"));
+        };
+        let autorise = match &active.allowed_agents {
+            ActiveValue::Set(agents) | ActiveValue::Unchanged(agents) => agents
+                .as_array()
+                .is_some_and(|agents| agents.iter().any(|agent| agent.as_str() == Some(defaut.as_str()))),
+            ActiveValue::NotSet => false,
+        };
+        if !autorise {
+            return Err(HookError::new(
+                "context type default agent must be in the allowed agents",
+            ));
+        }
+        Ok(())
+    }
+
     /// Porte commune de `before_create` (`existing` absent) et `before_update`, dans l'ordre du
-    /// `Must` de `./context_type.sdd`, interrompue au premier échec : au moins une version, chacune
-    /// désérialisée en `lymaille::ContextType` (le constructeur compile le schéma), `name` du
-    /// catalogue (`G_` exact via `classify`, DSD `DEC-9` — tout autre rendu, y compris une erreur
-    /// de `classify`, est le même refus), et sur une mise à jour `name` ne change pas. `name` et
-    /// `version` (celle de l'active, à défaut du brouillon) sont toujours réécrits.
+    /// `Must` de `./context_type.sdd`, interrompue au premier échec : au moins une version, les
+    /// trois colonnes pilotes DEC-28 (réalignement R1), chacune des versions désérialisée en
+    /// `lymaille::ContextType` (le constructeur compile le schéma), `name` du catalogue (`G_`
+    /// exact via `classify`, DSD `DEC-9` — tout autre rendu, y compris une erreur de `classify`,
+    /// est le même refus), et sur une mise à jour `name` ne change pas. `name` et `version`
+    /// (celle de l'active, à défaut du brouillon) sont toujours réécrits.
     fn valider_et_deriver(
         mut active: ActiveModel,
         existing: Option<&Model>,
@@ -103,6 +153,7 @@ impl Entity {
                 "a context type needs an active version or a draft",
             ));
         }
+        Self::valider_champs_pilotes(&active)?;
         brute_active.map(Self::charger).transpose()?;
         brute_draft.map(Self::charger).transpose()?;
         let brute = brute_active
@@ -228,17 +279,35 @@ mod tests {
         value
     }
 
-    /// `ActiveModel` dans la forme qui atteint le hook : colonnes dérivées fausses (le hook doit
-    /// les réécrire), versions voulues, clé et horodatage non posés.
-    fn active_avec(active: Option<serde_json::Value>, draft: Option<serde_json::Value>) -> ActiveModel {
+    /// `ActiveModel` dans la forme qui atteint le hook, champs du réalignement R1 réglés : colonnes
+    /// dérivées fausses (le hook doit les réécrire), versions et champs DEC-28 voulus, clé et
+    /// horodatage non posés.
+    fn active_avec_champs(
+        kind: &str,
+        default_agent: Option<&str>,
+        allowed_agents: serde_json::Value,
+        active: Option<serde_json::Value>,
+        draft: Option<serde_json::Value>,
+    ) -> ActiveModel {
         ActiveModel {
             id: NotSet,
             name: Set("faux-nom".to_string()),
             version: Set("0.0.0".to_string()),
+            kind: Set(kind.to_string()),
+            default_agent: Set(default_agent.map(str::to_owned)),
+            allowed_agents: Set(allowed_agents),
             active: Set(active),
             draft: Set(draft),
             created_at: NotSet,
         }
+    }
+
+    /// `ActiveModel` dans la forme qui atteint le hook : colonnes dérivées fausses (le hook doit
+    /// les réécrire), versions voulues, clé et horodatage non posés. Champs DEC-28 valides
+    /// (`work`, `G_triage` autorisé par lui-même) pour que les Scenarios existants atteignent
+    /// leurs propres portes.
+    fn active_avec(active: Option<serde_json::Value>, draft: Option<serde_json::Value>) -> ActiveModel {
+        active_avec_champs("work", Some("G_triage"), json!(["G_triage"]), active, draft)
     }
 
     /// Scenario « un type valide du catalogue est accepté, ses colonnes dérivées ».
@@ -339,6 +408,127 @@ mod tests {
                 assert_eq!(erreur.message, "context type name must start with G_ (catalog)");
             }
             Ok(_) => panic!("`cluster` n'est pas un identifiant du catalogue"),
+        }
+    }
+
+    /// Scenario (réalignement R1, DSD `DEC-28`) « un type sans agent par défaut est refusé » :
+    /// la nature et l'ensemble sont conformes, seul l'agent par défaut manque.
+    #[test]
+    fn before_create_refuse_un_type_sans_agent_par_defaut() {
+        let rendu = Entity::before_create(
+            active_avec_champs(
+                "work",
+                None,
+                json!(["G_triage"]),
+                Some(type_json("cluster", "1.0.0", json!({"type": "object"}))),
+                None,
+            ),
+            &principal(),
+        );
+        match rendu {
+            Err(erreur) => {
+                assert!(
+                    erreur.code.is_none(),
+                    "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
+                );
+                assert_eq!(erreur.message, "a context type needs a default agent");
+            }
+            Ok(_) => panic!("un type de contexte sans agent par défaut doit être refusé"),
+        }
+    }
+
+    /// Scenario (réalignement R1, DSD `DEC-28`) « un type sans agent par défaut est refusé »,
+    /// branche `ActiveValue::NotSet` du `Must` : « un `ActiveValue::NotSet` compte comme absent
+    /// et refuse ». Le `Must` est vérifié par construction directe de l'`ActiveModel` — la
+    /// colonne n'est pas posée `None`, elle n'est jamais posée du tout.
+    #[test]
+    fn before_create_refuse_un_agent_par_defaut_non_pose() {
+        let mut active = active_avec_champs(
+            "work",
+            Some("G_triage"),
+            json!(["G_triage"]),
+            Some(type_json("cluster", "1.0.0", json!({"type": "object"}))),
+            None,
+        );
+        active.default_agent = NotSet;
+        let rendu = Entity::before_create(active, &principal());
+        match rendu {
+            Err(erreur) => {
+                assert!(
+                    erreur.code.is_none(),
+                    "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
+                );
+                assert_eq!(erreur.message, "a context type needs a default agent");
+            }
+            Ok(_) => panic!("un `default_agent` `NotSet` compte comme absent et refuse : {rendu:?}"),
+        }
+    }
+
+    /// Scenario (réalignement R1, DSD `DEC-28`) « un agent par défaut hors de l'ensemble autorisé
+    /// est refusé » : `G_autre` n'est pas dans `["G_triage"]`.
+    #[test]
+    fn before_create_refuse_un_agent_par_defaut_hors_de_l_ensemble_autorise() {
+        let rendu = Entity::before_create(
+            active_avec_champs(
+                "work",
+                Some("G_autre"),
+                json!(["G_triage"]),
+                Some(type_json("cluster", "1.0.0", json!({"type": "object"}))),
+                None,
+            ),
+            &principal(),
+        );
+        match rendu {
+            Err(erreur) => {
+                assert!(
+                    erreur.code.is_none(),
+                    "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
+                );
+                assert_eq!(
+                    erreur.message,
+                    "context type default agent must be in the allowed agents"
+                );
+            }
+            Ok(_) => panic!("un agent par défaut hors de l'ensemble autorisé doit être refusé"),
+        }
+    }
+
+    /// Scenario (réalignement R1, DSD `DEC-28`) « une nature inconnue est refusée » : le type
+    /// n'ouvre que du `work` ou du `config` — `sub` et toute autre valeur sont refusés. Les cinq
+    /// cas du `Must` : `sub`, `travail`, `WORK`, vide, et `ActiveValue::NotSet` — un `NotSet`
+    /// compte comme absent et refuse.
+    #[test]
+    fn before_create_refuse_une_nature_inconnue() {
+        let natures = [
+            Set("sub".to_string()),
+            Set("travail".to_string()),
+            Set("WORK".to_string()),
+            Set(String::new()),
+            NotSet,
+        ];
+        for nature in &natures {
+            let mut active = active_avec_champs(
+                "work",
+                Some("G_triage"),
+                json!(["G_triage"]),
+                Some(type_json("cluster", "1.0.0", json!({"type": "object"}))),
+                None,
+            );
+            active.kind = nature.clone();
+            let rendu = Entity::before_create(active, &principal());
+            match rendu {
+                Err(erreur) => {
+                    assert!(
+                        erreur.code.is_none(),
+                        "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
+                    );
+                    assert_eq!(
+                        erreur.message, "context type kind must be work or config",
+                        "la nature {nature:?} est refusée pour la bonne raison"
+                    );
+                }
+                Ok(_) => panic!("une nature {nature:?} inconnue doit être refusée"),
+            }
         }
     }
 }

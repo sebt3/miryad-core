@@ -355,6 +355,26 @@ mod m20261104_000001_lymaille_lot2 {
     /// Seconde migration du module, rendue par `super::migrations()` en second.
     pub(super) struct Migration;
 
+    /// Colonnes de `catalog_context_types` : la forme catalogue (`id`, `name` unique, `version`,
+    /// versions actives et brouillon, horodatage) plus les trois colonnes pilotes DEC-28 du
+    /// réalignement R2 — nature, agent par défaut, ensemble des agents autorisés (modification en
+    /// place actée le 2026-11-03, exception `/AGENTS.md`, migration jamais déployée).
+    /// `default_agent` est nullable en base mais exigé posé par les hooks, comme `active`/`draft`
+    /// des toolsets (`../definitions/context_type.sdd`).
+    fn context_type_columns() -> Vec<ColumnDef> {
+        vec![
+            id(),
+            unique_text("name"),
+            text("version"),
+            text("kind"),
+            opt_text("default_agent"),
+            json("allowed_agents"),
+            opt_json("active"),
+            opt_json("draft"),
+            timestamp("created_at"),
+        ]
+    }
+
     /// Les dix tables de l'amendement, dans l'ordre de `up` (`down` le parcourt à l'envers).
     /// `catalog_context_types` et `catalog_contexts` suivent la forme catalogue (PK entière, nom
     /// unique `G_…`) ; `user_contexts` la forme privée (`owner_id`, unicité par propriétaire) ;
@@ -363,14 +383,7 @@ mod m20261104_000001_lymaille_lot2 {
         vec![
             TableSpec {
                 suffix: "catalog_context_types",
-                columns: vec![
-                    id(),
-                    unique_text("name"),
-                    text("version"),
-                    opt_json("active"),
-                    opt_json("draft"),
-                    timestamp("created_at"),
-                ],
+                columns: context_type_columns(),
                 primary_key: &[],
             },
             TableSpec {
@@ -640,11 +653,23 @@ mod tests {
     ];
 
     /// Les dix tables de l'« Amendement lot 2 », suffixe + colonnes déclarées, dans l'ordre de
-    /// `up` (`down` le parcourt à l'envers).
+    /// `up` (`down` le parcourt à l'envers). `catalog_context_types` porte les trois colonnes du
+    /// réalignement R2 (DSD `DEC-28`, modification en place actée le 2026-11-03) : nature, agent
+    /// par défaut, ensemble des agents autorisés.
     const TABLES_LOT2: [(&str, &[&str]); 10] = [
         (
             "catalog_context_types",
-            &["id", "name", "version", "active", "draft", "created_at"],
+            &[
+                "id",
+                "name",
+                "version",
+                "kind",
+                "default_agent",
+                "allowed_agents",
+                "active",
+                "draft",
+                "created_at",
+            ],
         ),
         ("catalog_contexts", &["id", "name", "context", "created_at"]),
         (
@@ -926,6 +951,28 @@ mod tests {
                     .await
                     .expect("has_table probe succeeds"),
                 "le up du lot 2 ne touche pas la table {name} du lot 1"
+            );
+        }
+    }
+
+    /// Scenario (réalignement R2, DSD `DEC-28`, 2026-11-03) : `catalog_context_types` porte les
+    /// trois colonnes pilotes de la session — nature (`work`|`config`), agent par défaut, ensemble
+    /// des agents autorisés. Sondes `has_column` sur le schéma complet.
+    #[tokio::test]
+    async fn lot2_catalog_context_types_carries_the_three_session_columns() {
+        let db = fresh_db().await;
+        LymailleMigrator::up(&db, None)
+            .await
+            .expect("le up complet pose les schémas des deux lots");
+        let manager = SchemaManager::new(&db);
+        let name = table("catalog_context_types");
+        for column in ["kind", "default_agent", "allowed_agents"] {
+            assert!(
+                manager
+                    .has_column(name.as_str(), column)
+                    .await
+                    .expect("has_column probe succeeds"),
+                "la table {name} porte la colonne {column} (réalignement R2, DSD `DEC-28`)"
             );
         }
     }

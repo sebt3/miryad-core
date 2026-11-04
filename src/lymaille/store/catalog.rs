@@ -163,6 +163,12 @@ impl AgentStore for SeaAgentStore {
         let Ok(kind) = classify(id) else {
             return Ok(None);
         };
+        // DEC-27 (amendement à venir dans `./catalog.sdd`) : un identifiant `H_…` est résolu
+        // par l'hôte, jamais stocké en table — lecture `Ok(None)` sans requête, avant même la
+        // reconstruction du principal.
+        if kind == IdKind::Host {
+            return Ok(None);
+        }
         let caller = principal(&self.identity, &self.subject).await?;
         let mut select = Query::select();
         select.column(Alias::new("definition"));
@@ -178,6 +184,8 @@ impl AgentStore for SeaAgentStore {
                     .and_where(Expr::col(Alias::new("owner_id")).eq(caller.user_id))
                     .and_where(Expr::col(Alias::new("agent_id")).eq(id));
             }
+            // Garde de couverture : `Host` rend déjà `Ok(None)` sans requête plus haut.
+            IdKind::Host => return Ok(None),
         }
         let stored = first_json(&self.db, &select, "definition")
             .await
@@ -246,6 +254,13 @@ impl AgentStore for SeaAgentStore {
                     &["kind", "profile", "definition"],
                 )
                 .await
+            }
+            // DEC-27 (amendement à venir dans `./catalog.sdd`) : `check_write` refuse déjà
+            // `H_…` en amont — aucun accès table ; branche de couverture au même refus.
+            IdKind::Host => {
+                return Err(deny(&LymailleError::Forbidden(
+                    "host identifiers are not writable".to_string(),
+                )));
             }
         };
         outcome.map_err(|err| AgentsError::Store(db_text(&err)))

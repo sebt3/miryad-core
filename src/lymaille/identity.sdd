@@ -54,8 +54,8 @@ Exposes:
   `CallerPrincipal`, `Identity::{new, resolve}`, `IdKind`, `classify`, `check_write`, `check_grants`
 
 Tasks:
-  [ ] Réalignement R5 (DSD `DEC-27`, 2026-11-03) : spec amendée le 2026-11-03 (variante `IdKind::Host`, préfixe `H_`, refus d'écriture, `Scenario` ci-dessous),
-    **en attente d'approbation**.
+  [x] Réalignement R5 (DSD `DEC-27`, 2026-11-03) : spec amendée le 2026-11-03 (variante `IdKind::Host`, préfixe `H_`, refus d'écriture, `Scenario` ci-dessous),
+    approuvée le 2026-11-04.
   [ ] Après approbation de R5 : tests d'abord pour `Host` et `h_`, puis amender ./identity.rs (variante `IdKind::Host`, `classify`, `check_write`) ; les `match` exhaustifs sur `IdKind`
     de ./store/catalog.rs (trois sites) et ./store/toolset.rs (deux sites) cessent de compiler : `Host` y est une erreur (`NotFound` en lecture, `Forbidden` en écriture, aucun
     accès table). Ces deux fichiers appartiennent à `store/catalog.sdd` et `store/toolset.sdd` : leur amendement (une ligne de `Must` + un `Scenario` chacun) est une tâche à part, avant celle-ci.

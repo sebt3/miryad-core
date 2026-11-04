@@ -17,11 +17,18 @@ References:
 
 Must:
   `Entity`/`Model`/`ActiveModel`, `table_name = "miryad_lymaille_catalog_context_types"`, `Model` : `id: i32` (PK), `name: String` (unique, `G_…`),
-    `version: String` (semver), `active: Option<serde_json::Value>`, `draft: Option<serde_json::Value>`, `created_at: DateTimeUtc`.
+    `version: String` (semver), `kind: String` (`work`|`config`, DSD `DEC-28`), `default_agent: Option<String>` (DSD `DEC-28`),
+    `allowed_agents: serde_json::Value` (tableau JSON d'identifiants, DSD `DEC-28`), `active: Option<serde_json::Value>`,
+    `draft: Option<serde_json::Value>`, `created_at: DateTimeUtc`. Les trois colonnes `DEC-28` vivent en miryad-core : le
+    `ContextType` de `lymaille` ne porte que `name`/`version`/`schema`/`roles`/`includes` (`ContextTypeStore` vérifié, R1).
   `impl MiryadResource` : `resource_name()` = `"lymaille_catalog_context_types"` ; lecture `Public` ; écriture `AdminOnly` ; `owner_column()` = `None` ;
     `filter_column()` = `None` ; `label_column()` = `Some(Column::Name)`.
-  `before_create` / `before_update` (premier échec interrompt, `HookError` sans code) : au moins un de `active`/`draft` non nul ; chaque colonne
-    non nulle se désérialise en `lymaille::ContextType` (le constructeur compile le schéma : un schéma invalide est refusé avec le message de
+  `before_create` / `before_update` (premier échec interrompt, `HookError` sans code) : au moins un de `active`/`draft` non nul ; puis la porte
+    `DEC-28`, placée avant les portes JSON car les trois colonnes pilotes en sont indépendantes et que l'arbitrage `[?]` du nommage `G_`
+    rendrait les portes JSON seules observables : `kind` exactement `work` ou `config` (sensible à la casse, `sub` et toute autre valeur
+    refusés) ; `default_agent` posé (colonne nullable en base, exigée par les hooks — motif `active`/`draft` des toolsets) et membre de
+    `allowed_agents` par comparaison de chaînes exacte ; un `ActiveValue::NotSet` compte comme absent et refuse. Chaque colonne non nulle
+    se désérialise ensuite en `lymaille::ContextType` (le constructeur compile le schéma : un schéma invalide est refusé avec le message de
     `lymaille`, jamais le schéma) ; `classify(name)` doit rendre `Catalog` sinon « context type name must start with G_ (catalog) » ; `name` et
     `version` sont réécrits depuis `active` (sinon `draft`) ; `before_update` : `name` ne change pas.
   Compiler sous `#[cfg(feature = "lymaille")]`.
@@ -65,3 +72,18 @@ Scenario: un nom privé est refusé
   Given un type nommé `cluster`
   When `before_create`
   Then `Err(HookError)` « must start with G_ »
+
+Scenario: un type sans agent par défaut est refusé
+  Given un `ActiveModel` valide par ailleurs mais `default_agent` `None` ou `NotSet`
+  When `before_create`
+  Then `Err(HookError)`
+
+Scenario: un agent par défaut hors de l'ensemble autorisé est refusé
+  Given `default_agent = "G_alpha"` et `allowed_agents` ne contenant que `"G_beta"`
+  When `before_create`
+  Then `Err(HookError)`
+
+Scenario: une nature inconnue est refusée
+  Given `kind` valant `sub`, `travail`, `WORK`, vide, ou non posé (`ActiveValue::NotSet`)
+  When `before_create`
+  Then `Err(HookError)` dans les cinq cas

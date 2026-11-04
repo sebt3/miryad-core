@@ -52,7 +52,11 @@ Must:
     `if_not_exists`, JSON `json()`, aucune `FOREIGN KEY`, aucun défaut serveur d'horodatage) :
     supprime les tables internes du lot 1 `context_types` et `contexts` (aucune donnée de production, la feature n'est pas déployée ; remplacées ci-dessous :
       `ContextTypeStore` et `ContextStore` lisent désormais les tables à identifiant entier, ../store/toolset.sdd) ;
-    `catalog_context_types` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** (`G_…`) ; `version` TEXT NOT NULL ; `active` JSON NULL ; `draft` JSON NULL ; `created_at`.
+    `catalog_context_types` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** (`G_…`) ; `version` TEXT NOT NULL ; `kind` TEXT NOT NULL
+      (`work`|`config`, DSD `DEC-28`, réalignement R2) ; `default_agent` TEXT NULL (DSD `DEC-28`) ; `allowed_agents` JSON NOT NULL (tableau
+      d'identifiants, DSD `DEC-28`) ; `active` JSON NULL ; `draft` JSON NULL ; `created_at`. Les trois colonnes `DEC-28` sont posées en
+      modification en place de `m20261104_000001` (exception `/AGENTS.md` du 2026-11-03, feature jamais déployée) ; contrat de l'entité :
+      ./definitions/context_type.sdd.
     `catalog_contexts` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** (`G_…`) ; `context` JSON NOT NULL ; `created_at` (contextes de niveau `Project`).
     `user_contexts` — `id` PK auto ; `owner_id` INTEGER NOT NULL ; `name` TEXT NOT NULL ; `context` JSON NOT NULL ; `created_at` ; `UNIQUE(owner_id, name)`.
     `mcp_servers` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** ; `url` TEXT NOT NULL ; `request_timeout_secs` INTEGER NOT NULL ; `connect_timeout_secs`
@@ -77,7 +81,7 @@ Exposes:
   `migrations`
 
 Tasks:
-  [ ] Réalignement R2 (DSD `DEC-28`, 2026-11-03) : Après R1 : ajouter les trois colonnes du type de contexte à la table de `m20261104_000001` (modification en place, migration non déployée) ;
+  [x] Réalignement R2 (DSD `DEC-28`, 2026-11-03) : Après R1 : ajouter les trois colonnes du type de contexte à la table de `m20261104_000001` (modification en place, migration non déployée) ;
     `Scenario` `has_column`. Exige d'actualiser les exceptions de /AGENTS.md (et `miryad-core#CON-5`) : amendement soumis au développeur principal avant
     d'y toucher, sinon migration suivante. Spec seule.
   [ ] Amendement lot 2 : seconde `Migration` `m20261104_000001_lymaille_lot2`, scenarios d'ordre et de `down` étendus, tests `has_table`/`has_index` d'abord, puis ./migration.rs ; amender ../migration/mod.sdd si le nombre d'entrées est asserté.
@@ -106,3 +110,8 @@ Scenario: l'unicité de agent_id est par table, et par propriétaire pour le pri
   Given les migrations appliquées
   When on insère deux agents `x` de même `owner_id` dans `agents`, puis `x` chez deux propriétaires différents, puis deux `G_x` dans `catalog_agents`
   Then le second `x` du même propriétaire échoue, les propriétaires différents réussissent, le second `G_x` du catalogue échoue
+
+Scenario: le type de contexte porte les trois colonnes pilotes du contexte
+  Given les migrations appliquées sous `lymaille`
+  When on inspecte `miryad_lymaille_catalog_context_types` (`has_column`)
+  Then `kind` (`TEXT NOT NULL`), `default_agent` (TEXT nullable) et `allowed_agents` (`JSON NOT NULL`) existent, et le `up` est idempotent
