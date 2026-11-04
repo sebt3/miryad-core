@@ -22,6 +22,11 @@ pub mod definitions;
 /// retryabilité consommée par le step `subagent` (`src/lymaille/error.sdd`).
 pub mod error;
 
+/// Point d'extension de l'application hôte : serveurs MCP et contextes `H_…` fournis par elle
+/// (`src/lymaille/host.sdd`). Déclaration seule — la re-déclaration et les ré-exports du
+/// `mod.sdd` sont la tâche R7 du lot 2.
+pub mod host;
+
 /// Identité de l'appelant : principal reconstruit par appel, préfixe réservé `G_`, droits
 /// d'accord de modules (`src/lymaille/identity.sdd`).
 pub mod identity;

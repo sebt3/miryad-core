@@ -114,7 +114,7 @@ cargo tree --no-default-features --features lymaille -e normal -i sea-orm
 Les quinze combinaisons de tests et de clippy sont celles de `tooling.sdd` (amendements 2026-10-19,
 feature `db`, et 2026-11-02, feature `lymaille`). Les trois `cargo tree … -e normal -i sea-orm` prouvent que `sea-orm` n'est plus dans
 le graphe sans `db` : sans `db` leur sortie standard doit être vide (cargo imprime « nothing to
-print » et rend 0) ; une ligne `sea-orm v…` en sortie fait échouer la vérification. Deux contrôles de plus pour `lymaille` : `cargo tree --no-default-features -e normal -i lymaille` doit imprimer « nothing to print » (la bibliothèque est absente sans la feature), et `cargo tree --no-default-features --features lymaille -e normal -i sea-orm` doit imprimer une ligne (la feature implique `db`).
+print » et rend 0) ; une ligne `sea-orm v…` en sortie fait échouer la vérification. Deux contrôles de plus pour `lymaille` : `cargo tree --no-default-features -e normal -i lymaille` doit rendre une **sortie stdout vide** — selon la version de cargo, soit « nothing to print » (rc 0), soit une erreur « did not match any packages » (rc≠0) puisque le paquet est alors absent du graphe : le test est la stdout vide, pas le code de sortie (mesuré cargo 1.99, 2026-11-04) — et `cargo tree --no-default-features --features lymaille -e normal -i sea-orm` doit imprimer une ligne (la feature implique `db`).
 
 Le harnais doit tourner sur **toutes** ces combinaisons : des lints `pedantic`
 (`must_use_candidate`, `missing_errors_doc`) dépendent du graphe de features et peuvent ne se
@@ -138,6 +138,9 @@ la syntaxe `.sdd`, `specdd resolve <cible>` vérifie la chaîne de specs avant d
   Exception actée le 2026-11-03 (feature `lymaille` jamais déployée) : `m20261104_000001` est modifiée en
   place (nature, agent par défaut et agents autorisés sur la table des types de contexte, DSD `lymaille#DEC-28`) ; même
   clause de sortie.
+  Exception actée le 2026-11-04 (feature `lymaille` jamais déployée) : `m20261103_000001` est modifiée en
+  place (ne crée plus `context_types` ni `contexts`, remplacées par les tables du lot 2 — chaîne `down` cohérente, DSD
+  `lymaille#DEC-20`) ; même clause de sortie.
 
 ## Git
 

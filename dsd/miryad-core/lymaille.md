@@ -494,9 +494,10 @@ et appels d'MCP externes depuis les scripts.
     - **Alternatives:** règle fournie par l'hôte (écarté : ni administrable ni lisible par la session `Config`) ; ouverture `Config` réservée aux admins
       (écarté : la configuration d'un projet par un non-admin est voulue, `FR-9`).
     - **Consequences:** trois champs de plus sur la ressource des types de contexte, donc sur la table de la migration `m20261104_000001`, non encore
-      déployée (modification en place à actualiser dans les exceptions d'`AGENTS.md`, ou migration suivante). **ASSUMPTION :** ces champs vivent en
-      colonnes de miryad-core et non dans l'objet `ContextType` de `lymaille` ; à vérifier contre `ContextTypeStore`. Le renommage `Shared` est à
-      signaler à `lymaille` (`ProviderLevel` et niveau de contexte).
+      déployée (modification en place actualisée dans les exceptions d'`AGENTS.md` du 2026-11-03). L'ASSUMPTION est **vérifiée** (2026-11-04, source
+      `lymaille` 0.1.0 `toolsets/context_type.rs`) : ces trois champs vivent en colonnes de miryad-core, `ContextType` ne portant que
+      `name`/`version`/`schema`/`roles`/`includes`. Le renommage `Shared` est documentaire côté miryad-core — l'enum amont reste `ContextLevel::Project`
+      et le jeton JSON `"project"` (à signaler à `lymaille`).
     - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B2, B3) ; user instruction, 2026-11-03
 
 - **DEC-29 - Handler Restate dédié au step `subagent`** (2026-11-03, amende `DEC-10`, `FR-6`, `OI-4`)
@@ -570,6 +571,11 @@ lecture seule), `/src/workflow/subagent_step.sdd` (`FR-6`, `FR-10`). Amendements
 **Réalignement du 2026-11-03 (`DEC-27` à `DEC-30`) :** le code du lot 2 est à l'arrêt le temps de l'amendement. Specs à ré-aligner avant approbation : `identity.sdd`,
 `mcp_access.sdd`, `definitions/{context_type,user_context}.sdd`, `interactive/{mod,hub,manager,assemble}.sdd`, `http/{routes,sse}.sdd`, `chat/{bridge,link}.sdd`,
 `migration.sdd`, `mod.sdd`, `/src/workflow/{dispatcher,subagent_step}.sdd`.
+
+**Statut du réalignement (2026-11-04) :** specs approuvées par Sébastien ; R1 à R5 réalisées et validées (checkpoint commité). Arbitrages rendus le même jour :
+nommage `G_` des types de contexte — option (a), la porte `classify` est retirée pour cette seule entité (`G_` conventionnel, garantie `AdminOnly` + table,
+conséquence de `DEC-20`/`DEC-9`) ; chaîne `down` du lot 2 — exception tracée `AGENTS.md` du 2026-11-04 sur `m20261103_000001` (`context_types`/`contexts` ne se
+créent plus, drop conditionnel au lot 2). R6 à R15 en cours.
 
 ## Acceptance Criteria
 

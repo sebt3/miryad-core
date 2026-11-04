@@ -6,8 +6,9 @@
 //! versionné des paramètres et des rôles MCP d'un environnement, vocabulaire partagé par les
 //! auteurs de toolsets (DSD `DEC-20`). La colonne JSON (DSD `DEC-18` : `active` pour la version
 //! active, `draft` pour le brouillon de la session de configuration) est la source de vérité ;
-//! `name` et `version` en sont des copies dérivées par les hooks, et l'identifiant doit porter le
-//! préfixe `G_` du catalogue (DSD `DEC-9`, `crate::lymaille::identity::classify`).
+//! `name` et `version` en sont des copies dérivées par les hooks. Le nom suit la grammaire de
+//! `lymaille` (`[a-z0-9-]+`) et ne porte pas de préfixe `G_` — arbitrage (a) du 2026-11-04
+//! (`./context_type.sdd`) : la garantie de catalogue est `AdminOnly` et la table, pas le préfixe.
 
 use sea_orm::ActiveValue;
 use sea_orm::entity::prelude::*;
@@ -15,7 +16,6 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::auth::AuthPrincipal;
-use crate::lymaille::identity;
 use crate::resource::AccessPolicy;
 use crate::resource::HookError;
 use crate::resource::MiryadResource;
@@ -29,8 +29,9 @@ pub struct Model {
     /// Clé primaire entière auto-incrémentée (convention `miryad_*` de la crate).
     #[sea_orm(primary_key)]
     pub id: i32,
-    /// Identifiant du type de contexte (`G_…`), copie dérivée du `name` de ses versions par les
-    /// hooks — libellé de la ressource, unique au catalogue (contrainte de la migration).
+    /// Identifiant du type de contexte (grammaire `lymaille` `[a-z0-9-]+`, sans préfixe `G_` —
+    /// arbitrage (a) du 2026-11-04), copie dérivée du `name` de ses versions par les hooks —
+    /// libellé de la ressource, unique au catalogue (contrainte de la migration).
     pub name: String,
     /// Version sémantique de la version active (à défaut du brouillon), copie dérivée par les
     /// hooks.
@@ -103,9 +104,7 @@ impl Entity {
     /// `work`/`config` (`sub` et toute autre valeur sont refusés), agent par défaut posé, agent
     /// par défaut membre de l'ensemble autorisé. Les valeurs `NotSet` comptent comme absentes :
     /// la porte refuse, le `NotSet` n'atteint jamais la base. Elle est placée avant les portes
-    /// JSON : les colonnes sont indépendantes de `active`/`draft`, et l'arbitrage `[?]` du
-    /// nommage `G_` ouvert rendrait la moindre des portes JSON infranchissable avec un nom du
-    /// catalogue.
+    /// JSON : les colonnes sont indépendantes de `active`/`draft`.
     fn valider_champs_pilotes(active: &ActiveModel) -> Result<(), HookError> {
         let nature = match &active.kind {
             ActiveValue::Set(nature) | ActiveValue::Unchanged(nature) => nature.as_str(),
@@ -138,10 +137,10 @@ impl Entity {
     /// Porte commune de `before_create` (`existing` absent) et `before_update`, dans l'ordre du
     /// `Must` de `./context_type.sdd`, interrompue au premier échec : au moins une version, les
     /// trois colonnes pilotes DEC-28 (réalignement R1), chacune des versions désérialisée en
-    /// `lymaille::ContextType` (le constructeur compile le schéma), `name` du catalogue (`G_`
-    /// exact via `classify`, DSD `DEC-9` — tout autre rendu, y compris une erreur de `classify`,
-    /// est le même refus), et sur une mise à jour `name` ne change pas. `name` et `version`
-    /// (celle de l'active, à défaut du brouillon) sont toujours réécrits.
+    /// `lymaille::ContextType` (le constructeur compile le schéma et vérifie la grammaire du nom
+    /// `[a-z0-9-]+`, DSD `DEC-9` — aucune porte @classify : le nom ne porte pas de préfixe `G_`,
+    /// arbitrage (a) du 2026-11-04), et sur une mise à jour `name` ne change pas. `name` et
+    /// `version` (celle de l'active, à défaut du brouillon) sont toujours réécrits.
     fn valider_et_deriver(
         mut active: ActiveModel,
         existing: Option<&Model>,
@@ -161,9 +160,6 @@ impl Entity {
             .ok_or_else(|| HookError::new("a context type needs an active version or a draft"))?;
         let name = Self::champ_texte(brute, "name")?;
         let version = Self::champ_texte(brute, "version")?;
-        if !matches!(identity::classify(&name), Ok(identity::IdKind::Catalog)) {
-            return Err(HookError::new("context type name must start with G_ (catalog)"));
-        }
         if let Some(ligne) = existing
             && name != ligne.name
         {
@@ -244,9 +240,10 @@ mod tests {
 
     // ── Fixtures — purement mémoire : hooks purs sur l'`ActiveModel`, aucune connexion. La forme
     // sérialisée de base est produite par la bibliothèque elle-même (`ContextType::new` puis
-    // `to_value`), seule la clé `name` est corrigée au nom voulu — `G_…` ne peut pas sortir du
-    // constructeur, dont la grammaire n'accepte que minuscules, chiffres et tirets (lymaille
-    // 0.1.0, `toolsets/context_type.rs::is_valid_name`).
+    // `to_value`), seule la clé `name` est corrigée au nom voulu — la grammaire du constructeur
+    // (lymaille 0.1.0, `toolsets/context_type.rs::is_valid_name`) n'accepte que minuscules,
+    // chiffres et tirets : les noms de type de contexte en sortent sans préfixe `G_` (arbitrage (a)
+    // du 2026-11-04, `./context_type.sdd`).
 
     fn principal() -> AuthPrincipal {
         AuthPrincipal {
@@ -310,20 +307,16 @@ mod tests {
         active_avec_champs("work", Some("G_triage"), json!(["G_triage"]), active, draft)
     }
 
-    /// Scenario « un type valide du catalogue est accepté, ses colonnes dérivées ».
-    ///
-    /// RED sous `lymaille` 0.1.0, et prouvé infaisable en l'état : aucun `ContextType` nommé
-    /// `G_cluster` ne peut exister — `is_valid_name` (lymaille 0.1.0, `toolsets/context_type.rs`)
-    /// n'accepte que minuscules ASCII, chiffres et tirets, et la désérialisation passe par le même
-    /// contrôle. Le contrat (`classify` exige `G_`, désérialisation l'interdit) est à arbitrer —
-    /// voir la ligne `[?]` de `Tasks` de `context_type.sdd`.
+    /// Scenario « un type valide du catalogue est accepté, ses colonnes dérivées ». Nom `lymaille`
+    /// valide (`[a-z0-9-]+`, lymaille 0.1.0 `toolsets/context_type.rs::is_valid_name`), sans
+    /// préfixe `G_` — arbitrage (a) du 2026-11-04 : la garantie de catalogue est `AdminOnly` et la
+    /// table, pas le préfixe.
     #[test]
-    #[ignore = "arbitrage G_ en attente (Tasks [?] de context_type.sdd) : lymaille 0.1.0 refuse les noms G_ dans ContextType"]
     fn before_create_accepte_un_type_valide_du_catalogue_et_derive_les_colonnes() {
         let rendu = Entity::before_create(
             active_avec(
                 Some(type_json(
-                    "G_cluster",
+                    "cluster",
                     "1.0.0",
                     json!({"type": "object", "properties": {"cluster": {"type": "string"}}, "required": ["cluster"]}),
                 )),
@@ -331,10 +324,10 @@ mod tests {
             ),
             &principal(),
         )
-        .expect("un type `G_cluster` 1.0.0 du catalogue est accepté");
+        .expect("un type `cluster` 1.0.0 du catalogue est accepté");
         assert_eq!(
             rendu.name,
-            Set("G_cluster".to_string()),
+            Set("cluster".to_string()),
             "`name` est dérivé de `active`"
         );
         assert_eq!(
@@ -389,25 +382,6 @@ mod tests {
                 );
             }
             Ok(_) => panic!("un schéma qui ne compile pas doit être refusé"),
-        }
-    }
-
-    /// Scenario « un nom privé est refusé » : `classify` ne rend pas `Catalog` pour `cluster`.
-    #[test]
-    fn before_create_refuse_un_nom_prive() {
-        let rendu = Entity::before_create(
-            active_avec(
-                Some(type_json("cluster", "1.0.0", json!({"type": "object"}))),
-                None,
-            ),
-            &principal(),
-        );
-        match rendu {
-            Err(erreur) => {
-                assert!(erreur.code.is_none(), "aucun code `MRD-*` sur un `HookError`");
-                assert_eq!(erreur.message, "context type name must start with G_ (catalog)");
-            }
-            Ok(_) => panic!("`cluster` n'est pas un identifiant du catalogue"),
         }
     }
 

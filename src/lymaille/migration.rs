@@ -22,8 +22,10 @@ pub fn migrations() -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
     ]
 }
 
-/// Première migration du module (lot 1, committée donc immuable) : pose les dix tables puis les
-/// index.
+/// Première migration du module (lot 1) : pose les huit tables puis les index. Les tables
+/// internes `context_types` et `contexts` ne sont plus dans sa liste : exception du 2026-11-04
+/// (`/AGENTS.md`, feature jamais déployée), amendement en place autorisé, remplacées par les
+/// tables du lot 2.
 struct Migration;
 
 /// Nom de table complet : `TABLE_PREFIX` + suffixe.
@@ -106,7 +108,7 @@ struct TableSpec {
     primary_key: &'static [&'static str],
 }
 
-/// Les dix tables du `Must`, dans l'ordre de `up` (`down` le parcourt à l'envers). Aucune
+/// Les huit tables du `Must`, dans l'ordre de `up` (`down` le parcourt à l'envers). Aucune
 /// `FOREIGN KEY` (couplage lâche, comme `owner_id` de `miryad_workflow_definitions`).
 fn table_specs() -> Vec<TableSpec> {
     let mut specs = definition_table_specs();
@@ -193,20 +195,12 @@ fn definition_table_specs() -> Vec<TableSpec> {
     ]
 }
 
-/// Tables des stores d'exécution : types et contextes nommés (PK `name`), `sessions` et
-/// `memories` (PK composées).
+/// Tables des stores d'exécution : `sessions` et `memories` (PK composées). Les tables internes
+/// `context_types` et `contexts` ne se créent plus : exception du 2026-11-04 (`/AGENTS.md`,
+/// feature jamais déployée), amendement en place — remplacées par `catalog_context_types`,
+/// `catalog_contexts` et `user_contexts` du lot 2 (DSD `DEC-20`).
 fn store_table_specs() -> Vec<TableSpec> {
     vec![
-        TableSpec {
-            suffix: "context_types",
-            columns: vec![text("name"), json("context_type")],
-            primary_key: &["name"],
-        },
-        TableSpec {
-            suffix: "contexts",
-            columns: vec![text("name"), json("context")],
-            primary_key: &["name"],
-        },
         TableSpec {
             suffix: "sessions",
             columns: vec![
@@ -348,8 +342,10 @@ mod m20261104_000001_lymaille_lot2 {
     /// `DeriveMigrationName` donnerait le stem du fichier parent (`migration`).
     const NAME: &str = "m20261104_000001_lymaille_lot2";
 
-    /// Les deux tables internes du lot 1 que ce `up` supprime, dans l'ordre de déclaration du
-    /// lot 1 (aucune donnée de production : la feature `lymaille` n'est pas déployée).
+    /// Les deux tables internes remplacées par celles de ce `up`, dans l'ordre de déclaration du
+    /// lot 1. Depuis l'exception du 2026-11-04 (`/AGENTS.md`, feature jamais déployée) le `up` du
+    /// lot 1 ne les crée plus : leur suppression ici n'est plus qu'un nettoyage conditionnel
+    /// (`if_exists`) pour une base ayant hérité d'un état antérieur à l'amendement.
     const REPLACED: [&str; 2] = ["context_types", "contexts"];
 
     /// Seconde migration du module, rendue par `super::migrations()` en second.
@@ -377,7 +373,10 @@ mod m20261104_000001_lymaille_lot2 {
 
     /// Les dix tables de l'amendement, dans l'ordre de `up` (`down` le parcourt à l'envers).
     /// `catalog_context_types` et `catalog_contexts` suivent la forme catalogue (PK entière, nom
-    /// unique `G_…`) ; `user_contexts` la forme privée (`owner_id`, unicité par propriétaire) ;
+    /// unique) — le nom de `catalog_context_types` suit la grammaire `lymaille` sans préfixe `G_`
+    /// (arbitrage (a) du 2026-11-04, `../definitions/context_type.sdd`), celui de
+    /// `catalog_contexts` garde le `G_` du catalogue (`../definitions/catalog_context.sdd`) ;
+    /// `user_contexts` la forme privée (`owner_id`, unicité par propriétaire) ;
     /// `write_journal` a une PK composée (spec `../store/write_journal.sdd`).
     fn table_specs() -> Vec<TableSpec> {
         vec![
@@ -517,10 +516,11 @@ mod m20261104_000001_lymaille_lot2 {
     #[async_trait::async_trait]
     impl MigrationTrait for Migration {
         async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-            // Suppression des tables internes du lot 1. `if_exists` : c'est le `up` qui les
-            // remplace et un `up` doit rester idempotent (règle du `Must` parent) — elles
-            // n'existent plus après une première application. La règle « strict, non idempotent »
-            // ne vise que les `down`.
+            // Suppression conditionnelle des tables internes héritées : depuis l'exception du
+            // 2026-11-04 (`/AGENTS.md`) le `up` du lot 1 ne les crée plus, elles n'existent donc
+            // sur aucune base neuve — `if_exists` garde ce `up` idempotent et vert dans les deux
+            // états (règle du `Must` parent : les créations sont `if_not_exists`, les `down` sont
+            // stricts, les suppressions d'`up` restent conditionnelles).
             for suffix in REPLACED {
                 manager
                     .drop_table(
@@ -599,10 +599,11 @@ mod tests {
     use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
     use sea_orm_migration::prelude::*;
 
-    /// Les dix tables du `Must` du lot 1, suffixe + colonnes déclarées, dans l'ordre de `up`.
-    /// Les deux tables internes `context_types` et `contexts` y figurent toujours : la migration
-    /// du lot 1 est immuable et c'est sa suite (lot 2) qui les remplace.
-    const TABLES: [(&str, &[&str]); 10] = [
+    /// Les huit tables du `Must` du lot 1, suffixe + colonnes déclarées, dans l'ordre de `up`. Les
+    /// deux tables internes `context_types` et `contexts` n'y figurent plus : exception du
+    /// 2026-11-04 (`/AGENTS.md`, feature jamais déployée) — amendement en place de
+    /// `m20261103_000001`, remplacées par les tables du lot 2 (DSD `DEC-20`).
+    const TABLES: [(&str, &[&str]); 8] = [
         (
             "catalog_agents",
             &["id", "agent_id", "kind", "profile", "definition", "created_at"],
@@ -640,8 +641,6 @@ mod tests {
             "providers",
             &["id", "name", "kind", "level", "provider", "created_at"],
         ),
-        ("context_types", &["name", "context_type"]),
-        ("contexts", &["name", "context"]),
         (
             "sessions",
             &["subject", "session_id", "kind", "state", "updated_at"],
@@ -707,8 +706,10 @@ mod tests {
         ("matrix_events", &["event_id", "seen_at"]),
     ];
 
-    /// Les tables internes du lot 1 que le `up` du lot 2 supprime (amendement : `ContextTypeStore`
-    /// et `ContextStore` lisent désormais les tables à identifiant entier).
+    /// Les deux tables internes que l'amendement lot 2 remplace par les tables à identifiant
+    /// entier (`ContextTypeStore` et `ContextStore`). Depuis l'exception du 2026-11-04
+    /// (`/AGENTS.md`) elles ne se créent plus nulle part : le `up` du lot 1 ne les pose plus et
+    /// celles du lot 2 ne les suppriment que conditionnellement (`if exists`).
     const LOT1_REPLACED: [&str; 2] = ["context_types", "contexts"];
 
     /// Contrainte unique et index posés par le lot 2 : (nom d'index, suffixe de table). L'unicité
@@ -786,12 +787,13 @@ mod tests {
         .map(|_| ())
     }
 
-    /// Scenario : « up crée les dix tables avec le préfixe ». Fige à la migration du lot 1,
-    /// immuable : son `up` est appelé **directement** sur une base vide. Via le migrateur, le lot 2
-    /// s'exécuterait ensuite et deux de ces dix tables n'existeraient plus — c'est l'objet des
-    /// tests du lot 2 ci-dessous. Sonde aussi l'index (`subject`, `updated_at`) de `sessions`.
+    /// Scenario : « up crée les tables du contrat avec le préfixe ». Huit tables depuis l'exception
+    /// du 2026-11-04 (`/AGENTS.md`) : le `up` de `m20261103_000001` amendé en place ne crée plus
+    /// `context_types` ni `contexts` — remplacées par les tables du lot 2, il doit en rester absent.
+    /// Son `up` est appelé **directement** sur une base vide, figé hors migrateur. Sonde aussi
+    /// l'index (`subject`, `updated_at`) de `sessions`.
     #[tokio::test]
-    async fn first_up_creates_the_ten_prefixed_tables_with_their_columns() {
+    async fn first_up_creates_the_eight_prefixed_tables_and_not_the_internal_ones() {
         let db = fresh_db().await;
         let manager = SchemaManager::new(&db);
         Migration
@@ -817,6 +819,16 @@ mod tests {
                 );
             }
         }
+        for suffix in LOT1_REPLACED {
+            let name = table(suffix);
+            assert!(
+                !manager
+                    .has_table(name.as_str())
+                    .await
+                    .expect("has_table probe succeeds"),
+                "le up amendé du lot 1 ne crée plus {name} (exception du 2026-11-04, /AGENTS.md)"
+            );
+        }
         assert!(
             manager
                 .has_index(
@@ -832,8 +844,8 @@ mod tests {
     /// `Must` : « `up` sur une base où une table existe déjà est idempotent » — attribut du lot 1.
     /// Le rejeu est effectif : le second `up` passe par `Migration.up` **directement** (motif du
     /// précédent `m20260930_000001_index_api_tokens_subject`), sinon le `Migrator` n'émet aucun DDL.
-    /// Appelé sur base neuve, hors migrateur : rejoué après le lot 2, il recréerait par
-    /// `if_not_exists` les deux tables internes que le lot 2 a supprimées.
+    /// Depuis l'exception du 2026-11-04, le `up` du lot 1 ne crée que ses huit tables : rejoué après
+    /// le lot 2, il ne peut plus reposer `context_types` ni `contexts`.
     #[tokio::test]
     async fn first_up_is_replayable_on_a_database_where_the_tables_already_exist() {
         let db = fresh_db().await;
@@ -857,14 +869,10 @@ mod tests {
 
     /// Scenario : « down les supprime toutes » — attribut du lot 1, sur une base qui ne l'a vu
     /// que lui : sa remontée stricte, tables dans l'ordre inverse de `up`, ne laisse aucune de ses
-    /// dix tables.
-    ///
-    /// Écart consigné (amendement lot 2, 2026-11-03, remonté) : sur une base où le lot 2 a tourné,
-    /// aucun `down` complet n'est plus réalisable — le `down` du lot 1 dropperait strictement
-    /// `context_types` et `contexts`, que son `up` a supprimées, et le `down` du lot 2 ne doit pas
-    /// les recréer (clause « **sans** recréer » de l'amendement). La chaîne s'arrête en `DbErr`
-    /// « no such table » ; voir `a_lot2_rollback_then_a_full_up_leaves_no_internal_context_tables`
-    /// pour le rejeu praticable (`down` d'un pas puis `up`).
+    /// huit tables. Depuis l'exception du 2026-11-04 (`/AGENTS.md`), son `up` ne crée plus
+    /// `context_types` ni `contexts` et son `down` ne les dropperait que si son `up` les avait
+    /// créées : la chaîne `down` complète sous `lymaille` est de nouveau cohérente, prouvée par
+    /// les tests de remontée `crate::migration::m20260822_*`.
     #[tokio::test]
     async fn first_down_drops_every_lot1_table() {
         let db = fresh_db().await;
@@ -872,7 +880,7 @@ mod tests {
         Migration
             .up(&manager)
             .await
-            .expect("le up du lot 1 pose ses dix tables");
+            .expect("le up du lot 1 pose ses huit tables");
         Migration
             .down(&manager)
             .await
@@ -901,9 +909,11 @@ mod tests {
         );
     }
 
-    /// Scenario (amendement lot 2) : `up` pose les dix nouvelles tables avec leurs colonnes,
-    /// supprime les deux tables internes du lot 1, et laisse les huit autres tables du lot 1 en
-    /// place.
+    /// Scenario (amendement lot 2) : `up` pose les dix nouvelles tables avec leurs colonnes, laisse
+    /// les huit tables du lot 1 en place, et ne laisse aucune trace de `context_types`/`contexts` :
+    /// depuis l'exception du 2026-11-04 ces tables ne se créent nulle part, et le `up` du lot 2 ne
+    /// les supprime que conditionnellement (`if exists`) au cas où une base les aurait héritées
+    /// d'un état antérieur à l'amendement.
     #[tokio::test]
     async fn lot2_up_replaces_the_internal_tables_with_the_ten_new_tables() {
         let db = fresh_db().await;
@@ -937,13 +947,10 @@ mod tests {
                     .has_table(name.as_str())
                     .await
                     .expect("has_table probe succeeds"),
-                "le up du lot 2 supprime la table interne {name} du lot 1"
+                "{name} n'existe nulle part après le up complet (exception du 2026-11-04, /AGENTS.md)"
             );
         }
         for (suffix, _) in TABLES {
-            if matches!(suffix, "context_types" | "contexts") {
-                continue;
-            }
             let name = table(suffix);
             assert!(
                 manager
@@ -1070,13 +1077,13 @@ mod tests {
     }
 
     /// Scenario (amendement lot 2, par le `Migrator` d'un test) : `up` complet, remontée du lot 2
-    /// (`down(Some(1))`), puis `up` complet laisse le schéma lot 2 sans les tables lot 1
-    /// `context_types`/`contexts` — le `down` du lot 2 ne les recrée pas et son `up` ne les
-    /// recrée pas davantage (`if_exists` sur les suppressions, pas de création).
+    /// (`down(Some(1))`), puis `up` complet laisse le schéma lot 2 sans `context_types`/`contexts`
+    /// — le `down` du lot 2 ne les recrée pas (clause « sans recréer ») et son `up` ne les recrée
+    /// pas davantage (`if_exists` sur les suppressions, pas de création).
     ///
-    /// Le `down` complet (`None`) n'est pas exercé ici : il bute sur le `down` du lot 1, droppeur
-    /// strict des deux tables internes déjà supprimées — écart consigné et remonté dans
-    /// `first_down_drops_every_lot1_table`.
+    /// Le `down` complet (`None`) est de nouveau praticable depuis l'exception du 2026-11-04
+    /// (`/AGENTS.md`) : il n'atteint plus de drop strict de ces deux tables, et il est exercé par
+    /// les tests de remontée `crate::migration::m20260822_*`.
     #[tokio::test]
     async fn a_lot2_rollback_then_a_full_up_leaves_no_internal_context_tables() {
         let db = fresh_db().await;

@@ -18,7 +18,7 @@ References:
 
 Must:
   `pub fn migrations() -> Vec<Box<dyn sea_orm_migration::MigrationTrait>>` rend `[Box::new(m20261103_000001_create_lymaille_tables::Migration)]`.
-  `up` crée les dix tables suivantes (préfixe `miryad_lymaille_`), `IF NOT EXISTS` comme les migrations existantes, types portables
+  `up` crée les huit tables suivantes (préfixe `miryad_lymaille_`), `IF NOT EXISTS` comme les migrations existantes, types portables
     SQLite/Postgres (`ColumnDef`, jamais de SQL brut spécifique à un backend), JSON en `ColumnDef::json()` (jamais `json_binary()`),
     aucune contrainte `FOREIGN KEY` (couplage lâche, comme `owner_id` de `miryad_workflow_definitions`) :
     Agents et toolsets existent en **deux tables chacun** (DSD `DEC-14`, `DEC-19`) : le **catalogue** (identifiants `G_…`, écrit par les admins,
@@ -36,8 +36,10 @@ Must:
     `profiles` — `id` PK auto ; `name` TEXT NOT NULL UNIQUE ; `profile` JSON NOT NULL ; `created_at`.
     `providers` — `id` PK auto ; `name` TEXT NOT NULL UNIQUE ; `kind` TEXT NOT NULL ; `level` TEXT NOT NULL (`user`|`project`) ;
       `provider` JSON NOT NULL (références seules, jamais de secret) ; `created_at`.
-    `context_types` — `name` TEXT PK ; `context_type` JSON NOT NULL.
-    `contexts` — `name` TEXT PK ; `context` JSON NOT NULL.
+    `context_types` — `name` TEXT PK ; `context_type` JSON NOT NULL — **ne se crée plus** : exception du 2026-11-04 (feature jamais déployée,
+      `/AGENTS.md`), remplacée par `catalog_context_types` du lot 2.
+    `contexts` — `name` TEXT PK ; `context` JSON NOT NULL — **ne se crée plus** : même exception, remplacée par `catalog_contexts` et
+      `user_contexts` du lot 2.
     `sessions` — PK(`subject`, `session_id`) ; `kind` TEXT NOT NULL (`work`|`config`|`sub`) ; `state` TEXT NOT NULL (le **texte JSON** de
       `SessionState`, tel que produit par `SessionState::to_json`) ; `updated_at` TIMESTAMP WITH TIME ZONE NOT NULL ; index
       (`subject`, `updated_at`). `subject` : TEXT, le `subject` du propriétaire (DSD `DEC-3`).
@@ -50,7 +52,9 @@ Must:
   **Amendement lot 2 (2026-11-03)** : `migrations()` rend désormais `[m20261103_000001_create_lymaille_tables, m20261104_000001_lymaille_lot2]` (la première
     migration committée reste **immuable**, règle de `/AGENTS.md`). `up` de la seconde, mêmes conventions que ci-dessus (préfixe `miryad_lymaille_`,
     `if_not_exists`, JSON `json()`, aucune `FOREIGN KEY`, aucun défaut serveur d'horodatage) :
-    supprime les tables internes du lot 1 `context_types` et `contexts` (aucune donnée de production, la feature n'est pas déployée ; remplacées ci-dessous :
+    supprime les tables internes du lot 1 `context_types` et `contexts` si elles existent (suppression conditionnelle, `if exists` : depuis l'exception
+      du 2026-11-04 sur `m20261103_000001` — `/AGENTS.md`, feature jamais déployée — ces deux tables ne se créent plus nulle part et la chaîne
+      `down` complète est de nouveau cohérente ; remplacées ci-dessous :
       `ContextTypeStore` et `ContextStore` lisent désormais les tables à identifiant entier, ../store/toolset.sdd) ;
     `catalog_context_types` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** (`G_…`) ; `version` TEXT NOT NULL ; `kind` TEXT NOT NULL
       (`work`|`config`, DSD `DEC-28`, réalignement R2) ; `default_agent` TEXT NULL (DSD `DEC-28`) ; `allowed_agents` JSON NOT NULL (tableau
@@ -84,9 +88,12 @@ Tasks:
   [x] Réalignement R2 (DSD `DEC-28`, 2026-11-03) : Après R1 : ajouter les trois colonnes du type de contexte à la table de `m20261104_000001` (modification en place, migration non déployée) ;
     `Scenario` `has_column`. Exige d'actualiser les exceptions de /AGENTS.md (et `miryad-core#CON-5`) : amendement soumis au développeur principal avant
     d'y toucher, sinon migration suivante. Spec seule.
-  [ ] Amendement lot 2 : seconde `Migration` `m20261104_000001_lymaille_lot2`, scenarios d'ordre et de `down` étendus, tests `has_table`/`has_index` d'abord, puis ./migration.rs ; amender ../migration/mod.sdd si le nombre d'entrées est asserté.
-    Réalisé et validé conforme (validator : spec ↔ code ↔ tests PASS) mais **non coché** : la batterie ciblée `lymaille` est rouge de 3 échecs hors périmètre — voir la question `[?]` ci-dessous.
-  [?] Arbitrage lot 2 : le `up` de `m20261104_000001` supprime `context_types`/`contexts` que le `down` de `m20261103_000001` (immuable) re-supprime strictement — la chaîne `down` complète est brisée sous `lymaille` et les trois tests de remontée complète de `../migration/m20260822_000001`/`m20260822_000002`/`m20260822_000003` échouent sous cette feature. Options : exception tracée dans `/AGENTS.md` (précédent `m20261006_000001`, feature jamais déployée) amendement en place de `m20261103_000001` qui ne créerait plus ces deux tables, ou branche `cfg` dans les trois tests (motif du contournement déjà consigné dans le test matrix de `../migration/mod.rs`). Les scénarios « down les supprime toutes » et « up crée les dix tables » ont un libellé inatteignable en chaîne complète sous `lymaille` : à ratifier ou amender avec l'arbitrage.
+  [x] Amendement lot 2 : seconde `Migration` `m20261104_000001_lymaille_lot2`, scenarios d'ordre et de `down` étendus, tests `has_table`/`has_index` d'abord, puis ./migration.rs ; amender ../migration/mod.sdd si le nombre d'entrées est asserté.
+    Réalisé et validé conforme (validator : spec ↔ code ↔ tests PASS) ; le blocage baseline (3 échecs de chaîne `down`) est soldé par l'arbitrage du 2026-11-04 ci-dessus — batterie ciblée verte au checkpoint 2.
+  [x] Arbitrage lot 2 (tranché par Sébastien le 2026-11-04) : exception tracée dans `/AGENTS.md` pour `m20261103_000001` (précédent `m20261006_000001`,
+    feature jamais déployée) — amendement en place : le `up` ne crée plus `context_types` ni `contexts`, le drop du lot 2 devient conditionnel
+    (`if exists`) et la chaîne `down` complète est de nouveau cohérente sous `lymaille`. Les trois tests de remontée `m20260822_*` n'ont pas de
+    branche `cfg`. Les libellés des Scenarios « up crée … » et « down les supprime toutes » sont ratifiés sous la nouvelle table du contrat.
   [x] Tests d'abord (SQLite mémoire, motif `has_table`/`has_column`/`has_index`), puis ./migration.rs. Validé 2026-11-02
     (validator PASS après rejeu d'idempotence en direct ; batterie ciblée verte).
   [x] Amender ../migration/mod.sdd et mod.rs (ajout conditionnel `lymaille` en fin de liste) dans le même lot. Validé
@@ -96,10 +103,10 @@ Tasks:
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./migration.rs.
 
-Scenario: up crée les dix tables avec le préfixe
+Scenario: up crée les tables du contrat avec le préfixe
   Given une base SQLite en mémoire
-  When le @Migrator d'un test exécute `up` avec `migrations()`
-  Then les dix tables `miryad_lymaille_*` existent avec leurs colonnes déclarées
+  When le `up` de `m20261103_000001` est exécuté directement (le chemin complet via @Migrator est prouvé par le test du lot 2)
+  Then les huit tables du `up` de `m20261103_000001` existent avec leurs colonnes déclarées, et `context_types`/`contexts` n'existent pas
 
 Scenario: down les supprime toutes
   Given les migrations appliquées

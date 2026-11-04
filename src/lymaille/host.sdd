@@ -45,7 +45,7 @@ Exposes:
   `LymailleHost`, `McpRequest`, `McpDecision`, `McpGrant`, `HostError`, `SharedHost`
 
 Tasks:
-  [ ] Tests d'abord (hôte factice : défauts, `is_expired`, `Debug` opaque), puis ./host.rs. Après approbation de cette spec.
+  [x] Tests d'abord (hôte factice : défauts, `is_expired`, `Debug` opaque), puis ./host.rs. Spec approuvée le 2026-11-04 ; validé 2026-11-04 (validator PASS checkpoint 2 — les 4 `Scenario` verrouillés, objet-trait prouvé).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./host.rs.
