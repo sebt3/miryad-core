@@ -46,6 +46,10 @@ pub mod catalog_context;
 /// Contextes de toolset personnels, `OwnerOnly` (`src/lymaille/definitions/user_context.sdd`).
 pub mod user_context;
 
+/// Serveurs MCP déclarés par l'admin, références seules, `AdminOnly` en lecture comme en écriture
+/// (`src/lymaille/definitions/mcp_server.sdd`).
+pub mod mcp_server;
+
 #[cfg(test)]
 mod tests {
     use super::agent;

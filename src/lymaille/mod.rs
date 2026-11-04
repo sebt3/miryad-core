@@ -31,6 +31,11 @@ pub mod host;
 /// d'accord de modules (`src/lymaille/identity.sdd`).
 pub mod identity;
 
+/// Droit d'usage des serveurs MCP et en-têtes d'authentification (`src/lymaille/mcp_access.sdd`).
+/// Déclaration seule — la re-déclaration et les ré-exports du `mod.sdd` sont la tâche R7 du
+/// lot 2.
+pub mod mcp_access;
+
 /// Migrations SeaORM internes du module (`src/lymaille/migration.sdd`), privées : l'API est le
 /// ré-export `migrations` ci-dessous, assemblé par `crate::migration::Migrator` sous `lymaille`.
 mod migration;

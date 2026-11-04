@@ -32,6 +32,8 @@ Must:
   `pub fn build_auth(model, resolver, interactive_token: Option<Zeroizing<String>>) -> Result<Option<SeaMcpAuth>, LymailleError>` : `Forward` sans jeton
     interactif (step batch, ou session sans jeton) → `Forbidden("forward auth needs an interactive session")`, **erreur non retryable** côté
     `subagent` (traduite en `StepError` non retryable par ../workflow/subagent_step.sdd).
+    Gardes de ligne jamais produite par les hooks (`mcp_server.sdd` les refuse à l'écriture) : `static` sans `auth_ref` → `Config` (fail-closed) ;
+    mode hors des trois valeurs connu → traité `None` (aucune auth inventée). Non testables depuis une ligne valide, verrouillées par lecture.
   **Amendement DEC-27 (2026-11-03) — serveur fourni par l'hôte :**
   `pub enum RoleBinding { Host(McpGrant), Table(mcp_server::Model) }`.
   `pub async fn resolve_role(host: Option<&dyn LymailleHost>, db, caller: &CallerPrincipal, context: &str, role: &str, bound_server: Option<&str>) -> Result<RoleBinding, LymailleError>` :
@@ -56,8 +58,8 @@ Exposes:
   `server_for`, `McpAuthMode`, `SeaMcpAuth`, `build_auth`, `RoleBinding`, `resolve_role`, `SeaHostMcpAuth`
 
 Tasks:
-  [ ] Réalignement R6 (DSD `DEC-27`, 2026-11-03) : spec amendée (`resolve_role`, `RoleBinding`, `SeaHostMcpAuth`) et trait créé dans ./host.sdd ; **en attente d'approbation**.
-  [ ] Tests d'abord (SQLite mémoire, `ScriptedResolver` de test, hôte factice de ./host.sdd), puis ./mcp_access.rs, après ./host.rs.
+  [x] Réalignement R6 (DSD `DEC-27`, 2026-11-03) : spec amendée (`resolve_role`, `RoleBinding`, `SeaHostMcpAuth`) et trait créé dans ./host.sdd. Spec approuvée le 2026-11-04 ; validé 2026-11-04 (validator PASS checkpoint 4).
+  [x] Tests d'abord (SQLite mémoire, `ScriptedResolver` de test, hôte factice de ./host.sdd), puis ./mcp_access.rs, après ./host.rs. Validé 2026-11-04 (validator PASS checkpoint 4 — 15 Scenario verrouillés).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./mcp_access.rs.

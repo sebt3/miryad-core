@@ -46,7 +46,7 @@ Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`, `client_config`
 
 Tasks:
-  [ ] Tests d'abord (hooks purs sur des `ActiveModel` construits en test, politiques), puis ./mcp_server.rs.
+  [x] Tests d'abord (hooks purs sur des `ActiveModel` construits en test, politiques), puis ./mcp_server.rs. Validé 2026-11-04 (validator PASS checkpoint 4 — verrou AdminOnly en métadonnées, motif `provider.rs`).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./mcp_server.rs.
