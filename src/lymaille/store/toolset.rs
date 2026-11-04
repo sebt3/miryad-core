@@ -7,8 +7,10 @@
 //! `put_draft` n'écrit que lui — l'activation est l'écriture de `active` par un admin via
 //! l'entité, jamais par le store. `put_draft` valide par le contrôle **partagé**
 //! `check_toolset` de `../definitions/toolset.rs`, qu'il appelle sans logique propre. Types de
-//! contexte et contextes sont globaux et internes au
-//! lot 1 (DSD `OI-9`), écriture réservée aux admins.
+//! contexte et contextes sont routés par le lot 2 (DSD `DEC-20`) : les types dans
+//! `miryad_lymaille_catalog_context_types` (colonne `active` ; `draft` réservée à ./draft.sdd),
+//! les contextes `G_…` dans `miryad_lymaille_catalog_contexts` (écriture admin) et les contextes
+//! privés dans `miryad_lymaille_user_contexts` (`owner_id = user_id`, jamais lus chez un autre).
 
 use sea_orm::ConnectionTrait;
 use sea_orm::DatabaseConnection;
@@ -32,17 +34,21 @@ use ::lymaille::ToolsetsResult;
 use super::db_text;
 use crate::lymaille::definitions::toolset::check_toolset;
 use crate::lymaille::error::LymailleError;
+use crate::lymaille::host::SharedHost;
 use crate::lymaille::identity::CallerPrincipal;
 use crate::lymaille::identity::IdKind;
 use crate::lymaille::identity::Identity;
 use crate::lymaille::identity::check_write;
 use crate::lymaille::identity::classify;
 
-/// Tables, noms complets (../migration.sdd).
+/// Tables, noms complets (../migration.sdd). Contextes et types de contexte : les tables du
+/// lot 2 (amendement `DEC-20`) — `catalog_context_types` (dont la colonne `draft` est réservée à
+/// ./draft.sdd), `catalog_contexts` (noms `G_…`) et `user_contexts` (noms privés, `owner_id`).
 const CATALOG_TOOLSETS_TABLE: &str = "miryad_lymaille_catalog_toolsets";
 const PRIVATE_TOOLSETS_TABLE: &str = "miryad_lymaille_toolsets";
-const CONTEXT_TYPES_TABLE: &str = "miryad_lymaille_context_types";
-const CONTEXTS_TABLE: &str = "miryad_lymaille_contexts";
+const CATALOG_CONTEXT_TYPES_TABLE: &str = "miryad_lymaille_catalog_context_types";
+const CATALOG_CONTEXTS_TABLE: &str = "miryad_lymaille_catalog_contexts";
+const USER_CONTEXTS_TABLE: &str = "miryad_lymaille_user_contexts";
 
 /// Refus de l'hôte rendu à `lymaille` par la variante `Store` de son erreur, code `MRD-*`
 /// compris (./mod.sdd règle 5).
@@ -50,15 +56,16 @@ fn deny(error: &LymailleError) -> ToolsetsError {
     ToolsetsError::Store(error.to_string())
 }
 
-/// Nom de la forme sérialisée d'un objet de table à clé par nom : `ContextType` et
-/// `ToolsetContext` ne rendent pas leur nom par un accesseur public — la colonne `name` est la
-/// copie de la clé de l'objet JSON, source de vérité (DSD `DEC-17`).
-fn stored_name(value: &serde_json::Value, what: &str) -> ToolsetsResult<String> {
+/// Champ texte de la forme sérialisée d'un objet de table à clé par nom : `ContextType` et
+/// `ToolsetContext` ne rendent ni leur nom ni leur version par un accesseur public — les
+/// colonnes `name` et `version` sont des copies de la clé et de la version de l'objet JSON,
+/// source de vérité (DSD `DEC-17`).
+fn stored_field(value: &serde_json::Value, field: &str, what: &str) -> ToolsetsResult<String> {
     value
-        .get("name")
+        .get(field)
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
-        .ok_or_else(|| ToolsetsError::Store(format!("stored {what} carries no name")))
+        .ok_or_else(|| ToolsetsError::Store(format!("stored {what} carries no {field}")))
 }
 
 /// Principal de l'appel, reconstruit à chaque opération (./mod.sdd règle 2, DSD `DEC-3`).
@@ -133,6 +140,8 @@ pub struct SeaContextStore {
     db: DatabaseConnection,
     identity: Identity,
     subject: String,
+    /// Hôte partagé posé par `LymailleStores::with_host` (amendement DEC-27 de ./toolset.sdd).
+    host: Option<SharedHost>,
 }
 
 impl SeaToolsetStore {
@@ -151,9 +160,9 @@ impl SeaToolsetStore {
         let Ok(kind) = classify(name) else {
             return Ok(None);
         };
-        // DEC-27 (amendement à venir dans `./toolset.sdd`) : un identifiant `H_…` est résolu
-        // par l'hôte, jamais stocké en table — lecture `Ok(None)` sans requête, avant même la
-        // reconstruction du principal.
+        // DEC-27 (./toolset.sdd, amendement approuvé 2026-11-04) : un identifiant `H_…` est
+        // résolu par l'hôte, jamais stocké en table — lecture `Ok(None)` sans requête, avant
+        // même la reconstruction du principal.
         if kind == IdKind::Host {
             return Ok(None);
         }
@@ -214,8 +223,8 @@ impl SeaToolsetStore {
                     ("toolset_id", Expr::val(toolset.name())),
                 ],
             ),
-            // DEC-27 (amendement à venir dans `./toolset.sdd`) : `check_write` refuse déjà
-            // `H_…` en amont — aucun accès table ; branche de couverture au même refus.
+            // DEC-27 (./toolset.sdd, amendement approuvé 2026-11-04) : `check_write` refuse
+            // déjà `H_…` en amont — aucun accès table ; branche de couverture au même refus.
             IdKind::Host => {
                 return Err(deny(&LymailleError::Forbidden(
                     "host identifiers are not writable".to_string(),
@@ -308,23 +317,46 @@ impl SeaContextTypeStore {
 }
 
 impl SeaContextStore {
-    pub(crate) fn new(db: DatabaseConnection, identity: Identity, subject: String) -> Self {
+    pub(crate) fn new(
+        db: DatabaseConnection,
+        identity: Identity,
+        subject: String,
+        host: Option<SharedHost>,
+    ) -> Self {
         Self {
             db,
             identity,
             subject,
+            host,
+        }
+    }
+
+    /// Contexte d'un identifiant hôte `H_…` (amendement DEC-27 de ./toolset.sdd) : délégué à
+    /// [`crate::lymaille::host::LymailleHost::resolve_context`] avec le principal relu, sans
+    /// table. Sans hôte, ou si l'hôte répond `None` **ou** `Err`, `Ok(None)` — échec fermé,
+    /// indiscernable d'un contexte absent ; aucun texte de `HostError` ne remonte (`host.sdd`).
+    async fn host_context(&self, name: &str) -> ToolsetsResult<Option<ToolsetContext>> {
+        let Some(host) = self.host.clone() else {
+            return Ok(None);
+        };
+        let caller = principal(&self.identity, &self.subject).await?;
+        match host.resolve_context(name, &caller).await {
+            Ok(found) => Ok(found),
+            Err(_host_error) => Ok(None),
         }
     }
 }
 
 impl ContextTypeStore for SeaContextTypeStore {
     async fn get_type(&self, name: &str) -> ToolsetsResult<Option<ContextType>> {
+        // Amendement lot 2 (./toolset.sdd) : la table `catalog_context_types`, colonne `active`
+        // (la colonne `draft` est réservée à ./draft.sdd).
         let select = Query::select()
-            .columns([Alias::new("context_type")])
-            .from(Alias::new(CONTEXT_TYPES_TABLE))
+            .columns([Alias::new("active")])
+            .from(Alias::new(CATALOG_CONTEXT_TYPES_TABLE))
             .and_where(Expr::col(Alias::new("name")).eq(name))
             .to_owned();
-        let stored = first_json(&self.db, &select, "context_type")
+        let stored = first_json(&self.db, &select, "active")
             .await
             .map_err(|err| ToolsetsError::Store(db_text(&err)))?;
         stored
@@ -343,33 +375,86 @@ impl ContextTypeStore for SeaContextTypeStore {
         // contrôle garde le store d'en porter un qui ne se relirait pas).
         let value = serde_json::to_value(context_type)
             .map_err(|_cause| ToolsetsError::Store("context type could not be serialized".to_owned()))?;
-        let name = stored_name(&value, "context type")?;
+        let name = stored_field(&value, "name", "context type")?;
+        let version = stored_field(&value, "version", "context type")?;
         serde_json::from_value::<ContextType>(value.clone()).map_err(|_cause| {
             ToolsetsError::InvalidContextType {
                 name: name.clone(),
                 reason: "the stored form does not read back",
             }
         })?;
-        upsert(
-            &self.db,
-            CONTEXT_TYPES_TABLE,
-            &["name", "context_type"],
-            vec![Expr::val(name), Expr::val(value)],
-            &["name"],
-            &["context_type"],
-        )
-        .await
-        .map_err(|err| ToolsetsError::Store(db_text(&err)))
+        // Upsert par `name` sur la colonne `active` (avec `version` dérivée, motif des hooks de
+        // `../definitions/context_type.sdd`). Les trois colonnes pilotes DEC-28 ne vivent pas
+        // dans l'objet `ContextType` de `lymaille` : une ligne nouvelle les reçoit **non posées**
+        // (nature vide, agents vides) et les hooks de l'entité les exigent posées au premier
+        // CRUD — le store ne les invente pas.
+        let statement = Query::insert()
+            .into_table(Alias::new(CATALOG_CONTEXT_TYPES_TABLE))
+            .columns([
+                "name",
+                "version",
+                "kind",
+                "default_agent",
+                "allowed_agents",
+                "active",
+                "draft",
+                "created_at",
+            ])
+            .values(vec![
+                Expr::val(name),
+                Expr::val(version),
+                Expr::val(String::new()),
+                Expr::null(),
+                Expr::val(serde_json::json!([])),
+                Expr::val(value),
+                Expr::null(),
+                Expr::val(chrono::Utc::now()),
+            ])
+            .map_err(|err| ToolsetsError::Store(db_text(&DbErr::Custom(err.to_string()))))?
+            .on_conflict(
+                OnConflict::columns([Alias::new("name")])
+                    .update_columns([Alias::new("active"), Alias::new("version")])
+                    .to_owned(),
+            )
+            .to_owned();
+        self.db
+            .execute(&statement)
+            .await
+            .map(|_| ())
+            .map_err(|err| ToolsetsError::Store(db_text(&err)))
     }
 }
 
 impl ContextStore for SeaContextStore {
     async fn get_context(&self, name: &str) -> ToolsetsResult<Option<ToolsetContext>> {
-        let select = Query::select()
-            .columns([Alias::new("context")])
-            .from(Alias::new(CONTEXTS_TABLE))
-            .and_where(Expr::col(Alias::new("name")).eq(name))
-            .to_owned();
+        // DEC-27 (./toolset.sdd) : un identifiant `H_…` est résolu par l'hôte, aucune table
+        // n'est touchée — la branche précède toute requête. Amendement lot 2 (`DEC-20`) : le
+        // préfixe tranche la table (règle 3 de ./mod.sdd, une requête sur une table) — `G_…` →
+        // `catalog_contexts`, nom privé → `user_contexts` avec `owner_id = user_id`, jamais la
+        // ligne privée d'un autre ; identifiant invalide ou de casse réservée → `Ok(None)`.
+        let kind = match classify(name) {
+            Ok(IdKind::Host) => return self.host_context(name).await,
+            Ok(kind) => kind,
+            Err(_error) => return Ok(None),
+        };
+        let mut select = Query::select();
+        select.column(Alias::new("context"));
+        match kind {
+            IdKind::Catalog => {
+                select
+                    .from(Alias::new(CATALOG_CONTEXTS_TABLE))
+                    .and_where(Expr::col(Alias::new("name")).eq(name));
+            }
+            IdKind::Private => {
+                let caller = principal(&self.identity, &self.subject).await?;
+                select
+                    .from(Alias::new(USER_CONTEXTS_TABLE))
+                    .and_where(Expr::col(Alias::new("owner_id")).eq(caller.user_id))
+                    .and_where(Expr::col(Alias::new("name")).eq(name));
+            }
+            // Garde de couverture : `Host` délègue à l'hôte plus haut, sans requête.
+            IdKind::Host => return Ok(None),
+        }
         let stored = first_json(&self.db, &select, "context")
             .await
             .map_err(|err| ToolsetsError::Store(db_text(&err)))?;
@@ -383,29 +468,57 @@ impl ContextStore for SeaContextStore {
     }
 
     async fn put_context(&self, context: &ToolsetContext) -> ToolsetsResult<()> {
-        require_admin(&self.identity, &self.subject, "toolset context write").await?;
+        // Validation de `lymaille` par construction (le constructeur du contexte refuse déjà un
+        // secret) ; le store relit la forme stockée pour la clé, comme ../toolset.rs pour les
+        // types.
         let value = serde_json::to_value(context)
             .map_err(|_cause| ToolsetsError::Store("toolset context could not be serialized".to_owned()))?;
-        upsert(
-            &self.db,
-            CONTEXTS_TABLE,
-            &["name", "context"],
-            vec![
-                Expr::val(stored_name(&value, "toolset context")?),
-                Expr::val(value),
-            ],
-            &["name"],
-            &["context"],
-        )
-        .await
-        .map_err(|err| ToolsetsError::Store(db_text(&err)))
+        let name = stored_field(&value, "name", "toolset context")?;
+        // DEC-27 (./toolset.sdd) : `check_write` refuse un nom `H_…` admin compris (règle 4),
+        // un nom `G_…` chez un non-admin, un préfixe réservé ou un identifiant invalide — avant
+        // tout accès table ; le refus traverse en `Store(<Display>)` (règle 5). Amendement lot 2
+        // (`DEC-20`) : un nom privé est accepté pour tout appelant, la table est la sienne.
+        let caller = principal(&self.identity, &self.subject).await?;
+        let kind = check_write(&caller, &name).map_err(|err| deny(&err))?;
+        match kind {
+            IdKind::Catalog => upsert(
+                &self.db,
+                CATALOG_CONTEXTS_TABLE,
+                &["name", "context", "created_at"],
+                vec![Expr::val(name), Expr::val(value), Expr::val(chrono::Utc::now())],
+                &["name"],
+                &["context"],
+            )
+            .await
+            .map_err(|err| ToolsetsError::Store(db_text(&err))),
+            IdKind::Private => upsert(
+                &self.db,
+                USER_CONTEXTS_TABLE,
+                &["owner_id", "name", "context", "created_at"],
+                vec![
+                    Expr::val(caller.user_id),
+                    Expr::val(name),
+                    Expr::val(value),
+                    Expr::val(chrono::Utc::now()),
+                ],
+                &["owner_id", "name"],
+                &["context"],
+            )
+            .await
+            .map_err(|err| ToolsetsError::Store(db_text(&err))),
+            // Garde de couverture : `check_write` refuse `H_…` en amont, aucun accès table.
+            IdKind::Host => Err(deny(&LymailleError::Forbidden(
+                "host identifiers are not writable".to_string(),
+            ))),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{SeaContextStore, SeaContextTypeStore, SeaToolsetStore};
-    use crate::lymaille::identity::Identity;
+    use crate::lymaille::host::{HostError, LymailleHost, SharedHost};
+    use crate::lymaille::identity::{CallerPrincipal, Identity};
     use crate::lymaille::store::test_support::test_db;
     use crate::users::membership::sync_group_memberships;
     use crate::users::resolve_user;
@@ -417,14 +530,21 @@ mod tests {
     use ::lymaille::ToolsetContext;
     use ::lymaille::ToolsetStore as _;
     use ::lymaille::ToolsetsError;
+    use async_trait::async_trait;
     use chrono::Utc;
     use sea_orm::ActiveModelTrait as _;
     use sea_orm::ActiveValue;
     use sea_orm::ConnectionTrait as _;
     use sea_orm::DatabaseConnection;
     use sea_orm::sea_query::Alias;
+    use sea_orm::sea_query::Expr;
+    use sea_orm::sea_query::ExprTrait;
     use sea_orm::sea_query::Query;
     use serde_json::json;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use vynil_core::Semver;
 
     /// Compte local de test, admin ou non.
@@ -464,6 +584,11 @@ mod tests {
         .expect("la fixture se construit, le source n'est jugé qu'à la validation")
     }
 
+    /// Contexte de toolset de fixture, nommé `name` au niveau `level`.
+    fn context(name: &str, level: ContextLevel) -> ToolsetContext {
+        ToolsetContext::new(name.to_string(), level).expect("le contexte de fixture se construit")
+    }
+
     /// Ligne du catalogue écrite « via l'entité » : l'`ActiveModel` de
     /// `../definitions/toolset.rs` inséré avec ses colonnes dérivées, comme le ferait le CRUD
     /// de l'admin après ses hooks.
@@ -485,11 +610,12 @@ mod tests {
             .expect("la ligne active est écrite par l'entité");
     }
 
-    async fn row_count(db: &DatabaseConnection, table: &str) -> usize {
-        let select = Query::select()
-            .columns([Alias::new("*")])
-            .from(Alias::new(table))
-            .to_owned();
+    async fn row_count(db: &DatabaseConnection, table: &str, conditions: &[(&str, &str)]) -> usize {
+        let mut select = Query::select();
+        select.columns([Alias::new("*")]).from(Alias::new(table));
+        for (column, value) in conditions {
+            select.and_where(Expr::col(Alias::new(*column)).eq(*value));
+        }
         db.query_all(&select).await.expect("comptage des lignes").len()
     }
 
@@ -563,7 +689,12 @@ mod tests {
             "la variante d'invalidité de lymaille est rendue : {refused:?}"
         );
         assert_eq!(
-            row_count(&db, "miryad_lymaille_catalog_toolsets").await,
+            row_count(
+                &db,
+                "miryad_lymaille_catalog_toolsets",
+                &[("toolset_id", "G_casse")]
+            )
+            .await,
             0,
             "aucune ligne écrite"
         );
@@ -607,7 +738,7 @@ mod tests {
             .put_type(&context_type)
             .await
             .expect("l'admin écrit le type de contexte");
-        SeaContextStore::new(db.clone(), identity.clone(), "root".to_string())
+        SeaContextStore::new(db.clone(), identity.clone(), "root".to_string(), None)
             .put_context(&context)
             .await
             .expect("l'admin écrit le contexte");
@@ -621,12 +752,325 @@ mod tests {
             "le type relu égale l'original"
         );
         assert_eq!(
-            SeaContextStore::new(db.clone(), identity, "root".to_string())
+            SeaContextStore::new(db.clone(), identity, "root".to_string(), None)
                 .get_context("prod")
                 .await
                 .expect("lecture du contexte"),
             Some(context),
             "le contexte relu égale l'original"
+        );
+    }
+
+    /// Routage lot 2 (`DEC-20`, amendement du `Must`) : un nom privé va dans `user_contexts`
+    /// (`owner_id = user_id`, invisible à un autre utilisateur comme à un admin — règle 1 de
+    /// ./mod.sdd), et l'upsert par `(owner_id, name)` remplace sans dupliquer.
+    #[tokio::test]
+    async fn private_contexts_are_routed_to_the_user_table_and_closed() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "bob", false).await;
+        user(&db, "root", true).await;
+        let identity = Identity::new(db.clone());
+
+        SeaContextStore::new(db.clone(), identity.clone(), "alice".to_string(), None)
+            .put_context(&context("dev", ContextLevel::User))
+            .await
+            .expect("alice écrit son contexte privé `dev`");
+        SeaContextStore::new(db.clone(), identity.clone(), "alice".to_string(), None)
+            .put_context(
+                &context("dev", ContextLevel::User)
+                    .with_parameter("region".to_string(), json!("eu"))
+                    .expect("un paramètre ordinaire"),
+            )
+            .await
+            .expect("l'upsert remplace le contexte");
+
+        assert_eq!(
+            SeaContextStore::new(db.clone(), identity.clone(), "alice".to_string(), None)
+                .get_context("dev")
+                .await
+                .expect("lecture d'alice"),
+            Some(
+                context("dev", ContextLevel::User)
+                    .with_parameter("region".to_string(), json!("eu"))
+                    .expect("un paramètre ordinaire")
+            ),
+            "la ligne relue est la sienne, une seule ligne"
+        );
+        assert_eq!(
+            row_count(&db, "miryad_lymaille_user_contexts", &[("name", "dev")]).await,
+            1,
+            "l'upsert par (`owner_id`, `name`) n'a pas dupliqué"
+        );
+        assert!(
+            matches!(
+                SeaContextStore::new(db.clone(), identity.clone(), "bob".to_string(), None)
+                    .get_context("dev")
+                    .await,
+                Ok(None)
+            ),
+            "bob ne lit pas le privé d'une autre : {:?}",
+            SeaContextStore::new(db.clone(), identity.clone(), "bob".to_string(), None)
+                .get_context("dev")
+                .await
+        );
+        assert!(
+            matches!(
+                SeaContextStore::new(db.clone(), identity, "root".to_string(), None)
+                    .get_context("dev")
+                    .await,
+                Ok(None)
+            ),
+            "`get_context` ne rend jamais le privé d'un autre, admin compris"
+        );
+    }
+
+    /// Routage lot 2 : un nom `G_…` va dans `catalog_contexts`, lisible de tous ; son écriture
+    /// exige un admin (`check_write`, refus rendu par `Store` citant `MRD-LYMAILLE-002`).
+    #[tokio::test]
+    async fn catalog_contexts_are_routed_to_the_catalog_table() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "root", true).await;
+        let identity = Identity::new(db.clone());
+
+        SeaContextStore::new(db.clone(), identity.clone(), "root".to_string(), None)
+            .put_context(&context("G_prod", ContextLevel::Project))
+            .await
+            .expect("l'admin écrit `G_prod` au catalogue");
+        assert_eq!(
+            SeaContextStore::new(db.clone(), identity.clone(), "alice".to_string(), None)
+                .get_context("G_prod")
+                .await
+                .expect("lecture de alice"),
+            Some(context("G_prod", ContextLevel::Project)),
+            "le catalogue est lisible de tous"
+        );
+        assert_eq!(
+            row_count(&db, "miryad_lymaille_catalog_contexts", &[("name", "G_prod")]).await,
+            1,
+            "la ligne est dans la table du catalogue"
+        );
+        assert_eq!(
+            row_count(&db, "miryad_lymaille_user_contexts", &[]).await,
+            0,
+            "rien n'a été écrit dans la table privée"
+        );
+
+        let refused = SeaContextStore::new(db.clone(), identity, "alice".to_string(), None)
+            .put_context(&context("G_x", ContextLevel::Project))
+            .await
+            .expect_err("un non-admin n'écrit pas un contexte du catalogue");
+        assert!(
+            refused.to_string().contains("MRD-LYMAILLE-002"),
+            "le refus cite le code (règle 5) : {refused}"
+        );
+    }
+
+    /// Hôte factice de l'amendement DEC-27 : `resolve_context` rend le contexte de fixture au
+    /// `subject` autorisé, `None` aux autres (ou `Err` si `broken`) ; il compte ses appels et
+    /// note les `subject` reçus — preuve que la délégation passe le principal relu.
+    struct SpyHost {
+        granted_to: Option<String>,
+        broken: bool,
+        calls: AtomicUsize,
+        seen: Mutex<Vec<String>>,
+    }
+
+    impl SpyHost {
+        fn granting_to(subject: &str) -> Arc<Self> {
+            Arc::new(Self {
+                granted_to: Some(subject.to_string()),
+                broken: false,
+                calls: AtomicUsize::new(0),
+                seen: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn broken() -> Arc<Self> {
+            Arc::new(Self {
+                granted_to: None,
+                broken: true,
+                calls: AtomicUsize::new(0),
+                seen: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn seen_subjects(&self) -> Vec<String> {
+            self.seen.lock().expect("verrou du spy non empoisonné").clone()
+        }
+    }
+
+    #[async_trait]
+    impl LymailleHost for SpyHost {
+        async fn resolve_context(
+            &self,
+            id: &str,
+            caller: &CallerPrincipal,
+        ) -> Result<Option<ToolsetContext>, HostError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.seen
+                .lock()
+                .expect("verrou du spy non empoisonné")
+                .push(caller.subject.clone());
+            if self.broken {
+                return Err(HostError);
+            }
+            if id == "H_sbx" && self.granted_to.as_deref() == Some(caller.subject.as_str()) {
+                Ok(Some(spy_context()))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    fn spy_context() -> ToolsetContext {
+        ToolsetContext::new("H_sbx".to_string(), ContextLevel::Project)
+            .expect("le contexte de fixture se construit")
+    }
+
+    /// Retire une table de la base de test (tables qui y existent — pour les toolsets et le
+    /// catalogue) : tout chemin qui la lirait ou l'écrirait ensuite tombe sur une erreur
+    /// « table introuvable » — la preuve d'absence de requête, pas seulement le `None` rendu.
+    /// Pour les contextes, aucune retraite n'est nécessaire : sous lot 2 (`DEC-20`) la table
+    /// `miryad_lymaille_contexts` du lot 1 n'existe plus dans la base migrée — la moindre requête
+    /// sur cette table échoue d'emblée, y compris via `SeaContextStore` (routage `G_`/privé en
+    /// place sur les tables du lot 2, amendement du `Must` ; le chemin `H_…` ne doit jamais en
+    /// atteindre la moindre).
+    async fn drop_table(db: &DatabaseConnection, table: &str) {
+        db.execute_unprepared(&format!("DROP TABLE {table}"))
+            .await
+            .unwrap_or_else(|err| panic!("retrait de {table} pour la preuve : {err}"));
+    }
+
+    /// `Scenario` « un contexte hôte est résolu par l'hôte pour le principal courant » : la
+    /// table `miryad_lymaille_contexts` n'existe pas dans la base migrée (`DEC-20`, routage
+    /// lot 2 en place sur les tables du lot 2) — toute requête sur le chemin `H_…` rendrait une
+    /// erreur « table introuvable », pas le contexte de l'hôte : c'est la preuve d'absence de
+    /// requête. Le spy rend le contexte à `alice`, `None` à `bob`.
+    #[tokio::test]
+    async fn a_host_context_is_resolved_by_the_host_for_the_current_principal() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "bob", false).await;
+        let host = SpyHost::granting_to("alice");
+        let identity = Identity::new(db.clone());
+
+        let alice = SeaContextStore::new(
+            db.clone(),
+            identity.clone(),
+            "alice".to_string(),
+            Some(Arc::clone(&host) as SharedHost),
+        );
+        assert_eq!(
+            alice
+                .get_context("H_sbx")
+                .await
+                .expect("l'hôte répond pour alice"),
+            Some(spy_context()),
+            "alice obtient le contexte rendu par l'hôte"
+        );
+
+        let bob = SeaContextStore::new(
+            db.clone(),
+            identity,
+            "bob".to_string(),
+            Some(Arc::clone(&host) as SharedHost),
+        );
+        assert!(
+            matches!(bob.get_context("H_sbx").await, Ok(None)),
+            "`None` de l'hôte pour bob, sans distinction d'absence : {:?}",
+            bob.get_context("H_sbx").await
+        );
+
+        assert_eq!(
+            host.seen_subjects(),
+            vec!["alice".to_string(), "bob".to_string()],
+            "l'hôte reçoit le principal relu à chaque appel"
+        );
+    }
+
+    /// `Scenario` « sans hôte, un contexte hôte est absent » : sans `with_host`, et avec un
+    /// hôte en panne, `get_context("H_sbx")` rend `Ok(None)` — échec fermé, indiscernable d'un
+    /// contexte absent. La table `miryad_lymaille_contexts` n'existe pas dans la base migrée
+    /// (`DEC-20`) : la moindre requête sur le chemin `H_…` rendrait une erreur, pas `Ok(None)`
+    /// — preuve d'absence de requête.
+    #[tokio::test]
+    async fn without_a_host_a_host_context_is_absent() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        let identity = Identity::new(db.clone());
+
+        let store = SeaContextStore::new(db.clone(), identity.clone(), "alice".to_string(), None);
+        assert!(
+            matches!(store.get_context("H_sbx").await, Ok(None)),
+            "sans hôte → `Ok(None)` fermé : {:?}",
+            store.get_context("H_sbx").await
+        );
+
+        let broken = SpyHost::broken();
+        let store = SeaContextStore::new(
+            db.clone(),
+            identity,
+            "alice".to_string(),
+            Some(Arc::clone(&broken) as SharedHost),
+        );
+        assert!(
+            matches!(store.get_context("H_sbx").await, Ok(None)),
+            "hôte en panne → `Ok(None)` fermé, aucun texte d'hôte propagé : {:?}",
+            store.get_context("H_sbx").await
+        );
+    }
+
+    /// `Scenario` « un contexte hôte ne s'écrit pas » : même un administrateur est refusé par
+    /// `check_write`, avec le code du refus `Forbidden` dans le texte (règle 5). La table
+    /// `miryad_lymaille_contexts` n'existe pas dans la base migrée (`DEC-20`) : si le chemin
+    /// tentait l'`INSERT`, l'erreur serait « table introuvable », pas le refus d'autorité — le
+    /// refus précède donc tout accès table.
+    #[tokio::test]
+    async fn a_host_context_is_not_written() {
+        let db = test_db().await;
+        user(&db, "root", true).await;
+        let store = SeaContextStore::new(db.clone(), Identity::new(db.clone()), "root".to_string(), None);
+
+        let refused = store
+            .put_context(&spy_context())
+            .await
+            .expect_err("un contexte hôte ne s'écrit pas, admin compris");
+        assert!(
+            refused.to_string().contains("MRD-LYMAILLE-002"),
+            "le refus cite le code `Forbidden` (règle 5) : {refused}"
+        );
+    }
+
+    /// Must amendé DEC-27 pour les toolsets : `get_active`, `get_draft` et `put_draft` d'un nom
+    /// `H_…` — lecture `Ok(None)`, écriture refusée, sans accès table. Les tables des toolsets
+    /// sont retirées : la moindre requête rendrait une erreur, pas le verdict attendu.
+    #[tokio::test]
+    async fn a_host_identifier_reaches_no_toolset_table() {
+        let db = test_db().await;
+        user(&db, "root", true).await;
+        drop_table(&db, "miryad_lymaille_catalog_toolsets").await;
+        drop_table(&db, "miryad_lymaille_toolsets").await;
+        let store = SeaToolsetStore::new(db.clone(), Identity::new(db.clone()), "root".to_string());
+
+        assert!(
+            matches!(store.get_active("H_sbx").await, Ok(None)),
+            "lecture `H_sbx` → `Ok(None)` sans requête : {:?}",
+            store.get_active("H_sbx").await
+        );
+        assert!(
+            matches!(store.get_draft("H_sbx").await, Ok(None)),
+            "lecture du brouillon `H_sbx` → `Ok(None)` sans requête : {:?}",
+            store.get_draft("H_sbx").await
+        );
+        let refused = store
+            .put_draft(&toolset("H_sbx", "1.0.0"))
+            .await
+            .expect_err("un toolset `H_…` ne s'écrit pas, admin compris");
+        assert!(
+            refused.to_string().contains("MRD-LYMAILLE-002"),
+            "l'écriture cite le code `Forbidden` (règle 5) : {refused}"
         );
     }
 }

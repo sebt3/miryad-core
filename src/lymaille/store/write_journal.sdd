@@ -26,6 +26,10 @@ Must:
   `pub async fn record(db, scope, op_key, result) -> Result<(), LymailleError>` : insère ; une violation d'unicité (concurrence) est
     un **succès** (le premier gagne, comme `replay` le montrera).
   `pub async fn purge_before(db, cutoff) -> Result<u64, LymailleError>` (appelée par ./purge.sdd).
+
+Raises:
+  `record` dont le résultat sérialisé dépasse 64 Ko → `LymailleError::Store` (`MRD-LYMAILLE-009`) : le résultat est **refusé, jamais tronqué** —
+    du JSON tronqué ne se relit pas et `replay` rendrait une erreur indéchiffrable (sémantique du « borné à 64 Ko », actée 2026-11-04).
   Ordre imposé aux appelants (documenté, testé dans ../resource_module.sdd) : `replay` ; sinon exécuter l'écriture ; puis `record`. Une
     panne entre l'écriture et `record` rejoue l'écriture au rejeu suivant : `update` et `delete` sont naturellement idempotents ; `create` doit
     tolérer le doublon (voir ../resource_module.sdd).
@@ -42,7 +46,7 @@ Exposes:
   `WriteScope`, `Op`, `op_key`, `replay`, `record`, `purge_before`
 
 Tasks:
-  [ ] Ajouter la dépendance `sha2` (déjà dans le graphe ? sinon `Cargo.toml` amendé avec accord) puis tests d'abord (SQLite mémoire), puis ./write_journal.rs.
+  [x] Ajouter la dépendance `sha2` (déjà dans le graphe ? sinon `Cargo.toml` amendé avec accord) puis tests d'abord (SQLite mémoire), puis ./write_journal.rs.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./write_journal.rs.

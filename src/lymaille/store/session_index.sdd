@@ -39,7 +39,7 @@ Exposes:
   `SeaSessionIndex`, `impl SessionIndex`
 
 Tasks:
-  [ ] Tests d'abord (SQLite mémoire), puis ./session_index.rs.
+  [x] Tests d'abord (SQLite mémoire), puis ./session_index.rs.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./session_index.rs.

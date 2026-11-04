@@ -18,9 +18,11 @@ References:
 Must:
   `pub struct SeaAgentStore` / `SeaProfileStore` / `SeaProviderStore` — `Clone`, créés par `LymailleStores`.
   `impl AgentStore for SeaAgentStore` :
-    `get_agent(id)` : règle 3 de ./mod.sdd ; ligne trouvée → `serde_json::from_value::<AgentDefinition>(definition)` ; échec de
+    `get_agent(id)` : règle 3 de ./mod.sdd ; `classify(id)` = `Host` → `Ok(None)` sans aucune requête (DSD `DEC-27`, les contextes et agents
+      d'hôte ne sont jamais stockés) ; ligne trouvée → `serde_json::from_value::<AgentDefinition>(definition)` ; échec de
       désérialisation → `AgentsError::Store(texte expurgé)`.
-    `put_agent(def)` : `AgentDefinition::validate()` (refus → `AgentsError::InvalidDefinition`), `check_write(caller, def.id())`, puis upsert
+    `put_agent(def)` : `AgentDefinition::validate()` (refus → `AgentsError::InvalidDefinition`), `check_write(caller, def.id())` — un
+      identifiant `Host` est refusé là, aucune table touchée (`DEC-27`) —, puis upsert
       selon la règle 4 dans la table du catalogue (`Catalog`) ou dans la table privée avec `owner_id = user_id` (`Private`) ; les colonnes
       `agent_id`, `kind`, `profile` sont réécrites depuis `def` ; refus de l'hôte → `AgentsError::Store("MRD-LYMAILLE-…")` (règle 5).
   `impl ProfileStore for SeaProfileStore` : `get_profile(name)` (ligne par `name` → `ModelProfile`), `put_profile(profile)` (upsert par
@@ -42,7 +44,7 @@ Exposes:
   `SeaAgentStore`, `SeaProfileStore`, `SeaProviderStore` et leurs `impl` de trait
 
 Tasks:
-  [ ] Amendement DEC-27 (2026-11-03) : `IdKind::Host` dans les `match` de `get_agent` et `put_agent` (lecture `Ok(None)` sans requête, écriture refusée par `check_write`) ; test d'abord, puis ./catalog.rs. Après ../identity.rs.
+  [x] Amendement DEC-27 (2026-11-03) : `IdKind::Host` dans les `match` de `get_agent` et `put_agent` (lecture `Ok(None)` sans requête, écriture refusée par `check_write`) ; test d'abord, puis ./catalog.rs. Après ../identity.rs.
   [x] Tests d'abord (SQLite mémoire), puis ./catalog.rs. Validé 2026-11-02 (validator PASS).
 
 Done when:

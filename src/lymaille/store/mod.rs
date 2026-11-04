@@ -35,19 +35,30 @@
 //! 6. **Horodatages** : `created_at` et `updated_at` sont posés par le store à l'heure UTC
 //!    courante.
 
+pub mod audit;
 pub mod catalog;
+pub mod draft;
 pub mod memory;
+pub mod purge;
 pub mod session;
+pub mod session_index;
 pub mod toolset;
+pub mod write_journal;
 
+pub use audit::AuditWriter;
 pub use catalog::{SeaAgentStore, SeaProfileStore, SeaProviderStore};
+pub use draft::SeaDraftStore;
 pub use memory::SeaMemoryStore;
+pub use purge::{PurgeReport, purge_sessions};
 pub use session::SeaSessionStore;
+pub use session_index::SeaSessionIndex;
 pub use toolset::{SeaContextStore, SeaContextTypeStore, SeaToolsetStore};
+pub use write_journal::WriteScope;
 
 use sea_orm::DatabaseConnection;
 use sea_orm::DbErr;
 
+use super::host::SharedHost;
 use super::identity::Identity;
 
 /// Fabrique des stores du module, liée à un `subject` (DSD `DEC-7`) : jamais partagé entre deux
@@ -57,6 +68,9 @@ pub struct LymailleStores {
     db: DatabaseConnection,
     identity: Identity,
     subject: String,
+    /// Hôte partagé pour la résolution des identifiants `H_…` (amendement DEC-27) : `None` par
+    /// défaut, posé par [`LymailleStores::with_host`] ; seule la fabrique de contextes le propage.
+    host: Option<SharedHost>,
 }
 
 impl LymailleStores {
@@ -68,7 +82,16 @@ impl LymailleStores {
             db,
             identity,
             subject: subject.into(),
+            host: None,
         }
+    }
+
+    /// Attache l'hôte partagé (amendement DEC-27 de ./mod.sdd) : `contexts()` délègue à cet hôte
+    /// la résolution des identifiants `H_…` (./toolset.sdd) ; les autres stores l'ignorent.
+    #[must_use]
+    pub fn with_host(mut self, host: SharedHost) -> Self {
+        self.host = Some(host);
+        self
     }
 
     /// Le `subject` auquel cette fabrique (et chaque store qu'elle rend) est liée.
@@ -116,13 +139,31 @@ impl LymailleStores {
     /// Store des contextes de toolset, table globale interne (`./toolset.sdd`).
     #[must_use]
     pub fn contexts(&self) -> SeaContextStore {
-        SeaContextStore::new(self.db.clone(), self.identity.clone(), self.subject.clone())
+        SeaContextStore::new(
+            self.db.clone(),
+            self.identity.clone(),
+            self.subject.clone(),
+            self.host.clone(),
+        )
     }
 
     /// Store des mémoires, clé par `(subject, portée, identifiant)` (`./memory.sdd`).
     #[must_use]
     pub fn memories(&self) -> SeaMemoryStore {
         SeaMemoryStore::new(self.db.clone(), self.subject.clone())
+    }
+
+    /// Store des brouillons de définitions (`./draft.sdd`, amendement lot 2 de `./mod.sdd`).
+    #[must_use]
+    pub fn drafts(&self) -> SeaDraftStore {
+        SeaDraftStore::new(self.db.clone(), self.identity.clone(), self.subject.clone())
+    }
+
+    /// Index des sessions et de leurs erreurs de script (`./session_index.sdd`, amendement lot 2
+    /// de `./mod.sdd`).
+    #[must_use]
+    pub fn session_index(&self) -> SeaSessionIndex {
+        SeaSessionIndex::new(self.db.clone(), self.identity.clone(), self.subject.clone())
     }
 }
 
@@ -269,10 +310,14 @@ mod tests {
         )
     }
 
-    /// Les huit accesseurs rendent bien les huit types de store (`Exposes`).
+    /// Les huit accesseurs rendent bien les huit types de store (`Exposes`), et l'amendement lot 2
+    /// ajoute `drafts()` et `session_index()` — test des chemins plats : les nouveaux enfants
+    /// (`audit`, `purge`, `write_journal`) et leurs types atteignables à plat depuis `store`
+    /// (`AuditWriter`, `purge_sessions`, `PurgeReport`, `WriteScope`).
     #[tokio::test]
     async fn the_factory_renders_the_eight_stores() {
-        let stores = LymailleStores::new(test_db().await, "alice");
+        let db = test_db().await;
+        let stores = LymailleStores::new(db.clone(), "alice");
         let _: super::SeaSessionStore = stores.sessions();
         let _: super::SeaAgentStore = stores.agents();
         let _: super::SeaProfileStore = stores.profiles();
@@ -281,9 +326,44 @@ mod tests {
         let _: super::SeaContextTypeStore = stores.context_types();
         let _: super::SeaContextStore = stores.contexts();
         let _: super::SeaMemoryStore = stores.memories();
+        let _: super::SeaDraftStore = stores.drafts();
+        let _: super::SeaSessionIndex = stores.session_index();
         assert_eq!(stores.subject(), "alice", "`subject()` rend le sujet verbatim");
         let clone = stores.clone();
         assert_eq!(clone.subject(), "alice", "la fabrique est `Clone`");
+
+        // Chemins plats de l'amendement lot 2 : les ré-exports du module `store` existent et
+        // portent les contrats annoncés par `./mod.sdd` (`Exposes`).
+        let audit: super::AuditWriter = super::AuditWriter::spawn(db.clone());
+        drop(audit);
+        let report: super::PurgeReport =
+            super::purge_sessions(&db, chrono::Utc::now(), super::purge::DEFAULT_RETENTION)
+                .await
+                .expect("la purge d'une base sans sessions réussit");
+        assert_eq!(
+            report,
+            super::PurgeReport {
+                sessions: 0,
+                script_errors: 0,
+                write_journal: 0,
+            },
+            "`purge_sessions` ré-exporté rend un rapport à zéro sur une base neuve"
+        );
+        let scope = super::WriteScope {
+            run_key: "run-plat".to_string(),
+            step_key: "step-plat".to_string(),
+        };
+        let key = super::write_journal::op_key(
+            super::write_journal::Op::Create,
+            "widget",
+            None,
+            &serde_json::json!({"v": 1}),
+        );
+        assert_eq!(key.len(), 64, "`op_key` est un SHA-256 hexadécimal");
+        assert!(
+            matches!(super::write_journal::replay(&db, &scope, &key).await, Ok(None)),
+            "aucune écriture journalisée sur une base neuve"
+        );
     }
 
     /// `Scenario` « deux sujets ne se voient pas, le catalogue est commun » : la ligne privée
@@ -442,6 +522,61 @@ mod tests {
         assert!(
             !text.contains("SECRET"),
             "la valeur de la colonne ne fuit pas dans l'erreur : {text}"
+        );
+    }
+
+    /// Amendement DEC-27 de ./mod.sdd : `with_host` propage l'hôte au store de contextes —
+    /// sans hôte, `contexts()` rend `Ok(None)` fermé sur `H_…` ; avec hôte, `get_context`
+    /// délègue à `resolve_context`. La table des contextes est retirée : preuve qu'aucune
+    /// requête ne part sur le chemin `H_…`.
+    #[tokio::test]
+    async fn with_host_propagates_the_host_to_the_context_store() {
+        use ::lymaille::ContextStore as _;
+
+        struct GrantHost;
+        #[async_trait::async_trait]
+        impl crate::lymaille::host::LymailleHost for GrantHost {
+            async fn resolve_context(
+                &self,
+                id: &str,
+                _caller: &crate::lymaille::identity::CallerPrincipal,
+            ) -> Result<Option<::lymaille::ToolsetContext>, crate::lymaille::host::HostError> {
+                if id == "H_sbx" {
+                    Ok(Some(
+                        ::lymaille::ToolsetContext::new(
+                            "H_sbx".to_string(),
+                            ::lymaille::ContextLevel::Project,
+                        )
+                        .expect("contexte de fixture"),
+                    ))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        // La table `miryad_lymaille_contexts` n'existe plus sous lot 2 (`DEC-20`) : la moindre
+        // requête sur le chemin `H_…` rendrait une erreur, pas `None` — preuve d'absence de
+        // requête.
+
+        let stores = LymailleStores::new(db.clone(), "alice");
+        assert!(
+            matches!(stores.contexts().get_context("H_sbx").await, Ok(None)),
+            "`None` par défaut, sans `with_host` : {:?}",
+            stores.contexts().get_context("H_sbx").await
+        );
+
+        let stores = stores.with_host(std::sync::Arc::new(GrantHost));
+        assert!(
+            stores
+                .contexts()
+                .get_context("H_sbx")
+                .await
+                .expect("l'hôte propagé par `with_host` répond")
+                .is_some(),
+            "avec hôte, `contexts()` délègue à `resolve_context`"
         );
     }
 }

@@ -229,6 +229,7 @@ impl MiryadResource for Entity {
 mod tests {
     use super::ActiveModel;
     use super::Entity;
+    use super::Model;
     use crate::auth::AuthPrincipal;
     use crate::auth::PrincipalSource;
     use crate::resource::MiryadResource;
@@ -503,6 +504,45 @@ mod tests {
                 }
                 Ok(_) => panic!("une nature {nature:?} inconnue doit être refusée"),
             }
+        }
+    }
+
+    /// Scenario « le nom ne change pas à la mise à jour » : une ligne `cluster`, un
+    /// `ActiveModel` dont le JSON porte `cluster2` — `before_update` refuse, le message cite la
+    /// règle ; aucun code `MRD-*` sur un `HookError`.
+    #[test]
+    fn before_update_refuse_un_changement_de_nom() {
+        let existing = Model {
+            id: 1,
+            name: "cluster".to_string(),
+            version: "1.0.0".to_string(),
+            kind: "work".to_string(),
+            default_agent: Some("G_triage".to_string()),
+            allowed_agents: json!(["G_triage"]),
+            active: Some(type_json("cluster", "1.0.0", json!({"type": "object"}))),
+            draft: None,
+            created_at: chrono::Utc::now(),
+        };
+        let rendu = Entity::before_update(
+            active_avec(
+                Some(type_json("cluster2", "1.1.0", json!({"type": "object"}))),
+                None,
+            ),
+            &existing,
+            &principal(),
+        );
+        match rendu {
+            Err(erreur) => {
+                assert!(
+                    erreur.code.is_none(),
+                    "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
+                );
+                assert!(
+                    erreur.message.contains("name cannot change"),
+                    "le refus cite la règle : {erreur:?}"
+                );
+            }
+            Ok(_) => panic!("un changement de nom à la mise à jour doit être refusé"),
         }
     }
 }

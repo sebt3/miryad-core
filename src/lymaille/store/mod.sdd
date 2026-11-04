@@ -75,8 +75,8 @@ Exposes:
     `db_text` (`pub(crate)`), et les huit types de store ré-exportés.
 
 Tasks:
-  [ ] Amendement DEC-27 (2026-11-03) : `with_host`, champ `host` propagé aux stores de contextes, règles 3 et 4 pour `Host` ; tests d'abord, puis ./mod.rs en dernier. Après ../host.rs et ../identity.rs.
-  [ ] Amendement lot 2 : accesseurs `drafts` et `session_index`, déclaration des enfants du lot 2, tests de chemins plats d'abord, puis ./mod.rs en dernier.
+  [x] Amendement DEC-27 (2026-11-03) : `with_host`, champ `host` propagé aux stores de contextes, règles 3 et 4 pour `Host` ; tests d'abord, puis ./mod.rs en dernier. Après ../host.rs et ../identity.rs.
+  [x] Amendement lot 2 : accesseurs `drafts` et `session_index`, déclaration des enfants du lot 2, tests de chemins plats d'abord, puis ./mod.rs en dernier.
   [x] Tests d'abord (SQLite mémoire : cloisonnement et règles 1 à 6 sur un store de test), puis ./mod.rs en dernier du
     dossier. Validé 2026-11-02 (validator PASS ; `db_text` de ../identity.rs basculé sur `store::db_text`).
 

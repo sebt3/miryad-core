@@ -163,9 +163,9 @@ impl AgentStore for SeaAgentStore {
         let Ok(kind) = classify(id) else {
             return Ok(None);
         };
-        // DEC-27 (amendement à venir dans `./catalog.sdd`) : un identifiant `H_…` est résolu
-        // par l'hôte, jamais stocké en table — lecture `Ok(None)` sans requête, avant même la
-        // reconstruction du principal.
+        // DEC-27 (./catalog.sdd, amendement approuvé 2026-11-04) : un identifiant `H_…` est
+        // résolu par l'hôte, jamais stocké en table — lecture `Ok(None)` sans requête, avant
+        // même la reconstruction du principal.
         if kind == IdKind::Host {
             return Ok(None);
         }
@@ -255,8 +255,8 @@ impl AgentStore for SeaAgentStore {
                 )
                 .await
             }
-            // DEC-27 (amendement à venir dans `./catalog.sdd`) : `check_write` refuse déjà
-            // `H_…` en amont — aucun accès table ; branche de couverture au même refus.
+            // DEC-27 (./catalog.sdd, amendement approuvé 2026-11-04) : `check_write` refuse
+            // déjà `H_…` en amont — aucun accès table ; branche de couverture au même refus.
             IdKind::Host => {
                 return Err(deny(&LymailleError::Forbidden(
                     "host identifiers are not writable".to_string(),
@@ -599,6 +599,37 @@ mod tests {
                 Ok(None)
             ),
             "agent absent → None"
+        );
+    }
+
+    /// `Scenario` « un identifiant hôte n'atteint aucune table » (amendement DEC-27) : les deux
+    /// tables d'agents sont retirées de la base de test — preuve d'absence de requête, la
+    /// moindre requête rendrait une erreur « table introuvable » — la lecture de `H_sbx` rend
+    /// donc `Ok(None)` sans requête et l'écriture est un refus d'autorité dont le texte cite le
+    /// code `Forbidden` (règle 5), jamais une erreur de base.
+    #[tokio::test]
+    async fn a_host_identifier_reaches_no_table() {
+        let db = test_db().await;
+        user(&db, "root", true).await;
+        for table in ["miryad_lymaille_catalog_agents", "miryad_lymaille_agents"] {
+            db.execute_unprepared(&format!("DROP TABLE {table}"))
+                .await
+                .unwrap_or_else(|err| panic!("retrait de {table} pour la preuve : {err}"));
+        }
+        let store = SeaAgentStore::new(db.clone(), Identity::new(db.clone()), "root".to_string());
+
+        assert!(
+            matches!(store.get_agent("H_sbx").await, Ok(None)),
+            "`H_sbx` rend `Ok(None)` sans atteindre les tables retirées : {:?}",
+            store.get_agent("H_sbx").await
+        );
+        let refused = store
+            .put_agent(&agent("H_sbx"))
+            .await
+            .expect_err("un identifiant hôte ne s'écrit pas, admin compris");
+        assert!(
+            refused.to_string().contains("MRD-LYMAILLE-002"),
+            "le refus est indiscernable d'un refus d'autorité et cite le code (règle 5) : {refused}"
         );
     }
 }

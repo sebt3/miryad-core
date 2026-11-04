@@ -38,6 +38,9 @@ Must:
     en plus de la validation de `lymaille`, le **droit d'usage des serveurs** : chaque rôle lié doit passer `server_for` (../mcp_access.sdd) ; sinon
     `ToolsetsError::Store("MRD-LYMAILLE-002…")` (chemin de la session de configuration ; le chemin REST/MCP des entités ne contrôle pas ici, hook
     synchrone — le contrôle d'autorité reste à l'assemblage et à l'appel). Le niveau `Session` d'un contexte reste interne (aucune table).
+    Une ligne de type créée par le store (brouillon seul) ne porte **pas** les champs DEC-28 (`kind` vide, `default_agent` `NULL`,
+    `allowed_agents` vide) : le store ne les invente pas ; les hooks de l'entité refuseront l'activation tant que l'admin n'aura pas complété
+    la ligne par le CRUD (acté 2026-11-04).
 
   **Amendement DEC-27 (2026-11-03)** : `get_context(H_…)` (`IdKind::Host`) délègue à `LymailleHost::resolve_context(id, caller)` avec le principal relu, sans table ; sans hôte, ou si l'hôte répond `None` ou `Err`, `Ok(None)`.
     `put_context(H_…)` est refusé par `check_write` (`ToolsetsError::Store(<Display>)`). `get_active`, `get_draft` et `put_draft` d'un nom `H_…` : lecture `Ok(None)`, écriture refusée, sans accès table.
@@ -52,7 +55,7 @@ Exposes:
   `SeaToolsetStore`, `SeaContextTypeStore`, `SeaContextStore` et leurs `impl` de trait
 
 Tasks:
-  [ ] Amendement DEC-27 (2026-11-03) : `IdKind::Host` dans `read_version` et l'écriture d'un toolset (lecture `Ok(None)`, écriture refusée), `get_context(H_…)` délégué à l'hôte (`SharedHost` porté par `LymailleStores`, ../store/mod.sdd), `put_context(H_…)` refusé ; tests d'abord, puis ./toolset.rs. Après ../host.rs et ./mod.rs.
+  [x] Amendement DEC-27 (2026-11-03) : `IdKind::Host` dans `read_version` et l'écriture d'un toolset (lecture `Ok(None)`, écriture refusée), `get_context(H_…)` délégué à l'hôte (`SharedHost` porté par `LymailleStores`, ../store/mod.sdd), `put_context(H_…)` refusé ; tests d'abord, puis ./toolset.rs. Après ../host.rs et ./mod.rs.
   [ ] Amendement lot 2 : routage des contextes (catalogue/privé) et contrôle des serveurs liés, nouveaux scenarios d'abord, puis ./toolset.rs.
   [x] Tests d'abord (SQLite mémoire), puis ./toolset.rs. Validé 2026-11-02 (validator PASS après partage littéral
     de `check_toolset` : le store appelle la fonction typée de ../definitions/toolset.sdd, zéro duplication).

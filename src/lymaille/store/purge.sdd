@@ -19,7 +19,8 @@ Must:
   `pub const DEFAULT_RETENTION: Duration` = 30 jours.
   `pub struct PurgeReport { pub sessions: u64, pub script_errors: u64, pub write_journal: u64 }` (`Debug`, `Clone`, `PartialEq`).
   `pub async fn purge_sessions(db: &DatabaseConnection, now: DateTimeUtc, retention: Duration) -> Result<PurgeReport, LymailleError>` :
-    1. `retention` nulle → `InvalidDefinition("retention must be positive")` (une rétention nulle viderait tout) ;
+    1. `retention` non positive (nulle **ou négative**) → `InvalidDefinition("retention must be positive")` — une rétention négative rendrait un
+      `cutoff` dans le futur et viderait tout (renforcement acté 2026-11-04 après le validation du batch stores) ;
     2. `cutoff = now - retention` (arithmétique vérifiée : un dépassement → erreur, jamais de panique) ;
     3. supprime les sessions `updated_at < cutoff`, puis les erreurs de script et les entrées de journal d'écritures `< cutoff` ; chaque
       suppression dans sa propre requête (pas de transaction englobante : une purge partielle reste valide) ;
@@ -38,7 +39,7 @@ Exposes:
   `purge_sessions`, `PurgeReport`, `DEFAULT_RETENTION`
 
 Tasks:
-  [ ] Tests d'abord (SQLite mémoire), puis ./purge.rs.
+  [x] Tests d'abord (SQLite mémoire), puis ./purge.rs.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./purge.rs.
@@ -47,6 +48,11 @@ Scenario: seules les sessions anciennes disparaissent
   Given trois sessions de 1, 20 et 40 jours et une rétention de 30 jours
   When `purge_sessions`
   Then la session de 40 jours disparaît, `PurgeReport.sessions = 1`
+
+Scenario: une rétention non positive est refusée
+  Given une rétention nulle puis une rétention négative
+  When `purge_sessions`
+  Then deux `InvalidDefinition` et aucune ligne supprimée
 
 Scenario: les traces suivent
   Given des erreurs de script et des entrées de journal de 40 jours et de 1 jour

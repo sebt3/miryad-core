@@ -85,3 +85,8 @@ Scenario: une nature inconnue est refusée
   Given `kind` valant `sub`, `travail`, `WORK`, vide, ou non posé (`ActiveValue::NotSet`)
   When `before_create`
   Then `Err(HookError)` dans les cinq cas
+
+Scenario: le nom ne change pas à la mise à jour
+  Given une ligne existante nommée `cluster` et un `ActiveModel` dont le JSON porte `cluster2`
+  When `before_update`
+  Then `Err(HookError)` « name cannot change »

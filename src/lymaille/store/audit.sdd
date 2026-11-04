@@ -19,6 +19,8 @@ Must:
     `pub fn record(&self, subject: &str, event: &Event)` (synchrone, non bloquant, `try_send`) : ne retient que `EventKind::Script` dont le
     record est en erreur ; ignore tout autre événement ; capacité du canal 1024.
   Table `miryad_lymaille_script_errors` : `id` PK auto, `subject`, `session_id`, `turn` (entier), `class` (texte), `text` (déjà masqué), `at` ;
+    `turn` : le `ScriptRecord` amont ne porte pas de tour — la colonne reste `NULL` tant qu'aucun producteur ne la porte (le hub, R8, le pourra) ;
+    le lecteur rend le tour `0` et l'ordre de relecture retombe sur `id` (acté 2026-11-04).
     index (`session_id`). Le texte est tronqué à 2000 caractères.
   `pub async fn purge_before(db, cutoff) -> Result<u64, LymailleError>` : supprime les lignes plus anciennes que `cutoff` (appelée par
     ./purge.sdd).
@@ -34,10 +36,10 @@ Depends on:
   ./mod.rs, @sea_orm, @tokio, `lymaille::{Event, EventKind}`
 
 Exposes:
-  `AuditWriter::{spawn, record}`, `purge_before`
+  `AuditWriter::{spawn, record, dropped}`, `purge_before`
 
 Tasks:
-  [ ] Tests d'abord (SQLite mémoire, temps tokio), puis ./audit.rs. La table est créée par la migration du lot 2 (../migration.sdd).
+  [x] Tests d'abord (SQLite mémoire, temps tokio), puis ./audit.rs. La table est créée par la migration du lot 2 (../migration.sdd).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./audit.rs.

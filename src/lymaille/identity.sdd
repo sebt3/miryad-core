@@ -56,9 +56,11 @@ Exposes:
 Tasks:
   [x] Réalignement R5 (DSD `DEC-27`, 2026-11-03) : spec amendée le 2026-11-03 (variante `IdKind::Host`, préfixe `H_`, refus d'écriture, `Scenario` ci-dessous),
     approuvée le 2026-11-04.
-  [ ] Après approbation de R5 : tests d'abord pour `Host` et `h_`, puis amender ./identity.rs (variante `IdKind::Host`, `classify`, `check_write`) ; les `match` exhaustifs sur `IdKind`
+  [x] Après approbation de R5 : tests d'abord pour `Host` et `h_`, puis amender ./identity.rs (variante `IdKind::Host`, `classify`, `check_write`) ; les `match` exhaustifs sur `IdKind`
     de ./store/catalog.rs (trois sites) et ./store/toolset.rs (deux sites) cessent de compiler : `Host` y est une erreur (`NotFound` en lecture, `Forbidden` en écriture, aucun
     accès table). Ces deux fichiers appartiennent à `store/catalog.sdd` et `store/toolset.sdd` : leur amendement (une ligne de `Must` + un `Scenario` chacun) est une tâche à part, avant celle-ci.
+    Validé 2026-11-04 : amendements DEC-27 des deux stores faits et testés (checkpoint 3) ; la régularisation a posteriori de l'ordre (branches minimales posées au checkpoint 1, `Must`+`Scenario`
+    de `catalog.sdd` ajoutés au checkpoint 3) est actée par le primary.
   [?] Le nom d'un contexte `H_…` doit passer la validation de `lymaille` (même restriction que `G_`, [lymaille#5](https://github.com/sebt3/lymaille/issues/5)) :
     à vérifier à la sortie de la correction, sans effet sur ce fichier.
   [x] Tests d'abord (SQLite mémoire pour `resolve`, tests purs pour le reste), puis ./identity.rs. Validé 2026-11-02
