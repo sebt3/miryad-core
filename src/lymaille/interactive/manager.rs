@@ -19,6 +19,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -172,11 +173,14 @@ struct Inner {
 }
 
 /// Mémoire des sessions ouvertes de ce processus : entrées par session (annulation, dernier
-/// usage) et plafond `max_open_per_user` — les sessions fermées ou déchargées ne comptent plus.
+/// usage), plafond `max_open_per_user` — les sessions fermées ou déchargées ne comptent plus —
+/// et marques de fermeture : une session `close`ée rend le même `NotFound` qu'une session absente
+/// jusqu'à une `resume` (`Scenario` « fermer libère la session » de ./manager.sdd).
 /// Mono-réplique : la table ne dit rien des autres processus (`session#DEC-1` de `lymaille`).
 #[derive(Default)]
 struct Table {
     by_id: HashMap<SessionId, (String, Arc<Entry>)>,
+    closed: HashSet<SessionId>,
 }
 
 impl Table {
@@ -198,9 +202,22 @@ impl Table {
         self.by_id.values().filter(|entry| entry.0 == subject).count()
     }
 
-    /// Décharge une session de la mémoire (fermeture) ; l'état persisté demeure.
-    fn remove(&mut self, id: &SessionId) {
+    /// Décharge une session de la mémoire (fermeture) et la marque fermée : `send` rend dès lors
+    /// le même `NotFound` qu'une session absente, jusqu'à une reprise. L'état persisté demeure.
+    fn close(&mut self, id: &SessionId) {
         let _removed: Option<(String, Arc<Entry>)> = self.by_id.remove(id);
+        let _closed = self.closed.insert(id.clone());
+    }
+
+    /// Une session fermée (non encore reprise) dans ce processus.
+    fn is_closed(&self, id: &SessionId) -> bool {
+        self.closed.contains(id)
+    }
+
+    /// Reprise : la marque de fermeture est levée, la session accepte de nouveau des tours
+    /// (l'état persisté relisu la rend disponible « à la demande », ./manager.sdd).
+    fn reopen(&mut self, id: &SessionId) {
+        let _gone = self.closed.remove(id);
     }
 
     /// Déchargement `idle_ttl` : les sessions inactives depuis le plafond quittent la mémoire,
@@ -355,6 +372,11 @@ impl SessionManager {
     ) -> Result<(), LymailleError> {
         let caller = self.principal(subject).await?;
         let state = self.readable(subject, id).await?;
+        // Session fermée par `close` et non encore reprise : le même `NotFound` indiscernable
+        // qu'une session absente (`Scenario` « fermer libère la session » de ./manager.sdd).
+        if lock(&self.inner.turns).is_closed(id) {
+            return Err(LymailleError::NotFound(SESSION_NOT_FOUND.to_string()));
+        }
         let permit = match self.inner.deps.gate.try_begin(id.clone()) {
             Ok(permit) => permit,
             Err(SessionError::TurnActive(_)) => {
@@ -449,6 +471,9 @@ impl SessionManager {
         let assembled =
             assemble_session(&self.inner.deps.assemble, &caller, kind, &agent_id, id, None).await?;
         self.inner.deps.assemble.hub.register(id, subject);
+        // Une session fermée que l'on reprend est rouverte : la marque de fermeture est levée,
+        // les tours sont de nouveau acceptés (l'état relisu est seul juge de sa disponibilité).
+        lock(&self.inner.turns).reopen(id);
         self.touch(subject, id);
         Ok(SessionHandle {
             id: id.clone(),
@@ -459,8 +484,10 @@ impl SessionManager {
         })
     }
 
-    /// Ferme la session : annule un tour actif, ferme le hub, décharge la mémoire. L'état
-    /// persisté demeure (la purge est `../store/purge.sdd`). Silencieuse sur session inconnue.
+    /// Ferme la session : annule un tour actif, ferme le hub, décharge la mémoire et la marque
+    /// fermée — `send` rend dès lors le même `NotFound` qu'une session absente, jusqu'à une
+    /// `resume`. L'état persisté demeure (la purge est `../store/purge.sdd`). Silencieuse sur
+    /// session inconnue.
     pub async fn close(&self, subject: &str, id: &SessionId) {
         if self.principal(subject).await.is_err() || self.readable(subject, id).await.is_err() {
             tracing::debug!("lymaille manager: close on an unknown or invisible session");
@@ -470,7 +497,7 @@ impl SessionManager {
             self.signal(id);
         }
         self.inner.deps.assemble.hub.close(id);
-        lock(&self.inner.turns).remove(id);
+        lock(&self.inner.turns).close(id);
     }
 
     /// Résumés expurgés (titre masqué) des sessions de `subject` selon le filtre.
@@ -793,7 +820,9 @@ mod tests {
     use ::lymaille::Provider;
     use ::lymaille::ProviderLevel;
     use ::lymaille::ProviderStore as _;
+    use ::lymaille::Redactor;
     use ::lymaille::ScriptedProvider;
+    use ::lymaille::SessionFilter;
     use ::lymaille::SessionId;
     use ::lymaille::SessionKind;
     use ::lymaille::SessionStore as _;
@@ -820,6 +849,7 @@ mod tests {
     use crate::lymaille::interactive::event::SessionEventKind;
     use crate::lymaille::interactive::hub::EventHub;
     use crate::lymaille::interactive::hub::Subscription;
+    use crate::lymaille::interactive::hub::SubscriptionError;
     use crate::lymaille::resource_module::ResourceReaders;
     use crate::lymaille::secret::SecretResolver;
     use crate::lymaille::store::LymailleStores;
@@ -1850,6 +1880,189 @@ mod tests {
         assert!(
             !evenements.to_string().contains("JETON-NE-PAS-PERSISTER"),
             "les diffuses ne portent pas le jeton"
+        );
+    }
+
+    /// Scenario « fermer libère la session » (spec amendée 2026-11-05) : `close` pendant un tour
+    /// actif — le tour est annulé, le hub est fermé, et `send` rend ensuite le même `NotFound`
+    /// qu'une session absente ; l'état persisté demeure relisible par `resume`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fermer_libere_la_session() {
+        let db = test_db().await;
+        setup_work(&db).await;
+        let hang = Hang::new();
+        // Le provider bloque jusqu'a liberation explicite : seul l'annulation termine le tour.
+        let manager = SessionManager::new(deps_with(
+            db.clone(),
+            Arc::new(HangFactory(Arc::clone(&hang))),
+            None,
+            Limits::default(),
+        ));
+        let handle = manager.open("alice", "c1", None).await.expect("ouverture");
+        let mut sub = manager.subscribe("alice", &handle.id).await.expect("abonnement");
+        manager
+            .send("alice", &handle.id, "long".to_owned(), None)
+            .await
+            .expect("le tour long est lance");
+        wait_entered(&hang).await;
+
+        manager.close("alice", &handle.id).await;
+
+        // Le tour en vol est annulé : le provider bloque éternellement, seule l'annulation a pu
+        // le terminer — le verrou rend un tour inactif.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while manager
+            .cancel("alice", &handle.id)
+            .await
+            .expect("la session cloisonnee repond de son tour")
+        {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "le tour n'a jamais ete annule"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Hub fermé : après les événements mis en file, l'abonné est rupture par `Closed`.
+        loop {
+            let rendu = tokio::time::timeout(Duration::from_secs(5), sub.recv())
+                .await
+                .expect("un evenement ou une rupture dans le delai");
+            if rendu.is_err() {
+                assert_eq!(
+                    rendu.expect_err("le hub est ferme"),
+                    SubscriptionError::Closed,
+                    "la rupture est la fermeture du canal"
+                );
+                break;
+            }
+        }
+
+        // `send` ultérieur : le même `NotFound` qu'une session absente.
+        let refuse = manager
+            .send("alice", &handle.id, "relance".to_owned(), None)
+            .await
+            .expect_err("une session fermee n'accepte plus de tour");
+        let inconnu = SessionId::new("s-inconnu").expect("identifiant de test");
+        let absent = manager
+            .send("alice", &inconnu, "x".to_owned(), None)
+            .await
+            .expect_err("session absente de reference");
+        assert_eq!(
+            refuse.to_string(),
+            absent.to_string(),
+            "les refus sont indiscernables"
+        );
+        assert!(
+            refuse.to_string().contains("MRD-LYMAILLE-010"),
+            "le refus cite NotFound (MRD-LYMAILLE-010) : {refuse}"
+        );
+
+        // L'état persisté demeure : `resume` le relit et rend le contexte persisté.
+        let repris = manager
+            .resume("alice", &handle.id)
+            .await
+            .expect("l'etat persiste demeure relisible par resume");
+        assert_eq!(repris.context, "c1", "la reprise relit le contexte de la ligne");
+        assert_eq!(session_count(&db).await, 1, "la fermeture ne purge pas l'etat");
+    }
+
+    /// Scenario « list résume les sessions de l'appelant » (spec amendée 2026-11-05) : deux
+    /// sessions d'alice (dont une dont le titre sensible est expurgé par le `Redactor` — le titre
+    /// rendu est le titre d'affichage borné, jamais le contenu brut) et une de bob : la liste
+    /// d'alice rend deux résumés, aucune trace de la session de bob.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn list_resume_les_sessions_de_l_appelant() {
+        let db = test_db().await;
+        setup_work(&db).await;
+        let bob = compte(&db, "bob", false).await;
+        put_agent(&db, &bob, &agent("dev", AgentKind::Work)).await;
+        inserer_contexte_prive(&db, bob.user_id, "c1", Some("t")).await;
+
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            Ok(final_text("reponse alice")),
+            Ok(final_text("reponse bob")),
+        ]));
+        let manager = SessionManager::new(deps_with(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider))),
+            None,
+            Limits::default(),
+        ));
+        let s1 = manager
+            .open("alice", "c1", None)
+            .await
+            .expect("session 1 d'alice");
+        let s2 = manager
+            .open("alice", "c1", None)
+            .await
+            .expect("session 2 d'alice");
+        let s3 = manager.open("bob", "c1", None).await.expect("session de bob");
+
+        // Titre sensible d'alice : un premier message dont la queue dépasse la borne de
+        // l'extrait ; celui de bob ne doit jamais traverser la liste d'alice.
+        let mut sub = manager.subscribe("alice", &s1.id).await.expect("abonnement");
+        manager
+            .send(
+                "alice",
+                &s1.id,
+                format!("MARQUEUR-SENSIBLE-{}-FIN-DE-LIGNE-SECRET", "x".repeat(80)),
+                None,
+            )
+            .await
+            .expect("le tour d'alice est lance");
+        drain(&mut sub).await;
+        let mut sub_bob = manager.subscribe("bob", &s3.id).await.expect("abonnement bob");
+        manager
+            .send("bob", &s3.id, "SECRET-DE-BOB-A-NE-JAMAIS-VOIR".to_owned(), None)
+            .await
+            .expect("le tour de bob est lance");
+        drain(&mut sub_bob).await;
+
+        let resumes = manager
+            .list("alice", &SessionFilter::new())
+            .await
+            .expect("la liste d'alice reussit");
+        assert_eq!(resumes.len(), 2, "deux resumés, ni plus ni moins : {resumes:?}");
+        let mut rendus: Vec<&str> = resumes.iter().map(|resume| resume.id().as_str()).collect();
+        rendus.sort_unstable();
+        let mut attendus = vec![s1.id.as_str(), s2.id.as_str()];
+        attendus.sort_unstable();
+        assert_eq!(rendus, attendus, "les deux sessions d'alice, aucune de bob");
+
+        for resume in &resumes {
+            let etat = LymailleStores::new(db.clone(), "alice".to_owned())
+                .sessions()
+                .load(resume.id())
+                .await
+                .expect("etat relu")
+                .expect("etat present");
+            assert_eq!(
+                resume.title(),
+                etat.display_title(&Redactor::new()),
+                "le titre du résumé est le titre d'affichage masqué par le `Redactor`"
+            );
+            assert_eq!(resume.agent(), "dev", "l'agent est celui de l'etat");
+            assert_eq!(resume.kind(), SessionKind::Work, "la nature vient du type");
+        }
+        let titre_s1 = resumes
+            .iter()
+            .find(|resume| resume.id() == &s1.id)
+            .expect("le résumé de la session au titre sensible")
+            .title()
+            .to_owned();
+        assert!(
+            titre_s1.contains("MARQUEUR-SENSIBLE"),
+            "le titre d'affichage porte l'extrait de la premiere emission : {titre_s1}"
+        );
+        assert!(
+            !titre_s1.contains("FIN-DE-LIGNE-SECRET"),
+            "l'extrait est borné : la queue du titre sensible n'est pas affichee : {titre_s1}"
+        );
+        let rendu = format!("{resumes:?}");
+        assert!(
+            !rendu.contains("SECRET-DE-BOB") && !rendu.contains(s3.id.as_str()),
+            "aucune trace de la session de bob : {rendu}"
         );
     }
 }

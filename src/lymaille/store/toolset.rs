@@ -40,6 +40,7 @@ use crate::lymaille::identity::IdKind;
 use crate::lymaille::identity::Identity;
 use crate::lymaille::identity::check_write;
 use crate::lymaille::identity::classify;
+use crate::lymaille::mcp_access::server_for;
 
 /// Tables, noms complets (../migration.sdd). Contextes et types de contexte : les tables du
 /// lot 2 (amendement `DEC-20`) — `catalog_context_types` (dont la colonne `draft` est réservée à
@@ -480,6 +481,22 @@ impl ContextStore for SeaContextStore {
         // (`DEC-20`) : un nom privé est accepté pour tout appelant, la table est la sienne.
         let caller = principal(&self.identity, &self.subject).await?;
         let kind = check_write(&caller, &name).map_err(|err| deny(&err))?;
+        // Amendement lot 2 (`DEC-20`, `./toolset.sdd`) : droit d'usage des serveurs liés — chaque
+        // rôle du contexte doit passer `server_for` (`../mcp_access.rs`) **avant** toute écriture.
+        // Absent, non autorisé, `Forbidden` : le même refus fermé, rendu `Store` avec le code
+        // `MRD-LYMAILLE-002` compris (règle 5), aucune ligne écrite.
+        if let Some(roles) = value.get("roles").and_then(serde_json::Value::as_object) {
+            for reference in roles.values() {
+                let Some(reference) = reference.as_str() else {
+                    return Err(ToolsetsError::Store(format!(
+                        "toolset context {name} binds a role to a value that is not a server name"
+                    )));
+                };
+                server_for(&self.db, &caller, reference)
+                    .await
+                    .map_err(|err| deny(&err))?;
+            }
+        }
         match kind {
             IdKind::Catalog => upsert(
                 &self.db,
@@ -1124,6 +1141,72 @@ mod tests {
             refused.to_string().contains("MRD-LYMAILLE-002"),
             "le refus cite le code `Forbidden` (règle 5) : {refused}"
         );
+    }
+
+    /// Ligne de `miryad_lymaille_mcp_servers` en `auth_mode = none` (même fixture que
+    /// `../mcp_access.rs`) : le droit d'usage ne regarde que `name` et `allowed_groups`.
+    async fn inserer_serveur(db: &DatabaseConnection, name: &str, groupes: serde_json::Value) {
+        use crate::lymaille::definitions::mcp_server;
+
+        let actif = mcp_server::ActiveModel {
+            id: ActiveValue::NotSet,
+            name: ActiveValue::Set(name.to_string()),
+            url: ActiveValue::Set("https://mcp.example/".to_string()),
+            request_timeout_secs: ActiveValue::Set(30),
+            connect_timeout_secs: ActiveValue::Set(5),
+            auth_mode: ActiveValue::Set("none".to_string()),
+            auth_ref: ActiveValue::Set(None),
+            allowed_groups: ActiveValue::Set(groupes),
+            created_at: ActiveValue::Set(Utc::now()),
+        };
+        actif.insert(db).await.expect("ligne mcp_servers de test");
+    }
+
+    /// `Scenario` « les serveurs liés sont contrôlés à l'écriture du contexte » (amendement lot 2,
+    /// `DEC-20`) : chaque rôle lié doit passer `server_for` (`../mcp_access.rs`) avant toute
+    /// écriture — serveur non autorisé comme serveur absent rendent un `Store` citant
+    /// `MRD-LYMAILLE-002` sans aucune ligne écrite ; tous rôles liés autorisés ou aucun rôle lié,
+    /// l'écriture réussit.
+    #[tokio::test]
+    async fn linked_servers_are_checked_when_writing_the_context() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        inserer_serveur(&db, "s_admin", json!(["admin"])).await;
+        inserer_serveur(&db, "s_libre", json!(["all"])).await;
+        let identity = Identity::new(db.clone());
+
+        for (name, serveur) in [("dev_interdit", "s_admin"), ("dev_absent", "s_absent")] {
+            let refuse = SeaContextStore::new(db.clone(), identity.clone(), "alice".to_string(), None)
+                .put_context(
+                    &context(name, ContextLevel::User)
+                        .with_role("r1".to_string(), serveur.to_string())
+                        .expect("le contexte à rôle lié se construit"),
+                )
+                .await
+                .expect_err("alice ne peut pas lier un rôle à un serveur qu'elle ne peut pas employer");
+            assert!(
+                refuse.to_string().contains("MRD-LYMAILLE-002"),
+                "le refus de `{name}` cite le code : {refuse}"
+            );
+            assert_eq!(
+                row_count(&db, "miryad_lymaille_user_contexts", &[("name", name)]).await,
+                0,
+                "aucune ligne écrite pour `{name}`"
+            );
+        }
+
+        SeaContextStore::new(db.clone(), identity.clone(), "alice".to_string(), None)
+            .put_context(
+                &context("dev_autorise", ContextLevel::User)
+                    .with_role("r1".to_string(), "s_libre".to_string())
+                    .expect("le contexte lié à un serveur autorisé se construit"),
+            )
+            .await
+            .expect("tous les rôles liés pointent des serveurs autorisés : l'écriture réussit");
+        SeaContextStore::new(db.clone(), identity, "alice".to_string(), None)
+            .put_context(&context("dev_sans_role", ContextLevel::User))
+            .await
+            .expect("contexte sans rôle lié : l'écriture réussit");
     }
 
     /// Must amendé DEC-27 pour les toolsets : `get_active`, `get_draft` et `put_draft` d'un nom

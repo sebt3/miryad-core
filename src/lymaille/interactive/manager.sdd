@@ -68,9 +68,9 @@ Exposes:
   `SessionManager::{new, open, send, subscribe, cancel, resume, close, list}`, `ManagerDeps`, `SessionHandle`
 
 Tasks:
-  [ ] Réalignement R10 (DSD `DEC-24, DEC-28`, 2026-11-03) : Après R9 : ouverture `(contexte, agent optionnel)`, contexte persisté et immuable, erreur typée pour un agent hors ensemble, droit d'ouvrir une session
+  [x] Réalignement R10 (DSD `DEC-24, DEC-28`, 2026-11-03) : Après R9 : ouverture `(contexte, agent optionnel)`, contexte persisté et immuable, erreur typée pour un agent hors ensemble, droit d'ouvrir une session
     `Config` = droit sur le contexte ; écrire la limite mono-réplique. Spec seule.
-  [ ] Tests d'abord (SQLite mémoire, `ScriptedProvider` de lymaille, horloge injectée), puis ./manager.rs. Après ./hub.rs et ./assemble.rs.
+  [x] Tests d'abord (SQLite mémoire, `ScriptedProvider` de lymaille, horloge injectée), puis ./manager.rs. Après ./hub.rs et ./assemble.rs. Validé 2026-11-05 (validator PASS checkpoints 5 et 6 — 15 Scenario, 16 tests, tous verts sur les graphes lymaille).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./manager.rs.
