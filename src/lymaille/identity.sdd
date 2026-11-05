@@ -61,8 +61,7 @@ Tasks:
     accès table). Ces deux fichiers appartiennent à `store/catalog.sdd` et `store/toolset.sdd` : leur amendement (une ligne de `Must` + un `Scenario` chacun) est une tâche à part, avant celle-ci.
     Validé 2026-11-04 : amendements DEC-27 des deux stores faits et testés (checkpoint 3) ; la régularisation a posteriori de l'ordre (branches minimales posées au checkpoint 1, `Must`+`Scenario`
     de `catalog.sdd` ajoutés au checkpoint 3) est actée par le primary.
-  [?] Le nom d'un contexte `H_…` doit passer la validation de `lymaille` (même restriction que `G_`, [lymaille#5](https://github.com/sebt3/lymaille/issues/5)) :
-    à vérifier à la sortie de la correction, sans effet sur ce fichier.
+  [x] Le nom d'un contexte `H_…` passe la validation de `lymaille` : levé par la 0.2.0 (ticket #5, grammaire `[A-Za-z0-9_-]+` depuis `toolsets` FR-20), sans effet sur ce fichier. Vérifié dans la source de `lymaille` 0.2.0 le 2026-11-05.
   [x] Tests d'abord (SQLite mémoire pour `resolve`, tests purs pour le reste), puis ./identity.rs. Validé 2026-11-02
     (validator PASS, batterie ciblée ; batterie complète de `tooling.sdd` à la clôture du lot).
 

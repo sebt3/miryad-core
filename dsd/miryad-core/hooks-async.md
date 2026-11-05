@@ -7,7 +7,9 @@ et les effets de bord d'une ressource se décident **à la sauvegarde**, par RES
 
 ## Scope and Non-goals
 
-- **Ouverte le 2026-11-03**, rien n'est implémenté ni spécifié. Hors lot 2 de `miryad-core/lymaille`.
+- **Ouverte le 2026-11-03**, rien n'est implémenté ni spécifié. Hors lot 2 de `miryad-core/lymaille`. **Lot 3 de `miryad-core`, avant `miryad-core/scripts-hote`** (arbitrage du
+  2026-11-05, user instruction : le changement transversal du trait d'abord ; vanyline peut en attendant passer par un module hôte pour les actions Kubernetes). Les quatre
+  Open Issues ci-dessous sont à trancher en atelier à l'ouverture du lot.
 - Concerne le trait `MiryadResource` et la séquence d'appel des hooks de `rest::core` et du handler MCP. Les politiques d'accès
   déclaratives (`AccessPolicy`) ne changent pas.
 - **Non-goal :** un hook « après » ou un hook de lecture (`miryad-core/resource-model#FR-6`) ; une file de tâches ou un bus d'événements.

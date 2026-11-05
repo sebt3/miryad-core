@@ -69,7 +69,7 @@ peut accorder que ce que son propriétaire peut utiliser), `FR-10` (identité du
 - **DEC-2 - Les grants d'un script sont ceux du type de contexte** (2026-11-03)
     - **Decision:** le type de contexte déclare les toolsets et modules accordables aux scripts ; le principal du spectateur est intersecté à chaque appel.
     - **Alternatives:** une famille `ScriptProfile` dédiée (écarté : une troisième définition à stocker, valider et exposer).
-    - **Consequences:** le type de contexte (`miryad-core/lymaille#DEC-28`) porte un champ de plus ; **ASSUMPTION :** à confirmer à la spec.
+    - **Consequences:** le type de contexte (`miryad-core/lymaille#DEC-28`) porte un champ de plus. **Arbitré le 2026-11-05 (user instruction)** : colonne JSON `script_grants` (toolsets et modules accordables aux scripts) sur la table des types de contexte, à côté de `allowed_agents`, ni réutilisation des toolsets de la session LLM ni champ amont ; coûte une retouche de migration en place de plus, à tracer dans `AGENTS.md` à l'ouverture du lot.
     - **Source:** user instruction, 2026-11-03
 
 - **DEC-3 - Lecture seule imposée par la crate** (2026-11-03)
@@ -92,8 +92,10 @@ Aucune.
 
 ## Open Issues
 
-- **OI-1:** **Signature de `HostModule` et de la politique d'accès** : énumération fermée (`Authenticated`, `AdminOnly`) ou décision de l'hôte par un appel. **TBD.**
-- **OI-2:** **Lot** : avant ou après le lot 2 de `miryad-core/lymaille` ; dépendance aux champs du type de contexte (`DEC-28`). **TBD.**
-- **OI-3:** **Surface de l'exécuteur** : fonction de bibliothèque seule, ou aussi route REST ? Une route serait une surface de plus à placer vis-à-vis de la parité
-  (`miryad-core#FR-1`). **TBD.**
-- **OI-4:** **Cache des résultats** : à l'hôte (`FR-7`), mais un script lent rejoué par plusieurs spectateurs pose la question d'un point d'ancrage dans la crate. **TBD.**
+- **OI-1:** **Soldé le 2026-11-05 (user instruction)** : la politique d'accès d'un `HostModule` est une **énumération fermée** (`Authenticated`, `AdminOnly`), lisible par `check_grants`
+  (`FR-9`) et évaluée par l'enrobage central (`FR-2`) ; pas de décision de l'hôte par appel.
+- **OI-2:** **Soldé le 2026-11-05 (user instruction)** : lot 3 de `miryad-core`, **après** le lot 2 de `lymaille` **et** après `hooks-async` (arbitrage ci-dessous) ; les specs s'écrivent à
+  l'ouverture du lot, pas avant.
+- **OI-3:** **Soldé le 2026-11-05 (user instruction)** : fonction de bibliothèque seule (`ScriptRunner::run`) ; aucune route REST ni outil MCP dans la crate, donc pas de question de parité
+  (`miryad-core#FR-1`). L'hôte l'expose à sa guise.
+- **OI-4:** **Soldé le 2026-11-05 (user instruction)** : aucun cache dans la crate (`FR-7`). Le résultat dépend du principal et du contenu : une clé de cache correcte est celle de l'hôte.

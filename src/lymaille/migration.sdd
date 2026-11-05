@@ -130,4 +130,4 @@ Scenario: le type de contexte porte la colonne des agents autorisés
 Scenario: les contextes portent leur type et les sessions leur contexte
   Given les migrations appliquées sous `lymaille`
   When on inspecte `catalog_contexts`, `user_contexts` et `sessions` (`has_column`)
-  Then `context_type` (TEXT nullable) existe sur les deux tables de contextes, et `context` (TEXT nullable) sur `sessions` ; le `down` du lot 2 les retire avec la table (ou laisse `sessions` sans `context` pour la remontée lot 1, cohérent avec le `down` qui ne recrée pas les tables du lot 2)
+  Then `context_type` (TEXT nullable) existe sur les deux tables de contextes, et `context` (TEXT nullable) sur `sessions`  ; le `up` teste `has_column` avant l'`ALTER TABLE` (idempotent, SQLite n'ayant pas `ADD COLUMN IF NOT EXISTS`) et le `down` **ne retire pas** `sessions.context` (limite assumée, feature jamais déployée — arbitrage du développeur principal, 2026-11-05) ; il retire `context_type` avec les tables de contextes du lot 2

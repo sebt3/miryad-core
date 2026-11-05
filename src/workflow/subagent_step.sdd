@@ -46,7 +46,7 @@ Must:
     exécuté), `false` pour les étapes 9 à 11 (le run peut avoir eu des effets) :
     1. `serde_json::from_value::<SubagentConfig>(config)` ; échec → `StepError { retryable: false, message: "config subagent invalide: …" }`.
       Validation pure avant tout accès : `agent` non vide ; `task` non vide après `trim` ; `max_secs` (défaut `DEFAULT_MAX_SECS = 480`) dans
-      `1..=ceiling` où `ceiling` est le `max_secs_ceiling` de l'application (défaut 3600, `DEC-29`) ; `max_turns` (défaut `DEFAULT_BATCH_MAX_TURNS` de `lymaille`) ≥ 1.
+      `1..=ceiling` où `ceiling` est le `max_secs_ceiling` de l'application (défaut 3600, `DEC-29`) ; `max_turns` (défaut `DEFAULT_BATCH_MAX_TURNS` de `lymaille`) ≥ 1. L'état `Interrupted` d'un run `lymaille` est une erreur **définitive** (render permanent), comme `Failed` : le step est `retryable: false` et ne relance jamais un agent de code qui a pu écrire (arbitrage du développeur principal, 2026-11-05).
     2. `run.trigger` absent → `StepError { retryable: false, message: "subagent step requires a trigger identity" }` (DSD `FR-10`).
     3. `install_crypto_provider()` (idempotent) ; `Identity::resolve(trigger)` → `UnknownSubject`/`Forbidden` non retryable.
     4. `LymailleStores::new(db, trigger)` ; `agents().get_agent(agent)` : absent → non retryable « unknown agent » ; sa nature doit être `Sub`
@@ -111,7 +111,7 @@ Handles:
 
 Tasks:
   [ ] Réalignement R15 (DSD `DEC-27, DEC-29`, 2026-11-03) : spec amendée (plafond d'application `max_secs_ceiling` de 3600 s par défaut, `with_max_secs_ceiling`, `SubagentDeps::host`, rôles MCP par `resolve_role`),
-    **en attente d'approbation**. `OI-11` soldé (spike vert sur 40 min). Code : tests d'abord puis ./subagent_step.rs, après ./dispatcher.rs (R14), ../lymaille/host.rs et ../lymaille/mcp_access.rs.
+    **approuvée le 2026-11-05 (développeur principal)**. `OI-11` soldé (spike vert sur 40 min). Code : tests d'abord puis ./subagent_step.rs, après ./dispatcher.rs (R14), ../lymaille/host.rs et ../lymaille/mcp_access.rs.
   [ ] Amendement lot 2 : `ResourceRegistry` + `WriteScope`, rôles MCP via `mcp_access`, scenarios (rejeu sans doublon d'écriture, `forward` refusé) d'abord, puis ./subagent_step.rs. Après ../lymaille/resource_module.rs et ../lymaille/mcp_access.rs.
   [x] Amender ./mod.sdd (déclaration gated `all(workflow, lymaille)`, ré-exports `SubagentStep`, `SubagentDeps`) et ./mod.rs dans le même lot.
     Validé 2026-11-03 (validator PASS, batterie ciblée workflow,lymaille + all-features).
@@ -119,8 +119,6 @@ Tasks:
     Validé 2026-11-03 (validator PASS, batterie ciblée workflow,lymaille + all-features).
   [ ] Preuve de reprise (DSD `AC-10`) : test `#[ignore]` contre `restate-server` par la méthode du spike de `workflow#AC-8`
     (`../../tests/workflow_restate.rs`, `Can modify` accordé le 2026-11-03 ; fichier rattaché à ./dispatcher.sdd) ; non verrouillée par la CI. Le rejeu en mémoire (test n°6) ne solde pas cette tâche : il ne prouve pas le journal Restate.
-  [?] L'état `Interrupted` de lymaille est traité comme une erreur définitive (render permanent) : la spec ne le nommait pas ; et la spec
-    ne dit rien du `max_turns=0` au-delà de la normalisation. À relire avec Sébastien.
 
 Done when:
   Les `Scenario` unitaires sont verts sous `all(workflow, lymaille)` et `--all-features` ; les specs de ../lymaille/ sont approuvées avant

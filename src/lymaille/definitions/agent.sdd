@@ -38,6 +38,8 @@ Must:
   Les `HookError` n'ont **aucun code** (`code: None`) et ne citent jamais le prompt ni un secret.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
+  Un identifiant hors `[A-Za-z0-9_]` est rejeté sous le message unique « agent id must start with G_ (catalog) » (arbitrage du développeur principal, 2026-11-05 : pas de message distinct).
+
 Must not:
   Accepter une ligne dont le `definition.id` diffère de `agent_id` après le hook (les colonnes dérivées sont toujours réécrites).
   Donner un code `MRD-*` à un `HookError`.
@@ -52,8 +54,7 @@ Exposes:
 Tasks:
   [x] Tests d'abord (hooks purs sur des `ActiveModel` construits en test, politiques), puis ./agent.rs. Validé
     2026-11-02 (validator PASS, batterie ciblée).
-  [?] Identifiant hors `[A-Za-z0-9_]` (`classify` en `Err`) : rejeté sous le message « agent id must start with
-    G_ (catalog) » (conforme à la lettre du Must). Faut-il un message distinct ? En attente d'arbitrage.
+
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./agent.rs.

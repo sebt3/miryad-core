@@ -262,7 +262,7 @@ Handles:
     affectée.
 
 Tasks:
-  [ ] Réalignement R14 (DSD `DEC-29`, 2026-11-03) : spec amendée (handler `execute_long`, `handler_name`, `recommended_options_for`), **en attente d'approbation**. Routage par liste
+  [ ] Réalignement R14 (DSD `DEC-29`, 2026-11-03) : spec amendée (handler `execute_long`, `handler_name`, `recommended_options_for`), **approuvée le 2026-11-05 (développeur principal)**. Routage par liste
     fixe et plafond par défaut de 3600 s : arbitrés le 2026-11-03.
   [ ] Après approbation de R14 : tests d'abord, puis ./dispatcher.rs, puis ./interpreter.rs (cible `handler_name(&step.kind)`), puis la preuve d'intégration `#[ignore]` du dernier `Scenario`
     (`../../tests/workflow_restate.rs`). Après ce fichier : R15 (./subagent_step.sdd).
