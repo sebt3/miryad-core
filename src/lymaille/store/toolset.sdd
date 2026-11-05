@@ -37,7 +37,9 @@ Must:
     privé → `user_contexts` avec `owner_id = user_id` (niveau `User`). `get_context` ne rend jamais le contexte privé d'un autre. `put_context` applique,
     en plus de la validation de `lymaille`, le **droit d'usage des serveurs** : chaque rôle lié doit passer `server_for` (../mcp_access.sdd) ; sinon
     `ToolsetsError::Store("MRD-LYMAILLE-002…")` (chemin de la session de configuration ; le chemin REST/MCP des entités ne contrôle pas ici, hook
-    synchrone — le contrôle d'autorité reste à l'assemblage et à l'appel). Le niveau `Session` d'un contexte reste interne (aucune table).
+    synchrone — le contrôle d'autorité reste à l'assemblage et à l'appel). **Défense en profondeur actée le 2026-11-05** : le contrôle est
+    `server_for` (table seule) — un rôle pointant un serveur **fourni par l'hôte** (sans ligne `mcp_servers`) est refusé à l'écriture ici, même
+    si l'assemblage le servirait. Le niveau `Session` d'un contexte reste interne (aucune table).
     Une ligne de type créée par le store (brouillon seul) ne porte **pas** les champs DEC-28 (`kind` vide, `default_agent` `NULL`,
     `allowed_agents` vide) : le store ne les invente pas ; les hooks de l'entité refuseront l'activation tant que l'admin n'aura pas complété
     la ligne par le CRUD (acté 2026-11-04). `put_context` n'écrit que la colonne `context` : `context_type` posé par le CRUD d'une ligne

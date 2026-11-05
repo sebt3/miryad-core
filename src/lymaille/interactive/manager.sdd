@@ -41,7 +41,8 @@ Must:
     garde) est traité `NotFound`.
     Limite mono-réplique : le verrou `TurnGate` et le déchargement `idle_ttl` sont **par processus** ; la crate cible un déploiement
     mono-réplique — plusieurs répliques nécessitent de l'affinité de session (aucune détection inter-processus, `session#DEC-1` de `lymaille`,
-    dernier `save` gagne).
+    dernier `save` gagne). La marque de fermeture (`close` → `send` rendu `NotFound`) vit dans la même table mémoire : accumulation bornée
+    au nombre de fermetures depuis le démarrage, purgée par `resume` (arbitrage de Sébastien du 2026-11-05 — non bornée au-delà).
   `send(&self, subject, id, text: String, token: Option<Zeroizing<String>>) -> Result<(), LymailleError>` : cloisonne (la session doit appartenir à
     `subject`, sinon `NotFound` indiscernable d'une session absente) ; `TurnGate::try_begin` immédiat, `TurnActive` → `Conflict("turn active")` ; lance le
     tour en tâche détachée (`run_turn` avec son `CancelHandle` enfant) et revient sans attendre ; `token` n'est vivant que pendant ce tour
