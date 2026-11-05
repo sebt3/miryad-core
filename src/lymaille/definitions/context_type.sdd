@@ -3,9 +3,8 @@ Spec: context_type — entité `lymaille_catalog_context_types`, types de contex
 Purpose:
   Porter l'entité @MiryadResource des types de contexte (table `miryad_lymaille_catalog_context_types`, DSD `DEC-20`) : un `ContextType` de `lymaille` est
     un schéma JSON versionné des paramètres et des rôles MCP d'un environnement, vocabulaire partagé par les auteurs de toolsets. Seul
-    l'admin les écrit (lecture `Public`, écriture `AdminOnly`). Le nom suit la grammaire de `lymaille` (`[a-z0-9-]+`) et ne porte **pas** de
-    préfixe `G_` (arbitrage du 2026-11-04 : `lymaille` 0.1.0 refuse `G_` dans un nom de `ContextType` — la garantie de catalogue est
-    `AdminOnly` et la table, pas le préfixe ; cf. Tasks). La colonne JSON (DSD `DEC-18` : `active`, `draft`) est la source de vérité ; `name`
+    l'admin les écrit (lecture `Public`, écriture `AdminOnly`). Le nom suit la grammaire de `lymaille` 0.2.0 (`[A-Za-z0-9_-]+`, majuscules et `_` admis — ticket amont #5) et porte le
+    préfixe `G_` du catalogue (arbitrage du 2026-11-04 renversé le 2026-11-05 : la porte `classify` redevient faisable ; cf. Tasks). La colonne JSON (DSD `DEC-18` : `active`, `draft`) est la source de vérité ; `name`
     et `version` sont dérivés par les hooks. Remplace la table interne `context_types` du lot 1 (../migration.sdd). Fichier neuf, conception.
 
 Owns:
@@ -16,21 +15,20 @@ References:
   ./agent.sdd — précédent exact (hooks, dérivation de colonnes) ; ../migration.sdd
 
 Must:
-  `Entity`/`Model`/`ActiveModel`, `table_name = "miryad_lymaille_catalog_context_types"`, `Model` : `id: i32` (PK), `name: String` (unique, nom
-    `lymaille` sans préfixe), `version: String` (semver), `kind: String` (`work`|`config`, DSD `DEC-28`), `default_agent: Option<String>` (DSD `DEC-28`),
+  `Entity`/`Model`/`ActiveModel`, `table_name = "miryad_lymaille_catalog_context_types"`, `Model` : `id: i32` (PK), `name: String` (unique, `G_…`), `version: String` (semver),
     `allowed_agents: serde_json::Value` (tableau JSON d'identifiants, DSD `DEC-28`), `active: Option<serde_json::Value>`,
-    `draft: Option<serde_json::Value>`, `created_at: DateTimeUtc`. Les trois colonnes `DEC-28` vivent en miryad-core : le
-    `ContextType` de `lymaille` ne porte que `name`/`version`/`schema`/`roles`/`includes` (`ContextTypeStore` vérifié, R1).
+    `draft: Option<serde_json::Value>`, `created_at: DateTimeUtc`. **Seule** `allowed_agents` vit en colonne miryad-core : depuis `lymaille` 0.2.0 le
+    `ContextType` porte lui-même `default_agent` et `session_kind` (optionnels, `with_default_agent`/`with_session_kind`), source de vérité unique dans `active`/`draft` ;
+    les colonnes `kind` et `default_agent` de R1/R2 sont retirées (arbitrage du 2026-11-05).
   `impl MiryadResource` : `resource_name()` = `"lymaille_catalog_context_types"` ; lecture `Public` ; écriture `AdminOnly` ; `owner_column()` = `None` ;
     `filter_column()` = `None` ; `label_column()` = `Some(Column::Name)`.
   `before_create` / `before_update` (premier échec interrompt, `HookError` sans code) : au moins un de `active`/`draft` non nul ; puis la porte
-    `DEC-28`, placée avant les portes JSON car les trois colonnes pilotes en sont indépendantes : `kind` exactement `work` ou `config`
-    (sensible à la casse, `sub` et toute autre valeur refusés) ; `default_agent` posé (colonne nullable en base, exigée par les hooks — motif
-    `active`/`draft` des toolsets) et membre de `allowed_agents` par comparaison de chaînes exacte ; un `ActiveValue::NotSet` compte comme absent
-    et refuse. Chaque colonne non nulle se désérialise ensuite en `lymaille::ContextType` (le constructeur compile le schéma : un schéma invalide
-    est refusé avec le message de `lymaille`, jamais le schéma — la grammaire du nom `[a-z0-9-]+` est vérifiée par cette désérialisation) ;
-    `name` et `version` sont réécrits depuis `active` (sinon `draft`) ; `before_update` : `name` ne change pas. Aucune porte @classify : le nom
-    ne porte pas de préfixe `G_` (arbitrage (a) du 2026-11-04, `Must` de la garantie = `AdminOnly` + table).
+    `DEC-28` : `allowed_agents` posé (`ActiveValue::NotSet` = absent, refus) et tableau JSON de chaînes ; puis `classify(name) == Catalog` (préfixe `G_`, comme ./agent.sdd).
+    Chaque colonne non nulle se désérialise ensuite en `lymaille::ContextType` (le constructeur compile le schéma : un schéma invalide est refusé avec le
+    message de `lymaille`, jamais le schéma — la grammaire du nom est vérifiée par cette désérialisation) ; si le `ContextType` porte un `default_agent`, il doit
+    être membre de `allowed_agents` par comparaison de chaînes exacte (un type **sans** agent par défaut est admis : l'ouverture exigera alors un agent explicite) ;
+    `name` et `version` sont réécrits depuis `active` (sinon `draft`) ; `before_update` : `name` ne change pas. L'existence de l'agent dans le catalogue et la
+    cohérence de la nature (`session_kind` ↔ nature de l'agent) sont contrôlées **à l'ouverture** par `lymaille::resolve_start`/`manager` (../interactive/manager.sdd), pas ici.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -44,6 +42,7 @@ Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`
 
 Tasks:
+  [ ] Alignement `lymaille` 0.2.0 (arbitrage du 2026-11-05, DSD `DEC-28` révisé) : retirer les colonnes `kind` et `default_agent` de l'entité (le `ContextType` amont les porte), rétablir la porte `classify(name) == Catalog` (`G_…`), ne plus exiger `default_agent` ; remplacer les `Scenario` « agent par défaut hors de l'ensemble » (devient : lu dans le JSON) et « nature inconnue » (supprimé : la nature est `session_kind` amont, validée à la désérialisation) ; tests d'abord, puis ./context_type.rs. Migration associée : ../migration.sdd.
   [x] Réalignement R1 (DSD `DEC-28`, 2026-11-03) : Ajouter au contrat les trois champs du type de contexte : nature (`work`|`config`), agent par défaut, ensemble des agents autorisés
     (colonnes miryad, ASSUMPTION vérifiée — `ContextTypeStore` de `lymaille` ne porte que `name`/`version`/`schema`/`roles`/`includes`) ; hooks de validation, `Scenario` d'un type sans agent par défaut,
     d'un agent par défaut hors de l'ensemble autorisé, d'une nature inconnue. `[?]` du nommage `G_` traité (option (a), 2026-11-04). Validé 2026-11-04 (validator PASS checkpoints 1 et 2).
@@ -57,9 +56,9 @@ Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./context_type.rs.
 
 Scenario: un type valide du catalogue est accepté, ses colonnes dérivées
-  Given un `ContextType` `cluster` 1.0.0 en `active`, avec `name`/`version` faux dans l'`ActiveModel`
+  Given un `ContextType` `G_cluster` 1.0.0 en `active`, avec `name`/`version` faux dans l'`ActiveModel`
   When `before_create`
-  Then `Ok`, `name = "cluster"`, `version = "1.0.0"`
+  Then `Ok`, `name = "G_cluster"`, `version = "1.0.0"`
 
 Scenario: ni active ni draft
   Given les deux colonnes nulles
@@ -71,20 +70,25 @@ Scenario: un schéma invalide est refusé
   When `before_create`
   Then `Err(HookError)` dont le message ne cite pas le schéma
 
-Scenario: un type sans agent par défaut est refusé
-  Given un `ActiveModel` valide par ailleurs mais `default_agent` `None` ou `NotSet`
+Scenario: un type sans agent par défaut est admis
+  Given un `ContextType` valide sans `default_agent`, avec `allowed_agents` non vide
+  When `before_create`
+  Then `Ok`
+
+Scenario: un nom sans préfixe G_ est refusé
+  Given un `ContextType` nommé `cluster`
   When `before_create`
   Then `Err(HookError)`
+
+Scenario: allowed_agents absent ou mal formé est refusé
+  Given `allowed_agents` `NotSet`, ou un objet, ou un tableau contenant un nombre
+  When `before_create`
+  Then `Err(HookError)` dans les trois cas
 
 Scenario: un agent par défaut hors de l'ensemble autorisé est refusé
-  Given `default_agent = "G_alpha"` et `allowed_agents` ne contenant que `"G_beta"`
+  Given un `ContextType` `G_cluster` dont le `default_agent` est `G_alpha` et `allowed_agents` ne contenant que `"G_beta"`
   When `before_create`
   Then `Err(HookError)`
-
-Scenario: une nature inconnue est refusée
-  Given `kind` valant `sub`, `travail`, `WORK`, vide, ou non posé (`ActiveValue::NotSet`)
-  When `before_create`
-  Then `Err(HookError)` dans les cinq cas
 
 Scenario: le nom ne change pas à la mise à jour
   Given une ligne existante nommée `cluster` et un `ActiveModel` dont le JSON porte `cluster2`

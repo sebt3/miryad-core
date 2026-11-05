@@ -40,9 +40,8 @@ Must:
     synchrone — le contrôle d'autorité reste à l'assemblage et à l'appel). **Défense en profondeur actée le 2026-11-05** : le contrôle est
     `server_for` (table seule) — un rôle pointant un serveur **fourni par l'hôte** (sans ligne `mcp_servers`) est refusé à l'écriture ici, même
     si l'assemblage le servirait. Le niveau `Session` d'un contexte reste interne (aucune table).
-    Une ligne de type créée par le store (brouillon seul) ne porte **pas** les champs DEC-28 (`kind` vide, `default_agent` `NULL`,
-    `allowed_agents` vide) : le store ne les invente pas ; les hooks de l'entité refuseront l'activation tant que l'admin n'aura pas complété
-    la ligne par le CRUD (acté 2026-11-04). `put_context` n'écrit que la colonne `context` : `context_type` posé par le CRUD d'une ligne
+    Une ligne de type créée par le store (brouillon seul) ne porte **pas** `allowed_agents` (vide) — seule colonne DEC-28 restante depuis `lymaille` 0.2.0, `kind` et `default_agent` étant dans le JSON du type : le store ne l'invente pas ; les hooks de l'entité refuseront l'activation tant que l'admin n'aura pas complété
+    la ligne par le CRUD (acté 2026-11-04, révisé 2026-11-05). `put_context` n'écrit que la colonne `context` : `context_type` posé par le CRUD d'une ligne
     existante est **préservé** à l'upsert (jamais effacé par la session de configuration) ; une ligne créée par `put_context` naît avec
     `context_type` `NULL` (la session ouvrable exige un type — erreur typée à l'ouverture).
 

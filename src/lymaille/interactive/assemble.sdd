@@ -28,7 +28,7 @@ Must:
       @SecretResolver **à la construction du client d'inférence seulement** (`DEC-16`) ;
     3. `check_grants(caller, def.modules(), ADMIN_ONLY)` : un module réservé à l'admin accordé à un non-admin → `Forbidden` (refus à l'assemblage ;
       l'appel de module revalide, `FR-4`) ;
-    4. toolsets **actifs** (jamais un brouillon) et contexte : le contexte lié (`User` de l'appelant ou `Project` du catalogue, jamais celui d'un
+    4. toolsets **actifs** (jamais un brouillon) et contexte : le contexte lié (`User` de l'appelant ou `Shared` du catalogue, jamais celui d'un
       autre) fournit les paramètres et les liaisons rôle → serveur ; pour chaque rôle lié : `resolve_role` (../mcp_access.sdd — décision de l'hôte d'abord, repli `server_for(caller, nom)` sur `Unprovided`) puis `build_auth(…, token)` ;
       un rôle **requis** par le type de contexte dont le serveur est refusé fait échouer l'assemblage (`Forbidden("mcp server unavailable")`), un
       rôle optionnel refusé est omis (avis `notices`) ;

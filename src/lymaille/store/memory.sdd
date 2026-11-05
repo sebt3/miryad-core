@@ -35,7 +35,7 @@ Exposes:
 Tasks:
   [x] Tests d'abord (SQLite mémoire), puis ./memory.rs. Validé 2026-11-02 (validator PASS). Wording : `MemoryLevel`
     n'a pas de serde dans `lymaille` 0.1.0 — la « forme sérialisée » est le texte canonique `as_str()`
-    (`user`/`project`/`session`), épinglé par test. La ligne du `Must` ci-dessus a été reformulée en ce sens.
+    (`user`/`shared`/`session` depuis `lymaille` 0.2.0 ; `MemoryScope::shared`, aucun alias de lecture amont — aucune donnée déployée), épinglé par test. La ligne du `Must` ci-dessus a été reformulée en ce sens.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./memory.rs.

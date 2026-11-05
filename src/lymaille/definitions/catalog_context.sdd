@@ -1,8 +1,8 @@
 Spec: catalog_context — entité `lymaille_catalog_contexts`, contextes de niveau `Shared` (partagés par l'instance)
 
 Purpose:
-  Porter l'entité @MiryadResource des contextes de toolset partagés (table `miryad_lymaille_catalog_contexts`, DSD `DEC-20`). `Shared` (nom amont
-  `ContextLevel::Project` dans `lymaille` 0.1.0, DSD `DEC-28`) signifie ici
+  Porter l'entité @MiryadResource des contextes de toolset partagés (table `miryad_lymaille_catalog_contexts`, DSD `DEC-20`). `Shared` (`ContextLevel::Shared` depuis `lymaille` 0.2.0 ;
+  l'ancien jeton `project` reste lu par alias, jamais écrit — DSD `DEC-28`) signifie ici
     « partagé par toute l'instance » (miryad-core n'a pas d'entité projet). Écriture `AdminOnly`, lecture `Public`, identifiants `G_…` (même
     règle que ./agent.sdd). Un `ToolsetContext` est un ensemble nommé de paramètres, de liaisons rôle → nom de serveur MCP et de surcharges par
     toolset ; il **ne contient aucun secret** (`lymaille` refuse une valeur qui en a l'air). Les liaisons ne sont pas contrôlées ici
@@ -24,7 +24,7 @@ Must:
     `filter_column()` = `None` ; `label_column()` = `Some(Column::Name)`.
   `before_create` / `before_update` (`HookError` sans code) : `context` objet JSON, désérialisable en `lymaille::ToolsetContext` (constructeur
     qui applique le détecteur de secrets ; un secret détecté → « context holds a secret-like value », jamais la valeur) ; `level` du contexte
-    égal à `Shared` (nom amont `Project`, jeton JSON `project` sous `lymaille` 0.1.0) sinon « catalog contexts have level project » ;
+    égal à `ContextLevel::Shared` (jeton JSON `shared` ; `project` est relu par alias amont) sinon « catalog contexts have level shared » ;
     `classify(name)` = `Catalog` ; `context_type` posé et de forme identifiant valide quand posé (existence du type vérifiée à l'ouverture, pas ici) ;
     `name` réécrit depuis le contexte ;
     `before_update` : `name` ne change pas.
@@ -48,7 +48,7 @@ Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./catalog_context.rs.
 
 Scenario: un contexte Shared valide est accepté
-  Given un `ToolsetContext` `G_prod` de niveau `project` (le niveau `Shared`, jeton amont) avec un paramètre `namespace`
+  Given un `ToolsetContext` `G_prod` de niveau `shared` avec un paramètre `namespace`
   When `before_create`
   Then `Ok` et `name = "G_prod"`
 

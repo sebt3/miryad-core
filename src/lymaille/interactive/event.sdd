@@ -24,6 +24,9 @@ Must:
     `TokenUsage { prompt, completion }`, `TodoChanged`, `TitleChanged { title }`, `ReviewRequested { reason }`,
     `Script { agent, duration_ms, result, truncated, error: Option<String> }` (**sans** texte de script), `McpCall { role, function, status, duration_ms }` (**sans** arguments),
     `McpReconnect { role, attempt, delay_ms }`, `InferenceRetry { attempt, delay_ms, error_class }`, `Overrun { elapsed_ms }`, `ResponseTruncated { has_text, has_tool_calls }`,
+    `UserMessage { turn, text }` et `ToolCallSummary { turn, tool, call_id, has_result }` — **propres à l'historique** (arbitrage du 2026-11-05, `../http/routes.sdd`) :
+      aucune conversion `From<&Event>` ne les produit, seule la route d'historique les émet ; `text` est déjà expurgé par l'appelant ; `ToolCallSummary` **sans arguments** ni résultat ;
+    `EmptyResponse { will_retry }` (miroir de `EventKind::EmptyResponse`, `lymaille` 0.2.0 : réponse vide écartée, `will_retry` = le modèle est relancé ; `will_retry` booléen, aucun contenu) ;
     `Other { name: String }` (tout événement amont non reflété : `MemoryChanged`, `TargetOpened`, `RunInterrupted`, et toute variante future — `name` est le nom de variante tel que `lymaille`
       le sérialise ; aucun contenu),
     `Host { kind: String, payload: serde_json::Value }` (`payload` exporté `#[ts(type = "unknown")]` ; émis seulement par l'hôte, ./hub.sdd).
@@ -47,6 +50,9 @@ Exposes:
   `SessionEvent`, `SessionEventKind`, `SessionOutcome`, `impl From<&Event> for SessionEvent`, `export_typescript`
 
 Tasks:
+  [ ] Alignement `lymaille` 0.2.0 (2026-11-05) : variante `EmptyResponse { will_retry }` (miroir de `EventKind::EmptyResponse`, sinon elle tomberait dans `Other { name }` et le client ne verrait pas le nouvel essai) ; la `From<&Event>` reste infaillible ; test d'abord (conversion + sérialisation `type` = `empty_response`), puis ./event.rs. Avant la tâche « historique complet ».
+  [ ] Amendement historique complet (DSD `DEC-30`, arbitrage du 2026-11-05) : variantes `UserMessage` et `ToolCallSummary` de `SessionEventKind` (`#[ts(type = "number")]` sur `turn`), tests d'abord
+    (sérialisation `type` = `user_message` / `tool_call_summary`, aller-retour serde, absence d'arguments), puis ./event.rs. Avant la tâche « historique complet » de ../http/routes.sdd.
   [x] Dépendance `ts-rs` (optionnelle, feature `lymaille`) : amendement de `/Cargo.toml` et `/tooling.sdd`, déjà prévu dans `../mod.sdd` (R7), à faire avant cette tâche.
   [x] Tests d'abord (conversion de chaque variante, `Other`, sérialisation `type`, `export_typescript` dans un répertoire temporaire), puis ./event.rs. Après approbation de cette spec et de R7. Validé 2026-11-05 (validator PASS checkpoint 5 — 7 Scenario verrouillés).
 
@@ -88,3 +94,8 @@ Scenario: un répertoire d'export inutilisable est une erreur
   Given un `dir` qui est un fichier existant
   When `export_typescript(dir)` est appelé
   Then `Err(Store(…))` et aucun fichier n'est écrit
+
+Scenario: un message utilisateur et un appel d'outil se sérialisent sous des noms distincts
+  Given `UserMessage { turn: 1, text: "bonjour" }` et `ToolCallSummary { turn: 1, tool: "rhai_pad", call_id: "c1", has_result: true }`
+  When ils sont sérialisés en JSON
+  Then `kind.type` vaut `user_message` et `tool_call_summary`, `turn` est un nombre, et aucun champ d'arguments n'existe

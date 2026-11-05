@@ -145,6 +145,8 @@ la syntaxe `.sdd`, `specdd resolve <cible>` vérifie la chaîne de specs avant d
   Exception actée le 2026-11-05 (feature `lymaille` jamais déployée) : `m20261104_000001` est modifiée en
   place une seconde fois (colonne `context_type` sur les deux tables de contextes, arbitrage `DEC-28` du 2026-11-05) ; la colonne
   `context` de `sessions` est ajoutée par le lot 2 lui-même (`ALTER TABLE`), pas par retouche de `m20261103_000001` ; même clause de sortie.
+  Exception actée le 2026-11-05 (feature `lymaille` jamais déployée) : `m20261104_000001` est modifiée en
+  place une troisième fois (retrait des colonnes `kind` et `default_agent` de la table des types de contexte, portées par le `ContextType` de `lymaille` 0.2.0 ; DSD `lymaille#DEC-28` révisé) ; même clause de sortie.
 
 ## Git
 

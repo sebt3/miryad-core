@@ -494,10 +494,11 @@ et appels d'MCP externes depuis les scripts.
     - **Alternatives:** règle fournie par l'hôte (écarté : ni administrable ni lisible par la session `Config`) ; ouverture `Config` réservée aux admins
       (écarté : la configuration d'un projet par un non-admin est voulue, `FR-9`).
     - **Consequences:** trois champs de plus sur la ressource des types de contexte, donc sur la table de la migration `m20261104_000001`, non encore
-      déployée (modification en place actualisée dans les exceptions d'`AGENTS.md` du 2026-11-03). L'ASSUMPTION est **vérifiée** (2026-11-04, source
-      `lymaille` 0.1.0 `toolsets/context_type.rs`) : ces trois champs vivent en colonnes de miryad-core, `ContextType` ne portant que
-      `name`/`version`/`schema`/`roles`/`includes`. Le renommage `Shared` est documentaire côté miryad-core — l'enum amont reste `ContextLevel::Project`
-      et le jeton JSON `"project"` (à signaler à `lymaille`). **Liaison contexte→type actée le 2026-11-05** : les tables de contextes portent une
+      déployée (modification en place actualisée dans les exceptions d'`AGENTS.md` du 2026-11-03). L'ASSUMPTION vérifiée le 2026-11-04 (`lymaille` 0.1.0 : trois colonnes miryad-core) est **caduque depuis `lymaille` 0.2.0** (tickets amont #1 à #5 fermés) :
+      le `ContextType` porte `default_agent` et `session_kind` (optionnels) et `resolve_start` les résout contre le catalogue d'agents. **Révisé le 2026-11-05
+      (user instruction)** : seule `allowed_agents` reste une colonne miryad-core ; `kind` et `default_agent` sont retirés de la table (source unique : le JSON du type) ;
+      le nom d'un type accepte majuscules et `_`, le préfixe `G_` du catalogue est rétabli (arbitrage (a) du 2026-11-04 renversé). `ContextLevel::Shared` existe
+      amont (l'ancien jeton `project` reste lu par alias). **Liaison contexte→type actée le 2026-11-05** : les tables de contextes portent une
       colonne `context_type` (nullable, posée par le CRUD, préservée par l'`upsert` de la session de configuration) ; la nature, l'agent par défaut
       et l'ensemble autorisé sont lus sur le type à l'ouverture ; les contextes `H_…` de l'hôte, sans type, n'ouvrent que `Work` avec un agent
       explicite. La session persiste sa colonne `context` (ajout du lot 2 sur `sessions`), immuable après l'ouverture.
@@ -524,8 +525,11 @@ et appels d'MCP externes depuis les scripts.
     - **Alternatives:** enum générique `SessionEvent<H>` (écarté : propage un paramètre de type dans le hub, le gestionnaire et les routes) ;
       journal d'événements rejouables (écarté : volumétrie et rétention, déjà écarté par `DEC-24`).
     - **Consequences:** amende `http/routes.sdd`, `http/sse.sdd`, `interactive/hub.sdd` ; une route de plus que les neuf de `AC-16`. L'export TypeScript se fait par `ts-rs`
-      (`OI-12`).
-    - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B7) ; user instruction, 2026-11-03
+      (`OI-12`). **Précision du 2026-11-05 (historique complet, arbitrage de l'utilisateur après exposé des conséquences)** : l'historique rend les messages
+      utilisateur, les réponses d'assistant et un résumé des appels d'outil (`UserMessage`, `ToolCallSummary`, sans arguments ni résultats), faute de quoi un
+      rechargement perd les questions de l'utilisateur. Ces deux variantes sont propres à l'historique (le flux direct ne les émet pas). **Limite** : `lymaille`
+      0.2.0 n'horodate pas ses messages ; `at` vaut l'instant de création de la session pour tout l'historique.
+    - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B7) ; user instruction, 2026-11-03 et 2026-11-05
 
 ## Contour du lot 2
 

@@ -26,11 +26,13 @@ Must:
     (une `Config` sur `H_…` → `InvalidDefinition("host contexts do not open config sessions")`), l'agent doit être résoluble par le principal ;
     sinon le contexte doit être **visible** pour le principal (`G_…` public, nom privé au propriétaire — un autre est `NotFound` indiscernable)
     et porter un `context_type` **existant** (sinon `InvalidDefinition("context has no usable type")`) ;
-    la nature de la session vient du type (`work` ↔ `Work`, `config` ↔ `Config`) — aucune nature n'est demandée à l'appelant ;
+    la nature de la session vient du type (`session_kind` amont s'il en porte un, sinon la nature de l'agent retenu : `work` ↔ `Work`, `config` ↔ `Config`) — aucune nature n'est
+    demandée à l'appelant ; `lymaille::resolve_start` (0.2.0) résout `default_agent` contre le catalogue d'agents (introuvable, sous-agent ou nature incohérente →
+    `InvalidDefinition`) ;
     l'agent retenu est `agent` sinon le `default_agent` du type (un type sans défaut exige `agent`, sinon
     `InvalidDefinition("agent required: the context type has no default agent")`) ; l'agent retenu doit appartenir à
     `allowed_agents` du type, sinon `Forbidden("agent not allowed for this context type")` (erreur typée `MRD-LYMAILLE-002`, AC-19), et sa
-    nature doit égaler celle du type ; ouvrir une session `Config` ne demande **aucun** statut admin — le droit est la visibilité du contexte
+    nature doit égaler le `session_kind` du type quand il en porte un ; ouvrir une session `Config` ne demande **aucun** statut admin — le droit est la visibilité du contexte
     (FR-9) ; les modules réservés de la session `Config` restent `AdminOnly` à l'usage (`assemble`) ;
     plafond `max_open_per_user` (admin exempté) sinon `Forbidden("too many open sessions")` ; crée un identifiant opaque (UUID v4), sauvegarde
     l'état initial avec la colonne `context` de la ligne posée à `context` et la colonne `kind` à la nature résolue, rend

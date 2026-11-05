@@ -41,7 +41,7 @@ Must:
     sync/async de `lymaille` pour ses modules Rhai) ;
     `rhai = { version = "1.27", default-features = false, features = ["std", "sync"], optional = true }` (pour construire le `Module` du
     module des ressources ; version unifiée avec celle de `lymaille`, un seul exemplaire dans le graphe) ;
-    `lymaille = { version = "0.1.0", optional = true }` (features par défaut conservées : `mcp-http`, `rig` ; **jamais** `fs` ni
+    `lymaille = { version = "0.2.0", optional = true }` (relevé de 0.1.0 le 2026-11-05 : niveau `Shared`, `MemoryLevel::Shared`, `Message::Discarded`, `EventKind::EmptyResponse`, `ContextType::{default_agent, session_kind}` + `resolve_start`) (features par défaut conservées : `mcp-http`, `rig` ; **jamais** `fs` ni
     `shell`, DSD `OI-1`) ;
     `rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }` (provider `ring`,
     DSD `DEC-4` ; déjà dans le graphe, aucune dépendance de fond ajoutée).
@@ -78,6 +78,7 @@ Exposes:
     `install_crypto_provider`, modules `store`, `definitions`, `resource_module`, `host` (amendement DEC-27/DEC-30 : ré-exports ci-dessus).
 
 Tasks:
+  [ ] Alignement `lymaille` 0.2.0 (2026-11-05, tickets amont #1 à #5 fermés) — **une tâche par fichier**, dans cet ordre, `cargo update -p lymaille` d'abord : (1) `/Cargo.toml` `version = "0.2.0"` + `Cargo.lock` ; (2) `ContextLevel::Project` → `ContextLevel::Shared` dans `store/toolset.rs`, `store/mod.rs`, `definitions/catalog_context.rs` (`NIVEAU_PARTAGE` = `"shared"`, message « catalog contexts have level shared »), `definitions/user_context.rs`, `interactive/manager.rs` (tests inclus) ; (3) `store/memory.rs` : `MemoryScope::shared`, texte canonique `shared` ; (4) `interactive/event.rs` : `EmptyResponse` (../interactive/event.sdd) ; (5) `http/routes.rs` : `Message::Discarded` non rendu (../http/routes.sdd). (6) `migration.rs` : retirer `kind` et `default_agent` de `catalog_context_types` (../migration.sdd, exception `/AGENTS.md` du 2026-11-05) ; (7) `definitions/context_type.rs` (../definitions/context_type.sdd : colonnes retirées, porte `G_` rétablie) ; (8) `store/toolset.rs` (ligne de type sans `kind`/`default_agent`) ; (9) `interactive/manager.rs` : nature et agent par défaut lus sur le `ContextType` amont via `lymaille::resolve_start` (../interactive/manager.sdd). Chaque tâche : batterie ciblée verte avant la suivante, batterie complète à la fin.
   [x] Réalignement R7 (DSD `DEC-27, DEC-30`, 2026-11-03) : spec amendée (déclaration et ré-exports de `host`, `SessionEvent`, `export_typescript`, `resolve_role`, `SeaHostMcpAuth` ; `Cargo.toml` : `dep:chrono`,
     `dep:ts-rs` ; contrôle de graphe de `ts-rs`). Spec approuvée le 2026-11-04.
   [x] Export TypeScript des événements (DSD `OI-12`, soldé le 2026-11-03) : `ts-rs`, dépendance optionnelle derrière la feature `lymaille` ; amendement de `Cargo.toml` : voir la tâche « Amendement DEC-27/DEC-30 » ci-dessous.

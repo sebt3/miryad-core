@@ -56,10 +56,10 @@ Must:
       du 2026-11-04 sur `m20261103_000001` — `/AGENTS.md`, feature jamais déployée — ces deux tables ne se créent plus nulle part et la chaîne
       `down` complète est de nouveau cohérente ; remplacées ci-dessous :
       `ContextTypeStore` et `ContextStore` lisent désormais les tables à identifiant entier, ../store/toolset.sdd) ;
-    `catalog_context_types` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** (`G_…`) ; `version` TEXT NOT NULL ; `kind` TEXT NOT NULL
-      (`work`|`config`, DSD `DEC-28`, réalignement R2) ; `default_agent` TEXT NULL (DSD `DEC-28`) ; `allowed_agents` JSON NOT NULL (tableau
-      d'identifiants, DSD `DEC-28`) ; `active` JSON NULL ; `draft` JSON NULL ; `created_at`. Les trois colonnes `DEC-28` sont posées en
-      modification en place de `m20261104_000001` (exception `/AGENTS.md` du 2026-11-03, feature jamais déployée) ; contrat de l'entité :
+    `catalog_context_types` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** (`G_…`) ; `version` TEXT NOT NULL ; `allowed_agents` JSON NOT NULL (tableau
+      d'identifiants, DSD `DEC-28`) ; `active` JSON NULL ; `draft` JSON NULL ; `created_at`. La colonne `allowed_agents` est posée en
+      modification en place de `m20261104_000001` (exceptions `/AGENTS.md` des 2026-11-03 et 2026-11-05, feature jamais déployée) ; `kind` et `default_agent`
+      **ne sont plus des colonnes** (le `ContextType` de `lymaille` 0.2.0 les porte, DSD `DEC-28` révisé le 2026-11-05) ; contrat de l'entité :
       ./definitions/context_type.sdd.
     `catalog_contexts` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** (`G_…`) ; `context` JSON NOT NULL ; `context_type` TEXT NULL (arbitrage
       `DEC-28` du 2026-11-05 : référence par `name` vers `catalog_context_types` ; posée par l'amendement en place du 2026-11-05, `/AGENTS.md`) ; `created_at` (contextes de niveau `Shared`).
@@ -122,10 +122,10 @@ Scenario: l'unicité de agent_id est par table, et par propriétaire pour le pri
   When on insère deux agents `x` de même `owner_id` dans `agents`, puis `x` chez deux propriétaires différents, puis deux `G_x` dans `catalog_agents`
   Then le second `x` du même propriétaire échoue, les propriétaires différents réussissent, le second `G_x` du catalogue échoue
 
-Scenario: le type de contexte porte les trois colonnes pilotes du contexte
+Scenario: le type de contexte porte la colonne des agents autorisés
   Given les migrations appliquées sous `lymaille`
   When on inspecte `miryad_lymaille_catalog_context_types` (`has_column`)
-  Then `kind` (`TEXT NOT NULL`), `default_agent` (TEXT nullable) et `allowed_agents` (`JSON NOT NULL`) existent, et le `up` est idempotent
+  Then `allowed_agents` (`JSON NOT NULL`) existe, `kind` et `default_agent` n'existent pas, et le `up` est idempotent
 
 Scenario: les contextes portent leur type et les sessions leur contexte
   Given les migrations appliquées sous `lymaille`
