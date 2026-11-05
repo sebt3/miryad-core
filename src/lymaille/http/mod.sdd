@@ -24,7 +24,7 @@ Must:
   `pub fn conversations_router<S>(manager: SessionManager) -> Router<S>` où `S` porte le @MiryadAuthState nécessaire à l'extracteur @AuthPrincipal
     (même borne que `me_router`) ; `manager` est un `Extension`/état propre du routeur (jamais un état global).
   Routes exactes (aucun slash final normalisé) sous `/api/v1/lymaille` :
-    `POST /conversations` · `GET /conversations` · `POST /conversations/{id}/messages` · `GET /conversations/{id}/events` ·
+    `POST /conversations` · `GET /conversations` · `POST /conversations/{id}/messages` · `GET /conversations/{id}/events` · `GET /conversations/{id}/history` ·
     `POST /conversations/{id}/cancel` · `POST /conversations/{id}/resume` · `DELETE /conversations/{id}` ·
     `POST /toolsets/{name}/activate` · `DELETE /toolsets/{name}/draft`.
   Toutes exigent un @AuthPrincipal (401 sinon, rendu de ../../auth/error.sdd). Corps JSON uniquement (`Content-Type: application/json`) ; taille de corps
@@ -45,6 +45,8 @@ Exposes:
 
 Tasks:
   [ ] `mod.rs` en dernier du dossier ; test d'agrégation de routes (table de routes exacte, méthodes servies).
+  [ ] Tracer dans le `Must` (arbitrage du 2026-11-05, suggestion) : un corps dépassant la borne de 64 Ko est rendu `422` (le `DefaultBodyLimit`
+    borne avant `serde`) — pas de `413` : @RestError n'a pas de variante de trop-plein et en ajouter une est hors périmètre de cette surface.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.
@@ -52,7 +54,7 @@ Done when:
 Scenario: les routes exactes existent, rien d'autre
   Given le routeur monté
   When on énumère ses chemins et méthodes
-  Then exactement les neuf routes ci-dessus
+  Then exactement les dix routes ci-dessus
 
 Scenario: un appel anonyme est refusé
   Given le routeur monté sans identifiant

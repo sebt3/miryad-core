@@ -56,6 +56,13 @@ Exposes:
 Tasks:
   [ ] Réalignement R13 (DSD `DEC-28`, 2026-11-03) : Après R10 : `!new <contexte> [agent]` remplace `!agent` ; `Scenario` d'un contexte inconnu ou refusé et d'un agent hors ensemble. Spec seule.
   [ ] Tests d'abord (SQLite mémoire, `ChatSender` espion, `ScriptedProvider`, horloge injectée), puis ./bridge.rs. Après ./link.rs et ./render.rs.
+  [ ] Amendement R13 à finaliser en spec (arbitrage de Sébastien du 2026-11-05) : le `Must` point 4 est resté pré-R13 (`!new [agent]`, `!agent <id>`)
+    alors que le code est écrit au contrat R13 — remplacer par `!new [<contexte> [agent]]` (ferme la session de la salle puis ouvre via
+    `SessionManager::open(subject, contexte, agent)`, nature par le type — DEC-28) ; le **contexte d'une salle est fourni par l'hôte** : @ChatConfig
+    porte un résolveur `salle → Option<nom de contexte>` (suggestion : `Arc<dyn Fn + Send + Sync>`, `None` par défaut → le texte libre sans session
+    rend un texte fixe invitant à `!new <contexte>`, et `!new` sans argument rouvre sur le contexte de la session fermée) ; retirer `default_agent`
+    de l'ouverture à la demande ; figer le couple `ChatBridge::new(… Arc<MatrixClient> …)` public + `with_sender`/`with_clock` `pub(crate)`
+    (résolution `private_interfaces` du code en place). Amender le point 5 du `Must` et les textes de confirmation en même temps.
   [?] Mise à jour d'un message par édition (streaming) et salles multi-utilisateurs : hors lot 2.
   [?] Le banc live (`tests/matrix_live.rs`, cluster media-test) pourra porter un test `#[ignore]` de bout en bout ; non exigé par ce lot.
 

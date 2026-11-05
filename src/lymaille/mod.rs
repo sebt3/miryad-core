@@ -27,6 +27,16 @@ pub mod error;
 /// `mod.sdd` sont la tâche R7 du lot 2.
 pub mod host;
 
+/// Surface REST+SSE des sessions interactives (`src/lymaille/http/mod.sdd`) : routeur
+/// auto-monté `conversations_router`, hors parité des ressources (acté 2026-11-03).
+pub mod http;
+
+/// Surface Matrix des sessions interactives (`src/lymaille/chat/mod.sdd`) : annuaire
+/// mxid → principal, mise en forme des sorties et pont `MatrixEventHandler` — glue des
+/// features `lymaille` et `matrix` (DSD `FR-13`, `DEC-26`).
+#[cfg(all(feature = "lymaille", feature = "matrix"))]
+pub mod chat;
+
 /// Socle des sessions interactives (`src/lymaille/interactive/mod.sdd`) — déclaration minimale
 /// du réalignement R8 (DSD `DEC-30`) : seuls `event` et `hub` existent à ce jour. La
 /// finalisation du `mod.rs` du dossier et les ré-exports plats du présent fichier sont la tâche

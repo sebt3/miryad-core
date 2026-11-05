@@ -97,6 +97,17 @@ rhai = { version = "1.27", default-features = false, features = ["std", "sync"],
 # features par défaut uniquement (`serde-compat`) : aucune feature d'implémentation de type tiers —
 # `at` est un `String`, `payload` est exporté `unknown` (DSD `DEC-30`).
 ts-rs = { version = "12", optional = true }
+# Flux SSE des conversations (`Depends on: @futures` de src/lymaille/http/sse.sdd) : `Stream` et
+# `stream::unfold` du flux d'événements — aucune autre surface de la crate ne l'emploie.
+futures = { version = "0.3", optional = true }
+# Comparaison en temps constant du haché des codes d'appairage Matrix
+# (`Depends on: @subtle` de src/lymaille/chat/link.sdd) ; version 2.6.1 déjà au graphe (cookie).
+subtle = { version = "2", optional = true }
+# Source d'entropie des codes d'appairage à usage unique
+# (`Depends on: @getrandom` de src/lymaille/chat/link.sdd) ; version 0.3.4 déjà au graphe
+# (lymaille → jsonschema → ahash). `sha2` n'est pas ajouté ici : `db` (impliquée par `lymaille`)
+# active déjà `dep:sha2` (`src/lymaille/mod.sdd`, amendement lot 2).
+getrandom = { version = "0.3", optional = true }
 
 [features]
 default = ["static-frontend", "db"]
@@ -115,8 +126,10 @@ systemone = []
 matrix = ["db", "dep:matrix-sdk", "dep:matrix-sdk-crypto", "dep:matrix-sdk-store-encryption", "dep:zeroize", "dep:tokio"]
 # Hôte de la bibliothèque `lymaille` (src/lymaille/mod.sdd), hors `default` (arbitrage 2026-11-02) ; implique `db`.
 # `dep:uuid` (amendement R10 du 2026-11-05) : identifiant opaque des sessions du SessionManager —
-# `Depends on: @uuid` de `src/lymaille/interactive/manager.sdd`.
-lymaille = ["db", "dep:lymaille", "dep:rustls", "dep:zeroize", "dep:tokio", "dep:vynil-core", "dep:rhai", "dep:chrono", "dep:ts-rs", "dep:uuid"]
+# `Depends on: @uuid` de `src/lymaille/interactive/manager.sdd`. `dep:subtle` et `dep:getrandom`
+# (amendement lot 2) : annuaire Matrix du pont — `Depends on` de `src/lymaille/chat/link.sdd` ;
+# `sha2` arrive par `db` (impliquée), `futures` et `uuid` sont déjà listés.
+lymaille = ["db", "dep:lymaille", "dep:rustls", "dep:zeroize", "dep:tokio", "dep:vynil-core", "dep:rhai", "dep:chrono", "dep:ts-rs", "dep:uuid", "dep:futures", "dep:subtle", "dep:getrandom"]
 
 [dev-dependencies]
 sea-orm = { version = "2", features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "macros", "mock"] }

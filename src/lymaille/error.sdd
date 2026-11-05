@@ -51,6 +51,11 @@ Exposes:
   `LymailleError`, `retryable`.
 
 Tasks:
+  [ ] Variante `Serialization(String)` → `MRD-LYMAILLE-012` (arbitrage de Sébastien du 2026-11-05) : panne de sérialisation sur le canal SSE, texte
+    expurgé, `retryable()` `false`, Display/`Debug` même forme que les autres variantes. Contexte : le validator checkpoint 7 a constaté que
+    `http/sse.rs` émettait le code `-009`, déjà porté par `Store` — violation de la règle transverse « code unique ». Tests d'abord (« les codes
+    sont stables » étendu `-001` à `-012`, retryabilité), puis ./error.rs ; ensuite corriger `sse.rs` (constante `SERIALIZATION_ERROR_BODY`) dans
+    le périmètre de sa tâche R11 restante.
   [x] Amendement lot 2 (DSD `DEC-24`) : variantes `NotFound` et `Conflict`, tests des codes `-010` et `-011` d'abord, puis ./error.rs. Validé 2026-11-03
     (validator PASS : codes uniques et stables, retryabilité `false`, Display/`Debug` verrouillés par assert exact ; cibles vertes).
   [x] Tests d'abord (codes, retryabilité), puis ./error.rs. Validé 2026-11-02 (validator PASS, batterie ciblée).
