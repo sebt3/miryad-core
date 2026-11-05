@@ -426,9 +426,9 @@ mod tests {
 
     /// Scenario « un niveau shared est refusé dans la table privée » : `level` doit être `user`.
     #[test]
-    fn before_create_refuse_un_niveau_project() {
+    fn before_create_refuse_un_niveau_shared() {
         let rendu = Entity::before_create(
-            active_avec(contexte("dev", ContextLevel::Project, json!({}))),
+            active_avec(contexte("dev", ContextLevel::Shared, json!({}))),
             &principal(),
         );
         match rendu {

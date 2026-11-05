@@ -352,18 +352,16 @@ mod m20261104_000001_lymaille_lot2 {
     pub(super) struct Migration;
 
     /// Colonnes de `catalog_context_types` : la forme catalogue (`id`, `name` unique, `version`,
-    /// versions actives et brouillon, horodatage) plus les trois colonnes pilotes DEC-28 du
-    /// réalignement R2 — nature, agent par défaut, ensemble des agents autorisés (modification en
-    /// place actée le 2026-11-03, exception `/AGENTS.md`, migration jamais déployée).
-    /// `default_agent` est nullable en base mais exigé posé par les hooks, comme `active`/`draft`
-    /// des toolsets (`../definitions/context_type.sdd`).
+    /// versions actives et brouillon, horodatage) plus `allowed_agents`, seule colonne DEC-28
+    /// restante depuis `lymaille` 0.2.0 (`DSD DEC-28` révisé le 2026-11-05 : nature et agent par
+    /// défaut sont portés par le `ContextType` amont dans la colonne `active`, plus par des
+    /// colonnes — modification en place, exception `/AGENTS.md` du 2026-11-05, table jamais
+    /// déployée). Contrat de l'entité : `../definitions/context_type.sdd`.
     fn context_type_columns() -> Vec<ColumnDef> {
         vec![
             id(),
             unique_text("name"),
             text("version"),
-            text("kind"),
-            opt_text("default_agent"),
             json("allowed_agents"),
             opt_json("active"),
             opt_json("draft"),
@@ -683,9 +681,10 @@ mod tests {
     ];
 
     /// Les dix tables de l'« Amendement lot 2 », suffixe + colonnes déclarées, dans l'ordre de
-    /// `up` (`down` le parcourt à l'envers). `catalog_context_types` porte les trois colonnes du
-    /// réalignement R2 (DSD `DEC-28`, modification en place actée le 2026-11-03) : nature, agent
-    /// par défaut, ensemble des agents autorisés. Les deux tables de contextes portent en plus
+    /// `up` (`down` le parcourt à l'envers). `catalog_context_types` porte la colonne des agents
+    /// autorisés (`allowed_agents`, DSD `DEC-28` révisé le 2026-11-05) ; `kind` et `default_agent`
+    /// ne sont plus des colonnes — nature et agent par défaut vivent dans le `ContextType` de
+    /// `lymaille` 0.2.0, colonne `active`. Les deux tables de contextes portent en plus
     /// `context_type` (TEXT nullable, référence par `name` à un type du catalogue — arbitrage
     /// `DEC-28` du 2026-11-05, modification en place, `/AGENTS.md`) ; la colonne `context` de
     /// `sessions` n'y figure pas : elle n'est pas déclarée par le lot 2, elle y est **ajoutée**
@@ -698,8 +697,6 @@ mod tests {
                 "id",
                 "name",
                 "version",
-                "kind",
-                "default_agent",
                 "allowed_agents",
                 "active",
                 "draft",
@@ -1001,24 +998,33 @@ mod tests {
         }
     }
 
-    /// Scenario (réalignement R2, DSD `DEC-28`, 2026-11-03) : `catalog_context_types` porte les
-    /// trois colonnes pilotes de la session — nature (`work`|`config`), agent par défaut, ensemble
-    /// des agents autorisés. Sondes `has_column` sur le schéma complet.
+    /// Scenario (alignement `lymaille` 0.2.0, DSD `DEC-28` révisé le 2026-11-05) :
+    /// `catalog_context_types` porte la colonne des agents autorisés. `kind` et `default_agent`
+    /// **ne sont plus des colonnes** — la nature et l'agent par défaut sont portés par le
+    /// `ContextType` de `lymaille` 0.2.0 dans la colonne `active` (modification en place du `up`,
+    /// exception `/AGENTS.md` du 2026-11-05, table jamais déployée).
     #[tokio::test]
-    async fn lot2_catalog_context_types_carries_the_three_session_columns() {
+    async fn lot2_catalog_context_types_porte_la_colonne_des_agents_autorises() {
         let db = fresh_db().await;
         LymailleMigrator::up(&db, None)
             .await
             .expect("le up complet pose les schémas des deux lots");
         let manager = SchemaManager::new(&db);
         let name = table("catalog_context_types");
-        for column in ["kind", "default_agent", "allowed_agents"] {
+        assert!(
+            manager
+                .has_column(name.as_str(), "allowed_agents")
+                .await
+                .expect("has_column probe succeeds"),
+            "la table {name} porte la colonne allowed_agents (DSD `DEC-28`)"
+        );
+        for column in ["kind", "default_agent"] {
             assert!(
-                manager
+                !manager
                     .has_column(name.as_str(), column)
                     .await
                     .expect("has_column probe succeeds"),
-                "la table {name} porte la colonne {column} (réalignement R2, DSD `DEC-28`)"
+                "la table {name} ne porte plus la colonne {column} (lymaille 0.2.0, DSD `DEC-28` révisé)"
             );
         }
     }

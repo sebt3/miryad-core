@@ -155,6 +155,12 @@ pub enum SessionEventKind {
         /// La réponse coupée porte des appels d'outils.
         has_tool_calls: bool,
     },
+    /// Une réponse vide a été écartée (`EventKind::EmptyResponse`, `lymaille` 0.2.0) :
+    /// `will_retry` dit si le modèle est relancé, aucun contenu.
+    EmptyResponse {
+        /// Le modèle est relancé après la réponse vide.
+        will_retry: bool,
+    },
     /// Événement amont non reflété (`MemoryChanged`, `TargetOpened`, `RunInterrupted` et toute
     /// variante future) : le nom de variante tel que `lymaille` le sérialise, aucun contenu.
     Other {
@@ -231,7 +237,7 @@ where
     Ok(path)
 }
 
-/// Variante amont vers sa variante typée : les 14 variantes reflétées champ à champ, toute autre
+/// Variante amont vers sa variante typée : les 15 variantes reflétées champ à champ, toute autre
 /// variante (connue ou future) en `Other { name }` — conversion infaillible, `Must` de ./event.sdd.
 fn kind_of(kind: &EventKind) -> SessionEventKind {
     match kind {
@@ -305,6 +311,9 @@ fn kind_of(kind: &EventKind) -> SessionEventKind {
         } => SessionEventKind::ResponseTruncated {
             has_text: *has_text,
             has_tool_calls: *has_tool_calls,
+        },
+        EventKind::EmptyResponse { will_retry } => SessionEventKind::EmptyResponse {
+            will_retry: *will_retry,
         },
         other => SessionEventKind::Other {
             name: other_name(other),
@@ -482,6 +491,22 @@ mod tests {
             !text.contains("token_like"),
             "les arguments d'un appel MCP ne traversent jamais le miroir : {text}"
         );
+    }
+
+    /// Tâche « Alignement `lymaille` 0.2.0 » (`../interactive/event.sdd`) : `EmptyResponse` est
+    /// un événement **typé** (miroir de la variante amont 0.2.0), pas un `Other` — sérialisé
+    /// sous `type` = `empty_response` avec le booléen `will_retry` et aucun autre contenu.
+    #[test]
+    fn une_reponse_vide_est_miroitee_en_empty_response() {
+        for will_retry in [true, false] {
+            let upstream = event("s1", EventKind::EmptyResponse { will_retry });
+            let value = serde_json::to_value(SessionEvent::from(&upstream)).expect("un miroir sérialise");
+            assert_eq!(
+                value["kind"],
+                json!({"type": "empty_response", "will_retry": will_retry}),
+                "`EmptyResponse` est une variante typée, pas un `Other`"
+            );
+        }
     }
 
     /// Scenario « une variante non reflétée devient Other » : `MemoryChanged` ne passe que par
@@ -710,6 +735,10 @@ mod tests {
                     has_text: true,
                     has_tool_calls: false,
                 },
+            ),
+            (
+                EventKind::EmptyResponse { will_retry: true },
+                SessionEventKind::EmptyResponse { will_retry: true },
             ),
         ];
         miroite_chacun(cases);

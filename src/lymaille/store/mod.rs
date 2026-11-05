@@ -545,7 +545,7 @@ mod tests {
                     Ok(Some(
                         ::lymaille::ToolsetContext::new(
                             "H_sbx".to_string(),
-                            ::lymaille::ContextLevel::Project,
+                            ::lymaille::ContextLevel::Shared,
                         )
                         .expect("contexte de fixture"),
                     ))

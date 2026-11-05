@@ -1030,7 +1030,7 @@ mod tests {
     async fn put_type(
         db: &DatabaseConnection,
         name: &str,
-        kind: &str,
+        session_kind: Option<::lymaille::SessionKind>,
         default_agent: Option<&str>,
         allowed: &[&str],
     ) {
@@ -1040,6 +1040,18 @@ mod tests {
             json!({}),
         )
         .expect("le type de fixture se construit");
+        let context_type = match session_kind {
+            Some(kind) => context_type
+                .with_session_kind(kind)
+                .expect("la nature de fixture se pose"),
+            None => context_type,
+        };
+        let context_type = match default_agent {
+            Some(agent) => context_type
+                .with_default_agent(agent.to_owned())
+                .expect("l'agent par defaut de fixture se pose"),
+            None => context_type,
+        };
         let active = serde_json::to_value(context_type).expect("le type se serialise");
         let mut insert = Query::insert();
         insert
@@ -1047,8 +1059,6 @@ mod tests {
             .columns([
                 "name",
                 "version",
-                "kind",
-                "default_agent",
                 "allowed_agents",
                 "active",
                 "draft",
@@ -1057,8 +1067,6 @@ mod tests {
             .values(vec![
                 Expr::val(name),
                 Expr::val("1.0.0"),
-                Expr::val(kind),
-                default_agent.map_or_else(Expr::null, |agent| Expr::val(agent.to_owned())),
                 Expr::val(serde_json::Value::Array(
                     allowed.iter().map(|agent| json!(*agent)).collect(),
                 )),
@@ -1200,7 +1208,14 @@ mod tests {
         compte(&db, "eve", false).await;
         put_agent(&db, "alice", &agent("dev", AgentKind::Work)).await;
         put_agent(&db, "alice", &agent("a2", AgentKind::Work)).await;
-        put_type(&db, "t", "work", Some("dev"), &["dev"]).await;
+        put_type(
+            &db,
+            "t",
+            Some(::lymaille::SessionKind::Work),
+            Some("dev"),
+            &["dev"],
+        )
+        .await;
         let alice = Identity::new(db.clone())
             .resolve("alice")
             .await

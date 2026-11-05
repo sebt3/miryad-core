@@ -408,7 +408,8 @@ async fn load_state(
 /// `TurnEnded { outcome : valid }`, teneurs passées au `Redactor`. Les `System` (prompt) et
 /// `Boundary` ne sont jamais rendus ; les appels d'outil et leurs résultats ne sont pas rendus
 /// faute de champs faithfully dérivables (`McpCall` exige rôle, statut et durée que l'historique
-/// ne porte pas).
+/// ne porte pas). `Discarded` (réponse écartée, `lymaille` 0.2.0) est conservée pour l'audit
+/// seulement : jamais rendue, jamais comptée comme tour.
 fn history_events(state: &SessionState) -> Vec<SessionEvent> {
     let redactor = Redactor::new();
     let at = timestamp_rfc3339(state.created_at());
@@ -431,7 +432,10 @@ fn history_events(state: &SessionState) -> Vec<SessionEvent> {
                     });
                 }
             }
-            Message::System { .. } | Message::ToolResult { .. } | Message::Boundary { .. } => {}
+            Message::System { .. }
+            | Message::ToolResult { .. }
+            | Message::Boundary { .. }
+            | Message::Discarded { .. } => {}
             _unknown_amont => {}
         }
     }
@@ -1089,6 +1093,52 @@ mod tests {
         );
     }
 
+    /// Tâche « Alignement `lymaille` 0.2.0 » (`./routes.sdd`, Clôture R12) : `Message::Discarded`
+    /// (réponse écartée, conservée pour audit seulement) n'est **jamais rendue** dans l'historique
+    /// et n'ouvre **aucun tour** — le rang des tours suit les seuls messages utilisateur. Contrat
+    /// de non-régression : le repli `_unknown_amont` du mapping la couvrait déjà par accident,
+    /// le bras explicite le verrouille.
+    #[test]
+    fn une_reponse_ecartee_n_est_jamais_rendue_ni_comptee_comme_tour() {
+        use ::lymaille::AgentRef;
+        let id = SessionId::new("s-discarded").expect("id de fixture");
+        let state = ::lymaille::SessionState::new(
+            id,
+            AgentRef::new("dev", "empreinte"),
+            "c1",
+            std::collections::BTreeMap::new(),
+            ::lymaille::Timestamp::from_millis(1_730_000_000_000),
+        );
+        let mut value: serde_json::Value =
+            serde_json::from_str(&state.to_json().expect("l'etat se serialise")).expect("JSON d'etat");
+        value["history"] = json!([
+            { "role": "user", "content": "bonjour" },
+            { "role": "discarded", "cause": "empty", "reasoning": null },
+            { "role": "assistant", "content": "reponse", "reasoning": null, "tool_calls": [] }
+        ]);
+        let state =
+            ::lymaille::SessionState::from_json(&value.to_string()).expect("l'etat historise se relit");
+        let events = history_events(&state);
+        let json = serde_json::to_value(&events).expect("le rendu serialise");
+        assert_eq!(
+            json,
+            json!([{
+                "session": "s-discarded",
+                "at": state_at_rfc3339(),
+                "kind": { "type": "turn_ended", "turn": 1, "outcome": "valid", "response": "reponse" }
+            }]),
+            "la reponse ecartee n'est ni rendue, ni comptee comme tour"
+        );
+    }
+
+    /// L'instant de création de la fixture d'état (`Timestamp::from_millis(1_730_000_000_000)`)
+    /// en RFC 3339 UTC, même conversion que le mapping.
+    fn state_at_rfc3339() -> String {
+        let moment = chrono::DateTime::from_timestamp_millis(1_730_000_000_000)
+            .expect("un instant d'epoque en portee chrono");
+        moment.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    }
+
     /// `Must` (traduction) : table variante → statut, sans contenu de session dans les textes.
     #[test]
     fn la_traduction_des_erreurs_est_fixe() {
@@ -1265,7 +1315,7 @@ pub(crate) mod fix {
     pub async fn put_type(
         db: &DatabaseConnection,
         name: &str,
-        kind: &str,
+        session_kind: Option<::lymaille::SessionKind>,
         default_agent: Option<&str>,
         allowed: &[&str],
     ) {
@@ -1275,6 +1325,18 @@ pub(crate) mod fix {
             json!({}),
         )
         .expect("le type de fixture se construit");
+        let context_type = match session_kind {
+            Some(kind) => context_type
+                .with_session_kind(kind)
+                .expect("la nature de fixture se pose"),
+            None => context_type,
+        };
+        let context_type = match default_agent {
+            Some(agent) => context_type
+                .with_default_agent(agent.to_owned())
+                .expect("l'agent par defaut de fixture se pose"),
+            None => context_type,
+        };
         let active = serde_json::to_value(context_type).expect("le type se serialise");
         let mut insert = Query::insert();
         insert
@@ -1282,8 +1344,6 @@ pub(crate) mod fix {
             .columns([
                 "name",
                 "version",
-                "kind",
-                "default_agent",
                 "allowed_agents",
                 "active",
                 "draft",
@@ -1292,8 +1352,6 @@ pub(crate) mod fix {
             .values(vec![
                 Expr::val(name),
                 Expr::val("1.0.0"),
-                Expr::val(kind),
-                default_agent.map_or_else(Expr::null, |agent| Expr::val(agent.to_owned())),
                 Expr::val(serde_json::Value::Array(
                     allowed.iter().map(|agent| json!(*agent)).collect(),
                 )),
@@ -1539,7 +1597,14 @@ pub(crate) mod fix {
         compte(&db, "alice", false).await;
         compte(&db, "bob", false).await;
         put_agent(&db, "alice", &agent("dev", AgentKind::Work)).await;
-        put_type(&db, "t", "work", Some("dev"), &["dev"]).await;
+        put_type(
+            &db,
+            "t",
+            Some(::lymaille::SessionKind::Work),
+            Some("dev"),
+            &["dev"],
+        )
+        .await;
         let alice = user_id(&db, "alice").await;
         inserer_contexte_prive(&db, alice, "c1", Some("t")).await;
         let hub = Arc::new(EventHub::new(None, 256));
@@ -1564,7 +1629,14 @@ pub(crate) mod fix {
         compte(&db, "alice", false).await;
         compte(&db, "bob", false).await;
         put_agent(&db, "alice", &agent("dev", AgentKind::Work)).await;
-        put_type(&db, "t", "work", Some("dev"), &["dev"]).await;
+        put_type(
+            &db,
+            "t",
+            Some(::lymaille::SessionKind::Work),
+            Some("dev"),
+            &["dev"],
+        )
+        .await;
         let alice = user_id(&db, "alice").await;
         inserer_contexte_prive(&db, alice, "c1", Some("t")).await;
         let hub = Arc::new(EventHub::new(None, 256));

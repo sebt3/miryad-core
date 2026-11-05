@@ -78,7 +78,33 @@ Exposes:
     `install_crypto_provider`, modules `store`, `definitions`, `resource_module`, `host` (amendement DEC-27/DEC-30 : ré-exports ci-dessus).
 
 Tasks:
-  [ ] Alignement `lymaille` 0.2.0 (2026-11-05, tickets amont #1 à #5 fermés) — **une tâche par fichier**, dans cet ordre, `cargo update -p lymaille` d'abord : (1) `/Cargo.toml` `version = "0.2.0"` + `Cargo.lock` ; (2) `ContextLevel::Project` → `ContextLevel::Shared` dans `store/toolset.rs`, `store/mod.rs`, `definitions/catalog_context.rs` (`NIVEAU_PARTAGE` = `"shared"`, message « catalog contexts have level shared »), `definitions/user_context.rs`, `interactive/manager.rs` (tests inclus) ; (3) `store/memory.rs` : `MemoryScope::shared`, texte canonique `shared` ; (4) `interactive/event.rs` : `EmptyResponse` (../interactive/event.sdd) ; (5) `http/routes.rs` : `Message::Discarded` non rendu (../http/routes.sdd). (6) `migration.rs` : retirer `kind` et `default_agent` de `catalog_context_types` (../migration.sdd, exception `/AGENTS.md` du 2026-11-05) ; (7) `definitions/context_type.rs` (../definitions/context_type.sdd : colonnes retirées, porte `G_` rétablie) ; (8) `store/toolset.rs` (ligne de type sans `kind`/`default_agent`) ; (9) `interactive/manager.rs` : nature et agent par défaut lus sur le `ContextType` amont via `lymaille::resolve_start` (../interactive/manager.sdd). Chaque tâche : batterie ciblée verte avant la suivante, batterie complète à la fin.
+  [x] Alignement `lymaille` 0.2.0 (2026-11-05, tickets amont #1 à #5 fermés) — **une tâche par fichier**, dans cet ordre, `cargo update -p lymaille` d'abord : (1) `/Cargo.toml` `version = "0.2.0"` + `Cargo.lock` ; (2) `ContextLevel::Project` → `ContextLevel::Shared` dans `store/toolset.rs`, `store/mod.rs`, `definitions/catalog_context.rs` (`NIVEAU_PARTAGE` = `"shared"`, message « catalog contexts have level shared »), `definitions/user_context.rs`, `interactive/manager.rs` (tests inclus) ; (3) `store/memory.rs` : `MemoryScope::shared`, texte canonique `shared` ; (4) `interactive/event.rs` : `EmptyResponse` (../interactive/event.sdd) ; (5) `http/routes.rs` : `Message::Discarded` non rendu (../http/routes.sdd). (6) `migration.rs` : retirer `kind` et `default_agent` de `catalog_context_types` (../migration.sdd, exception `/AGENTS.md` du 2026-11-05) ; (7) `definitions/context_type.rs` (../definitions/context_type.sdd : colonnes retirées, porte `G_` rétablie) ; (8) `store/toolset.rs` (ligne de type sans `kind`/`default_agent`) ; (9) `interactive/manager.rs` : nature et agent par défaut lus sur le `ContextType` amont via `lymaille::resolve_start` (../interactive/manager.sdd). Chaque tâche : batterie ciblée verte avant la suivante, batterie complète à la fin.
+    Validé 2026-11-05 (synthèse validator PASS : 15 combinaisons de tests et 15 de clippy `-D warnings`, `cargo fmt --check`,
+    six contrôles `cargo tree`, `specdd lint` ; delta `Cargo.lock` limité à `lymaille` 0.1.0 → 0.2.0, `rmcp` 3.8.0, `rig-core` 0.43.0
+    et `rhai` 1.27.0 intacts ; zéro warning sur les fichiers touchés ; `m20261103_000001` non touchée).
+  [?] Ordre de `open` sur un contexte non hôte : `lymaille::resolve_start` est appelé **avant** la sélection d'agent, donc un type dont le
+    `default_agent` est introuvable refuse l'ouverture **même avec un agent explicite valide** (test `un_defaut_de_type_introuvable_refuse_l_ouverture`).
+    Choix provisoire : l'ordre du `Must` de `../interactive/manager.sdd`, verrouillé par ce test. Options : le garder (recommandé, aucune donnée
+    déployée) ou faire primer l'agent explicite sur un défaut invalide.
+  [?] Collatéraux de l'étape (6) hors des neuf fichiers nommés : `../store/draft.rs` (`put_type_draft`) et les fixtures SQL de `../http/routes.rs`,
+    `../http/sse.rs`, `../chat/bridge.rs` écrivaient les colonnes retirées et ont été alignés sur le nouveau schéma. Choix provisoire : correction
+    mécanique assumée (sinon `put_type_draft` casse à l'exécution), validator l'a relue et validée. Rateur : `../store/draft.sdd` mérite-t-il une
+    ligne sur la forme de l'upsert du type ?
+  [?] Wording de quatre specs en retard sur `project` → `shared` (le comportement est bon, l'alias serde amont fait passer les tests) :
+    `../store/toolset.sdd:36` (Given du Scenario), `../definitions/provider.sdd:17`, `../migration.sdd:37` (colonne texte libre jamais relue en
+    @ContextLevel), `../definitions/user_context.sdd:60` (Scenario « jeton JSON `project` »). Micro-tâche de relecture à ouvrir, ou laisser l'alias
+    historique tel quel.
+  [?] Fixture `put_context_only_rewrites_the_context_column` : le jeton JSON passe de `"project"` à `"shared"`. Choix provisoire : `"shared"`, plus
+    fidèle à « jamais écrit `project` » ; une fixture `"project"` testerait en fait l'alias amont à la relecture.
+  [?] Étape (5) : `Message::Discarded` n'était **pas** rendu avant non plus (repli `_unknown_amont` du mapping d'historique) — le test ajouté
+    `une_reponse_ecartee_n_est_jamais_rendue_ni_comptee_comme_tour` est vert d'emblée. Choix provisoire : bras explicite + test de non-régression
+    (recommandé, le contrat est rendu lisible) ; alternative : le marquer test de structure.
+  [?] Ouverture d'un contexte dont le type n'a qu'un `draft` (`active` nul) : `context_type` rend `Ok(None)` → `InvalidDefinition("context has no
+    usable type")`. Choix provisoire : le refus (l'ouverture se lit sur la version active, comme `get_type`) ; la spec ne le tranche pas.
+  [?] Commentaires citationnant encore « `lymaille` 0.1.0 » hors des neuf fichiers (`../definitions/toolset.rs`, `../interactive/assemble.rs`) :
+    références historiques exactes au source vérifié à 0.1.0, laissées telles quelles (hors périmètre). Choix provisoire : ne pas les retoucher.
+  [?] @ProviderLevel amont (`user`|`project`) n'est PAS renommé en 0.2.0 (énumération distincte de @ContextLevel et @MemoryScope, hors tickets #1 à #5) :
+    laissé tel quel. Choix provisoire : ne pas y toucher ; à reconfirmer si un ticket amont le reprend.
   [x] Réalignement R7 (DSD `DEC-27, DEC-30`, 2026-11-03) : spec amendée (déclaration et ré-exports de `host`, `SessionEvent`, `export_typescript`, `resolve_role`, `SeaHostMcpAuth` ; `Cargo.toml` : `dep:chrono`,
     `dep:ts-rs` ; contrôle de graphe de `ts-rs`). Spec approuvée le 2026-11-04.
   [x] Export TypeScript des événements (DSD `OI-12`, soldé le 2026-11-03) : `ts-rs`, dépendance optionnelle derrière la feature `lymaille` ; amendement de `Cargo.toml` : voir la tâche « Amendement DEC-27/DEC-30 » ci-dessous.

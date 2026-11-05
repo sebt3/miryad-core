@@ -98,7 +98,7 @@ impl MemoryStore for SeaMemoryStore {
             .values(vec![
                 Expr::val(self.subject.as_str()),
                 // La colonne `level` porte le texte canonique amont de `MemoryLevel::as_str`
-                // (`user`, `project` ou `session`) — l'énumération amont n'a pas de serde,
+                // (`user`, `shared` ou `session`) — l'énumération amont n'a pas de serde,
                 // `as_str` est sa forme canonique (`./memory.sdd`).
                 Expr::val(scope.level().as_str()),
                 Expr::val(scope.reference()),
@@ -172,7 +172,7 @@ mod tests {
     #[tokio::test]
     async fn put_get_list_and_delete() {
         let store = SeaMemoryStore::new(test_db().await, "alice".to_string());
-        let scope = MemoryScope::project("alpha");
+        let scope = MemoryScope::shared("alpha");
         for id in ["c", "a", "b"] {
             store
                 .put(
@@ -216,7 +216,7 @@ mod tests {
         );
     }
 
-    /// Texte canonique de `MemoryLevel::as_str` dans la colonne `level` : `user`, `project` ou
+    /// Texte canonique de `MemoryLevel::as_str` dans la colonne `level` : `user`, `shared` ou
     /// `session`, exercé aux trois niveaux. L'énumération amont n'a pas de serde — `as_str` est
     /// sa forme canonique, pas une forme sérialisée (`./memory.sdd`).
     #[tokio::test]
@@ -227,7 +227,7 @@ mod tests {
             SessionId::new("session-canonique").expect("un texte non vide fait un identifiant de session");
         let scopes = [
             (MemoryScope::user("ref-utilisateur"), "user"),
-            (MemoryScope::project("ref-projet"), "project"),
+            (MemoryScope::shared("ref-partagee"), "shared"),
             (MemoryScope::session(&session), "session"),
         ];
         for (scope, expected) in scopes {
@@ -265,7 +265,7 @@ mod tests {
         let db = test_db().await;
         let alice = SeaMemoryStore::new(db.clone(), "alice".to_string());
         let bob = SeaMemoryStore::new(db.clone(), "bob".to_string());
-        let scope = MemoryScope::project("alpha");
+        let scope = MemoryScope::shared("alpha");
         alice
             .put(&scope, &memory("m", "la sienne", "a"))
             .await

@@ -275,17 +275,17 @@ impl DraftStore for SeaDraftStore {
         let name = stored_name(&value, "context type")?;
         let version = stored_version(&value, "context type")?;
         // Upsert écrivant **uniquement** la colonne `draft` à la mise à jour ; ligne nouvelle
-        // créée avec `active = NULL` — le store n'active jamais. Les colonnes pilotes DEC-28 ne
-        // vivent pas dans l'objet `ContextType` de `lymaille` : une ligne nouvelle les reçoit
-        // **non posées** et les hooks de l'entité les exigent posées au premier CRUD — le store
-        // ne les invente pas.
+        // créée avec `active = NULL` — le store n'active jamais. Une ligne de type créée par le
+        // store ne porte **pas** `allowed_agents` (vide) — seule colonne DEC-28 restante depuis
+        // `lymaille` 0.2.0, `kind` et `default_agent` étant dans le JSON du type : le store ne les
+        // invente pas ; les hooks de l'entité refuseront l'activation tant que l'admin n'aura pas
+        // complété la ligne par le CRUD (`../store/toolset.sdd`, acté 2026-11-04, révisé
+        // 2026-11-05).
         let statement = Query::insert()
             .into_table(Alias::new(CATALOG_CONTEXT_TYPES_TABLE))
             .columns([
                 "name",
                 "version",
-                "kind",
-                "default_agent",
                 "allowed_agents",
                 "active",
                 "draft",
@@ -294,8 +294,6 @@ impl DraftStore for SeaDraftStore {
             .values(vec![
                 Expr::val(name),
                 Expr::val(version),
-                Expr::val(String::new()),
-                Expr::null(),
                 Expr::val(serde_json::json!([])),
                 Expr::null(),
                 Expr::val(value),

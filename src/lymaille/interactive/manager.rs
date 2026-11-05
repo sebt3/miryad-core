@@ -36,6 +36,7 @@ use ::lymaille::AgentKind;
 use ::lymaille::AgentRef;
 use ::lymaille::AgentStore as _;
 use ::lymaille::CancelHandle;
+use ::lymaille::ContextType;
 use ::lymaille::Redactor;
 use ::lymaille::SessionError;
 use ::lymaille::SessionFilter;
@@ -289,39 +290,8 @@ impl SessionManager {
                 (SessionKind::Work, agent.to_owned(), definition)
             }
             kind @ (IdKind::Catalog | IdKind::Private) => {
-                let reference = self.visible_context_type(&caller, kind, context).await?;
-                let Some(reference) = reference else {
-                    return Err(LymailleError::InvalidDefinition(
-                        "context has no usable type".to_string(),
-                    ));
-                };
-                let Some((kind, default_agent, allowed)) = self.context_type(&reference).await? else {
-                    return Err(LymailleError::InvalidDefinition(
-                        "context has no usable type".to_string(),
-                    ));
-                };
-                let agent_id = agent.or(default_agent.as_deref()).ok_or_else(|| {
-                    LymailleError::InvalidDefinition(
-                        "agent required: the context type has no default agent".to_string(),
-                    )
-                })?;
-                if !allowed.iter().any(|allowed| allowed == agent_id) {
-                    return Err(LymailleError::Forbidden(AGENT_NOT_ALLOWED.to_string()));
-                }
-                let definition = self.resolve_agent(&stores, agent_id).await?;
-                let expected = match kind {
-                    SessionKind::Work => AgentKind::Work,
-                    SessionKind::Config => AgentKind::Config,
-                    // Les `Sub` (et toute nature amont inconnue d'ici) ne sont pas des natures
-                    // de session interactive (`Must not`).
-                    _ => {
-                        return Err(LymailleError::Forbidden(AGENT_NOT_ALLOWED.to_string()));
-                    }
-                };
-                if definition.kind() != expected {
-                    return Err(LymailleError::Forbidden(AGENT_NOT_ALLOWED.to_string()));
-                }
-                (kind, agent_id.to_owned(), definition)
+                self.resolve_type_start(&stores, &caller, kind, context, agent)
+                    .await?
             }
         };
         // Plafond de sessions ouvertes en mémoire (l'admin est exemptée).
@@ -578,6 +548,88 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Résolution (`DEC-28` révisé le 2026-11-05) d'un contexte non hôte pour `open` : référence
+    /// visible du type, `ContextType` amont (colonne `active`) et colonne `allowed_agents`,
+    /// `lymaille::resolve_start` contre le catalogue d'agents (0.2.0), agent retenu et nature de
+    /// la session. Référence absente ou type inexistant/inutilisable :
+    /// `InvalidDefinition("context has no usable type")` ; type sans défaut sans agent explicite :
+    /// `InvalidDefinition("agent required: the context type has no default agent")` ; agent hors
+    /// de l'ensemble autorisé ou de nature incompatible avec le `session_kind` du type :
+    /// `Forbidden`.
+    async fn resolve_type_start(
+        &self,
+        stores: &LymailleStores,
+        caller: &CallerPrincipal,
+        kind: IdKind,
+        context: &str,
+        agent: Option<&str>,
+    ) -> Result<(SessionKind, String, AgentDefinition), LymailleError> {
+        let reference = self.visible_context_type(caller, kind, context).await?;
+        let Some(reference) = reference else {
+            return Err(LymailleError::InvalidDefinition(
+                "context has no usable type".to_string(),
+            ));
+        };
+        let Some((context_type, allowed)) = self.context_type(&reference).await? else {
+            return Err(LymailleError::InvalidDefinition(
+                "context has no usable type".to_string(),
+            ));
+        };
+        // `lymaille::resolve_start` (0.2.0) : le `default_agent` du type résolu contre le
+        // catalogue d'agents — introuvable, sous-agent ou nature incohérente avec le
+        // `session_kind` du type → `InvalidDefinition`. Un type sans défaut ne résout
+        // rien et le catalogue n'est pas lu.
+        let start = ::lymaille::resolve_start(&context_type, &stores.agents())
+            .await
+            .map_err(|error| match error {
+                ::lymaille::ToolsetsError::Store(text) => LymailleError::Store(text),
+                other => LymailleError::InvalidDefinition(other.to_string()),
+            })?;
+        let agent_id = match agent.or_else(|| context_type.default_agent()) {
+            Some(agent) => agent.to_owned(),
+            None => {
+                return Err(LymailleError::InvalidDefinition(
+                    "agent required: the context type has no default agent".to_string(),
+                ));
+            }
+        };
+        if !allowed.iter().any(|allowed| allowed == &agent_id) {
+            return Err(LymailleError::Forbidden(AGENT_NOT_ALLOWED.to_string()));
+        }
+        // L'agent retenu : le défaut déjà résolu par `resolve_start` (catalogue vérifié), un
+        // agent explicite relu pour ce principal. Un `start` `None` équivaut à l'absence de
+        // `default_agent` : atteint plus haut par le refus « agent required ».
+        let definition = match (agent, start) {
+            (Some(_), _) => self.resolve_agent(stores, &agent_id).await?,
+            (None, Some(target)) => target.agent().clone(),
+            (None, None) => {
+                return Err(LymailleError::InvalidDefinition(
+                    "agent required: the context type has no default agent".to_string(),
+                ));
+            }
+        };
+        // Nature (`DEC-28` révisé) : le `session_kind` du type quand il en porte un — la nature
+        // de l'agent doit l'égaler — sinon la nature de l'agent résolu. Les `Sub` (et toute
+        // nature amont inconnue d'ici) ne sont pas des natures de session interactive
+        // (`Must not`).
+        let kind = match context_type.session_kind() {
+            Some(kind @ (SessionKind::Work | SessionKind::Config)) => {
+                if definition.kind() != agent_kind_of(kind) {
+                    return Err(LymailleError::Forbidden(AGENT_NOT_ALLOWED.to_string()));
+                }
+                kind
+            }
+            Some(_) | None => match definition.kind() {
+                AgentKind::Work => SessionKind::Work,
+                AgentKind::Config => SessionKind::Config,
+                _ => {
+                    return Err(LymailleError::Forbidden(AGENT_NOT_ALLOWED.to_string()));
+                }
+            },
+        };
+        Ok((kind, agent_id, definition))
+    }
+
     /// Visibilité du contexte et colonne `context_type` de sa ligne : `G_…` du catalogue
     /// (public), sinon la table privée de l'appelant — un contexte d'un autre est un `NotFound`
     /// indiscernable.
@@ -614,20 +666,14 @@ impl SessionManager {
             .map_err(|error| LymailleError::Store(crate::lymaille::store::db_text(&error)))
     }
 
-    /// Ligne du type de contexte (`DEC-28`) : nature, agent par défaut, agents autorisés — les
-    /// trois colonnes pilotes, hors objet `lymaille`. Absent comme nature inutilisable
-    /// (`sub` ou texte inconnu) : `Ok(None)` — le refus « aucun type exploitable » est posé
+    /// Ligne du type de contexte (`DEC-28` révisé le 2026-11-05) : le `ContextType` amont (colonne
+    /// `active`), qui porte la nature (`session_kind`) et l'agent par défaut (`default_agent`),
+    /// plus la colonne miryad `allowed_agents`. Ligne absente, `active` nul ou JSON illisible —
+    /// type inexistant ou inutilisable : `Ok(None)`, le refus « aucun type exploitable » est posé
     /// par l'appelant.
-    async fn context_type(
-        &self,
-        name: &str,
-    ) -> Result<Option<(SessionKind, Option<String>, Vec<String>)>, LymailleError> {
+    async fn context_type(&self, name: &str) -> Result<Option<(ContextType, Vec<String>)>, LymailleError> {
         let select = Query::select()
-            .columns([
-                Alias::new("kind"),
-                Alias::new("default_agent"),
-                Alias::new("allowed_agents"),
-            ])
+            .columns([Alias::new("active"), Alias::new("allowed_agents")])
             .from(Alias::new(CATALOG_CONTEXT_TYPES_TABLE))
             .and_where(Expr::col(Alias::new("name")).eq(name))
             .to_owned();
@@ -641,15 +687,13 @@ impl SessionManager {
             .map_err(|error| LymailleError::Store(crate::lymaille::store::db_text(&error)))?;
         let Some(row) = row else { return Ok(None) };
         let db_text = |error: sea_orm::DbErr| LymailleError::Store(crate::lymaille::store::db_text(&error));
-        let kind_text: String = row.try_get("", "kind").map_err(db_text)?;
-        let kind = match kind_text.as_str() {
-            "work" => SessionKind::Work,
-            "config" => SessionKind::Config,
-            _ => return Ok(None),
+        let active: Option<serde_json::Value> = row.try_get("", "active").map_err(db_text)?;
+        let Some(brute) = active.filter(|version| !version.is_null()) else {
+            return Ok(None);
         };
-        let default_agent = row
-            .try_get::<Option<String>>("", "default_agent")
-            .map_err(db_text)?;
+        let Ok(context_type) = serde_json::from_value::<ContextType>(brute) else {
+            return Ok(None);
+        };
         let allowed: serde_json::Value = row.try_get("", "allowed_agents").map_err(db_text)?;
         let allowed: Vec<String> = allowed.as_array().map_or_else(Vec::new, |values| {
             values
@@ -658,7 +702,7 @@ impl SessionManager {
                 .map(str::to_owned)
                 .collect()
         });
-        Ok(Some((kind, default_agent, allowed)))
+        Ok(Some((context_type, allowed)))
     }
 
     /// Définition de l'agent relue pour ce principal (privé ou catalogue) ; insoluble : le même
@@ -774,6 +818,16 @@ impl SessionManager {
 
 /// Verrou d'une table du gestionnaire : un verrou empoisonné est récupéré — l'état est une
 /// `HashMap` simple qui ne peut pas rester à demi écrit (précédent `./hub.rs`).
+/// Nature d'agent correspondant à une nature de session (`DEC-28` révisé : `work` ↔ `Work`,
+/// `config` ↔ `Config` ; `Sub` n'est pas une nature de session interactive).
+const fn agent_kind_of(kind: SessionKind) -> AgentKind {
+    match kind {
+        SessionKind::Work => AgentKind::Work,
+        SessionKind::Config => AgentKind::Config,
+        _ => AgentKind::Sub,
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -925,12 +979,14 @@ mod tests {
             .expect("le proprietaire ecrit son agent");
     }
 
-    /// Écrit une ligne de `catalog_context_types` : nature, agent par défaut et agents autorisés
-    /// sont des colonnes DEC-28 hors objet `lymaille`, posées ici comme le ferait le CRUD.
+    /// Écrit une ligne de `catalog_context_types` : la nature (`session_kind` amont, `None` : le
+    /// JSON n'en porte pas) et l'agent par défaut vivent dans le `ContextType` de `lymaille` 0.2.0,
+    /// colonne `active` ; `allowed_agents` seule colonne DEC-28 restante (`../migration.sdd`,
+    /// DSD `DEC-28` révisé le 2026-11-05), posées ici comme le ferait le CRUD.
     async fn put_type(
         db: &DatabaseConnection,
         name: &str,
-        kind: &str,
+        session_kind: Option<SessionKind>,
         default_agent: Option<&str>,
         allowed: &[&str],
     ) {
@@ -940,6 +996,18 @@ mod tests {
             json!({}),
         )
         .expect("le type de fixture se construit");
+        let context_type = match session_kind {
+            Some(kind) => context_type
+                .with_session_kind(kind)
+                .expect("la nature de fixture se pose"),
+            None => context_type,
+        };
+        let context_type = match default_agent {
+            Some(agent) => context_type
+                .with_default_agent(agent.to_owned())
+                .expect("l'agent par défaut de fixture se pose"),
+            None => context_type,
+        };
         let active = serde_json::to_value(context_type).expect("le type se serialise");
         let mut insert = Query::insert();
         insert
@@ -947,8 +1015,6 @@ mod tests {
             .columns([
                 "name",
                 "version",
-                "kind",
-                "default_agent",
                 "allowed_agents",
                 "active",
                 "draft",
@@ -957,8 +1023,6 @@ mod tests {
             .values(vec![
                 Expr::val(name),
                 Expr::val("1.0.0"),
-                Expr::val(kind),
-                default_agent.map_or_else(Expr::null, |agent| Expr::val(agent.to_owned())),
                 Expr::val(serde_json::Value::Array(
                     allowed.iter().map(|agent| json!(*agent)).collect(),
                 )),
@@ -1151,7 +1215,7 @@ mod tests {
         ) -> Result<Option<ToolsetContext>, HostError> {
             if id == "H_sbx" && caller.subject == "alice" {
                 Ok(Some(
-                    ToolsetContext::new("H_sbx".to_owned(), ContextLevel::Project)
+                    ToolsetContext::new("H_sbx".to_owned(), ContextLevel::Shared)
                         .expect("le contexte hote de fixture se construit"),
                 ))
             } else {
@@ -1167,7 +1231,7 @@ mod tests {
         wire_catalog(db).await;
         let alice = compte(db, "alice", false).await;
         put_agent(db, &alice, &agent("dev", AgentKind::Work)).await;
-        put_type(db, "t", "work", Some("dev"), &["dev"]).await;
+        put_type(db, "t", Some(SessionKind::Work), Some("dev"), &["dev"]).await;
         inserer_contexte_prive(db, alice.user_id, "c1", Some("t")).await;
         alice
     }
@@ -1613,7 +1677,14 @@ mod tests {
         let alice = compte(&db, "alice", false).await;
         put_agent(&db, &alice, &agent("a_config", AgentKind::Config)).await;
         put_agent(&db, &alice, &agent("a_work", AgentKind::Work)).await;
-        put_type(&db, "t", "config", Some("a_config"), &["a_config"]).await;
+        put_type(
+            &db,
+            "t",
+            Some(SessionKind::Config),
+            Some("a_config"),
+            &["a_config"],
+        )
+        .await;
         inserer_contexte_prive(&db, alice.user_id, "c1", Some("t")).await;
 
         let provider = Arc::new(ScriptedProvider::new(Vec::new()));
@@ -1647,6 +1718,94 @@ mod tests {
         assert!(
             refus.to_string().contains("MRD-LYMAILLE-002"),
             "l'erreur typée cite MRD-LYMAILLE-002 (AC-19) : {refus}"
+        );
+    }
+
+    /// Tâche « Alignement `lymaille` 0.2.0 » (`./manager.sdd`, `Must` `DEC-28` révisé) : un type
+    /// sans `default_agent` (lu dans le `ContextType` amont, plus en colonne) exige un agent
+    /// explicite — `InvalidDefinition("agent required: the context type has no default agent")` ;
+    /// avec un agent explicite autorisé, la session s'ouvre et la nature vient de cet agent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_type_sans_defaut_exige_un_agent_explicite() {
+        let db = test_db().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
+        put_type(&db, "t", None, None, &["dev"]).await;
+        inserer_contexte_prive(&db, alice.user_id, "c1", Some("t")).await;
+
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let manager = SessionManager::new(deps_with(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider))),
+            None,
+            Limits::default(),
+        ));
+
+        let refus = manager
+            .open("alice", "c1", None)
+            .await
+            .expect_err("un type sans agent par défaut sans agent explicite est refusé");
+        match &refus {
+            crate::lymaille::error::LymailleError::InvalidDefinition(message) => {
+                assert_eq!(
+                    message, "agent required: the context type has no default agent",
+                    "le refus nomme la regle : {message}"
+                );
+            }
+            autre => panic!("un `InvalidDefinition` est attendu, obtenu : {autre:?}"),
+        }
+
+        let handle = manager
+            .open("alice", "c1", Some("dev"))
+            .await
+            .expect("un agent explicite autorise l'ouverture sur un type sans defaut");
+        assert_eq!(
+            handle.kind,
+            SessionKind::Work,
+            "sans session_kind du type, la nature vient de l'agent"
+        );
+        assert_eq!(handle.agent_id, "dev");
+    }
+
+    /// Tâche « Alignement `lymaille` 0.2.0 » (`./manager.sdd`, `Must`) : `lymaille::resolve_start`
+    /// résout le `default_agent` du type contre le catalogue d'agents — un défaut introuvable est
+    /// un `InvalidDefinition`, aucune session n'est créée.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_defaut_de_type_introuvable_refuse_l_ouverture() {
+        let db = test_db().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
+        put_type(&db, "t", Some(SessionKind::Work), Some("ghost"), &["ghost"]).await;
+        inserer_contexte_prive(&db, alice.user_id, "c1", Some("t")).await;
+
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let manager = SessionManager::new(deps_with(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider))),
+            None,
+            Limits::default(),
+        ));
+
+        let refus = manager
+            .open("alice", "c1", None)
+            .await
+            .expect_err("le default_agent du type doit exister dans le catalogue");
+        assert!(
+            matches!(refus, crate::lymaille::error::LymailleError::InvalidDefinition(_)),
+            "resolve_start rend un `InvalidDefinition`, obtenu : {refus:?}"
+        );
+        let compte_sessions = Query::select()
+            .column(Alias::new("session_id"))
+            .from(Alias::new(super::SESSIONS_TABLE))
+            .to_owned();
+        let lignes = db
+            .query_all(&compte_sessions)
+            .await
+            .expect("comptage des sessions");
+        assert!(
+            lignes.is_empty(),
+            "aucune session n'est creee sur un defaut insoluble"
         );
     }
 
@@ -1801,7 +1960,7 @@ mod tests {
         wire_catalog(&db).await;
         let alice = compte(&db, "alice", false).await;
         put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
-        put_type(&db, "t", "work", Some("dev"), &["dev"]).await;
+        put_type(&db, "t", Some(SessionKind::Work), Some("dev"), &["dev"]).await;
         inserer_contexte_prive(&db, alice.user_id, "c1", Some("t")).await;
         let root = compte(&db, "root", true).await;
         put_agent(&db, &root, &agent("dev", AgentKind::Work)).await;

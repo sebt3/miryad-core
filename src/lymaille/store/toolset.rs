@@ -385,17 +385,16 @@ impl ContextTypeStore for SeaContextTypeStore {
             }
         })?;
         // Upsert par `name` sur la colonne `active` (avec `version` dérivée, motif des hooks de
-        // `../definitions/context_type.sdd`). Les trois colonnes pilotes DEC-28 ne vivent pas
-        // dans l'objet `ContextType` de `lymaille` : une ligne nouvelle les reçoit **non posées**
-        // (nature vide, agents vides) et les hooks de l'entité les exigent posées au premier
-        // CRUD — le store ne les invente pas.
+        // `../definitions/context_type.sdd`). Une ligne créée par le store ne porte **pas**
+        // `allowed_agents` (vide) — seule colonne DEC-28 restante depuis `lymaille` 0.2.0,
+        // `kind` et `default_agent` étant dans le JSON du type : le store ne les invente pas ; les
+        // hooks de l'entité refuseront l'activation tant que l'admin n'aura pas complété la ligne
+        // par le CRUD (`./toolset.sdd`, amendement lot 2, révisé 2026-11-05).
         let statement = Query::insert()
             .into_table(Alias::new(CATALOG_CONTEXT_TYPES_TABLE))
             .columns([
                 "name",
                 "version",
-                "kind",
-                "default_agent",
                 "allowed_agents",
                 "active",
                 "draft",
@@ -404,8 +403,6 @@ impl ContextTypeStore for SeaContextTypeStore {
             .values(vec![
                 Expr::val(name),
                 Expr::val(version),
-                Expr::val(String::new()),
-                Expr::null(),
                 Expr::val(serde_json::json!([])),
                 Expr::val(value),
                 Expr::null(),
@@ -748,7 +745,7 @@ mod tests {
             json!({"type": "object", "properties": {"cluster": {"type": "string"}}, "required": ["cluster"]}),
         )
         .expect("un type de contexte valide");
-        let context = ToolsetContext::new("prod".to_string(), ContextLevel::Project)
+        let context = ToolsetContext::new("prod".to_string(), ContextLevel::Shared)
             .expect("un contexte de toolset valide");
 
         SeaContextTypeStore::new(db.clone(), identity.clone(), "root".to_string())
@@ -852,7 +849,7 @@ mod tests {
         let identity = Identity::new(db.clone());
 
         SeaContextStore::new(db.clone(), identity.clone(), "root".to_string(), None)
-            .put_context(&context("G_prod", ContextLevel::Project))
+            .put_context(&context("G_prod", ContextLevel::Shared))
             .await
             .expect("l'admin écrit `G_prod` au catalogue");
         assert_eq!(
@@ -860,7 +857,7 @@ mod tests {
                 .get_context("G_prod")
                 .await
                 .expect("lecture de alice"),
-            Some(context("G_prod", ContextLevel::Project)),
+            Some(context("G_prod", ContextLevel::Shared)),
             "le catalogue est lisible de tous"
         );
         assert_eq!(
@@ -875,7 +872,7 @@ mod tests {
         );
 
         let refused = SeaContextStore::new(db.clone(), identity, "alice".to_string(), None)
-            .put_context(&context("G_x", ContextLevel::Project))
+            .put_context(&context("G_x", ContextLevel::Shared))
             .await
             .expect_err("un non-admin n'écrit pas un contexte du catalogue");
         assert!(
@@ -893,7 +890,7 @@ mod tests {
         user(&db, "root", true).await;
         db.execute_unprepared(
             "INSERT INTO miryad_lymaille_catalog_contexts (name, context, context_type, created_at) \
-             VALUES ('G_prod', '{\"name\": \"G_prod\", \"level\": \"project\", \"parameters\": {}}', \
+             VALUES ('G_prod', '{\"name\": \"G_prod\", \"level\": \"shared\", \"parameters\": {}}', \
              'cluster', '2026-11-01T00:00:00Z')",
         )
         .await
@@ -901,7 +898,7 @@ mod tests {
 
         SeaContextStore::new(db.clone(), Identity::new(db.clone()), "root".to_string(), None)
             .put_context(
-                &context("G_prod", ContextLevel::Project)
+                &context("G_prod", ContextLevel::Shared)
                     .with_parameter("region".to_string(), json!("eu"))
                     .expect("un parametre ordinaire"),
             )
@@ -930,7 +927,7 @@ mod tests {
                 .await
                 .expect("lecture du contexte"),
             Some(
-                context("G_prod", ContextLevel::Project)
+                context("G_prod", ContextLevel::Shared)
                     .with_parameter("region".to_string(), json!("eu"))
                     .expect("un parametre ordinaire")
             ),
@@ -1025,7 +1022,7 @@ mod tests {
     }
 
     fn spy_context() -> ToolsetContext {
-        ToolsetContext::new("H_sbx".to_string(), ContextLevel::Project)
+        ToolsetContext::new("H_sbx".to_string(), ContextLevel::Shared)
             .expect("le contexte de fixture se construit")
     }
 

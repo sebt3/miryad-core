@@ -7,8 +7,11 @@
 //! auteurs de toolsets (DSD `DEC-20`). La colonne JSON (DSD `DEC-18` : `active` pour la version
 //! active, `draft` pour le brouillon de la session de configuration) est la source de vérité ;
 //! `name` et `version` en sont des copies dérivées par les hooks. Le nom suit la grammaire de
-//! `lymaille` (`[a-z0-9-]+`) et ne porte pas de préfixe `G_` — arbitrage (a) du 2026-11-04
-//! (`./context_type.sdd`) : la garantie de catalogue est `AdminOnly` et la table, pas le préfixe.
+//! `lymaille` 0.2.0 (`[A-Za-z0-9_-]+`, majuscules et `_` admis — ticket amont #5) et porte le
+//! préfixe `G_` du catalogue (arbitrage du 2026-11-04 renversé le 2026-11-05 : la porte `classify`
+//! redevient faisable). Nature et agent par défaut sont portés par le `ContextType` amont
+//! (`session_kind`, `default_agent`) dans `active`/`draft` : seule `allowed_agents` vit en colonne
+//! miryad-core (DSD `DEC-28` révisé, `./context_type.sdd`).
 
 use sea_orm::ActiveValue;
 use sea_orm::entity::prelude::*;
@@ -16,6 +19,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::auth::AuthPrincipal;
+use crate::lymaille::identity;
 use crate::resource::AccessPolicy;
 use crate::resource::HookError;
 use crate::resource::MiryadResource;
@@ -29,25 +33,19 @@ pub struct Model {
     /// Clé primaire entière auto-incrémentée (convention `miryad_*` de la crate).
     #[sea_orm(primary_key)]
     pub id: i32,
-    /// Identifiant du type de contexte (grammaire `lymaille` `[a-z0-9-]+`, sans préfixe `G_` —
-    /// arbitrage (a) du 2026-11-04), copie dérivée du `name` de ses versions par les hooks —
-    /// libellé de la ressource, unique au catalogue (contrainte de la migration).
+    /// Identifiant du type de contexte (grammaire `lymaille` 0.2.0 `[A-Za-z0-9_-]+`, préfixe `G_`
+    /// du catalogue — arbitrage du 2026-11-05), copie dérivée du `name` de ses versions par les
+    /// hooks — libellé de la ressource, unique au catalogue (contrainte de la migration).
     pub name: String,
     /// Version sémantique de la version active (à défaut du brouillon), copie dérivée par les
     /// hooks.
     pub version: String,
-    /// Nature des sessions ouvertes par ce type (`work` | `config`, DSD `DEC-28`) — colonne miryad,
-    /// ces champs ne vivent pas dans l'objet `ContextType` de `lymaille` (`ContextTypeStore`
-    /// vérifié, amendement R1). Les hooks refusent toute autre valeur, `sub` compris : un type du
-    /// catalogue n'ouvre que du travail ou de la configuration.
-    pub kind: String,
-    /// Agent par défaut à l'ouverture d'une session dans un contexte de ce type (DSD `DEC-28`).
-    /// Colonne nullable en base, exigée posée par les hooks — motif des toolsets : le contrôle est
-    /// celui des hooks, pas une contrainte `CHECK`.
-    pub default_agent: Option<String>,
     /// Ensemble des agents autorisés à l'ouverture, tableau JSON d'identifiants (DSD `DEC-28`) :
-    /// l'agent par défaut doit en être, un agent explicite hors de l'ensemble est refusé à
-    /// l'ouverture (`mcp_access`/`assemble`, hors de cette entité).
+    /// **seule** colonne miryad-core des champs du type — depuis `lymaille` 0.2.0 le
+    /// `ContextType` porte lui-même `default_agent` et `session_kind`, source de vérité unique
+    /// dans `active`/`draft`. L'agent par défaut doit être membre de cet ensemble ; un agent
+    /// explicite hors de l'ensemble est refusé à l'ouverture (`mcp_access`/`assemble`, hors de
+    /// cette entité).
     pub allowed_agents: serde_json::Value,
     /// Le `lymaille::ContextType` actif, colonne JSON nullable — `None` tant qu'aucune version
     /// n'est activée (DSD `DEC-18`).
@@ -78,20 +76,19 @@ impl Entity {
         }
     }
 
-    /// Étape 2 du `Must` : la version se désérialise en `lymaille::ContextType` — le constructeur
-    /// compile le schéma, un schéma invalide est donc refusé ici. La cause est la variante typée
-    /// de `lymaille` rendue par ses affichages fixes, qui ne citent jamais le schéma (`Must
-    /// not`).
+    /// La version se désérialise en `lymaille::ContextType` — le constructeur compile le schéma
+    /// et vérifie la grammaire du nom (`[A-Za-z0-9_-]+` de `lymaille` 0.2.0), un schéma invalide
+    /// est donc refusé ici. La cause est la variante typée de `lymaille` rendue par ses affichages
+    /// fixes, qui ne citent jamais le schéma (`Must not`).
     fn charger(brute: &serde_json::Value) -> Result<::lymaille::ContextType, HookError> {
         serde_json::from_value(brute.clone())
             .map_err(|cause| HookError::new(format!("invalid context type: {cause}")))
     }
 
-    /// Nom et version lus dans la forme sérialisée : `ContextType` ne rend pas ses accès par un
-    /// accesseur public (lymaille 0.1.0, `pub(in crate::toolsets)`) — la colonne `name` est la
-    /// copie de la clé de l'objet JSON, source de vérité, comme dans `../store/toolset.rs`. La
-    /// désérialisation a réussi avant cet appel, les deux clés y sont donc requises ; le refus
-    /// n'est qu'un garde-fou sans `unwrap`.
+    /// Champ texte lu dans la forme sérialisée : `ContextType` ne rend `name` et `version` que
+    /// partiellement (accesseurs `default_agent`/`session_kind` depuis `lymaille` 0.2.0) — la
+    /// colonne `name` est la copie de la clé de l'objet JSON, source de vérité, comme dans
+    /// `../store/toolset.rs`. Le refus n'est qu'un garde-fou sans `unwrap`.
     fn champ_texte(brute: &serde_json::Value, champ: &str) -> Result<String, HookError> {
         brute
             .get(champ)
@@ -100,47 +97,45 @@ impl Entity {
             .ok_or_else(|| HookError::new(format!("invalid context type: no `{champ}` in the stored form")))
     }
 
-    /// Porte des trois colonnes DEC-28 (réalignement R1 de `./context_type.sdd`) : nature parmi
-    /// `work`/`config` (`sub` et toute autre valeur sont refusés), agent par défaut posé, agent
-    /// par défaut membre de l'ensemble autorisé. Les valeurs `NotSet` comptent comme absentes :
-    /// la porte refuse, le `NotSet` n'atteint jamais la base. Elle est placée avant les portes
-    /// JSON : les colonnes sont indépendantes de `active`/`draft`.
-    fn valider_champs_pilotes(active: &ActiveModel) -> Result<(), HookError> {
-        let nature = match &active.kind {
-            ActiveValue::Set(nature) | ActiveValue::Unchanged(nature) => nature.as_str(),
-            ActiveValue::NotSet => "",
+    /// Porte `DEC-28` de la colonne restante : `allowed_agents` posé (`ActiveValue::NotSet` compte
+    /// comme absent et refuse) et tableau JSON de chaînes — les identifiants nus, jamais un objet
+    /// ni un mixte avec des nombres. Rend la liste pour le contrôle d'appartenance de l'agent par
+    /// défaut (`./context_type.sdd`, `Must`).
+    fn liste_autorisee(active: &ActiveModel) -> Result<Vec<String>, HookError> {
+        let brute = match &active.allowed_agents {
+            ActiveValue::Set(agents) | ActiveValue::Unchanged(agents) => agents,
+            ActiveValue::NotSet => {
+                return Err(HookError::new(
+                    "context type allowed agents must be an array of agent names",
+                ));
+            }
         };
-        if !matches!(nature, "work" | "config") {
-            return Err(HookError::new("context type kind must be work or config"));
-        }
-        let defaut = match &active.default_agent {
-            ActiveValue::Set(defaut) | ActiveValue::Unchanged(defaut) => defaut.as_ref(),
-            ActiveValue::NotSet => None,
-        };
-        let Some(defaut) = defaut else {
-            return Err(HookError::new("a context type needs a default agent"));
-        };
-        let autorise = match &active.allowed_agents {
-            ActiveValue::Set(agents) | ActiveValue::Unchanged(agents) => agents
-                .as_array()
-                .is_some_and(|agents| agents.iter().any(|agent| agent.as_str() == Some(defaut.as_str()))),
-            ActiveValue::NotSet => false,
-        };
-        if !autorise {
-            return Err(HookError::new(
-                "context type default agent must be in the allowed agents",
-            ));
-        }
-        Ok(())
+        brute
+            .as_array()
+            .filter(|agents| agents.iter().all(serde_json::Value::is_string))
+            .map(|agents| {
+                agents
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .ok_or_else(|| HookError::new("context type allowed agents must be an array of agent names"))
     }
 
     /// Porte commune de `before_create` (`existing` absent) et `before_update`, dans l'ordre du
-    /// `Must` de `./context_type.sdd`, interrompue au premier échec : au moins une version, les
-    /// trois colonnes pilotes DEC-28 (réalignement R1), chacune des versions désérialisée en
-    /// `lymaille::ContextType` (le constructeur compile le schéma et vérifie la grammaire du nom
-    /// `[a-z0-9-]+`, DSD `DEC-9` — aucune porte @classify : le nom ne porte pas de préfixe `G_`,
-    /// arbitrage (a) du 2026-11-04), et sur une mise à jour `name` ne change pas. `name` et
-    /// `version` (celle de l'active, à défaut du brouillon) sont toujours réécrits.
+    /// `Must` de `./context_type.sdd`, interrompue au premier échec : au moins une version ; la
+    /// porte `DEC-28` (`allowed_agents` posé et tableau de chaînes) ; `classify(name) == Catalog`
+    /// (préfixe `G_`, comme `./agent.sdd` — arbitrage du 2026-11-05, la grammaire amont 0.2.0
+    /// rend les noms `G_…` désérialisables ; tout autre rendu de `classify`, y compris une
+    /// erreur, est le même refus) ; chaque version non nulle désérialisée en
+    /// `lymaille::ContextType` (le constructeur compile le schéma et vérifie la grammaire du nom)
+    /// et, si le type porte un `default_agent`, appartenance à l'ensemble autorisé par comparaison
+    /// de chaînes exacte (un type sans agent par défaut est admis : l'ouverture exigera alors un
+    /// agent explicite) ; sur une mise à jour `name` ne change pas. `name` et `version` (celle de
+    /// l'active, à défaut du brouillon) sont toujours réécrits. L'existence de l'agent dans le
+    /// catalogue et la cohérence de la nature (`session_kind` ↔ nature de l'agent) sont contrôlées
+    /// à l'ouverture par `lymaille::resolve_start` (`../interactive/manager.sdd`), pas ici.
     fn valider_et_deriver(
         mut active: ActiveModel,
         existing: Option<&Model>,
@@ -152,13 +147,25 @@ impl Entity {
                 "a context type needs an active version or a draft",
             ));
         }
-        Self::valider_champs_pilotes(&active)?;
-        brute_active.map(Self::charger).transpose()?;
-        brute_draft.map(Self::charger).transpose()?;
+        let autorises = Self::liste_autorisee(&active)?;
         let brute = brute_active
             .or(brute_draft)
             .ok_or_else(|| HookError::new("a context type needs an active version or a draft"))?;
         let name = Self::champ_texte(brute, "name")?;
+        if !matches!(identity::classify(&name), Ok(identity::IdKind::Catalog)) {
+            return Err(HookError::new("context type name must start with G_ (catalog)"));
+        }
+        for brute_version in brute_active.into_iter().chain(brute_draft) {
+            let type_valide = Self::charger(brute_version)?;
+            if type_valide
+                .default_agent()
+                .is_some_and(|defaut| !autorises.iter().any(|agent| agent == defaut))
+            {
+                return Err(HookError::new(
+                    "context type default agent must be in the allowed agents",
+                ));
+            }
+        }
         let version = Self::champ_texte(brute, "version")?;
         if let Some(ligne) = existing
             && name != ligne.name
@@ -242,9 +249,9 @@ mod tests {
     // ── Fixtures — purement mémoire : hooks purs sur l'`ActiveModel`, aucune connexion. La forme
     // sérialisée de base est produite par la bibliothèque elle-même (`ContextType::new` puis
     // `to_value`), seule la clé `name` est corrigée au nom voulu — la grammaire du constructeur
-    // (lymaille 0.1.0, `toolsets/context_type.rs::is_valid_name`) n'accepte que minuscules,
-    // chiffres et tirets : les noms de type de contexte en sortent sans préfixe `G_` (arbitrage (a)
-    // du 2026-11-04, `./context_type.sdd`).
+    // (`lymaille` 0.2.0, `toolsets/context_type.rs::is_valid_name`) accepte lettres ASCII,
+    // chiffres, tirets et underscores : un nom `G_…` se désérialise, la porte `classify` du
+    // catalogue est faisable (arbitrage du 2026-11-05, `./context_type.sdd`).
 
     fn principal() -> AuthPrincipal {
         AuthPrincipal {
@@ -277,12 +284,20 @@ mod tests {
         value
     }
 
-    /// `ActiveModel` dans la forme qui atteint le hook, champs du réalignement R1 réglés : colonnes
-    /// dérivées fausses (le hook doit les réécrire), versions et champs DEC-28 voulus, clé et
-    /// horodatage non posés.
-    fn active_avec_champs(
-        kind: &str,
-        default_agent: Option<&str>,
+    /// Forme sérialisée d'un type nommant un agent par défaut `defaut` (champ du `ContextType`
+    /// amont depuis `lymaille` 0.2.0, plus une colonne miryad).
+    fn type_json_avec_defaut(name: &str, defaut: &str) -> serde_json::Value {
+        let mut value = type_json(name, "1.0.0", json!({ "type": "object" }));
+        let Some(map) = value.as_object_mut() else {
+            panic!("la forme sérialisée d'un `ContextType` est un objet");
+        };
+        map.insert("default_agent".to_string(), json!(defaut));
+        value
+    }
+
+    /// `ActiveModel` dans la forme qui atteint le hook : colonnes dérivées fausses (le hook doit
+    /// les réécrire), `allowed_agents` et versions voulus, clé et horodatage non posés.
+    fn active_avec_agents(
         allowed_agents: serde_json::Value,
         active: Option<serde_json::Value>,
         draft: Option<serde_json::Value>,
@@ -291,8 +306,6 @@ mod tests {
             id: NotSet,
             name: Set("faux-nom".to_string()),
             version: Set("0.0.0".to_string()),
-            kind: Set(kind.to_string()),
-            default_agent: Set(default_agent.map(str::to_owned)),
             allowed_agents: Set(allowed_agents),
             active: Set(active),
             draft: Set(draft),
@@ -300,24 +313,20 @@ mod tests {
         }
     }
 
-    /// `ActiveModel` dans la forme qui atteint le hook : colonnes dérivées fausses (le hook doit
-    /// les réécrire), versions voulues, clé et horodatage non posés. Champs DEC-28 valides
-    /// (`work`, `G_triage` autorisé par lui-même) pour que les Scenarios existants atteignent
-    /// leurs propres portes.
+    /// `ActiveModel` avec un ensemble autorisé ordinaire non vide, pour que les Scenarios
+    /// atteignent leurs propres portes.
     fn active_avec(active: Option<serde_json::Value>, draft: Option<serde_json::Value>) -> ActiveModel {
-        active_avec_champs("work", Some("G_triage"), json!(["G_triage"]), active, draft)
+        active_avec_agents(json!(["G_triage"]), active, draft)
     }
 
-    /// Scenario « un type valide du catalogue est accepté, ses colonnes dérivées ». Nom `lymaille`
-    /// valide (`[a-z0-9-]+`, lymaille 0.1.0 `toolsets/context_type.rs::is_valid_name`), sans
-    /// préfixe `G_` — arbitrage (a) du 2026-11-04 : la garantie de catalogue est `AdminOnly` et la
-    /// table, pas le préfixe.
+    /// Scenario « un type valide du catalogue est accepté, ses colonnes dérivées » : nom `G_…`
+    /// de la grammaire `lymaille` 0.2.0, porte `classify` franchie.
     #[test]
     fn before_create_accepte_un_type_valide_du_catalogue_et_derive_les_colonnes() {
         let rendu = Entity::before_create(
             active_avec(
                 Some(type_json(
-                    "cluster",
+                    "G_cluster",
                     "1.0.0",
                     json!({"type": "object", "properties": {"cluster": {"type": "string"}}, "required": ["cluster"]}),
                 )),
@@ -325,10 +334,10 @@ mod tests {
             ),
             &principal(),
         )
-        .expect("un type `cluster` 1.0.0 du catalogue est accepté");
+        .expect("un type `G_cluster` 1.0.0 du catalogue est accepté");
         assert_eq!(
             rendu.name,
-            Set("cluster".to_string()),
+            Set("G_cluster".to_string()),
             "`name` est dérivé de `active`"
         );
         assert_eq!(
@@ -368,7 +377,10 @@ mod tests {
     fn before_create_refuse_un_schema_invalide_sans_le_citer() {
         let marque = "SCHEMA-A-NE-JAMAIS-CITER-7c21";
         let rendu = Entity::before_create(
-            active_avec(Some(type_json("cluster", "1.0.0", json!({"type": marque}))), None),
+            active_avec(
+                Some(type_json("G_cluster", "1.0.0", json!({"type": marque}))),
+                None,
+            ),
             &principal(),
         );
         match rendu {
@@ -386,15 +398,31 @@ mod tests {
         }
     }
 
-    /// Scenario (réalignement R1, DSD `DEC-28`) « un type sans agent par défaut est refusé » :
-    /// la nature et l'ensemble sont conformes, seul l'agent par défaut manque.
+    /// Scenario (alignement `lymaille` 0.2.0) « un type sans agent par défaut est admis » : le
+    /// JSON ne porte aucun `default_agent`, l'ensemble est non vide — l'ouverture exigera alors
+    /// un agent explicite (`../interactive/manager.sdd`). La nature est `session_kind` amont,
+    /// validée à la désérialisation : aucune porte « nature » ici.
     #[test]
-    fn before_create_refuse_un_type_sans_agent_par_defaut() {
+    fn before_create_accepte_un_type_sans_agent_par_defaut() {
         let rendu = Entity::before_create(
-            active_avec_champs(
-                "work",
+            active_avec_agents(
+                json!(["G_alpha"]),
+                Some(type_json("G_cluster", "1.0.0", json!({"type": "object"}))),
                 None,
-                json!(["G_triage"]),
+            ),
+            &principal(),
+        )
+        .expect("un type sans agent par défaut est admis");
+        assert_eq!(rendu.name, Set("G_cluster".to_string()));
+    }
+
+    /// Scenario (alignement `lymaille` 0.2.0) « un nom sans préfixe G_ est refusé » : la porte
+    /// `classify(name) == Catalog` est rétablie (arbitrage du 2026-11-05 — la grammaire amont
+    /// `[A-Za-z0-9_-]+` de `lymaille` 0.2.0 rend les noms `G_…` désérialisables).
+    #[test]
+    fn before_create_refuse_un_nom_sans_prefixe_g() {
+        let rendu = Entity::before_create(
+            active_avec(
                 Some(type_json("cluster", "1.0.0", json!({"type": "object"}))),
                 None,
             ),
@@ -406,49 +434,55 @@ mod tests {
                     erreur.code.is_none(),
                     "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
                 );
-                assert_eq!(erreur.message, "a context type needs a default agent");
-            }
-            Ok(_) => panic!("un type de contexte sans agent par défaut doit être refusé"),
-        }
-    }
-
-    /// Scenario (réalignement R1, DSD `DEC-28`) « un type sans agent par défaut est refusé »,
-    /// branche `ActiveValue::NotSet` du `Must` : « un `ActiveValue::NotSet` compte comme absent
-    /// et refuse ». Le `Must` est vérifié par construction directe de l'`ActiveModel` — la
-    /// colonne n'est pas posée `None`, elle n'est jamais posée du tout.
-    #[test]
-    fn before_create_refuse_un_agent_par_defaut_non_pose() {
-        let mut active = active_avec_champs(
-            "work",
-            Some("G_triage"),
-            json!(["G_triage"]),
-            Some(type_json("cluster", "1.0.0", json!({"type": "object"}))),
-            None,
-        );
-        active.default_agent = NotSet;
-        let rendu = Entity::before_create(active, &principal());
-        match rendu {
-            Err(erreur) => {
                 assert!(
-                    erreur.code.is_none(),
-                    "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
+                    erreur.message.contains("G_"),
+                    "le refus cite la règle du préfixe : {erreur:?}"
                 );
-                assert_eq!(erreur.message, "a context type needs a default agent");
             }
-            Ok(_) => panic!("un `default_agent` `NotSet` compte comme absent et refuse : {rendu:?}"),
+            Ok(_) => panic!("un type de contexte sans préfixe `G_` doit être refusé"),
         }
     }
 
-    /// Scenario (réalignement R1, DSD `DEC-28`) « un agent par défaut hors de l'ensemble autorisé
-    /// est refusé » : `G_autre` n'est pas dans `["G_triage"]`.
+    /// Scenario (alignement `lymaille` 0.2.0) « `allowed_agents` absent ou mal formé est refusé »
+    /// : `ActiveValue::NotSet` compte comme absent et refuse ; un objet, ou un tableau contenant
+    /// un nombre, ne sont pas un tableau de chaînes.
     #[test]
-    fn before_create_refuse_un_agent_par_defaut_hors_de_l_ensemble_autorise() {
+    fn before_create_refuse_allowed_agents_absent_ou_mal_forme() {
+        let valide = type_json("G_cluster", "1.0.0", json!({"type": "object"}));
+        let mut mal_formes = vec![
+            (NotSet, "absent (`NotSet`)"),
+            (Set(json!({"0": "G_triage"})), "objet"),
+            (Set(json!(["G_triage", 1])), "tableau contenant un nombre"),
+        ];
+        for (valeur, cause) in mal_formes.drain(..) {
+            let mut active = active_avec(Some(valide.clone()), None);
+            active.allowed_agents = valeur;
+            let rendu = Entity::before_create(active, &principal());
+            match rendu {
+                Err(erreur) => {
+                    assert!(
+                        erreur.code.is_none(),
+                        "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
+                    );
+                    assert!(
+                        erreur.message.contains("allowed agents"),
+                        "le refus motive l'ensemble mal formé ({cause}) : {erreur:?}"
+                    );
+                }
+                Ok(_) => panic!("un `allowed_agents` {cause} doit être refusé"),
+            }
+        }
+    }
+
+    /// Scenario (alignement `lymaille` 0.2.0) « un agent par défaut hors de l'ensemble autorisé
+    /// est refusé », lu **dans le JSON** : la colonne `default_agent` n'existe plus, c'est le
+    /// `ContextType` amont qui porte l'agent, comparé par chaînes exactes à `allowed_agents`.
+    #[test]
+    fn before_create_refuse_un_agent_par_defaut_hors_ensemble_lu_dans_le_json() {
         let rendu = Entity::before_create(
-            active_avec_champs(
-                "work",
-                Some("G_autre"),
-                json!(["G_triage"]),
-                Some(type_json("cluster", "1.0.0", json!({"type": "object"}))),
+            active_avec_agents(
+                json!(["G_beta"]),
+                Some(type_json_avec_defaut("G_cluster", "G_alpha")),
                 None,
             ),
             &principal(),
@@ -460,72 +494,46 @@ mod tests {
                     "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
                 );
                 assert_eq!(
-                    erreur.message,
-                    "context type default agent must be in the allowed agents"
+                    erreur.message, "context type default agent must be in the allowed agents",
+                    "l'agent par défaut du JSON doit être membre de l'ensemble autorisé"
                 );
             }
-            Ok(_) => panic!("un agent par défaut hors de l'ensemble autorisé doit être refusé"),
+            Ok(_) => panic!("un `default_agent` du JSON hors de l'ensemble autorisé doit être refusé"),
         }
     }
 
-    /// Scenario (réalignement R1, DSD `DEC-28`) « une nature inconnue est refusée » : le type
-    /// n'ouvre que du `work` ou du `config` — `sub` et toute autre valeur sont refusés. Les cinq
-    /// cas du `Must` : `sub`, `travail`, `WORK`, vide, et `ActiveValue::NotSet` — un `NotSet`
-    /// compte comme absent et refuse.
+    /// Scenario (alignement `lymaille` 0.2.0) « un agent par défaut membre de l'ensemble autorisé
+    /// est accepté », lu dans le JSON.
     #[test]
-    fn before_create_refuse_une_nature_inconnue() {
-        let natures = [
-            Set("sub".to_string()),
-            Set("travail".to_string()),
-            Set("WORK".to_string()),
-            Set(String::new()),
-            NotSet,
-        ];
-        for nature in &natures {
-            let mut active = active_avec_champs(
-                "work",
-                Some("G_triage"),
-                json!(["G_triage"]),
-                Some(type_json("cluster", "1.0.0", json!({"type": "object"}))),
+    fn before_create_accepte_un_agent_par_defaut_membre_de_l_ensemble() {
+        Entity::before_create(
+            active_avec_agents(
+                json!(["G_alpha", "G_beta"]),
+                Some(type_json_avec_defaut("G_cluster", "G_alpha")),
                 None,
-            );
-            active.kind = nature.clone();
-            let rendu = Entity::before_create(active, &principal());
-            match rendu {
-                Err(erreur) => {
-                    assert!(
-                        erreur.code.is_none(),
-                        "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
-                    );
-                    assert_eq!(
-                        erreur.message, "context type kind must be work or config",
-                        "la nature {nature:?} est refusée pour la bonne raison"
-                    );
-                }
-                Ok(_) => panic!("une nature {nature:?} inconnue doit être refusée"),
-            }
-        }
+            ),
+            &principal(),
+        )
+        .expect("un agent par défaut membre de l'ensemble est accepté");
     }
 
-    /// Scenario « le nom ne change pas à la mise à jour » : une ligne `cluster`, un
-    /// `ActiveModel` dont le JSON porte `cluster2` — `before_update` refuse, le message cite la
+    /// Scenario « le nom ne change pas à la mise à jour » : une ligne `G_cluster`, un
+    /// `ActiveModel` dont le JSON porte `G_cluster2` — `before_update` refuse, le message cite la
     /// règle ; aucun code `MRD-*` sur un `HookError`.
     #[test]
     fn before_update_refuse_un_changement_de_nom() {
         let existing = Model {
             id: 1,
-            name: "cluster".to_string(),
+            name: "G_cluster".to_string(),
             version: "1.0.0".to_string(),
-            kind: "work".to_string(),
-            default_agent: Some("G_triage".to_string()),
             allowed_agents: json!(["G_triage"]),
-            active: Some(type_json("cluster", "1.0.0", json!({"type": "object"}))),
+            active: Some(type_json("G_cluster", "1.0.0", json!({"type": "object"}))),
             draft: None,
             created_at: chrono::Utc::now(),
         };
         let rendu = Entity::before_update(
             active_avec(
-                Some(type_json("cluster2", "1.1.0", json!({"type": "object"}))),
+                Some(type_json("G_cluster2", "1.1.0", json!({"type": "object"}))),
                 None,
             ),
             &existing,

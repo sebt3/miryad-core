@@ -3,7 +3,7 @@
 //!
 //! Table `miryad_lymaille_catalog_contexts` : les contextes de toolset partagés par toute
 //! l'instance (DSD `DEC-20`, `DEC-28` ; le niveau `Shared` porte le nom amont
-//! `ContextLevel::Project` dans `lymaille` 0.1.0 — miryad-core n'a pas d'entité projet),
+//! `ContextLevel::Shared` depuis `lymaille` 0.2.0 — miryad-core n'a pas d'entité projet),
 //! administrés par l'admin par le CRUD REST et MCP générique. La colonne `context` (JSON, un
 //! `lymaille::ToolsetContext` complet) est la source de vérité ; `name` en est une copie dérivée
 //! par les hooks, et l'identifiant doit porter le préfixe `G_` du catalogue (DSD `DEC-9`,
@@ -58,9 +58,10 @@ pub enum Relation {}
 impl ActiveModelBehavior for ActiveModel {}
 
 impl Entity {
-    /// Jeton JSON (`snake_case`, lymaille 0.1.0) du niveau `Shared` — le nom amont de ce niveau
-    /// est `ContextLevel::Project` (DSD `DEC-28`, réalignement R3 de `./catalog_context.sdd`).
-    const NIVEAU_PARTAGE: &'static str = "project";
+    /// Jeton JSON (`snake_case`, lymaille 0.2.0) du niveau `Shared` — le nom amont de ce niveau
+    /// est `ContextLevel::Shared` depuis `lymaille` 0.2.0 ; l'ancien jeton `project` reste lu par
+    /// alias amont, jamais écrit (DSD `DEC-28`, réalignement R3 de `./catalog_context.sdd`).
+    const NIVEAU_PARTAGE: &'static str = "shared";
 
     /// Nom et niveau lus dans la forme sérialisée : `ToolsetContext` ne rend ni `name` ni
     /// `level` par un accesseur public (lymaille 0.1.0, `name` en
@@ -101,7 +102,7 @@ impl Entity {
     /// Porte commune de `before_create` (`existing` absent) et `before_update`, dans l'ordre du
     /// `Must` de `./catalog_context.sdd`, interrompue au premier échec : `context` objet JSON
     /// présent, désérialisable en `lymaille::ToolsetContext` (le constructeur refuse un secret,
-    /// sans jamais le citer), `level` du contexte égal à `Shared` (jeton amont `project`),
+    /// sans jamais le citer), `level` du contexte égal à `Shared` (jeton JSON `shared`),
     /// `name` du catalogue (`G_` exact via `classify`, DSD `DEC-9` — tout autre rendu, y
     /// compris une erreur de `classify`, est le même refus), et sur une mise à jour `name` ne
     /// change pas. `name` est toujours réécrit depuis le contexte ; `created_at` est posé à la
@@ -118,7 +119,7 @@ impl Entity {
         };
         Self::charger(&brute)?;
         if Self::champ_texte(&brute, "level")? != Self::NIVEAU_PARTAGE {
-            return Err(HookError::new("catalog contexts have level project"));
+            return Err(HookError::new("catalog contexts have level shared"));
         }
         let name = Self::champ_texte(&brute, "name")?;
         if !matches!(identity::classify(&name), Ok(identity::IdKind::Catalog)) {
@@ -272,25 +273,25 @@ mod tests {
         Model {
             id: 1,
             name: name.to_string(),
-            context: contexte(name, ContextLevel::Project, json!({"namespace": "prod"})),
+            context: contexte(name, ContextLevel::Shared, json!({"namespace": "prod"})),
             context_type: None,
             created_at: Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap(),
         }
     }
 
-    /// Scenario « un contexte Project valide est accepté » : `G_prod` de niveau `project` avec
+    /// Scenario « un contexte Shared valide est accepté » : `G_prod` de niveau `shared` avec
     /// un paramètre `namespace` passe, et `name` est réécrit depuis le contexte.
     #[test]
-    fn before_create_accepte_un_contexte_project_valide_et_derive_le_nom() {
+    fn before_create_accepte_un_contexte_shared_valide_et_derive_le_nom() {
         let rendu = Entity::before_create(
             active_avec(contexte(
                 "G_prod",
-                ContextLevel::Project,
+                ContextLevel::Shared,
                 json!({"namespace": "prod"}),
             )),
             &principal(),
         )
-        .expect("un contexte `G_prod` de niveau project est accepté");
+        .expect("un contexte `G_prod` de niveau shared est accepté");
         assert_eq!(
             rendu.name,
             Set("G_prod".to_string()),
@@ -309,7 +310,7 @@ mod tests {
         let rendu = Entity::before_create(
             active_avec(contexte(
                 "G_prod",
-                ContextLevel::Project,
+                ContextLevel::Shared,
                 json!({"api_key": "sk-abcdef"}),
             )),
             &principal(),
@@ -333,7 +334,7 @@ mod tests {
         }
     }
 
-    /// Scenario « un niveau user est refusé au catalogue » : `level` doit être `project`.
+    /// Scenario « un niveau user est refusé au catalogue » : `level` doit être `shared`.
     #[test]
     fn before_create_refuse_un_niveau_user() {
         let rendu = Entity::before_create(
@@ -343,7 +344,7 @@ mod tests {
         match rendu {
             Err(erreur) => {
                 assert!(erreur.code.is_none(), "aucun code `MRD-*` sur un `HookError`");
-                assert_eq!(erreur.message, "catalog contexts have level project");
+                assert_eq!(erreur.message, "catalog contexts have level shared");
             }
             Ok(_) => panic!("un contexte de niveau user n'a rien au catalogue"),
         }
@@ -370,7 +371,7 @@ mod tests {
     #[test]
     fn before_create_refuse_un_nom_prive() {
         let rendu = Entity::before_create(
-            active_avec(contexte("prod", ContextLevel::Project, json!({}))),
+            active_avec(contexte("prod", ContextLevel::Shared, json!({}))),
             &principal(),
         );
         match rendu {
@@ -412,7 +413,7 @@ mod tests {
         for reference in ["", "G_cluster", "g_cluster", "h_cluster", "cluster-x"] {
             let active = ActiveModel {
                 context_type: Set(Some(reference.to_string())),
-                ..active_avec(contexte("G_prod", ContextLevel::Project, json!({})))
+                ..active_avec(contexte("G_prod", ContextLevel::Shared, json!({})))
             };
             match Entity::before_create(active, &principal()) {
                 Err(erreur) => {
@@ -435,7 +436,7 @@ mod tests {
     #[test]
     fn before_create_accepte_un_context_type_de_forme_valide() {
         let sans = Entity::before_create(
-            active_avec(contexte("G_prod", ContextLevel::Project, json!({}))),
+            active_avec(contexte("G_prod", ContextLevel::Shared, json!({}))),
             &principal(),
         )
         .expect("un contexte sans type est accepté par le hook");
@@ -447,7 +448,7 @@ mod tests {
         let avec = Entity::before_create(
             ActiveModel {
                 context_type: Set(Some("cluster".to_string())),
-                ..active_avec(contexte("G_prod", ContextLevel::Project, json!({})))
+                ..active_avec(contexte("G_prod", ContextLevel::Shared, json!({})))
             },
             &principal(),
         )
@@ -465,7 +466,7 @@ mod tests {
         let rendu = Entity::before_update(
             active_avec(contexte(
                 "G_autre",
-                ContextLevel::Project,
+                ContextLevel::Shared,
                 json!({"namespace": "dev"}),
             )),
             &modele("G_prod"),
@@ -488,7 +489,7 @@ mod tests {
         let rendu = Entity::before_update(
             active_avec(contexte(
                 "G_prod",
-                ContextLevel::Project,
+                ContextLevel::Shared,
                 json!({"namespace": "prod"}),
             )),
             &existing,
