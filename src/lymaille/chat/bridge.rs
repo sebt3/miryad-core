@@ -717,6 +717,7 @@ fn code_de(erreur: &LymailleError) -> &'static str {
         LymailleError::Store(_) => "MRD-LYMAILLE-009",
         LymailleError::NotFound(_) => "MRD-LYMAILLE-010",
         LymailleError::Conflict(_) => "MRD-LYMAILLE-011",
+        LymailleError::Serialization(_) => "MRD-LYMAILLE-012",
     }
 }
 

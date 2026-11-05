@@ -51,11 +51,25 @@ Exposes:
   `LymailleError`, `retryable`.
 
 Tasks:
-  [ ] Variante `Serialization(String)` → `MRD-LYMAILLE-012` (arbitrage de Sébastien du 2026-11-05) : panne de sérialisation sur le canal SSE, texte
+  [x] Variante `Serialization(String)` → `MRD-LYMAILLE-012` (arbitrage de Sébastien du 2026-11-05) : panne de sérialisation sur le canal SSE, texte
     expurgé, `retryable()` `false`, Display/`Debug` même forme que les autres variantes. Contexte : le validator checkpoint 7 a constaté que
     `http/sse.rs` émettait le code `-009`, déjà porté par `Store` — violation de la règle transverse « code unique ». Tests d'abord (« les codes
     sont stables » étendu `-001` à `-012`, retryabilité), puis ./error.rs ; ensuite corriger `sse.rs` (constante `SERIALIZATION_ERROR_BODY`) dans
     le périmètre de sa tâche R11 restante.
+    Validé 2026-11-05 (synthèse validator PASS : batterie complète verte — 15 combinaisons de tests dont `--all-features`, 15 de clippy `-D warnings`,
+    `cargo fmt --check`, six contrôles `cargo tree`, `specdd lint` ; codes `-001` à `-012` tous uniques, le doublon `-009` de `./http/sse.rs` levé ;
+    zéro warning sur les trois fichiers touchés ; Display et `Debug` verrouillés par assert exact).
+  [?] Wording du Display fixé par le code (`MRD-LYMAILLE-012: serialization error: {0}`) alors qu'aucun `Must` ne le nomme — « même forme que les
+      autres variantes » (`store error`, `inference error`). Choix provisoire : le calque du motif. À acter ou amender au `Must` avec l'extension des
+      deux `Scenario` de cette spec à `-012` (ils disent encore « `-001` à `-009` » et « `-011` ») — amendement hors cycle, domaine du développeur
+      principal.
+  [?] `./http/sse.rs` rend la constante de corps nue et ne construit jamais @LymailleError::Serialization : la variante n'a aucun émetteur
+      intra-crate. Choix provisoire : le périmètre du `Tasks` (la constante seulement), verrouillée par `panne_de_serialisation_rend_le_code_012`.
+      Alternative : faire passer `serialization_error_event` par la variante, ce qui déborde sur la tâche R11 restante de `./http/sse.sdd`.
+  [?] Ratification d'une ligne hors `Owns` : `./chat/bridge.rs` (`code_de`, branche `Serialization(_) → "MRD-LYMAILLE-012"`) — match exhaustif sans
+      catch-all de l'enum `#[non_exhaustive]`, cassure de compilation `E0004` sous `lymaille,matrix` et `--all-features` sans elle. Choix provisoire :
+      la ligne, aucune autre, `match` gardé exhaustif (il forcera la revue sur toute variante future), cohérent avec le `Must` « tout échec interne
+      répond par `format_error(code)` » de `./chat/bridge.sdd`.
   [x] Amendement lot 2 (DSD `DEC-24`) : variantes `NotFound` et `Conflict`, tests des codes `-010` et `-011` d'abord, puis ./error.rs. Validé 2026-11-03
     (validator PASS : codes uniques et stables, retryabilité `false`, Display/`Debug` verrouillés par assert exact ; cibles vertes).
   [x] Tests d'abord (codes, retryabilité), puis ./error.rs. Validé 2026-11-02 (validator PASS, batterie ciblée).

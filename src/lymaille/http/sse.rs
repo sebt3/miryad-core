@@ -28,9 +28,10 @@ const KEEPALIVE_PERIOD: Duration = Duration::from_secs(15);
 
 /// Corps de l'événement `error` rendu quand la sérialisation d'un `SessionEvent` échoue
 /// (`Must` de `./sse.sdd`) — un code `MRD-*` nu, aucun contenu de session. Le chemin est
-/// quasi-inatteignable (`SessionEvent` est un type serde ordinaire) ; `MRD-LYMAILLE-009` est le
-/// code de panne retenu faute de variante de sérialisation dans `../error.sdd` (signalé au rapport).
-const SERIALIZATION_ERROR_BODY: &str = r#"{"code":"MRD-LYMAILLE-009"}"#;
+/// quasi-inatteignable (`SessionEvent` est un type serde ordinaire) ; `MRD-LYMAILLE-012` est le
+/// code de la variante `Serialization` de `../error.sdd` (arbitrage du 2026-11-05 ; `-009`
+/// était un doublon de `Store`).
+const SERIALIZATION_ERROR_BODY: &str = r#"{"code":"MRD-LYMAILLE-012"}"#;
 
 /// Traduction de la rupture d'abonnement en erreur REST (même table que `to_rest` de
 /// `./routes.rs`, que `./sse.sdd` ne cite pas en dépendance — duplication assumée de dix lignes).
@@ -770,5 +771,18 @@ mod tests {
         })
         .await;
         assert!(end.is_ok(), "le flux s'est arrete de lui-meme");
+    }
+
+    /// Verrou du code rendu sur panne de sérialisation (`Must` de `./sse.sdd` : `event: error`
+    /// `data: {"code":"MRD-LYMAILLE-…"}`) : le code est `MRD-LYMAILLE-012`, variante
+    /// `Serialization` de `../error.sdd` (arbitrage du 2026-11-05) — plus `-009`, doublon de
+    /// `Store`. Le corps ne porte qu'un code nu, aucun contenu de session.
+    #[test]
+    fn panne_de_serialisation_rend_le_code_012() {
+        assert_eq!(
+            super::SERIALIZATION_ERROR_BODY,
+            r#"{"code":"MRD-LYMAILLE-012"}"#,
+            "le corps rendu par `serialization_error_event` porte le code unique -012"
+        );
     }
 }

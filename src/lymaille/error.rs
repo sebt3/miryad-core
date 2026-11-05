@@ -49,6 +49,10 @@ pub enum LymailleError {
     /// `{0}` est expurgé.
     #[error("MRD-LYMAILLE-011: conflict: {0}")]
     Conflict(String),
+    /// Panne de sérialisation sur le canal SSE (`../http/sse.rs`, tâche du 2026-11-05) ; `{0}`
+    /// est un texte expurgé, sans contenu de session. Code propre, distinct de `-009` (`Store`).
+    #[error("MRD-LYMAILLE-012: serialization error: {0}")]
+    Serialization(String),
 }
 
 impl LymailleError {
@@ -68,7 +72,8 @@ impl LymailleError {
 mod tests {
     use super::*;
 
-    // Scenario: les codes sont stables — amendement lot 2 : couvre désormais `-001` à `-011`.
+    // Scenario: les codes sont stables — tâche `Serialization` (2026-11-05) : couvre désormais
+    // `-001` à `-012`.
     #[test]
     fn codes_are_stable() {
         let cases = [
@@ -89,6 +94,7 @@ mod tests {
             (LymailleError::Store("x".into()), "MRD-LYMAILLE-009"),
             (LymailleError::NotFound("x".into()), "MRD-LYMAILLE-010"),
             (LymailleError::Conflict("x".into()), "MRD-LYMAILLE-011"),
+            (LymailleError::Serialization("x".into()), "MRD-LYMAILLE-012"),
         ];
         for (err, code) in cases {
             let msg = err.to_string();
@@ -121,6 +127,24 @@ mod tests {
         );
     }
 
+    // Tâche `Serialization` (arbitrage du 2026-11-05) : message et `Debug` même forme que les
+    // autres variantes (code, texte contractuel, texte expurgé fourni par l'appelant, rien de
+    // plus), et panne de sérialisation non rejouable.
+    #[test]
+    fn serialization_message_debug_et_retryabilite() {
+        let err = LymailleError::Serialization("event payload rejected by encoder".into());
+        assert_eq!(
+            err.to_string(),
+            "MRD-LYMAILLE-012: serialization error: event payload rejected by encoder"
+        );
+        let debug = format!("{err:?}");
+        assert_eq!(
+            debug, r#"Serialization("event payload rejected by encoder")"#,
+            "le Debug ne porte que ce qu'a fourni l'appelant"
+        );
+        assert!(!err.retryable(), "une panne de sérialisation ne se rejoue pas");
+    }
+
     // Scenario: la retryabilité suit la variante
     #[test]
     fn retryable_follows_variant() {
@@ -146,6 +170,8 @@ mod tests {
             // Amendement lot 2 (DSD `DEC-24`) : NotFound et Conflict ne se rejouent pas.
             (LymailleError::NotFound("x".into()), false),
             (LymailleError::Conflict("x".into()), false),
+            // Tâche `Serialization` (2026-11-05) : une panne de sérialisation ne se rejoue pas.
+            (LymailleError::Serialization("x".into()), false),
         ];
         for (err, expected) in cases {
             assert_eq!(err.retryable(), expected, "variante : {err}");
