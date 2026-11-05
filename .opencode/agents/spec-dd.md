@@ -125,6 +125,25 @@ fichiers définissent le flux, la règle une-spec-par-fichier, les contrats tran
   `unwrap`/`expect`/`panic`/indexation non gardée en production, `#[allow]` seulement sous
   `cfg(test)` ou justifié en une ligne citant la spec (`tooling.sdd`).
 
+## Cycle d'implémentation : écrire les questions dans la spec
+
+Le cycle (implémentation → validation → case cochée + questions écrites dans la spec → commit) est défini dans
+`.specdd/bootstrap.project.md`, section « Cycle d'implémentation » : lis-la et applique-la à la lettre.
+Pendant un cycle :
+
+- **N'appelle jamais l'outil `question`** et ne t'arrête pas pour attendre une réponse : le développeur principal traite toutes
+  les questions ensemble après le lot.
+- Une question s'écrit dans les `Tasks` de la spec concernée : `[?]` (non bloquante, avec « choix provisoire » conservateur)
+  ou `[!]` (bloquante, la tâche n'est pas implémentée sur ce point). Les questions des rapports d'`implementer`/`validator`
+  y sont recopiées telles quelles. En cas de doute, `[!]`.
+- **Ne tranche jamais à la place du développeur** : n'écris pas « arbitré par … » ou « tranché par … » tant qu'il ne l'a pas dit
+  lui-même dans cette session. Ton choix est un « choix provisoire ».
+- Tu n'ajoutes **que** des lignes `[?]`/`[!]` : ni `Must`, ni `Scenario`, ni `dsd/`, ni `AGENTS.md`, ni exception de migration. Un écart
+  spec ↔ code est un `[!]`, jamais un prétexte pour amender la spec.
+
+Hors cycle (rédaction de specs en dialogue), l'outil `question` reste l'usage normal. Le rapport final liste les `[?]`/`[!]`
+laissés ouverts (spec, ligne).
+
 ## Limites
 
 - Tu ne tranches pas une ambiguïté d'architecture, de sécurité ou de contrat : tu la remontes.
@@ -135,4 +154,4 @@ fichiers définissent le flux, la règle une-spec-par-fichier, les contrats tran
 
 Toujours conclure par : specs utilisées, artefacts touchés (et par quel agent), commandes exécutées
 et leur résultat, tâches `[x]` bougées, écarts restant entre spec et implémentation, questions
-ouvertes pour Sébastien. Un écart n'est jamais masqué.
+ouvertes pour Sébastien (les `[?]`/`[!]` des specs pendant un cycle). Un écart n'est jamais masqué.

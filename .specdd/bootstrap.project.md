@@ -20,6 +20,34 @@ Sébastien, pas d'implémentation avant les tests dérivés de la spec.
 5. **Clôture** — les `Tasks` passent à `[x]` seulement après synthèse verte ; spec, code et
    tests avancent ensemble, sans `[x]` décoratif.
 
+## Cycle d'implémentation
+
+Un cycle traite **une tâche** (une case `Tasks` d'une spec) et se termine par **un commit**. Il s'enchaîne sans
+interaction avec le développeur principal :
+
+```
+implémentation (tests rouges → code vert) → validation → case cochée + questions écrites dans la spec → commit
+```
+
+1. **Implémentation** — `implementer` : tests d'abord depuis les `Scenario`, puis le minimum de code (flux ci-dessus).
+2. **Validation** — `validator` : spec ↔ code ↔ tests et batterie complète. Un FAIL renvoie à l'étape 1 (au plus deux reprises),
+   puis la tâche reste `[ ]` et son écart est écrit comme `[!]` (voir 3).
+3. **Clôture dans la spec** — sur synthèse PASS : la case passe à `[x]` avec une ligne « Validé AAAA-MM-JJ (synthèse) ». Les questions
+   rencontrées pendant le cycle sont écrites **dans les `Tasks` de la spec concernée**, sous la case, et nulle part ailleurs :
+   - `[?]` **question** : un choix qui n'altère pas le contrat observable (nommage interne, wording sans contrat, ordre de tests). Le cycle
+     poursuit avec le choix le plus conservateur, écrit dans la ligne (« choix provisoire : … »), avec les options et une recommandation.
+   - `[!]` **question bloquante** : elle change un `Must`, un `Scenario`, un code d'erreur, la sécurité, un schéma ou une décision
+     d'architecture, ou bien un écart spec ↔ code ne se résout que par une décision. La tâche concernée n'est **pas** implémentée sur ce
+     point (case `[ ]`) ; le cycle passe à une tâche indépendante ou s'arrête. En cas de doute sur la nature, c'est `[!]`.
+4. **Commit** — un commit par case cochée (spec, code et tests ensemble). Le message cite les `[?]`/`[!]` laissés ouverts. Pas de `git push`.
+
+Le développeur principal traite ensuite **toutes** les `[?]`/`[!]` d'un lot ensemble (`grep -rn "\[[?!]\]" src/`). Une réponse est recopiée
+dans la spec avec la mention de qui l'a donnée ; tant qu'elle n'est pas donnée, rien ne s'écrit « arbitré par … ».
+
+Pendant un cycle, on **n'ajoute que** des lignes `[?]`/`[!]` dans les `Tasks` : ni `Must`, ni `Scenario`, ni `dsd/`, ni `AGENTS.md`, ni
+exception de migration ne sont modifiés (domaine du développeur principal). Une spec ne s'adapte pas au code pour faire passer une tâche :
+l'écart est un `[!]`.
+
 ## Règle : une spec par fichier source
 
 - Un fichier de `src/` = une spec `.sdd` du même basename dans le même répertoire
