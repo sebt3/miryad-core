@@ -50,9 +50,22 @@ Exposes:
   `SessionEvent`, `SessionEventKind`, `SessionOutcome`, `impl From<&Event> for SessionEvent`, `export_typescript`
 
 Tasks:
-  [ ] Alignement `lymaille` 0.2.0 (2026-11-05) : variante `EmptyResponse { will_retry }` (miroir de `EventKind::EmptyResponse`, sinon elle tomberait dans `Other { name }` et le client ne verrait pas le nouvel essai) ; la `From<&Event>` reste infaillible ; test d'abord (conversion + sérialisation `type` = `empty_response`), puis ./event.rs. Avant la tâche « historique complet ».
-  [ ] Amendement historique complet (DSD `DEC-30`, arbitrage du 2026-11-05) : variantes `UserMessage` et `ToolCallSummary` de `SessionEventKind` (`#[ts(type = "number")]` sur `turn`), tests d'abord
+  [x] Alignement `lymaille` 0.2.0 (2026-11-05) : variante `EmptyResponse { will_retry }` (miroir de `EventKind::EmptyResponse`, sinon elle tomberait dans `Other { name }` et le client ne verrait pas le nouvel essai) ; la `From<&Event>` reste infaillible ; test d'abord (conversion + sérialisation `type` = `empty_response`), puis ./event.rs. Avant la tâche « historique complet ».
+    Livré et validé dans le cycle « Alignement `lymaille` 0.2.0 » de `../mod.sdd` (2026-11-05, commit fce0732, validator PASS sur les 15+15
+    combinaisons : variante typée, test `une_reponse_vide_est_miroitee_en_empty_response`, conversion infaillible). Case closee ici pour ne pas
+    laisser une case ouverte sur un contrat livre ; a rouvrir si le developpeur principal prefere que chaque case ait son propre commit.
+  [x] Amendement historique complet (DSD `DEC-30`, arbitrage du 2026-11-05) : variantes `UserMessage` et `ToolCallSummary` de `SessionEventKind` (`#[ts(type = "number")]` sur `turn`), tests d'abord
     (sérialisation `type` = `user_message` / `tool_call_summary`, aller-retour serde, absence d'arguments), puis ./event.rs. Avant la tâche « historique complet » de ../http/routes.sdd.
+    Validé 2026-11-05 (synthèse validator PASS : 15 combinaisons de tests et 15 de clippy `-D warnings`, plus les croisements `lymaille,matrix`
+    et `--all-features`, `cargo fmt --check`, six contrôles `cargo tree`, `specdd lint` ; `kind_of` et @From<&Event> intacts — les deux variantes
+    ne sont produites par aucune conversion amont ; jeu de clés JSON exact verrouillé, aucun champ d'arguments ; `user_message` et
+    `tool_call_summary` sortent dans `SessionEventKind.ts` avec `turn` typé `number`. L'écart spec ↔ code consigné au cycle précédent est soldé.
+  [?] @UserMessage et @ToolCallSummary sont propres à l'historique et @lymaille 0.2.0 n'horodate pas ses messages : leur `at` vaut l'instant de
+    création de la session, non significatif. La limite est écrite dans `../http/routes.sdd` (`DEC-30`) et non ici. Choix provisoire : rien
+    d'ajouter au `Must` de cette spec (c'est la route qui porte la sémantique de `at`). Options : laisser ainsi (recommandé) ou une ligne de `Must`.
+  [?] Deux `[?]` de corps de spec (lignes 16 et 20 : « API amont à relire en source », « conversion RFC 3339 du @Timestamp à confirmer ») peuvent
+    être clos : @timestamp_rfc3339 convertit bien en RFC 3339 UTC, vérifié par le test `un_evenement_de_tour_est_type`. Fermer ces mentions
+    demande de retoucher le `Must` et le `References` : hors cycle, domaine du développeur principal.
   [x] Dépendance `ts-rs` (optionnelle, feature `lymaille`) : amendement de `/Cargo.toml` et `/tooling.sdd`, déjà prévu dans `../mod.sdd` (R7), à faire avant cette tâche.
   [x] Tests d'abord (conversion de chaque variante, `Other`, sérialisation `type`, `export_typescript` dans un répertoire temporaire), puis ./event.rs. Après approbation de cette spec et de R7. Validé 2026-11-05 (validator PASS checkpoint 5 — 7 Scenario verrouillés).
 

@@ -155,6 +155,30 @@ pub enum SessionEventKind {
         /// La réponse coupée porte des appels d'outils.
         has_tool_calls: bool,
     },
+    /// Le message d'un utilisateur — **propre à l'historique** (DSD `DEC-30`, arbitrage du
+    /// 2026-11-05) : seule la route d'historique (../http/routes.sdd) l'émet, aucune conversion
+    /// `From<&Event>` ne la produit ; `text` est déjà expurgé par l'appelant.
+    UserMessage {
+        /// Rang du tour auquel appartient le message.
+        #[ts(type = "number")]
+        turn: u64,
+        /// Texte du message, déjà expurgé par l'appelant.
+        text: String,
+    },
+    /// Résumé d'un appel d'outil — **propre à l'historique** (DSD `DEC-30`, arbitrage du
+    /// 2026-11-05) : seule la route d'historique (../http/routes.sdd) l'émet, aucune conversion
+    /// `From<&Event>` ne la produit ; **sans arguments** ni résultat.
+    ToolCallSummary {
+        /// Rang du tour auquel appartient l'appel.
+        #[ts(type = "number")]
+        turn: u64,
+        /// Nom de l'outil appelé.
+        tool: String,
+        /// Identifiant de l'appel.
+        call_id: String,
+        /// L'appel a un résultat, sans que son contenu soit porté ici.
+        has_result: bool,
+    },
     /// Une réponse vide a été écartée (`EventKind::EmptyResponse`, `lymaille` 0.2.0) :
     /// `will_retry` dit si le modèle est relancé, aucun contenu.
     EmptyResponse {
@@ -509,6 +533,150 @@ mod tests {
         }
     }
 
+    /// Scenario « un message utilisateur et un appel d'outil se sérialisent sous des noms
+    /// distincts » (amendement historique complet, DSD `DEC-30`) : `UserMessage` et
+    /// `ToolCallSummary` portent `type` = `user_message` / `tool_call_summary`, `turn` est un
+    /// nombre, aucun champ d'arguments n'existe, et l'aller-retour serde est identique.
+    #[test]
+    fn un_message_utilisateur_et_un_appel_d_outil_se_serialisent_sous_des_noms_distincts() {
+        let user = SessionEvent {
+            session: "s1".to_owned(),
+            at: "2026-11-05T00:00:00.000Z".to_owned(),
+            kind: SessionEventKind::UserMessage {
+                turn: 1,
+                text: "bonjour".to_owned(),
+            },
+        };
+        let value = serde_json::to_value(&user).expect("un miroir sérialise");
+        assert_eq!(
+            value["kind"],
+            json!({"type": "user_message", "turn": 1, "text": "bonjour"})
+        );
+        assert!(
+            value["kind"]["turn"].is_number(),
+            "`turn` est un nombre JSON : {value}"
+        );
+
+        let call = SessionEvent {
+            session: "s1".to_owned(),
+            at: "2026-11-05T00:00:00.000Z".to_owned(),
+            kind: SessionEventKind::ToolCallSummary {
+                turn: 1,
+                tool: "rhai_pad".to_owned(),
+                call_id: "c1".to_owned(),
+                has_result: true,
+            },
+        };
+        let value = serde_json::to_value(&call).expect("un miroir sérialise");
+        assert_eq!(
+            value["kind"],
+            json!({"type": "tool_call_summary", "turn": 1, "tool": "rhai_pad", "call_id": "c1", "has_result": true})
+        );
+        assert!(
+            value["kind"]["turn"].is_number(),
+            "`turn` est un nombre JSON : {value}"
+        );
+        let kind = value["kind"].as_object().expect("kind est un objet");
+        let mut keys: Vec<&str> = kind.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["call_id", "has_result", "tool", "turn", "type"],
+            "`ToolCallSummary` ne porte aucun champ d'arguments : {value}"
+        );
+
+        for mirrored in [user, call] {
+            let text = serde_json::to_string(&mirrored).expect("un miroir sérialise");
+            let back: SessionEvent = serde_json::from_str(&text).expect("un miroir sérialisé se désérialise");
+            assert_eq!(back, mirrored, "l'aller-retour serde est identique");
+        }
+    }
+
+    /// Amendement historique complet (DSD `DEC-30`) : `UserMessage` et `ToolCallSummary` sont
+    /// **propres à l'historique** — seule la route d'historique les émet. Aucun événement amont
+    /// connu, reflété ou non, ne produit ces variantes par `From<&Event>` : `kind_of` ne porte
+    /// aucun bras nouveau vers elles.
+    #[test]
+    fn from_event_ne_produit_jamais_les_variantes_propres_a_l_historique() {
+        let record = ScriptRecord::new(
+            &Redactor::default(),
+            2000,
+            ScriptInput::new("agent-a", "let x = 1;", "1", Duration::from_millis(1)),
+        );
+        let mcp = McpRecord::new(
+            &Redactor::default(),
+            McpInput::new("monitoring", "query", &json!({}), "ok", Duration::from_millis(1)),
+        );
+        let upstream_kinds = vec![
+            EventKind::TurnStarted { turn: TurnId::new(1) },
+            EventKind::TextDelta {
+                turn: TurnId::new(1),
+                text: "bon".to_owned(),
+            },
+            EventKind::TurnEnded {
+                turn: TurnId::new(1),
+                outcome: Outcome::Valid,
+                response: "fin".to_owned(),
+            },
+            EventKind::RunEnded {
+                run: RunId::new("run-7").expect("un texte non vide fait un identifiant de run"),
+                outcome: Outcome::Valid,
+            },
+            EventKind::TokenUsage {
+                prompt: 1,
+                completion: 1,
+            },
+            EventKind::TodoChanged,
+            EventKind::TitleChanged {
+                title: "t".to_owned(),
+            },
+            EventKind::ReviewRequested {
+                reason: "r".to_owned(),
+            },
+            EventKind::Script(record),
+            EventKind::McpCall(mcp),
+            EventKind::McpReconnect {
+                role: "monitoring".to_owned(),
+                attempt: 1,
+                delay_ms: 1,
+            },
+            EventKind::InferenceRetry {
+                attempt: 1,
+                delay_ms: 1,
+                error_class: "timeout".to_owned(),
+            },
+            EventKind::Overrun { elapsed_ms: 1 },
+            EventKind::ResponseTruncated {
+                has_text: true,
+                has_tool_calls: false,
+            },
+            EventKind::EmptyResponse { will_retry: true },
+            EventKind::MemoryChanged {
+                level: "user".to_owned(),
+                id: "m1".to_owned(),
+            },
+            EventKind::TargetOpened {
+                kind: "definition".to_owned(),
+                name: "agent/ctx".to_owned(),
+            },
+            EventKind::RunInterrupted {
+                run: RunId::new("run-7").expect("un texte non vide fait un identifiant de run"),
+                session: session("sub-7"),
+            },
+        ];
+        for upstream in upstream_kinds {
+            let mirrored = SessionEvent::from(&event("s1", upstream));
+            assert!(
+                !matches!(
+                    mirrored.kind,
+                    SessionEventKind::UserMessage { .. } | SessionEventKind::ToolCallSummary { .. }
+                ),
+                "aucun événement amont ne produit une variante propre à l'historique : {:?}",
+                mirrored.kind
+            );
+        }
+    }
+
     /// Scenario « une variante non reflétée devient Other » : `MemoryChanged` ne passe que par
     /// son nom, sans `level` ni `id`.
     #[test]
@@ -609,6 +777,12 @@ mod tests {
             "`payload` est inconnu : {kinds}"
         );
         assert!(!kinds.contains("bigint"), "jamais de bigint : {kinds}");
+        for name in ["user_message", "tool_call_summary"] {
+            assert!(
+                kinds.contains(name),
+                "les variantes propres à l'historique apparaissent dans l'export : {name} : {kinds}"
+            );
+        }
         let outcome =
             std::fs::read_to_string(dir.join("SessionOutcome.ts")).expect("SessionOutcome.ts est écrit");
         for name in ["valid", "failed", "cancelled"] {
