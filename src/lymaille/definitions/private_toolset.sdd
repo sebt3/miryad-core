@@ -34,7 +34,20 @@ Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`
 
 Tasks:
-  [ ] Tests d'abord (hooks purs, politiques), puis ./private_toolset.rs.
+  [x] Tests d'abord (hooks purs, politiques), puis ./private_toolset.rs.
+    Validé 2026-11-05 (synthèse validator PASS : même batterie que `./private_agent.sdd`, 15+1 combinaisons de tests et 16 de clippy, `fmt`,
+    six contrôles `cargo tree` ; les colonnes et l'unicité `(owner_id, toolset_id)` sont celles de `../migration.rs:160-172` et `:238-242`,
+    migration non touchée ; le @check_toolset partagé de `./toolset.rs` est importé, non dupliqué ; les trois `Scenario` ont leur test distinct,
+    cloisonnement exercé par `rest::core::list` ; zéro warning sur ./private_toolset.rs).
+    `before_update` ne repose pas `created_at` depuis `existing` : c'est le précédent de `./toolset.rs:121` (l'étape 4 de `toolset.sdd` qualifie
+    la pose de la date « création »), et sur le chemin réel la date traverse en @Unchanged par `mark_all_set` du moteur — asymétrie assumée avec
+    `./private_agent.rs`, dictée par les specs respectives.
+  [?] Les deux messages non nommés par aucun `Must` (`H_…` → « toolset id cannot use the host prefix », identifiant invalide → « invalid
+    toolset id ») : même question que dans `./private_agent.sdd`, même choix provisoire (le précédent `./user_context.rs`, tests sur refus et
+    absence de code seulement). À contractualiser ou à laisser libre.
+  [?] `toolset.sdd` ne dit nulle part que la date de création survit à un `before_update` par le chemin réel : c'est `rest::core` (@mark_all_set)
+    qui la porte, et le test pur-hook de cette spec ne peut pas l'assertionner. Choix provisoire : s'en remettre au test moteur. Option : un
+    `Scenario` de plus ici, qui exercerait un update complet par `rest::core`.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./private_toolset.rs.
