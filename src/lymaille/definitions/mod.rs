@@ -31,6 +31,10 @@ pub mod agent;
 /// Toolsets du catalogue, version active et brouillon (`src/lymaille/definitions/toolset.sdd`).
 pub mod toolset;
 
+/// Définitions d'agent privées de leur propriétaire, `OwnerOnly`
+/// (`src/lymaille/definitions/private_agent.sdd`).
+pub mod private_agent;
+
 /// Profils de modèle (`src/lymaille/definitions/profile.sdd`).
 pub mod profile;
 
