@@ -47,7 +47,7 @@ Tasks:
   [ ] Réalignement R12 (DSD `DEC-28, DEC-30`, 2026-11-03) : Après R10 et R11 : corps d'ouverture `(contexte, agent optionnel)` ; dixième route de lecture de l'historique (état persisté, mêmes types) ;
     types exportés. Spec seule.
   [ ] Tests d'abord (`tower::ServiceExt::oneshot`, SQLite mémoire, `ScriptedProvider`), puis ./routes.rs.
-  [ ] Clôture R12 — **historique complet** (arbitrage de Sébastien du 2026-11-05, rouvert et confirmé après exposé des conséquences ; remplace le
+  [x] Clôture R12 — **historique complet** (arbitrage de Sébastien du 2026-11-05, rouvert et confirmé après exposé des conséquences ; remplace le
     choix « historique léger » du validator checkpoint 7) : `history_events` rend, dans l'ordre de l'état persisté, `UserMessage { turn, text }` pour chaque
     `Message::User`, `TurnEnded { outcome: valid, response }` pour chaque réponse d'assistant non vide, et `ToolCallSummary { turn, tool, call_id, has_result }`
     pour chaque `ToolCall` d'un message d'assistant (`has_result` = un `Message::ToolResult` de même `call_id` suit) ; textes passés au `Redactor` ; ni arguments d'outil,
@@ -56,6 +56,18 @@ Tasks:
     (champ à ne pas utiliser comme date par le client) — à rouvrir si `lymaille` horodate ses messages. Amender le `Must` et le Scenario « historique puis abonnement ».
     Remplacer le test `le_mapping_de_l_historique_rend_les_tours_acheves` (qui verrouille l'absence) par des tests couvrant les trois variantes, l'ordre, l'expurgation
     et l'absence d'arguments. Le DSD reçoit une note datée sous `DEC-30` (déjà posée).
+    Validé 2026-11-05 (synthèse validator PASS : 15 combinaisons de tests plus le croisement `lymaille,matrix`, 16 de clippy `-D warnings`,
+    `cargo fmt --check`, six contrôles `cargo tree` ; les DEUX verrous d'absence levés — `le_mapping_de_l_historique_rend_les_tours_acheves`
+    remplacé et `historique_puis_abonnement_memes_types` réécrit sur le `Then` amendé ; `KNOWN_EVENT_TYPES` complétée de `empty_response`,
+    `user_message` et `tool_call_summary` ; teneurs au @Redactor, `at` = création de la session (limite `DEC-30` dite en doc-comment) ;
+    ni arguments, ni contenu de @ToolResult, ni `System`, `Boundary` ni `Discarded` ; zéro warning sur ./routes.rs).
+  [?] Volet end-to-end du `Then` « historique puis abonnement » : @ToolCallSummary est verrouillé au niveau du mapping sur état persisté,
+    pas dans la conversation scriptée — @ScriptedProvider de la fixture n'émet pas d'appel d'outil et un exécuteur d'outils n'est pas monté
+    (`NoMcp`). Choix provisoire : verrou mapping + e2e sur @UserMessage et @TurnEnded (recommandé par le validator). Alternative : étendre
+    @ScriptedProvider avec un exécuteur d'outils, hors @Owns de cette tâche.
+  [?] Le clamp `turn.max(1)` (./routes.rs:449 et :463) couvre un message d'assistant ou un appel d'outil avant tout message utilisateur : branche
+    défensive jamais atteignable sur un état @lymaille réel, non testée. Choix provisoire : la garder (numéro de tour jamais nul). Alternative :
+    rendre le `turn` brut et laisser le cas hors contrat.
   [ ] Clôture R12 (décata du checkpoint 7, suggestions à valider au passage) : amender le Given du Scenario « le jeton Bearer est transmis »
     (le `SessionManager` concret n'est pas espionnable) — preuve end-to-end de la branche `Some` par bearer JWT (`MockOidcClient`), le mapping
     `forward_token` restant verrouillé à la source ; amender le Purpose : `history` et la garde `DELETE` lisent le store via l'état d'authentification

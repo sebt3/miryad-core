@@ -400,26 +400,63 @@ async fn load_state(
         .ok_or(RestError::NotFound)
 }
 
-/// Rendu de l'état persisté en événements du flux (DSD `DEC-30`) — **mapping retenu, écart
-/// signalé au rapport** : l'état amont ne porte ni le texte des messages utilisateur comme
-/// événement propre, ni le rôle/la durée d'un appel d'outil, et le miroir `SessionEventKind`
-/// n'a pas de variante pour cela. Sont donc rendus fidèlement, dans l'ordre : le rang des tours
-/// (un `User` ouvre un tour, non rendu) et les réponses complètes des assistants en
-/// `TurnEnded { outcome : valid }`, teneurs passées au `Redactor`. Les `System` (prompt) et
-/// `Boundary` ne sont jamais rendus ; les appels d'outil et leurs résultats ne sont pas rendus
-/// faute de champs faithfully dérivables (`McpCall` exige rôle, statut et durée que l'historique
-/// ne porte pas). `Discarded` (réponse écartée, `lymaille` 0.2.0) est conservée pour l'audit
-/// seulement : jamais rendue, jamais comptée comme tour.
+/// Rendu de l'état persisté en événements du flux (DSD `DEC-30`, arbitrage historique complet du
+/// 2026-11-05) : dans l'ordre de l'état, chaque `Message::User` rend `UserMessage { turn, text }`
+/// (il ouvre un tour), chaque `ToolCall` d'un message d'assistant rend `ToolCallSummary`
+/// (`has_result` = un `Message::ToolResult` de même `call_id` suit), et chaque réponse d'assistant
+/// non vide rend `TurnEnded { outcome : valid }`. Les teneurs (`text`, `response`) passent par le
+/// `Redactor` du chemin d'affichage ; ni arguments d'outil ni contenu de `ToolResult` ne sortent.
+/// `System` (prompt), `Boundary` et `Discarded` (réponse écartée, conservée pour audit seulement)
+/// ne sont jamais rendus et ne comptent pas comme tour. **Limite assumée (`DEC-30`)** :
+/// `lymaille` 0.2.0 n'horodate pas ses messages ; `at` vaut l'instant de création de la session
+/// pour tout l'historique — le client ne doit pas l'employer comme date.
 fn history_events(state: &SessionState) -> Vec<SessionEvent> {
-    let redactor = Redactor::new();
+    render_history(state, &Redactor::new())
+}
+
+/// Rendu effectif de l'état (même contrat que `history_events`) avec le `Redactor` du chemin
+/// d'affichage : la couture porte l'expurgation des teneurs (`Must` : « textes passés au
+/// `Redactor` »). La route la ferme sur un redacteur sans secret déclaré — la route de lecture
+/// n'a pas la liste des secrets de la session ; c'est la convention déjà prise côté
+/// `SessionManager::list` (`SessionSummary::from_state`).
+fn render_history(state: &SessionState, redactor: &Redactor) -> Vec<SessionEvent> {
     let at = timestamp_rfc3339(state.created_at());
     let session = state.id().as_str().to_owned();
+    let messages = state.history().messages();
     let mut events = Vec::new();
     let mut turn = 0_u64;
-    for message in state.history().messages() {
+    for (index, message) in messages.iter().enumerate() {
         match message {
-            Message::User { .. } => turn = turn.saturating_add(1),
-            Message::Assistant { content, .. } => {
+            Message::User { content } => {
+                turn = turn.saturating_add(1);
+                events.push(SessionEvent {
+                    session: session.clone(),
+                    at: at.clone(),
+                    kind: SessionEventKind::UserMessage {
+                        turn,
+                        text: redactor.redact(content),
+                    },
+                });
+            }
+            Message::Assistant {
+                content, tool_calls, ..
+            } => {
+                for call in tool_calls {
+                    events.push(SessionEvent {
+                        session: session.clone(),
+                        at: at.clone(),
+                        kind: SessionEventKind::ToolCallSummary {
+                            turn: turn.max(1),
+                            tool: call.name().to_owned(),
+                            call_id: call.id().to_owned(),
+                            has_result: messages.iter().skip(index.saturating_add(1)).any(|later| {
+                                matches!(later,
+                                        Message::ToolResult { call_id, .. }
+                                            if call_id == call.id())
+                            }),
+                        },
+                    });
+                }
                 if !content.is_empty() {
                     events.push(SessionEvent {
                         session: session.clone(),
@@ -465,6 +502,7 @@ mod tests {
     use super::history;
     use super::history_events;
     use super::list_conversations;
+    use super::render_history;
     use super::resume_conversation;
     use super::send_message;
     use super::to_rest;
@@ -604,9 +642,12 @@ mod tests {
         hang.release.add_permits(8);
     }
 
-    /// Scenario « historique puis abonnement, mêmes types » : après un tour terminé, l'historique
-    /// rend des `SessionEvent` (mêmes noms `type` que le flux), sans secret ; l'abonnement au flux
-    /// puis un nouveau tour enchaînent sans trou de type.
+    /// Scenario « historique puis abonnement, mêmes types » (amendement historique complet, DSD
+    /// `DEC-30`) : après un tour terminé, l'historique rend dans l'ordre `user_message` puis
+    /// `turn_ended` (types exportés du flux SSE, teneurs passées au `Redactor`) ; l'abonnement au
+    /// flux puis un nouveau tour enchaînent sans trou de type. Le `tool_call_summary` du `Then`
+    /// est verrouillé au niveau du mapping (`l_historique_rend_les_trois_variantes_dans_l_ordre_persiste`) :
+    /// le provider scripté de la fixture n'émet pas d'appel d'outil.
     #[tokio::test(flavor = "multi_thread")]
     async fn historique_puis_abonnement_memes_types() {
         let (db, _hub, manager) = setup().await;
@@ -650,10 +691,24 @@ mod tests {
                 "le type rendu est celui du flux SSE : {kind_type}"
             );
         }
-        let rendu = history.to_string();
-        assert!(
-            !rendu.contains("MARQUEUR-VISIBLE"),
-            "le texte du message utilisateur n'est pas rendu : {rendu}"
+        let types: Vec<&str> = events
+            .iter()
+            .map(|event| event["kind"]["type"].as_str().expect("kind.type present"))
+            .collect();
+        assert_eq!(
+            types,
+            vec!["user_message", "turn_ended"],
+            "l'historique rend le tour dans l'ordre de l'etat persiste : {events:?}"
+        );
+        assert_eq!(
+            events[0]["kind"]["text"].as_str().expect("texte rendu"),
+            "bonjour MARQUEUR-VISIBLE",
+            "le message utilisateur est rendu, texte passe par le Redactor (aucun secret configure)"
+        );
+        assert_eq!(
+            events[1]["kind"]["response"].as_str().expect("reponse rendue"),
+            "reponse de tour",
+            "la reponse d'assistant est rendue en turn_ended"
         );
 
         let (status, mut body) = serve_stream(
@@ -1069,27 +1124,196 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND, "plus de brouillon a jeter");
     }
 
-    /// Mapping retenu de l'historique (signalé à la spec) : l'état d'une session au tour terminé
-    /// rend un `turn_ended` fidèle, `outcome : valid`, teneur masquée par le `Redactor` — pas de
-    /// prompt système, pas de message utilisateur nu, pas d'appel d'outil inventé.
+    /// Scenario « historique puis abonnement, mêmes types » (volet mapping, amendement historique
+    /// complet DSD `DEC-30`) : l'état persisté est rendu dans son ordre, sous les trois variantes
+    /// de l'historique — `user_message`, `tool_call_summary` (les appels viennent avant la
+    /// réponse du même tour), `turn_ended` — `turn` numerote a 1, `outcome` `valid`, `at` l'instant
+    /// de creation de la session (limite `DEC-30`), aucune donnee brute : ni prompt systeme, ni
+    /// contenu de resultat d'outil, ni frontiere de segment.
     #[test]
-    fn le_mapping_de_l_historique_rend_les_tours_acheves() {
-        // Exercé sans base : un etat construit a la main (messages user + assistant + tool call
-        // + tool result + systeme), rendu par la fonction du handler.
+    fn l_historique_rend_les_trois_variantes_dans_l_ordre_persiste() {
         let state = state_with_history();
         let events = history_events(&state);
-        assert_eq!(events.len(), 1, "une seule reponse complete rendue");
         let json = serde_json::to_value(&events).expect("le rendu serialise");
-        assert_eq!(json[0]["kind"]["type"], json!("turn_ended"));
-        assert_eq!(json[0]["kind"]["turn"], json!(1));
-        assert_eq!(json[0]["kind"]["outcome"], json!("valid"));
+        assert_eq!(
+            json,
+            json!([
+                {
+                    "session": "s-mapping",
+                    "at": state_at_rfc3339(),
+                    "kind": { "type": "user_message", "turn": 1, "text": "bonjour" }
+                },
+                {
+                    "session": "s-mapping",
+                    "at": state_at_rfc3339(),
+                    "kind": {
+                        "type": "tool_call_summary",
+                        "turn": 1,
+                        "tool": "lookup",
+                        "call_id": "call-1",
+                        "has_result": true
+                    }
+                },
+                {
+                    "session": "s-mapping",
+                    "at": state_at_rfc3339(),
+                    "kind": { "type": "turn_ended", "turn": 1, "outcome": "valid", "response": "reponse" }
+                }
+            ]),
+            "l'historique rend l'etat persiste dans son ordre, sous les trois variantes"
+        );
+    }
+
+    /// Scenario « l'historique ne rend ni arguments ni résultats d'outil » : l'appel d'outil est
+    /// rendu par son nom et son `has_result`, jamais par ses arguments ni par le contenu de son
+    /// resultat, tous deux porteurs de secrets factices dans la fixture.
+    #[test]
+    fn l_historique_ne_rend_ni_arguments_ni_contenus_de_resultat() {
+        let state = state_with_history();
+        let rendu = serde_json::to_string(&history_events(&state)).expect("le rendu serialise");
+        assert!(rendu.contains("lookup"), "le nom de l'outil est rendu : {rendu}");
         assert!(
-            !json.to_string().contains("PROMPT-SYSTEME"),
-            "le prompt n'est jamais rendu : {json}"
+            rendu.contains("call-1"),
+            "l'identifiant d'appel est rendu : {rendu}"
+        );
+        assert!(rendu.contains("has_result"), "has_result est rendu : {rendu}");
+        assert!(
+            !rendu.contains("ARGUMENT-MCP-PRIVE"),
+            "les arguments d'outil ne sont jamais rendus : {rendu}"
         );
         assert!(
-            !json.to_string().contains("ARGUMENT-MCP-PRIVE"),
-            "les arguments d'outil ne sont pas rendus : {json}"
+            !rendu.contains("CONTENU-RESULTAT-PRIVE"),
+            "le contenu du resultat d'outil n'est jamais rendu : {rendu}"
+        );
+    }
+
+    /// Tâche « historique complet » : `has_result` est `false` quand aucun `Message::ToolResult`
+    /// de meme `call_id` ne suit l'appel — et une reponse d'assistant vide, meme chargee d'appels,
+    /// ne rend pas de `turn_ended`.
+    #[test]
+    fn l_historique_marque_un_appel_sans_resultat() {
+        let state = state_history_fixture(
+            "s-sans-resultat",
+            json!([
+                { "role": "user", "content": "lanca" },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning": null,
+                    "tool_calls": [
+                        { "id": "call-2", "name": "rhai_pad", "arguments": { "corps": "secret-factice-d-arguments" } }
+                    ]
+                }
+            ]),
+        );
+        let json = serde_json::to_value(history_events(&state)).expect("le rendu serialise");
+        assert_eq!(
+            json,
+            json!([
+                {
+                    "session": "s-sans-resultat",
+                    "at": state_at_rfc3339(),
+                    "kind": { "type": "user_message", "turn": 1, "text": "lanca" }
+                },
+                {
+                    "session": "s-sans-resultat",
+                    "at": state_at_rfc3339(),
+                    "kind": {
+                        "type": "tool_call_summary",
+                        "turn": 1,
+                        "tool": "rhai_pad",
+                        "call_id": "call-2",
+                        "has_result": false
+                    }
+                }
+            ]),
+            "un appel sans resultat suit, a has_result faux, sans turn_ended sur texte vide"
+        );
+    }
+
+    /// Tâche « historique complet » : le rang des tours suit les seuls messages utilisateur —
+    /// chaque tour acheve rend son `user_message` puis son `turn_ended`, numerotes.
+    #[test]
+    fn l_historique_numerote_les_tours_successifs() {
+        let state = state_history_fixture(
+            "s-deux-tours",
+            json!([
+                { "role": "user", "content": "premier" },
+                { "role": "assistant", "content": "reponse un", "reasoning": null, "tool_calls": [] },
+                { "role": "user", "content": "second" },
+                { "role": "assistant", "content": "reponse deux", "reasoning": null, "tool_calls": [] }
+            ]),
+        );
+        let json = serde_json::to_value(history_events(&state)).expect("le rendu serialise");
+        assert_eq!(
+            json,
+            json!([
+                {
+                    "session": "s-deux-tours",
+                    "at": state_at_rfc3339(),
+                    "kind": { "type": "user_message", "turn": 1, "text": "premier" }
+                },
+                {
+                    "session": "s-deux-tours",
+                    "at": state_at_rfc3339(),
+                    "kind": { "type": "turn_ended", "turn": 1, "outcome": "valid", "response": "reponse un" }
+                },
+                {
+                    "session": "s-deux-tours",
+                    "at": state_at_rfc3339(),
+                    "kind": { "type": "user_message", "turn": 2, "text": "second" }
+                },
+                {
+                    "session": "s-deux-tours",
+                    "at": state_at_rfc3339(),
+                    "kind": { "type": "turn_ended", "turn": 2, "outcome": "valid", "response": "reponse deux" }
+                }
+            ]),
+            "les tours sont numerotes par les seuls messages utilisateur, dans l'ordre persiste"
+        );
+    }
+
+    /// Tâche « historique complet » (`Must` : « textes passés au `Redactor` ») : les teneurs de
+    /// `user_message` et de `turn_ended` traversent le `Redactor` — un secret declare est remplace
+    /// par le masque, la donnee brute ne sort jamais de l'historique.
+    #[test]
+    fn l_historique_expurge_les_teneurs_par_le_redacteur() {
+        let state = state_history_fixture(
+            "s-redaction",
+            json!([
+                { "role": "user", "content": "bonjour CLE-SECRETE-DE-TEST" },
+                { "role": "assistant", "content": "voila CLE-SECRETE-DE-TEST", "reasoning": null, "tool_calls": [] }
+            ]),
+        );
+        let mut redactor = ::lymaille::Redactor::new();
+        redactor
+            .add_secret("CLE-SECRETE-DE-TEST")
+            .expect("le secret de fixture est assez long");
+        let json = serde_json::to_value(render_history(&state, &redactor)).expect("le rendu serialise");
+        assert_eq!(
+            json,
+            json!([
+                {
+                    "session": "s-redaction",
+                    "at": state_at_rfc3339(),
+                    "kind": {
+                        "type": "user_message",
+                        "turn": 1,
+                        "text": "bonjour *redacted secret*"
+                    }
+                },
+                {
+                    "session": "s-redaction",
+                    "at": state_at_rfc3339(),
+                    "kind": {
+                        "type": "turn_ended",
+                        "turn": 1,
+                        "outcome": "valid",
+                        "response": "voila *redacted secret*"
+                    }
+                }
+            ]),
+            "les teneurs de l'historique sont expurgees par le Redactor"
         );
     }
 
@@ -1097,36 +1321,34 @@ mod tests {
     /// (réponse écartée, conservée pour audit seulement) n'est **jamais rendue** dans l'historique
     /// et n'ouvre **aucun tour** — le rang des tours suit les seuls messages utilisateur. Contrat
     /// de non-régression : le repli `_unknown_amont` du mapping la couvrait déjà par accident,
-    /// le bras explicite le verrouille.
+    /// le bras explicite le verrouille. L'amendement historique complet (DSD `DEC-30`) ajoute le
+    /// `user_message` du tour, que le message écarté ne remplace ni ne décale.
     #[test]
     fn une_reponse_ecartee_n_est_jamais_rendue_ni_comptee_comme_tour() {
-        use ::lymaille::AgentRef;
-        let id = SessionId::new("s-discarded").expect("id de fixture");
-        let state = ::lymaille::SessionState::new(
-            id,
-            AgentRef::new("dev", "empreinte"),
-            "c1",
-            std::collections::BTreeMap::new(),
-            ::lymaille::Timestamp::from_millis(1_730_000_000_000),
+        let state = state_history_fixture(
+            "s-discarded",
+            json!([
+                { "role": "user", "content": "bonjour" },
+                { "role": "discarded", "cause": "empty", "reasoning": null },
+                { "role": "assistant", "content": "reponse", "reasoning": null, "tool_calls": [] }
+            ]),
         );
-        let mut value: serde_json::Value =
-            serde_json::from_str(&state.to_json().expect("l'etat se serialise")).expect("JSON d'etat");
-        value["history"] = json!([
-            { "role": "user", "content": "bonjour" },
-            { "role": "discarded", "cause": "empty", "reasoning": null },
-            { "role": "assistant", "content": "reponse", "reasoning": null, "tool_calls": [] }
-        ]);
-        let state =
-            ::lymaille::SessionState::from_json(&value.to_string()).expect("l'etat historise se relit");
         let events = history_events(&state);
         let json = serde_json::to_value(&events).expect("le rendu serialise");
         assert_eq!(
             json,
-            json!([{
-                "session": "s-discarded",
-                "at": state_at_rfc3339(),
-                "kind": { "type": "turn_ended", "turn": 1, "outcome": "valid", "response": "reponse" }
-            }]),
+            json!([
+                {
+                    "session": "s-discarded",
+                    "at": state_at_rfc3339(),
+                    "kind": { "type": "user_message", "turn": 1, "text": "bonjour" }
+                },
+                {
+                    "session": "s-discarded",
+                    "at": state_at_rfc3339(),
+                    "kind": { "type": "turn_ended", "turn": 1, "outcome": "valid", "response": "reponse" }
+                }
+            ]),
             "la reponse ecartee n'est ni rendue, ni comptee comme tour"
         );
     }
@@ -1257,6 +1479,9 @@ pub(crate) mod fix {
         "inference_retry",
         "overrun",
         "response_truncated",
+        "empty_response",
+        "user_message",
+        "tool_call_summary",
         "other",
         "host",
     ];
@@ -1721,13 +1946,12 @@ pub(crate) mod fix {
             .expect("requete valide")
     }
 
-    /// État de session avec historique complet pour le test du mapping (construit à la main,
-    /// hors base) : un tour, un appel d'outil, un prompt système. L'état amont n'a pas de
-    /// pousseur de message public : le JSON rendu par `to_json` est complété de l'historique et
-    /// relu par `from_json` (mêmes types que la persistance).
-    pub fn state_with_history() -> ::lymaille::SessionState {
+    /// État de session portant l'historique `history` (construit à la main, hors base) : l'état
+    /// amont n'a pas de pousseur de message public — le JSON rendu par `to_json` est complété de
+    /// l'historique et relu par `from_json` (mêmes types que la persistance).
+    pub fn state_history_fixture(id: &str, history: serde_json::Value) -> ::lymaille::SessionState {
         use ::lymaille::AgentRef;
-        let id = SessionId::new("s-mapping").expect("id de fixture");
+        let id = SessionId::new(id).expect("id de fixture");
         let state = ::lymaille::SessionState::new(
             id,
             AgentRef::new("dev", "empreinte"),
@@ -1737,20 +1961,32 @@ pub(crate) mod fix {
         );
         let mut value: serde_json::Value =
             serde_json::from_str(&state.to_json().expect("l'etat se serialise")).expect("JSON d'etat");
-        value["history"] = json!([
-            { "role": "system", "content": "PROMPT-SYSTEME" },
-            { "role": "user", "content": "bonjour" },
-            {
-                "role": "assistant",
-                "content": "reponse",
-                "reasoning": null,
-                "tool_calls": [
-                    { "id": "call-1", "name": "lookup", "arguments": { "cle": "ARGUMENT-MCP-PRIVE" } }
-                ]
-            },
-            { "role": "tool_result", "call_id": "call-1", "tool": "lookup", "content": "ok", "original_chars": null }
-        ]);
+        value["history"] = history;
         ::lymaille::SessionState::from_json(&value.to_string()).expect("l'etat historise se relit")
+    }
+
+    /// État d'un tour terminé avec appel d'outil (fixture du mapping d'historique) : frontière de
+    /// segment, prompt système, message utilisateur, appel d'outil aux arguments porteurs d'un
+    /// secret factice, résultat portant un autre secret, puis réponse finale.
+    pub fn state_with_history() -> ::lymaille::SessionState {
+        state_history_fixture(
+            "s-mapping",
+            json!([
+                { "role": "boundary", "kind": "Start" },
+                { "role": "system", "content": "PROMPT-SYSTEME" },
+                { "role": "user", "content": "bonjour" },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning": null,
+                    "tool_calls": [
+                        { "id": "call-1", "name": "lookup", "arguments": { "cle": "ARGUMENT-MCP-PRIVE" } }
+                    ]
+                },
+                { "role": "tool_result", "call_id": "call-1", "tool": "lookup", "content": "CONTENU-RESULTAT-PRIVE", "original_chars": null },
+                { "role": "assistant", "content": "reponse", "reasoning": null, "tool_calls": [] }
+            ]),
+        )
     }
 
     /// Extrait le discriminant `kind.type` du premier événement SSE d'un tampon.
