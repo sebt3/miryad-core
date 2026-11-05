@@ -78,10 +78,10 @@ Exposes:
     `install_crypto_provider`, modules `store`, `definitions`, `resource_module`, `host` (amendement DEC-27/DEC-30 : ré-exports ci-dessus).
 
 Tasks:
-  [ ] Réalignement R7 (DSD `DEC-27, DEC-30`, 2026-11-03) : spec amendée (déclaration et ré-exports de `host`, `SessionEvent`, `export_typescript`, `resolve_role`, `SeaHostMcpAuth` ; `Cargo.toml` : `dep:chrono`,
-    `dep:ts-rs` ; contrôle de graphe de `ts-rs`), **en attente d'approbation**.
+  [x] Réalignement R7 (DSD `DEC-27, DEC-30`, 2026-11-03) : spec amendée (déclaration et ré-exports de `host`, `SessionEvent`, `export_typescript`, `resolve_role`, `SeaHostMcpAuth` ; `Cargo.toml` : `dep:chrono`,
+    `dep:ts-rs` ; contrôle de graphe de `ts-rs`). Spec approuvée le 2026-11-04.
   [x] Export TypeScript des événements (DSD `OI-12`, soldé le 2026-11-03) : `ts-rs`, dépendance optionnelle derrière la feature `lymaille` ; amendement de `Cargo.toml` : voir la tâche « Amendement DEC-27/DEC-30 » ci-dessous.
-  [ ] Amendement DEC-27/DEC-30 : /Cargo.toml (`ts-rs`, `dep:chrono`), /tooling.sdd, /AGENTS.md (commande `cargo tree --no-default-features -e normal -i ts-rs`, sortie vide), /.github/workflows/workflows.sdd et ci.yml (même contrôle) ; fichiers hors périmètre : amendement soumis au développeur principal avant d'y toucher. Avant ./interactive/event.rs.
+  [x] Amendement DEC-27/DEC-30 : /Cargo.toml (`ts-rs`, `dep:chrono`), /tooling.sdd, /AGENTS.md (commande `cargo tree --no-default-features -e normal -i ts-rs`, sortie vide), /.github/workflows/workflows.sdd et ci.yml (même contrôle) ; fichiers hors périmètre : amendement soumis au développeur principal avant d'y toucher. Avant ./interactive/event.rs.
   [ ] Amendement lot 2 : `mod.rs` re-déclaré **en dernier du lot 2** (après ./interactive, ./http, ./chat, ./mcp_access, ./store, ./definitions), tests de chemins plats étendus.
   [ ] Amendement lot 2 : /Cargo.toml, /tooling.sdd, /AGENTS.md, /.github/workflows/workflows.sdd et ci.yml pour la combinaison `lymaille,matrix` et les dépendances (fichiers hors périmètre : amendement soumis au développeur principal avant d'y toucher).
   [x] `mod.rs` en dernier du lot (après tous les enfants) ; test de chemins plats. Validé 2026-11-03 (validator PASS, batterie ciblée lymaille + workflow,lymaille + all-features).

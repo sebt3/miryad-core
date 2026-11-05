@@ -65,7 +65,7 @@ contenus d'origine restent consultables par Git :
     - **Source:** `SpecDD /tooling.sdd`
 
 - **CON-5 - MUST NOT:** Une migration committée n'est pas modifiée ; on ajoute la suivante. Exceptions datées dans
-  `AGENTS.md` (2026-10-04 pour `m20260923_000001`, 2026-10-17 pour `m20261006_000001`, 2026-11-03 pour `m20261104_000001`, 2026-11-04 pour
+  `AGENTS.md` (2026-10-04 pour `m20260923_000001`, 2026-10-17 pour `m20261006_000001`, 2026-11-03 et 2026-11-05 pour `m20261104_000001`, 2026-11-04 pour
   `m20261103_000001`), valables tant qu'aucune production n'existe.
     - **Source:** `AGENTS.md`, « Conventions de code »
 

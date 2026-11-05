@@ -41,7 +41,7 @@ Exposes:
   `activate_toolset`, `discard_draft`, `ActivationReport`
 
 Tasks:
-  [ ] Tests d'abord (SQLite mémoire), puis ./activation.rs.
+  [x] Tests d'abord (SQLite mémoire), puis ./activation.rs. Validé 2026-11-05 (validator PASS checkpoint 5 — atomicité et AdminOnly prouvés).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./activation.rs.

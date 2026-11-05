@@ -153,6 +153,12 @@ jobs:
           out=$(cargo tree --no-default-features -e normal -i lymaille 2>/dev/null) || true
           if [ -n "$out" ]; then echo "lymaille est dans le graphe sans la feature :" ; echo "$out" ; exit 1 ; fi
 
+      - name: cargo tree -i ts-rs doit être vide sans la feature
+        shell: bash
+        run: |
+          out=$(cargo tree --no-default-features -e normal -i ts-rs 2>/dev/null) || true
+          if [ -n "$out" ]; then echo "ts-rs est dans le graphe sans la feature lymaille :" ; echo "$out" ; exit 1 ; fi
+
       - name: la feature lymaille implique db
         shell: bash
         run: |

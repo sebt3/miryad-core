@@ -43,6 +43,9 @@ Must:
     graphe : `cargo tree --no-default-features -e normal -i lymaille` (sortie vide : la bibliothèque est absente sans la feature) et
     `cargo tree --no-default-features --features lymaille -e normal -i sea-orm` (une ligne : la feature implique `db`). `./AGENTS.md` amendé le 2026-11-02 (accord du développeur principal) ;
     `./.github/workflows/ci.yml` et `workflows.sdd` amendés le 2026-11-03 (amendement `lymaille` de `./.github/workflows/workflows.sdd`) : les quinze combinaisons et les deux contrôles de graphe `lymaille` sont en CI.
+    **Amendement 2026-11-04 (DEC-27/DEC-30, ./src/lymaille/mod.sdd)** : un contrôle de graphe de plus pour `ts-rs` : `cargo tree --no-default-features -e normal -i ts-rs`
+    (sortie vide : la dépendance n'existe que sous `lymaille` ; même convention que `lymaille` — le test est la SORTIE vide, pas le code de sortie). `./AGENTS.md`, `./.github/workflows/ci.yml` et
+    `workflows.sdd` amendés le 2026-11-04 (accord explicite du développeur principal sur ces fichiers hors périmètre).
     **Amendement 2026-10-19** : `graphql` et `graphiql` sortent de la batterie avec la suppression de la
     surface GraphQL — soit **dix** combinaisons de tests et dix de clippy, toutes en
     `--no-default-features --features <liste>` hors défaut et `--all-features`. Les

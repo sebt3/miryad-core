@@ -39,6 +39,13 @@ pub struct Model {
     /// `before_create` et `before_update`. Ne contient aucun secret (le constructeur de
     /// `lymaille` refuse une valeur qui en a l'air).
     pub context: serde_json::Value,
+    /// Référence par `name` à un type de contexte du catalogue (`../definitions/context_type.rs`
+    /// — arbitrage `DEC-28` du 2026-11-05) : la nature, l'agent par défaut et les agents autorisés
+    /// des sessions ouvertes sur ce contexte en viennent. `None` : le contexte ne précise aucun
+    /// type, l'ouverture de session le refuse (`../interactive/manager.sdd`). L'**existence** du
+    /// type est vérifiée à l'ouverture, pas au hook (hook synchrone sans connexion) ; le hook ne
+    /// contrôle que la **forme** de la référence.
+    pub context_type: Option<String>,
     /// Horodatage de création, posé par le hook de création.
     pub created_at: DateTimeUtc,
 }
@@ -123,6 +130,21 @@ impl Entity {
             && name != ligne.name
         {
             return Err(HookError::new("catalog context name cannot change"));
+        }
+        let reference = match &active.context_type {
+            ActiveValue::Set(reference) | ActiveValue::Unchanged(reference) => reference.as_deref(),
+            ActiveValue::NotSet => None,
+        };
+        if reference
+            .is_some_and(|reference| !matches!(identity::classify(reference), Ok(identity::IdKind::Private)))
+        {
+            // R10 (`DEC-28`) : la référence désigne un nom de type du catalogue — la grammaire
+            // `lymaille`, jamais un identifiant `G_`/`H_` (les noms de type n'ont pas de préfixe,
+            // arbitrage (a) du 2026-11-04). L'existence n'est vérifiée qu'à l'ouverture : le hook
+            // ne juge que la forme.
+            return Err(HookError::new(
+                "catalog context type reference is not a valid name",
+            ));
         }
         active.name = ActiveValue::Set(name);
         match existing {
@@ -240,6 +262,7 @@ mod tests {
             id: NotSet,
             name: Set("faux-nom".to_string()),
             context: Set(context),
+            context_type: NotSet,
             created_at: NotSet,
         }
     }
@@ -250,6 +273,7 @@ mod tests {
             id: 1,
             name: name.to_string(),
             context: contexte(name, ContextLevel::Project, json!({"namespace": "prod"})),
+            context_type: None,
             created_at: Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap(),
         }
     }
@@ -376,6 +400,63 @@ mod tests {
             Err(erreur) => assert_eq!(erreur.message, "catalog context is required"),
             Ok(_) => panic!("un `context` non objet doit être refusé"),
         }
+    }
+
+    /// Réalignement R10 (`Must` de `./catalog_context.sdd`, arbitrage `DEC-28` du 2026-11-05) :
+    /// `context_type` posé doit être de forme identifiant valide — un nom de type du catalogue,
+    /// sans préfixe réservé (`G_`/`H_` et leurs casses réservées), non vide, sans caractère
+    /// étranger (`classify`). L'existence du type n'est pas vérifiée ici (hook sans connexion).
+    /// Le `HookError` ne porte aucun code `MRD-*`.
+    #[test]
+    fn before_create_refuse_un_context_type_de_forme_invalide() {
+        for reference in ["", "G_cluster", "g_cluster", "h_cluster", "cluster-x"] {
+            let active = ActiveModel {
+                context_type: Set(Some(reference.to_string())),
+                ..active_avec(contexte("G_prod", ContextLevel::Project, json!({})))
+            };
+            match Entity::before_create(active, &principal()) {
+                Err(erreur) => {
+                    assert!(
+                        erreur.code.is_none(),
+                        "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
+                    );
+                    assert!(
+                        erreur.message.contains("context type"),
+                        "le refus nomme la référence en cause : {erreur:?}"
+                    );
+                }
+                Ok(_) => panic!("`{reference}` n'est pas une forme d'identifiant de type valide"),
+            }
+        }
+    }
+
+    /// `Must` (R10) : `context_type` absent (`None`) passe, et une référence de forme valide
+    /// traverse le hook inchangée — l'existence est vérifiée à l'ouverture de session, pas ici.
+    #[test]
+    fn before_create_accepte_un_context_type_de_forme_valide() {
+        let sans = Entity::before_create(
+            active_avec(contexte("G_prod", ContextLevel::Project, json!({}))),
+            &principal(),
+        )
+        .expect("un contexte sans type est accepté par le hook");
+        assert!(
+            matches!(sans.context_type, NotSet),
+            "`None` (ou absent) traverse le hook : {:?}",
+            sans.context_type
+        );
+        let avec = Entity::before_create(
+            ActiveModel {
+                context_type: Set(Some("cluster".to_string())),
+                ..active_avec(contexte("G_prod", ContextLevel::Project, json!({})))
+            },
+            &principal(),
+        )
+        .expect("une référence de forme valide est acceptée sans contrôle d'existence");
+        assert_eq!(
+            avec.context_type,
+            Set(Some("cluster".to_string())),
+            "le hook ne réécrit pas la référence"
+        );
     }
 
     /// Scenario (`before_update`) : `name` ne change pas.

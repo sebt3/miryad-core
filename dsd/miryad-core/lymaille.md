@@ -497,7 +497,10 @@ et appels d'MCP externes depuis les scripts.
       déployée (modification en place actualisée dans les exceptions d'`AGENTS.md` du 2026-11-03). L'ASSUMPTION est **vérifiée** (2026-11-04, source
       `lymaille` 0.1.0 `toolsets/context_type.rs`) : ces trois champs vivent en colonnes de miryad-core, `ContextType` ne portant que
       `name`/`version`/`schema`/`roles`/`includes`. Le renommage `Shared` est documentaire côté miryad-core — l'enum amont reste `ContextLevel::Project`
-      et le jeton JSON `"project"` (à signaler à `lymaille`).
+      et le jeton JSON `"project"` (à signaler à `lymaille`). **Liaison contexte→type actée le 2026-11-05** : les tables de contextes portent une
+      colonne `context_type` (nullable, posée par le CRUD, préservée par l'`upsert` de la session de configuration) ; la nature, l'agent par défaut
+      et l'ensemble autorisé sont lus sur le type à l'ouverture ; les contextes `H_…` de l'hôte, sans type, n'ouvrent que `Work` avec un agent
+      explicite. La session persiste sa colonne `context` (ajout du lot 2 sur `sessions`), immuable après l'ouverture.
     - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B2, B3) ; user instruction, 2026-11-03
 
 - **DEC-29 - Handler Restate dédié au step `subagent`** (2026-11-03, amende `DEC-10`, `FR-6`, `OI-4`)

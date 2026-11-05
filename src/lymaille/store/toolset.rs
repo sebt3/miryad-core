@@ -867,6 +867,89 @@ mod tests {
         );
     }
 
+    /// `Scenario` (réalignement R10, `../store/toolset.sdd`, DEC-28) : `put_context` ne touche
+    /// **que** la colonne `context` d'une ligne existante — `context_type` (la référence au type,
+    /// posée par le CRUD de l'entité) et `created_at` subsistent.
+    #[tokio::test]
+    async fn put_context_only_rewrites_the_context_column() {
+        let db = test_db().await;
+        user(&db, "root", true).await;
+        db.execute_unprepared(
+            "INSERT INTO miryad_lymaille_catalog_contexts (name, context, context_type, created_at) \
+             VALUES ('G_prod', '{\"name\": \"G_prod\", \"level\": \"project\", \"parameters\": {}}', \
+             'cluster', '2026-11-01T00:00:00Z')",
+        )
+        .await
+        .expect("ligne de catalogue avec context_type pose");
+
+        SeaContextStore::new(db.clone(), Identity::new(db.clone()), "root".to_string(), None)
+            .put_context(
+                &context("G_prod", ContextLevel::Project)
+                    .with_parameter("region".to_string(), json!("eu"))
+                    .expect("un parametre ordinaire"),
+            )
+            .await
+            .expect("lecrasement du contexte par put_context reussit");
+
+        let select = Query::select()
+            .columns([Alias::new("context_type"), Alias::new("created_at")])
+            .from(Alias::new("miryad_lymaille_catalog_contexts"))
+            .and_where(Expr::col(Alias::new("name")).eq("G_prod"))
+            .to_owned();
+        let row = db
+            .query_one(&select)
+            .await
+            .expect("relecture de la ligne")
+            .expect("la ligne existe toujours");
+        assert_eq!(
+            row.try_get::<Option<String>>("", "context_type")
+                .expect("colonne context_type relue"),
+            Some("cluster".to_owned()),
+            "`put_context` ne touche pas la reference au type"
+        );
+        assert_eq!(
+            SeaContextStore::new(db.clone(), Identity::new(db.clone()), "root".to_string(), None)
+                .get_context("G_prod")
+                .await
+                .expect("lecture du contexte"),
+            Some(
+                context("G_prod", ContextLevel::Project)
+                    .with_parameter("region".to_string(), json!("eu"))
+                    .expect("un parametre ordinaire")
+            ),
+            "la colonne context est bien remplacee"
+        );
+    }
+
+    /// Mème verrou R10 côté privé : l'upsert de `put_context` sur une **ligne neuve** pose
+    /// `context_type` non renseigné (`NULL`) — le store n'invente pas de type — et sur la ligne
+    /// d'une autre table, aucune.
+    #[tokio::test]
+    async fn put_context_leaves_a_new_row_without_a_context_type() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        SeaContextStore::new(db.clone(), Identity::new(db.clone()), "alice".to_string(), None)
+            .put_context(&context("dev", ContextLevel::User))
+            .await
+            .expect("alice cree son contexte prive");
+        let select = Query::select()
+            .columns([Alias::new("context_type")])
+            .from(Alias::new("miryad_lymaille_user_contexts"))
+            .and_where(Expr::col(Alias::new("name")).eq("dev"))
+            .to_owned();
+        let row = db
+            .query_one(&select)
+            .await
+            .expect("relecture de la ligne")
+            .expect("la ligne existe");
+        assert_eq!(
+            row.try_get::<Option<String>>("", "context_type")
+                .expect("colonne context_type relue"),
+            None,
+            "le store ne pose pas de type de lui-meme"
+        );
+    }
+
     /// Hôte factice de l'amendement DEC-27 : `resolve_context` rend le contexte de fixture au
     /// `subject` autorisé, `None` aux autres (ou `Err` si `broken`) ; il compte ses appels et
     /// note les `subject` reçus — preuve que la délégation passe le principal relu.

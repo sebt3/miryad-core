@@ -47,8 +47,8 @@ Exposes:
   `SessionEvent`, `SessionEventKind`, `SessionOutcome`, `impl From<&Event> for SessionEvent`, `export_typescript`
 
 Tasks:
-  [ ] Dépendance `ts-rs` (optionnelle, feature `lymaille`) : amendement de `/Cargo.toml` et `/tooling.sdd`, déjà prévu dans `../mod.sdd` (R7), à faire avant cette tâche.
-  [ ] Tests d'abord (conversion de chaque variante, `Other`, sérialisation `type`, `export_typescript` dans un répertoire temporaire), puis ./event.rs. Après approbation de cette spec et de R7.
+  [x] Dépendance `ts-rs` (optionnelle, feature `lymaille`) : amendement de `/Cargo.toml` et `/tooling.sdd`, déjà prévu dans `../mod.sdd` (R7), à faire avant cette tâche.
+  [x] Tests d'abord (conversion de chaque variante, `Other`, sérialisation `type`, `export_typescript` dans un répertoire temporaire), puis ./event.rs. Après approbation de cette spec et de R7. Validé 2026-11-05 (validator PASS checkpoint 5 — 7 Scenario verrouillés).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./event.rs.

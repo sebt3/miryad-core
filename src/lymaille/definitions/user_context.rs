@@ -43,6 +43,12 @@ pub struct Model {
     /// `before_create` et `before_update`. Ne contient aucun secret (le constructeur de
     /// `lymaille` refuse une valeur qui en a l'air).
     pub context: serde_json::Value,
+    /// Référence par `name` à un type de contexte du catalogue (`../definitions/context_type.rs`
+    /// — arbitrage `DEC-28` du 2026-11-05) : la nature, l'agent par défaut et les agents autorisés
+    /// des sessions ouvertes sur ce contexte en viennent. `None` : le contexte ne précise aucun
+    /// type, l'ouverture de session le refuse (`../interactive/manager.sdd`) ; l'existence du type
+    /// est vérifiée à l'ouverture, pas au hook.
+    pub context_type: Option<String>,
     /// Horodatage de création, posé par le hook de création.
     pub created_at: DateTimeUtc,
 }
@@ -272,6 +278,7 @@ mod tests {
             owner_id: NotSet,
             name: Set("faux-nom".to_string()),
             context: Set(context),
+            context_type: NotSet,
             created_at: NotSet,
         }
     }
@@ -283,6 +290,7 @@ mod tests {
             owner_id,
             name: name.to_string(),
             context: contexte(name, ContextLevel::User, json!({"namespace": "dev"})),
+            context_type: None,
             created_at: Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap(),
         }
     }
@@ -306,6 +314,7 @@ mod tests {
                 owner_id: Set(compte.id),
                 name: Set("dev".to_string()),
                 context: Set(contexte("dev", ContextLevel::User, json!({"namespace": "dev"}))),
+                context_type: NotSet,
                 created_at: Set(Utc::now()),
             })
             .exec(&db)

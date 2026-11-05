@@ -29,14 +29,15 @@ Must:
     3. `check_grants(caller, def.modules(), ADMIN_ONLY)` : un module réservé à l'admin accordé à un non-admin → `Forbidden` (refus à l'assemblage ;
       l'appel de module revalide, `FR-4`) ;
     4. toolsets **actifs** (jamais un brouillon) et contexte : le contexte lié (`User` de l'appelant ou `Project` du catalogue, jamais celui d'un
-      autre) fournit les paramètres et les liaisons rôle → serveur ; pour chaque rôle lié : `server_for(caller, nom)` puis `build_auth(…, token)` ;
+      autre) fournit les paramètres et les liaisons rôle → serveur ; pour chaque rôle lié : `resolve_role` (../mcp_access.sdd — décision de l'hôte d'abord, repli `server_for(caller, nom)` sur `Unprovided`) puis `build_auth(…, token)` ;
       un rôle **requis** par le type de contexte dont le serveur est refusé fait échouer l'assemblage (`Forbidden("mcp server unavailable")`), un
       rôle optionnel refusé est omis (avis `notices`) ;
     5. modules : `resources` pour tous ; si `kind = Config` : `config_registration(...)` (stores = nos `Sea*`, index = `SeaSessionIndex`, slot
       d'inspection par session), l'agent `Config` n'appelle aucun serveur MCP, ne délègue pas et n'active rien (`agent-sessions#BR-8`, garanti par
       la définition de l'agent et par ce fichier : aucun client MCP monté pour `Config`) ;
     6. `TurnConfig` : horloge, `Redactor` de la session (secrets du provider et du jeton ajoutés), le `EventHub` en `EventSink`, `Budget` du profil.
-  `AssembleDeps` regroupe : connexion, `LymailleStores`, `ResourceReaders`/écrivains, `Arc<dyn SecretResolver>`, fabrique d'inférence, hub, horloge.
+  `AssembleDeps` regroupe : connexion, `ResourceReaders`/écrivains, `Arc<dyn SecretResolver>`, fabrique d'inférence, hub, horloge, hôte optionnel
+    (`SharedHost`) ; les stores `Sea*` sont dérivés de la connexion et du `subject` à l'assemblage, non portés par la structure.
   Le jeton `forward` n'est transmis qu'à `build_auth` et n'est conservé que dans le `SeaMcpAuth` du tour ; il disparaît avec le tour.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
@@ -51,9 +52,9 @@ Exposes:
   `assemble_session`, `AssembleDeps`, `AssembledSession`
 
 Tasks:
-  [ ] Réalignement R9 (DSD `DEC-27, DEC-28`, 2026-11-03) : Après R1, R5, R6, R8 : résoudre contexte (`G_`, privé, `H_` par `resolve_context`) et rôles MCP (`resolve_mcp` puis repli) à l'assemblage ; nature et agent
+  [x] Réalignement R9 (DSD `DEC-27, DEC-28`, 2026-11-03) : Après R1, R5, R6, R8 : résoudre contexte (`G_`, privé, `H_` par `resolve_context`) et rôles MCP (`resolve_mcp` puis repli) à l'assemblage ; nature et agent
     par défaut issus du type de contexte ; la session `Config` voit les liaisons de l'hôte en lecture seule, sans client MCP. Spec seule.
-  [ ] Tests d'abord (SQLite mémoire, `ScriptedProvider`, serveur MCP factice de `lymaille` si disponible, sinon `McpAuth` espion), puis ./assemble.rs.
+  [x] Tests d'abord (SQLite mémoire, `ScriptedProvider`, serveur MCP factice de `lymaille` si disponible, sinon `McpAuth` espion), puis ./assemble.rs. Validé 2026-11-05 (validator PASS checkpoint 5 — 7 Scenario verrouillés, DEC-28 câblé).
   [?] À vérifier à l'ouverture de la tâche dans le source de `lymaille` : la voie exacte pour injecter des clients MCP par rôle dans
     `assemble(...)`/`ScratchpadEngine::builder` et la construction de `TurnRunner` pour une session non batch (le lot 1 n'a assemblé que le batch).
 

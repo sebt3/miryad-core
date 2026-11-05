@@ -20,11 +20,28 @@ Must:
   `pub struct SessionManager` — `Clone` (état partagé), créé par `SessionManager::new(deps: ManagerDeps)` où `ManagerDeps` regroupe : la connexion,
     @EventHub, `Arc<ResourceReaders>` / écrivains, `Arc<dyn SecretResolver>`, la fabrique d'inférence (`InferenceFactory` de ../workflow/subagent_step.sdd
     réutilisée), `TurnGate`, l'horloge, les limites (`max_open_per_user` défaut 8, `idle_ttl` défaut 30 min avant déchargement mémoire).
-  `open(&self, subject: &str, kind: SessionKind, agent_id: &str) -> Result<SessionHandle, LymailleError>` : `Identity::resolve` ; `kind = Sub` →
-    `InvalidDefinition("sub sessions are not interactive")` ; l'agent doit être résoluble pour ce principal (`AgentStore::get_agent`) et sa
-    nature égale à `kind` (`work` ↔ `Work`, `config` ↔ `Config`) ; une session `Config` n'est ouverte que si l'agent est de nature `config` ;
+  `open(&self, subject: &str, context: &str, agent: Option<&str>) -> Result<SessionHandle, LymailleError>` (arbitrage `DEC-28` du 2026-11-05 —
+    l'utilisateur choisit un **contexte**, pas un agent parmi N) : `Identity::resolve` ;
+    contexte `H_…` (hôte) : `agent` **obligatoire** (`InvalidDefinition("host sessions need an explicit agent")`), nature `Work` uniquement
+    (une `Config` sur `H_…` → `InvalidDefinition("host contexts do not open config sessions")`), l'agent doit être résoluble par le principal ;
+    sinon le contexte doit être **visible** pour le principal (`G_…` public, nom privé au propriétaire — un autre est `NotFound` indiscernable)
+    et porter un `context_type` **existant** (sinon `InvalidDefinition("context has no usable type")`) ;
+    la nature de la session vient du type (`work` ↔ `Work`, `config` ↔ `Config`) — aucune nature n'est demandée à l'appelant ;
+    l'agent retenu est `agent` sinon le `default_agent` du type (un type sans défaut exige `agent`, sinon
+    `InvalidDefinition("agent required: the context type has no default agent")`) ; l'agent retenu doit appartenir à
+    `allowed_agents` du type, sinon `Forbidden("agent not allowed for this context type")` (erreur typée `MRD-LYMAILLE-002`, AC-19), et sa
+    nature doit égaler celle du type ; ouvrir une session `Config` ne demande **aucun** statut admin — le droit est la visibilité du contexte
+    (FR-9) ; les modules réservés de la session `Config` restent `AdminOnly` à l'usage (`assemble`) ;
     plafond `max_open_per_user` (admin exempté) sinon `Forbidden("too many open sessions")` ; crée un identifiant opaque (UUID v4), sauvegarde
-    l'état initial, rend `SessionHandle { id, kind, agent_id }`.
+    l'état initial avec la colonne `context` de la ligne posée à `context` et la colonne `kind` à la nature résolue, rend
+    `SessionHandle { id, kind, agent_id, context }`.
+  La colonne `context` d'une session est **immuable après l'ouverture** : tout enregistrement ultérieur de la ligne (`save` du state par le tour,
+    reprise) met `state`/`kind`/`updated_at` à jour et **ne touche jamais** `context` (`ON CONFLICT DO UPDATE` sans la colonne) ; `resume` relit
+    la ligne et rend le contexte persisté. Un `resume` dont la ligne n'a pas de `context` (session d'avant le lot 2 — impossible en practice,
+    garde) est traité `NotFound`.
+    Limite mono-réplique : le verrou `TurnGate` et le déchargement `idle_ttl` sont **par processus** ; la crate cible un déploiement
+    mono-réplique — plusieurs répliques nécessitent de l'affinité de session (aucune détection inter-processus, `session#DEC-1` de `lymaille`,
+    dernier `save` gagne).
   `send(&self, subject, id, text: String, token: Option<Zeroizing<String>>) -> Result<(), LymailleError>` : cloisonne (la session doit appartenir à
     `subject`, sinon `NotFound` indiscernable d'une session absente) ; `TurnGate::try_begin` immédiat, `TurnActive` → `Conflict("turn active")` ; lance le
     tour en tâche détachée (`run_turn` avec son `CancelHandle` enfant) et revient sans attendre ; `token` n'est vivant que pendant ce tour
@@ -59,9 +76,10 @@ Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./manager.rs.
 
 Scenario: ouvrir, envoyer, recevoir la réponse par le hub
-  Given un utilisateur et un agent `work` scripté
-  When `open`, `subscribe`, `send("bonjour")`
-  Then les événements `TurnStarted`, `TextDelta…`, `TurnEnded` arrivent dans l'ordre et l'état est sauvegardé
+  Given un utilisateur, un contexte privé dont le `context_type` est de nature `work` avec un agent par défaut scripté
+  When `open(context, None)`, `subscribe`, `send("bonjour")`
+  Then la session rendue porte la nature `Work` et l'agent par défaut du type ; les événements `TurnStarted`, `TextDelta…`, `TurnEnded` arrivent
+    dans l'ordre et l'état est sauvegardé
 
 Scenario: un second tour est refusé
   Given un tour actif
@@ -93,15 +111,40 @@ Scenario: reprise avec avis
   When `resume`
   Then la reprise réussit et `notices` est non vide
 
-Scenario: une session Config exige un agent config, Sub est refusée
-  Given un agent `work`
-  When `open(Config)` avec lui, puis `open(Sub)`
-  Then deux erreurs
+Scenario: la nature vient du type, l'agent doit être autorisé
+  Given un contexte `c1` de type `t` (nature `config`, `default_agent` `a-config`, `allowed_agents` `{a-config}`) et un agent `a-work` de nature `work`
+  When `open(c1, None)` par un non-admin (ouvrir une `Config` n'exige aucun admin, FR-9), puis `open(c1, Some(a-work))`
+  Then la première ouvre une session `Config` avec `a-config`, la seconde est `Forbidden("agent not allowed for this context type")` (`MRD-LYMAILLE-002`, AC-19)
+
+Scenario: un contexte sans type exploitable est refusé
+  Given un contexte sans `context_type`, puis un contexte dont le `context_type` ne désigne aucun type existant
+  When `open(context, None)` dans les deux cas
+  Then deux `InvalidDefinition("context has no usable type")` et aucune session créée
+
+Scenario: un contexte hôte exige un agent de travail explicite
+  Given un contexte `H_…` rendu par l'hôte et un agent `work` résoluble
+  When `open(H_…, None)`, puis `open(H_…, Some(agent-work))`, puis `open(H_…, Some(agent-config))` (agent de nature `config`)
+  Then `InvalidDefinition("host sessions need an explicit agent")` ; une session `Work` ouverte ; `InvalidDefinition("host contexts do not open config sessions")`
+
+Scenario: le contexte de la session est immuable
+  Given une session ouverte sur `c1`, puis un tour sauvegardé (`save` de la ligne par le tour)
+  When on relit la ligne `sessions`
+  Then la colonne `context` est toujours `c1` alors que `state`/`updated_at` ont changé, et `resume` rend `c1`
 
 Scenario: plafond de sessions ouvertes
   Given `max_open_per_user = 2` et deux sessions ouvertes
   When un non-admin ouvre une troisième
   Then `Forbidden("too many open sessions")` ; un admin y parvient
+
+Scenario: fermer libère la session
+  Given une session ouverte dont un tour est actif
+  When `close`, puis `send` sur cette session
+  Then le tour est annulé, le hub est fermé, et `send` rend le même `NotFound` qu'une session absente ; l'état persisté demeure relisible par `resume`
+
+Scenario: list résume les sessions de l'appelant
+  Given deux sessions de `alice` (dont une avec un titre sensible) et une session de `bob`
+  When `list` par `alice`
+  Then deux résumés dont le titre est masqué (`Redactor`), aucune trace de la session de `bob`
 
 Scenario: le jeton n'est jamais persisté
   Given un `send` avec un jeton

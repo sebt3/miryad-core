@@ -27,6 +27,12 @@ pub mod error;
 /// `mod.sdd` sont la tâche R7 du lot 2.
 pub mod host;
 
+/// Socle des sessions interactives (`src/lymaille/interactive/mod.sdd`) — déclaration minimale
+/// du réalignement R8 (DSD `DEC-30`) : seuls `event` et `hub` existent à ce jour. La
+/// finalisation du `mod.rs` du dossier et les ré-exports plats du présent fichier sont la tâche
+/// R7 (amendement DEC-27/DEC-30 de ./mod.sdd).
+pub mod interactive;
+
 /// Identité de l'appelant : principal reconstruit par appel, préfixe réservé `G_`, droits
 /// d'accord de modules (`src/lymaille/identity.sdd`).
 pub mod identity;

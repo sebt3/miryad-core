@@ -17,13 +17,15 @@ References:
 
 Must:
   `Entity`/`Model`/`ActiveModel`, `table_name = "miryad_lymaille_user_contexts"`, `Model` : `id: i32` (PK), `owner_id: i32`, `name: String`, `context:
-    serde_json::Value`, `created_at: DateTimeUtc` ; unicité `(owner_id, name)` par la migration.
+    serde_json::Value`, `context_type: Option<String>` (référence par `name` à un type du catalogue — arbitrage `DEC-28` du 2026-11-05 ; existence
+    vérifiée à l'ouverture de session, pas au hook), `created_at: DateTimeUtc` ; unicité `(owner_id, name)` par la migration.
   `impl MiryadResource` : `resource_name()` = `"lymaille_contexts"` ; lecture `OwnerOnly` ; écriture `OwnerOnly` ; `owner_column()` = `Some(Column::OwnerId)` ;
     `filter_column()` = `None` ; `label_column()` = `Some(Column::Name)`. `owner_id` est posé par le moteur (injection du propriétaire).
   `before_create` / `before_update` (`HookError` sans code) : `context` désérialisable en `ToolsetContext` sans secret ; `level` = `User` ;
     `name` ne commence ni par `G_` ni par `g_` (`classify` = `Private`, sinon « user context name cannot use the catalog prefix ») ; un
     identifiant `H_…` (résolu par l'hôte, DSD `DEC-27`) n'est jamais écrit par cette ressource, `classify` = `Host` (ou préfixe `h_`) →
-    « user context name cannot use the host prefix » ; `name`
+    « user context name cannot use the host prefix » ; `context_type` posé : de forme identifiant valide (grammaire `lymaille`, sans préfixe
+    réservé — même porte que `catalog_context.sdd`, symétrisée 2026-11-05 ; existence du type vérifiée à l'ouverture, pas ici) ; `name`
     réécrit depuis le contexte ; `before_update` : `name` ne change pas.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 

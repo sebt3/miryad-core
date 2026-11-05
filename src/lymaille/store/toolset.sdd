@@ -40,7 +40,9 @@ Must:
     synchrone — le contrôle d'autorité reste à l'assemblage et à l'appel). Le niveau `Session` d'un contexte reste interne (aucune table).
     Une ligne de type créée par le store (brouillon seul) ne porte **pas** les champs DEC-28 (`kind` vide, `default_agent` `NULL`,
     `allowed_agents` vide) : le store ne les invente pas ; les hooks de l'entité refuseront l'activation tant que l'admin n'aura pas complété
-    la ligne par le CRUD (acté 2026-11-04).
+    la ligne par le CRUD (acté 2026-11-04). `put_context` n'écrit que la colonne `context` : `context_type` posé par le CRUD d'une ligne
+    existante est **préservé** à l'upsert (jamais effacé par la session de configuration) ; une ligne créée par `put_context` naît avec
+    `context_type` `NULL` (la session ouvrable exige un type — erreur typée à l'ouverture).
 
   **Amendement DEC-27 (2026-11-03)** : `get_context(H_…)` (`IdKind::Host`) délègue à `LymailleHost::resolve_context(id, caller)` avec le principal relu, sans table ; sans hôte, ou si l'hôte répond `None` ou `Err`, `Ok(None)`.
     `put_context(H_…)` est refusé par `check_write` (`ToolsetsError::Store(<Display>)`). `get_active`, `get_draft` et `put_draft` d'un nom `H_…` : lecture `Ok(None)`, écriture refusée, sans accès table.

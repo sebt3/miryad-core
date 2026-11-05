@@ -93,6 +93,10 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # `Module` Rhai du module des ressources (src/lymaille/resource_module.sdd) ; version unifiée
 # avec celle de `lymaille`, un seul exemplaire dans le graphe.
 rhai = { version = "1.27", default-features = false, features = ["std", "sync"], optional = true }
+# Export TypeScript des événements de session (src/lymaille/mod.sdd, amendement DEC-27/DEC-30) ;
+# features par défaut uniquement (`serde-compat`) : aucune feature d'implémentation de type tiers —
+# `at` est un `String`, `payload` est exporté `unknown` (DSD `DEC-30`).
+ts-rs = { version = "12", optional = true }
 
 [features]
 default = ["static-frontend", "db"]
@@ -110,7 +114,9 @@ systemone = []
 # Client Matrix de bot (src/matrix/mod.sdd), hors `default` (arbitrage 2026-10-06).
 matrix = ["db", "dep:matrix-sdk", "dep:matrix-sdk-crypto", "dep:matrix-sdk-store-encryption", "dep:zeroize", "dep:tokio"]
 # Hôte de la bibliothèque `lymaille` (src/lymaille/mod.sdd), hors `default` (arbitrage 2026-11-02) ; implique `db`.
-lymaille = ["db", "dep:lymaille", "dep:rustls", "dep:zeroize", "dep:tokio", "dep:vynil-core", "dep:rhai"]
+# `dep:uuid` (amendement R10 du 2026-11-05) : identifiant opaque des sessions du SessionManager —
+# `Depends on: @uuid` de `src/lymaille/interactive/manager.sdd`.
+lymaille = ["db", "dep:lymaille", "dep:rustls", "dep:zeroize", "dep:tokio", "dep:vynil-core", "dep:rhai", "dep:chrono", "dep:ts-rs", "dep:uuid"]
 
 [dev-dependencies]
 sea-orm = { version = "2", features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "macros", "mock"] }

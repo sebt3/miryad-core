@@ -69,6 +69,11 @@ Must:
     `lymaille` rendu 101 par l'absence du nom) ; et `cargo tree --no-default-features --features lymaille -e normal -i sea-orm`
     dont la sortie doit **contenir une ligne** `sea-orm` (la feature implique `db`, DSD `AC-2`) — le pas échoue si cargo
     rend un code non nul ou si la sortie est vide.
+  **Amendement 2026-11-04 (DEC-27/DEC-30, `../../src/lymaille/mod.sdd`)** — complète l'amendement 2026-11-03 sans le réécrire : le job
+    de preuve de graphe de `./ci.yml` gagne un contrôle `ts-rs` : `cargo tree --no-default-features -e normal -i ts-rs` dont la **sortie
+    standard doit être vide** — la dépendance n'existe que sous `lymaille` ; même convention que le contrôle `lymaille` : le critère est la
+    sortie vide, pas le code de sortie (`../../tooling.sdd`) ; le pas échoue si la sortie est non vide, le code de sortie n'est pas bloquant
+    sur ce contrôle seul. `../../AGENTS.md` et `../../tooling.sdd` amendés le même jour (accord explicite du développeur principal sur ces fichiers hors périmètre).
 
 Must not:
   Publier alors que les tests ou le harnais ont échoué.

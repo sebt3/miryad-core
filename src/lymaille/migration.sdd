@@ -61,8 +61,10 @@ Must:
       d'identifiants, DSD `DEC-28`) ; `active` JSON NULL ; `draft` JSON NULL ; `created_at`. Les trois colonnes `DEC-28` sont posées en
       modification en place de `m20261104_000001` (exception `/AGENTS.md` du 2026-11-03, feature jamais déployée) ; contrat de l'entité :
       ./definitions/context_type.sdd.
-    `catalog_contexts` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** (`G_…`) ; `context` JSON NOT NULL ; `created_at` (contextes de niveau `Project`).
-    `user_contexts` — `id` PK auto ; `owner_id` INTEGER NOT NULL ; `name` TEXT NOT NULL ; `context` JSON NOT NULL ; `created_at` ; `UNIQUE(owner_id, name)`.
+    `catalog_contexts` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** (`G_…`) ; `context` JSON NOT NULL ; `context_type` TEXT NULL (arbitrage
+      `DEC-28` du 2026-11-05 : référence par `name` vers `catalog_context_types` ; posée par l'amendement en place du 2026-11-05, `/AGENTS.md`) ; `created_at` (contextes de niveau `Shared`).
+    `user_contexts` — `id` PK auto ; `owner_id` INTEGER NOT NULL ; `name` TEXT NOT NULL ; `context` JSON NOT NULL ; `context_type` TEXT NULL
+      (même arbitrage) ; `created_at` ; `UNIQUE(owner_id, name)`.
     `mcp_servers` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** ; `url` TEXT NOT NULL ; `request_timeout_secs` INTEGER NOT NULL ; `connect_timeout_secs`
       INTEGER NOT NULL ; `auth_mode` TEXT NOT NULL ; `auth_ref` TEXT NULL ; `allowed_groups` JSON NOT NULL ; `created_at`.
     `write_journal` — PK(`run_key`, `step_key`, `op_key`) ; `result` JSON NOT NULL ; `created_at` (../store/write_journal.sdd).
@@ -72,6 +74,8 @@ Must:
     `matrix_rooms` — `room_id` TEXT PK ; `subject` ; `session_id` ; `agent_id` ; `updated_at` (../chat/bridge.sdd).
     `matrix_events` — `event_id` TEXT PK ; `seen_at` ; index (`seen_at`).
     Les tables `matrix_*` sont créées même sans la feature `matrix` (le schéma ne dépend pas des features, comme les autres migrations de la crate).
+    `sessions` : le lot 2 **ajoute** la colonne `context` TEXT NULL (le contexte sur lequel la session est ouverte — arbitrage `DEC-28` du
+      2026-11-05 ; ajout par `ALTER TABLE … ADD COLUMN` portables SQLite/Postgres, jamais par une retouche de `m20261103_000001`).
     `down` supprime les tables du lot 2 dans l'ordre inverse **sans** recréer `context_types` ni `contexts`.
 
 Must not:
@@ -122,3 +126,8 @@ Scenario: le type de contexte porte les trois colonnes pilotes du contexte
   Given les migrations appliquées sous `lymaille`
   When on inspecte `miryad_lymaille_catalog_context_types` (`has_column`)
   Then `kind` (`TEXT NOT NULL`), `default_agent` (TEXT nullable) et `allowed_agents` (`JSON NOT NULL`) existent, et le `up` est idempotent
+
+Scenario: les contextes portent leur type et les sessions leur contexte
+  Given les migrations appliquées sous `lymaille`
+  When on inspecte `catalog_contexts`, `user_contexts` et `sessions` (`has_column`)
+  Then `context_type` (TEXT nullable) existe sur les deux tables de contextes, et `context` (TEXT nullable) sur `sessions` ; le `down` du lot 2 les retire avec la table (ou laisse `sessions` sans `context` pour la remontée lot 1, cohérent avec le `down` qui ne recrée pas les tables du lot 2)

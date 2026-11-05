@@ -391,6 +391,7 @@ mod m20261104_000001_lymaille_lot2 {
                     id(),
                     unique_text("name"),
                     json("context"),
+                    opt_text("context_type"),
                     timestamp("created_at"),
                 ],
                 primary_key: &[],
@@ -401,6 +402,7 @@ mod m20261104_000001_lymaille_lot2 {
                     id(),
                     owner("owner_id"),
                     text("name"),
+                    opt_text("context_type"),
                     json("context"),
                     timestamp("created_at"),
                 ],
@@ -571,14 +573,43 @@ mod m20261104_000001_lymaille_lot2 {
                 }
                 manager.create_index(index.take()).await?;
             }
+            // Réalignement R10 (DSD `DEC-28`, arbitrage du 2026-11-05) : le lot 2 **ajoute** la
+            // colonne `context` TEXT NULL à `sessions` (le contexte sur lequel la session est
+            // ouverte, immuable après l'ouverture), par `ALTER TABLE … ADD COLUMN` portable —
+            // jamais par une retouche du lot 1. Le rejeu du `Must` parent (idempotence) garde
+            // l'ajout par `has_column` : sans ce garde, le second `up` échouerait sur une colonne
+            // déjà présente.
+            if !manager
+                .has_column(table_name("sessions").as_str(), "context")
+                .await?
+            {
+                manager
+                    .alter_table(
+                        Table::alter()
+                            .table(Alias::new(table_name("sessions")))
+                            .add_column(opt_text("context"))
+                            .to_owned(),
+                    )
+                    .await?;
+            }
             Ok(())
         }
 
-        /// Remontée stricte, non idempotent (règle de `src/migration/mod.sdd`) : `drop_table` sans
-        /// `if_exists`, tables dans l'ordre inverse de `up`, **sans** recréer `context_types` ni
-        /// `contexts` (clause de l'amendement lot 2 : la suppression des tables internes n'est
-        /// annulée par aucun `down` — leur réapparition relève d'un acte manuel).
+        /// Remontée stricte, non idempotent (règle de `src/migration/mod.sdd`) : colonne `context`
+        /// de `sessions` retirée d'abord (c'est le lot 2 qui l'a ajoutée — R10, chaîne `down`
+        /// cohérente), puis `drop_table` sans `if_exists`, tables dans l'ordre inverse de `up`,
+        /// **sans** recréer `context_types` ni `contexts` (clause de l'amendement lot 2 : la
+        /// suppression des tables internes n'est annulée par aucun `down` — leur réapparition
+        /// relève d'un acte manuel).
         async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+            manager
+                .alter_table(
+                    Table::alter()
+                        .table(Alias::new(table_name("sessions")))
+                        .drop_column(Alias::new("context"))
+                        .to_owned(),
+                )
+                .await?;
             for spec in table_specs().iter().rev() {
                 manager
                     .drop_table(
@@ -654,7 +685,12 @@ mod tests {
     /// Les dix tables de l'« Amendement lot 2 », suffixe + colonnes déclarées, dans l'ordre de
     /// `up` (`down` le parcourt à l'envers). `catalog_context_types` porte les trois colonnes du
     /// réalignement R2 (DSD `DEC-28`, modification en place actée le 2026-11-03) : nature, agent
-    /// par défaut, ensemble des agents autorisés.
+    /// par défaut, ensemble des agents autorisés. Les deux tables de contextes portent en plus
+    /// `context_type` (TEXT nullable, référence par `name` à un type du catalogue — arbitrage
+    /// `DEC-28` du 2026-11-05, modification en place, `/AGENTS.md`) ; la colonne `context` de
+    /// `sessions` n'y figure pas : elle n'est pas déclarée par le lot 2, elle y est **ajoutée**
+    /// par `ALTER TABLE` (son test propre, « les contextes portent leur type et les sessions leur
+    /// contexte »).
     const TABLES_LOT2: [(&str, &[&str]); 10] = [
         (
             "catalog_context_types",
@@ -670,10 +706,13 @@ mod tests {
                 "created_at",
             ],
         ),
-        ("catalog_contexts", &["id", "name", "context", "created_at"]),
+        (
+            "catalog_contexts",
+            &["id", "name", "context", "context_type", "created_at"],
+        ),
         (
             "user_contexts",
-            &["id", "owner_id", "name", "context", "created_at"],
+            &["id", "owner_id", "name", "context", "context_type", "created_at"],
         ),
         (
             "mcp_servers",
@@ -982,6 +1021,86 @@ mod tests {
                 "la table {name} porte la colonne {column} (réalignement R2, DSD `DEC-28`)"
             );
         }
+    }
+
+    /// Scenarios (réalignement R10, DSD `DEC-28`, arbitrage du 2026-11-05) : « les contextes
+    /// portent leur type et les sessions leur contexte ». Après le `up` complet, `context_type`
+    /// (TEXT nullable) existe sur `catalog_contexts` et `user_contexts` (modification en place du
+    /// `up`, exception `/AGENTS.md`, tables jamais déployées), et `context` (TEXT nullable) existe
+    /// sur `sessions` — ajoutée par `ALTER TABLE` par le lot 2, jamais par une retouche du lot 1.
+    #[tokio::test]
+    async fn contexts_carry_their_type_and_sessions_their_context() {
+        let db = fresh_db().await;
+        LymailleMigrator::up(&db, None)
+            .await
+            .expect("le up complet pose les schémas des deux lots");
+        let manager = SchemaManager::new(&db);
+        for suffix in ["catalog_contexts", "user_contexts"] {
+            let name = table(suffix);
+            assert!(
+                manager
+                    .has_column(name.as_str(), "context_type")
+                    .await
+                    .expect("has_column probe succeeds"),
+                "la table {name} porte la colonne context_type (arbitrage DEC-28 du 2026-11-05)"
+            );
+        }
+        assert!(
+            manager
+                .has_column(table("sessions").as_str(), "context")
+                .await
+                .expect("has_column probe succeeds"),
+            "la table des sessions porte la colonne context ajoutée par le lot 2 (DEC-28)"
+        );
+    }
+
+    /// Scenario (réalignement R10, DSD `DEC-28`) : la remontée du lot 2 retire ces colonnes —
+    /// `context_type` part avec les tables de contextes (elles sont du lot 2), `context` est
+    /// supprimée de `sessions` par le `down` du lot 2, qui l'a ajoutée : la chaîne `down` est
+    /// cohérente avec le `up`, et un rejeu complet repose la colonne.
+    #[tokio::test]
+    async fn lot2_rollback_removes_the_columns_it_added() {
+        let db = fresh_db().await;
+        let manager = SchemaManager::new(&db);
+        LymailleMigrator::up(&db, None)
+            .await
+            .expect("premier up complet réussit");
+        LymailleMigrator::down(&db, Some(1))
+            .await
+            .expect("un pas de down défait le lot 2, dernière appliquée");
+        for suffix in ["catalog_contexts", "user_contexts"] {
+            assert!(
+                !manager
+                    .has_table(table(suffix).as_str())
+                    .await
+                    .expect("has_table probe succeeds"),
+                "{suffix} est supprimée avec ses colonnes par le down du lot 2"
+            );
+        }
+        assert!(
+            manager
+                .has_table(table("sessions").as_str())
+                .await
+                .expect("has_table probe succeeds"),
+            "le down du lot 2 ne touche pas la table sessions du lot 1"
+        );
+        assert!(
+            !manager
+                .has_column(table("sessions").as_str(), "context")
+                .await
+                .expect("has_column probe succeeds"),
+            "le down du lot 2 retire la colonne context qu'il avait ajoutée (chaîne down cohérente)"
+        );
+        LymailleMigrator::up(&db, None)
+            .await
+            .expect("le rejeu du up complet réussit après la remontée");
+        assert!(
+            manager
+                .has_column(table("sessions").as_str(), "context")
+                .await
+                .expect("has_column probe succeeds"),
+            "le rejeu du up repose la colonne context (ALTER gardé, idempotence du `Must` parent)"
+        );
     }
 
     /// Scenarios (amendement lot 2, tâche « tests `has_table`/`has_index` d'abord ») : la

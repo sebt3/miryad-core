@@ -41,8 +41,8 @@ Exposes:
   `EventHub::{new, register, subscribe, close, publish_host}`, `HOST_PAYLOAD_MAX`, `Subscription::recv`, `impl EventSink`
 
 Tasks:
-  [ ] Réalignement R8 (DSD `DEC-30`, 2026-11-03) : spec amendée (diffusion de `SessionEvent`, `publish_host`) avec la spec neuve ./event.sdd ; **en attente d'approbation**.
-  [ ] Tests d'abord (temps tokio), puis ./hub.rs. Après ./event.rs.
+  [x] Réalignement R8 (DSD `DEC-30`, 2026-11-03) : spec amendée (diffusion de `SessionEvent`, `publish_host`) avec la spec neuve ./event.sdd. Spec approuvée le 2026-11-04.
+  [x] Tests d'abord (temps tokio), puis ./hub.rs. Après ./event.rs. Validé 2026-11-05 (validator PASS checkpoint 5 — 10 Scenario verrouillés).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./hub.rs.
