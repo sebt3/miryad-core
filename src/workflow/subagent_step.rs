@@ -116,13 +116,6 @@ use super::step::StepError;
 /// strictement sous la borne ≈ 11 min d'un `ctx.run` par défaut.
 pub const DEFAULT_MAX_SECS: u64 = 480;
 
-/// Plafond absolu de `max_secs` (DSD `OI-4`) : plafond du lot 1, figé à 540 s avant
-/// l'amendement DEC-29. Depuis DEC-29, la validation de `max_secs` regarde le plafond
-/// d'application du step (`max_secs_ceiling`, défaut [`DEFAULT_LONG_CEILING_SECS`]), plus cette
-/// constante ; elle reste exposée car `Exposes` de la spec la nomme — question `[?]` remontée
-/// pour la retirer de la surface au prochain amendement.
-pub const MAX_SECS_CEILING: u64 = 540;
-
 /// Nom du contexte de toolsets et type de contexte des sessions produites par le step : la même
 /// clé partout, pour que la reprise retrouve un contexte homologue. Identifiant valide au sens de
 /// `identity::classify` (amendement lot 2 : c'est aussi le nom sous lequel le store des contextes
