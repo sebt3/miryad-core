@@ -6,7 +6,7 @@ Purpose:
     Au lot 1 toutes sont du **catalogue** (écriture `AdminOnly`, `owner_column() = None`, identifiant `G_…` pour agents et toolsets, tables
     `catalog_*`). Les lignes privées vivent dans des tables distinctes (`agents`, `toolsets`, `owner_id` non nul), écrites par les stores ; leurs
     entités `OwnerOnly` — seconde ressource de la paire, aux droits distincts — arrivent au lot 2 (DSD `DEC-19`, ../store/mod.sdd). Les tables internes (sessions,
-    mémoires, types de contexte, contextes) n'ont pas d'entité ici. Fichier neuf, conception.
+    mémoires) n'ont pas d'entité ici ; les types de contexte et les contextes en reçoivent au lot 2 (`DEC-20`, amendement ci-dessous). Fichier neuf, conception.
 
 Owns:
   ./mod.rs
@@ -30,7 +30,7 @@ Must:
     REST/MCP comme celles du lot 1 ; aucune n'est enregistrée par défaut.
 
 Must not:
-  Déclarer d'entité pour sessions, mémoires, types de contexte ou contextes (DSD `DEC-14`).
+  Déclarer d'entité pour les sessions ou les mémoires (DSD `DEC-14`) — types de contexte et contextes sont des ressources depuis le lot 2 (`DEC-20`).
 
 Depends on:
   ./agent.rs, ./toolset.rs, ./profile.rs, ./provider.rs
@@ -39,7 +39,11 @@ Exposes:
   modules `agent`, `toolset`, `profile`, `provider`
 
 Tasks:
-  [ ] Amendement lot 2 : déclaration des six enfants, test de chemins étendu d'abord, puis ./mod.rs en dernier.
+  [x] Amendement lot 2 : déclaration des six enfants, test de chemins étendu d'abord, puis ./mod.rs en dernier.
+    Validé 2026-11-06 (validator PASS : doc alignée sur les dix entités et leurs politiques réelles vérifiées dans les enfants ; test étendu verrouillant les dix chemins, les dix noms exacts et leur distinction ; rien hors Owns ; lymaille vert en tests et clippy `-D warnings`, `fmt`).
+    [!] soldé en séance par spec-dd : le Purpose et le `Must not` portaient encore « types de contexte, contextes n'ont pas d'entité ici », en contradiction avec l'amendement lot 2 approuvé de la même spec et `DEC-20` — limités à « sessions, mémoires » avec renvoi à `DEC-20`. Correction de cohérence, pas un nouveau contrat ; à reconfirmer.
+    [?] (validator) : la parenthèse « tables `catalog_*` » du bloc //! sur-génère — `profiles`, `providers` et `mcp_servers` ne portent pas ce préfixe. Resserrer la formulation ou l'assumer comme label de famille ?
+    [?] (validator) : le rouge du « test d'abord » était structurellement impossible ici (les six modules préexistaient au code du lot) — la phase est satisfaite par l'extension de couverture seule, acté ?
   [x] `mod.rs` en dernier du dossier (après les quatre enfants) ; test de chemins. Validé 2026-11-02 (validator PASS).
 
 Done when:
