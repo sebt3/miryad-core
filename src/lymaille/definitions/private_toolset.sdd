@@ -44,7 +44,9 @@ Tasks:
     `./private_agent.rs`, dictée par les specs respectives.
   [x] Arbitré le 2026-11-06 : messages `host prefix` et `invalid … id` nommés au `Must`.
   [x] Arbitré le 2026-11-06 : `created_at` d'un update reste porté par `rest::core` (@mark_all_set) et verrouillé par le test moteur ; pas de `Scenario` de plus.
-  [ ] Alignement sur le préfixe (arbitrage du 2026-11-06) : `H_`/`h_` rend « toolset id cannot use the host prefix » (aujourd'hui `h_` rend « catalog prefix ») ; tests d'abord (nouveau `Scenario`), puis ./private_toolset.rs.
+  [x] Alignement sur le préfixe (arbitrage du 2026-11-06) : `H_`/`h_` rend « toolset id cannot use the host prefix » (aujourd'hui `h_` rend « catalog prefix ») ; tests d'abord (nouveau `Scenario`), puis ./private_toolset.rs.
+    Validé 2026-11-06 (validator PASS : dispatch du payload `ReservedPrefix` isomorphe au jumeau `./private_agent.rs` (5bf170a) ; Scenario hôte couvert aux deux casses au message exact, catalogue et `G_` intacts ; lymaille vert en tests et clippy `-D warnings`, `fmt`).
+    [?] (validator, porté du cycle `./private_agent.sdd`) : la convention « un test par casse » est appliquée deux fois — mérite-t-elle une ligne dans la checklist de production des specs de `/miryad-core.sdd` ?
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./private_toolset.rs.

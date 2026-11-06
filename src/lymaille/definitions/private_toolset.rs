@@ -63,18 +63,26 @@ impl ActiveModelBehavior for ActiveModel {}
 
 impl Entity {
     /// Étape d'identifiant du `Must` de `./private_toolset.sdd` : le `name` doit être `Private`
-    /// au sens de `identity::classify` (DSD `DEC-9`) — `Catalog` et `ReservedPrefix` (le préfixe
-    /// `g_`/`h_` en casse réservée) sont refusés sous le message contractualisé « toolset id
-    /// cannot use the catalog prefix ». L'identifiant `H_` résolu par l'hôte (DSD `DEC-27`) et un
-    /// identifiant invalide au sens Rhai sont refusés sous des messages que la spec ne
-    /// contractualise pas (choix provisoire signalé `[?]`, cohérent avec `./user_context.rs`).
+    /// au sens de `identity::classify` (DSD `DEC-9`). Distinction par préfixe alignée sur
+    /// `./user_context.rs` (arbitrage du 2026-11-06) : `G_`/`g_` → « toolset id cannot use the
+    /// catalog prefix » ; `H_`/`h_` (dont la casse réservée `h_` rend `ReservedPrefix` au sens de
+    /// `classify`, DSD `DEC-27`) → « toolset id cannot use the host prefix » ; identifiant invalide
+    /// au sens Rhai → « invalid toolset id ».
     fn verifier_identifiant(name: &str) -> Result<(), HookError> {
         match identity::classify(name) {
             Ok(identity::IdKind::Private) => Ok(()),
-            Ok(identity::IdKind::Catalog) | Err(crate::lymaille::error::LymailleError::ReservedPrefix(_)) => {
-                Err(HookError::new("toolset id cannot use the catalog prefix"))
-            }
+            Ok(identity::IdKind::Catalog) => Err(HookError::new("toolset id cannot use the catalog prefix")),
             Ok(identity::IdKind::Host) => Err(HookError::new("toolset id cannot use the host prefix")),
+            Err(crate::lymaille::error::LymailleError::ReservedPrefix(identifiant)) => {
+                if identifiant
+                    .get(..2)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("g_"))
+                {
+                    Err(HookError::new("toolset id cannot use the catalog prefix"))
+                } else {
+                    Err(HookError::new("toolset id cannot use the host prefix"))
+                }
+            }
             Err(_) => Err(HookError::new("invalid toolset id")),
         }
     }
@@ -369,6 +377,56 @@ mod tests {
                 }
                 Ok(_) => panic!("le toolset `{name}` devait être refusé"),
             }
+        }
+    }
+
+    /// Scenario « le préfixe hôte est refusé » (moitié majuscule, arbitré le 2026-11-06) :
+    /// `H_git` (`classify` = `Host`, DSD `DEC-27`) est refusé sous le message contractualisé
+    /// « toolset id cannot use the host prefix », sans code `MRD-*` (`Must`).
+    #[test]
+    fn before_create_refuse_un_identifiant_hote() {
+        let rendu = Entity::before_create(
+            active_avec(Some(version_json("H_git", "1.0.0")), None),
+            &principal(),
+        );
+        match rendu {
+            Err(erreur) => {
+                assert!(
+                    erreur.code.is_none(),
+                    "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
+                );
+                assert_eq!(
+                    erreur.message, "toolset id cannot use the host prefix",
+                    "`H_git` porte le préfixe hôte"
+                );
+            }
+            Ok(_) => panic!("`H_git` est un identifiant résolu par l'hôte, jamais écrit ici"),
+        }
+    }
+
+    /// Scenario « le préfixe hôte est refusé » (moitié minuscule, alignement arbitré le
+    /// 2026-11-06 sur `./user_context.sdd`) : `h_git` — `ReservedPrefix` au sens de `classify`,
+    /// préfixe `h_` — est refusé sous le **même** message que `H_git`, « toolset id cannot use
+    /// the host prefix », et non sous « catalog prefix ».
+    #[test]
+    fn before_create_refuse_le_prefixe_hote_minuscule() {
+        let rendu = Entity::before_create(
+            active_avec(Some(version_json("h_git", "1.0.0")), None),
+            &principal(),
+        );
+        match rendu {
+            Err(erreur) => {
+                assert!(
+                    erreur.code.is_none(),
+                    "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
+                );
+                assert_eq!(
+                    erreur.message, "toolset id cannot use the host prefix",
+                    "`h_git` porte le préfixe hôte sous casse réservée, pas le préfixe \
+                     catalogue"
+                );
+            }
+            Ok(_) => panic!("`h_git` porte le préfixe hôte réservé, jamais écrit ici"),
         }
     }
 
