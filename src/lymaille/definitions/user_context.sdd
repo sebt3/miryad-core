@@ -57,7 +57,7 @@ Scenario: le préfixe catalogue est refusé
   Then `Err(HookError)`
 
 Scenario: un niveau shared est refusé dans la table privée
-  Given un contexte de niveau `shared` (nom amont `project`, jeton JSON `project`)
+  Given un contexte de niveau `shared` (nom amont `project`, alias de lecture JSON `project`, jeton JSON écrit `shared`)
   When `before_create`
   Then `Err(HookError)`
 

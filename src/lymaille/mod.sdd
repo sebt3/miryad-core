@@ -90,7 +90,9 @@ Tasks:
   [x] Arbitré le 2026-11-06 : refus ratifié et tracé au `Must` et au `Scenario` de `./interactive/manager.sdd`.
   [x] Arbitré le 2026-11-06 : les références « 0.1.0 » historiques de `../definitions/toolset.rs` et `../interactive/assemble.rs` ne sont pas retouchées.
   [x] Arbitré le 2026-11-06 : @ProviderLevel n'est pas renommé ; à reconfirmer seulement si un ticket amont le reprend.
-  [ ] Micro-tâche de relecture (arbitrage du 2026-11-06) : wording `project` → `shared` dans `../store/toolset.sdd:36` (Given du Scenario), `../definitions/provider.sdd:17`, `../migration.sdd:37`, `../definitions/user_context.sdd:60`. Spec seule.
+  [x] Micro-tâche de relecture (arbitrage du 2026-11-06) : wording `project` → `shared` dans `../store/toolset.sdd:36` (Given du Scenario), `../definitions/provider.sdd:17`, `../migration.sdd:37`, `../definitions/user_context.sdd:60`. Spec seule.
+    Validé 2026-11-06 (validator PASS : wording conforme au contrat observable — `ContextLevel::Shared`/`ProviderLevel::Shared` écrivent `shared`, alias `project` en lecture seule, aucun CHECK dans ./migration.rs ; grep résiduel limité aux lignes d'historique et à l'annotation d'alias ; `specdd lint` ×4 et `fmt` verts, zéro code touché).
+    [?] (validator) : le doc-comment de `../definitions/provider.rs:32` porte encore « Niveau du provider (`user` ou `project`) » — purement documentaire, à corriger au prochain passage sur ce fichier (la case disait « spec seule »).
   [x] Réalignement R7 (DSD `DEC-27, DEC-30`, 2026-11-03) : spec amendée (déclaration et ré-exports de `host`, `SessionEvent`, `export_typescript`, `resolve_role`, `SeaHostMcpAuth` ; `Cargo.toml` : `dep:chrono`,
     `dep:ts-rs` ; contrôle de graphe de `ts-rs`). Spec approuvée le 2026-11-04.
   [x] Export TypeScript des événements (DSD `OI-12`, soldé le 2026-11-03) : `ts-rs`, dépendance optionnelle derrière la feature `lymaille` ; amendement de `Cargo.toml` : voir la tâche « Amendement DEC-27/DEC-30 » ci-dessous.

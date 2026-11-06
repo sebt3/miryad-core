@@ -34,7 +34,7 @@ Must:
       les deux nuls : contrôle des hooks et du store, pas une contrainte `CHECK`).
     `toolsets` — mêmes colonnes que `catalog_toolsets` plus `owner_id` INTEGER **NOT NULL** ; `UNIQUE(owner_id, toolset_id)`. Sans entité au lot 1.
     `profiles` — `id` PK auto ; `name` TEXT NOT NULL UNIQUE ; `profile` JSON NOT NULL ; `created_at`.
-    `providers` — `id` PK auto ; `name` TEXT NOT NULL UNIQUE ; `kind` TEXT NOT NULL ; `level` TEXT NOT NULL (`user`|`project`) ;
+    `providers` — `id` PK auto ; `name` TEXT NOT NULL UNIQUE ; `kind` TEXT NOT NULL ; `level` TEXT NOT NULL (`user`|`shared`) ;
       `provider` JSON NOT NULL (références seules, jamais de secret) ; `created_at`.
     `context_types` — `name` TEXT PK ; `context_type` JSON NOT NULL — **ne se crée plus** : exception du 2026-11-04 (feature jamais déployée,
       `/AGENTS.md`), remplacée par `catalog_context_types` du lot 2.

@@ -14,7 +14,7 @@ References:
 
 Must:
   `Entity`/`Model`/`ActiveModel`, `#[sea_orm(table_name = "miryad_lymaille_providers")]`, `Model` : `id: i32` (`primary_key`), `name: String`
-    (unique), `kind: String`, `level: String` (`user`|`project`), `provider: serde_json::Value` (colonne `Json`), `created_at: DateTimeUtc`.
+    (unique), `kind: String`, `level: String` (`user`|`shared`), `provider: serde_json::Value` (colonne `Json`), `created_at: DateTimeUtc`.
   `impl MiryadResource for Entity` : `resource_name()` = `"lymaille_providers"` ; `read_policy()` = `AdminOnly` ; `write_policy()` = `AdminOnly` ;
     `owner_column()` = `None` ; `filter_column()` = `None` ; `label_column()` = `Some(Column::Name)`.
   `before_create` / `before_update` : `provider` absent ou non objet → `HookError::new("provider is required")` ; désérialiser en

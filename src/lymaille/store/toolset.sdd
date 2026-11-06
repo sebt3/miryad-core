@@ -33,7 +33,7 @@ Must:
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
   **Amendement lot 2 (2026-11-03, DSD `DEC-20`)** : `SeaContextTypeStore` lit et écrit la table `catalog_context_types` (colonne `active` pour `get_type`,
-    `draft` réservée à ./draft.sdd) ; `SeaContextStore` route par le préfixe : `G_…` → `catalog_contexts` (niveau `Project`, écriture admin), nom
+    `draft` réservée à ./draft.sdd) ; `SeaContextStore` route par le préfixe : `G_…` → `catalog_contexts` (niveau `Shared`, écriture admin), nom
     privé → `user_contexts` avec `owner_id = user_id` (niveau `User`). `get_context` ne rend jamais le contexte privé d'un autre. `put_context` applique,
     en plus de la validation de `lymaille`, le **droit d'usage des serveurs** : chaque rôle lié doit passer `server_for` (../mcp_access.sdd) ; sinon
     `ToolsetsError::Store("MRD-LYMAILLE-002…")` (chemin de la session de configuration ; le chemin REST/MCP des entités ne contrôle pas ici, hook
