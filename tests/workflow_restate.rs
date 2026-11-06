@@ -9,9 +9,15 @@
 //! Lancement explicite :
 //! `cargo test --no-default-features --features workflow --test workflow_restate -- --ignored`.
 //!
-//! Hors périmètre (reste au spike du 2026-09-22 et à `dsd/miryad-core/workflow.md`) : la reprise sur
-//! crash du *processus service* — le serveur de test vit dans le processus du test et ne peut pas
-//! être tué sans tuer le test. Le rejeu d'un step transitoire, lui, est exercé ici.
+//! Reprise sur crash du *processus service* : exercée depuis le 2026-11-06 (preuve de reprise de
+//! `src/workflow/subagent_step.sdd`, DSD `lymaille#AC-10`) par la méthode du spike de
+//! `workflow#AC-8` : `reprise_apres_kill_du_service_sur_step_subagent` ne sert plus dans le
+//! processus du test mais relance le binaire lui-même en *mode service* (`mode_service_restate`,
+//! activé par la variable d'environnement `MIRYAD_RESTATE_SERVE_PORT`), le tue d'un SIGKILL en
+//! cours de step, puis le recharge sur le même port — seul le journal Restate et le fichier de
+//! journal de la fixture (la « session ») survivent. Les autres tests servent toujours dans le
+//! processus, qui ne peut pas y être tué sans tuer le test ; le rejeu d'un step transitoire, lui,
+//! est exercé dans tous les cas ici.
 
 // Famille panic/unwrap/indexation tolérée dans cette crate de test : en-tête d'exemption
 // équivalent à celui de `src/lib.rs`, posé d'après le `Must` de `tooling.sdd` — une crate
@@ -91,6 +97,38 @@ impl Drop for RestateContainer {
     fn drop(&mut self) {
         let _ = Command::new("podman").args(["rm", "-f", &self.name]).output();
     }
+}
+
+/// Conteneur `restate-server` jetable : trois ports libres sur le réseau hôte, nom dérivé du
+/// port applicatif rendu. Le port `app` retourné n'est **pas** binder par cette fonction : c'est
+/// le destinataire qui le lie — l'endpoint en processus pour `Stack`, le sous-processus service
+/// pour la preuve de reprise (`mode_service_restate`). Extraite de `Stack::start_with_options`
+/// le 2026-11-06 pour que le test de reprise (tâche `subagent_step.sdd`, DSD `lymaille#AC-10`)
+/// partage le conteneur sans partager l'endpoint.
+fn lancer_conteneur() -> (RestateContainer, u16, u16, u16) {
+    let (ingress, admin, node, app) = (free_port(), free_port(), free_port(), free_port());
+    let name = format!("miryad-restate-test-{app}");
+    let started = Command::new("podman")
+        .args(["run", "-d", "--name", &name, "--network=host"])
+        .args([
+            "-e",
+            &format!("RESTATE_INGRESS__BIND_ADDRESS=127.0.0.1:{ingress}"),
+        ])
+        .args(["-e", &format!("RESTATE_ADMIN__BIND_ADDRESS=127.0.0.1:{admin}")])
+        .args(["-e", &format!("RESTATE_BIND_ADDRESS=127.0.0.1:{node}")])
+        .args([
+            "-e",
+            &format!("RESTATE_ADVERTISED_ADDRESS=http://127.0.0.1:{node}"),
+        ])
+        .arg(IMAGE)
+        .output()
+        .expect("podman doit être installé");
+    assert!(
+        started.status.success(),
+        "podman run a échoué : {}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    (RestateContainer { name }, ingress, admin, app)
 }
 
 /// Journal partagé des exécutions de steps (`start:<id>`, `end:<id>`), dans l'ordre observé.
@@ -251,6 +289,200 @@ impl MiryadWorkflowStep for Subagent {
     }
 }
 
+// ————— Mode service en sous-processus (preuve de reprise, 2026-11-06) —————————————
+//
+// Le spike `workflow#AC-8` tue le *processus* service, le relance, et vérifie le rejeu. Un
+// endpoint servi par `HttpServer::serve` dans le processus du test ne peut pas être tué ainsi :
+// boucler la tâche d'acceptation laisse les connexions en vol vivre dans leurs tâches spawnées
+// par le SDK (`restate-sdk-0.12.1/src/http_server.rs`). La reprise est donc prouvée contre un
+// vrai second processus : le binaire de test se relance lui-même (`mode_service_restate`,
+// activé par `MIRYAD_RESTATE_SERVE_PORT`), le test parent le tue d'un SIGKILL et en relance un
+// autre sur le même port. Le journal des fixtures s'écrit dans un **fichier** partagée entre
+// les générations — c'est l'analogue de la session `lymaille` sauvegardée (`subagent_step.sdd`
+// étape 8 : nom de session déterministe, reprise et non recommencement), que ni l'une ni l'autre
+// génération ne porte dans sa mémoire.
+
+/// Append une ligne au journal-fichier de la fixture (mode service).
+fn journal_fichier(chemin: &std::path::Path, entree: &str) {
+    use std::io::Write;
+    let fichier = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(chemin)
+        .unwrap_or_else(|erreur| panic!("le journal {} doit être ouvrable : {erreur}", chemin.display()));
+    writeln!(&mut &fichier, "{entree}").expect("une ligne du journal doit être inscriptible");
+}
+
+/// Lignes du journal-fichier ; vide si le fichier n'existe pas encore.
+fn lire_journal(chemin: &std::path::Path) -> Vec<String> {
+    match std::fs::read_to_string(chemin) {
+        Ok(contenu) => contenu.lines().map(str::to_string).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Kind `"record"` à journal-fichier (mode service) : comme `Record`, mais le journal survit au
+/// kill du processus service — c'est ce qui rend la preuve de reprise lisible par le parent.
+struct FileRecord(std::path::PathBuf);
+
+#[async_trait::async_trait]
+impl MiryadWorkflowStep for FileRecord {
+    fn kind(&self) -> &'static str {
+        "record"
+    }
+    async fn run(
+        &self,
+        _run: &RunInfo,
+        config: Value,
+        _inputs: HashMap<String, Value>,
+    ) -> Result<Value, StepError> {
+        let id = config["id"].as_str().unwrap_or_default().to_string();
+        journal_fichier(&self.0, &format!("start:{id}"));
+        journal_fichier(&self.0, &format!("end:{id}"));
+        Ok(json!({ "id": id }))
+    }
+}
+
+/// Kind `"subagent"` à journal-fichier (mode service, fixture de la preuve `AC-10`) : journalise
+/// `start:<id>`, dort `sommeil` (un tour de l'agent en cours, à la `run_batch` de `lymaille`),
+/// puis `end:<id>`. Au rejeu après kill, le `ctx.run` du dispatcher n'ayant rien journalisé, la
+/// fermeture est ré-exécutée par la nouvelle génération ; si le journal-fichier porte déjà un
+/// `start:<id>` (la « session sauvegardée », nom déterministe transposé en `(kind, id)`), la
+/// fixture **ne refait pas le tour** déjà commencé : elle journalise `reprise:<id>` au lieu de
+/// dormir et rend le résultat attendu. Le `end` n'est journalisé qu'une fois.
+struct FileSubagent {
+    journal: std::path::PathBuf,
+    sommeil: Duration,
+}
+
+#[async_trait::async_trait]
+impl MiryadWorkflowStep for FileSubagent {
+    fn kind(&self) -> &'static str {
+        "subagent"
+    }
+    async fn run(
+        &self,
+        _run: &RunInfo,
+        config: Value,
+        _inputs: HashMap<String, Value>,
+    ) -> Result<Value, StepError> {
+        let id = config["id"].as_str().unwrap_or_default().to_string();
+        let session_deja_entamee = lire_journal(&self.journal)
+            .iter()
+            .any(|e| e == &format!("start:{id}"));
+        journal_fichier(&self.journal, &format!("start:{id}"));
+        if session_deja_entamee {
+            journal_fichier(&self.journal, &format!("reprise:{id}"));
+        } else {
+            tokio::time::sleep(self.sommeil).await;
+        }
+        journal_fichier(&self.journal, &format!("end:{id}"));
+        Ok(json!({ "id": id }))
+    }
+}
+
+/// Enfant de test servant le mode service, tué au `Drop` (comme `RestateContainer`) pour
+/// qu'aucun service orphelin ne survienne à un échec du parent.
+struct ServiceChild(std::process::Child);
+
+impl Drop for ServiceChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Relance le binaire de test lui-même en mode service sur `port` (méthode du spike de
+/// `workflow#AC-8` : le service est un vrai OS processus, donc tuable et relançable). `sommeil`
+/// est la durée du tour interrompu de la fixture `subagent`.
+fn lancer_service(port: u16, journal: &std::path::Path, sommeil: Duration) -> ServiceChild {
+    let exe = std::env::current_exe().expect("le binaire de test doit être relançable en mode service");
+    let enfant = Command::new(exe)
+        .args(["--ignored", "--exact", "mode_service_restate", "--test-threads=1"])
+        .env("MIRYAD_RESTATE_SERVE_PORT", port.to_string())
+        .env("MIRYAD_RESTATE_SERVE_JOURNAL", journal)
+        .env("MIRYAD_RESTATE_SERVE_SLEEP_MS", sommeil.as_millis().to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("le binaire de test doit pouvoir être relancé comme processus service");
+    ServiceChild(enfant)
+}
+
+/// Attend qu'un port accepte les connexions TCP (le service — en processus ou en enfant — est
+/// prêt ; l'endpoint Restate derrière répond alors sur son port applicatif).
+async fn attendre_port(port: u16, quoi: &str) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{quoi} n'a pas répondu sur le port {port} en 60 s"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Attend (60 s) que le journal-fichier partagé vérifie `attendu` ; message d'échec : le
+/// contenu réellement observé.
+async fn attendre_lignes(chemin: &std::path::Path, description: &str, attendu: impl Fn(&[String]) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let lignes = lire_journal(chemin);
+        if attendu(&lignes) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{description} : le journal {} n'a pas porté ce qui était attendu dans les 60 s : {lignes:?}",
+            chemin.display()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Attend la disponibilité de l'admin API Restate (60 s) puis enregistre le déploiement déclaré
+/// par `config` — même séquence que dans `Stack::start_with_options`, isolée pour le test de
+/// reprise, qui n'a pas de `Stack` (le service est un sous-processus).
+async fn attendre_admin_et_enregistrer(http: &reqwest::Client, config: &WorkflowConfig) {
+    let deadline = Instant::now() + Duration::from_mins(1);
+    loop {
+        let up = http
+            .get(format!("{}/health", config.admin_url))
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success());
+        if up {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Restate n'a pas démarré en 60 s");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    register_deployment(config, http)
+        .await
+        .expect("l'enregistrement du déploiement doit réussir");
+}
+
+/// Attache le workflow du run à l'ingress (bloque jusqu'à sa complétion, borne de 4 min : le
+/// temps que Restate rejoue son journal et que le service rechargé reprenne) ; rend
+/// `(statut HTTP, corps JSON)`.
+async fn attache_run(http: &reqwest::Client, ingress_url: &str, run_key: &str) -> (u16, Value) {
+    let response = http
+        .get(format!(
+            "{ingress_url}/restate/workflow/DagInterpreter/{run_key}/attach"
+        ))
+        .timeout(Duration::from_mins(4))
+        .send()
+        .await
+        .expect("l'attache au workflow doit répondre");
+    let statut = response.status().as_u16();
+    let body = response.json::<Value>().await.unwrap_or(Value::Null);
+    (statut, body)
+}
+
 /// Pile de test : Restate en conteneur + endpoint applicatif en tâche tokio, déploiement
 /// enregistré. `_container` garde le conteneur vivant jusqu'à la fin du test.
 struct Stack {
@@ -276,29 +508,7 @@ impl Stack {
     /// Pile complète avec les options de service `options` posées au `bind()` du
     /// `StepDispatcher` (spike `OI-11` : bornes de handler relevées).
     async fn start_with_options(max_depth: u32, options: restate_sdk::endpoint::ServiceOptions) -> Self {
-        let (ingress, admin, node, app) = (free_port(), free_port(), free_port(), free_port());
-        let name = format!("miryad-restate-test-{app}");
-        let started = Command::new("podman")
-            .args(["run", "-d", "--name", &name, "--network=host"])
-            .args([
-                "-e",
-                &format!("RESTATE_INGRESS__BIND_ADDRESS=127.0.0.1:{ingress}"),
-            ])
-            .args(["-e", &format!("RESTATE_ADMIN__BIND_ADDRESS=127.0.0.1:{admin}")])
-            .args(["-e", &format!("RESTATE_BIND_ADDRESS=127.0.0.1:{node}")])
-            .args([
-                "-e",
-                &format!("RESTATE_ADVERTISED_ADDRESS=http://127.0.0.1:{node}"),
-            ])
-            .arg(IMAGE)
-            .output()
-            .expect("podman doit être installé");
-        assert!(
-            started.status.success(),
-            "podman run a échoué : {}",
-            String::from_utf8_lossy(&started.stderr)
-        );
-        let container = RestateContainer { name };
+        let (container, ingress, admin, app) = lancer_conteneur();
 
         let log: Log = Arc::default();
         let flaky_calls = Arc::new(AtomicUsize::new(0));
@@ -400,50 +610,65 @@ impl Stack {
         self.log.lock().expect("journal").clone()
     }
 
-    /// Cibles des invocations `StepDispatcher` lues dans `sys_invocation` de l'admin API
-    /// (`POST /query`, corps `{"query": …}`, réponse JSON `{"rows": […]}` sous
-    /// `Accept: application/json` — sans cet en-tête le serveur rend du Arrow IPC binaire, vérifié
-    /// sur `restate:latest` = 1.7.12). Le champ `target` porte le couple service/handler
-    /// (`StepDispatcher/…`).
-    async fn dispatcher_targets(&self) -> Vec<String> {
-        let response = self
-            .http
-            .post(format!("{}/query", self.config.admin_url))
-            .header("Accept", "application/json")
-            .json(&json!({ "query": "SELECT target FROM sys_invocation" }))
-            .send()
-            .await
-            .expect("la requête à l'admin API doit répondre");
-        let corps = response.json::<Value>().await.unwrap_or(Value::Null);
-        corps
-            .get("rows")
-            .and_then(Value::as_array)
-            .map(|lignes| {
-                lignes
-                    .iter()
-                    .filter_map(|ligne| ligne.get("target")?.as_str().map(str::to_string))
-                    .filter(|t| t.contains("StepDispatcher"))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     /// Attend (bornes de 30 s : la table est eventually consistent après l'achèvement du run)
     /// qu'une invocation `StepDispatcher` dont la cible satisfait `attendu` apparaisse dans
-    /// `sys_invocation`.
+    /// `sys_invocation`. Voir [`attendre_cible_pour`] — l'extraction du 2026-11-06 qui rend la
+    /// requête `sys_invocation` utilisable sans `Stack` (preuve de reprise). La lecture brute
+    /// des cibles, avant extraction portée par cette méthode, est désormais [`cibles_dispatchers`].
     async fn attendre_cible(&self, attendu: impl Fn(&str) -> bool, description: &str) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let cibles = self.dispatcher_targets().await;
-            if cibles.iter().any(|t| attendu(t)) {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "aucune invocation StepDispatcher visant {description} dans les cibles : {cibles:?}"
-            );
-            tokio::time::sleep(Duration::from_millis(250)).await;
+        attendre_cible_pour(&self.http, &self.config.admin_url, attendu, description).await;
+    }
+}
+
+/// Cibles des invocations `StepDispatcher` lues dans `sys_invocation` de l'admin API
+/// (`POST /query`, corps `{"query": …}`, réponse JSON `{"rows": […]}` sous
+/// `Accept: application/json` — sans cet en-tête le serveur rend du Arrow IPC binaire, vérifié
+/// sur `restate:latest` = 1.7.12). Le champ `target` porte le couple service/handler
+/// (`StepDispatcher/…`). Extraite de `Stack::dispatcher_targets` le 2026-11-06 : le test de
+/// reprise n'a pas d'endpoint en processus, donc pas de `Stack`, mais lit la même table.
+async fn cibles_dispatchers(http: &reqwest::Client, admin_url: &str) -> Vec<String> {
+    let response = http
+        .post(format!("{admin_url}/query"))
+        .header("Accept", "application/json")
+        .json(&json!({ "query": "SELECT target FROM sys_invocation" }))
+        .send()
+        .await
+        .expect("la requête à l'admin API doit répondre");
+    let corps = response.json::<Value>().await.unwrap_or(Value::Null);
+    corps
+        .get("rows")
+        .and_then(Value::as_array)
+        .map(|lignes| {
+            lignes
+                .iter()
+                .filter_map(|ligne| ligne.get("target")?.as_str().map(str::to_string))
+                .filter(|t| t.contains("StepDispatcher"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Attend (bornes de 30 s : la table est eventually consistent après l'achèvement du run)
+/// qu'une invocation `StepDispatcher` dont la cible satisfait `attendu` apparaisse dans
+/// `sys_invocation`. Extraite de `Stack::attendre_cible` le 2026-11-06, même rationale que
+/// [`cibles_dispatchers`].
+async fn attendre_cible_pour(
+    http: &reqwest::Client,
+    admin_url: &str,
+    attendu: impl Fn(&str) -> bool,
+    description: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let cibles = cibles_dispatchers(http, admin_url).await;
+        if cibles.iter().any(|t| attendu(t)) {
+            return;
         }
+        assert!(
+            Instant::now() < deadline,
+            "aucune invocation StepDispatcher visant {description} dans les cibles : {cibles:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 
@@ -887,6 +1112,202 @@ async fn un_step_subagent_est_exécuté_par_execute_long() {
             "execute (jamais execute_long pour un kind ordinaire)",
         )
         .await;
+}
+
+/// Mode service du binaire de test (sous-processus de
+/// [`reprise_apres_kill_du_service_sur_step_subagent`]) : sert le `DagInterpreter` +
+/// `StepDispatcher` (kinds de fixture à journal-fichier, options `recommended_options()` — le
+/// kind `"subagent"` passe donc par `execute_long`, bornes relevées) sur le port donné, sans
+/// jamais rien valider : c'est le parent qui observe. Tant que
+/// `MIRYAD_RESTATE_SERVE_PORT` est posé, ce « test » ne rend jamais la main — le parent le tue
+/// (SIGKILL, méthode du spike `workflow#AC-8`) et le relance. Sans la variable d'environnement
+/// (lancement `-- --ignored` de la batterie), il ne fait rien : il est là pour être relancé, pas
+/// pour tourner seul.
+#[tokio::test]
+#[ignore = "mode service : ne sert que relancé avec MIRYAD_RESTATE_SERVE_PORT par le test de reprise"]
+async fn mode_service_restate() {
+    let Ok(port) = std::env::var("MIRYAD_RESTATE_SERVE_PORT") else {
+        return;
+    };
+    let port: u16 = port
+        .parse()
+        .expect("MIRYAD_RESTATE_SERVE_PORT doit être un numéro de port");
+    let journal = std::path::PathBuf::from(
+        std::env::var("MIRYAD_RESTATE_SERVE_JOURNAL")
+            .expect("le chemin du journal est requis en mode service"),
+    );
+    let sommeil_ms = match std::env::var("MIRYAD_RESTATE_SERVE_SLEEP_MS") {
+        Ok(v) => v
+            .parse::<u64>()
+            .expect("la durée du tour interrompu doit être un nombre de millisecondes"),
+        Err(_) => 90_000,
+    };
+    let sommeil = Duration::from_millis(sommeil_ms);
+    let mut registry = StepRegistry::new();
+    registry
+        .register(FileRecord(journal.clone()))
+        .and_then(|r| r.register(FileSubagent { journal, sommeil }))
+        .expect("kinds distincts");
+    let endpoint = Endpoint::builder()
+        .bind(DagInterpreter)
+        .bind(
+            StepDispatcher::new(registry)
+                .into_service_definition()
+                .options(recommended_options()),
+        )
+        .build();
+    // Le port peut porter encore la trace du processus tué d'un SIGKILL : retenter le bind 10 s.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let listener = loop {
+        match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(l) => break l,
+            Err(erreur) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "le port {port} ne s'est pas libéré pour le service : {erreur}"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    };
+    // Ne rend jamais la main (le `serve` de `HttpServer` attend ctrl_c, que le parent ne
+    // transmet pas : il tue) ; si le parent tue par SIGINT, la fermeture gracieuse s'arrête ici.
+    HttpServer::new(endpoint).serve(listener).await;
+}
+
+/// Preuve de reprise (tâche `subagent_step.sdd`, DSD `lymaille#AC-10`, méthode du spike
+/// `workflow#AC-8`, 2026-11-06) : le service est un sous-processus relancé par le binaire
+/// lui-même ([`mode_service_restate`]), pas un endpoint en processus. Un DAG `A` (kind `record`)
+/// puis `S` (kind `"subagent"`, routé `execute_long`) est lancé ; dès que `A` a **commité** son
+/// `ctx.run` (le `end:A` est au journal-fichier, la réponse est dans le journal Restate) et que le
+/// step subagent a entamé son tour (`start:S`, pas encore `end:S`), le service est tué d'un
+/// **SIGKILL** et relancé sur le même port — mémoire neuve, seul le journal Restate (côté
+/// serveur) et le journal-fichier (la « session » de la fixture) survivent.
+///
+/// Ce que la reprise doit rendre, journal en main :
+/// - `A` : exécuté **une seule fois** au total — son `ctx.run` journalisé avant le kill est
+///   rejoué par Restate, la fermeture n'est pas ré-exécutée (preuve par le `sys_invocation` :
+///   une seule invocation `StepDispatcher/execute`) ;
+/// - `S` : l'effet interrompu est **ré-exécuté** (le `ctx.run` n'avait rien journalisé —
+///   « au moins une fois » sur le seul tour interrompu, DSD `DEC-11`) : deux `start:S` au total,
+///   mais la nouvelle génération retrouve la session déjà entamée (`reprise:S`, le tour n'est pas
+///   refait à l'identique), le résultat est commité **une seule fois** (`end:S` unique), et
+///   l'attache du run rend `{"id": "S"}` attendu, sans doublon.
+///
+/// Durée : ~30 s hors démarrage de l'image (le sommeil de 90 s du premier `S` est coupé par le
+/// kill, la reprise ne le refait pas). Non verrouillé par la CI, comme tout le fichier.
+#[tokio::test]
+#[ignore = "exige podman et l'image restate ; relance le binaire de test en sous-processus"]
+async fn reprise_apres_kill_du_service_sur_step_subagent() {
+    let (_container, ingress, admin, app) = lancer_conteneur();
+    let http = reqwest::Client::new();
+    let config = WorkflowConfig {
+        admin_url: format!("http://127.0.0.1:{admin}"),
+        ingress_url: format!("http://127.0.0.1:{ingress}"),
+        deployment_url: format!("http://127.0.0.1:{app}"),
+    };
+    let journal = std::env::temp_dir().join(format!("miryad-restate-kill-{app}.log"));
+    let _ = std::fs::remove_file(&journal);
+
+    // Génération 1 du service : sous-processus, donc tuable (méthode du spike).
+    let mut service = lancer_service(app, &journal, Duration::from_secs(90));
+    attendre_port(app, "le service (génération 1)").await;
+    attendre_admin_et_enregistrer(&http, &config).await;
+
+    let dag = DagSteps(vec![
+        step("A", &[], "record", json!({ "id": "A" })),
+        step("S", &["A"], "subagent", json!({ "id": "S" })),
+    ]);
+    let handle = trigger_run(&config, &http, &dag, &serde_json::Map::new(), None)
+        .await
+        .unwrap_or_else(|erreur| panic!("le déclenchement doit être accepté : {erreur}"));
+    let run_key = handle.run_key;
+
+    // Fenêtre du kill : `A` terminé et journalisé, `S` en cours de tour sans rien de commité.
+    attendre_lignes(
+        &journal,
+        "`end:A` (A commité) et `start:S` (S interrompu)",
+        |lignes| lignes.iter().any(|e| e == "end:A") && lignes.iter().any(|e| e == "start:S"),
+    )
+    .await;
+
+    // ————— Le kill : SIGKILL sur le processus service, rien d'autre ne survit côté app.
+    service.0.kill().expect("le service doit être tuable");
+    let statut = service.0.wait().expect("le service tué doit être récupéré");
+    assert!(
+        statut.code().is_none(),
+        "le service doit avoir été tué par signal, pas sorti proprement : {statut:?}"
+    );
+    // ————— Le rechargement : second processus, mémoire neuve, même port et même journal.
+    let _service_rechargé = lancer_service(app, &journal, Duration::from_secs(90));
+    attendre_port(app, "le service rechargé (génération 2)").await;
+
+    // L'attache bloque pendant que Restate rejoue son journal et retente l'invocation
+    // interrompue : cette attente EST la reprise.
+    let (statut_attache, body) = attache_run(&http, &config.ingress_url, &run_key).await;
+    assert_eq!(
+        statut_attache, 200,
+        "le run interrompu doit être mené au bout par la reprise : {statut_attache} {body}"
+    );
+    assert_eq!(body["A"]["id"], "A", "la sortie commitée de A : {body}");
+    assert_eq!(
+        body["S"]["id"], "S",
+        "la reprise doit rendre le résultat attendu de S, sans doublon : {body}"
+    );
+
+    let lignes = lire_journal(&journal);
+    let compte = |cible: &str| lignes.iter().filter(|e| e.as_str() == cible).count();
+    assert_eq!(
+        compte("start:A"),
+        1,
+        "A, journalisé avant le kill, n'est jamais ré-exécuté par le service rechargé : {lignes:?}"
+    );
+    assert_eq!(compte("end:A"), 1, "A n'a commité qu'une fois : {lignes:?}");
+    assert_eq!(
+        compte("start:S"),
+        2,
+        "l'effet interrompu est ré-exécuté une fois (« au moins une fois », DEC-11), pas davantage : {lignes:?}"
+    );
+    assert_eq!(
+        compte("reprise:S"),
+        1,
+        "la génération 2 doit retrouver la session déjà entamée et ne pas refaire le tour : {lignes:?}"
+    );
+    assert_eq!(
+        compte("end:S"),
+        1,
+        "le résultat est commité une seule fois : {lignes:?}"
+    );
+
+    // Preuve par le journal Restate : le kill n'a pas dédoublé les invocations — une invocation
+    // par step (`A` sous `execute`, `S` sous le handler dédié `execute_long`), et le rejeu de la
+    // reprise n'en a pas créé de nouvelle.
+    attendre_cible_pour(
+        &http,
+        &config.admin_url,
+        |t| t.ends_with("/execute_long"),
+        "execute_long (step subagent)",
+    )
+    .await;
+    attendre_cible_pour(
+        &http,
+        &config.admin_url,
+        |t| t.ends_with("/execute"),
+        "execute (step record)",
+    )
+    .await;
+    let cibles = cibles_dispatchers(&http, &config.admin_url).await;
+    assert_eq!(
+        cibles.iter().filter(|t| t.ends_with("/execute")).count(),
+        1,
+        "le kill n'a pas dupliqué l'invocation de A, journalisée et terminée avant lui : {cibles:?}"
+    );
+    assert_eq!(
+        cibles.iter().filter(|t| t.ends_with("/execute_long")).count(),
+        1,
+        "l'invocation d'un step subagent survit au kill et se rejoue sous la même entrée : {cibles:?}"
+    );
+    let _ = std::fs::remove_file(&journal);
 }
 
 /// Ajoute les réglages du spike `OI-11` au `ServiceOptions` de base (retry plafonné) : les options de

@@ -126,8 +126,12 @@ Tasks:
     Validé 2026-11-03 (validator PASS, batterie ciblée workflow,lymaille + all-features).
   [x] Tests d'abord depuis les `Scenario` (couture `InferenceFactory` + `ScriptedProvider`, SQLite mémoire), puis ./subagent_step.rs.
     Validé 2026-11-03 (validator PASS, batterie ciblée workflow,lymaille + all-features).
-  [ ] Preuve de reprise (DSD `AC-10`) : test `#[ignore]` contre `restate-server` par la méthode du spike de `workflow#AC-8`
+  [x] Preuve de reprise (DSD `AC-10`) : test `#[ignore]` contre `restate-server` par la méthode du spike de `workflow#AC-8`
     (`../../tests/workflow_restate.rs`, `Can modify` accordé le 2026-11-03 ; fichier rattaché à ./dispatcher.sdd) ; non verrouillée par la CI. Le rejeu en mémoire (test n°6) ne solde pas cette tâche : il ne prouve pas le journal Restate.
+    Validé 2026-11-06 (validator PASS : `reprise_apres_kill_du_service_sur_step_subagent` — service en sous-processus, SIGKILL après `end:A` pendant le tour de `S`, reprise sans rejeu des effets commités (A jamais ré-exécuté, `end:S` une fois), `sys_invocation` à une invocation par handler sans doublon ; preuve verte 4 fois (4,7-7,4 s), suite ignorée 13/13, CI sans occurrence podman/restate ; ./../../tests/workflow_restate.rs refactor sans adoucissement, spike 40 min intact au diff).
+    [?] (validator) : la « session sauvegardée » de la preuve est le journal-fichier de la fixture (transposition assumée du nom déterministe de l'étape 8), pas une session `lymaille` via `restore_session` — le `SubagentStep` réel n'est pas exercé dans ce fichier. La lettre de la case est tenue ; cet écart de transposition convient-il ?
+    [?] (validator) : `mode_service_restate` passe trivialement (return immédiat) quand la suite ignorée tourne en entier — compteur 13 au lieu de 12. Inoffensif ; l'assumer ou le masquer ?
+    [?] (validator) : le journal-fichier de preuve fuiterait dans /tmp en cas d'échec d'assertion (nettoyé avant/après chaque exécution) — acceptable, ou nettoyage au drop ?
 
 Done when:
   Les `Scenario` unitaires sont verts sous `all(workflow, lymaille)` et `--all-features` ; les specs de ../lymaille/ sont approuvées avant
