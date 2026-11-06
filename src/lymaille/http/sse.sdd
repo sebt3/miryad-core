@@ -38,7 +38,8 @@ Exposes:
   `events` (`pub(super)`)
 
 Tasks:
-  [ ] Réalignement R11 (DSD `DEC-30`, 2026-11-03) : Après R8 : le flux sérialise `SessionEvent` ; `Scenario` d'un événement `Host`. Spec seule.
+  [x] Réalignement R11 (DSD `DEC-30`, 2026-11-03) : Après R8 : le flux sérialise `SessionEvent` ; `Scenario` d'un événement `Host`. Spec seule.
+    Validé 2026-11-06 (validator PASS clôture spec seule : Must et Scenario « un événement hôte traverse sans interprétation » en place, code conforme — `encode_event(&SessionEvent)` ; test vert).
   [ ] Tests d'abord (flux lu en mémoire, horloge tokio en pause), puis ./sse.rs.
   [x] Amendement du `Must` fait le 2026-11-06 (retour `Result<Sse<…>, RestError>`, imposé par le « 404 avant tout en-tête SSE »). Clôture R11 (validator checkpoint 7, 2026-11-05) : le `Must` annonce `-> Sse<…>` alors que le code rend `Result<Sse<…>, RestError>` —
     le « 404 avant tout en-tête SSE » l'impose, amender le wording du `Must` ; l'erreur de sérialisation portera `MRD-LYMAILLE-012` dès que la
