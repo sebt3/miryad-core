@@ -979,17 +979,15 @@ mod tests {
             .expect("le proprietaire ecrit son agent");
     }
 
-    /// Écrit une ligne de `catalog_context_types` : la nature (`session_kind` amont, `None` : le
-    /// JSON n'en porte pas) et l'agent par défaut vivent dans le `ContextType` de `lymaille` 0.2.0,
-    /// colonne `active` ; `allowed_agents` seule colonne DEC-28 restante (`../migration.sdd`,
-    /// DSD `DEC-28` révisé le 2026-11-05), posées ici comme le ferait le CRUD.
-    async fn put_type(
-        db: &DatabaseConnection,
+    /// Construit le JSON du `ContextType` de fixture : la nature (`session_kind` amont, `None` :
+    /// le JSON n'en porte pas) et l'agent par défaut vivent dans le `ContextType` de `lymaille`
+    /// 0.2.0 (DSD `DEC-28` révisé le 2026-11-05), colonne `active` (ou `draft` pour la ligne au
+    /// seul brouillon).
+    fn brut_type(
         name: &str,
         session_kind: Option<SessionKind>,
         default_agent: Option<&str>,
-        allowed: &[&str],
-    ) {
+    ) -> serde_json::Value {
         let context_type = ContextType::new(
             name.to_owned(),
             Semver::parse("1.0.0").expect("la version de fixture se parse"),
@@ -1008,7 +1006,19 @@ mod tests {
                 .expect("l'agent par défaut de fixture se pose"),
             None => context_type,
         };
-        let active = serde_json::to_value(context_type).expect("le type se serialise");
+        serde_json::to_value(context_type).expect("le type se serialise")
+    }
+
+    /// Pose une ligne de `catalog_context_types` avec les colonnes DEC-28 (`allowed_agents`,
+    /// `../migration.sdd`) et l'`created_at` courant, les colonnes `active` et `draft` telles que
+    /// passées.
+    async fn insert_type(
+        db: &DatabaseConnection,
+        name: &str,
+        allowed: &[&str],
+        active: sea_orm::sea_query::SimpleExpr,
+        draft: sea_orm::sea_query::SimpleExpr,
+    ) {
         let mut insert = Query::insert();
         insert
             .into_table(Alias::new(super::CATALOG_CONTEXT_TYPES_TABLE))
@@ -1026,12 +1036,40 @@ mod tests {
                 Expr::val(serde_json::Value::Array(
                     allowed.iter().map(|agent| json!(*agent)).collect(),
                 )),
-                Expr::val(active),
-                Expr::null(),
+                active,
+                draft,
                 Expr::val(chrono::Utc::now()),
             ])
             .expect("les colonnes et valeurs de fixture correspondent");
         db.execute(&insert).await.expect("ligne de type inseree");
+    }
+
+    /// Écrit une ligne de `catalog_context_types` active : le JSON du type en colonne `active`,
+    /// `draft` nul, `allowed_agents` en colonne DEC-28.
+    async fn put_type(
+        db: &DatabaseConnection,
+        name: &str,
+        session_kind: Option<SessionKind>,
+        default_agent: Option<&str>,
+        allowed: &[&str],
+    ) {
+        let active = brut_type(name, session_kind, default_agent);
+        insert_type(db, name, allowed, Expr::val(active), Expr::null()).await;
+    }
+
+    /// Écrit une ligne de `catalog_context_types` au **seul brouillon** (troisième cas du
+    /// `Scenario` « un contexte sans type exploitable est refusé », arbitrage du 2026-11-06) :
+    /// `active` nul, `draft` porteur d'un type par ailleurs exploitable — c'est le refus du
+    /// repli sur le brouillon qui se joue ici, pas la forme du type.
+    async fn put_type_au_seul_draft(
+        db: &DatabaseConnection,
+        name: &str,
+        session_kind: Option<SessionKind>,
+        default_agent: Option<&str>,
+        allowed: &[&str],
+    ) {
+        let draft = brut_type(name, session_kind, default_agent);
+        insert_type(db, name, allowed, Expr::null(), Expr::val(draft)).await;
     }
 
     /// Ligne de contexte privé `(owner, name)` de type `context_type` (`None` : colonne non
@@ -1839,6 +1877,42 @@ mod tests {
                 ),
                 autre => panic!("un `InvalidDefinition` est attendu pour {contexte} : {autre:?}"),
             }
+        }
+        assert_eq!(session_count(&db).await, 0, "aucune session creee");
+    }
+
+    /// Scenario « un contexte sans type exploitable est refusé », troisième cas (spec amendée par
+    /// l'arbitrage du 2026-11-06) : un contexte dont le type n'a qu'un `draft` (`active` nul) est
+    /// refusé par le même `InvalidDefinition("context has no usable type")` — l'ouverture se lit
+    /// sur la version **active** comme `get_type`, sans repli sur le brouillon, même si le
+    /// brouillon porte un type par ailleurs exploitable. Aucune session créée.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_contexte_de_type_au_seul_draft_est_refuse() {
+        let db = test_db().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
+        put_type_au_seul_draft(&db, "t_brouillon", Some(SessionKind::Work), Some("dev"), &["dev"]).await;
+        inserer_contexte_prive(&db, alice.user_id, "c_brouillon", Some("t_brouillon")).await;
+
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let manager = SessionManager::new(deps_with(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider))),
+            None,
+            Limits::default(),
+        ));
+
+        let refus = manager
+            .open("alice", "c_brouillon", None)
+            .await
+            .expect_err("un type au seul draft ne doit ouvrir de session");
+        match refus {
+            crate::lymaille::error::LymailleError::InvalidDefinition(message) => assert_eq!(
+                message, "context has no usable type",
+                "le refus nomme la regle : {message}"
+            ),
+            autre => panic!("un `InvalidDefinition` est attendu : {autre:?}"),
         }
         assert_eq!(session_count(&db).await, 0, "aucune session creee");
     }
