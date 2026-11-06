@@ -7,28 +7,28 @@
 //!
 //! Famille catalogue (tables `catalog_*`, écriture `AdminOnly`, `owner_column() = None`) :
 //!
-//! - [`agent::Entity`] — `lymaille_catalog_agents` : définitions d'agent, lecture `Public`, filtre
+//! - [`agent::Entity`](crate::lymaille::definitions::agent::Entity) — `lymaille_catalog_agents` : définitions d'agent, lecture `Public`, filtre
 //!   et libellé sur les colonnes dérivées ;
-//! - [`toolset::Entity`] — `lymaille_catalog_toolsets` : toolsets, version active et brouillon sur
+//! - [`toolset::Entity`](crate::lymaille::definitions::toolset::Entity) — `lymaille_catalog_toolsets` : toolsets, version active et brouillon sur
 //!   la même ligne (DSD `DEC-18`), mêmes politiques ;
-//! - [`profile::Entity`] — `lymaille_profiles` : profils de modèle, mêmes politiques ;
-//! - [`provider::Entity`] — `lymaille_providers` : moteurs d'inférence, `AdminOnly` en lecture
+//! - [`profile::Entity`](crate::lymaille::definitions::profile::Entity) — `lymaille_profiles` : profils de modèle, mêmes politiques ;
+//! - [`provider::Entity`](crate::lymaille::definitions::provider::Entity) — `lymaille_providers` : moteurs d'inférence, `AdminOnly` en lecture
 //!   comme en écriture (DSD `DEC-16`) ;
-//! - [`context_type::Entity`] — `lymaille_catalog_context_types` : types de contexte, lecture
+//! - [`context_type::Entity`](crate::lymaille::definitions::context_type::Entity) — `lymaille_catalog_context_types` : types de contexte, lecture
 //!   `Public`, écriture `AdminOnly` ;
-//! - [`catalog_context::Entity`] — `lymaille_catalog_contexts` : contextes de toolset du
+//! - [`catalog_context::Entity`](crate::lymaille::definitions::catalog_context::Entity) — `lymaille_catalog_contexts` : contextes de toolset du
 //!   catalogue, mêmes politiques ;
-//! - [`mcp_server::Entity`] — `lymaille_mcp_servers` : serveurs MCP déclarés par l'admin,
+//! - [`mcp_server::Entity`](crate::lymaille::definitions::mcp_server::Entity) — `lymaille_mcp_servers` : serveurs MCP déclarés par l'admin,
 //!   références seules, `AdminOnly` en lecture comme en écriture.
 //!
 //! Famille privée (tables distinctes, `owner_id` non nul, `OwnerOnly` en lecture comme en
 //! écriture) :
 //!
-//! - [`private_agent::Entity`] — `lymaille_agents` : définitions d'agent privées de leur
+//! - [`private_agent::Entity`](crate::lymaille::definitions::private_agent::Entity) — `lymaille_agents` : définitions d'agent privées de leur
 //!   propriétaire, écrites par les stores ;
-//! - [`private_toolset::Entity`] — `lymaille_toolsets` : toolsets privés, version active et
+//! - [`private_toolset::Entity`](crate::lymaille::definitions::private_toolset::Entity) — `lymaille_toolsets` : toolsets privés, version active et
 //!   brouillon sur la même ligne ;
-//! - [`user_context::Entity`] — `lymaille_contexts` : contextes de toolset personnels.
+//! - [`user_context::Entity`](crate::lymaille::definitions::user_context::Entity) — `lymaille_contexts` : contextes de toolset personnels.
 //!
 //! Agents et toolsets du catalogue portent un identifiant préfixé `G_` (DSD `DEC-9`), refusé sur
 //! les lignes privées (DSD `DEC-19`). Les tables internes (sessions, mémoires) n'ont pas d'entité

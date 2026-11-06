@@ -4,7 +4,7 @@
 //! **brouillon** d'un toolset (DSD `DEC-18`). Au lot 1 l'admin écrit `active` et `draft`
 //! directement par le CRUD REST et MCP ; l'activation d'un brouillon est l'écriture de `active`
 //! par un admin, et le store ne lit jamais `draft` pour son version active. Une version est une
-//! `lymaille::Toolset` sérialisée ; les hooks la valident ([`check_toolset`], contrat partagé
+//! `lymaille::Toolset` sérialisée ; les hooks la valident (`check_toolset` ci-dessous, contrat partagé
 //! avec `../store/toolset.rs`) et en dérivent `toolset_id` (le `name`, préfixé `G_` au catalogue,
 //! DSD `DEC-9`) et `version`.
 

@@ -2,7 +2,7 @@
 //!
 //! Contrat de fil (DSD `FR-15`, `DEC-30`) : un enum `SessionEvent` diffusé par le hub
 //! (./hub.sdd), sérialisé par le flux SSE (../http/sse.sdd), rendu en texte par le pont Matrix
-//! (../chat/render.sdd) et exporté vers TypeScript par [`export_typescript`] pour remplacer un
+//! (../chat/render.sdd) et exporté vers TypeScript par [`export_typescript`](crate::lymaille::interactive::event::export_typescript) pour remplacer un
 //! `ChatEvent` écrit à la main. Les types amont (`Event`, `EventKind`, `ScriptRecord`,
 //! `McpRecord`) sont `#[non_exhaustive]` et ne peuvent pas porter `ts-rs` (règle des traits
 //! étrangers) : ce fichier est le miroir de la partie utile à un client, plus la variante
@@ -38,7 +38,7 @@ pub struct SessionEvent {
 }
 
 /// Ce qui s'est passé dans une session, en variantes typées et sérialisées avec un discriminant
-/// `type` en `snake_case`. Les variantes non reflétées de l'enum amont tombent dans [`Other`] ;
+/// `type` en `snake_case`. Les variantes non reflétées de l'enum amont tombent dans [`Other`](Self::Other) ;
 /// les événements émis par l'hôte seul tombent dans [`Host`](Self::Host).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]

@@ -5,15 +5,15 @@
 //! `#[cfg(all(feature = "lymaille", feature = "matrix"))]`, et le module n'existe pas sans
 //! `matrix`.
 //!
-//! Déploiement : l'application monte [`link_code_router`] dans son routeur (le lien mxid →
-//! compte se fait depuis la surface REST authentifiée), puis construit un [`ChatBridge`] branché
+//! Déploiement : l'application monte [`link_code_router`](crate::lymaille::chat::link_code_router) dans son routeur (le lien mxid →
+//! compte se fait depuis la surface REST authentifiée), puis construit un [`ChatBridge`](crate::lymaille::chat::ChatBridge) branché
 //! sur son @SessionManager et son @MatrixClient, et le donne à `run_sync` comme
 //! @MatrixEventHandler. Le contexte des salles ouvertes à la demande vient de l'hôte :
 //! `ChatConfig::rooms` porte un @RoomContextResolver (`bridge::RoomContextResolver`).
 //!
 //! Identité : un mxid ne vaut un droit que par la liaison créée avec un code à usage unique
-//! ([`issue_code`] → `!link` dans la salle → [`consume_code`]) ; la relecture à chaque message
-//! suit la suppression du compte (DSD `AC-17`). [`unlink`] délie, révoquant la surface.
+//! ([`issue_code`](crate::lymaille::chat::issue_code) → `!link` dans la salle → [`consume_code`](crate::lymaille::chat::consume_code)) ; la relecture à chaque message
+//! suit la suppression du compte (DSD `AC-17`). [`unlink`](crate::lymaille::chat::unlink) délie, révoquant la surface.
 //!
 //! Limites du lot 2 : le nommage des salles est à la charge de l'opérateur ; une salle directe
 //! accueille un seul utilisateur lié ; pas de streaming par édition — la réponse arrive en un ou

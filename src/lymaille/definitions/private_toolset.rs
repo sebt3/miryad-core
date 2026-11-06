@@ -7,7 +7,7 @@
 //! l'action d'activation de la session de configuration (`../interactive/activation.sdd`).
 //! `OwnerOnly` : le moteur d'accès pose `owner_id` et cloisonne les lignes ; le `name` doit être
 //! un identifiant `Private` au sens de `crate::lymaille::identity` (jamais `G_`/`g_`, DSD
-//! `DEC-9`). Les contrôles de version sont le [`check_toolset`] partagé de ./toolset.rs.
+//! `DEC-9`). Les contrôles de version sont le `check_toolset` partagé de ./toolset.rs.
 //!
 //! **Limite assumée** (comme `./private_agent.rs`) : les droits d'accord de modules du
 //! propriétaire exigent l'état admin relu en base et ne sont pas vérifiés dans le hook (synchrone,

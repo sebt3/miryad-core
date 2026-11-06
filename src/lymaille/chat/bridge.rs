@@ -1,13 +1,13 @@
 //! Pont Matrix ↔ sessions interactives (`src/lymaille/chat/bridge.sdd`).
 //!
-//! Une **salle** directe est reliée à une **session** du [`SessionManager`] : mêmes tours, mêmes
+//! Une **salle** directe est reliée à une **session** du [`SessionManager`](crate::lymaille::interactive::manager::SessionManager) : mêmes tours, mêmes
 //! événements, mêmes droits que la surface REST+SSE — le pont n'a aucune logique de conversation
 //! propre (DSD `DEC-6`, `DEC-26`). Le `sender` Matrix est résolu par l'annuaire (./link.sdd) ;
 //! un mxid non lié n'a aucun droit. Les événements sont dédoublonnés par `event_id` en base
 //! (bascule de bail) et les sorties longues découpées par ./render.sdd.
 //!
 //! Le contexte des salles est fourni par l'hôte : [`ChatConfig::rooms`] porte un
-//! [`RoomContextResolver`] sur lequel le pont ouvre à la demande (texte libre sans session) et
+//! [`RoomContextResolver`](crate::lymaille::chat::bridge::RoomContextResolver) sur lequel le pont ouvre à la demande (texte libre sans session) et
 //! rouvre (`!new` sans argument, à défaut du contexte de la session fermée) ; un résolveur qui
 //! rend `None` répond par le texte fixe invitant à `!new <contexte>`, sans session.
 

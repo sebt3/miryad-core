@@ -1,7 +1,7 @@
 //! Diffusion des événements d'une session vers ses abonnés (`src/lymaille/interactive/hub.sdd`).
 //!
 //! Le `EventSink` des sessions interactives (DSD `FR-11`, `DEC-24`, amendé `DEC-30`) : `lymaille`
-//! émet ses événements vers [`EventHub::emit`], synchrone, qui ne bloque pas et ne peut pas
+//! émet ses événements vers [`EventHub::emit`](::lymaille::EventSink::emit), synchrone, qui ne bloque pas et ne peut pas
 //! échouer. Le hub convertit chaque événement amont en [`SessionEvent`] typé (./event.sdd) et le
 //! **diffuse** à zéro, un ou plusieurs abonnés de la **même** session (REST+SSE, Matrix,
 //! plusieurs onglets) par `tokio::sync::broadcast` ; un abonné lent est décroché proprement
