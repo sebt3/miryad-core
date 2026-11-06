@@ -45,6 +45,14 @@ Tasks:
     [?] (validator) : la parenthèse « tables `catalog_*` » du bloc //! sur-génère — `profiles`, `providers` et `mcp_servers` ne portent pas ce préfixe. Resserrer la formulation ou l'assumer comme label de famille ?
     [?] (validator) : le rouge du « test d'abord » était structurellement impossible ici (les six modules préexistaient au code du lot) — la phase est satisfaite par l'extension de couverture seule, acté ?
   [x] `mod.rs` en dernier du dossier (après les quatre enfants) ; test de chemins. Validé 2026-11-02 (validator PASS).
+  [!] (fin de lot 3, 2026-11-06) : `cargo doc --all-features --no-deps` rend **10 warnings `rustdoc::private_intra_doc_links`**
+    (`before_create` → `Entity::valider_et_deriver` dans `agent/toolset/private_agent/private_toolset/profile/provider/context_type/catalog_context/user_context.rs`, `Entity::valider` dans
+    `mcp_server.rs`) — introduits par le lot 1 (`3c005f8`), invisibles tant que la doc `--all-features` ne couvrait pas `lymaille`, et qui
+    font échouer le critère « doc sans warnings » de la batterie. Le code et les specs ne sont pas touchés en attente d'arbitrage : lien public, lien
+    conditionnel `#[cfg(doc)]`, ou dette tracée dans `/tooling.sdd`. **Arbitrage de Sébastien requis.**
+  [?] (implementer, lot 3) : les deux liens [`check_toolset`] de la doc de `./toolset.rs` et `./private_toolset.rs` sont passés en texte
+    inline car la cible est `pub(crate)` — un lien vers son chemin aurait créé un warning `private_intra_doc_links` de plus. Si un lien
+    est souhaité, il faut rendre `check_toolset` pub (changement de surface). Choix provisoire : texte inline.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.
