@@ -189,9 +189,9 @@ mod tests {
             "MRD-LYMAILLE-005: secret reference could not be resolved: LLM_API_KEY"
         );
         let debug = format!("{err:?}");
-        assert!(
-            debug.contains("LLM_API_KEY"),
-            "la référence doit rester visible dans le Debug : {debug}"
+        assert_eq!(
+            debug, r#"SecretUnresolved("LLM_API_KEY")"#,
+            "le Debug ne porte que la référence fournie par l'appelant, rien d'autre"
         );
     }
 }

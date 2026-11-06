@@ -67,7 +67,9 @@ Tasks:
   [x] Amendement lot 2 (DSD `DEC-24`) : variantes `NotFound` et `Conflict`, tests des codes `-010` et `-011` d'abord, puis ./error.rs. Validé 2026-11-03
     (validator PASS : codes uniques et stables, retryabilité `false`, Display/`Debug` verrouillés par assert exact ; cibles vertes).
   [x] Tests d'abord (codes, retryabilité), puis ./error.rs. Validé 2026-11-02 (validator PASS, batterie ciblée).
-  [ ] Verrouiller par un assert exact le `Debug` du `Scenario` « aucune valeur secrète » (`format!("{:?}", e)` == `SecretUnresolved("LLM_API_KEY")`) au lieu de `contains` (arbitrage du développeur principal, 2026-11-05). Test seul, sans changement de ./error.rs.
+  [x] Verrouiller par un assert exact le `Debug` du `Scenario` « aucune valeur secrète » (`format!("{:?}", e)` == `SecretUnresolved("LLM_API_KEY")`) au lieu de `contains` (arbitrage du développeur principal, 2026-11-05). Test seul, sans changement de ./error.rs.
+    Validé 2026-11-06 (validator PASS : assert exact sur Display et `Debug`, production intacte — diff confiné à `mod tests` ; lymaille vert en tests et clippy `-D warnings`, `fmt`).
+    [?] du validator (la coche exige-t-elle la batterie complète ou la ciblée suffit pour un changement confiné à `mod tests`) : tranché par Sébastien en session du 2026-11-06 — batterie ciblée par cycle, batterie complète en fin de lot.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./error.rs.
