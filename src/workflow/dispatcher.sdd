@@ -262,8 +262,9 @@ Handles:
     affectée.
 
 Tasks:
-  [ ] Réalignement R14 (DSD `DEC-29`, 2026-11-03) : spec amendée (handler `execute_long`, `handler_name`, `recommended_options_for`), **approuvée le 2026-11-05 (développeur principal)**. Routage par liste
+  [x] Réalignement R14 (DSD `DEC-29`, 2026-11-03) : spec amendée (handler `execute_long`, `handler_name`, `recommended_options_for`), **approuvée le 2026-11-05 (développeur principal)**. Routage par liste
     fixe et plafond par défaut de 3600 s : arbitrés le 2026-11-03.
+    Validé 2026-11-06 (validator PASS clôture spec seule : Must porte execute_long, LONG_RUNNING_KINDS/handler_name, plafond 3600 s et recommended_options_for avec clamp ; quatre Scenario DEC-29 en place ; le code reste à la case suivante, attendu).
   [ ] Après approbation de R14 : tests d'abord, puis ./dispatcher.rs, puis ./interpreter.rs (cible `handler_name(&step.kind)`), puis la preuve d'intégration `#[ignore]` du dernier `Scenario`
     (`../../tests/workflow_restate.rs`). Après ce fichier : R15 (./subagent_step.sdd).
   [x] Spike OI-11 (DSD `lymaille#OI-11`, 2026-11-03) : `un_step_de_40_minutes_survit_aux_bornes_relevees_du_handler` dans `tests/workflow_restate.rs` (`#[ignore]`, podman) :
