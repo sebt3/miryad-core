@@ -148,7 +148,9 @@ impl DagInterpreter {
                     ctx.request::<Json<StepInvocation>, Json<serde_json::Value>>(
                         RequestTarget::Service {
                             name: "StepDispatcher".into(),
-                            handler: "execute".into(),
+                            // DEC-29 (amendement 2026-11-03, ./dispatcher.sdd) : routage par liste
+                            // fixe — un kind de LONG_RUNNING_KINDS cible `execute_long`, sinon `execute`.
+                            handler: super::dispatcher::handler_name(&step.kind).into(),
                         },
                         Json(invocation),
                     )

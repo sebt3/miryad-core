@@ -8,8 +8,9 @@
 //! kinds, la dynamique vit entièrement côté [`StepRegistry`] en Rust pur.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
-use restate_sdk::endpoint::ServiceOptions;
+use restate_sdk::endpoint::{HandlerOptions, ServiceOptions};
 use restate_sdk::prelude::{Context, ContextSideEffects, HandlerError, Json, TerminalError, service};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,16 +59,13 @@ impl StepDispatcher {
     pub fn new(registry: StepRegistry) -> Self {
         Self { registry }
     }
-}
 
-// `client_visibility = "pub(crate)"` : les clients générés par la macro pour invoquer ce service
-// (XClient / XIngressClient) ne sortent jamais de la crate — ./interpreter.rs est leur seul
-// consommateur (./dispatcher.sdd `Exposes` : « aucune fonction pub de logique métier en dehors
-// de la forme service »). Le nom de service et `execute` sur le fil restent inchangés.
-#[service(name = "StepDispatcher", client_visibility = "pub(crate)")]
-impl StepDispatcher {
-    #[handler]
-    async fn execute(
+    /// Corps partagé des deux handlers du service, `execute` et `execute_long` (amendement DEC-29,
+    /// 2026-11-03, ./dispatcher.sdd) : les deux handlers sont **identiques** — seule change la
+    /// configuration Restate (`ServiceOptions`/`HandlerOptions`) que l'app pose au `bind()` sur le
+    /// handler seul, de sorte que la détection d'un step ordinaire bloqué (`execute`) n'est pas
+    /// retardée par les bornes relevées des kinds longs.
+    async fn run_step(
         &self,
         ctx: Context<'_>,
         req: Json<StepInvocation>,
@@ -138,6 +136,36 @@ impl StepDispatcher {
     }
 }
 
+// `client_visibility = "pub(crate)"` : les clients générés par la macro pour invoquer ce service
+// (XClient / XIngressClient) ne sortent jamais de la crate — ./interpreter.rs est leur seul
+// consommateur (./dispatcher.sdd `Exposes` : « aucune fonction pub de logique métier en dehors
+// de la forme service »). Le nom de service et `execute` sur le fil restent inchangés.
+#[service(name = "StepDispatcher", client_visibility = "pub(crate)")]
+impl StepDispatcher {
+    #[handler]
+    async fn execute(
+        &self,
+        ctx: Context<'_>,
+        req: Json<StepInvocation>,
+    ) -> Result<Json<Value>, HandlerError> {
+        self.run_step(ctx, req).await
+    }
+
+    /// Handler dédié aux kinds longs de `LONG_RUNNING_KINDS` (amendement DEC-29, 2026-11-03,
+    /// ./dispatcher.sdd) : signature et corps **identiques** à [`Self::execute`] — seul le fil du
+    /// protocole change (`StepDispatcher`/`execute_long` pour ces kinds). Les bornes
+    /// `inactivity_timeout`/`abort_timeout` sont relevées **sur ce handler seul** par l'app au
+    /// `bind()` (via [`recommended_options_for`]), jamais sur `execute`.
+    #[handler]
+    async fn execute_long(
+        &self,
+        ctx: Context<'_>,
+        req: Json<StepInvocation>,
+    ) -> Result<Json<Value>, HandlerError> {
+        self.run_step(ctx, req).await
+    }
+}
+
 /// Erreur `404` « kind inconnu » : erreur de configuration du DAG, jamais `StepError`.
 fn kind_inconnu(kind: &str) -> HandlerError {
     HandlerError::from(TerminalError::new_with_code(404, format!("kind inconnu: {kind}")))
@@ -205,21 +233,73 @@ fn step_error_to_handler_error(e: StepError) -> HandlerError {
     }
 }
 
-/// Politique de retry recommandée pour le `bind()` de [`StepDispatcher`] — jamais appliquée
-/// par ce fichier, l'app en fait ce qu'elle veut.
+/// Liste fixe des kinds routés vers le handler `execute_long` (amendement DEC-29, 2026-11-03,
+/// ./dispatcher.sdd) : comparé par [`handler_name`], liste arbitrée le 2026-11-03 — un kind
+/// d'application ne peut pas être long sans modifier la crate.
+pub(crate) const LONG_RUNNING_KINDS: &[&str] = &["subagent"];
+
+/// Nom du handler `StepDispatcher` qui exécute un kind (amendement DEC-29, 2026-11-03,
+/// ./dispatcher.sdd) : `"execute_long"` si le kind figure dans [`LONG_RUNNING_KINDS`] (comparaison
+/// exacte), `"execute"` sinon. Fonction pure, sans état ni effet de bord — la cible unique du
+/// routage côté ./interpreter.rs.
 #[must_use]
-pub fn recommended_options() -> ServiceOptions {
-    // Pas de retry permanent (décision Sébastien 2026-09-23, ./dispatcher.sdd `Must`) : au
-    // 5e essai l'invocation passe en `paused`, relable manuellement (jamais `Kill`, jamais le
-    // retry indéfini du serveur par absence de plafond).
+pub(crate) fn handler_name(kind: &str) -> &'static str {
+    if LONG_RUNNING_KINDS.contains(&kind) {
+        "execute_long"
+    } else {
+        "execute"
+    }
+}
+
+/// Plafond de durée par défaut d'un step long, en secondes (amendement DEC-29, 2026-11-03,
+/// ./dispatcher.sdd) : la valeur par défaut de [`recommended_options_for`].
+pub const DEFAULT_LONG_CEILING_SECS: u64 = 3600;
+
+/// Maximum absolu du plafond de durée d'un step long, en secondes (amendement DEC-29, 2026-11-03,
+/// ./dispatcher.sdd) : au-delà, [`recommended_options_for`] plafonne — aucune invocation ne reste
+/// sans borne détectée.
+pub const LONG_CEILING_MAX_SECS: u64 = 14_400;
+
+/// Politique de retry recommandée, avec les bornes du handler `execute_long` calées sur un plafond
+/// de durée de `ceiling` (amendement DEC-29, 2026-11-03, ./dispatcher.sdd) :
+/// [`recommended_options`] de base (retry plafonné, pause) **plus** une `HandlerOptions` sur
+/// `execute_long` seul — inactivité = plafond + 5 min, abandon = inactivité + 5 min, le plafond
+/// borné à [`LONG_CEILING_MAX_SECS`] et une valeur nulle portée à 1 s. Le handler `execute` garde
+/// les bornes par défaut du serveur. Convenience pure : l'application qui relève le plafond de
+/// `SubagentStep` (`./subagent_step.rs`) y passe la **même** valeur ; ./dispatcher.rs ne l'applique
+/// jamais lui-même, il n'a pas la main sur l'`Endpoint`.
+#[must_use]
+pub fn recommended_options_for(ceiling: Duration) -> ServiceOptions {
+    let c = ceiling.clamp(Duration::from_secs(1), Duration::from_secs(LONG_CEILING_MAX_SECS));
+    // Tronc commun : pas de retry permanent (décision Sébastien 2026-09-23, ./dispatcher.sdd
+    // `Must`) — au 5e essai l'invocation passe en `paused`, relable manuellement (jamais `Kill`,
+    // jamais le retry indéfini du serveur par absence de plafond).
     ServiceOptions::new()
         .retry_policy_max_attempts(5)
         .retry_policy_pause_on_max_attempts()
+        .handler(
+            "execute_long",
+            HandlerOptions::new()
+                .inactivity_timeout(c.saturating_add(Duration::from_mins(5)))
+                .abort_timeout(c.saturating_add(Duration::from_mins(10))),
+        )
+}
+
+/// Politique de retry recommandée pour le `bind()` de [`StepDispatcher`] — jamais appliquée
+/// par ce fichier, l'app en fait ce qu'elle veut. Rendu de
+/// [`recommended_options_for`] avec le plafond par défaut ([`DEFAULT_LONG_CEILING_SECS`]) : le
+/// handler `execute` garde les bornes par défaut du serveur.
+#[must_use]
+pub fn recommended_options() -> ServiceOptions {
+    recommended_options_for(Duration::from_secs(DEFAULT_LONG_CEILING_SECS))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{StepInvocation, recommended_options, run_invocation, step_error_to_handler_error};
+    use super::{
+        LONG_CEILING_MAX_SECS, StepDispatcher, StepInvocation, handler_name, recommended_options,
+        recommended_options_for, run_invocation, step_error_to_handler_error,
+    };
     use crate::workflow::step::{MiryadWorkflowStep, RunInfo, StepError, StepRegistry};
     use restate_sdk::prelude::Json;
     use serde_json::Value;
@@ -228,6 +308,7 @@ mod tests {
     use std::error::Error as StdError;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     // ── Fixtures : kinds de registre, chaque Scenario pur monte son `StepRegistry` dédié ──
 
@@ -935,9 +1016,15 @@ mod tests {
     /// Scenario « `recommended_options` pose un plafond de tentatives et une pause, jamais un
     /// retry indéfini » : `Debug` est le seul point d'observation (champs `pub(crate)` dans
     /// `restate-sdk` `0.12.1`) ; plafond `5`, `Pause` au plafond, jamais `None` ni `Kill`.
+    /// La vérification « jamais None » porte sur la portion **service** du rendu (avant
+    /// `handler_options:`) : DEC-29 (2026-11-03) y ajoute l'entrée `execute_long`, dont le
+    /// `HandlerOptions` affiche nécessairement ses champs de retry à `None` — non posés au niveau
+    /// handler, ils retombent sur la politique du service (`apply_options` de `discovery.rs` ne
+    /// surcharge qu'en `Some`), jamais sur le retry indéfini du serveur.
     #[test]
     fn recommended_options_plafonne_tentatives_et_pause() {
         let rendu = format!("{:?}", recommended_options());
+        let niveau_service = rendu.split("handler_options:").next().unwrap_or(rendu.as_str());
         assert!(
             rendu.contains("retry_policy_max_attempts: Some(5)"),
             "le plafond de tentatives doit être 5, rendu : {rendu}"
@@ -947,12 +1034,107 @@ mod tests {
             "l'atteinte du plafond doit mettre en pause, rendu : {rendu}"
         );
         assert!(
-            !rendu.contains("retry_policy_max_attempts: None"),
-            "aucun plafond (None) reproduirait le retry indéfini du serveur, rendu : {rendu}"
+            !niveau_service.contains("retry_policy_max_attempts: None"),
+            "aucun plafond au niveau service (None) reproduirait le retry indéfini du serveur, \
+             rendu : {rendu}"
         );
         assert!(
             !rendu.contains("Some(Kill)"),
             "Kill empêcherait la relance manuelle voulue, rendu : {rendu}"
         );
+    }
+
+    /// Scenario « le kind `subagent` est routé vers le handler dédié » (DEC-29, amendement
+    /// 2026-11-03) : `handler_name` compare le kind à `LONG_RUNNING_KINDS` (comparaison exacte) —
+    /// `subagent` cible `execute_long`, `record` et `durable_sleep` (un durable : le routing ne
+    /// distingue pas ordinaire et durable, la branche durable vit dans le handler) ciblent
+    /// `execute`, inchangé.
+    #[test]
+    fn le_kind_subagent_est_routé_vers_le_handler_dédié() {
+        assert_eq!(
+            handler_name("subagent"),
+            "execute_long",
+            "le seul kind de LONG_RUNNING_KINDS doit viser le handler dédié"
+        );
+        assert_eq!(handler_name("record"), "execute");
+        assert_eq!(handler_name("durable_sleep"), "execute");
+    }
+
+    /// Scenario « les options recommandées bornent le handler long, pas le handler ordinaire »
+    /// (DEC-29) : `Debug` est le seul point d'observation (champs `pub(crate)` dans `restate-sdk`
+    /// `0.12.1`). Première branche : plafond 3600 s → inactivité `3600 + 300 s` (65 min), abandon
+    /// `+600 s` (70 min) sur `execute_long` seul. Seconde branche : plafond 100 000 s plafonné à
+    /// `LONG_CEILING_MAX_SECS` (14 400 s) → inactivité 4 h 05, abandon 4 h 10, même entrée.
+    /// Troisième branche (`Must`) : une valeur nulle est portée à 1 s. Dans les trois cas, aucune
+    /// entrée pour `execute` — les bornes ne se posent jamais sur le handler ordinaire.
+    #[test]
+    fn les_options_recommandées_bornent_le_handler_long_pas_le_handler_ordinaire() {
+        let rendu = format!("{:?}", recommended_options_for(Duration::from_mins(60)));
+        let inactivité_attendue = format!("{:?}", Duration::from_mins(65));
+        let abandon_attendu = format!("{:?}", Duration::from_mins(70));
+        assert!(
+            rendu.contains("\"execute_long\""),
+            "une entrée de handler execute_long est attendue, rendu : {rendu}"
+        );
+        assert!(
+            rendu.contains(&format!("Some({inactivité_attendue})")),
+            "l'inactivité doit valoir le plafond + 5 min ({inactivité_attendue}), rendu : {rendu}"
+        );
+        assert!(
+            rendu.contains(&format!("Some({abandon_attendu})")),
+            "l'abandon doit valoir le plafond + 10 min ({abandon_attendu}), rendu : {rendu}"
+        );
+        assert!(
+            !rendu.contains("\"execute\""),
+            "aucune borne ne doit être posée sur le handler ordinaire execute, rendu : {rendu}"
+        );
+        let plafond = Duration::from_secs(LONG_CEILING_MAX_SECS);
+        let rendu_plafonné = format!("{:?}", recommended_options_for(Duration::from_secs(100_000)));
+        assert!(
+            rendu_plafonné.contains(&format!(
+                "Some({:?})",
+                plafond.saturating_add(Duration::from_mins(5))
+            )),
+            "le plafond doit être ramené à LONG_CEILING_MAX_SECS pour l'inactivité, rendu : {rendu_plafonné}"
+        );
+        assert!(
+            rendu_plafonné.contains(&format!(
+                "Some({:?})",
+                plafond.saturating_add(Duration::from_mins(10))
+            )),
+            "le plafond doit être ramené à LONG_CEILING_MAX_SECS pour l'abandon, rendu : {rendu_plafonné}"
+        );
+        assert!(
+            !rendu_plafonné.contains("\"execute\""),
+            "aucune borne ne doit être posée sur le handler ordinaire execute, rendu : {rendu_plafonné}"
+        );
+        let rendu_nul = format!("{:?}", recommended_options_for(Duration::ZERO));
+        assert!(
+            rendu_nul.contains(&format!(
+                "Some({:?})",
+                Duration::from_secs(1).saturating_add(Duration::from_mins(5))
+            )),
+            "un plafond nul est porté à 1 s : inactivité 301 s, rendu : {rendu_nul}"
+        );
+        assert!(
+            rendu_nul.contains(&format!(
+                "Some({:?})",
+                Duration::from_secs(1).saturating_add(Duration::from_mins(10))
+            )),
+            "un plafond nul est porté à 1 s : abandon 601 s, rendu : {rendu_nul}"
+        );
+    }
+
+    /// Scenario « le service se lie avec les options longues sans paniquer » (DEC-29) : `bind`
+    /// panique si un handler nommé par les options n'existe pas — `recommended_options()` nomme
+    /// `execute_long`, la construction de l'`Endpoint` réussit si le service porte bien ce second
+    /// handler. Aucun serveur, aucun port : `build` ne fait que router les définitions.
+    #[test]
+    fn le_service_se_lie_avec_les_options_longues_sans_paniquer() {
+        use restate_sdk::prelude::{Endpoint, IntoServiceDefinition};
+        let definition = StepDispatcher::new(StepRegistry::new())
+            .into_service_definition()
+            .options(recommended_options());
+        let _endpoint = Endpoint::builder().bind(definition).build();
     }
 }

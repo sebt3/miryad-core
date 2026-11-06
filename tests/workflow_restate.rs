@@ -226,6 +226,31 @@ impl MiryadWorkflowStep for EchoTrigger {
     }
 }
 
+/// Kind ordinaire de fixture `"subagent"` (Scenario DEC-29 de ./dispatcher.sdd) : journalise
+/// `start:<id>`/`end:<id>` comme `record` et rend son `id`. Le **nom** du kind est imposé par
+/// `LONG_RUNNING_KINDS` (./dispatcher.rs) — c'est lui que le routage `handler_name` envoie vers
+/// le handler `execute_long`. Simple step à journal, sans dépendance : la preuve ici porte sur
+/// le handler servi, pas sur la logique du futur `SubagentStep` (`./subagent_step.sdd`, R15).
+struct Subagent(Log);
+
+#[async_trait::async_trait]
+impl MiryadWorkflowStep for Subagent {
+    fn kind(&self) -> &'static str {
+        "subagent"
+    }
+    async fn run(
+        &self,
+        _run: &RunInfo,
+        config: Value,
+        _inputs: HashMap<String, Value>,
+    ) -> Result<Value, StepError> {
+        let id = config["id"].as_str().unwrap_or_default().to_string();
+        self.0.lock().expect("journal").push(format!("start:{id}"));
+        self.0.lock().expect("journal").push(format!("end:{id}"));
+        Ok(json!({ "id": id }))
+    }
+}
+
 /// Pile de test : Restate en conteneur + endpoint applicatif en tâche tokio, déploiement
 /// enregistré. `_container` garde le conteneur vivant jusqu'à la fin du test.
 struct Stack {
@@ -283,6 +308,7 @@ impl Stack {
             .and_then(|r| r.register(Fail))
             .and_then(|r| r.register(Flaky(Arc::clone(&flaky_calls))))
             .and_then(|r| r.register(EchoTrigger))
+            .and_then(|r| r.register(Subagent(Arc::clone(&log))))
             .and_then(|r| r.register_durable(DurableSleeper))
             .and_then(|r| r.register_durable(DurableConfig))
             .and_then(|r| r.register_durable(SubWorkflowStep::new(max_depth)))
@@ -372,6 +398,52 @@ impl Stack {
 
     fn journal(&self) -> Vec<String> {
         self.log.lock().expect("journal").clone()
+    }
+
+    /// Cibles des invocations `StepDispatcher` lues dans `sys_invocation` de l'admin API
+    /// (`POST /query`, corps `{"query": …}`, réponse JSON `{"rows": […]}` sous
+    /// `Accept: application/json` — sans cet en-tête le serveur rend du Arrow IPC binaire, vérifié
+    /// sur `restate:latest` = 1.7.12). Le champ `target` porte le couple service/handler
+    /// (`StepDispatcher/…`).
+    async fn dispatcher_targets(&self) -> Vec<String> {
+        let response = self
+            .http
+            .post(format!("{}/query", self.config.admin_url))
+            .header("Accept", "application/json")
+            .json(&json!({ "query": "SELECT target FROM sys_invocation" }))
+            .send()
+            .await
+            .expect("la requête à l'admin API doit répondre");
+        let corps = response.json::<Value>().await.unwrap_or(Value::Null);
+        corps
+            .get("rows")
+            .and_then(Value::as_array)
+            .map(|lignes| {
+                lignes
+                    .iter()
+                    .filter_map(|ligne| ligne.get("target")?.as_str().map(str::to_string))
+                    .filter(|t| t.contains("StepDispatcher"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Attend (bornes de 30 s : la table est eventually consistent après l'achèvement du run)
+    /// qu'une invocation `StepDispatcher` dont la cible satisfait `attendu` apparaisse dans
+    /// `sys_invocation`.
+    async fn attendre_cible(&self, attendu: impl Fn(&str) -> bool, description: &str) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let cibles = self.dispatcher_targets().await;
+            if cibles.iter().any(|t| attendu(t)) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "aucune invocation StepDispatcher visant {description} dans les cibles : {cibles:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
 }
 
@@ -782,6 +854,39 @@ async fn un_step_de_40_minutes_survit_aux_bornes_relevees_du_handler() {
         "aucun rejeu : {journal:?}"
     );
     assert_eq!(journal.iter().filter(|e| e.as_str() == "end:L").count(), 1);
+}
+
+/// Scenario « un step subagent est exécuté par `execute_long` » (./dispatcher.sdd, amendement
+/// DEC-29 du 2026-11-03, preuve d'intégration) : la pile `Stack::start` lie le `StepDispatcher`
+/// avec `recommended_options()` — dont l'entrée de handler `execute_long` (le `bind` panique si le
+/// service ne porte pas ce second handler). Un DAG d'un unique step du kind `"subagent"` (seul
+/// membre de `LONG_RUNNING_KINDS`) réussit et son invocation vise `execute_long`, lu dans
+/// `sys_invocation.target` de l'admin API ; un second run, DAG d'un unique step `record`, vise
+/// `execute` — les bornes relevées ne sortent jamais du handler dédié.
+#[tokio::test]
+#[ignore = "exige podman et l'image restate"]
+async fn un_step_subagent_est_exécuté_par_execute_long() {
+    let stack = Stack::start().await;
+    let dag_long = DagSteps(vec![step("S", &[], "subagent", json!({ "id": "S" }))]);
+    let (status, body) = stack.run_to_completion(&dag_long, None).await;
+    assert_eq!(status, 200, "le step subagent doit mener le run au bout : {body}");
+    let journal = stack.journal();
+    assert!(
+        journal.iter().any(|e| e == "start:S") && journal.iter().any(|e| e == "end:S"),
+        "le step subagent doit s'exécuter : {journal:?}"
+    );
+    stack
+        .attendre_cible(|t| t.contains("execute_long"), "execute_long")
+        .await;
+    let dag_ord = DagSteps(vec![step("R", &[], "record", json!({ "id": "R" }))]);
+    let (status, body) = stack.run_to_completion(&dag_ord, None).await;
+    assert_eq!(status, 200, "le step record doit mener le run au bout : {body}");
+    stack
+        .attendre_cible(
+            |t| t.contains("StepDispatcher") && t.contains("execute") && !t.contains("execute_long"),
+            "execute (jamais execute_long pour un kind ordinaire)",
+        )
+        .await;
 }
 
 /// Ajoute les réglages du spike `OI-11` au `ServiceOptions` de base (retry plafonné) : les options de
