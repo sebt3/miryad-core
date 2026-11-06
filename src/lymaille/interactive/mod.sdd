@@ -30,7 +30,21 @@ Exposes:
   `SessionEvent`, `SessionEventKind`, `SessionOutcome`, `EventHub`, `SessionManager`, `ManagerDeps`, `SessionHandle`, `activate_toolset`, `discard_draft`, `ActivationReport`, modules `hub`, `manager`, `activation`
 
 Tasks:
-  [ ] `mod.rs` en dernier du dossier ; test de chemins plats.
+  [x] `mod.rs` en dernier du dossier ; test de chemins plats. — **lot 3 (2026-11-06) :
+    `tests::chemins_plats_resolvent` référence chaque entrée de la liste fermée du `Must` par le
+    chemin plat promis — types et fonctions, compilés puis `black_box`és sans instanciation — et le
+    chemin `event::export_typescript` promis par `../mod.sdd` (amendement DEC-30). Vert sous
+    `--features lymaille`, et `--no-default-features` compile (module gated `db` à sa déclaration).
+    `pub use activation::…` passe du glob au nommage explicite, liste ouverte et commentaire
+    contredisant la règle retirés.**
+    - `[!]` le `Must` (« le module `assemble` et ses types internes ne sont pas exposés
+      publiquement ») est structurellement impossible par la seule visibilité : `AssembleInput`
+      expose `Option<Arc<dyn AssembleDeps>>` dans la surface publique de `app.rs`, et serrer
+      `pub(crate) mod assemble` déclenche `private_interfaces`/`private_types` (`assemble.rs:686`,
+      `app.rs` — vérifié par l'`implementer`, cycle 18). Trois issues : réécrire le `Must` (« non
+      exposé *depuis `interactive`* »), ou retirer `Arc<dyn AssembleDeps>` de `app.sdd`, ou sortir
+      `assemble` de cette portée. Le code garde `pub mod assemble` (état DEC-27, inchangé) ; la
+      tâche est close sur les chemins plats, en suspens sur `assemble`. **Arbitrage requis.**
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.
