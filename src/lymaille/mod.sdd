@@ -97,7 +97,24 @@ Tasks:
     `dep:ts-rs` ; contrôle de graphe de `ts-rs`). Spec approuvée le 2026-11-04.
   [x] Export TypeScript des événements (DSD `OI-12`, soldé le 2026-11-03) : `ts-rs`, dépendance optionnelle derrière la feature `lymaille` ; amendement de `Cargo.toml` : voir la tâche « Amendement DEC-27/DEC-30 » ci-dessous.
   [x] Amendement DEC-27/DEC-30 : /Cargo.toml (`ts-rs`, `dep:chrono`), /tooling.sdd, /AGENTS.md (commande `cargo tree --no-default-features -e normal -i ts-rs`, sortie vide), /.github/workflows/workflows.sdd et ci.yml (même contrôle) ; fichiers hors périmètre : amendement soumis au développeur principal avant d'y toucher. Avant ./interactive/event.rs.
-  [ ] Amendement lot 2 : `mod.rs` re-déclaré **en dernier du lot 2** (après ./interactive, ./http, ./chat, ./mcp_access, ./store, ./definitions), tests de chemins plats étendus.
+  [x] Amendement lot 2 : `mod.rs` re-déclaré **en dernier du lot 2** (après ./interactive, ./http, ./chat, ./mcp_access, ./store, ./definitions), tests de chemins plats étendus.
+    Livré 2026-11-06 (lot 3) : `mod.rs` porte les ré-exports plats des deux amendements (les 8 items du lot 2 et les 10 items + chemin
+    `export_typescript` de DEC-27/DEC-30, symboles vérifiés à leur source, aucun shim) ; `//!` documente les surfaces du lot 2
+    (REST+SSE, Matrix, `SessionManager` partagé, rétention `purge_sessions` planifiée par l'application, montage des routeurs par
+    l'application), l'hôte applicatif (`SharedHost` optionnel, `SubagentDeps::host`, `ManagerDeps`) et l'export TypeScript côté
+    application ; les trois commentaires « tâche R7 » réécrits à l'état final. `Cargo.toml` vérifié en lecture seule, inchangé :
+    toutes les dépendances des deux amendements sont au graphe (`sha2` arrive par `db`). Validé 2026-11-06 (validator PASS,
+    batterie ciblée une passe : `lymaille` lib 883 vertes ; `lymaille,matrix` test 1 057 + clippy `-D warnings` verts ;
+    `workflow,lymaille` 1 042 + clippy verts ; `--all-features` 1 383 + clippy verts ; `fmt` et `specdd lint` verts ; rouge
+    préalable constaté : 21 erreurs E0425/E0405 avant les `pub use`).
+    - `[?]` (implementer, recopié par le validator) : le `Must` (amendement lot 2) dit « le module **privé** `mcp_access` » mais le
+      code déclare `pub mod mcp_access` (HEAD, préexistant à la tâche) et des consommateurs internes le nomment par son chemin
+      (`store/toolset.rs`, `interactive/assemble.rs`, `workflow/subagent_step.rs`, dont `build_auth` hors liste de ré-exports).
+      Deux issues : amender le `Must` pour acter `pub mod mcp_access` (les types étant déjà ré-exportés à plat, le `pub` n'ajoute
+      que le chemin), ou rendre le module privé avec `pub(crate)` sur les items. **Choix provisoire : garder `pub`**, non tranché.
+    - `[?]` (validator) : le commentaire d'en-tête du bloc de ré-exports rattache `host` à « l'amendement lot 2 » **et** à
+      DEC-27/DEC-30 ; le `mod.sdd` n'introduit `host` que par DEC-27/30. Purement documentaire, à corriger au prochain passage sur
+      le fichier. Choix provisoire : non retouché pour ne pas rouvrir une validation.
   [x] Amendement lot 2 : /Cargo.toml, /tooling.sdd, /AGENTS.md, /.github/workflows/workflows.sdd et ci.yml pour la combinaison `lymaille,matrix` et les dépendances (fichiers hors périmètre : amendement soumis au développeur principal avant d'y toucher).
     Livré 2026-11-06 (lot 3, accord explicite du développeur principal en séance) : `lymaille,matrix` ajoutée aux deux matrices de
     `ci.yml` (16 entrées chacune, parse et ordre vérifiés), amendements `tooling.sdd`, `AGENTS.md` (lignes de commande + comptage
