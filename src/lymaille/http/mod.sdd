@@ -45,7 +45,8 @@ Exposes:
   `conversations_router`
 
 Tasks:
-  [ ] `mod.rs` en dernier du dossier ; test d'agrégation de routes (table de routes exacte, méthodes servies).
+  [x] `mod.rs` en dernier du dossier ; test d'agrégation de routes (table de routes exacte, méthodes servies).
+    Validé 2026-11-06 (validator PASS clôture : table exacte des dix routes méthode comprise (anonyme → 401 partout), six formes hors table jamais 401, rien hors préfixe, slash final 404, corps 70 Ko refusé avant serde — les trois Scenario couverts ; le [?] « 413 » reste ouvert, hors périmètre).
   [x] Tracé dans le `Must` le 2026-11-06 (arbitrage du 2026-11-05) : un corps dépassant la borne de 64 Ko est rendu `422` (le `DefaultBodyLimit`
     borne avant `serde`) — pas de `413` : @RestError n'a pas de variante de trop-plein et en ajouter une est hors périmètre de cette surface.
 
