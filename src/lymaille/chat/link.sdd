@@ -45,7 +45,8 @@ Exposes:
   `issue_code`, `consume_code`, `resolve`, `unlink`, `purge_expired`, `link_code_router`, `IssuedCode`
 
 Tasks:
-  [ ] Dépendances `sha2`, `getrandom`, `subtle` (amendement `Cargo.toml` avec accord si absentes du graphe) ; tests d'abord (SQLite mémoire, horloge injectée) ; puis ./link.rs.
+  [x] Dépendances `sha2`, `getrandom`, `subtle` (amendement `Cargo.toml` avec accord si absentes du graphe) ; tests d'abord (SQLite mémoire, horloge injectée) ; puis ./link.rs.
+    Validé 2026-11-06 (validator PASS clôture : les trois dépendances au Cargo.toml via `dep:` et réellement utilisées ; 8 Scenario / 8 tests au Then réel dont les deux erreurs identiques expiration/inconnu, `too many attempts`, purge et routeur oneshot ; SQLite mémoire, horloge injectée).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille,matrix` ; la spec est relue et approuvée avant ./link.rs.
