@@ -6,14 +6,19 @@
 //! dispatcher. La session porte un nom déterministe dérivé de `(run_key, step_id)` : à un rejeu,
 //! la session sauvegardée est reprise (`restore_session`), jamais recommencée. Le step tourne
 //! sous le `subject` du déclencheur (`RunInfo::trigger`) ; sans identité il échoue sans repli.
-//! Le plafond `max_secs` (défaut [`DEFAULT_MAX_SECS`], maximum [`MAX_SECS_CEILING`]) est appliqué
-//! par l'annulation coopérative `CancelHandle`, strictement sous la borne ≈ 11 min d'un `ctx.run`
-//! (DSD `OI-4`).
+//! Le plafond `max_secs` (défaut [`DEFAULT_MAX_SECS`], borné par le plafond d'application
+//! `max_secs_ceiling` — défaut [`DEFAULT_LONG_CEILING_SECS`, amendement DEC-29]) est appliqué par
+//! l'annulation coopérative `CancelHandle`. Le kind est routé vers le handler dédié `execute_long`
+//! du dispatcher, dont les bornes couvrent ce plafond (DSD `OI-4`, `OI-11`).
 //!
 //! L'application enregistre elle-même le kind : `registry.register(SubagentStep::new(deps))`.
 //! Amendement lot 2 (DSD `DEC-20`, `DEC-21`) : le module `resources` écrit sous `WriteScope`
 //! `(run_key, step_key)` — idempotent au rejeu par le journal d'écritures — et les rôles MCP du
 //! contexte lié passent par `mcp_access` sans session interactive : un `forward` est refusé.
+//! Amendement R15 (DSD `DEC-27`, `DEC-29`) : le plafond d'application se règle par
+//! `with_max_secs_ceiling` (l'application qui le change lie `recommended_options_for` à la même
+//! valeur) ; `SubagentDeps::host` donne à `resolve_role` l'autorité de l'hôte sur les rôles MCP
+//! liés, sous le principal du déclencheur.
 //! Aucune erreur, aucune trace ne contient un prompt, un secret, un contenu de session ou de
 //! ressource.
 
@@ -92,7 +97,7 @@ use ::lymaille::todo_module;
 use sea_orm::DatabaseConnection;
 
 use crate::lymaille::error::LymailleError;
-use crate::lymaille::host::LymailleHost;
+use crate::lymaille::host::SharedHost;
 use crate::lymaille::identity::{CallerPrincipal, Identity, check_grants};
 use crate::lymaille::install_crypto_provider;
 use crate::lymaille::mcp_access::{RoleBinding, build_auth, resolve_role};
@@ -102,6 +107,7 @@ use crate::lymaille::store::LymailleStores;
 use crate::lymaille::store::SeaSessionStore;
 use crate::lymaille::store::WriteScope;
 
+use super::dispatcher::{DEFAULT_LONG_CEILING_SECS, LONG_CEILING_MAX_SECS};
 use super::step::MiryadWorkflowStep;
 use super::step::RunInfo;
 use super::step::StepError;
@@ -110,8 +116,11 @@ use super::step::StepError;
 /// strictement sous la borne ≈ 11 min d'un `ctx.run` par défaut.
 pub const DEFAULT_MAX_SECS: u64 = 480;
 
-/// Plafond absolu de `max_secs` (DSD `OI-4`) : au-delà, le run serait coupé par Restate avant
-/// que l'annulation coopérative de `lymaille` ne puisse s'appliquer.
+/// Plafond absolu de `max_secs` (DSD `OI-4`) : plafond du lot 1, figé à 540 s avant
+/// l'amendement DEC-29. Depuis DEC-29, la validation de `max_secs` regarde le plafond
+/// d'application du step (`max_secs_ceiling`, défaut [`DEFAULT_LONG_CEILING_SECS`]), plus cette
+/// constante ; elle reste exposée car `Exposes` de la spec la nomme — question `[?]` remontée
+/// pour la retirer de la surface au prochain amendement.
 pub const MAX_SECS_CEILING: u64 = 540;
 
 /// Nom du contexte de toolsets et type de contexte des sessions produites par le step : la même
@@ -154,6 +163,10 @@ pub struct SubagentDeps {
     /// Registre des entités lues **et écrites** par les agents — amendement lot 2 (DSD `DEC-21`) :
     /// `readers` devient `registry`, un [`ResourceRegistry`] (`src/lymaille/resource_module.sdd`).
     pub registry: Arc<ResourceRegistry>,
+    /// Extension de l'application hôte (`src/lymaille/host.sdd`) — amendement DEC-27 : les rôles
+    /// MCP liés qu'elle pourvoit sont tranchés par sa décision, sous le principal du
+    /// déclencheur. `None` par défaut : seule la liaison classique de `mcp_servers` répond.
+    pub host: Option<SharedHost>,
 }
 
 /// Couture d'inférence du step (test) : produit le client d'inférence d'un provider, là où la
@@ -231,16 +244,43 @@ impl Summarizer for NoSummarizer {
 pub struct SubagentStep {
     deps: SubagentDeps,
     inference: Arc<dyn InferenceFactory>,
+    /// Plafond d'application de `max_secs` (amendement DEC-29) : la validation de la `config`
+    /// refuse tout `max_secs` hors de `1..=max_secs_ceiling`. Sans `with_max_secs_ceiling`,
+    /// [`DEFAULT_LONG_CEILING_SECS`] ; l'application qui le change lie le handler
+    /// `execute_long` à la même valeur par `recommended_options_for` (./dispatcher.sdd).
+    max_secs_ceiling: u64,
 }
 
 impl SubagentStep {
-    /// Construit le step autour des dépendances de l'application, avec la fabrique `rig`.
+    /// Construit le step autour des dépendances de l'application, avec la fabrique `rig` et le
+    /// plafond d'application par défaut ([`DEFAULT_LONG_CEILING_SECS`], DEC-29).
     #[must_use]
     pub fn new(deps: SubagentDeps) -> Self {
         Self {
             deps,
             inference: Arc::new(RigInferenceFactory),
+            max_secs_ceiling: DEFAULT_LONG_CEILING_SECS,
         }
+    }
+
+    /// Fixe le plafond d'application de `max_secs` (amendement DEC-29) : `ceiling` dans
+    /// `1..=LONG_CEILING_MAX_SECS`, strictement couvert par les bornes du handler `execute_long`
+    /// que l'application lie à la même valeur (`recommended_options_for(ceiling)`).
+    ///
+    /// # Errors
+    ///
+    /// [`LymailleError::InvalidDefinition`] si `ceiling` est hors de `1..=LONG_CEILING_MAX_SECS`
+    /// (`"max_secs ceiling out of range"`).
+    pub fn with_max_secs_ceiling(self, ceiling: u64) -> Result<Self, LymailleError> {
+        if !(1..=LONG_CEILING_MAX_SECS).contains(&ceiling) {
+            return Err(LymailleError::InvalidDefinition(
+                "max_secs ceiling out of range".to_owned(),
+            ));
+        }
+        Ok(Self {
+            max_secs_ceiling: ceiling,
+            ..self
+        })
     }
 
     /// Construit le step avec une fabrique d'inférence de rechange (tests unitaires uniquement —
@@ -250,6 +290,7 @@ impl SubagentStep {
         Self {
             deps,
             inference: factory,
+            max_secs_ceiling: DEFAULT_LONG_CEILING_SECS,
         }
     }
 }
@@ -317,8 +358,10 @@ fn from_session(error: ::lymaille::SessionError) -> StepError {
     }
 }
 
-/// Validation pure de la `config` (`Must` étape 1), avant tout accès.
-fn validate(cfg: &SubagentConfig) -> Result<(), StepError> {
+/// Validation pure de la `config` (`Must` étape 1), avant tout accès. Le `max_secs` demandé est
+/// borné par le plafond d'application `ceiling` (amendement DEC-29, défaut
+/// [`DEFAULT_LONG_CEILING_SECS`]).
+fn validate(cfg: &SubagentConfig, ceiling: u64) -> Result<(), StepError> {
     if cfg.agent.is_empty() {
         return Err(invalid("agent vide"));
     }
@@ -326,11 +369,9 @@ fn validate(cfg: &SubagentConfig) -> Result<(), StepError> {
         return Err(invalid("task vide"));
     }
     if let Some(max_secs) = cfg.max_secs
-        && !(1..=MAX_SECS_CEILING).contains(&max_secs)
+        && !(1..=ceiling).contains(&max_secs)
     {
-        return Err(invalid(format!(
-            "max_secs hors de 1..={MAX_SECS_CEILING} : {max_secs}"
-        )));
+        return Err(invalid(format!("max_secs hors de 1..={ceiling} : {max_secs}")));
     }
     if cfg.max_turns == Some(0) {
         return Err(invalid("max_turns doit être supérieur ou égal à 1"));
@@ -526,11 +567,16 @@ fn context_roles(context: &ToolsetContext) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-/// Fin de l'étape 7, amendement lot 2 (DSD `DEC-20`) : les rôles MCP du contexte lié à la session
-/// (`CONTEXT_TYPE`, relu sous le sujet du déclencheur) passent par `mcp_access` — `resolve_role`
-/// sans hôte (la décision d'hôte vient de la tâche R15), puis `build_auth` avec
-/// `interactive_token = None` : un serveur `forward` échoue le step en `StepError` **non
-/// retryable**, comme un serveur refusé en `Forbidden`, sans repli. Aucun jeton n'est persisté.
+/// Fin de l'étape 7, amendements lot 2 (DSD `DEC-20`) et R15 (DSD `DEC-27`) : les rôles MCP du
+/// contexte lié à la session (`CONTEXT_TYPE`, relu sous le sujet du déclencheur) passent par
+/// `mcp_access` — `resolve_role` **avec l'hôte de `SubagentDeps`** quand l'application en fournit
+/// un (sa décision fait foi, sous le principal du déclencheur, sans repli ; priorité sur la
+/// table), puis, pour une liaison de table, `build_auth` avec `interactive_token = None` : un
+/// serveur `forward` échoue le step en `StepError` **non retryable**, comme un serveur refusé
+/// (`Forbidden`) ou un refus de l'hôte, sans repli. Un `RoleBinding::Host` ouvre la porte — le
+/// jeton de l'hôte n'est ni persisté ni tracé, le `Grant` est jeté ici (la porte est un contrôle,
+/// pas un montage : question `[?]` du lot 2). Aucun texte de l'hôte ne remonte : `HostError` est
+/// sans contenu (`../lymaille/host.sdd`).
 async fn check_context_roles(
     step: &SubagentStep,
     stores: &LymailleStores,
@@ -546,7 +592,7 @@ async fn check_context_roles(
     };
     for (role, server) in context_roles(&context) {
         let binding = resolve_role(
-            None::<&dyn LymailleHost>,
+            step.deps.host.as_deref(),
             &step.deps.db,
             caller,
             CONTEXT_TYPE,
@@ -562,8 +608,9 @@ async fn check_context_roles(
                 build_auth(&model, Arc::clone(&step.deps.secrets), None)
                     .map_err(|error| from_lymaille(&error))?;
             }
-            // Sans hôte, `resolve_role` ne rend jamais `Host` : branche de garde, sans repli.
-            RoleBinding::Host(_) => return Err(permanent("host binding without a host")),
+            // DEC-27 : l'hôte a accordé un jeton non expiré sous le déclencheur — la porte
+            // s'ouvre, le `Grant` n'est ni persisté ni tracé (jeté au drop de cette branche).
+            RoleBinding::Host(_) => {}
         }
     }
     Ok(())
@@ -733,7 +780,7 @@ impl MiryadWorkflowStep for SubagentStep {
     ) -> Result<Value, StepError> {
         // ── 1. config (validation pure, aucun accès) ──
         let cfg: SubagentConfig = serde_json::from_value(config).map_err(invalid)?;
-        validate(&cfg)?;
+        validate(&cfg, self.max_secs_ceiling)?;
         let max_secs = cfg.max_secs.unwrap_or(DEFAULT_MAX_SECS);
         let max_turns = cfg.max_turns.unwrap_or(DEFAULT_BATCH_MAX_TURNS);
 
@@ -833,6 +880,7 @@ mod tests {
     use super::*;
 
     use crate::lymaille::definitions::mcp_server;
+    use crate::lymaille::host::{HostError, LymailleHost, McpDecision, McpGrant, McpRequest};
     use crate::lymaille::store::test_support::test_db;
     use crate::resource::{AccessPolicy, MiryadResource};
     use crate::users::membership::sync_group_memberships;
@@ -1156,6 +1204,25 @@ mod tests {
                 db,
                 secrets: Arc::new(FixedSecret("s3cret")),
                 registry: Arc::new(registry),
+                host: None,
+            },
+            factory,
+        )
+    }
+
+    /// Le step avec un hôte applicatif (amendement DEC-27) : les rôles MCP liés passent par sa
+    /// décision avant la table.
+    fn step_with_host(
+        db: DatabaseConnection,
+        factory: Arc<dyn InferenceFactory>,
+        host: SharedHost,
+    ) -> SubagentStep {
+        SubagentStep::with_inference(
+            SubagentDeps {
+                db,
+                secrets: Arc::new(FixedSecret("s3cret")),
+                registry: Arc::new(ResourceRegistry::new()),
+                host: Some(host),
             },
             factory,
         )
@@ -1230,7 +1297,10 @@ mod tests {
             json!({ "agent": "", "task": "inspecter" }),
             json!({ "agent": "G_sub", "task": "  " }),
             json!({ "agent": "G_sub", "task": "inspecter", "max_secs": 0 }),
-            json!({ "agent": "G_sub", "task": "inspecter", "max_secs": 541 }),
+            // Le `Scenario` citait `541` (plafond figé du lot 1) ; sous le plafond d'application
+            // par défaut de 3600 (amendement DEC-29) c'est `3601` qui déborde — même intention,
+            // « max_secs hors du plafond en force ».
+            json!({ "agent": "G_sub", "task": "inspecter", "max_secs": 3601 }),
             json!({ "agent": "G_sub", "task": "inspecter", "max_turns": 0 }),
             json!({ "agent": "G_sub", "task": "inspecter", "inconnue": true }),
         ];
@@ -1682,5 +1752,185 @@ mod tests {
             "le texte fermé de `server_for` : {refus}"
         );
         assert!(provider.requests().is_empty(), "toujours aucune inférence");
+    }
+
+    // ── Scenario: le plafond d'application borne max_secs (DEC-29) -----------------------------
+
+    /// Hôte fixture du `Scenario` DEC-27 : accorde le rôle `sandbox` au seul subject `alice`,
+    /// refuse (`Denied`) à tout autre — la décision se prend sur le `caller` relu par
+    /// `resolve_role`, c'est-à-dire sous le déclencheur. Le jeton et l'URL sont des marqueurs de
+    /// fuite : ils ne doivent jamais remonter dans une erreur.
+    struct HoteParSujet;
+
+    #[async_trait::async_trait]
+    impl LymailleHost for HoteParSujet {
+        async fn resolve_mcp(
+            &self,
+            request: &McpRequest<'_>,
+            caller: &CallerPrincipal,
+        ) -> Result<McpDecision, HostError> {
+            if request.role == "sandbox" && caller.subject == "alice" {
+                Ok(McpDecision::Granted(McpGrant {
+                    url: "https://sbx.example/mcp".to_owned(),
+                    token: Zeroizing::new("JETON-HOTE".to_owned()),
+                    expires_at: None,
+                }))
+            } else {
+                Ok(McpDecision::Denied)
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn le_plafond_dapplication_borne_max_secs() {
+        let db = test_db().await;
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let factory: Arc<dyn InferenceFactory> = Arc::new(ScriptFactory(Arc::clone(&provider)));
+        let default_step = step_with(db.clone(), Arc::clone(&factory));
+        let high_step = step_with(db.clone(), Arc::clone(&factory))
+            .with_max_secs_ceiling(7200)
+            .expect("7200 est dans 1..=LONG_CEILING_MAX_SECS");
+
+        // Sonde : `trigger = None`. Si la validation de `max_secs` passe, le run s'arrête à
+        // l'étape 2 (« trigger identity ») ; si elle échoue, le message est préfixé
+        // « config subagent invalide ». Dans les deux cas ni la base ni l'inférence ne sont
+        // touchées.
+        for (step, secs, accepte) in [
+            (&default_step, 3600_u64, true),
+            (&default_step, 3601, false),
+            (&high_step, 3601, true),
+            (&high_step, 7200, true),
+        ] {
+            let error = step
+                .run(
+                    &run_info("t-ceiling", "s1", None),
+                    json!({ "agent": "G_sub", "task": "inspecter", "max_secs": secs }),
+                    HashMap::new(),
+                )
+                .await
+                .expect_err("la sonde rend l'échec de validation ou d'identité");
+            if accepte {
+                assert_eq!(
+                    error.message, "subagent step requires a trigger identity",
+                    "max_secs={secs} doit être accepté par le plafond en force"
+                );
+            } else {
+                assert!(
+                    error.message.starts_with("config subagent invalide"),
+                    "max_secs={secs} doit être refusé par le plafond en force : {error}"
+                );
+            }
+        }
+
+        // Bornes du constructeur : 0 et 14 401 refusés par la phrase fixe, 14 400 accepté.
+        let refuse_zero = step_with(db.clone(), Arc::clone(&factory)).with_max_secs_ceiling(0);
+        assert!(
+            matches!(&refuse_zero, Err(LymailleError::InvalidDefinition(detail))
+                if detail == "max_secs ceiling out of range"),
+            "le plafond 0 est refusé par le constructeur"
+        );
+        let refuse_max = step_with(db.clone(), Arc::clone(&factory)).with_max_secs_ceiling(14_401);
+        assert!(
+            matches!(&refuse_max, Err(LymailleError::InvalidDefinition(detail))
+                if detail == "max_secs ceiling out of range"),
+            "le plafond 14 401 est refusé par le constructeur"
+        );
+        assert!(
+            matches!(&refuse_zero, Err(e) if e.to_string().contains("max_secs ceiling out of range")),
+            "le Display porte la phrase fixe"
+        );
+        assert!(
+            step_with(db, Arc::clone(&factory))
+                .with_max_secs_ceiling(LONG_CEILING_MAX_SECS)
+                .is_ok(),
+            "LONG_CEILING_MAX_SECS est la borne haute incluse et doit être accepté"
+        );
+        assert!(
+            provider.requests().is_empty(),
+            "les sondes ne touchent ni la base ni l'inférence"
+        );
+    }
+
+    // ── Scenario: un rôle MCP fourni par l'hôte est résolu sous le déclencheur (DEC-27) --------
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_role_mcp_fourni_par_lhote_est_resolu_sous_le_declencheur() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "bob", false).await;
+        user(&db, "root", true).await;
+        wire_catalog(&db).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        // Le serveur est pourvu par l'hôte ; sa ligne table n'est qu'une trace de repli : en
+        // mode `forward` il est inutilisable en batch, donc tout run accepté sous `alice` prouve
+        // que la décision vient de l'hôte et non de la table.
+        inserer_serveur(&db, "srv_hote", "forward", json!(["all"])).await;
+        lier_contexte(&db, "alice", &[("sandbox", "srv_hote")]).await;
+        lier_contexte(&db, "bob", &[("sandbox", "srv_hote")]).await;
+        let hote: SharedHost = Arc::new(HoteParSujet);
+
+        // Sous `alice` : l'hôte accorde le rôle, la porte s'ouvre et le run va à son terme.
+        let alice_provider = Arc::new(ScriptedProvider::new(vec![Ok(pad_call(SUBMIT_OK))]));
+        let alice_step = step_with_host(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&alice_provider))),
+            Arc::clone(&hote),
+        );
+        let alice_run = run_info("t-hote-alice", "s1", Some("alice"));
+        let output = alice_step
+            .run(&alice_run, config("G_sub", "inspecter"), HashMap::new())
+            .await
+            .expect("l'hôte accorde le rôle à alice : le run aboutit");
+        assert_eq!(output, json!({ "verdict": "ok" }));
+        assert!(
+            !alice_provider.requests().is_empty(),
+            "le rôle accordé, le run part à l'inférence"
+        );
+
+        // Sous `bob` : refus fermé de l'hôte, non retryable, sur la phrase fixe — pas celle du
+        // repli `forward` (aucun repli sur la table), et rien qui vienne de l'hôte.
+        let bob_provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let bob_step = step_with_host(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&bob_provider))),
+            Arc::clone(&hote),
+        );
+        let bob_run = run_info("t-hote-bob", "s1", Some("bob"));
+        let error = bob_step
+            .run(&bob_run, config("G_sub", "inspecter"), HashMap::new())
+            .await
+            .expect_err("l'hôte refuse bob");
+        assert!(!error.retryable, "le refus de l'hôte est définitif : {error}");
+        assert!(
+            error.message.contains("mcp server unavailable"),
+            "la phrase fermée de refus d'hôte : {error}"
+        );
+        assert!(
+            !error.message.contains("forward auth"),
+            "aucun repli sur la table n'a été consulté : {error}"
+        );
+        let debug = format!("{error:?}");
+        assert!(
+            !debug.contains("JETON-HOTE") && !debug.contains("sbx.example"),
+            "ni le jeton ni l'URL de l'hôte ne transparaissent : {debug}"
+        );
+        assert!(bob_provider.requests().is_empty(), "aucune inférence pour bob");
+
+        // Sans hôte, la même liaison refuse le step de façon permanente : repli sur la ligne
+        // `forward`, inutilisable en batch (`retryable: false`).
+        let sans_hote_provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let sans_hote = step_with(db.clone(), Arc::new(ScriptFactory(sans_hote_provider)));
+        let mute_run = run_info("t-hote-mute", "s1", Some("alice"));
+        let refus = sans_hote
+            .run(&mute_run, config("G_sub", "inspecter"), HashMap::new())
+            .await
+            .expect_err("sans hôte la liaison n'est pas montageable en batch");
+        assert!(!refus.retryable, "le refus sans hôte est permanent : {refus}");
+        assert!(
+            refus
+                .message
+                .contains("forward auth needs an interactive session"),
+            "le repli sur la ligne `forward` est refusé : {refus}"
+        );
     }
 }
