@@ -93,10 +93,10 @@ Forbids:
   `restate_sdk::*` dans ./subagent_step.rs (kind ordinaire, ./step.sdd)
 
 Depends on:
-  ./step.rs, ../lymaille/{identity,error,secret,tls,resource_module}.rs, ../lymaille/store/mod.rs, @sha2, @hex, @serde, @serde_json, @tokio, `lymaille`
+  ./step.rs, ../lymaille/{identity,error,secret,tls,resource_module,host,mcp_access}.rs, ../lymaille/store/mod.rs, @sha2, @hex, @serde, @serde_json, @tokio, `lymaille`
 
 Exposes:
-  `SubagentStep`, `SubagentDeps`, `DEFAULT_MAX_SECS`, `MAX_SECS_CEILING` ; ré-exporté `miryad_core::workflow::{SubagentStep, SubagentDeps}` sous
+  `SubagentStep`, `SubagentDeps`, `DEFAULT_MAX_SECS` ; ré-exporté `miryad_core::workflow::{SubagentStep, SubagentDeps}` sous
     `all(workflow, lymaille)` (./mod.sdd).
 
 Accepts:
@@ -113,10 +113,12 @@ Tasks:
   [ ] Réalignement R15 (DSD `DEC-27, DEC-29`, 2026-11-03) : spec amendée (plafond d'application `max_secs_ceiling` de 3600 s par défaut, `with_max_secs_ceiling`, `SubagentDeps::host`, rôles MCP par `resolve_role`),
     **approuvée le 2026-11-05 (développeur principal)**. `OI-11` soldé (spike vert sur 40 min). Code : tests d'abord puis ./subagent_step.rs, après ./dispatcher.rs (R14), ../lymaille/host.rs et ../lymaille/mcp_access.rs.
     Code posé et batterie ciblée verte (validator 2026-11-06 : `max_secs_ceiling` défaut 3600 et `with_max_secs_ceiling` bornés `1..=14 400`, validation sans base ni inférence ; `SubagentDeps::host` et `resolve_role` au contrat ; Grant hôte jamais persisté ni tracé ; workflow et workflow,lymaille verts en tests et clippy `-D warnings`, `fmt`) — case non closee, trois arbitrages de spec suspendus :
-    [!] Scenario DEC-27, volet alice : le `Then` écrit « le serveur de l'hôte est **utilisé** » alors que le `Must` étape 7 (approuvé le même jour) ne contractue qu'une **porte** (`resolve_role`, refus/forward → `StepError` non retryable) et que le code jette le `Grant` sans montage. Amender le Then vers « décision de l'hôte fait foi, porte ouverte, grant jeté » avec montage en tâche dédiée, ou monter le client hôte dans le batch dès R15 ? (DSD `DEC-27` : « appelé à l'assemblage et à chaque appel d'outil » — penche pour l'usage.)
-    [!] Vieux Scenario « une config invalide » : son littéral `max_secs = 541` est valide sous le plafond défaut 3600 amendé — le test a dû passer à `3601` (intention préservée : validation pure avant tout accès). Figer le Scenario à `3601` (ou « plafond en force + 1 »).
-    [!] `MAX_SECS_CEILING = 540` : listé à l'`Exposes`, plus aucun usage de validation ; son commentaire (« plus cette constante ») est inexact — rien ne combine. Le retirer (`Exposes` et fichier) ou lui rendre un rôle normatif ; corriger le commentaire dans tous les cas.
-    [!] `Depends on` périmé : l'ajout de ../lymaille/host.rs et ../lymaille/mcp_access.rs était dû « au prochain edit » — l'amendement R15 était cet edit, faire la correction au prochain passage.
+    Arbitrages du 2026-11-06 (développeur principal), à appliquer en spec puis en code :
+    [x] Volet alice : le `Then` est amendé (porte ouverte, grant jeté) ; le montage du client hôte sort de R15 vers la tâche « Montage du client hôte » ci-dessous.
+    [x] Littéral du Scenario « config invalide » figé à `3601` (plafond d'application par défaut + 1).
+    [ ] Retirer `MAX_SECS_CEILING` de ./subagent_step.rs (plus d'usage normatif, retiré de l'`Exposes`) et corriger le commentaire de `DEFAULT_MAX_SECS`/plafond qui le cite. Code seul, Haiku.
+    [x] `Depends on` corrigé (../lymaille/host.rs, ../lymaille/mcp_access.rs).
+  [ ] Montage du client hôte (DSD `DEC-27` : « appelé à l'assemblage et à chaque appel d'outil ») : monter le client MCP du `Grant` hôte à l'assemblage et le ré-évaluer à chaque appel d'outil ; le `Grant` n'est jamais persisté ni tracé. Couvre aussi le `[?]` « serveur `static`/`none` jamais monté » du lot 2. Spec à détailler (Must, Scenario) et à faire approuver avant tout code.
   [x] Amendement lot 2 : `ResourceRegistry` + `WriteScope`, rôles MCP via `mcp_access`, scenarios (rejeu sans doublon d'écriture, `forward` refusé) d'abord, puis ./subagent_step.rs. Après ../lymaille/resource_module.rs et ../lymaille/mcp_access.rs.
     Validé 2026-11-06 (validator PASS : les deux Scenario ont leur test au Then réel — rejeu dédupliqué par le journal sous les clés du step, même `create` ré-émis sous un autre id d'appel ; forward → `StepError` non retryable au message exact de ../lymaille/mcp_access.rs, aucune inférence ; `check_context_roles` avant tout effet de bord, R15 non touché (attendu) ; workflow et workflow,lymaille verts en tests et clippy `-D warnings`, `fmt`).
     [?] (implementer et validator) : `CONTEXT_TYPE` renommé `workflow-subagent` → `workflow_subagent` — le premier était mort-né (@classify refuse le `-`, `get_context` rendait `Ok(None)` sans requête) ; le littéral n'est figé dans aucune spec. C'est une surface effective : c'est sous ce nom que l'utilisateur lie son contexte. Le contractualiser (`Must`/`Exposes`, voire `pub const`) ou l'assumer comme détail de fichier ?
@@ -153,7 +155,7 @@ Scenario: sans identité du déclencheur le step échoue sans repli
   Then `Err(StepError { retryable: false })` « subagent step requires a trigger identity » et aucune requête d'inférence
 
 Scenario: une config invalide ne touche ni la base ni l'inférence
-  Given `agent = ""`, puis `task = "  "`, puis `max_secs = 0`, puis `max_secs = 541`, puis une clé inconnue
+  Given `agent = ""`, puis `task = "  "`, puis `max_secs = 0`, puis `max_secs = 3601` (plafond d'application par défaut + 1), puis une clé inconnue
   When `run` est appelé pour chacune
   Then chaque résultat est `Err(StepError { retryable: false })` préfixé `config subagent invalide:`
 
@@ -200,4 +202,4 @@ Scenario: le plafond d'application borne max_secs (DEC-29)
 Scenario: un rôle MCP fourni par l'hôte est résolu sous le déclencheur (DEC-27)
   Given un hôte qui accorde le rôle `sandbox` au subject `alice` et le refuse à `bob`, et un step déclenché par `alice` puis par `bob`
   When le step est exécuté dans chaque cas
-  Then pour `alice` le serveur de l'hôte est utilisé ; pour `bob` le step échoue (`retryable: false`) sans message de l'hôte
+  Then pour `alice` la décision de l'hôte fait foi : la porte (`resolve_role`) est ouverte et le `Grant` est jeté, sans montage du serveur (le montage relève de la tâche dédiée ci-dessous) ; pour `bob` le step échoue (`retryable: false`) sans message de l'hôte

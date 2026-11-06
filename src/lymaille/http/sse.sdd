@@ -48,7 +48,8 @@ Tasks:
     avec la tâche R11 restante (la spec est approuvée le 2026-11-04 ; `[x]` après ces deux corrections et validation).
   [x] Émission de la variante (arbitrage du 2026-11-06) : `serialization_error_event` construit @LymailleError::Serialization et en tire le code `MRD-LYMAILLE-012` au lieu de la constante nue ; le test `panne_de_serialisation_rend_le_code_012` reste le verrou.
     Validé 2026-11-06 (validator PASS : `serialization_error_body()` dérive le code du préfixe `Display` de la variante — corps sur le fil byte-identique, plus aucun code en dur en production dans ./sse.rs ; verrou adapté + test de dérivation ; lymaille vert en tests et clippy `-D warnings`, `fmt`).
-    [!] (implementer et validator) : aucun `Scenario` « panne de sérialisation » dans cette spec — le `Must` (corps d'erreur + « le flux continue ») n'est couvert que par deux verrous unitaires du corps, jamais par une lecture du flux ; un seam d'injection de panne serait nécessaire pour le prouver sur le fil. Ajouter le `Scenario` avec seam, ou amender le `Must` pour acter les verrous unitaires comme couverture ?
+    Arbitré le 2026-11-06 (développeur principal) : le `Scenario` « une panne de sérialisation n'interrompt pas le flux » est ajouté avec un seam d'encodeur injectable ; les deux verrous unitaires du corps sont conservés.
+  [ ] Tests d'abord depuis le `Scenario` « panne de sérialisation » (encodeur défaillant injecté), puis seam minimal dans ./sse.rs. Code seul, Haiku.
     [?] (validator) : `../chat/bridge.rs::code_de` duplique les douze codes en littéraux — aligner sur la dérivation par `Display` (comme ./sse.rs désormais) ou la table de la salle Matrix reste-t-elle assumée dans sa spec ? (à reprendre au cycle de ./bridge.rs).
   [?] `Last-Event-ID` / rejeu des événements manqués : écarté au lot 2 (les événements ne sont pas persistés ; l'état de la session l'est). À rouvrir si un
     client se déconnecte souvent pendant un tour.
@@ -85,6 +86,11 @@ Scenario: battement
   Given un flux sans événement pendant 20 s (horloge en pause)
   When le temps avance
   Then un commentaire `: keepalive` est émis
+
+Scenario: une panne de sérialisation n'interrompt pas le flux
+  Given un abonné et un encodeur injecté qui échoue sur le deuxième événement (seam : le constructeur du flux prend l'encodeur en paramètre, `events` passe l'encodeur réel ; seam interne, `pub(super)` au plus)
+  When trois événements sont publiés puis le flux est lu
+  Then le premier et le troisième sont émis normalement, le deuxième est remplacé par `event: error` `data: {"code":"MRD-LYMAILLE-012"}`, et le flux reste ouvert jusqu'à `Closed`
 
 Scenario: fin de session
   Given un flux ouvert
