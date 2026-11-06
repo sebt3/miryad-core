@@ -59,7 +59,9 @@ Exposes:
   `ChatBridge::new`, `ChatConfig`, `impl MatrixEventHandler`, `ChatSender` (`pub(crate)`)
 
 Tasks:
-  [ ] Réalignement R13 (DSD `DEC-28`, 2026-11-03) : Après R10 : `!new <contexte> [agent]` remplace `!agent` ; `Scenario` d'un contexte inconnu ou refusé et d'un agent hors ensemble. Spec seule.
+  [x] Réalignement R13 (DSD `DEC-28`, 2026-11-03) : Après R10 : `!new <contexte> [agent]` remplace `!agent` ; `Scenario` d'un contexte inconnu ou refusé et d'un agent hors ensemble. Spec seule.
+    Validé 2026-11-06 (validator : Must porte `!new [<contexte> [agent]]` et `RoomContextResolver` ; les deux Scenario exigés manquaient — ajoutés au verbatim des tests existants (`Contexte inconnu ou inaccessible.` / `Agent non autorisé pour ce contexte.`, aucune session) et lint vert ; écart spec ↔ code reporté à la case :63, `ChatConfig::default_agent` encore en place).
+    [?] (validator) : le Given du Scenario « `!new` ferme et rouvre » décrit un repli à expliciter sous le nouveau contrat (session fermée → `RoomContextResolver` → texte fixe) — à trancher au cycle code :63.
   [ ] Tests d'abord (SQLite mémoire, `ChatSender` espion, `ScriptedProvider`, horloge injectée), puis ./bridge.rs. Après ./link.rs et ./render.rs.
   [x] Amendement R13 fait le 2026-11-06 (`RoomContextResolver` en trait async, arbitrage du 2026-11-06 ; `default_agent` retiré de `ChatConfig`). Historique : amendement R13 à finaliser en spec (arbitrage de Sébastien du 2026-11-05) : le `Must` point 4 est resté pré-R13 (`!new [agent]`, `!agent <id>`)
     alors que le code est écrit au contrat R13 — remplacer par `!new [<contexte> [agent]]` (ferme la session de la salle puis ouvre via
@@ -108,6 +110,16 @@ Scenario: !new ferme et rouvre
   Given une session de la salle
   When `!new`
   Then l'ancienne est fermée, une nouvelle ouverte, le contexte repart de zéro
+
+Scenario: un contexte inconnu ou refusé est refusé
+  Given un mxid lié, `!new c_inconnu` (contexte absent) puis `!new c_bob` (contexte d'un autre, refusé)
+  When chaque commande s'exécute
+  Then le message fixe « Contexte inconnu ou inaccessible. », indiscernable entre les deux cas, et aucune session
+
+Scenario: un agent hors ensemble est refusé
+  Given un mxid lié, un contexte `c1` et un agent `a2` hors de l'ensemble autorisé par son type
+  When `!new c1 a2`
+  Then le message fixe « Agent non autorisé pour ce contexte. » et aucune session
 
 Scenario: une erreur interne ne fuit pas
   Given un fournisseur qui échoue avec un message contenant un secret factice
