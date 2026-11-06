@@ -74,6 +74,13 @@ Must:
     standard doit être vide** — la dépendance n'existe que sous `lymaille` ; même convention que le contrôle `lymaille` : le critère est la
     sortie vide, pas le code de sortie (`../../tooling.sdd`) ; le pas échoue si la sortie est non vide, le code de sortie n'est pas bloquant
     sur ce contrôle seul. `../../AGENTS.md` et `../../tooling.sdd` amendés le même jour (accord explicite du développeur principal sur ces fichiers hors périmètre).
+  **Amendement 2026-11-06 (croisement `lymaille,matrix`, `../../tooling.sdd`)** — complète l'amendement 2026-11-03 sans le réécrire ; en cas de
+    contradiction de comptage, cet amendement prévaut : les matrices de test et de clippy de `./ci.yml` portent les
+    seize combinaisons de `../../tooling.sdd` — les quinze de l'amendement 2026-11-03 plus `lymaille-matrix`
+    (`--no-default-features --features lymaille,matrix`), bloquantes. Ce croisement prouve que le module `lymaille::chat`
+    (`../../src/lymaille/mod.rs`, gated `all(feature = "lymaille", feature = "matrix")`) compile, test et passe clippy sur le
+    graphe nu, sans `static-frontend` que `--all-features` ajoute. Pas de nouveau contrôle de graphe. `../../AGENTS.md` et
+    `../../tooling.sdd` amendés le même jour (accord explicite du développeur principal sur ces fichiers hors périmètre, lot 3).
 
 Must not:
   Publier alors que les tests ou le harnais ont échoué.

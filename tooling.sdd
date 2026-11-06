@@ -46,6 +46,15 @@ Must:
     **Amendement 2026-11-04 (DEC-27/DEC-30, ./src/lymaille/mod.sdd)** : un contrôle de graphe de plus pour `ts-rs` : `cargo tree --no-default-features -e normal -i ts-rs`
     (sortie vide : la dépendance n'existe que sous `lymaille` ; même convention que `lymaille` — le test est la SORTIE vide, pas le code de sortie). `./AGENTS.md`, `./.github/workflows/ci.yml` et
     `workflows.sdd` amendés le 2026-11-04 (accord explicite du développeur principal sur ces fichiers hors périmètre).
+    **Amendement 2026-11-06 (croisement `lymaille,matrix`)** — complète l'amendement 2026-11-02 sans le réécrire ; en cas de
+    contradiction de comptage, cet amendement prévaut : s'y ajoute le croisement `lymaille,matrix` (`--no-default-features
+    --features lymaille,matrix`), soit **seize** combinaisons de tests et seize de clippy. Le croisement fait exister le module
+    `lymaille::chat` (`src/lymaille/mod.rs` : `#[cfg(all(feature = "lymaille", feature = "matrix"))] pub mod chat;`) — pont Matrix
+    des sessions interactives (DSD `DEC-26`). Le prouver sous `--no-default-features` sépare ce module du reste du graphe : sous
+    `--all-features` il compile avec `static-frontend`, `swagger-ui` et `mcp`, et une régression propre au graphe nu du croisement
+    (lints `pedantic` dépendants du graphe, gating mal typé) n'est visible que là. `./AGENTS.md`, `./.github/workflows/ci.yml` et
+    `./.github/workflows/workflows.sdd` amendés le 2026-11-06 (accord explicite du développeur principal sur ces fichiers hors
+    périmètre, lot 3).
     **Amendement 2026-10-19** : `graphql` et `graphiql` sortent de la batterie avec la suppression de la
     surface GraphQL — soit **dix** combinaisons de tests et dix de clippy, toutes en
     `--no-default-features --features <liste>` hors défaut et `--all-features`. Les

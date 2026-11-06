@@ -45,6 +45,8 @@ jobs:
             args: "--no-default-features --features lymaille"
           - name: workflow-lymaille
             args: "--no-default-features --features workflow,lymaille"
+          - name: lymaille-matrix
+            args: "--no-default-features --features lymaille,matrix"
           - name: all-features
             args: "--all-features"
     steps:
@@ -111,6 +113,8 @@ jobs:
             args: "--no-default-features --features lymaille"
           - name: workflow-lymaille
             args: "--no-default-features --features workflow,lymaille"
+          - name: lymaille-matrix
+            args: "--no-default-features --features lymaille,matrix"
           - name: all-features
             args: "--all-features"
     steps:
