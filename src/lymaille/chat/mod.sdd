@@ -30,7 +30,9 @@ Exposes:
   `ChatBridge`, `ChatConfig`, `link_code_router`, `issue_code`, `consume_code`, `resolve`, `unlink`, modules `link`, `bridge`
 
 Tasks:
-  [ ] `mod.rs` en dernier du dossier ; test de chemins plats.
+  [x] `mod.rs` en dernier du dossier ; test de chemins plats.
+    Validé 2026-11-06 (validator PASS clôture : `chemins_plats_attendus` à jour du cycle `RoomContextResolver` (pont, config, annuaire, `IssuedCode`, résolveur sur le défaut) ; verrou structurel `cfg(all(lymaille, matrix))` pour le Scenario « absent sans matrix »).
+    [?] (validator) : `IssuedCode` est ré-exporté à plat mais non nommé à l'`Exposes` de cette spec (sursemble mineur) — à nommer à la relecture, avec le [?] du ré-export `RoomContextResolver` porté par ./bridge.sdd.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.
