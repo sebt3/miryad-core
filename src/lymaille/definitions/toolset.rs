@@ -309,6 +309,27 @@ mod tests {
         );
     }
 
+    /// Scenario « active + draft présents → `version` pris de l'`active` » : les deux versions
+    /// présentes portent le même nom ; `version` est dérivé de l'`active`, non du brouillon
+    /// (`Must` étape 4).
+    #[test]
+    fn before_create_derive_version_de_l_active_quand_le_brouillon_est_present() {
+        let rendu = Entity::before_create(
+            active_avec(
+                Some(version_json("G_git", "2.0.0")),
+                Some(version_json("G_git", "1.0.0")),
+            ),
+            &principal(),
+        )
+        .expect("`active` et `draft` du même nom sont acceptés");
+        assert_eq!(rendu.toolset_id, Set("G_git".to_string()));
+        assert_eq!(
+            rendu.version,
+            Set("2.0.0".to_string()),
+            "`version` vient de l'`active`, pas du brouillon"
+        );
+    }
+
     /// Scenario « un nom privé ou deux noms différents sont refusés » : le brouillon `git` (sans
     /// préfixe) est refusé pour son identifiant, le couple `G_a`/`G_b` pour ses noms discordants.
     #[test]
@@ -327,10 +348,13 @@ mod tests {
             ),
             &principal(),
         ) {
-            Err(erreur) => assert!(
-                !erreur.message.is_empty() && erreur.code.is_none(),
-                "deux versions de noms différents sont refusées : {erreur:?}"
-            ),
+            Err(erreur) => {
+                assert!(erreur.code.is_none(), "aucun code sur un `HookError` de la crate");
+                assert_eq!(
+                    erreur.message, "the active and draft versions must carry the same name",
+                    "message exact du refus de noms discordants"
+                );
+            }
             Ok(_) => panic!("`G_a` actif avec `G_b` en brouillon est incohérent"),
         }
     }
