@@ -2,7 +2,9 @@ Spec: routes — handlers JSON des conversations interactives
 
 Purpose:
   Porter les handlers JSON de ./mod.sdd (DSD `FR-12`, `DEC-25`) : chacun reçoit @AuthPrincipal, `Path`/`Json`, appelle une méthode de @SessionManager
-    (../interactive/manager.sdd) ou de ../interactive/activation.sdd et rend la réponse. L'envoi d'un message **n'attend pas** la fin du tour :
+    (../interactive/manager.sdd) ou de ../interactive/activation.sdd et rend la réponse ; `history` et la garde de visibilité du `DELETE` font exception —
+    ils lisent le store persisté via l'état d'authentification (@MiryadAuthState, dont seul @db est lu — précédent `../../rest/me.rs`), pas par une méthode
+    du gestionnaire. L'envoi d'un message **n'attend pas** la fin du tour :
     `202 Accepted`, le résultat arrive par le flux ./sse.sdd. Les erreurs sont traduites en @RestError (codes `MRD-REST-*`/`MRD-LYMAILLE-*`),
     jamais un texte brut. Fichier neuf, conception.
 
@@ -27,7 +29,8 @@ Must:
   `GET /conversations/{id}/history` → `200` `{ "events": [SessionEvent…] }` — l'état persisté de la session (messages, appels d'outil en résumé)
     **rendu sous les mêmes types que le flux SSE** (`../interactive/event.sdd`, DSD `DEC-30` : le client lit l'historique puis s'abonne) ;
     session inconnue ou d'un autre → `404` identique. Aucune donnée brute : les teneurs passent par le `Redactor` du chemin d'affichage.
-  `DELETE /conversations/{id}` → `204`.
+  `DELETE /conversations/{id}` → `204` ; un re-`DELETE` par la propriétaire est `204` idempotent (la garde de visibilité repasse, la fermeture du
+    gestionnaire est silencieuse).
   `POST /toolsets/{name}/activate` → `200` `ActivationReport` ; `DELETE /toolsets/{name}/draft` → `204` (si un brouillon existait, sinon `404`).
   Traduction d'erreur : `UnknownSubject`/`Forbidden` → `403`, `NotFound` → `404`, `Conflict` → `409`, `InvalidDefinition` → `422`, `Store`/autre → `500`
     avec code `MRD-LYMAILLE-*` ; message à texte fixe, jamais le contenu d'un message, d'un jeton, d'un prompt ni d'une URL.
@@ -63,10 +66,13 @@ Tasks:
     ni arguments, ni contenu de @ToolResult, ni `System`, `Boundary` ni `Discarded` ; zéro warning sur ./routes.rs).
   [x] Arbitré le 2026-11-06 : verrou de `ToolCallSummary` au niveau du mapping + e2e sur @UserMessage et @TurnEnded ratifiés ; étendre @ScriptedProvider avec un exécuteur d'outils est hors périmètre.
   [x] Arbitré le 2026-11-06 : le clamp défensif `turn.max(1)` est gardé (numéro de tour jamais nul), non testé.
-  [ ] Clôture R12 (décata du checkpoint 7, suggestions à valider au passage) : amender le Given du Scenario « le jeton Bearer est transmis »
+  [x] Clôture R12 (décata du checkpoint 7, suggestions à valider au passage) : amender le Given du Scenario « le jeton Bearer est transmis »
     (le `SessionManager` concret n'est pas espionnable) — preuve end-to-end de la branche `Some` par bearer JWT (`MockOidcClient`), le mapping
     `forward_token` restant verrouillé à la source ; amender le Purpose : `history` et la garde `DELETE` lisent le store via l'état d'authentification
     (précédent `rest/me.rs`), pas par une méthode du gestionnaire ; tracer dans le `Must` que re-`DELETE` par la propriétaire est `204` idempotent.
+    Validé 2026-11-06 (validator PASS : Purpose et Must fidèles au code réel — State(auth)+load_state vérifié handler par handler, re-DELETE 204 verrouillé par le test existant ; preuve e2e réelle par MockOidcClient, 202 ⟹ source Bearer authentique ; verrou source du mapping intact ; lymaille vert en tests et clippy `-D warnings`, `fmt`, `specdd lint`).
+    [?] (implementer, analysé par le validator sans trancher) : la case disait amender le Given ; le When/Then ont été alignés faute de quoi ils décrivaient une preuve que plus rien n'établit — le validator juge le sens du contrat préservé (Some monté en e2e, None ramenée au verrou source, seul niveau observable). Choix provisoire : cet alignement. Valides-tu cette répartition de preuve comme précédent pour les Scenario où le manager concret n'est pas espionnable ?
+    [?] (validator) : le 204 idempotent du re-DELETE repose sur le fait que `close` ne supprime pas la ligne persistée ; si un futur `lymaille` purgeait à la fermeture, ce serait un 404 — verrou amont à arbitrer le moment venu, pas ici.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./routes.rs.
@@ -107,9 +113,11 @@ Scenario: erreur sans fuite
   Then elle ne contient pas le secret
 
 Scenario: le jeton Bearer est transmis, le cookie non
-  Given un `SessionManager` espion
-  When un envoi par Bearer puis un envoi par cookie
-  Then `token` est `Some` puis `None`
+  Given un montage dont l'état d'authentification porte un @MockOidcClient vérifiant un JWT Bearer en une identité connue
+    (le @SessionManager concret n'est pas espionnable) et une conversation ouverte
+  When un envoi par Bearer JWT de bout en bout
+  Then `202` et le tour lancé — la branche `Some` de `forward_token` est exercée en situation par le handler ; le mapping (`Some` par Bearer,
+    `None` par cookie et token API) reste verrouillé à la source dans ./routes.rs
 
 Scenario: activer son brouillon
   Given un toolset privé avec brouillon

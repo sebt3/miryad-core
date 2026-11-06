@@ -512,6 +512,9 @@ mod tests {
     use crate::lymaille::http::sse;
     use crate::lymaille::interactive::manager::SessionManager;
 
+    use crate::auth::MiryadAuthState;
+    use crate::auth::MockOidcClient;
+    use crate::auth::OidcIdentity;
     use crate::lymaille::http::routes::fix;
     use ::lymaille::SessionId;
     use axum::Router;
@@ -525,11 +528,18 @@ mod tests {
     use fix::*;
     use sea_orm::DatabaseConnection;
     use serde_json::json;
+    use std::sync::Arc;
     use tower::ServiceExt;
 
     /// Le montage complet des handlers — miroir de `conversations_router` (l'agrégation exacte
     /// est sous contrat de ./mod.rs, testée là-bas).
     fn app(manager: SessionManager, db: DatabaseConnection) -> Router {
+        app_on(manager, test_state(db))
+    }
+
+    /// Le même montage sur un état d'authentification fourni (le `MockOidcClient` de
+    /// `test_state` est configurable par appelant : branche Bearer des scénarios).
+    fn app_on(manager: SessionManager, state: MiryadAuthState) -> Router {
         Router::new()
             .nest(
                 "/api/v1/lymaille",
@@ -549,7 +559,7 @@ mod tests {
             )
             .layer(axum::Extension(manager))
             .layer(DefaultBodyLimit::max(64 * 1024))
-            .with_state(test_state(db))
+            .with_state(state)
     }
 
     async fn serve_json(app: Router, request: Request<Body>) -> (StatusCode, serde_json::Value) {
@@ -917,10 +927,12 @@ mod tests {
         );
     }
 
-    /// Scenario « le jeton Bearer est transmis, le cookie non » : le gestionnaire n'a pas de
-    /// trait espionnable (`SessionManager` est un type concret, ./manager.rs est hors
-    /// périmètre) ; la transmission est prouvée à sa source unique, l'extraction du matériau
-    /// par source de principal — `Some` pour `Bearer`, `None` pour cookie et token API.
+    /// Scenario « le jeton Bearer est transmis, le cookie non » (volet mapping à la source) : le
+    /// gestionnaire n'a pas de trait espionnable (`SessionManager` est un type concret,
+    /// ./manager.rs est hors périmètre) ; l'extraction du matériau par source de principal est
+    /// verrouillée ici — `Some` pour `Bearer`, `None` pour cookie et token API. La branche `Some`
+    /// exercée de bout en bout par un vrai JWT validé par `MockOidcClient` est verrouillée par
+    /// `le_jeton_bearer_est_transmis_de_bout_en_bout`.
     #[test]
     fn le_jeton_bearer_est_transmis_le_cookie_non() {
         let bearer = AuthPrincipal {
@@ -958,6 +970,61 @@ mod tests {
             forward_token(&api.source).is_none(),
             "le token API ne transmet rien"
         );
+    }
+
+    /// Scenario « le jeton Bearer est transmis, le cookie non » (volet end-to-end, clôture R12 —
+    /// le `SessionManager` concret n'est pas espionnable) : un envoi porté par un JWT Bearer
+    /// validé de bout en bout — extracteur dual (`src/auth/dual.rs`), `MockOidcClient` configuré,
+    /// `PrincipalSource::Bearer` réel, jamais fabriqué par le test — atteint le handler et lance
+    /// le tour (`202`, état persisté). La branche `Some` de `forward_token` est ainsi exercée en
+    /// situation par `send_message` ; le mapping (`Some` par Bearer, `None` par cookie et token
+    /// API) reste verrouillé à la source par `le_jeton_bearer_est_transmis_le_cookie_non`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn le_jeton_bearer_est_transmis_de_bout_en_bout() {
+        let (db, _hub, manager) = setup().await;
+        let alice = token_for(&db, "alice").await;
+        let (status, body) = serve_json(
+            app(manager.clone(), db.clone()),
+            post_json(
+                "/api/v1/lymaille/conversations",
+                &alice,
+                &json!({ "context": "c1" }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "ouverture par token API : {body}");
+        let id = body["id"].as_str().expect("id").to_owned();
+        let session = SessionId::new(id.clone()).expect("id de session valide");
+
+        // Un seul appel JWT par état : le résultat de `MockOidcClient::with_bearer_result` est
+        // rendu une fois (`src/auth/oidc.rs`). L'identité rendue porte l'`id_token` = le JWT reçu,
+        // matériau que l'extracteur dépose dans `PrincipalSource::Bearer` et que `forward_token`
+        // relaie en `Some`.
+        let jwt = "aaa.bbb.ccc";
+        let state = MiryadAuthState {
+            oidc_client: Arc::new(MockOidcClient::with_bearer_result(Ok(OidcIdentity {
+                id_token: jwt.to_owned(),
+                subject: "alice".to_owned(),
+                email: None,
+                preferred_username: None,
+            }))),
+            ..test_state(db.clone())
+        };
+        let (status, body) = serve_json(
+            app_on(manager.clone(), state),
+            post_json(
+                &format!("/api/v1/lymaille/conversations/{id}/messages"),
+                jwt,
+                &json!({ "text": "bonjour porteur" }),
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::ACCEPTED,
+            "l'envoi passe par un JWT verifie de bout en bout : {body}"
+        );
+        wait_state(&db, "alice", &session, |etat| etat.contains("bonjour porteur")).await;
     }
 
     /// Scenario « activer son brouillon » : le toolset privé d'alice portant un brouillon est
@@ -1058,9 +1125,8 @@ mod tests {
             ),
         )
         .await;
-        // Le spec ne prononce pas le re-DELETE par le propriétaire : la garde de visibilité
-        // (`load_state`) passe encore, la fermeture du gestionnaire est silencieuse — le DELETE
-        // est idempotent, même `204` (écart signalé au rapport, la spec est muette ici).
+        // `Must` de la spec (clôture R12) : le re-`DELETE` par la propriétaire est `204` idempotent —
+        // la garde de visibilité (`load_state`) repasse, la fermeture du gestionnaire est silencieuse.
         assert_eq!(
             status,
             StatusCode::NO_CONTENT,
