@@ -69,21 +69,28 @@ pub(super) async fn events(
         .subscribe(&principal.subject, &session)
         .await
         .map_err(to_rest)?;
-    Ok(Sse::new(event_stream(subscription)))
+    Ok(Sse::new(event_stream(subscription, encode_event)))
 }
 
 /// Le flux lui-même : `event:` = le discriminant `type` du `SessionEvent` (miroir typé, DSD
 /// `DEC-30`), `data:` = son JSON complet, `id:` = compteur croissant propre à la connexion ;
 /// `Lagged(n)` devient `event: lagged` `{"missed":n}` et le flux continue ; `Closed` le termine ;
-/// 15 s sans événement émettent le commentaire `: keepalive`.
-fn event_stream(subscription: Subscription) -> impl Stream<Item = Result<Event, Infallible>> {
+/// 15 s sans événement émettent le commentaire `: keepalive`. `encode` est le seam d'encodage :
+/// `events` passe `encode_event` ; une erreur d'encodage devient `event: error` et le flux continue.
+fn event_stream<E>(subscription: Subscription, encode: E) -> impl Stream<Item = Result<Event, Infallible>>
+where
+    E: Fn(&SessionEvent, u64) -> Result<Event, LymailleError> + Send + 'static,
+{
     stream::unfold(
-        (subscription, 0_u64),
-        move |(mut subscription, counter)| async move {
+        (subscription, 0_u64, encode),
+        move |(mut subscription, counter, encode)| async move {
             let (event, counter) = match tokio::time::timeout(KEEPALIVE_PERIOD, subscription.recv()).await {
                 Ok(Ok(session_event)) => {
                     let next = counter.checked_add(1).unwrap_or(counter);
-                    (encode_event(&session_event, next), next)
+                    (
+                        encode(&session_event, next).unwrap_or_else(|_cause| serialization_error_event(next)),
+                        next,
+                    )
                 }
                 Ok(Err(SubscriptionError::Lagged(missed))) => {
                     let next = counter.checked_add(1).unwrap_or(counter);
@@ -92,7 +99,7 @@ fn event_stream(subscription: Subscription) -> impl Stream<Item = Result<Event, 
                 Ok(Err(SubscriptionError::Closed)) => return None,
                 Err(_elapsed) => (Event::default().comment("keepalive"), counter),
             };
-            Some((Ok(event), (subscription, counter)))
+            Some((Ok(event), (subscription, counter, encode)))
         },
     )
 }
@@ -100,23 +107,20 @@ fn event_stream(subscription: Subscription) -> impl Stream<Item = Result<Event, 
 /// Un `SessionEvent` en événement SSE : le nom vient du discriminant `kind.type` du miroir (les
 /// variantes sont déjà en `snake_case` — `../interactive/event.sdd`), le contenu est le JSON
 /// complet, recopié sans lecture d'aucun champ (un `Host` traverse tel quel). Une panne de
-/// sérialisation remplace l'événement par `event: error` ; le flux continue.
-fn encode_event(session_event: &SessionEvent, id: u64) -> Event {
-    match serde_json::to_value(session_event) {
-        Ok(value) => {
-            let name = value
-                .get("kind")
-                .and_then(|kind| kind.get("type"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("error");
-            Event::default()
-                .id(id.to_string())
-                .event(name)
-                .json_data(&value)
-                .unwrap_or_else(|_cause| serialization_error_event(id))
-        }
-        Err(_cause) => serialization_error_event(id),
-    }
+/// sérialisation est rendue en `Err` ; `event_stream` la remplace par `event: error`.
+fn encode_event(session_event: &SessionEvent, id: u64) -> Result<Event, LymailleError> {
+    let value = serde_json::to_value(session_event)
+        .map_err(|cause| LymailleError::Serialization(cause.to_string()))?;
+    let name = value
+        .get("kind")
+        .and_then(|kind| kind.get("type"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("error");
+    Event::default()
+        .id(id.to_string())
+        .event(name)
+        .json_data(&value)
+        .map_err(|cause| LymailleError::Serialization(cause.to_string()))
 }
 
 /// L'événement de rupture `Lagged(n)` (`Must` de `./sse.sdd`) : `event: lagged`, données
@@ -146,6 +150,8 @@ mod tests {
     use futures::StreamExt as _;
     use std::future::Future;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use sea_orm::ConnectionTrait;
@@ -810,6 +816,65 @@ mod tests {
             super::serialization_error_body(),
             json!({ "code": code }).to_string(),
             "le corps rendu egale le corps que produit le chemin d'erreur pour la variante Serialization"
+        );
+    }
+
+    /// Scenario « une panne de sérialisation n'interrompt pas le flux » : l'encodeur injecté
+    /// échoue sur le deuxième événement ; le flux rend `event: error` à sa place, le premier et
+    /// le troisième sont normaux, et le flux reste ouvert jusqu'à `Closed`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn une_panne_de_serialisation_n_interrompt_pas_le_flux() {
+        let (_db, hub, manager) = setup().await;
+        let handle = manager.open("alice", "c1", None).await.expect("ouverture");
+        let subscription = manager
+            .subscribe("alice", &handle.id)
+            .await
+            .expect("l'abonnement de la proprietaire");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let encoder = move |session_event: &crate::lymaille::interactive::event::SessionEvent, id: u64| {
+            if counter.fetch_add(1, Ordering::SeqCst) == 1 {
+                Err(crate::lymaille::error::LymailleError::Serialization(
+                    "panne injectee".to_owned(),
+                ))
+            } else {
+                super::encode_event(session_event, id)
+            }
+        };
+        let response = axum::response::IntoResponse::into_response(axum::response::sse::Sse::new(
+            super::event_stream(subscription, encoder),
+        ));
+        let mut body = body_stream(response);
+        for index in 0..3 {
+            hub.publish_host(&handle.id, "h", json!({ "i": index }))
+                .expect("la publication hote est valide");
+        }
+        manager.close("alice", &handle.id).await;
+        let buffer = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut buffer = String::new();
+            while let Some(chunk) = body.next().await {
+                buffer.push_str(&chunk);
+            }
+            buffer
+        })
+        .await
+        .expect("le flux se termine a la fermeture de la session");
+        let names: Vec<&str> = buffer
+            .lines()
+            .filter_map(|line| line.strip_prefix("event: "))
+            .collect();
+        assert_eq!(
+            names,
+            ["host", "error", "host"],
+            "le deuxieme evenement est remplace par `error` : {buffer}"
+        );
+        assert!(
+            buffer.contains(r#"data: {"code":"MRD-LYMAILLE-012"}"#),
+            "le corps de l'erreur porte le code -012 : {buffer}"
+        );
+        assert!(
+            buffer.contains(r#""i":0"#) && buffer.contains(r#""i":2"#),
+            "le premier et le troisieme evenements sont emis normalement : {buffer}"
         );
     }
 }
