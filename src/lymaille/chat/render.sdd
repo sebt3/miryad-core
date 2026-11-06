@@ -36,7 +36,8 @@ Exposes:
   `split_message`, `format_notice`, `format_error`, `help_text`, `MAX_PART_CHARS`, `MAX_PARTS`
 
 Tasks:
-  [ ] Tests d'abord (purs, dont un test de propriété : concaténation des parties ≈ texte à la numérotation et aux marqueurs près), puis ./render.rs.
+  [x] Tests d'abord (purs, dont un test de propriété : concaténation des parties ≈ texte à la numérotation et aux marqueurs près), puis ./render.rs.
+    Validé 2026-11-06 (validator PASS clôture : test de propriété `propriete_concatenation_retrouve_le_texte` en place (trois tailles, reconstructions exactes), 6 Scenario / 6 tests purs, bloc de code, multi-octets, troncature).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille,matrix` ; la spec est relue et approuvée avant ./render.rs.
