@@ -846,7 +846,7 @@ mod tests {
     use crate::lymaille::interactive::manager::Limits;
     use crate::lymaille::interactive::manager::ManagerDeps;
     use crate::lymaille::interactive::manager::SessionManager;
-    use crate::lymaille::resource_module::ResourceReaders;
+    use crate::lymaille::resource_module::ResourceRegistry;
     use crate::lymaille::secret::SecretResolver;
     use crate::lymaille::store::LymailleStores;
     use crate::lymaille::store::test_support::test_db;
@@ -1369,7 +1369,7 @@ mod tests {
         SessionManager::new(ManagerDeps {
             assemble: AssembleDeps {
                 db: db.clone(),
-                readers: Arc::new(ResourceReaders::new()),
+                readers: Arc::new(ResourceRegistry::new()),
                 secrets: Arc::new(FixedSecret("cle-fixe")),
                 hub,
                 clock: Arc::new(::lymaille::SystemClock::new()),

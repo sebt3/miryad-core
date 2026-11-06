@@ -54,7 +54,7 @@ use crate::lymaille::identity::CallerPrincipal;
 use crate::lymaille::identity::IdKind;
 use crate::lymaille::identity::Identity;
 use crate::lymaille::identity::classify;
-use crate::lymaille::resource_module::ResourceReaders;
+use crate::lymaille::resource_module::ResourceRegistry;
 use crate::lymaille::secret::SecretResolver;
 use crate::lymaille::store::LymailleStores;
 
@@ -120,7 +120,7 @@ impl ManagerDeps {
     #[must_use]
     pub fn new(
         db: sea_orm::DatabaseConnection,
-        readers: Arc<ResourceReaders>,
+        readers: Arc<ResourceRegistry>,
         secrets: Arc<dyn SecretResolver>,
         hub: Arc<EventHub>,
     ) -> Self {
@@ -904,7 +904,7 @@ mod tests {
     use crate::lymaille::interactive::hub::EventHub;
     use crate::lymaille::interactive::hub::Subscription;
     use crate::lymaille::interactive::hub::SubscriptionError;
-    use crate::lymaille::resource_module::ResourceReaders;
+    use crate::lymaille::resource_module::ResourceRegistry;
     use crate::lymaille::secret::SecretResolver;
     use crate::lymaille::store::LymailleStores;
     use crate::lymaille::store::test_support::test_db;
@@ -1109,7 +1109,7 @@ mod tests {
         ManagerDeps {
             assemble: AssembleDeps {
                 db,
-                readers: Arc::new(ResourceReaders::new()),
+                readers: Arc::new(ResourceRegistry::new()),
                 secrets: Arc::new(FixedSecret("cle-fixe")),
                 hub: Arc::new(EventHub::new(None, 256)),
                 clock: Arc::new(SystemClock::new()),

@@ -90,7 +90,7 @@ use crate::lymaille::host::SharedHost;
 use crate::lymaille::identity::{CallerPrincipal, Identity, check_grants};
 use crate::lymaille::install_crypto_provider;
 use crate::lymaille::mcp_access::{RoleBinding, SeaHostMcpAuth, build_auth, resolve_role};
-use crate::lymaille::resource_module::{ResourceReaders, resources_module};
+use crate::lymaille::resource_module::{ResourceRegistry, resources_module};
 use crate::lymaille::secret::SecretResolver;
 use crate::lymaille::store::LymailleStores;
 use crate::lymaille::store::SeaSessionStore;
@@ -320,7 +320,7 @@ pub struct AssembleDeps {
     /// Connexion à la base de l'application (identité, stores, module des ressources).
     pub db: DatabaseConnection,
     /// Registre des entités lisibles et écrivable par les agents (`../resource_module.rs`).
-    pub readers: Arc<ResourceReaders>,
+    pub readers: Arc<ResourceRegistry>,
     /// Résolveur des références d'authentification (`../secret.rs`).
     pub secrets: Arc<dyn SecretResolver>,
     /// Diffusion des événements de session (`./hub.rs`) — l'`EventSink` des tours et des modules.
@@ -344,7 +344,7 @@ impl AssembleDeps {
     #[must_use]
     pub fn new(
         db: DatabaseConnection,
-        readers: Arc<ResourceReaders>,
+        readers: Arc<ResourceRegistry>,
         secrets: Arc<dyn SecretResolver>,
         hub: Arc<EventHub>,
     ) -> Self {
@@ -893,7 +893,14 @@ fn toolset_context_roles(context: &ToolsetContext) -> BTreeMap<String, String> {
 /// `../../workflow/subagent_step.rs` ; la spec de ce fichier ne promet que `resources` et
 /// l'enregistrement `Config`. Les modules MCP s'ajoutent par rôle au-dessus.
 fn base_modules(deps: &AssembleDeps, caller: &CallerPrincipal) -> Result<Vec<GrantedModule>, LymailleError> {
-    let resources = resources_module(Arc::clone(&deps.readers), deps.db.clone(), caller.subject.clone());
+    // Session interactive : `scope = None`, pas de journal (`resource_module.sdd`,
+    // amendement lot 2).
+    let resources = resources_module(
+        Arc::clone(&deps.readers),
+        deps.db.clone(),
+        caller.subject.clone(),
+        None,
+    );
     Ok(vec![
         GrantedModule::new("resources", resources.into())
             .ok_or_else(|| LymailleError::InvalidDefinition("invalid module name: resources".to_owned()))?,
@@ -1190,7 +1197,7 @@ mod tests {
     ) -> AssembleDeps {
         AssembleDeps {
             db,
-            readers: Arc::new(ResourceReaders::new()),
+            readers: Arc::new(ResourceRegistry::new()),
             secrets: Arc::new(FixedSecret("cle-fixe")),
             hub: Arc::new(EventHub::new(None, 16)),
             clock: Arc::new(SystemClock::new()),

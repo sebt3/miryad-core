@@ -79,7 +79,15 @@ Exposes:
   `ResourceReaders::{new, register}`, `resources_module`, `LLM_MAX_PER_PAGE`, `LLM_DEFAULT_PER_PAGE`
 
 Tasks:
-  [ ] Amendement lot 2 (`DEC-21`) : registre lecture/écriture, `WriteScope`, scenarios ci-dessus d'abord, puis ./resource_module.rs ; dépend de ./store/write_journal.rs.
+  [x] Amendement lot 2 (`DEC-21`) : registre lecture/écriture, `WriteScope`, scenarios ci-dessus d'abord, puis ./resource_module.rs ; dépend de ./store/write_journal.rs.
+    Validé 2026-11-06 (validator PASS : les sept Scenario du lot 2 ont chacun leur test au Then réel, scripts Rhai réels ; parité structurelle prouvée — le delegate est @rest::core lui-même ; journal en ordre replay→écrire→record, interactif jamais journalisé ; alias @ResourceReaders conservé #[deprecated] ; le test lot 1 no_write_exists retiré car son contrat a disparu de la spec ; lymaille vert en tests et clippy `-D warnings` sur build frais, `fmt`, `specdd lint`).
+    [!] (implementer) : ripple mécanique hors `Owns` appliqué pour que la crate compile à la signature 4 args — ./interactive/assemble.rs et ./interactive/manager.rs (sites de production, `scope = None` en interactif) et les sites `cfg(test)` de ./../chat/bridge.rs, ./http/routes.rs, ./http/sse.rs. Précedent invoqué : « obligation de compilation » des lots B du workflow. Ratifier ces diffs comme appartenant à cette tâche, ou les re-découper en amendements des specs porteuses ?
+    [?] (implementer et validator) : verbes d'écriture sur une ressource enregistrée @register_read_only → `unknown resource: <nom>` (choix provisoire conservateur, `writable = false` dans `describe()`) — la taxonomie de la spec ne nomme pas ce cas ; pas de verrou de test tant que non arbitré.
+    [?] (validator) : plafond de 100 compté en tête d'appel, avant `replay` et avant le contrôle de politique — un rejeu consomme un crédit ; « 100 écritures » ≠ « 100 tentatives ». Conforme au Scenario, à confirmer comme sémantique voulue.
+    [?] (validator) : la relecture de fenêtre de crash compare les champs non-PK via `label_column` — sans `label_column` déclarée, un corps égal retombe en `conflict` au lieu de reconnaître le doublon. Voulu ?
+    [?] (validator) : échec de `record` après écriture réussie → `internal error` (le rejeu rattrape par le replay) — acté ou faut-il un traitement distinct ?
+    [?] (validator) : les Must « corps inconnu → `invalid body` » et « écriture batch sans subject → `no account for this session` » n'ont ni Scenario ni verrou exécutable — les ajouter ?
+    [?] (validator) : à resserrer à la prochaine relecture — l'`Exposes` de cette spec cite encore @ResourceReaders::{new, register} au lieu de @ResourceRegistry/@register_read_only/@WriteScope, et les mentions de ./interactive/assemble.sdd:39 et ./interactive/manager.sdd:21 restent sur l'ancien nom.
   [x] Amender ../auth/principal.sdd et principal.rs : variante `PrincipalSource::Agent` (unité, `Debug` « Agent »), seule variante
     non rendue par un transport HTTP ; aucun consommateur ne la lit (la crate ne lit pas `source`). Amendement soumis au développeur
     principal avant d'y toucher (hors périmètre de ce fichier). Validé 2026-11-03 (validator PASS ; deux bras `cfg(test)` d'exhaustivité
