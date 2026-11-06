@@ -28,10 +28,18 @@ const KEEPALIVE_PERIOD: Duration = Duration::from_secs(15);
 
 /// Corps de l'événement `error` rendu quand la sérialisation d'un `SessionEvent` échoue
 /// (`Must` de `./sse.sdd`) — un code `MRD-*` nu, aucun contenu de session. Le chemin est
-/// quasi-inatteignable (`SessionEvent` est un type serde ordinaire) ; `MRD-LYMAILLE-012` est le
-/// code de la variante `Serialization` de `../error.sdd` (arbitrage du 2026-11-05 ; `-009`
-/// était un doublon de `Store`).
-const SERIALIZATION_ERROR_BODY: &str = r#"{"code":"MRD-LYMAILLE-012"}"#;
+/// quasi-inatteignable (`SessionEvent` est un type serde ordinaire). Le code est **dérivé** de la
+/// variante `Serialization` de @`LymailleError` (`../error.sdd`, code `MRD-LYMAILLE-012`, arbitrage
+/// du 2026-11-06) : préfixe de la `Display` avant le premier `:`, verrouillé par le `Scenario`
+/// « les codes sont stables » de `../error.sdd` — plus aucune constante nue dans ce fichier.
+fn serialization_error_body() -> String {
+    let error = LymailleError::Serialization("session event serialization failed".to_owned());
+    let display = error.to_string();
+    let code = display
+        .split_once(':')
+        .map_or(display.as_str(), |(code, _cause)| code);
+    json!({ "code": code }).to_string()
+}
 
 /// Traduction de la rupture d'abonnement en erreur REST (même table que `to_rest` de
 /// `./routes.rs`, que `./sse.sdd` ne cite pas en dépendance — duplication assumée de dix lignes).
@@ -126,7 +134,7 @@ fn serialization_error_event(id: u64) -> Event {
     Event::default()
         .id(id.to_string())
         .event("error")
-        .data(SERIALIZATION_ERROR_BODY)
+        .data(serialization_error_body())
 }
 
 #[cfg(test)]
@@ -780,9 +788,28 @@ mod tests {
     #[test]
     fn panne_de_serialisation_rend_le_code_012() {
         assert_eq!(
-            super::SERIALIZATION_ERROR_BODY,
+            super::serialization_error_body(),
             r#"{"code":"MRD-LYMAILLE-012"}"#,
             "le corps rendu par `serialization_error_event` porte le code unique -012"
+        );
+    }
+
+    /// Émission de la variante (arbitrage du 2026-11-06) : le corps rendu est celui que produit
+    /// le chemin d'erreur pour @`LymailleError::Serialization` — le préfixe de sa `Display` (le
+    /// code, verrouillé par `../error.sdd`), rendu en JSON `{"code": …}`. Plus aucune constante
+    /// nue dans `./sse.rs` : si le code de la variante bouge, ce test et le verrou `-012` ne
+    /// peuvent plus être verts ensemble.
+    #[test]
+    fn corps_derive_de_la_variante_serialization() {
+        let erreur = crate::lymaille::error::LymailleError::Serialization("cause expurgée".to_owned());
+        let display = erreur.to_string();
+        let code = display
+            .split_once(':')
+            .map_or(display.as_str(), |(code, _cause)| code);
+        assert_eq!(
+            super::serialization_error_body(),
+            json!({ "code": code }).to_string(),
+            "le corps rendu egale le corps que produit le chemin d'erreur pour la variante Serialization"
         );
     }
 }
