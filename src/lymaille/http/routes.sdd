@@ -50,7 +50,8 @@ Tasks:
   [x] Réalignement R12 (DSD `DEC-28, DEC-30`, 2026-11-03) : Après R10 et R11 : corps d'ouverture `(contexte, agent optionnel)` ; dixième route de lecture de l'historique (état persisté, mêmes types) ;
     types exportés. Spec seule.
     Validé 2026-11-06 (validator PASS clôture spec seule : contrat d'ouverture (contexte, agent optionnel) au Must et aux Scenarios, dixième route history contractuelle et servie, types exportés renvoyés à `../interactive/event.sdd` ; code conforme vérifié).
-  [ ] Tests d'abord (`tower::ServiceExt::oneshot`, SQLite mémoire, `ScriptedProvider`), puis ./routes.rs.
+  [x] Tests d'abord (`tower::ServiceExt::oneshot`, SQLite mémoire, `ScriptedProvider`), puis ./routes.rs.
+    Validé 2026-11-06 (validator PASS clôture : infrastructure annoncée en place (oneshot, SQLite mémoire, ScriptedProvider) ; les deux verrous d'absence de l'historique levés et remplacés par six tests — trois variantes dans l'ordre, absence d'arguments, has_result, numérotation, Redactor, Discarded jamais rendu — plus l'e2e mêmes types ; les 9 Scenario ont leur test).
   [x] Clôture R12 — **historique complet** (arbitrage de Sébastien du 2026-11-05, rouvert et confirmé après exposé des conséquences ; remplace le
     choix « historique léger » du validator checkpoint 7) : `history_events` rend, dans l'ordre de l'état persisté, `UserMessage { turn, text }` pour chaque
     `Message::User`, `TurnEnded { outcome: valid, response }` pour chaque réponse d'assistant non vide, et `ToolCallSummary { turn, tool, call_id, has_result }`
