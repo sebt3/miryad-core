@@ -104,7 +104,7 @@ Tasks:
     respectives, @../workflow/mod.rs} et @/tooling.sdd} et @/AGENTS.md} par les tâches 16/17 et l'amendement batterie 2026-11-02,
     la CI (/.github/workflows/ci.yml} + workflows.sdd) par la tâche « Amendement 2026-11-03 » de /.github/workflows/workflows.sdd}
     (commit 98577f6, validator PASS). Accord du développeur principal donné au montage du lot.
-  [x] Prouver le graphe : `cargo tree --no-default-features -e normal -i lymaille` imprime « nothing to print » ; avec
+  [x] Prouver le graphe : `cargo tree --no-default-features -e normal -i lymaille` rend une **sortie stdout vide** (« nothing to print » rc 0, ou « did not match any packages » rc≠0 selon la version de cargo — le test est la sortie, pas le code de sortie) ; avec
     `--features lymaille`, `cargo tree -e normal -i sea-orm` imprime une ligne (DSD `AC-2`) ; un seul `rhai`, un seul `tokio`
     et un seul `rustls` **que la crate contrôle** (le `0.23` à provider `ring`) dans `cargo tree --all-features` (DSD `AC-1`) — les versions `0.26` et `0.27` sont tirées par `restate-sdk` et `matrix-sdk`, hors périmètre, tolérées par `multiple_crate_versions` (arbitrage du développeur principal, 2026-11-05) ; la bascule `rhai` 1.26.1 → 1.27.0 est prouvée par la batterie
     `workflow` du moment de l'ajout (DSD `Constraints and Pitfalls`).
@@ -113,12 +113,7 @@ Tasks:
     @sea-orm v2.0.4} présent avec @--features lymaille} (AC-2) ; @rhai v1.27.0} et @tokio v1.54.1} à version unique dans le graphe
     @--all-features}, @lymaille}, @rig-core} et @rmcp} à un exemplaire ; bascule `rhai` 1.27 prouvée par les batteries @workflow}
     et @workflow,lymaille} vertes.
-  [?] Wording de la preuve ci-dessus : sur cargo 1.99, `cargo tree --no-default-features -e normal -i lymaille` rend 101
-    (« package ID specification did not match ») et non « nothing to print » — l'absence est bien prouvée, la formulation
-    est inexacte (constat validator 2026-11-02). Tranché au montage : le critère retenu est la **sortie vide**, pas le code
-    de sortie — la convention de `tooling.sdd` (« le test est la SORTIE vide, pas le code de sortie ») ; formulation écrite
-    dans l'amendement 2026-11-03 de /.github/workflows/workflows.sdd. À relire avec Sébastien (le texte de `mod.sdd` ci-dessus
-    garde « nothing to print », qui reste la formulation exacte pour `sea-orm` sans `db`).
+  [x] Wording de la preuve : aligné le 2026-11-06 sur `/tooling.sdd` (critère = sortie stdout vide, cargo 1.99 rend 101 sur le nom absent) ; « nothing to print » reste exact pour `sea-orm` sans `db`.
 
 Done when:
   Les `Scenario` sont verts ; `cargo build --no-default-features --features lymaille` et `--all-features` compilent sans

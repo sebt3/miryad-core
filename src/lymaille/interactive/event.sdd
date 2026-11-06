@@ -50,7 +50,7 @@ Exposes:
   `SessionEvent`, `SessionEventKind`, `SessionOutcome`, `impl From<&Event> for SessionEvent`, `export_typescript`
 
 Tasks:
-  [x] Alignement `lymaille` 0.2.0 (2026-11-05) : variante `EmptyResponse { will_retry }` (miroir de `EventKind::EmptyResponse`, sinon elle tomberait dans `Other { name }` et le client ne verrait pas le nouvel essai) ; la `From<&Event>` reste infaillible ; test d'abord (conversion + sérialisation `type` = `empty_response`), puis ./event.rs. Avant la tâche « historique complet ».
+  [ ] Alignement `lymaille` 0.2.0 (2026-11-05) — rouverte le 2026-11-06 : livrée au niveau du lot (commit fce0732), à refermer par un cycle qui la touche (un commit par case) : variante `EmptyResponse { will_retry }` (miroir de `EventKind::EmptyResponse`, sinon elle tomberait dans `Other { name }` et le client ne verrait pas le nouvel essai) ; la `From<&Event>` reste infaillible ; test d'abord (conversion + sérialisation `type` = `empty_response`), puis ./event.rs. Avant la tâche « historique complet ».
     Livré et validé dans le cycle « Alignement `lymaille` 0.2.0 » de `../mod.sdd` (2026-11-05, commit fce0732, validator PASS sur les 15+15
     combinaisons : variante typée, test `une_reponse_vide_est_miroitee_en_empty_response`, conversion infaillible). Case closee ici pour ne pas
     laisser une case ouverte sur un contrat livre ; a rouvrir si le developpeur principal prefere que chaque case ait son propre commit.
