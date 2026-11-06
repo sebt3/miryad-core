@@ -11,6 +11,9 @@
 //! (DSD `OI-4`).
 //!
 //! L'application enregistre elle-même le kind : `registry.register(SubagentStep::new(deps))`.
+//! Amendement lot 2 (DSD `DEC-20`, `DEC-21`) : le module `resources` écrit sous `WriteScope`
+//! `(run_key, step_key)` — idempotent au rejeu par le journal d'écritures — et les rôles MCP du
+//! contexte lié passent par `mcp_access` sans session interactive : un `forward` est refusé.
 //! Aucune erreur, aucune trace ne contient un prompt, un secret, un contenu de session ou de
 //! ressource.
 
@@ -34,6 +37,7 @@ use ::lymaille::AgentStore as _;
 use ::lymaille::CancelHandle;
 use ::lymaille::ContextError;
 use ::lymaille::ContextLevel;
+use ::lymaille::ContextStore as _;
 use ::lymaille::DEFAULT_BATCH_MAX_TURNS;
 use ::lymaille::DEFAULT_CORRECTIONS;
 use ::lymaille::DEFAULT_SUMMARY_PROMPT;
@@ -88,12 +92,15 @@ use ::lymaille::todo_module;
 use sea_orm::DatabaseConnection;
 
 use crate::lymaille::error::LymailleError;
-use crate::lymaille::identity::{Identity, check_grants};
+use crate::lymaille::host::LymailleHost;
+use crate::lymaille::identity::{CallerPrincipal, Identity, check_grants};
 use crate::lymaille::install_crypto_provider;
-use crate::lymaille::resource_module::{ResourceReaders, resources_module};
+use crate::lymaille::mcp_access::{RoleBinding, build_auth, resolve_role};
+use crate::lymaille::resource_module::{ResourceRegistry, resources_module};
 use crate::lymaille::secret::SecretResolver;
 use crate::lymaille::store::LymailleStores;
 use crate::lymaille::store::SeaSessionStore;
+use crate::lymaille::store::WriteScope;
 
 use super::step::MiryadWorkflowStep;
 use super::step::RunInfo;
@@ -108,8 +115,10 @@ pub const DEFAULT_MAX_SECS: u64 = 480;
 pub const MAX_SECS_CEILING: u64 = 540;
 
 /// Nom du contexte de toolsets et type de contexte des sessions produites par le step : la même
-/// clé partout, pour que la reprise retrouve un contexte homologue.
-const CONTEXT_TYPE: &str = "workflow-subagent";
+/// clé partout, pour que la reprise retrouve un contexte homologue. Identifiant valide au sens de
+/// `identity::classify` (amendement lot 2 : c'est aussi le nom sous lequel le store des contextes
+/// est lu pour les rôles MCP liés — un nom avec `-` n'y serait jamais relu).
+const CONTEXT_TYPE: &str = "workflow_subagent";
 
 /// Modules dont l'accord par une définition est réservé aux admins (DSD `FR-9`, défense en
 /// profondeur à l'étape 5 du `Must`). Vide au lot 1 : aucun module connu n'y figure encore — le
@@ -142,8 +151,9 @@ pub struct SubagentDeps {
     pub db: DatabaseConnection,
     /// Résolveur des références d'authentification des providers (`src/lymaille/secret.sdd`).
     pub secrets: Arc<dyn SecretResolver>,
-    /// Registre des entités lisibles par les agents (`src/lymaille/resource_module.sdd`).
-    pub readers: Arc<ResourceReaders>,
+    /// Registre des entités lues **et écrites** par les agents — amendement lot 2 (DSD `DEC-21`) :
+    /// `readers` devient `registry`, un [`ResourceRegistry`] (`src/lymaille/resource_module.sdd`).
+    pub registry: Arc<ResourceRegistry>,
 }
 
 /// Couture d'inférence du step (test) : produit le client d'inférence d'un provider, là où la
@@ -367,6 +377,9 @@ fn outcome_to_result(outcome: &SubagentOutcome) -> Result<Value, StepError> {
 struct Resolved {
     /// Fabrique des stores `lymaille`, liée au sujet du déclencheur.
     stores: LymailleStores,
+    /// Principal reconstruit du déclencheur (droits relus à l'exécution, DSD `FR-4`) — relu à
+    /// l'étape 7 pour le contrôle d'usage des serveurs MCP liés.
+    caller: CallerPrincipal,
     /// Définition lue du sous-agent.
     definition: AgentDefinition,
     /// Profil effectif de la définition.
@@ -424,6 +437,7 @@ impl SubagentStep {
         );
         Ok(Resolved {
             stores,
+            caller,
             definition,
             profile,
             client,
@@ -439,6 +453,9 @@ struct ModuleHost<'a> {
     stores: &'a LymailleStores,
     trigger: &'a str,
     session_id: &'a SessionId,
+    /// Scope d'idempotence du step batch (amendement lot 2, DSD `DEC-21`) : les clés de la
+    /// session `Sub`, sous lesquelles le module `resources` journalise ses écritures.
+    scope: &'a WriteScope,
     sink: &'a Arc<dyn EventSink>,
     clock: &'a Arc<dyn ::lymaille::Clock>,
 }
@@ -450,9 +467,10 @@ fn granted_modules(host: &ModuleHost<'_>, names: &[String]) -> Result<Vec<Grante
     for name in names {
         let module = match name.as_str() {
             "resources" => resources_module(
-                Arc::clone(&host.step.deps.readers),
+                Arc::clone(&host.step.deps.registry),
                 host.step.deps.db.clone(),
                 host.trigger.to_owned(),
+                Some(host.scope.clone()),
             ),
             "todo" => todo_module(
                 TodoList::new(),
@@ -485,6 +503,70 @@ fn granted_modules(host: &ModuleHost<'_>, names: &[String]) -> Result<Vec<Grante
         );
     }
     Ok(granted)
+}
+
+/// Liaisons rôle → serveur d'un contexte, lues de sa forme sérialisée (champ `roles` du JSON
+/// stocké — `ToolsetContext` ne rend que les noms des rôles, jamais leurs références ; précédent :
+/// `../lymaille/interactive/assemble.rs`).
+fn context_roles(context: &ToolsetContext) -> Vec<(String, String)> {
+    serde_json::to_value(context)
+        .ok()
+        .and_then(|value| {
+            value.get("roles").and_then(Value::as_object).map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|(role, reference)| {
+                        reference
+                            .as_str()
+                            .map(|reference| (role.clone(), reference.to_owned()))
+                    })
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// Fin de l'étape 7, amendement lot 2 (DSD `DEC-20`) : les rôles MCP du contexte lié à la session
+/// (`CONTEXT_TYPE`, relu sous le sujet du déclencheur) passent par `mcp_access` — `resolve_role`
+/// sans hôte (la décision d'hôte vient de la tâche R15), puis `build_auth` avec
+/// `interactive_token = None` : un serveur `forward` échoue le step en `StepError` **non
+/// retryable**, comme un serveur refusé en `Forbidden`, sans repli. Aucun jeton n'est persisté.
+async fn check_context_roles(
+    step: &SubagentStep,
+    stores: &LymailleStores,
+    caller: &CallerPrincipal,
+) -> Result<(), StepError> {
+    let context: Option<ToolsetContext> = stores
+        .contexts()
+        .get_context(CONTEXT_TYPE)
+        .await
+        .map_err(from_toolsets)?;
+    let Some(context) = context else {
+        return Ok(());
+    };
+    for (role, server) in context_roles(&context) {
+        let binding = resolve_role(
+            None::<&dyn LymailleHost>,
+            &step.deps.db,
+            caller,
+            CONTEXT_TYPE,
+            &role,
+            Some(&server),
+        )
+        .await
+        .map_err(|error| from_lymaille(&error))?;
+        match binding {
+            RoleBinding::Table(model) => {
+                // `interactive_token = None` : le step n'est pas une session interactive ; un
+                // mode `forward` rend ici `Forbidden(« forward auth needs an interactive session »)`.
+                build_auth(&model, Arc::clone(&step.deps.secrets), None)
+                    .map_err(|error| from_lymaille(&error))?;
+            }
+            // Sans hôte, `resolve_role` ne rend jamais `Host` : branche de garde, sans repli.
+            RoleBinding::Host(_) => return Err(permanent("host binding without a host")),
+        }
+    }
+    Ok(())
 }
 
 /// Moteur du run, collecteur de ses résultats soumission et contexte assemblé (étapes 7 et 9).
@@ -674,17 +756,27 @@ impl MiryadWorkflowStep for SubagentStep {
         let sink: Arc<dyn EventSink> = Arc::new(NullSink::new());
 
         // ── 7. toolsets et modules accordés → moteur ──
+        // Le scope d'idempotence du step batch : les clés de la session `Sub` (amendement lot 2,
+        // DSD `DEC-21`) — un rejeu rejourne les écritures sous les mêmes clés du journal.
+        let scope = WriteScope {
+            run_key: run.run_key.clone(),
+            step_key: run.step_id.clone(),
+        };
         let granted = granted_modules(
             &ModuleHost {
                 step: self,
                 stores: &resolved.stores,
                 trigger: &trigger,
                 session_id: &session_id,
+                scope: &scope,
                 sink: &sink,
                 clock: &clock,
             },
             resolved.definition.modules(),
         )?;
+        // Rôles MCP du contexte lié (amendement lot 2, DSD `DEC-20`) : refus ou `forward` sont des
+        // échecs non retryables, avant que le run commence.
+        check_context_roles(self, &resolved.stores, &resolved.caller).await?;
         let parts = assemble_and_engine(&resolved.stores, &resolved.definition, granted, &schema).await?;
 
         // ── 8. session déterministe : reprise, ou état neuf `Sub` ──
@@ -740,6 +832,7 @@ impl MiryadWorkflowStep for SubagentStep {
 mod tests {
     use super::*;
 
+    use crate::lymaille::definitions::mcp_server;
     use crate::lymaille::store::test_support::test_db;
     use crate::resource::{AccessPolicy, MiryadResource};
     use crate::users::membership::sync_group_memberships;
@@ -755,6 +848,7 @@ mod tests {
     use sea_orm::ConnectionTrait as _;
     use sea_orm::Schema;
     use sea_orm::entity::prelude::*;
+    use sea_orm::sea_query::ExprTrait as _;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
 
@@ -792,6 +886,104 @@ mod tests {
                 None
             }
         }
+    }
+
+    /// Ressource `Public` inscriptible par tous — fixture du `Scenario` lot 2 « un rejeu n'écrit
+    /// pas deux fois » (table créée par `Schema` sur la base migrée, ouverte en écriture par
+    /// `register`, pas `register_read_only`).
+    mod widget_res {
+        use super::*;
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "llm_widgets")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub title: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "widget"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+        }
+    }
+
+    /// Ligne de `miryad_lymaille_mcp_servers` — fixture du `Scenario` lot 2 « un serveur MCP en
+    /// forward fait échouer le step » (forme des fixtures de `../lymaille/mcp_access.rs`).
+    async fn inserer_serveur(
+        db: &DatabaseConnection,
+        nom: &str,
+        auth_mode: &str,
+        groupes: serde_json::Value,
+    ) {
+        use sea_orm::ActiveValue::NotSet;
+        let actif = mcp_server::ActiveModel {
+            id: NotSet,
+            name: Set(nom.to_owned()),
+            url: Set("https://mcp.example/".to_owned()),
+            request_timeout_secs: Set(30),
+            connect_timeout_secs: Set(5),
+            auth_mode: Set(auth_mode.to_owned()),
+            auth_ref: Set(None),
+            allowed_groups: Set(groupes),
+            created_at: Set(chrono::Utc::now()),
+        };
+        actif.insert(db).await.expect("ligne mcp_servers de test");
+    }
+
+    /// Contexte lié du step (`CONTEXT_TYPE`, privé sous `subject`) liant chaque rôle donné à un
+    /// serveur — écrit par `subject` lui-même via le store (les hooks de `put_context` valident
+    /// la liaison, `store/toolset.sdd`).
+    async fn lier_contexte(db: &DatabaseConnection, subject: &str, roles: &[(&str, &str)]) {
+        let mut context = ToolsetContext::new(super::CONTEXT_TYPE.to_owned(), ContextLevel::Session)
+            .expect("contexte de test");
+        for (role, server) in roles {
+            context = context
+                .with_role((*role).to_owned(), (*server).to_owned())
+                .expect("liaison role-serveur de test");
+        }
+        LymailleStores::new(db.clone(), subject)
+            .contexts()
+            .put_context(&context)
+            .await
+            .expect("le contexte lie est ecrit par son proprietaire");
+    }
+
+    /// Nombre de lignes du journal d'écritures pour un `run_key` (table posée par la migration).
+    async fn journal_rows(db: &DatabaseConnection, run_key: &str) -> usize {
+        let mut select = sea_orm::sea_query::Query::select();
+        select
+            .column(sea_orm::sea_query::Alias::new("op_key"))
+            .from(sea_orm::sea_query::Alias::new("miryad_lymaille_write_journal"))
+            .and_where(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("run_key")).eq(run_key));
+        db.query_all(&select)
+            .await
+            .expect("comptage des lignes du journal")
+            .len()
+    }
+
+    /// Nombre de lignes de la ressource fixture.
+    async fn widget_rows(db: &DatabaseConnection) -> usize {
+        widget_res::Entity::find()
+            .all(db)
+            .await
+            .expect("comptage des lignes de la ressource fixture")
+            .len()
     }
 
     /// Compte local de test, membre ou non du groupe `admin` (`src/lymaille/store/mod.rs`, même
@@ -869,6 +1061,19 @@ mod tests {
         InferenceResponse::new(Message::assistant(text.to_owned(), None, Vec::new()), None)
     }
 
+    /// Réponse appelant l'outil `rhai_pad` avec `script`, sous l'identifiant d'appel donné — un
+    /// rejeu réémet un appel sous un identifiant neuf, jamais celui déjà soldé de la session.
+    fn pad_call_id(id: &str, script: &str) -> InferenceResponse {
+        InferenceResponse::new(
+            Message::assistant(
+                String::new(),
+                None,
+                vec![ToolCall::new(id, RHAI_PAD_TOOL, json!({ "script": script }))],
+            ),
+            None,
+        )
+    }
+
     /// Réponse appelant l'outil `rhai_pad` avec `script`.
     fn pad_call(script: &str) -> InferenceResponse {
         InferenceResponse::new(
@@ -933,31 +1138,34 @@ mod tests {
         }
     }
 
-    /// Le step du scenario : `config` des dépendances, inférence de rechange, registry de
+    /// Le step du scenario : `config` des dépendances, inférence de rechange, registre de
     /// ressources vide sauf fixture contraire.
     fn step_with(db: DatabaseConnection, factory: Arc<dyn InferenceFactory>) -> SubagentStep {
+        step_with_registry(db, factory, ResourceRegistry::new())
+    }
+
+    /// Le step avec un registre de ressources donné (amendement lot 2 : `SubagentDeps` porte un
+    /// `ResourceRegistry`, plus un simple `ResourceReaders`).
+    fn step_with_registry(
+        db: DatabaseConnection,
+        factory: Arc<dyn InferenceFactory>,
+        registry: ResourceRegistry,
+    ) -> SubagentStep {
         SubagentStep::with_inference(
             SubagentDeps {
                 db,
                 secrets: Arc::new(FixedSecret("s3cret")),
-                readers: Arc::new(ResourceReaders::new()),
+                registry: Arc::new(registry),
             },
             factory,
         )
     }
 
-    /// Le step du `Scenario` des droits : le registry porte la ressource `AdminOnly`.
+    /// Le step du `Scenario` des droits : le registre porte la ressource `AdminOnly`.
     fn step_with_readers(db: DatabaseConnection, factory: Arc<dyn InferenceFactory>) -> SubagentStep {
-        let mut readers = ResourceReaders::new();
-        readers.register::<subsecret_res::Entity>();
-        SubagentStep::with_inference(
-            SubagentDeps {
-                db,
-                secrets: Arc::new(FixedSecret("s3cret")),
-                readers: Arc::new(readers),
-            },
-            factory,
-        )
+        let mut registry = ResourceRegistry::new();
+        registry.register::<subsecret_res::Entity>();
+        step_with_registry(db, factory, registry)
     }
 
     fn run_info(run_key: &str, step_id: &str, trigger: Option<&str>) -> RunInfo {
@@ -1334,5 +1542,145 @@ mod tests {
 
         assert_eq!(alice_output, json!({ "verdict": "forbidden" }));
         assert_eq!(root_output, json!({ "verdict": "lu" }));
+    }
+
+    // ── Scenario lot 2: un rejeu n'écrit pas deux fois -----------------------------------------
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_rejeu_n_ecrit_pas_deux_fois() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "root", true).await;
+        wire_catalog(&db).await;
+        let schema = Schema::new(db.get_database_backend());
+        db.execute(&schema.create_table_from_entity(widget_res::Entity))
+            .await
+            .expect("la table de la ressource fixture est créée");
+        put_catalog_agent(
+            &db,
+            &sub_agent(
+                "G_scribe",
+                "tu ecris puis tu rends ton verdict",
+                vec!["resources".to_owned()],
+            ),
+        )
+        .await;
+        let registry = || {
+            let mut registry = ResourceRegistry::new();
+            registry.register::<widget_res::Entity>();
+            registry
+        };
+        let run = run_info("t-rejeu-ecritures", "s1", Some("alice"));
+        let create = r#"resources::create("widget", #{ id: 0, title: "Ecriture-unique" })"#;
+
+        // Le run interrompu : un `create` exécuté et journalisé, aucun résultat soumis (`max_turns` 1).
+        let first_provider = Arc::new(ScriptedProvider::new(vec![Ok(pad_call(create))]));
+        let first = step_with_registry(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&first_provider))),
+            registry(),
+        );
+        let interrupted = first
+            .run(
+                &run,
+                json!({ "agent": "G_scribe", "task": "ecris puis juge", "max_turns": 1 }),
+                HashMap::new(),
+            )
+            .await
+            .expect_err("sans résultat soumis le premier run échoue");
+        assert!(!interrupted.retryable, "{interrupted}");
+        assert_eq!(widget_rows(&db).await, 1, "le `create` du premier run a écrit");
+        assert_eq!(
+            journal_rows(&db, "t-rejeu-ecritures").await,
+            1,
+            "l'écriture est journalisée sous les clés de la session `Sub`"
+        );
+
+        // Le rejeu : session restaurée, le MÊME `create` est ré-émis — c'est le journal qui répond,
+        // la ligne n'est pas doublée (`WriteScope` du step, DSD `DEC-21`).
+        let replay_script = format!("{create};\nresult::submit(#{{ verdict: \"ok\" }})");
+        let replay_provider = Arc::new(ScriptedProvider::new(vec![Ok(pad_call_id(
+            "call-rejeu",
+            &replay_script,
+        ))]));
+        let replay = step_with_registry(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&replay_provider))),
+            registry(),
+        );
+        let output = replay
+            .run(&run, config("G_scribe", "ecris puis juge"), HashMap::new())
+            .await
+            .expect("le rejeu rend le résultat");
+
+        assert_eq!(output, json!({ "verdict": "ok" }));
+        assert_eq!(
+            widget_rows(&db).await,
+            1,
+            "une seule ligne existe : le rejeu n'a pas écrit deux fois"
+        );
+        assert_eq!(
+            journal_rows(&db, "t-rejeu-ecritures").await,
+            1,
+            "une seule clé d'opération au journal après le rejeu"
+        );
+    }
+
+    // ── Scenario lot 2: un serveur MCP en forward fait échouer le step sans retry --------------
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_serveur_mcp_en_forward_fait_echouer_le_step_sans_retry() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "root", true).await;
+        wire_catalog(&db).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        inserer_serveur(&db, "srv_fwd", "forward", json!(["all"])).await;
+        lier_contexte(&db, "alice", &[("sandbox", "srv_fwd")]).await;
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let step = step_with(db.clone(), Arc::new(ScriptFactory(Arc::clone(&provider))));
+        let run = run_info("t-forward", "s1", Some("alice"));
+
+        let error = step
+            .run(&run, config("G_sub", "inspecter"), HashMap::new())
+            .await
+            .expect_err("un serveur `forward` lié au contexte du step est refusé en batch");
+
+        assert!(
+            !error.retryable,
+            "le refus du forward n'est pas retryable : {error}"
+        );
+        assert!(
+            error
+                .message
+                .contains("forward auth needs an interactive session"),
+            "la phrase fixe de `build_auth` : {error}"
+        );
+        assert!(provider.requests().is_empty(), "aucune inférence n'est partie");
+
+        // Seconde clause de l'amendement : un serveur dont l'usage, accordé à la liaison, est
+        // retiré à l'exécution du step (relecture en base de `mcp_access`, aucun cache) est un
+        // échec non retryable du même ordre.
+        inserer_serveur(&db, "srv_ops", "none", json!(["ops"])).await;
+        let alice = crate::users::resolve_user(&db, "alice", None)
+            .await
+            .expect("le compte local d'alice");
+        sync_group_memberships(&db, alice.id, &["ops".to_owned()])
+            .await
+            .expect("alice membre de ops");
+        lier_contexte(&db, "alice", &[("prive", "srv_ops")]).await;
+        sync_group_memberships(&db, alice.id, &[])
+            .await
+            .expect("appartenance retrahie avant l'exécution du step");
+        let refus = step
+            .run(&run, config("G_sub", "inspecter"), HashMap::new())
+            .await
+            .expect_err("un serveur refusé ferme le step");
+        assert!(!refus.retryable, "le refus d'usage n'est pas retryable : {refus}");
+        assert!(
+            refus.message.contains("mcp server unavailable"),
+            "le texte fermé de `server_for` : {refus}"
+        );
+        assert!(provider.requests().is_empty(), "toujours aucune inférence");
     }
 }
