@@ -13,11 +13,11 @@ Owns:
 
 References:
   /dsd/miryad-core/lymaille.md — `FR-15`, `DEC-24`, `DEC-30`, `AC-20` ; ./hub.sdd — diffusion et `publish_host` ; ../http/sse.sdd — sérialisation ; ../http/routes.sdd — historique
-  `lymaille::session::{Event, EventKind, Outcome, ScriptRecord, McpRecord}` — API à relire en source (`[?]`, variantes et champs)
+  `lymaille::session::{Event, EventKind, Outcome, ScriptRecord, McpRecord}` — API vérifiée en source (lymaille 0.2.0)
 
 Must:
   `pub struct SessionEvent { pub session: String, pub at: String, pub kind: SessionEventKind }` : `session` = identifiant de la session, `at` = instant de l'événement en
-    **RFC 3339 UTC** (`[?]` conversion du `Timestamp` de `lymaille`, à confirmer en source). `Clone`, `Debug`, `PartialEq`, `Serialize`, `Deserialize`, `ts_rs::TS`.
+    **RFC 3339 UTC** (conversion du `Timestamp` de `lymaille` par `timestamp_rfc3339`, vérifiée par `un_evenement_de_tour_est_type`). `Clone`, `Debug`, `PartialEq`, `Serialize`, `Deserialize`, `ts_rs::TS`.
   `pub enum SessionEventKind` — `#[serde(tag = "type", rename_all = "snake_case")]`, mêmes dérives. Variantes **typées**, champs `u64` annotés `#[ts(type = "number")]` (`ts-rs`
     exporte `u64` en `bigint` alors que JSON porte un nombre : l'annotation évite un contrat TS faux) :
     `TurnStarted { turn }`, `TextDelta { turn, text }`, `TurnEnded { turn, outcome: SessionOutcome, response }`, `RunEnded { run: String, outcome }`,
@@ -60,12 +60,8 @@ Tasks:
     et `--all-features`, `cargo fmt --check`, six contrôles `cargo tree`, `specdd lint` ; `kind_of` et @From<&Event> intacts — les deux variantes
     ne sont produites par aucune conversion amont ; jeu de clés JSON exact verrouillé, aucun champ d'arguments ; `user_message` et
     `tool_call_summary` sortent dans `SessionEventKind.ts` avec `turn` typé `number`. L'écart spec ↔ code consigné au cycle précédent est soldé.
-  [?] @UserMessage et @ToolCallSummary sont propres à l'historique et @lymaille 0.2.0 n'horodate pas ses messages : leur `at` vaut l'instant de
-    création de la session, non significatif. La limite est écrite dans `../http/routes.sdd` (`DEC-30`) et non ici. Choix provisoire : rien
-    d'ajouter au `Must` de cette spec (c'est la route qui porte la sémantique de `at`). Options : laisser ainsi (recommandé) ou une ligne de `Must`.
-  [?] Deux `[?]` de corps de spec (lignes 16 et 20 : « API amont à relire en source », « conversion RFC 3339 du @Timestamp à confirmer ») peuvent
-    être clos : @timestamp_rfc3339 convertit bien en RFC 3339 UTC, vérifié par le test `un_evenement_de_tour_est_type`. Fermer ces mentions
-    demande de retoucher le `Must` et le `References` : hors cycle, domaine du développeur principal.
+  [x] Arbitré le 2026-11-06 : la limite sur `at` reste portée par `../http/routes.sdd` (`DEC-30`), pas par ce `Must`.
+  [x] Arbitré le 2026-11-06 : les deux `[?]` de corps sont clos dans cette spec.
   [x] Dépendance `ts-rs` (optionnelle, feature `lymaille`) : amendement de `/Cargo.toml` et `/tooling.sdd`, déjà prévu dans `../mod.sdd` (R7), à faire avant cette tâche.
   [x] Tests d'abord (conversion de chaque variante, `Other`, sérialisation `type`, `export_typescript` dans un répertoire temporaire), puis ./event.rs. Après approbation de cette spec et de R7. Validé 2026-11-05 (validator PASS checkpoint 5 — 7 Scenario verrouillés).
 

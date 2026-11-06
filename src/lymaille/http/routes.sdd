@@ -61,13 +61,8 @@ Tasks:
     remplacé et `historique_puis_abonnement_memes_types` réécrit sur le `Then` amendé ; `KNOWN_EVENT_TYPES` complétée de `empty_response`,
     `user_message` et `tool_call_summary` ; teneurs au @Redactor, `at` = création de la session (limite `DEC-30` dite en doc-comment) ;
     ni arguments, ni contenu de @ToolResult, ni `System`, `Boundary` ni `Discarded` ; zéro warning sur ./routes.rs).
-  [?] Volet end-to-end du `Then` « historique puis abonnement » : @ToolCallSummary est verrouillé au niveau du mapping sur état persisté,
-    pas dans la conversation scriptée — @ScriptedProvider de la fixture n'émet pas d'appel d'outil et un exécuteur d'outils n'est pas monté
-    (`NoMcp`). Choix provisoire : verrou mapping + e2e sur @UserMessage et @TurnEnded (recommandé par le validator). Alternative : étendre
-    @ScriptedProvider avec un exécuteur d'outils, hors @Owns de cette tâche.
-  [?] Le clamp `turn.max(1)` (./routes.rs:449 et :463) couvre un message d'assistant ou un appel d'outil avant tout message utilisateur : branche
-    défensive jamais atteignable sur un état @lymaille réel, non testée. Choix provisoire : la garder (numéro de tour jamais nul). Alternative :
-    rendre le `turn` brut et laisser le cas hors contrat.
+  [x] Arbitré le 2026-11-06 : verrou de `ToolCallSummary` au niveau du mapping + e2e sur @UserMessage et @TurnEnded ratifiés ; étendre @ScriptedProvider avec un exécuteur d'outils est hors périmètre.
+  [x] Arbitré le 2026-11-06 : le clamp défensif `turn.max(1)` est gardé (numéro de tour jamais nul), non testé.
   [ ] Clôture R12 (décata du checkpoint 7, suggestions à valider au passage) : amender le Given du Scenario « le jeton Bearer est transmis »
     (le `SessionManager` concret n'est pas espionnable) — preuve end-to-end de la branche `Some` par bearer JWT (`MockOidcClient`), le mapping
     `forward_token` restant verrouillé à la source ; amender le Purpose : `history` et la garde `DELETE` lisent le store via l'état d'authentification

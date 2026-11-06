@@ -21,8 +21,8 @@ Must:
     `profile: String`, `definition: serde_json::Value`, `created_at: DateTimeUtc` ; unicité `(owner_id, agent_id)` par la migration.
   `impl MiryadResource` : `resource_name()` = `"lymaille_agents"` ; lecture et écriture `OwnerOnly` ; `owner_column()` = `Some(Column::OwnerId)` ;
     `filter_column()` = `Some(Column::Kind)` ; `label_column()` = `Some(Column::AgentId)`.
-  `before_create` / `before_update` : les étapes de ./agent.sdd, sauf l'étape 4 qui exige `classify(def.id()) = Private` (message
-    « agent id cannot use the catalog prefix » pour `Catalog`/`ReservedPrefix`) ; `agent_id` ne change pas à la mise à jour.
+  `before_create` / `before_update` : les étapes de ./agent.sdd, sauf l'étape 4 qui exige `classify(def.id()) = Private`, avec la distinction par préfixe de `./user_context.sdd` :
+    `G_`/`g_` → « agent id cannot use the catalog prefix » ; `H_`/`h_` → « agent id cannot use the host prefix » ; identifiant invalide au sens Rhai → « invalid agent id » ; `agent_id` ne change pas à la mise à jour.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -40,14 +40,9 @@ Tasks:
     `cargo fmt --check`, six contrôles `cargo tree`, `specdd lint` ; migration non touchée — les colonnes et l'unicité `(owner_id, agent_id)`
     sont celles de `../migration.rs:135-147` et `:232-237` ; les quatre `Scenario` ont chacun leur test distinct et le cloisonnement passe
     par `rest::core::list`, le chemin exact de REST et de MCP ; zéro warning sur ./private_agent.rs).
-  [?] Deux messages ne sont nommés par aucun `Must` : un identifiant `H_…` rend « agent id cannot use the host prefix » et un identifiant
-    invalide au sens Rhai rend « invalid agent id ». Choix provisoire : le précédent validé de `./user_context.rs` (R4, `DEC-27`), les tests ne
-    verrouillant pour ces cas que le refus et l'absence de code. Options : les contractualiser au `Must` (recommandé par le validator, pour
-    aligner la lettre sur `user_context.sdd`) ou les laisser libres.
-  [?] Le `h_` minuscule tombe en @ReservedPrefix et rend donc, à la lettre de cette spec, le message « cannot use the catalog prefix » — alors
-    que `./user_context.rs` distingue par préfixe et rendrait « host prefix ». Choix provisoire : la lettre actuelle, cas non testé (le `Scenario`
-    ne nomme que `G_triage` et `g_triage`). Options : garder (recommandé, aucune donnée en jeu) ou amender le `Must` vers la distinction par
-    préfixe de `./user_context.sdd`.
+  [x] Arbitré le 2026-11-06 : messages `host prefix` et `invalid agent id` nommés au `Must`.
+  [x] Arbitré le 2026-11-06 : distinction par préfixe alignée sur `./user_context.sdd` (voir la tâche et le `Scenario` ci-dessous).
+  [ ] Alignement sur le préfixe (arbitrage du 2026-11-06) : `H_`/`h_` rend « agent id cannot use the host prefix » (aujourd'hui `h_` rend « catalog prefix ») ; tests d'abord (nouveau `Scenario`), puis ./private_agent.rs.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./private_agent.rs.
@@ -61,6 +56,11 @@ Scenario: le préfixe catalogue est refusé
   Given une définition d'id `G_triage`, puis `g_triage`
   When `before_create`
   Then deux `Err(HookError)` sans code
+
+Scenario: le préfixe hôte est refusé
+  Given une définition d'id `H_triage`, puis `h_triage`
+  When `before_create`
+  Then deux `Err(HookError)` sans code, message « agent id cannot use the host prefix »
 
 Scenario: chacun ne voit que ses agents
   Given `alice` et `bob` qui ont chacun un agent `x`

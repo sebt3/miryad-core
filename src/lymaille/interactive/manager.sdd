@@ -25,10 +25,10 @@ Must:
     contexte `H_…` (hôte) : `agent` **obligatoire** (`InvalidDefinition("host sessions need an explicit agent")`), nature `Work` uniquement
     (une `Config` sur `H_…` → `InvalidDefinition("host contexts do not open config sessions")`), l'agent doit être résoluble par le principal ;
     sinon le contexte doit être **visible** pour le principal (`G_…` public, nom privé au propriétaire — un autre est `NotFound` indiscernable)
-    et porter un `context_type` **existant** (sinon `InvalidDefinition("context has no usable type")`) ;
+    et porter un `context_type` **existant et actif** (sinon `InvalidDefinition("context has no usable type")` : un type au seul `draft` est refusé, l'ouverture se lit sur la version active comme `get_type`) ;
     la nature de la session vient du type (`session_kind` amont s'il en porte un, sinon la nature de l'agent retenu : `work` ↔ `Work`, `config` ↔ `Config`) — aucune nature n'est
     demandée à l'appelant ; `lymaille::resolve_start` (0.2.0) résout `default_agent` contre le catalogue d'agents (introuvable, sous-agent ou nature incohérente →
-    `InvalidDefinition`) ;
+    `InvalidDefinition`) ; `resolve_start` est appelé **avant** la sélection d'agent : un `default_agent` de type introuvable refuse l'ouverture même avec un `agent` explicite valide (arbitrage du 2026-11-06) ;
     l'agent retenu est `agent` sinon le `default_agent` du type (un type sans défaut exige `agent`, sinon
     `InvalidDefinition("agent required: the context type has no default agent")`) ; l'agent retenu doit appartenir à
     `allowed_agents` du type, sinon `Forbidden("agent not allowed for this context type")` (erreur typée `MRD-LYMAILLE-002`, AC-19), et sa
@@ -120,9 +120,9 @@ Scenario: la nature vient du type, l'agent doit être autorisé
   Then la première ouvre une session `Config` avec `a-config`, la seconde est `Forbidden("agent not allowed for this context type")` (`MRD-LYMAILLE-002`, AC-19)
 
 Scenario: un contexte sans type exploitable est refusé
-  Given un contexte sans `context_type`, puis un contexte dont le `context_type` ne désigne aucun type existant
-  When `open(context, None)` dans les deux cas
-  Then deux `InvalidDefinition("context has no usable type")` et aucune session créée
+  Given un contexte sans `context_type`, un contexte dont le `context_type` ne désigne aucun type existant, puis un contexte dont le type n'a qu'un `draft` (`active` nul)
+  When `open(context, None)` dans les trois cas
+  Then trois `InvalidDefinition("context has no usable type")` et aucune session créée
 
 Scenario: un contexte hôte exige un agent de travail explicite
   Given un contexte `H_…` rendu par l'hôte et un agent `work` résoluble

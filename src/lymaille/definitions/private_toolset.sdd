@@ -20,8 +20,8 @@ Must:
     `active: Option<serde_json::Value>`, `draft: Option<serde_json::Value>`, `created_at: DateTimeUtc` ; unicité `(owner_id, toolset_id)`.
   `impl MiryadResource` : `resource_name()` = `"lymaille_toolsets"` ; lecture et écriture `OwnerOnly` ; `owner_column()` = `Some(Column::OwnerId)` ;
     `filter_column()` = `None` ; `label_column()` = `Some(Column::ToolsetId)`.
-  `before_create` / `before_update` : les étapes de ./toolset.sdd (`check_toolset` partagé), sauf `classify(name) = Private` (sinon « toolset id cannot
-    use the catalog prefix ») ; `toolset_id` ne change pas à la mise à jour.
+  `before_create` / `before_update` : les étapes de ./toolset.sdd (`check_toolset` partagé), sauf `classify(name) = Private`, avec la distinction par préfixe de `./user_context.sdd` : `G_`/`g_` → « toolset id cannot use the catalog prefix » ;
+    `H_`/`h_` → « toolset id cannot use the host prefix » ; identifiant invalide au sens Rhai → « invalid toolset id » ; `toolset_id` ne change pas à la mise à jour.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -42,12 +42,9 @@ Tasks:
     `before_update` ne repose pas `created_at` depuis `existing` : c'est le précédent de `./toolset.rs:121` (l'étape 4 de `toolset.sdd` qualifie
     la pose de la date « création »), et sur le chemin réel la date traverse en @Unchanged par `mark_all_set` du moteur — asymétrie assumée avec
     `./private_agent.rs`, dictée par les specs respectives.
-  [?] Les deux messages non nommés par aucun `Must` (`H_…` → « toolset id cannot use the host prefix », identifiant invalide → « invalid
-    toolset id ») : même question que dans `./private_agent.sdd`, même choix provisoire (le précédent `./user_context.rs`, tests sur refus et
-    absence de code seulement). À contractualiser ou à laisser libre.
-  [?] `toolset.sdd` ne dit nulle part que la date de création survit à un `before_update` par le chemin réel : c'est `rest::core` (@mark_all_set)
-    qui la porte, et le test pur-hook de cette spec ne peut pas l'assertionner. Choix provisoire : s'en remettre au test moteur. Option : un
-    `Scenario` de plus ici, qui exercerait un update complet par `rest::core`.
+  [x] Arbitré le 2026-11-06 : messages `host prefix` et `invalid … id` nommés au `Must`.
+  [x] Arbitré le 2026-11-06 : `created_at` d'un update reste porté par `rest::core` (@mark_all_set) et verrouillé par le test moteur ; pas de `Scenario` de plus.
+  [ ] Alignement sur le préfixe (arbitrage du 2026-11-06) : `H_`/`h_` rend « toolset id cannot use the host prefix » (aujourd'hui `h_` rend « catalog prefix ») ; tests d'abord (nouveau `Scenario`), puis ./private_toolset.rs.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./private_toolset.rs.
@@ -61,6 +58,11 @@ Scenario: le préfixe catalogue est refusé
   Given un toolset `G_git`
   When `before_create`
   Then `Err(HookError)` sans code
+
+Scenario: le préfixe hôte est refusé
+  Given un toolset `H_git`, puis `h_git`
+  When `before_create`
+  Then deux `Err(HookError)` sans code, message « toolset id cannot use the host prefix »
 
 Scenario: cloisonnement par propriétaire
   Given `alice` et `bob` ont chacun un toolset `git`

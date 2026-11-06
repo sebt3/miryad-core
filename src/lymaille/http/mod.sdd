@@ -28,7 +28,8 @@ Must:
     `POST /conversations/{id}/cancel` · `POST /conversations/{id}/resume` · `DELETE /conversations/{id}` ·
     `POST /toolsets/{name}/activate` · `DELETE /toolsets/{name}/draft`.
   Toutes exigent un @AuthPrincipal (401 sinon, rendu de ../../auth/error.sdd). Corps JSON uniquement (`Content-Type: application/json`) ; taille de corps
-    bornée à 64 Ko par `DefaultBodyLimit` posé ici.
+    bornée à 64 Ko par `DefaultBodyLimit` posé ici ; un corps plus grand est rendu `422` (la borne s'applique avant `serde`) — pas de `413` :
+    @RestError n'a pas de variante de trop-plein et en ajouter une est hors périmètre de cette surface.
   Documenter dans le bloc `//!` : le montage (`app.merge(conversations_router(manager))`), l'exemption de parité, le cloisonnement par `subject`,
     et que ces routes n'apparaissent pas dans l'OpenAPI générique.
   Compiler sous `#[cfg(feature = "lymaille")]`.
@@ -45,8 +46,10 @@ Exposes:
 
 Tasks:
   [ ] `mod.rs` en dernier du dossier ; test d'agrégation de routes (table de routes exacte, méthodes servies).
-  [ ] Tracer dans le `Must` (arbitrage du 2026-11-05, suggestion) : un corps dépassant la borne de 64 Ko est rendu `422` (le `DefaultBodyLimit`
+  [x] Tracé dans le `Must` le 2026-11-06 (arbitrage du 2026-11-05) : un corps dépassant la borne de 64 Ko est rendu `422` (le `DefaultBodyLimit`
     borne avant `serde`) — pas de `413` : @RestError n'a pas de variante de trop-plein et en ajouter une est hors périmètre de cette surface.
+
+  [?] `413` serait la sémantique correcte du trop-plein : à rouvrir quand @RestError sera retouché (variante dédiée), hors périmètre de cette surface.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.

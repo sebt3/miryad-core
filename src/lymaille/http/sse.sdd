@@ -15,7 +15,7 @@ References:
   /dsd/miryad-core/lymaille.md — `FR-12`, `DEC-25`, `DEC-30`, `AC-16` ; ../interactive/event.sdd — `SessionEvent`
 
 Must:
-  `pub(super) async fn events(…) -> Sse<impl Stream<Item = Result<sse::Event, Infallible>>>` : appelle `manager.subscribe(subject, id)` ; session inconnue ou
+  `pub(super) async fn events(…) -> Result<Sse<impl Stream<Item = Result<sse::Event, Infallible>>>, RestError>` : appelle `manager.subscribe(subject, id)` ; session inconnue ou
     d'un autre → `404` (avant tout en-tête SSE) ; sinon `200`, `Content-Type: text/event-stream`, `Cache-Control: no-cache`.
   Format d'un événement : `event:` = nom de la variante de `SessionEventKind` en `snake_case` (`turn_started`, `text_delta`, `turn_ended`, `script`,
     `host`, …), `data:` = JSON complet du `SessionEvent` (../interactive/event.sdd — miroir typé, discriminant `type`, résumés sans texte de script
@@ -40,10 +40,11 @@ Exposes:
 Tasks:
   [ ] Réalignement R11 (DSD `DEC-30`, 2026-11-03) : Après R8 : le flux sérialise `SessionEvent` ; `Scenario` d'un événement `Host`. Spec seule.
   [ ] Tests d'abord (flux lu en mémoire, horloge tokio en pause), puis ./sse.rs.
-  [ ] Clôture R11 (validator checkpoint 7, 2026-11-05) : le `Must` annonce `-> Sse<…>` alors que le code rend `Result<Sse<…>, RestError>` —
+  [x] Amendement du `Must` fait le 2026-11-06 (retour `Result<Sse<…>, RestError>`, imposé par le « 404 avant tout en-tête SSE »). Clôture R11 (validator checkpoint 7, 2026-11-05) : le `Must` annonce `-> Sse<…>` alors que le code rend `Result<Sse<…>, RestError>` —
     le « 404 avant tout en-tête SSE » l'impose, amender le wording du `Must` ; l'erreur de sérialisation portera `MRD-LYMAILLE-012` dès que la
     variante `Serialization` sera posée par `../error.sdd` (tâche du 2026-11-05) — la constante actuelle `-009` est un doublon de `Store`, à corriger
     avec la tâche R11 restante (la spec est approuvée le 2026-11-04 ; `[x]` après ces deux corrections et validation).
+  [ ] Émission de la variante (arbitrage du 2026-11-06) : `serialization_error_event` construit @LymailleError::Serialization et en tire le code `MRD-LYMAILLE-012` au lieu de la constante nue ; le test `panne_de_serialisation_rend_le_code_012` reste le verrou.
   [?] `Last-Event-ID` / rejeu des événements manqués : écarté au lot 2 (les événements ne sont pas persistés ; l'état de la session l'est). À rouvrir si un
     client se déconnecte souvent pendant un tour.
 

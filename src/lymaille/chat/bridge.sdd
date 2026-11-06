@@ -20,8 +20,10 @@ Must:
   Tables : `miryad_lymaille_matrix_rooms` — `room_id` PK, `subject`, `session_id`, `agent_id`, `updated_at` ; `miryad_lymaille_matrix_events` — `event_id` PK,
     `seen_at`. Une salle accueille **un seul utilisateur lié** (salle directe) ; une salle où un mxid autre que le propriétaire de la session écrit
     est ignorée avec un seul message d'avertissement (pas de session partagée au lot 2).
-  `pub struct ChatBridge` — `new(db, manager: SessionManager, client: Arc<dyn ChatSender>, config: ChatConfig)` ; `ChatConfig { default_agent: String,
-    max_event_age: Duration (défaut 5 min), dedupe_window: Duration (défaut 7 jours) }`. `ChatSender` est un trait privé minimal
+  `pub struct ChatBridge` — `new(db, manager: SessionManager, client: Arc<MatrixClient>, config: ChatConfig)` public (`with_sender` / `with_clock` `pub(crate)`
+    pour les tests) ; `ChatConfig { rooms: Arc<dyn RoomContextResolver>, max_event_age: Duration (défaut 5 min), dedupe_window: Duration (défaut 7 jours) }`.
+    `RoomContextResolver` (trait public, `#[async_trait]`) : `async fn resolve(&self, room_id: &str) -> Option<String>` rend le **nom du contexte** d'une salle,
+    fourni par l'hôte ; implémentation par défaut : toujours `None`. `ChatSender` est un trait privé minimal
     (`send(room_id, body) -> Result<String, …>`) implémenté pour @MatrixClient et par un espion de test ; aucune dépendance directe à `matrix-sdk`.
   `impl MatrixEventHandler for ChatBridge` : `on_message(msg)` dans cet ordre :
     1. **dédoublonnage** : insère `event_id` dans `miryad_lymaille_matrix_events` ; déjà présent → return silencieux ; événements plus vieux que
@@ -29,9 +31,12 @@ Must:
     2. si `body` commence par `!link ` : `consume_code` ; succès → « Compte lié. » ; échec → message fixe ; **toute autre commande** exige un mxid lié ;
     3. `link::resolve(sender)` ; `None` → une seule réponse « Ce compte n'est pas lié : demandez un code sur l'API, puis `!link <code>`. » (au plus une par
       salle et par heure) et aucune session ; sinon le principal est reconstruit à chaque message (`Identity::resolve`) ;
-    4. commandes : `!help`, `!new [agent]` (ferme la session de la salle, en ouvre une `Work`), `!agent <id>` (idem avec l'agent), `!cancel`,
+    4. commandes : `!help`, `!new [<contexte> [agent]]` (ferme la session de la salle puis ouvre via `SessionManager::open(subject, contexte, agent)`, nature portée par le type de
+      contexte — DEC-28 ; sans argument, rouvre sur le contexte de la session fermée, sinon celui de `RoomContextResolver`, sinon texte fixe invitant à
+      `!new <contexte>` ; contexte inconnu ou refusé, ou agent hors de l'ensemble autorisé → message fixe, aucune session), `!cancel`,
       `!activate <toolset>` (appelle ../interactive/activation.sdd, le résultat est rendu en une ligne), `!resume` (rend les avis) ;
-    5. sinon, texte libre : session de la salle (ouverte à la demande avec `default_agent`, restaurée si déjà persistée) → `send(subject, id, body, None)` ;
+    5. sinon, texte libre : session de la salle (restaurée si déjà persistée ; sinon ouverte à la demande sur le contexte de `RoomContextResolver`, et si celui-ci rend `None`
+      → texte fixe invitant à `!new <contexte>`, aucune session) → `send(subject, id, body, None)` ;
       tour actif → « Un tour est en cours. » (aucun envoi) ;
     6. la réponse : abonnement au hub **avant** l'envoi ; le pont accumule les `text_delta`, et à `turn_ended` envoie `split_message(réponse)` (une
       partie = un message, `txn_id` = `event_id` + rang pour l'idempotence d'envoi) ; issue `Failed` → `format_error` ; `Cancelled` → « Annulé. » ;
@@ -56,7 +61,7 @@ Exposes:
 Tasks:
   [ ] Réalignement R13 (DSD `DEC-28`, 2026-11-03) : Après R10 : `!new <contexte> [agent]` remplace `!agent` ; `Scenario` d'un contexte inconnu ou refusé et d'un agent hors ensemble. Spec seule.
   [ ] Tests d'abord (SQLite mémoire, `ChatSender` espion, `ScriptedProvider`, horloge injectée), puis ./bridge.rs. Après ./link.rs et ./render.rs.
-  [ ] Amendement R13 à finaliser en spec (arbitrage de Sébastien du 2026-11-05) : le `Must` point 4 est resté pré-R13 (`!new [agent]`, `!agent <id>`)
+  [x] Amendement R13 fait le 2026-11-06 (`RoomContextResolver` en trait async, arbitrage du 2026-11-06 ; `default_agent` retiré de `ChatConfig`). Historique : amendement R13 à finaliser en spec (arbitrage de Sébastien du 2026-11-05) : le `Must` point 4 est resté pré-R13 (`!new [agent]`, `!agent <id>`)
     alors que le code est écrit au contrat R13 — remplacer par `!new [<contexte> [agent]]` (ferme la session de la salle puis ouvre via
     `SessionManager::open(subject, contexte, agent)`, nature par le type — DEC-28) ; le **contexte d'une salle est fourni par l'hôte** : @ChatConfig
     porte un résolveur `salle → Option<nom de contexte>` (suggestion : `Arc<dyn Fn + Send + Sync>`, `None` par défaut → le texte libre sans session
