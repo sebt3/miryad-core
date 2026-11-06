@@ -8,7 +8,8 @@
 //! Déploiement : l'application monte [`link_code_router`] dans son routeur (le lien mxid →
 //! compte se fait depuis la surface REST authentifiée), puis construit un [`ChatBridge`] branché
 //! sur son @SessionManager et son @MatrixClient, et le donne à `run_sync` comme
-//! @MatrixEventHandler.
+//! @MatrixEventHandler. Le contexte des salles ouvertes à la demande vient de l'hôte :
+//! `ChatConfig::rooms` porte un @RoomContextResolver (`bridge::RoomContextResolver`).
 //!
 //! Identité : un mxid ne vaut un droit que par la liaison créée avec un code à usage unique
 //! ([`issue_code`] → `!link` dans la salle → [`consume_code`]) ; la relecture à chaque message
@@ -66,6 +67,12 @@ mod tests {
             expires_at: chrono::Utc::now(),
         };
         assert_eq!(issu.code, "AB23");
-        assert_eq!(super::ChatConfig::default().default_agent, String::new());
+        let salles: std::sync::Arc<dyn super::bridge::RoomContextResolver> =
+            super::ChatConfig::default().rooms;
+        assert_eq!(
+            std::mem::size_of_val(&salles),
+            2 * std::mem::size_of::<usize>(),
+            "la defaut monte un resolveur de contexte"
+        );
     }
 }

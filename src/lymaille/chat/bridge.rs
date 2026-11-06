@@ -5,6 +5,11 @@
 //! propre (DSD `DEC-6`, `DEC-26`). Le `sender` Matrix est résolu par l'annuaire (./link.sdd) ;
 //! un mxid non lié n'a aucun droit. Les événements sont dédoublonnés par `event_id` en base
 //! (bascule de bail) et les sorties longues découpées par ./render.sdd.
+//!
+//! Le contexte des salles est fourni par l'hôte : [`ChatConfig::rooms`] porte un
+//! [`RoomContextResolver`] sur lequel le pont ouvre à la demande (texte libre sans session) et
+//! rouvre (`!new` sans argument, à défaut du contexte de la session fermée) ; un résolveur qui
+//! rend `None` répond par le texte fixe invitant à `!new <contexte>`, sans session.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -49,6 +54,10 @@ const ROOMS_TABLE: &str = "miryad_lymaille_matrix_rooms";
 /// Table des événements vus, clé d'idempotence du pont.
 const EVENTS_TABLE: &str = "miryad_lymaille_matrix_events";
 
+/// Table des sessions interactives (`../migration.sdd`) : lecture de la colonne `context`,
+/// posée à l'ouverture et immuable (`DEC-28`), pour le `!new` sans argument.
+const SESSIONS_TABLE: &str = "miryad_lymaille_sessions";
+
 /// Réponse d'un mxid non lié, au plus une par salle et par heure (`Must` de `./bridge.sdd`).
 const INVITE_TEXT: &str = "Ce compte n'est pas lié : demandez un code sur l'API, puis `!link <code>`.";
 
@@ -66,6 +75,11 @@ const CONTEXT_UNAVAILABLE: &str = "Contexte inconnu ou inaccessible.";
 
 /// Réponse d'un `!new` dont l'agent est hors de l'ensemble autorisé du type (`Scenario` R13).
 const AGENT_REFUSED: &str = "Agent non autorisé pour ce contexte.";
+
+/// Réponse d'un texte libre ou d'un `!new` sans contexte connu : ni session fermée ni
+/// `RoomContextResolver` n'en fournissent (`Must` points 4 et 5 de `./bridge.sdd`, arbitrage du
+/// 2026-11-06).
+const NO_CONTEXT: &str = "Aucun contexte pour cette salle : utilisez `!new <contexte>`.";
 
 /// Réponse d'un `Cancelled`.
 const CANCELLED_TEXT: &str = "Annulé.";
@@ -97,21 +111,52 @@ const INVITE_PERIOD_MS: u64 = 3_600_000;
 /// persiste pas ces marques).
 const WARNED_MAX: usize = 4096;
 
+/// Contexte d'une salle, fourni par l'hôte (`Must` de `./bridge.sdd`, arbitrage du 2026-11-06) :
+/// le texte libre sans session et le `!new` sans contexte connu ouvrent sur le nom rendu ici ;
+/// `None` répond par le texte fixe invitant à `!new <contexte>`, sans session.
+#[async_trait::async_trait]
+pub trait RoomContextResolver: Send + Sync {
+    /// Nom du contexte de `room_id`, `None` si l'hôte n'en impose aucun.
+    async fn resolve(&self, room_id: &str) -> Option<String>;
+}
+
+/// Résolveur de contexte par défaut : toujours `None` (implémentation par défaut du
+/// `Must` de `./bridge.sdd`).
+struct AucunContexte;
+
+#[async_trait::async_trait]
+impl RoomContextResolver for AucunContexte {
+    async fn resolve(&self, _room_id: &str) -> Option<String> {
+        None
+    }
+}
+
 /// Ce que l'application règle sur le pont (`Must` de `./bridge.sdd`).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ChatConfig {
-    /// Contexte par défaut des ouvertures à la demande (texte libre sans `!new` préalable).
-    pub default_agent: String,
+    /// Contexte des salles fourni par l'hôte : ouvertures à la demande (texte libre sans
+    /// session) et `!new` sans contexte connu. Défaut : toujours `None`.
+    pub rooms: Arc<dyn RoomContextResolver>,
     /// Au-delà, un événement est de l'historique : ignoré sans réponse (défaut 5 min).
     pub max_event_age: Duration,
     /// Fenêtre de dédoublonnage en base (défaut 7 jours).
     pub dedupe_window: Duration,
 }
 
+impl std::fmt::Debug for ChatConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChatConfig")
+            .field("rooms", &"RoomContextResolver")
+            .field("max_event_age", &self.max_event_age)
+            .field("dedupe_window", &self.dedupe_window)
+            .finish()
+    }
+}
+
 impl Default for ChatConfig {
     fn default() -> Self {
         Self {
-            default_agent: String::new(),
+            rooms: Arc::new(AucunContexte),
             max_event_age: Duration::from_mins(5),
             dedupe_window: Duration::from_hours(168),
         }
@@ -259,7 +304,10 @@ impl ChatBridge {
             };
             match nom {
                 "help" => self.dire(&message.room_id, &render::help_text()).await,
-                "new" => self.nouvelle_session(&sujet, &message.room_id, reste).await,
+                "new" => {
+                    self.nouvelle_session(&sujet, &message.room_id, reste, session.as_ref())
+                        .await
+                }
                 "cancel" => self.annuler(&sujet, &message.room_id, session.as_ref()).await,
                 "resume" => self.reprendre(&sujet, &message.room_id, session.as_ref()).await,
                 "activate" => self.activer(&message.room_id, &appelant, reste).await,
@@ -313,18 +361,41 @@ impl ChatBridge {
         }
     }
 
-    /// `!new <contexte> [agent]` (`Tasks` R13 de `./bridge.sdd`, DSD `DEC-28`) : ferme la session
-    /// de la salle, en ouvre une sur le contexte choisi — la nature vient du type du contexte.
-    async fn nouvelle_session(&self, sujet: &str, room_id: &str, reste: &str) -> Result<(), String> {
+    /// `!new [<contexte> [agent]]` (`Must` point 4 de `./bridge.sdd`, DSD `DEC-28`, arbitrage du
+    /// 2026-11-06) : ferme la session de la salle, en ouvre une sur le contexte choisi — la
+    /// nature vient du type du contexte. Sans argument : le contexte de la session qui vient
+    /// d'être fermée, sinon celui que rend le `RoomContextResolver` de l'hôte, sinon un texte
+    /// fixe invitant à `!new <contexte>` — aucune session dans ce dernier cas.
+    async fn nouvelle_session(
+        &self,
+        sujet: &str,
+        room_id: &str,
+        reste: &str,
+        session: Option<&SessionId>,
+    ) -> Result<(), String> {
         let mut mots = reste.split_whitespace();
-        let contexte = mots.next().unwrap_or(self.config.default_agent.as_str());
+        let explicite = mots.next();
         let agent = mots.next();
-        if let Some(salle) = self.lire_salle(room_id).await?
-            && let Some(session) = salle.session
-        {
-            self.manager.close(sujet, &session).await;
+        let contexte = if let Some(contexte) = explicite {
+            Some(contexte.to_owned())
+        } else {
+            let ferme = if let Some(id) = session {
+                self.contexte_session(sujet, id).await?
+            } else {
+                None
+            };
+            match ferme {
+                Some(contexte) => Some(contexte),
+                None => self.config.rooms.resolve(room_id).await,
+            }
+        };
+        if let Some(id) = session {
+            self.manager.close(sujet, id).await;
         }
-        match self.manager.open(sujet, contexte, agent).await {
+        let Some(contexte) = contexte else {
+            return self.dire(room_id, NO_CONTEXT).await;
+        };
+        match self.manager.open(sujet, &contexte, agent).await {
             Ok(anse) => {
                 self.ecrire_salle(room_id, sujet, Some(&anse.id), Some(&anse.agent_id))
                     .await?;
@@ -388,38 +459,20 @@ impl ChatBridge {
         }
     }
 
-    /// Texte libre (`Must` point 5) : session de la salle, ouverte à la demande sur le contexte
-    /// par défaut, restaurée si persistée ; abonnement au hub **avant** l'envoi (`Must` point 6).
+    /// Texte libre (`Must` point 5 de `./bridge.sdd`, arbitrage du 2026-11-06) : session de la
+    /// salle, restaurée si persistée, sinon ouverte à la demande sur le contexte que rend le
+    /// `RoomContextResolver` de l'hôte (`None` → texte fixe, aucune session). Abonnement au hub
+    /// **avant** l'envoi (`Must` point 6).
     async fn texte_libre(
         &self,
         sujet: &str,
         session: Option<&SessionId>,
         message: &MatrixMessage,
     ) -> Result<(), String> {
-        let id = match session {
-            Some(id) => id.to_owned(),
-            None => match self.manager.open(sujet, &self.config.default_agent, None).await {
-                Ok(anse) => {
-                    self.ecrire_salle(&message.room_id, sujet, Some(&anse.id), Some(&anse.agent_id))
-                        .await?;
-                    let abonnement = self
-                        .manager
-                        .subscribe(sujet, &anse.id)
-                        .await
-                        .map_err(|erreur| tracer(erreur, "abonnement au hub"))?;
-                    self.manager
-                        .send(sujet, &anse.id, message.body.clone(), None)
-                        .await
-                        .map_err(|erreur| tracer(erreur, "envoi de tour"))?;
-                    return self
-                        .collecte(abonnement, &message.room_id, &message.event_id)
-                        .await;
-                }
-                Err(erreur) => {
-                    return self.dire(&message.room_id, &texte_erreur(&erreur)).await;
-                }
-            },
+        let Some(id) = session else {
+            return self.ouvrir_a_la_demande(sujet, message).await;
         };
+        let id = id.to_owned();
         let abonnement = self
             .manager
             .subscribe(sujet, &id)
@@ -442,27 +495,37 @@ impl ChatBridge {
                         Err(LymailleError::Conflict(_)) => self.dire(&message.room_id, TURN_ACTIVE).await,
                         Err(erreur) => self.dire(&message.room_id, &texte_erreur(&erreur)).await,
                     },
-                    Err(_) => match self.manager.open(sujet, &self.config.default_agent, None).await {
-                        Ok(anse) => {
-                            self.ecrire_salle(&message.room_id, sujet, Some(&anse.id), Some(&anse.agent_id))
-                                .await?;
-                            let abonnement = self
-                                .manager
-                                .subscribe(sujet, &anse.id)
-                                .await
-                                .map_err(|erreur| tracer(erreur, "abonnement au hub"))?;
-                            self.manager
-                                .send(sujet, &anse.id, message.body.clone(), None)
-                                .await
-                                .map_err(|erreur| tracer(erreur, "envoi de tour"))?;
-                            self.collecte(abonnement, &message.room_id, &message.event_id)
-                                .await
-                        }
-                        Err(erreur) => self.dire(&message.room_id, &texte_erreur(&erreur)).await,
-                    },
+                    Err(_) => self.ouvrir_a_la_demande(sujet, message).await,
                 }
             }
             Err(LymailleError::Conflict(_)) => self.dire(&message.room_id, TURN_ACTIVE).await,
+            Err(erreur) => self.dire(&message.room_id, &texte_erreur(&erreur)).await,
+        }
+    }
+
+    /// Ouverture à la demande (`Must` point 5 de `./bridge.sdd`) : sur le contexte que rend le
+    /// `RoomContextResolver` de l'hôte ; `None` → texte fixe invitant à `!new <contexte>`, aucune
+    /// session. Abonnement au hub **avant** l'envoi (`Must` point 6).
+    async fn ouvrir_a_la_demande(&self, sujet: &str, message: &MatrixMessage) -> Result<(), String> {
+        let Some(contexte) = self.config.rooms.resolve(&message.room_id).await else {
+            return self.dire(&message.room_id, NO_CONTEXT).await;
+        };
+        match self.manager.open(sujet, &contexte, None).await {
+            Ok(anse) => {
+                self.ecrire_salle(&message.room_id, sujet, Some(&anse.id), Some(&anse.agent_id))
+                    .await?;
+                let abonnement = self
+                    .manager
+                    .subscribe(sujet, &anse.id)
+                    .await
+                    .map_err(|erreur| tracer(erreur, "abonnement au hub"))?;
+                self.manager
+                    .send(sujet, &anse.id, message.body.clone(), None)
+                    .await
+                    .map_err(|erreur| tracer(erreur, "envoi de tour"))?;
+                self.collecte(abonnement, &message.room_id, &message.event_id)
+                    .await
+            }
             Err(erreur) => self.dire(&message.room_id, &texte_erreur(&erreur)).await,
         }
     }
@@ -611,6 +674,29 @@ impl ChatBridge {
         }))
     }
 
+    /// Colonne `context` de la ligne de session (`../migration.sdd`, posée à l'ouverture et
+    /// immuable depuis — `DEC-28`) : source du `!new` sans argument. `None` si la ligne n'en
+    /// porte pas (session d'avant le contrat, garde).
+    async fn contexte_session(&self, sujet: &str, id: &SessionId) -> Result<Option<String>, String> {
+        let mut select = Query::select();
+        select
+            .column(Alias::new("context"))
+            .from(Alias::new(SESSIONS_TABLE))
+            .and_where(Expr::col(Alias::new("subject")).eq(sujet))
+            .and_where(Expr::col(Alias::new("session_id")).eq(id.as_str()));
+        let Some(ligne) = self
+            .db
+            .query_one(&select)
+            .await
+            .map_err(|panne| format!("lecture de contexte: {panne}"))?
+        else {
+            return Ok(None);
+        };
+        ligne
+            .try_get::<Option<String>>("", "context")
+            .map_err(|panne| format!("lecture de contexte: {panne}"))
+    }
+
     /// Revendique ou rafraîchit la ligne de la salle (`Must` tables) : un seul utilisateur lié,
     /// sa session et son agent courants.
     async fn ecrire_salle(
@@ -747,7 +833,9 @@ impl ChatSender for MatrixClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatBridge, ChatConfig, ChatSender, EVENTS_TABLE, ROOMS_TABLE};
+    use super::{
+        ChatBridge, ChatConfig, ChatSender, EVENTS_TABLE, ROOMS_TABLE, RoomContextResolver, SESSIONS_TABLE,
+    };
     use crate::lymaille::chat::link;
     use crate::lymaille::identity::Identity;
     use crate::lymaille::interactive::assemble::AssembleDeps;
@@ -868,6 +956,16 @@ mod tests {
         }
         fn own_user_id(&self) -> String {
             "@bot:srv".to_owned()
+        }
+    }
+
+    /// Résolveur d'hôte de test : rend toujours le même contexte (`None` = hôte muet).
+    pub struct ContexteFixe(pub Option<String>);
+
+    #[async_trait::async_trait]
+    impl RoomContextResolver for ContexteFixe {
+        async fn resolve(&self, _room_id: &str) -> Option<String> {
+            self.0.clone()
         }
     }
 
@@ -1104,9 +1202,9 @@ mod tests {
     }
 
     /// L'installation du pont : catalogue, agents `dev`/`a2` d'alice, type `t` (work, défaut
-    /// `dev`, autorisés `{dev}`), contextes `c1` (alice) et `c_bob` (bob). Le champ
-    /// `default_agent` de `ChatConfig` porte ici `c1` : le texte libre ouvre une session sur ce
-    /// contexte (lecture du `Must` point 5 après `DEC-28` — voir le rapport de tâche).
+    /// `dev`, autorisés `{dev}`), contextes `c1` et `c2` (alice) et `c_bob` (bob). Le
+    /// `RoomContextResolver` de la monture rend `c1` : le texte libre ouvre une session sur ce
+    /// contexte (`Must` point 5 de `./bridge.sdd`, arbitrage du 2026-11-06).
     struct Monture {
         db: DatabaseConnection,
         bridge: ChatBridge,
@@ -1178,16 +1276,49 @@ mod tests {
                 .expect("session relue")
                 .map(|row| row.try_get::<String>("", "kind").expect("kind lu"))
         }
+        async fn session_context(&self, subject: &str) -> Option<String> {
+            let mut select = Query::select();
+            select
+                .column(Alias::new("context"))
+                .from(Alias::new(SESSIONS_TABLE))
+                .and_where(Expr::col(Alias::new("subject")).eq(subject));
+            self.db
+                .query_one(&select)
+                .await
+                .expect("session relue")
+                .and_then(|row| row.try_get::<Option<String>>("", "context").expect("context lu"))
+        }
+        async fn session_context_by_id(&self, session_id: &str) -> Option<String> {
+            let mut select = Query::select();
+            select
+                .column(Alias::new("context"))
+                .from(Alias::new(SESSIONS_TABLE))
+                .and_where(Expr::col(Alias::new("session_id")).eq(session_id));
+            self.db
+                .query_one(&select)
+                .await
+                .expect("session relue")
+                .and_then(|row| row.try_get::<Option<String>>("", "context").expect("context lu"))
+        }
     }
 
     fn monture(db: DatabaseConnection, manager: SessionManager, clock: Arc<FixedClock>) -> Monture {
+        monture_avec(db, manager, clock, Arc::new(ContexteFixe(Some("c1".to_owned()))))
+    }
+
+    fn monture_avec(
+        db: DatabaseConnection,
+        manager: SessionManager,
+        clock: Arc<FixedClock>,
+        rooms: Arc<dyn RoomContextResolver>,
+    ) -> Monture {
         let spy = Spy::new();
         let bridge = ChatBridge::with_clock(
             db.clone(),
             manager,
             spy.clone(),
             ChatConfig {
-                default_agent: "c1".to_owned(),
+                rooms,
                 max_event_age: Duration::from_mins(5),
                 dedupe_window: Duration::from_hours(168),
             },
@@ -1228,6 +1359,7 @@ mod tests {
             .expect("bob")
             .user_id;
         inserer_contexte_prive(&db, alice, "c1", Some("t")).await;
+        inserer_contexte_prive(&db, alice, "c2", Some("t")).await;
         inserer_contexte_prive(&db, bob, "c_bob", Some("t")).await;
         db
     }
@@ -1608,6 +1740,135 @@ mod tests {
             .await;
         let envoyes = m.spy.bodies();
         assert_eq!(envoyes, vec!["Agent non autorisé pour ce contexte.".to_owned()]);
+        assert_eq!(m.sessions_count("alice").await, 0, "aucune session creee");
+    }
+
+    /// Arbitrage du 2026-11-06 (`Must` point 5) : texte libre sans session avec un
+    /// `RoomContextResolver` qui rend un contexte → session ouverte sur ce contexte.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn texte_libre_sans_session_rouvre_sur_le_resolveur() {
+        let db = installe().await;
+        let manager = gestionnaire(
+            &db,
+            Arc::new(ScriptFactory(Arc::new(ScriptedProvider::new(vec![Ok(
+                final_text("reponse c2"),
+            )])))),
+        );
+        let m = monture_avec(
+            db,
+            manager,
+            FixedClock::at(1_800_000_000_000),
+            Arc::new(ContexteFixe(Some("c2".to_owned()))),
+        );
+        m.linked("@alice:srv", "alice").await;
+        m.bridge
+            .on_message(Monture::texte("bonjour", "@alice:srv", "q1", "!qa:srv", m.now()))
+            .await;
+        let envoyes = m.spy.bodies();
+        assert_eq!(envoyes, vec!["reponse c2".to_owned()], "le tour revient");
+        assert_eq!(
+            m.session_context("alice").await.as_deref(),
+            Some("c2"),
+            "la session s'ouvre sur le contexte du resolveur"
+        );
+    }
+
+    /// Arbitrage du 2026-11-06 (`Must` point 5) : texte libre sans session, resolver `None` →
+    /// texte fixe invitant a `!new <contexte>`, aucune session.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn texte_libre_sans_session_ni_contexte_repond_texte_fixe() {
+        let db = installe().await;
+        let manager = gestionnaire(
+            &db,
+            Arc::new(ScriptFactory(Arc::new(ScriptedProvider::new(vec![Ok(
+                final_text("ne doit jamais etre appele"),
+            )])))),
+        );
+        let m = monture_avec(
+            db,
+            manager,
+            FixedClock::at(1_800_000_000_000),
+            Arc::new(ContexteFixe(None)),
+        );
+        m.linked("@alice:srv", "alice").await;
+        m.bridge
+            .on_message(Monture::texte("bonjour", "@alice:srv", "q2", "!qb:srv", m.now()))
+            .await;
+        assert_eq!(
+            m.spy.bodies(),
+            vec!["Aucun contexte pour cette salle : utilisez `!new <contexte>`.".to_owned()],
+            "texte fixe R13"
+        );
+        assert_eq!(m.sessions_count("alice").await, 0, "aucune session creee");
+    }
+
+    /// Scenario `!new` sans argument (`Must` point 4, arbitrage du 2026-11-06) : rouvre sur le
+    /// contexte de la session fermee, pas sur celui du resolveur (qui rend `c2` ici).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_sans_argument_rouvre_sur_la_session_fermee() {
+        let db = installe().await;
+        let manager = gestionnaire(
+            &db,
+            Arc::new(ScriptFactory(Arc::new(ScriptedProvider::new(vec![])))),
+        );
+        let m = monture_avec(
+            db,
+            manager,
+            FixedClock::at(1_800_000_000_000),
+            Arc::new(ContexteFixe(Some("c2".to_owned()))),
+        );
+        m.linked("@alice:srv", "alice").await;
+        m.bridge
+            .on_message(Monture::texte("!new c1", "@alice:srv", "z1", "!qz:srv", m.now()))
+            .await;
+        let (_subject, avant) = m.rooms_session("!qz:srv").await;
+        let avant = avant.expect("une session est ouverte sur c1");
+        assert_eq!(
+            m.session_context("alice").await.as_deref(),
+            Some("c1"),
+            "premiere session sur c1"
+        );
+        m.bridge
+            .on_message(Monture::texte("!new", "@alice:srv", "z2", "!qz:srv", m.now()))
+            .await;
+        let (_subject, apres) = m.rooms_session("!qz:srv").await;
+        let apres = apres.expect("une nouvelle session est ouverte");
+        assert_ne!(avant, apres, "!new a rouvre une autre session");
+        assert_eq!(
+            m.session_context_by_id(&apres).await.as_deref(),
+            Some("c1"),
+            "la reouverture part du contexte de la session fermee, pas du resolveur"
+        );
+        assert!(
+            m.spy.bodies().contains(&"Nouvelle session ouverte.".to_owned()),
+            "{:?}",
+            m.spy.bodies()
+        );
+    }
+
+    /// `!new` sans argument, sans session et resolver `None` → texte fixe, aucune session.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_sans_argument_sans_session_ni_contexte_repond_texte_fixe() {
+        let db = installe().await;
+        let manager = gestionnaire(
+            &db,
+            Arc::new(ScriptFactory(Arc::new(ScriptedProvider::new(vec![])))),
+        );
+        let m = monture_avec(
+            db,
+            manager,
+            FixedClock::at(1_800_000_000_000),
+            Arc::new(ContexteFixe(None)),
+        );
+        m.linked("@alice:srv", "alice").await;
+        m.bridge
+            .on_message(Monture::texte("!new", "@alice:srv", "w1", "!qw:srv", m.now()))
+            .await;
+        assert_eq!(
+            m.spy.bodies(),
+            vec!["Aucun contexte pour cette salle : utilisez `!new <contexte>`.".to_owned()],
+            "texte fixe R13"
+        );
         assert_eq!(m.sessions_count("alice").await, 0, "aucune session creee");
     }
 
