@@ -42,7 +42,10 @@ Tasks:
     par `rest::core::list`, le chemin exact de REST et de MCP ; zéro warning sur ./private_agent.rs).
   [x] Arbitré le 2026-11-06 : messages `host prefix` et `invalid agent id` nommés au `Must`.
   [x] Arbitré le 2026-11-06 : distinction par préfixe alignée sur `./user_context.sdd` (voir la tâche et le `Scenario` ci-dessous).
-  [ ] Alignement sur le préfixe (arbitrage du 2026-11-06) : `H_`/`h_` rend « agent id cannot use the host prefix » (aujourd'hui `h_` rend « catalog prefix ») ; tests d'abord (nouveau `Scenario`), puis ./private_agent.rs.
+  [x] Alignement sur le préfixe (arbitrage du 2026-11-06) : `H_`/`h_` rend « agent id cannot use the host prefix » (aujourd'hui `h_` rend « catalog prefix ») ; tests d'abord (nouveau `Scenario`), puis ./private_agent.rs.
+    Validé 2026-11-06 (validator PASS : le hook dispatche le payload `ReservedPrefix` sur le patron de `user_context.rs::verifier_nom` — `g_`/`G_` → catalog prefix, `h_` → host prefix ; `identity::classify` intact et conforme à sa spec ; nouveau test `h_` vu rouge→vert, `H_` verrouillé au message exact ; lymaille vert en tests et clippy `-D warnings`, `fmt`).
+    [?] (validator) : le jumeau `./private_toolset.sdd` porte la même case encore ouverte — traité par le cycle suivant, prévu au lot.
+    [?] (validator, noté `[!]` informatif dans sa synthèse — le contrat du `Then` est intégralement asserté, le point porte sur la convention de découpage des tests) : le Scenario hôte est couvert par deux tests distincts (une casse chacun) plutôt qu'un test bouclant les deux ids — convention déjà tenue implicitement le 2026-11-05 ; à figer dans la checklist de production des specs si ce n'est pas déjà fait.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./private_agent.rs.

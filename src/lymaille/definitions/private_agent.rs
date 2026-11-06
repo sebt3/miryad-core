@@ -61,18 +61,26 @@ impl ActiveModelBehavior for ActiveModel {}
 
 impl Entity {
     /// Étape 4 du `Must` de `./private_agent.sdd` : l'identifiant doit être `Private` au sens de
-    /// `identity::classify` (DSD `DEC-9`) — `Catalog` et `ReservedPrefix` (le préfixe `g_`/`h_` en
-    /// casse réservée) sont refusés sous le message contractualisé « agent id cannot use the
-    /// catalog prefix ». L'identifiant `H_` résolu par l'hôte (DSD `DEC-27`) et un identifiant
-    /// invalide au sens Rhai sont refusés sous des messages que la spec ne contractualise pas
-    /// (choix provisoire signalé `[?]`, cohérent avec `./user_context.rs`).
+    /// `identity::classify` (DSD `DEC-9`). Distinction par préfixe alignée sur
+    /// `./user_context.rs` (arbitrage du 2026-11-06) : `G_`/`g_` → « agent id cannot use the
+    /// catalog prefix » ; `H_`/`h_` (dont la casse réservée `h_` rend `ReservedPrefix` au sens de
+    /// `classify`, DSD `DEC-27`) → « agent id cannot use the host prefix » ; identifiant invalide
+    /// au sens Rhai → « invalid agent id ».
     fn verifier_identifiant(id: &str) -> Result<(), HookError> {
         match identity::classify(id) {
             Ok(identity::IdKind::Private) => Ok(()),
-            Ok(identity::IdKind::Catalog) | Err(crate::lymaille::error::LymailleError::ReservedPrefix(_)) => {
-                Err(HookError::new("agent id cannot use the catalog prefix"))
-            }
+            Ok(identity::IdKind::Catalog) => Err(HookError::new("agent id cannot use the catalog prefix")),
             Ok(identity::IdKind::Host) => Err(HookError::new("agent id cannot use the host prefix")),
+            Err(crate::lymaille::error::LymailleError::ReservedPrefix(identifiant)) => {
+                if identifiant
+                    .get(..2)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("g_"))
+                {
+                    Err(HookError::new("agent id cannot use the catalog prefix"))
+                } else {
+                    Err(HookError::new("agent id cannot use the host prefix"))
+                }
+            }
             Err(_) => Err(HookError::new("invalid agent id")),
         }
     }
@@ -332,13 +340,13 @@ mod tests {
         }
     }
 
-    /// `Must` étape 4 : `classify` doit rendre `Private`, donc `H_sandbox` (identifiant résolu par
-    /// l'hôte, DSD `DEC-27`) est refusé aussi. Le libellé du message n'est pas contractualisé par
-    /// la spec (question `[?]`) : on verrouille seulement le refus et l'absence de code.
+    /// Scenario « le préfixe hôte est refusé » (moitié majuscule, arbitré le 2026-11-06) :
+    /// `H_triage` (`classify` = `Host`, DSD `DEC-27`) est refusé sous le message contractualisé
+    /// « agent id cannot use the host prefix », sans code `MRD-*` (`Must` étape 4).
     #[test]
     fn before_create_refuse_un_identifiant_hote() {
         let rendu = Entity::before_create(
-            active_avec(definition("H_sandbox", AgentKind::Sub, "trie", "qwen")),
+            active_avec(definition("H_triage", AgentKind::Sub, "trie", "qwen")),
             &principal(),
         );
         match rendu {
@@ -347,9 +355,38 @@ mod tests {
                     erreur.code.is_none(),
                     "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
                 );
-                assert!(!erreur.message.is_empty(), "le refus est motivé : {erreur:?}");
+                assert_eq!(
+                    erreur.message, "agent id cannot use the host prefix",
+                    "`H_triage` porte le préfixe hôte"
+                );
             }
-            Ok(_) => panic!("`H_sandbox` est un identifiant résolu par l'hôte, jamais écrit ici"),
+            Ok(_) => panic!("`H_triage` est un identifiant résolu par l'hôte, jamais écrit ici"),
+        }
+    }
+
+    /// Scenario « le préfixe hôte est refusé » (moitié minuscule, alignement arbitré le
+    /// 2026-11-06 sur `./user_context.sdd`) : `h_triage` — `ReservedPrefix` au sens de `classify`,
+    /// préfixe `h_` — est refusé sous le **même** message que `H_triage`, « agent id cannot use
+    /// the host prefix », et non sous « catalog prefix ».
+    #[test]
+    fn before_create_refuse_le_prefixe_hote_minuscule() {
+        let rendu = Entity::before_create(
+            active_avec(definition("h_triage", AgentKind::Sub, "trie", "qwen")),
+            &principal(),
+        );
+        match rendu {
+            Err(erreur) => {
+                assert!(
+                    erreur.code.is_none(),
+                    "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
+                );
+                assert_eq!(
+                    erreur.message, "agent id cannot use the host prefix",
+                    "`h_triage` porte le préfixe hôte sous casse réservée, pas le préfixe \
+                     catalogue"
+                );
+            }
+            Ok(_) => panic!("`h_triage` porte le préfixe hôte réservé, jamais écrit ici"),
         }
     }
 
