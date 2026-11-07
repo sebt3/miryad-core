@@ -591,6 +591,18 @@ fn mount_failure(error: &LymailleError) -> StepError {
     }
 }
 
+/// `Redactor` des clients MCP du run : la clé d'API résolue du provider y entre à la construction
+/// et n'en sort jamais, pour qu'une sortie d'outil qui l'écho soit masquée (`./subagent_step.sdd`,
+/// amendement 2026-11-07). Copie locale de `configured_redactor` d'`interactive/assemble.rs` (privée
+/// là-bas) : une valeur trop courte est ignorée, jamais fatale.
+fn mcp_redactor(api_key: Option<&Zeroizing<String>>) -> ::lymaille::Redactor {
+    let mut redactor = ::lymaille::Redactor::default();
+    if let Some(secret) = api_key {
+        let _ = redactor.add_secret(secret.to_string());
+    }
+    redactor
+}
+
 /// Fin de l'étape 7 (DSD `DEC-27`, `DEC-20`) : chaque rôle MCP du contexte lié à la session
 /// (`CONTEXT_TYPE`, relu sous le sujet du déclencheur) est **monté** en client par `mount_role`
 /// (`./mcp_mount.sdd`), `interactive_token = None`, sous le principal du déclencheur. Les modules
@@ -621,9 +633,10 @@ async fn mount_context_roles(
         mcp: step.mcp.as_ref(),
     };
     let mut mounted = Vec::new();
+    let redactor = Arc::new(mcp_redactor(resolved.api_key.as_ref()));
     for (role, server) in context_roles(&context) {
         let env = McpEnv::new(
-            Arc::new(::lymaille::Redactor::new()),
+            Arc::clone(&redactor),
             Arc::clone(sink),
             Arc::clone(clock),
             session_id.clone(),
@@ -2321,6 +2334,201 @@ mod tests {
         assert!(
             provider_nom.requests().is_empty(),
             "aucune inférence : le run n'a pas commencé (nom de rôle invalide)"
+        );
+    }
+
+    // ── Scenario: une sortie d'outil MCP qui écho la clé du provider est masquée ──────────────
+
+    /// Clé fictive du provider de ce `Scenario` (résolue par la référence `FIXED_KEY`).
+    const CLE_FICTIVE: &str = "cle-fictive-de-test";
+
+    /// Message d'échec de l'outil : il reflète la clé du provider, comme un serveur qui la rend
+    /// dans ses erreurs. `refus de l'outil` est le témoin que l'échec a bien été reçu.
+    fn message_d_echec() -> String {
+        format!("refus de l'outil, jeton {CLE_FICTIVE} rejeté")
+    }
+
+    /// Script qui appelle l'outil du rôle `outil`, capture l'erreur levée et la soumet : le texte
+    /// reçu par l'agent est ce qu'il soumet (un tour bat une seule inférence : appel et soumission
+    /// sont dans le même script).
+    const SCRIPT_ECHEC: &str = r#"let recu = ""; try { outil::ping(#{}); } catch (erreur) { recu = erreur.to_string(); } result::submit(#{ verdict: recu })"#;
+
+    /// Fabrique MCP dont l'outil échoue avec un message donné.
+    struct FailMcp {
+        message: String,
+    }
+
+    impl McpConnectorFactory for FailMcp {
+        fn make(
+            &self,
+            _url: &str,
+            _request_timeout: Duration,
+            _connect_timeout: Duration,
+            _auth: Option<Arc<dyn DynMcpAuth>>,
+        ) -> Arc<dyn DynMcpConnector> {
+            Arc::new(FailConnector {
+                message: self.message.clone(),
+            })
+        }
+    }
+
+    /// Connecteur sans réseau : l'outil `ping` échoue avec le message de la fabrique.
+    struct FailConnector {
+        message: String,
+    }
+
+    impl McpLister for FailConnector {
+        fn list_tools(&self) -> impl Future<Output = Result<Vec<McpTool>, McpError>> + Send {
+            std::future::ready(Ok(vec![McpTool::new(
+                "ping",
+                "le ping",
+                json!({"type": "object"}),
+            )]))
+        }
+    }
+
+    impl McpConnector for FailConnector {
+        fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: &serde_json::Value,
+        ) -> impl Future<Output = Result<serde_json::Value, McpError>> + Send {
+            std::future::ready(Err(McpError::Failed(self.message.clone())))
+        }
+
+        fn reconnect(&self) -> impl Future<Output = ()> + Send {
+            std::future::ready(())
+        }
+    }
+
+    /// Le step avec une clé d'API du provider donnée (résolue par `FIXED_KEY`).
+    fn step_avec_cle(
+        db: DatabaseConnection,
+        factory: Arc<dyn InferenceFactory>,
+        mcp: Arc<dyn McpConnectorFactory>,
+        cle: &'static str,
+    ) -> SubagentStep {
+        SubagentStep::with_seams(
+            SubagentDeps {
+                db,
+                secrets: Arc::new(FixedSecret(cle)),
+                registry: Arc::new(ResourceRegistry::new()),
+                host: None,
+            },
+            factory,
+            mcp,
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_echec_doutil_mcp_qui_echo_la_cle_du_provider_est_masque() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "root", true).await;
+        wire_catalog(&db).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        inserer_serveur_statique(&db, "srv_stat").await;
+        lier_contexte(&db, "alice", &[("outil", "srv_stat")]).await;
+        let mcp: Arc<dyn McpConnectorFactory> = Arc::new(FailMcp {
+            message: message_d_echec(),
+        });
+        let provider = Arc::new(ScriptedProvider::new(vec![Ok(pad_call(SCRIPT_ECHEC))]));
+        let step = step_avec_cle(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider))),
+            mcp,
+            CLE_FICTIVE,
+        );
+
+        let output = step
+            .run(
+                &run_info("t-echec", "s1", Some("alice")),
+                config("G_sub", "inspecter"),
+                HashMap::new(),
+            )
+            .await
+            .expect("le run aboutit : l'échec de l'outil est capturé, puis soumis");
+
+        // Témoin : l'agent a bien reçu le texte d'échec. La clé n'y figure pas, ni dans la sortie.
+        let sortie = output.to_string();
+        assert!(
+            sortie.contains("refus de l'outil"),
+            "l'agent a reçu le texte d'échec : {sortie}"
+        );
+        assert!(
+            !sortie.contains(CLE_FICTIVE),
+            "le texte d'échec reçu par l'agent ne porte pas la clé : {sortie}"
+        );
+    }
+
+    // ── Scenario: un rôle MCP au nom d'un module du run échoue le step ───────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_role_mcp_au_nom_dun_module_du_run_echoue_le_step() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "bob", false).await;
+        user(&db, "root", true).await;
+        wire_catalog(&db).await;
+        // `resources` est accordé par la définition ; `G_sub` n'accorde aucun module.
+        put_catalog_agent(
+            &db,
+            &sub_agent("G_res", "tu rends un verdict", vec!["resources".to_owned()]),
+        )
+        .await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        inserer_serveur_statique(&db, "srv_stat").await;
+        lier_contexte(&db, "alice", &[("resources", "srv_stat")]).await;
+        lier_contexte(&db, "bob", &[("result", "srv_stat")]).await;
+        let spy = Arc::new(SpyMcp::default());
+        let mcp: Arc<dyn McpConnectorFactory> = spy.clone();
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let step = step_with_seams(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider))),
+            None,
+            mcp,
+        );
+
+        let collision_resources = step
+            .run(
+                &run_info("t-collision-resources", "s1", Some("alice")),
+                config("G_res", "inspecter"),
+                HashMap::new(),
+            )
+            .await
+            .expect_err("un rôle `resources` face au module `resources` du run échoue le step");
+        assert!(
+            !collision_resources.retryable,
+            "non retryable : {collision_resources}"
+        );
+        assert!(
+            collision_resources
+                .message
+                .contains("mcp role name collides with a module: resources"),
+            "message fixe de la collision : {collision_resources}"
+        );
+
+        let collision_result = step
+            .run(
+                &run_info("t-collision-result", "s1", Some("bob")),
+                config("G_sub", "inspecter"),
+                HashMap::new(),
+            )
+            .await
+            .expect_err("un rôle `result` face au module `result` du batch échoue le step");
+        assert!(!collision_result.retryable, "non retryable : {collision_result}");
+        assert!(
+            collision_result
+                .message
+                .contains("mcp role name collides with a module: result"),
+            "message fixe de la collision : {collision_result}"
+        );
+
+        assert!(spy.montes().is_empty(), "aucun connecteur créé");
+        assert!(
+            provider.requests().is_empty(),
+            "aucune requête d'inférence, aucun tour"
         );
     }
 }

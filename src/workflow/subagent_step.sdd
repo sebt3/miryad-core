@@ -230,7 +230,7 @@ Scenario: un rôle MCP refusé échoue le step avant tout tour
 Scenario: un échec d'outil MCP qui écho la clé du provider est masqué
   Given un provider dont la clé résolue est `cle-fictive-de-test`, un serveur MCP espion dont l'outil échoue avec un message qui contient cette clé, et un agent qui appelle l'outil
   When le step est exécuté
-  Then le texte d'échec que l'agent reçoit et ce que le run consigne ne contiennent pas la clé (masquée) ; limite connue de `lymaille` 0.2.0, hors contrat : la réponse d'un outil qui réussit et la valeur soumise ne sont pas masquées par le `Redactor` de `McpEnv`
+  Then le texte d'échec que l'agent reçoit ne contient pas la clé (masquée ; la consignation au journal MCP relève de `lymaille`, non observable depuis le step sans couture) ; limite connue de `lymaille` 0.2.0, hors contrat : la réponse d'un outil qui réussit et la valeur soumise ne sont pas masquées par le `Redactor` de `McpEnv`
 
 Scenario: un rôle MCP au nom d'un module du run échoue le step
   Given un contexte dont un rôle lié s'appelle `resources`, puis un autre `result`
