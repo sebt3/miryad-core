@@ -1491,11 +1491,11 @@ pub(crate) mod fix {
     use crate::lymaille::interactive::assemble::AssembleDeps;
     use crate::lymaille::interactive::assemble::DynInference;
     use crate::lymaille::interactive::assemble::InferenceFactory;
-    use crate::lymaille::interactive::assemble::McpConnectorFactory;
     use crate::lymaille::interactive::hub::EventHub;
     use crate::lymaille::interactive::manager::Limits;
     use crate::lymaille::interactive::manager::ManagerDeps;
     use crate::lymaille::interactive::manager::SessionManager;
+    use crate::lymaille::mcp_mount::McpConnectorFactory;
     use crate::lymaille::resource_module::ResourceRegistry;
     use crate::lymaille::secret::SecretResolver;
     use crate::lymaille::store::LymailleStores;
@@ -1787,8 +1787,8 @@ pub(crate) mod fix {
             _url: &str,
             _request_timeout: Duration,
             _connect_timeout: Duration,
-            _auth: Option<Arc<dyn crate::lymaille::interactive::assemble::DynMcpAuth>>,
-        ) -> Arc<dyn crate::lymaille::interactive::assemble::DynMcpConnector> {
+            _auth: Option<Arc<dyn crate::lymaille::mcp_mount::DynMcpAuth>>,
+        ) -> Arc<dyn crate::lymaille::mcp_mount::DynMcpConnector> {
             Arc::new(NoConnector)
         }
     }

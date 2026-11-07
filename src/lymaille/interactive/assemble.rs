@@ -17,7 +17,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 use sea_orm::DatabaseConnection;
 use zeroize::Zeroizing;
@@ -41,15 +40,8 @@ use ::lymaille::InferenceProvider;
 use ::lymaille::InferenceRequest;
 use ::lymaille::InferenceResponse;
 use ::lymaille::InspectionSlot;
-use ::lymaille::McpAuth;
-use ::lymaille::McpClientConfig;
-use ::lymaille::McpConnector;
 use ::lymaille::McpEnv;
-use ::lymaille::McpError;
-use ::lymaille::McpHeaders;
-use ::lymaille::McpLister;
 use ::lymaille::McpRetryPolicy;
-use ::lymaille::McpTool;
 use ::lymaille::ModelSnapshot;
 use ::lymaille::ProfileStore as _;
 use ::lymaille::Provenance;
@@ -61,7 +53,6 @@ use ::lymaille::ResolvedProfile;
 use ::lymaille::RestoredSession;
 use ::lymaille::RigConfig;
 use ::lymaille::RigProvider;
-use ::lymaille::RmcpConnector;
 use ::lymaille::Scratchpad;
 use ::lymaille::ScratchpadEngine;
 use ::lymaille::ScratchpadLimits;
@@ -81,15 +72,14 @@ use ::lymaille::TurnOutput;
 use ::lymaille::TurnRunner;
 use ::lymaille::assemble;
 use ::lymaille::config_registration;
-use ::lymaille::mcp_module;
 use ::lymaille::restore_session;
 use ::lymaille::rhai_pad_definition;
 
 use crate::lymaille::error::LymailleError;
 use crate::lymaille::host::SharedHost;
-use crate::lymaille::identity::{CallerPrincipal, Identity, check_grants};
+use crate::lymaille::identity::{CallerPrincipal, check_grants};
 use crate::lymaille::install_crypto_provider;
-use crate::lymaille::mcp_access::{RoleBinding, SeaHostMcpAuth, build_auth, resolve_role};
+use crate::lymaille::mcp_mount::{McpConnectorFactory, MountDeps, RmcpConnectorFactory, mount_role};
 use crate::lymaille::resource_module::{ResourceRegistry, resources_module};
 use crate::lymaille::secret::SecretResolver;
 use crate::lymaille::store::LymailleStores;
@@ -170,146 +160,6 @@ impl Summarizer for NoSummarizer {
         std::future::ready(Err(ContextError::Summarizer(
             "no summarizer is wired for interactive sessions".to_owned(),
         )))
-    }
-}
-
-/// Auth MCP sous forme objet : [`McpAuth`] de `lymaille` n'est pas object-safe (méthode
-/// `impl Future`), le pas d'indirection est posé ici.
-pub(crate) trait DynMcpAuth: Send + Sync {
-    fn headers_dyn(&self) -> Pin<Box<dyn Future<Output = Result<McpHeaders, McpError>> + Send + '_>>;
-}
-
-impl<A> DynMcpAuth for A
-where
-    A: McpAuth + Sync + 'static,
-{
-    fn headers_dyn(&self) -> Pin<Box<dyn Future<Output = Result<McpHeaders, McpError>> + Send + '_>> {
-        Box::pin(self.headers())
-    }
-}
-
-/// Auth en forme objet pour le connecteur production : `RmcpConnector` est générique sur son
-/// auth, la liste des rôles ne peut pas monomorphiser deux auth différentes par appel — le pas
-/// d'indirection inverse (objet → `impl McpAuth`) est posé ici.
-struct BoxAuth(Option<Arc<dyn DynMcpAuth>>);
-
-impl std::fmt::Debug for BoxAuth {
-    /// Opaque : l'auth sous-jacente peut porter un jeton.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BoxAuth").finish_non_exhaustive()
-    }
-}
-
-impl McpAuth for BoxAuth {
-    fn headers(&self) -> impl Future<Output = Result<McpHeaders, McpError>> + Send {
-        // Le futur retourné par `McpAuth::headers` ne peut pas emprunter `self` (RPIT sans
-        // `use<'_>`) : l'`Arc` est déplacé dans le futur, qui le lâche à sa fin.
-        let auth = self.0.clone();
-        Box::pin(async move {
-            match auth {
-                Some(auth) => auth.headers_dyn().await,
-                None => Ok(McpHeaders::new()),
-            }
-        })
-    }
-}
-
-/// Connecteur MCP sous forme objet : [`McpConnector`] de `lymaille` n'est pas object-safe ; le
-/// pas d'indirection est posé ici (même raison que `DynInference`).
-pub(crate) trait DynMcpConnector: Send + Sync {
-    fn list_dyn(&self) -> Pin<Box<dyn Future<Output = Result<Vec<McpTool>, McpError>> + Send + '_>>;
-    fn call_dyn(
-        &self,
-        name: &str,
-        arguments: &serde_json::Value,
-    ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, McpError>> + Send + '_>>;
-    fn reconnect_dyn(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
-}
-
-impl<C> DynMcpConnector for C
-where
-    C: McpConnector + 'static,
-{
-    fn list_dyn(&self) -> Pin<Box<dyn Future<Output = Result<Vec<McpTool>, McpError>> + Send + '_>> {
-        Box::pin(self.list_tools())
-    }
-
-    fn call_dyn(
-        &self,
-        name: &str,
-        arguments: &serde_json::Value,
-    ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, McpError>> + Send + '_>> {
-        // Le futur de `call_tool` ne capture pas les références d'appel (RPITIT sans
-        // `use<'_, '_>`) : nom et arguments sont copiés dans le futur, qui ne garde que l'emprunt
-        // de `self`.
-        let name = name.to_owned();
-        let arguments = arguments.clone();
-        Box::pin(async move { self.call_tool(&name, &arguments).await })
-    }
-
-    fn reconnect_dyn(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        Box::pin(self.reconnect())
-    }
-}
-
-/// Connecteur objet rendu compatible avec le générique [`McpConnector`] de `lymaille` — la voie
-/// d'injection des clients MCP par rôle dans `mcp_module` (la tâche `[?]` de la spec, tranchée
-/// dans le source de `lymaille` 0.1.0 : `mcp_module` est générique sur le connecteur, un seul
-/// type concret peut donc passer, les autres étant derrière cet adaptateur).
-struct DynConnector(Arc<dyn DynMcpConnector>);
-
-impl McpLister for DynConnector {
-    fn list_tools(&self) -> impl Future<Output = Result<Vec<McpTool>, McpError>> + Send {
-        self.0.list_dyn()
-    }
-}
-
-impl McpConnector for DynConnector {
-    fn call_tool(
-        &self,
-        name: &str,
-        arguments: &serde_json::Value,
-    ) -> impl Future<Output = Result<serde_json::Value, McpError>> + Send {
-        self.0.call_dyn(name, arguments)
-    }
-
-    fn reconnect(&self) -> impl Future<Output = ()> + Send {
-        self.0.reconnect_dyn()
-    }
-}
-
-/// Fabrique des connecteurs MCP (couture de test) : production → [`RmcpConnector`] ; les tests
-/// injectent un connecteur espion — la voie par défaut n'a pas de serveur MCP factice publié par
-/// `lymaille` dans le graphe de la crate (`Scenario` « le jeton forward n'atteint que son
-/// serveur », tâche `[?]` de la spec tranchée par le connecteur injecté).
-pub(crate) trait McpConnectorFactory: Send + Sync {
-    /// Connecteur vers `url`, avec les timeouts du serveur et l'auth du rôle (`None` = aucun
-    /// en-tête). La clé et le jeton ne figurent dans aucune trace.
-    fn make(
-        &self,
-        url: &str,
-        request_timeout: Duration,
-        connect_timeout: Duration,
-        auth: Option<Arc<dyn DynMcpAuth>>,
-    ) -> Arc<dyn DynMcpConnector>;
-}
-
-/// Fabrique de production : un [`RmcpConnector`] par rôle (streamable HTTP, TLS par
-/// `install_crypto_provider`).
-struct RmcpConnectorFactory;
-
-impl McpConnectorFactory for RmcpConnectorFactory {
-    fn make(
-        &self,
-        url: &str,
-        request_timeout: Duration,
-        connect_timeout: Duration,
-        auth: Option<Arc<dyn DynMcpAuth>>,
-    ) -> Arc<dyn DynMcpConnector> {
-        let config = McpClientConfig::new(url)
-            .with_request_timeout(request_timeout)
-            .with_connect_timeout(connect_timeout);
-        Arc::new(RmcpConnector::new(config, Arc::new(BoxAuth(auth))))
     }
 }
 
@@ -650,10 +500,11 @@ async fn resolve_scope(
     })
 }
 
-/// Clients MCP par rôle (étape 5) : `resolve_role` — hôte d'abord, repli table `mcp_access` —
-/// puis `build_auth` avec le jeton `forward` du tour, qui ne vit que dans le `SeaMcpAuth` du
-/// connecteur. Un rôle **requis** vers un serveur refusé fait échouer la session ; un rôle
-/// optionnel refusé n'émet qu'un avis. Une session `Config` n'assemble aucun client MCP.
+/// Clients MCP par rôle (étape 5) : la boucle sur les rôles requis puis optionnels, et la
+/// **politique** de l'assemblage. Le montage d'un rôle (liaison, auth, connecteur, module) est
+/// `mcp_mount::mount_role`. Un rôle **requis** refusé fait échouer la session ; un rôle
+/// optionnel refusé par le serveur (`"mcp server unavailable"`) n'émet qu'un avis, toute autre
+/// erreur de montage reste fatale. Une session `Config` n'assemble aucun client MCP.
 async fn mount_mcp_roles(
     deps: &AssembleDeps,
     caller: &CallerPrincipal,
@@ -668,75 +519,39 @@ async fn mount_mcp_roles(
     if kind == SessionKind::Config {
         return Ok((granted, notices));
     }
+    let mounts = MountDeps {
+        db: &deps.db,
+        secrets: &deps.secrets,
+        host: deps.host.as_ref(),
+        mcp: deps.mcp.as_ref(),
+    };
     let mcp_redactor = Arc::new(configured_redactor(resolved.api_key.as_ref(), token));
     for role in scope.required.iter().chain(scope.optional.iter()) {
         let is_required = scope.required.contains(role);
-        let binding = match resolve_role(
-            deps.host.as_deref(),
-            &deps.db,
+        let env = McpEnv::new(
+            Arc::clone(&mcp_redactor),
+            Arc::clone(&deps.hub) as Arc<dyn EventSink>,
+            Arc::clone(&deps.clock),
+            session.clone(),
+            McpRetryPolicy::default(),
+        );
+        match mount_role(
+            &mounts,
             caller,
             &scope.context_name,
             role,
             scope.bindings.get(role).map(String::as_str),
+            token,
+            env,
         )
         .await
         {
-            Ok(binding) => binding,
-            Err(error) if is_required => return Err(error),
-            Err(_) => {
+            Ok(module) => granted.push(module),
+            Err(LymailleError::Forbidden(message)) if !is_required && message == "mcp server unavailable" => {
                 notices.push(format!("role {role} omitted: mcp server unavailable"));
-                continue;
             }
-        };
-        let connector = match binding {
-            RoleBinding::Host(grant) => {
-                let auth: Arc<dyn DynMcpAuth> =
-                    Arc::new(SeaHostMcpAuth::new(
-                        Arc::clone(deps.host.as_ref().ok_or_else(|| {
-                            LymailleError::Config("host binding without a host".to_string())
-                        })?),
-                        Identity::new(deps.db.clone()),
-                        caller.subject.clone(),
-                        scope.context_name.clone(),
-                        role.clone(),
-                    ));
-                deps.mcp.make(
-                    &grant.url,
-                    DEFAULT_REQUEST_TIMEOUT,
-                    DEFAULT_CONNECT_TIMEOUT,
-                    Some(auth),
-                )
-            }
-            RoleBinding::Table(model) => {
-                // Le jeton `forward` ne transite que par `build_auth` ; il disparaîtra avec
-                // le `SeaMcpAuth` porté par ce connecteur, mort avec la session.
-                let auth = build_auth(&model, Arc::clone(&deps.secrets), token.cloned())?
-                    .map(|sea_auth| Arc::new(sea_auth) as Arc<dyn DynMcpAuth>);
-                deps.mcp.make(
-                    &model.url,
-                    timeout(model.request_timeout_secs),
-                    timeout(model.connect_timeout_secs),
-                    auth,
-                )
-            }
-        };
-        let module = mcp_module(
-            role,
-            Arc::new(DynConnector(connector)),
-            McpEnv::new(
-                Arc::clone(&mcp_redactor),
-                Arc::clone(&deps.hub) as Arc<dyn EventSink>,
-                Arc::clone(&deps.clock),
-                session.clone(),
-                McpRetryPolicy::default(),
-            ),
-        )
-        .await
-        .map_err(|error| LymailleError::Store(error.to_string()))?;
-        granted.push(
-            GrantedModule::new(role, module.into())
-                .ok_or_else(|| LymailleError::InvalidDefinition(format!("invalid module name: {role}")))?,
-        );
+            Err(error) => return Err(error),
+        }
     }
     Ok((granted, notices))
 }
@@ -801,16 +616,6 @@ fn build_engine(
     Ok(Arc::new(builder.build().map_err(|error| {
         LymailleError::InvalidDefinition(format!("engine build failed: {error}"))
     })?))
-}
-
-/// Timeouts de connexion MCP par défaut quand la ligne ne les fixe pas (relus du modèle sinon).
-const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// secondes de la colonne → `Duration`. Les hooks de `../definitions/mcp_server.rs` garantissent
-/// 1..=600 et 1..=60 ; une ligne hors contrat retombe sur le défaut, jamais un `unwrap`.
-fn timeout(seconds: i32) -> Duration {
-    u64::try_from(seconds).map_or(DEFAULT_REQUEST_TIMEOUT, Duration::from_secs)
 }
 
 /// Rôles requis et optionnels exigés par les toolsets actifs : leurs déclarations propres et
@@ -956,6 +761,8 @@ fn from_session(error: SessionError) -> LymailleError {
 mod tests {
     use super::*;
     use crate::lymaille::definitions::mcp_server;
+    use crate::lymaille::identity::Identity;
+    use crate::lymaille::mcp_mount::{DynMcpAuth, DynMcpConnector, McpConnectorFactory};
     use crate::lymaille::store::test_support::test_db;
     use crate::users::group;
     use crate::users::membership::sync_group_memberships;
@@ -964,11 +771,13 @@ mod tests {
         AgentKind, ContextLevel, ModelProfile, ProviderLevel, Redactor, RunEnv, RunStatus, ScriptedProvider,
         ToolsetContext,
     };
+    use ::lymaille::{McpConnector, McpError, McpLister, McpTool};
     use sea_orm::ActiveModelTrait;
     use sea_orm::ActiveValue::{NotSet, Set};
     use sea_orm::ConnectionTrait;
     use serde_json::json;
     use std::sync::Mutex;
+    use std::time::Duration;
     use vynil_core::Semver;
 
     // ── Fixtures ────────────────────────────────────────────────────────────

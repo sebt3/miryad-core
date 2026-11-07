@@ -63,6 +63,10 @@ pub mod identity;
 /// `RoleBinding`, `SeaHostMcpAuth` (amendement DEC-27/DEC-30) de ./mod.sdd.
 pub mod mcp_access;
 
+/// Montage d'un client MCP par rôle, commun aux sessions interactives et au step batch
+/// (`src/lymaille/mcp_mount.sdd`), privé : aucun ré-export à plat, surface `pub(crate)`.
+mod mcp_mount;
+
 /// Migrations SeaORM internes du module (`src/lymaille/migration.sdd`), privées : l'API est le
 /// ré-export `migrations` ci-dessous, assemblé par `crate::migration::Migrator` sous `lymaille`.
 mod migration;
