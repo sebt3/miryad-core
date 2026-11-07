@@ -49,7 +49,8 @@ Tasks:
   [x] Émission de la variante (arbitrage du 2026-11-06) : `serialization_error_event` construit @LymailleError::Serialization et en tire le code `MRD-LYMAILLE-012` au lieu de la constante nue ; le test `panne_de_serialisation_rend_le_code_012` reste le verrou.
     Validé 2026-11-06 (validator PASS : `serialization_error_body()` dérive le code du préfixe `Display` de la variante — corps sur le fil byte-identique, plus aucun code en dur en production dans ./sse.rs ; verrou adapté + test de dérivation ; lymaille vert en tests et clippy `-D warnings`, `fmt`).
     Arbitré le 2026-11-06 (développeur principal) : le `Scenario` « une panne de sérialisation n'interrompt pas le flux » est ajouté avec un seam d'encodeur injectable ; les deux verrous unitaires du corps sont conservés.
-  [ ] Tests d'abord depuis le `Scenario` « panne de sérialisation » (encodeur défaillant injecté), puis seam minimal dans ./sse.rs. Code seul, Haiku.
+  [x] Tests d'abord depuis le `Scenario` « panne de sérialisation » (encodeur défaillant injecté), puis seam minimal dans ./sse.rs. Code seul, Haiku.
+    Validé 2026-11-07 (validator PASS : `une_panne_de_serialisation_n_interrompt_pas_le_flux` au Then réel, seam d'encodeur privé, chemin réel inchangé, verrous unitaires conservés ; batterie complète 38/38 conforme, `specdd lint` vert).
     [?] (validator) : `../chat/bridge.rs::code_de` duplique les douze codes en littéraux — aligner sur la dérivation par `Display` (comme ./sse.rs désormais) ou la table de la salle Matrix reste-t-elle assumée dans sa spec ? (à reprendre au cycle de ./bridge.rs).
   [?] `Last-Event-ID` / rejeu des événements manqués : écarté au lot 2 (les événements ne sont pas persistés ; l'état de la session l'est). À rouvrir si un
     client se déconnecte souvent pendant un tour.
