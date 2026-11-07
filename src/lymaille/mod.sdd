@@ -97,7 +97,7 @@ Tasks:
     `dep:ts-rs` ; contrôle de graphe de `ts-rs`). Spec approuvée le 2026-11-04.
   [x] Export TypeScript des événements (DSD `OI-12`, soldé le 2026-11-03) : `ts-rs`, dépendance optionnelle derrière la feature `lymaille` ; amendement de `Cargo.toml` : voir la tâche « Amendement DEC-27/DEC-30 » ci-dessous.
   [x] Amendement DEC-27/DEC-30 : /Cargo.toml (`ts-rs`, `dep:chrono`), /tooling.sdd, /AGENTS.md (commande `cargo tree --no-default-features -e normal -i ts-rs`, sortie vide), /.github/workflows/workflows.sdd et ci.yml (même contrôle) ; fichiers hors périmètre : amendement soumis au développeur principal avant d'y toucher. Avant ./interactive/event.rs.
-  [ ] Amendement 2026-11-07 : déclarer le module privé `mcp_mount` (couture des connecteurs MCP et `mount_role`, ./mcp_mount.sdd) dans ./mod.rs, avec ./mcp_mount.rs dans `Depends on` ; aucun ré-export à plat (surface `pub(crate)`). Après ./mcp_mount.rs.
+  [ ] Amendement 2026-11-07 : déclarer le module `mcp_mount` en `pub(crate)` (le step batch ./../workflow/subagent_step.rs y accède) (couture des connecteurs MCP et `mount_role`, ./mcp_mount.sdd) dans ./mod.rs, avec ./mcp_mount.rs dans `Depends on` ; aucun ré-export à plat (surface `pub(crate)`). Après ./mcp_mount.rs.
   [x] Amendement lot 2 : `mod.rs` re-déclaré **en dernier du lot 2** (après ./interactive, ./http, ./chat, ./mcp_access, ./store, ./definitions), tests de chemins plats étendus.
     Livré 2026-11-06 (lot 3) : `mod.rs` porte les ré-exports plats des deux amendements (les 8 items du lot 2 et les 10 items + chemin
     `export_typescript` de DEC-27/DEC-30, symboles vérifiés à leur source, aucun shim) ; `//!` documente les surfaces du lot 2
