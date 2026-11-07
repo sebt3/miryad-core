@@ -603,6 +603,7 @@ async fn mount_context_roles(
     session_id: &SessionId,
     sink: &Arc<dyn EventSink>,
     clock: &Arc<dyn ::lymaille::Clock>,
+    taken: &[&str],
 ) -> Result<Vec<GrantedModule>, StepError> {
     let context: Option<ToolsetContext> = resolved
         .stores
@@ -635,6 +636,7 @@ async fn mount_context_roles(
             &role,
             Some(&server),
             None,
+            taken,
             env,
         )
         .await
@@ -852,7 +854,12 @@ impl MiryadWorkflowStep for SubagentStep {
         // Rôles MCP du contexte lié (DSD `DEC-27`, `DEC-20`) : chaque rôle est monté en client
         // dans le moteur du run ; refus, panne ou `forward` sont des échecs non retryables, avant
         // le premier tour.
-        granted.extend(mount_context_roles(self, &resolved, &session_id, &sink, &clock).await?);
+        // Noms réservés à la garde de collision (`./mcp_mount.sdd`, étape 0) : les modules accordés
+        // par la définition, et `result`, que `assemble_and_engine` ajoute ensuite.
+        let mut taken: Vec<&str> = granted.iter().map(GrantedModule::name).collect();
+        taken.push("result");
+        let mounted = mount_context_roles(self, &resolved, &session_id, &sink, &clock, &taken).await?;
+        granted.extend(mounted);
         let parts = assemble_and_engine(&resolved.stores, &resolved.definition, granted, &schema).await?;
 
         // ── 8. session déterministe : reprise, ou état neuf `Sub` ──

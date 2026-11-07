@@ -238,7 +238,9 @@ fn connector_for(
 
 /// Monte le rôle `role` du contexte `context` : résolution de la liaison, connecteur, module
 /// Rhai accordé. Un refus, une panne ou une liaison incohérente remonte en erreur ; la politique
-/// (fatal ou avis) reste chez l'appelant.
+/// (fatal ou avis) reste chez l'appelant. `taken` : noms déjà pris (modules accordés et modules
+/// d'office) ; un rôle qui en porte un est refusé en `Config` avant toute résolution.
+#[allow(clippy::too_many_arguments)] // Signature fixée par ./mcp_mount.sdd (amendement 2026-11-07, paramètre `taken`).
 pub(crate) async fn mount_role(
     deps: &MountDeps<'_>,
     caller: &CallerPrincipal,
@@ -246,8 +248,16 @@ pub(crate) async fn mount_role(
     role: &str,
     bound_server: Option<&str>,
     interactive_token: Option<&Zeroizing<String>>,
+    taken: &[&str],
     env: McpEnv,
 ) -> Result<GrantedModule, LymailleError> {
+    // Étape 0 (`./mcp_mount.sdd`) : `lymaille::assemble` ignore en silence un module au nom déjà
+    // pris ; la collision est refusée ici, avant toute résolution. `Config`, jamais `Forbidden`.
+    if taken.contains(&role) {
+        return Err(LymailleError::Config(format!(
+            "mcp role name collides with a module: {role}"
+        )));
+    }
     let binding = resolve_role(
         deps.host.map(|host| &**host),
         deps.db,
@@ -491,7 +501,7 @@ mod tests {
             mcp: &spy,
         };
 
-        let module = mount_role(&deps, &alice, "G_prod", "sandbox", None, None, env())
+        let module = mount_role(&deps, &alice, "G_prod", "sandbox", None, None, &[], env())
             .await
             .expect("le rôle pourvu par l'hôte est monté");
         let mut moteur = rhai::Engine::new();
@@ -532,7 +542,7 @@ mod tests {
             mcp: &spy,
         };
 
-        let erreur = echec_de(mount_role(&deps, &bob, "G_prod", "sandbox", None, None, env()).await);
+        let erreur = echec_de(mount_role(&deps, &bob, "G_prod", "sandbox", None, None, &[], env()).await);
 
         assert!(
             matches!(&erreur, LymailleError::Forbidden(message) if message == "mcp server unavailable"),
@@ -558,7 +568,7 @@ mod tests {
             mcp: &spy,
         };
 
-        let _module = mount_role(&deps, &alice, "G_prod", "stat", Some("stat"), None, env())
+        let _module = mount_role(&deps, &alice, "G_prod", "stat", Some("stat"), None, &[], env())
             .await
             .expect("le serveur static est monté");
 
@@ -584,7 +594,7 @@ mod tests {
             mcp: &spy,
         };
 
-        let _module = mount_role(&deps, &alice, "G_prod", "nu", Some("nu"), None, env())
+        let _module = mount_role(&deps, &alice, "G_prod", "nu", Some("nu"), None, &[], env())
             .await
             .expect("le serveur sans auth est monté");
 
@@ -609,7 +619,7 @@ mod tests {
             mcp: &spy,
         };
 
-        let refus = echec_de(mount_role(&deps, &alice, "G_prod", "fwd", Some("fwd"), None, env()).await);
+        let refus = echec_de(mount_role(&deps, &alice, "G_prod", "fwd", Some("fwd"), None, &[], env()).await);
         assert!(
             matches!(&refus, LymailleError::Forbidden(message) if message == "forward auth needs an interactive session"),
             "refus attendu : {refus:?}"
@@ -617,9 +627,18 @@ mod tests {
         assert!(spy.montes().is_empty(), "aucun connecteur sans jeton interactif");
 
         let jeton = Zeroizing::new("jeton-session".to_owned());
-        let _fwd = mount_role(&deps, &alice, "G_prod", "fwd", Some("fwd"), Some(&jeton), env())
-            .await
-            .expect("le serveur forward est monté avec le jeton du tour");
+        let _fwd = mount_role(
+            &deps,
+            &alice,
+            "G_prod",
+            "fwd",
+            Some("fwd"),
+            Some(&jeton),
+            &[],
+            env(),
+        )
+        .await
+        .expect("le serveur forward est monté avec le jeton du tour");
         let _plain = mount_role(
             &deps,
             &alice,
@@ -627,6 +646,7 @@ mod tests {
             "plain",
             Some("plain"),
             Some(&jeton),
+            &[],
             env(),
         )
         .await
@@ -664,7 +684,7 @@ mod tests {
             mcp: &spy,
         };
 
-        let erreur = echec_de(mount_role(&deps, &alice, "G_prod", "sandbox", None, None, env()).await);
+        let erreur = echec_de(mount_role(&deps, &alice, "G_prod", "sandbox", None, None, &[], env()).await);
 
         assert!(
             matches!(&erreur, LymailleError::Forbidden(message) if message == "mcp server unavailable"),
@@ -696,5 +716,39 @@ mod tests {
             "échec fermé attendu : {erreur:?}"
         );
         assert_eq!(spy.montes(), Vec::<String>::new());
+    }
+
+    /// Scenario « un rôle qui porte le nom d'un module déjà accordé est refusé » : `resources`
+    /// puis `todo`, chacun lié à un serveur valide et présent dans `taken` : `Config` fixe,
+    /// l'hôte n'est jamais consulté, aucun connecteur créé.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_role_qui_porte_le_nom_dun_module_deja_accorde_est_refuse() {
+        let db = db_migre().await;
+        let alice = compte(&db, "alice").await;
+        inserer_serveur(&db, "res", "none", None).await;
+        inserer_serveur(&db, "tod", "none", None).await;
+        let host = ScriptedHost::new(|_| Ok(McpDecision::Denied));
+        let shared: SharedHost = host.clone();
+        let spy = SpyFactory::default();
+        let secrets: Arc<dyn SecretResolver> = Arc::new(FixedSecret);
+        let deps = MountDeps {
+            db: &db,
+            secrets: &secrets,
+            host: Some(&shared),
+            mcp: &spy,
+        };
+        let taken = ["resources", "todo"];
+
+        for (role, server) in [("resources", "res"), ("todo", "tod")] {
+            let erreur =
+                echec_de(mount_role(&deps, &alice, "G_prod", role, Some(server), None, &taken, env()).await);
+            assert!(
+                matches!(&erreur, LymailleError::Config(message)
+                    if *message == format!("mcp role name collides with a module: {role}")),
+                "collision attendue pour {role} : {erreur:?}"
+            );
+        }
+        assert_eq!(host.appels(), 0, "l'hôte ne doit jamais être consulté");
+        assert!(spy.montes().is_empty(), "aucun connecteur ne doit être créé");
     }
 }

@@ -312,8 +312,21 @@ async fn assemble_with(
     // Étape 5 : modules — `resources` pour tous, clients MCP par rôle accordé (aucun pour
     // `Config`) — puis le moteur assemblé de tout cela.
     let mut granted = base_modules(deps, caller)?;
-    let (mcp_granted, mut notices) =
-        mount_mcp_roles(deps, caller, kind, &scope, session, &resolved, token.as_ref()).await?;
+    // Noms réservés à la garde de collision (`./mcp_mount.sdd`, étape 0) : les modules déjà
+    // accordés. Aucun module d'office de `lymaille` n'est à ajouter (`lymaille` 0.2.0 n'en déclare
+    // aucun : `assemble` ne grant que ce qu'il reçoit).
+    let granted_names: Vec<&str> = granted.iter().map(GrantedModule::name).collect();
+    let (mcp_granted, mut notices) = mount_mcp_roles(
+        deps,
+        caller,
+        kind,
+        &scope,
+        session,
+        &resolved,
+        token.as_ref(),
+        &granted_names,
+    )
+    .await?;
     granted.extend(mcp_granted);
     let engine = build_engine(deps, &resolved, kind, session, &scope, &granted, token.as_ref())?;
     let toolset_versions: BTreeMap<String, String> = scope
@@ -505,6 +518,7 @@ async fn resolve_scope(
 /// `mcp_mount::mount_role`. Un rôle **requis** refusé fait échouer la session ; un rôle
 /// optionnel refusé par le serveur (`"mcp server unavailable"`) n'émet qu'un avis, toute autre
 /// erreur de montage reste fatale. Une session `Config` n'assemble aucun client MCP.
+#[allow(clippy::too_many_arguments)] // Signature fixée par ./mcp_mount.sdd (garde de collision, `taken`, amendement 2026-11-07).
 async fn mount_mcp_roles(
     deps: &AssembleDeps,
     caller: &CallerPrincipal,
@@ -513,6 +527,7 @@ async fn mount_mcp_roles(
     session: &SessionId,
     resolved: &Resolved,
     token: Option<&Zeroizing<String>>,
+    granted_names: &[&str],
 ) -> Result<(Vec<GrantedModule>, Vec<String>), LymailleError> {
     let mut granted: Vec<GrantedModule> = Vec::new();
     let mut notices: Vec<String> = Vec::new();
@@ -542,6 +557,7 @@ async fn mount_mcp_roles(
             role,
             scope.bindings.get(role).map(String::as_str),
             token,
+            granted_names,
             env,
         )
         .await
