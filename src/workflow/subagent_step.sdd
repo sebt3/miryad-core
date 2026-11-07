@@ -125,6 +125,7 @@ Tasks:
     (pas de dérive d'un rejeu). Le `Grant` n'est ni persisté ni tracé. Solde le `[?]` du lot 2 « serveur `static`/`none` jamais monté ». Tests d'abord depuis les `Scenario` ci-dessous, puis ./subagent_step.rs,
     après ../lymaille/mcp_mount.rs.
     Les `Scenario` « rôle MCP fourni par l'hôte » et « un serveur MCP en forward » ci-dessous sont amendés dans ce lot (le `Then` d'alice passe de « porte ouverte, grant jeté » à « client monté »).
+    Code posé le 2026-11-07 (implementer ; batterie ciblée verte, validator à passer) — `[?]` : un rôle MCP dont le nom coïncide avec un module déclaré (`resources`, `todo`, `memory_user`…) est ignoré en silence par `lymaille::assemble` (`if let Some(extended)`) ; garde explicite (échec non retryable à l'étape 7) ou comportement amont assumé ?
   [x] Amendement lot 2 : `ResourceRegistry` + `WriteScope`, rôles MCP via `mcp_access`, scenarios (rejeu sans doublon d'écriture, `forward` refusé) d'abord, puis ./subagent_step.rs. Après ../lymaille/resource_module.rs et ../lymaille/mcp_access.rs.
     Validé 2026-11-06 (validator PASS : les deux Scenario ont leur test au Then réel — rejeu dédupliqué par le journal sous les clés du step, même `create` ré-émis sous un autre id d'appel ; forward → `StepError` non retryable au message exact de ../lymaille/mcp_access.rs, aucune inférence ; `check_context_roles` avant tout effet de bord, R15 non touché (attendu) ; workflow et workflow,lymaille verts en tests et clippy `-D warnings`, `fmt`).
     [?] (implementer et validator) : `CONTEXT_TYPE` renommé `workflow-subagent` → `workflow_subagent` — le premier était mort-né (@classify refuse le `-`, `get_context` rendait `Ok(None)` sans requête) ; le littéral n'est figé dans aucune spec. C'est une surface effective : c'est sous ce nom que l'utilisateur lie son contexte. Le contractualiser (`Must`/`Exposes`, voire `pub const`) ou l'assumer comme détail de fichier ?
@@ -208,7 +209,7 @@ Scenario: le plafond d'application borne max_secs (DEC-29)
 Scenario: un rôle MCP fourni par l'hôte est résolu sous le déclencheur (DEC-27)
   Given un hôte qui accorde le rôle `sandbox` au subject `alice` et le refuse à `bob`, et un step déclenché par `alice` puis par `bob`
   When le step est exécuté dans chaque cas
-  Then pour `alice` la décision de l'hôte fait foi : la porte (`resolve_role`) est ouverte et le `Grant` est jeté, sans montage du serveur (le montage relève de la tâche dédiée ci-dessous) ; pour `bob` le step échoue (`retryable: false`) sans message de l'hôte
+  Then pour `alice` la décision de l'hôte fait foi et le client du serveur de l'hôte est monté sur l'URL du `Grant` (tâche « Montage du client hôte », le `Grant` n'est ni persisté ni tracé) ; pour `bob` le step échoue (`retryable: false`) sans message de l'hôte
 
 Scenario: le client de l'hôte est monté et son jeton redemandé à chaque appel (DEC-27, tâche « Montage du client hôte »)
   Given un hôte qui accorde `sandbox` à `alice` avec un jeton qui change à chaque `resolve_mcp`, un connecteur espion, et un agent qui appelle deux fois l'outil du rôle
