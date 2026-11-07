@@ -60,7 +60,10 @@ Tasks:
     et la **politique** (requis refusé → l'assemblage échoue ; optionnel refusé → omis, avis `notices`), et ne monte rien pour `Config`. Aucun changement de comportement : les
     `Scenario` ci-dessous restent verts sans modification. Refactor derrière les tests existants, après ../mcp_mount.rs.
     Validé 2026-11-07 (validator PASS : `mount_mcp_roles` réduit à la boucle et à la politique, Scenario existants verts sans modification ; écart optionnel/Store acté ; batterie complète 38/38 conforme, `specdd lint` vert, rustdoc sans nouveau warning).
+    Amendement 2026-11-07 (garde de collision, ../mcp_mount.sdd) : `mount_mcp_roles` passe `taken` = les noms des modules déjà accordés (`resources`) ; une collision de nom de rôle est une `Config`,
+    donc **fatale même pour un rôle optionnel** (la politique n'omet que `Forbidden("mcp server unavailable")`).
     [?] (implementer, 2026-11-07) : seul écart de comportement du refactor — un rôle **optionnel** dont la résolution échoue autrement que par `Forbidden("mcp server unavailable")` (panne de base : `Store`) est désormais fatal, alors qu'il était omis avec avis. Échec fermé plutôt que masquage d'une panne en « serveur indisponible » : à acter (recommandé) ou à rétablir.
+  [ ] Test d'abord du cas « collision de nom de rôle optionnel » : Scenario en fin de spec, puis verrou de non-régression dans ./assemble.rs (aucun code de production attendu : la garde est livrée). Test seul.
   [?] À vérifier à l'ouverture de la tâche dans le source de `lymaille` : la voie exacte pour injecter des clients MCP par rôle dans
     `assemble(...)`/`ScratchpadEngine::builder` et la construction de `TurnRunner` pour une session non batch (le lot 1 n'a assemblé que le batch).
 
@@ -101,3 +104,8 @@ Scenario: contexte d'un autre utilisateur
   Given un contexte `User` de `bob` portant le nom référencé par `alice`
   When `assemble_session` pour `alice`
   Then le contexte de `bob` n'est jamais lu
+
+Scenario: un rôle optionnel au nom d'un module accordé fait échouer l'assemblage
+  Given un type de contexte dont un rôle optionnel s'appelle `resources`, lié à un serveur valide
+  When la session est assemblée
+  Then l'assemblage échoue en `Config("mcp role name collides with a module: resources")`, sans avis `notices` et sans connecteur monté

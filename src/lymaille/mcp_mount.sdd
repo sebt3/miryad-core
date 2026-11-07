@@ -24,7 +24,7 @@ Must:
     la production pose la fabrique réelle, les tests injectent un connecteur espion.
   `pub(crate) async fn mount_role(deps: &MountDeps<'_>, caller: &CallerPrincipal, context: &str, role: &str, bound_server: Option<&str>, interactive_token: Option<&Zeroizing<String>>, taken: &[&str], env: McpEnv) -> Result<GrantedModule, LymailleError>` :
     0. **Garde de collision (amendement 2026-11-07, `lymaille::assemble` ignore en silence un module qui porte un nom déjà pris)** : si `role` figure dans `taken` — les noms des modules déjà
-      accordés de l'appelant et ceux que `lymaille::assemble` ou le moteur déclarent d'office (`resources`, `todo`, `memory_*`, `result` en batch… liste à relever dans le source de `lymaille`) —
+      accordés de l'appelant, fournis par lui (relevé fait dans `lymaille` 0.2.0 : `lymaille::assemble` et le moteur ne déclarent aucun module d'office ; interactif : les modules de base, soit `resources` ; batch : les modules accordés par la définition plus `result`) —
       → `LymailleError::Config("mcp role name collides with a module: <rôle>")` avant toute résolution, tout accès à l'hôte et tout connecteur. Erreur de configuration de l'administrateur, pas
       une indisponibilité : jamais un `Forbidden`, donc fatale chez tous les appelants (y compris pour un rôle optionnel interactif).
     1. `resolve_role(deps.host, deps.db, caller, context, role, bound_server)` — son erreur remonte telle quelle (`Forbidden("mcp server unavailable")`) ;
@@ -55,7 +55,8 @@ Tasks:
   [x] Tests d'abord depuis les `Scenario` (SQLite mémoire, hôte factice de ./host.sdd, connecteur espion), puis ./mcp_mount.rs : déplacement de la couture
     hors de ./interactive/assemble.rs et `mount_role` ; ./interactive/assemble.rs ne garde que la boucle et la politique (amendement ci-dessous).
     Validé 2026-11-07 (validator PASS : les 7 Scenario ont leur test au Then réel, couture déplacée à l'identique, aucun jeton ni URL tracé ; batterie complète 38/38 conforme, `specdd lint` vert, rustdoc sans nouveau warning).
-  [ ] Garde de collision (arbitrage du 2026-11-07) : test d'abord depuis le Scenario « un rôle qui porte le nom d'un module déjà accordé est refusé », puis paramètre `taken` de `mount_role` et garde dans ./mcp_mount.rs ; les deux appelants (./interactive/assemble.rs, ../../workflow/subagent_step.rs) passent `taken` (ripple acté : ils sont amendés dans le même lot).
+  [x] Garde de collision (arbitrage du 2026-11-07) : test d'abord depuis le Scenario « un rôle qui porte le nom d'un module déjà accordé est refusé », puis paramètre `taken` de `mount_role` et garde dans ./mcp_mount.rs ; les deux appelants (./interactive/assemble.rs, ../../workflow/subagent_step.rs) passent `taken` (ripple acté : ils sont amendés dans le même lot).
+    Validé 2026-11-07 (validator PASS : garde avant `resolve_role`, hôte jamais consulté, aucun connecteur, deux appelants à jour ; batterie complète 39/39 conforme, `specdd lint` vert, rustdoc sans nouveau warning).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; les `Scenario` existants de ./interactive/assemble.sdd restent verts sans modification ; la spec est
