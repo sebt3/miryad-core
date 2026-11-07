@@ -46,7 +46,7 @@ Must not:
     lire un contexte d'un autre utilisateur ; garder le jeton hors du tour ; inclure un prompt, un secret ou une URL dans une erreur.
 
 Depends on:
-  ../identity.rs, ../mcp_access.rs, ../resource_module.rs, ../store/*.rs, ./hub.rs, ../secret.rs, @zeroize, `lymaille`
+  ../identity.rs, ../mcp_access.rs, ../mcp_mount.rs, ../resource_module.rs, ../store/*.rs, ./hub.rs, ../secret.rs, @zeroize, `lymaille`
 
 Exposes:
   `assemble_session`, `AssembleDeps`, `AssembledSession`
@@ -55,10 +55,11 @@ Tasks:
   [x] Réalignement R9 (DSD `DEC-27, DEC-28`, 2026-11-03) : Après R1, R5, R6, R8 : résoudre contexte (`G_`, privé, `H_` par `resolve_context`) et rôles MCP (`resolve_mcp` puis repli) à l'assemblage ; nature et agent
     par défaut issus du type de contexte ; la session `Config` voit les liaisons de l'hôte en lecture seule, sans client MCP. Spec seule.
   [x] Tests d'abord (SQLite mémoire, `ScriptedProvider`, serveur MCP factice de `lymaille` si disponible, sinon `McpAuth` espion), puis ./assemble.rs. Validé 2026-11-05 (validator PASS checkpoint 5 — 7 Scenario verrouillés, DEC-28 câblé).
-  [ ] Amendement 2026-11-07 (DSD `DEC-27`, arbitrage du développeur principal) : le montage d'un rôle (résolution, auth, connecteur, `mcp_module`) et la couture des
+  [x] Amendement 2026-11-07 (DSD `DEC-27`, arbitrage du développeur principal) : le montage d'un rôle (résolution, auth, connecteur, `mcp_module`) et la couture des
     connecteurs MCP passent dans ../mcp_mount.sdd (`mount_role`, `McpConnectorFactory`) ; `mount_mcp_roles` ne garde que la boucle sur les rôles requis et optionnels
     et la **politique** (requis refusé → l'assemblage échoue ; optionnel refusé → omis, avis `notices`), et ne monte rien pour `Config`. Aucun changement de comportement : les
     `Scenario` ci-dessous restent verts sans modification. Refactor derrière les tests existants, après ../mcp_mount.rs.
+    Validé 2026-11-07 (validator PASS : `mount_mcp_roles` réduit à la boucle et à la politique, Scenario existants verts sans modification ; écart optionnel/Store acté ; batterie complète 38/38 conforme, `specdd lint` vert, rustdoc sans nouveau warning).
     [?] (implementer, 2026-11-07) : seul écart de comportement du refactor — un rôle **optionnel** dont la résolution échoue autrement que par `Forbidden("mcp server unavailable")` (panne de base : `Store`) est désormais fatal, alors qu'il était omis avec avis. Échec fermé plutôt que masquage d'une panne en « serveur indisponible » : à acter (recommandé) ou à rétablir.
   [?] À vérifier à l'ouverture de la tâche dans le source de `lymaille` : la voie exacte pour injecter des clients MCP par rôle dans
     `assemble(...)`/`ScratchpadEngine::builder` et la construction de `TurnRunner` pour une session non batch (le lot 1 n'a assemblé que le batch).

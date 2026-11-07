@@ -44,11 +44,13 @@ Depends on:
   ./mcp_access.rs, ./host.rs, ./identity.rs, ./secret.rs, ./error.rs, ./definitions/mcp_server.rs, @zeroize, @sea_orm, `lymaille`
 
 Exposes:
-  `McpConnectorFactory`, `MountDeps`, `mount_role` (tous `pub(crate)`)
+  `McpConnectorFactory`, `MountDeps`, `mount_role` (tous `pub(crate)`), plus les items de la couture déplacée et nécessaires aux tests et aux appelants : `DynMcpAuth`, `DynMcpConnector`, `DynConnector`,
+    `RmcpConnectorFactory`, `timeout`, `DEFAULT_REQUEST_TIMEOUT`, `DEFAULT_CONNECT_TIMEOUT` (`pub(crate)`, sans autre contrat que celui d'avoir été déplacés tels quels)
 
 Tasks:
-  [ ] Tests d'abord depuis les `Scenario` (SQLite mémoire, hôte factice de ./host.sdd, connecteur espion), puis ./mcp_mount.rs : déplacement de la couture
+  [x] Tests d'abord depuis les `Scenario` (SQLite mémoire, hôte factice de ./host.sdd, connecteur espion), puis ./mcp_mount.rs : déplacement de la couture
     hors de ./interactive/assemble.rs et `mount_role` ; ./interactive/assemble.rs ne garde que la boucle et la politique (amendement ci-dessous).
+    Validé 2026-11-07 (validator PASS : les 7 Scenario ont leur test au Then réel, couture déplacée à l'identique, aucun jeton ni URL tracé ; batterie complète 38/38 conforme, `specdd lint` vert, rustdoc sans nouveau warning).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; les `Scenario` existants de ./interactive/assemble.sdd restent verts sans modification ; la spec est
