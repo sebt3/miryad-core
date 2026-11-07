@@ -18,7 +18,8 @@
 //! Amendement R15 (DSD `DEC-27`, `DEC-29`) : le plafond d'application se règle par
 //! `with_max_secs_ceiling` (l'application qui le change lie `recommended_options_for` à la même
 //! valeur) ; `SubagentDeps::host` donne à `resolve_role` l'autorité de l'hôte sur les rôles MCP
-//! liés, sous le principal du déclencheur.
+//! liés, sous le principal du déclencheur. Le montage des rôles (`./mcp_mount.sdd`, `mount_role`)
+//! ajoute chaque client au moteur du run avant le premier tour : un échec est fatal.
 //! Aucune erreur, aucune trace ne contient un prompt, un secret, un contenu de session ou de
 //! ressource.
 
@@ -54,6 +55,8 @@ use ::lymaille::InferenceError;
 use ::lymaille::InferenceProvider;
 use ::lymaille::InferenceRequest;
 use ::lymaille::InferenceResponse;
+use ::lymaille::McpEnv;
+use ::lymaille::McpRetryPolicy;
 use ::lymaille::MemoryLevel;
 use ::lymaille::MemoryScopes;
 use ::lymaille::ModelSnapshot;
@@ -100,7 +103,7 @@ use crate::lymaille::error::LymailleError;
 use crate::lymaille::host::SharedHost;
 use crate::lymaille::identity::{CallerPrincipal, Identity, check_grants};
 use crate::lymaille::install_crypto_provider;
-use crate::lymaille::mcp_access::{RoleBinding, build_auth, resolve_role};
+use crate::lymaille::mcp_mount::{McpConnectorFactory, MountDeps, RmcpConnectorFactory, mount_role};
 use crate::lymaille::resource_module::{ResourceRegistry, resources_module};
 use crate::lymaille::secret::SecretResolver;
 use crate::lymaille::store::LymailleStores;
@@ -242,17 +245,23 @@ pub struct SubagentStep {
     /// [`DEFAULT_LONG_CEILING_SECS`] ; l'application qui le change lie le handler
     /// `execute_long` à la même valeur par `recommended_options_for` (./dispatcher.sdd).
     max_secs_ceiling: u64,
+    /// Couture des connecteurs MCP du montage (`./mcp_mount.sdd`) : [`RmcpConnectorFactory`] en
+    /// production, un connecteur espion en test. Privée (amendement DEC-27, accord du développeur
+    /// principal) : `SubagentDeps` garde sa forme de littéral publique.
+    mcp: Arc<dyn McpConnectorFactory>,
 }
 
 impl SubagentStep {
-    /// Construit le step autour des dépendances de l'application, avec la fabrique `rig` et le
-    /// plafond d'application par défaut ([`DEFAULT_LONG_CEILING_SECS`], DEC-29).
+    /// Construit le step autour des dépendances de l'application, avec les fabriques de
+    /// production (`rig`, `rmcp`) et le plafond d'application par défaut
+    /// ([`DEFAULT_LONG_CEILING_SECS`], DEC-29).
     #[must_use]
     pub fn new(deps: SubagentDeps) -> Self {
         Self {
             deps,
             inference: Arc::new(RigInferenceFactory),
             max_secs_ceiling: DEFAULT_LONG_CEILING_SECS,
+            mcp: Arc::new(RmcpConnectorFactory),
         }
     }
 
@@ -280,10 +289,22 @@ impl SubagentStep {
     /// un `ScriptedProvider` remplace `RigProvider`, aucun réseau).
     #[cfg(test)]
     fn with_inference(deps: SubagentDeps, factory: Arc<dyn InferenceFactory>) -> Self {
+        Self::with_seams(deps, factory, Arc::new(RmcpConnectorFactory))
+    }
+
+    /// Construit le step avec les deux coutures de test : inférence (`ScriptedProvider`) et
+    /// connecteurs MCP (espion). Aucun réseau.
+    #[cfg(test)]
+    fn with_seams(
+        deps: SubagentDeps,
+        factory: Arc<dyn InferenceFactory>,
+        mcp: Arc<dyn McpConnectorFactory>,
+    ) -> Self {
         Self {
             deps,
             inference: factory,
             max_secs_ceiling: DEFAULT_LONG_CEILING_SECS,
+            mcp,
         }
     }
 }
@@ -560,53 +581,67 @@ fn context_roles(context: &ToolsetContext) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-/// Fin de l'étape 7, amendements lot 2 (DSD `DEC-20`) et R15 (DSD `DEC-27`) : les rôles MCP du
-/// contexte lié à la session (`CONTEXT_TYPE`, relu sous le sujet du déclencheur) passent par
-/// `mcp_access` — `resolve_role` **avec l'hôte de `SubagentDeps`** quand l'application en fournit
-/// un (sa décision fait foi, sous le principal du déclencheur, sans repli ; priorité sur la
-/// table), puis, pour une liaison de table, `build_auth` avec `interactive_token = None` : un
-/// serveur `forward` échoue le step en `StepError` **non retryable**, comme un serveur refusé
-/// (`Forbidden`) ou un refus de l'hôte, sans repli. Un `RoleBinding::Host` ouvre la porte — le
-/// jeton de l'hôte n'est ni persisté ni tracé, le `Grant` est jeté ici (la porte est un contrôle,
-/// pas un montage : question `[?]` du lot 2). Aucun texte de l'hôte ne remonte : `HostError` est
-/// sans contenu (`../lymaille/host.sdd`).
-async fn check_context_roles(
+/// Échec d'un montage de rôle MCP (étape 7) : message de [`from_lymaille`], `retryable: false`
+/// forcé. Le montage précède le premier tour ; un rejeu ne changerait ni un refus d'autorité ni
+/// une panne de base qu'on ne veut pas relancer en silence (`./subagent_step.sdd`, Must étape 7).
+fn mount_failure(error: &LymailleError) -> StepError {
+    StepError {
+        retryable: false,
+        ..from_lymaille(error)
+    }
+}
+
+/// Fin de l'étape 7 (DSD `DEC-27`, `DEC-20`) : chaque rôle MCP du contexte lié à la session
+/// (`CONTEXT_TYPE`, relu sous le sujet du déclencheur) est **monté** en client par `mount_role`
+/// (`./mcp_mount.sdd`), `interactive_token = None`, sous le principal du déclencheur. Les modules
+/// obtenus rejoignent les modules accordés du run. Tout échec (refus, panne de l'hôte, `forward`,
+/// nom invalide) est fatal et précède le premier tour, sans avis ni repli. Le `Grant` de l'hôte
+/// n'est ni persisté ni tracé ; aucun texte de l'hôte ne remonte dans l'erreur.
+async fn mount_context_roles(
     step: &SubagentStep,
-    stores: &LymailleStores,
-    caller: &CallerPrincipal,
-) -> Result<(), StepError> {
-    let context: Option<ToolsetContext> = stores
+    resolved: &Resolved,
+    session_id: &SessionId,
+    sink: &Arc<dyn EventSink>,
+    clock: &Arc<dyn ::lymaille::Clock>,
+) -> Result<Vec<GrantedModule>, StepError> {
+    let context: Option<ToolsetContext> = resolved
+        .stores
         .contexts()
         .get_context(CONTEXT_TYPE)
         .await
         .map_err(from_toolsets)?;
     let Some(context) = context else {
-        return Ok(());
+        return Ok(Vec::new());
     };
+    let deps = MountDeps {
+        db: &step.deps.db,
+        secrets: &step.deps.secrets,
+        host: step.deps.host.as_ref(),
+        mcp: step.mcp.as_ref(),
+    };
+    let mut mounted = Vec::new();
     for (role, server) in context_roles(&context) {
-        let binding = resolve_role(
-            step.deps.host.as_deref(),
-            &step.deps.db,
-            caller,
+        let env = McpEnv::new(
+            Arc::new(::lymaille::Redactor::new()),
+            Arc::clone(sink),
+            Arc::clone(clock),
+            session_id.clone(),
+            McpRetryPolicy::default(),
+        );
+        let module = mount_role(
+            &deps,
+            &resolved.caller,
             CONTEXT_TYPE,
             &role,
             Some(&server),
+            None,
+            env,
         )
         .await
-        .map_err(|error| from_lymaille(&error))?;
-        match binding {
-            RoleBinding::Table(model) => {
-                // `interactive_token = None` : le step n'est pas une session interactive ; un
-                // mode `forward` rend ici `Forbidden(« forward auth needs an interactive session »)`.
-                build_auth(&model, Arc::clone(&step.deps.secrets), None)
-                    .map_err(|error| from_lymaille(&error))?;
-            }
-            // DEC-27 : l'hôte a accordé un jeton non expiré sous le déclencheur — la porte
-            // s'ouvre, le `Grant` n'est ni persisté ni tracé (jeté au drop de cette branche).
-            RoleBinding::Host(_) => {}
-        }
+        .map_err(|error| mount_failure(&error))?;
+        mounted.push(module);
     }
-    Ok(())
+    Ok(mounted)
 }
 
 /// Moteur du run, collecteur de ses résultats soumission et contexte assemblé (étapes 7 et 9).
@@ -802,7 +837,7 @@ impl MiryadWorkflowStep for SubagentStep {
             run_key: run.run_key.clone(),
             step_key: run.step_id.clone(),
         };
-        let granted = granted_modules(
+        let mut granted = granted_modules(
             &ModuleHost {
                 step: self,
                 stores: &resolved.stores,
@@ -814,9 +849,10 @@ impl MiryadWorkflowStep for SubagentStep {
             },
             resolved.definition.modules(),
         )?;
-        // Rôles MCP du contexte lié (amendement lot 2, DSD `DEC-20`) : refus ou `forward` sont des
-        // échecs non retryables, avant que le run commence.
-        check_context_roles(self, &resolved.stores, &resolved.caller).await?;
+        // Rôles MCP du contexte lié (DSD `DEC-27`, `DEC-20`) : chaque rôle est monté en client
+        // dans le moteur du run ; refus, panne ou `forward` sont des échecs non retryables, avant
+        // le premier tour.
+        granted.extend(mount_context_roles(self, &resolved, &session_id, &sink, &clock).await?);
         let parts = assemble_and_engine(&resolved.stores, &resolved.definition, granted, &schema).await?;
 
         // ── 8. session déterministe : reprise, ou état neuf `Sub` ──
@@ -874,6 +910,7 @@ mod tests {
 
     use crate::lymaille::definitions::mcp_server;
     use crate::lymaille::host::{HostError, LymailleHost, McpDecision, McpGrant, McpRequest};
+    use crate::lymaille::mcp_mount::{DynMcpAuth, DynMcpConnector};
     use crate::lymaille::store::test_support::test_db;
     use crate::resource::{AccessPolicy, MiryadResource};
     use crate::users::membership::sync_group_memberships;
@@ -885,6 +922,7 @@ mod tests {
     use ::lymaille::RHAI_PAD_TOOL;
     use ::lymaille::ScriptedProvider;
     use ::lymaille::ToolCall;
+    use ::lymaille::{McpConnector, McpError, McpLister, McpTool};
     use sea_orm::ActiveValue::Set;
     use sea_orm::ConnectionTrait as _;
     use sea_orm::Schema;
@@ -892,6 +930,8 @@ mod tests {
     use sea_orm::sea_query::ExprTrait as _;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // ── fixtures ------------------------------------------------------------------------------
 
@@ -1209,8 +1249,9 @@ mod tests {
         db: DatabaseConnection,
         factory: Arc<dyn InferenceFactory>,
         host: SharedHost,
+        mcp: Arc<dyn McpConnectorFactory>,
     ) -> SubagentStep {
-        SubagentStep::with_inference(
+        SubagentStep::with_seams(
             SubagentDeps {
                 db,
                 secrets: Arc::new(FixedSecret("s3cret")),
@@ -1218,6 +1259,7 @@ mod tests {
                 host: Some(host),
             },
             factory,
+            mcp,
         )
     }
 
@@ -1861,13 +1903,17 @@ mod tests {
         lier_contexte(&db, "alice", &[("sandbox", "srv_hote")]).await;
         lier_contexte(&db, "bob", &[("sandbox", "srv_hote")]).await;
         let hote: SharedHost = Arc::new(HoteParSujet);
+        let spy = Arc::new(SpyMcp::default());
+        let mcp: Arc<dyn McpConnectorFactory> = spy.clone();
 
-        // Sous `alice` : l'hôte accorde le rôle, la porte s'ouvre et le run va à son terme.
+        // Sous `alice` : l'hôte accorde le rôle, le client est monté (connecteur espion) et le
+        // run va à son terme.
         let alice_provider = Arc::new(ScriptedProvider::new(vec![Ok(pad_call(SUBMIT_OK))]));
         let alice_step = step_with_host(
             db.clone(),
             Arc::new(ScriptFactory(Arc::clone(&alice_provider))),
             Arc::clone(&hote),
+            Arc::clone(&mcp),
         );
         let alice_run = run_info("t-hote-alice", "s1", Some("alice"));
         let output = alice_step
@@ -1879,6 +1925,11 @@ mod tests {
             !alice_provider.requests().is_empty(),
             "le rôle accordé, le run part à l'inférence"
         );
+        assert_eq!(
+            spy.montes(),
+            vec!["https://sbx.example/mcp".to_owned()],
+            "le client de l'hôte est monté sur l'URL du Grant"
+        );
 
         // Sous `bob` : refus fermé de l'hôte, non retryable, sur la phrase fixe — pas celle du
         // repli `forward` (aucun repli sur la table), et rien qui vienne de l'hôte.
@@ -1887,6 +1938,7 @@ mod tests {
             db.clone(),
             Arc::new(ScriptFactory(Arc::clone(&bob_provider))),
             Arc::clone(&hote),
+            Arc::clone(&mcp),
         );
         let bob_run = run_info("t-hote-bob", "s1", Some("bob"));
         let error = bob_step
@@ -1925,5 +1977,298 @@ mod tests {
                 .contains("forward auth needs an interactive session"),
             "le repli sur la ligne `forward` est refusé : {refus}"
         );
+    }
+
+    // ── Montage du client hôte et des serveurs de la table (`./mcp_mount.sdd`) ──────────────
+
+    /// Espion des connecteurs MCP : chaque montage est noté (URL) ; à chaque relevé (listage au
+    /// montage, appel d'outil), la présence d'un porteur est notée. `McpHeaders` ne montre que la
+    /// présence du jeton : la fraîcheur du jeton est prouvée par le compteur de l'hôte.
+    #[derive(Default)]
+    struct SpyMcp {
+        montes: Mutex<Vec<String>>,
+        releves: Arc<Mutex<Vec<(String, bool)>>>,
+    }
+
+    impl SpyMcp {
+        fn montes(&self) -> Vec<String> {
+            self.montes.lock().expect("verrou de l'espion").clone()
+        }
+
+        fn releves(&self) -> Vec<(String, bool)> {
+            self.releves.lock().expect("verrou de l'espion").clone()
+        }
+    }
+
+    impl McpConnectorFactory for SpyMcp {
+        fn make(
+            &self,
+            url: &str,
+            _request_timeout: Duration,
+            _connect_timeout: Duration,
+            auth: Option<Arc<dyn DynMcpAuth>>,
+        ) -> Arc<dyn DynMcpConnector> {
+            self.montes
+                .lock()
+                .expect("verrou de l'espion")
+                .push(url.to_owned());
+            Arc::new(SpyConnector {
+                url: url.to_owned(),
+                auth,
+                releves: Arc::clone(&self.releves),
+            })
+        }
+    }
+
+    /// Connecteur espion : sans réseau, relève la présence d'un porteur à chaque relevé.
+    struct SpyConnector {
+        url: String,
+        auth: Option<Arc<dyn DynMcpAuth>>,
+        releves: Arc<Mutex<Vec<(String, bool)>>>,
+    }
+
+    impl SpyConnector {
+        async fn relever(&self) -> Result<(), McpError> {
+            let porteur = match &self.auth {
+                Some(auth) => format!("{:?}", auth.headers_dyn().await?).contains("bearer: true"),
+                None => false,
+            };
+            self.releves
+                .lock()
+                .expect("verrou de l'espion")
+                .push((self.url.clone(), porteur));
+            Ok(())
+        }
+    }
+
+    impl McpLister for SpyConnector {
+        async fn list_tools(&self) -> Result<Vec<McpTool>, McpError> {
+            self.relever().await?;
+            Ok(vec![McpTool::new("ping", "le ping", json!({"type": "object"}))])
+        }
+    }
+
+    impl McpConnector for SpyConnector {
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: &serde_json::Value,
+        ) -> Result<serde_json::Value, McpError> {
+            self.relever().await?;
+            Ok(json!({"pong": true}))
+        }
+
+        fn reconnect(&self) -> impl Future<Output = ()> + Send {
+            std::future::ready(())
+        }
+    }
+
+    /// Hôte du `Scenario` « client de l'hôte » : accorde `sandbox` au seul `alice`, avec un jeton
+    /// différent à chaque décision. Le compteur de décisions est relu par le test.
+    struct HoteRotatif {
+        appels: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl LymailleHost for HoteRotatif {
+        async fn resolve_mcp(
+            &self,
+            request: &McpRequest<'_>,
+            caller: &CallerPrincipal,
+        ) -> Result<McpDecision, HostError> {
+            let rang = self.appels.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+            if request.role == "sandbox" && caller.subject == "alice" {
+                Ok(McpDecision::Granted(McpGrant {
+                    url: "https://sbx.example/mcp".to_owned(),
+                    token: Zeroizing::new(format!("jeton-{rang}")),
+                    expires_at: None,
+                }))
+            } else {
+                Ok(McpDecision::Denied)
+            }
+        }
+    }
+
+    /// Hôte qui refuse tout rôle, à tout sujet (`Scenario` « rôle refusé »).
+    struct HoteRefusant;
+
+    #[async_trait::async_trait]
+    impl LymailleHost for HoteRefusant {
+        async fn resolve_mcp(
+            &self,
+            _request: &McpRequest<'_>,
+            _caller: &CallerPrincipal,
+        ) -> Result<McpDecision, HostError> {
+            Ok(McpDecision::Denied)
+        }
+    }
+
+    /// Ligne `static` de la table, référence d'authentification `FIXED_KEY` (résolue en test).
+    async fn inserer_serveur_statique(db: &DatabaseConnection, nom: &str) {
+        use sea_orm::ActiveValue::NotSet;
+        let actif = mcp_server::ActiveModel {
+            id: NotSet,
+            name: Set(nom.to_owned()),
+            url: Set("https://mcp.example/".to_owned()),
+            request_timeout_secs: Set(30),
+            connect_timeout_secs: Set(5),
+            auth_mode: Set("static".to_owned()),
+            auth_ref: Set(Some("FIXED_KEY".to_owned())),
+            allowed_groups: Set(json!(["all"])),
+            created_at: Set(chrono::Utc::now()),
+        };
+        actif
+            .insert(db)
+            .await
+            .expect("ligne mcp_servers statique de test");
+    }
+
+    /// Le step des `Scenario` de montage : la couture d'inférence et la couture MCP, sans hôte
+    /// sauf fourni.
+    fn step_with_seams(
+        db: DatabaseConnection,
+        factory: Arc<dyn InferenceFactory>,
+        host: Option<SharedHost>,
+        mcp: Arc<dyn McpConnectorFactory>,
+    ) -> SubagentStep {
+        SubagentStep::with_seams(
+            SubagentDeps {
+                db,
+                secrets: Arc::new(FixedSecret("s3cret")),
+                registry: Arc::new(ResourceRegistry::new()),
+                host,
+            },
+            factory,
+            mcp,
+        )
+    }
+
+    /// Script qui appelle deux fois l'outil du rôle `sandbox`, puis soumet le résultat.
+    const SCRIPT_DEUX_APPELS: &str =
+        r#"sandbox::ping(#{}); sandbox::ping(#{}); result::submit(#{ verdict: "ok" })"#;
+
+    /// Script qui appelle une fois l'outil du rôle `outil`, puis soumet le résultat.
+    const SCRIPT_APPEL_OUTIL: &str = r#"outil::ping(#{}); result::submit(#{ verdict: "ok" })"#;
+
+    // ── Scenario: le client de l'hôte est monté et son jeton redemandé à chaque appel ──────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn le_client_de_lhote_est_monte_et_son_jeton_redemande_a_chaque_appel() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "root", true).await;
+        wire_catalog(&db).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        inserer_serveur(&db, "srv_hote", "forward", json!(["all"])).await;
+        lier_contexte(&db, "alice", &[("sandbox", "srv_hote")]).await;
+        let hote = Arc::new(HoteRotatif {
+            appels: AtomicUsize::new(0),
+        });
+        let shared: SharedHost = hote.clone();
+        let spy = Arc::new(SpyMcp::default());
+        let mcp: Arc<dyn McpConnectorFactory> = spy.clone();
+        let provider = Arc::new(ScriptedProvider::new(vec![Ok(pad_call(SCRIPT_DEUX_APPELS))]));
+        let step = step_with_seams(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider))),
+            Some(shared),
+            mcp,
+        );
+        let run = run_info("t-client-hote", "s1", Some("alice"));
+
+        let output = step
+            .run(&run, config("G_sub", "inspecter"), HashMap::new())
+            .await
+            .expect("le client de l'hôte est monté : le run aboutit");
+
+        assert_eq!(output, json!({ "verdict": "ok" }));
+        assert_eq!(spy.montes(), vec!["https://sbx.example/mcp".to_owned()]);
+        // Listage au montage, puis deux appels d'outil : trois relevés porteurs.
+        assert_eq!(
+            spy.releves(),
+            vec![("https://sbx.example/mcp".to_owned(), true); 3]
+        );
+        // Une décision au montage, puis une par relevé : aucun jeton gardé entre deux relevés.
+        assert_eq!(hote.appels.load(Ordering::SeqCst), 4);
+    }
+
+    // ── Scenario: un serveur static lié au contexte est monté en batch ────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_serveur_static_lie_au_contexte_est_monte_en_batch() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "root", true).await;
+        wire_catalog(&db).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        inserer_serveur_statique(&db, "srv_stat").await;
+        lier_contexte(&db, "alice", &[("outil", "srv_stat")]).await;
+        let spy = Arc::new(SpyMcp::default());
+        let mcp: Arc<dyn McpConnectorFactory> = spy.clone();
+        let provider = Arc::new(ScriptedProvider::new(vec![Ok(pad_call(SCRIPT_APPEL_OUTIL))]));
+        let step = step_with_seams(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider))),
+            None,
+            mcp,
+        );
+        let run = run_info("t-static", "s1", Some("alice"));
+
+        let output = step
+            .run(&run, config("G_sub", "inspecter"), HashMap::new())
+            .await
+            .expect("le serveur static lié est monté en batch");
+
+        assert_eq!(output, json!({ "verdict": "ok" }));
+        assert_eq!(spy.montes(), vec!["https://mcp.example/".to_owned()]);
+        // Listage au montage puis appel de l'outil : deux relevés, chacun avec l'en-tête résolu.
+        assert_eq!(spy.releves(), vec![("https://mcp.example/".to_owned(), true); 2]);
+    }
+
+    // ── Scenario: un rôle MCP refusé échoue le step avant tout tour ───────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_role_mcp_refuse_echoue_le_step_avant_tout_tour() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "bob", false).await;
+        user(&db, "root", true).await;
+        wire_catalog(&db).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        inserer_serveur(&db, "srv_hote", "forward", json!(["all"])).await;
+        // Deux rôles refusés : le rôle `sandbox` d'alice, et le rôle `annexe` de bob (le
+        // contexte batch n'a pas de rôle optionnel : tout rôle refusé est fatal).
+        lier_contexte(&db, "alice", &[("sandbox", "srv_hote")]).await;
+        lier_contexte(&db, "bob", &[("annexe", "srv_hote")]).await;
+        let hote: SharedHost = Arc::new(HoteRefusant);
+
+        for (sujet, cle) in [("alice", "t-refus-alice"), ("bob", "t-refus-bob")] {
+            let spy = Arc::new(SpyMcp::default());
+            let mcp: Arc<dyn McpConnectorFactory> = spy.clone();
+            let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+            let step = step_with_seams(
+                db.clone(),
+                Arc::new(ScriptFactory(Arc::clone(&provider))),
+                Some(Arc::clone(&hote)),
+                mcp,
+            );
+            let run = run_info(cle, "s1", Some(sujet));
+
+            let error = step
+                .run(&run, config("G_sub", "inspecter"), HashMap::new())
+                .await
+                .expect_err("un rôle MCP refusé par l'hôte échoue le step");
+
+            assert!(!error.retryable, "refus de l'hôte, non retryable : {error}");
+            assert!(
+                error.message.contains("mcp server unavailable"),
+                "phrase fermée du refus : {error}"
+            );
+            assert!(spy.montes().is_empty(), "aucun client monté pour {sujet}");
+            assert!(
+                provider.requests().is_empty(),
+                "aucune inférence avant le premier tour pour {sujet}"
+            );
+        }
     }
 }

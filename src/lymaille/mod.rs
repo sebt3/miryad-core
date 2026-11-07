@@ -64,8 +64,9 @@ pub mod identity;
 pub mod mcp_access;
 
 /// Montage d'un client MCP par rôle, commun aux sessions interactives et au step batch
-/// (`src/lymaille/mcp_mount.sdd`), privé : aucun ré-export à plat, surface `pub(crate)`.
-mod mcp_mount;
+/// (`src/lymaille/mcp_mount.sdd`), `pub(crate)` : aucun ré-export à plat ; le step batch
+/// (`crate::workflow::subagent_step`) y accède par ce chemin.
+pub(crate) mod mcp_mount;
 
 /// Migrations SeaORM internes du module (`src/lymaille/migration.sdd`), privées : l'API est le
 /// ré-export `migrations` ci-dessous, assemblé par `crate::migration::Migrator` sous `lymaille`.
