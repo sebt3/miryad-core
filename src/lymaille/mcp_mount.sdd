@@ -1,0 +1,88 @@
+Spec: mcp_mount — montage d'un client MCP par rôle, commun à la session interactive et au step batch
+
+Purpose:
+  Porter en **un seul endroit** le montage d'un rôle MCP lié à un contexte (DSD `DEC-27`, `DEC-20`, `FR-9`, `FR-14`) : résoudre la liaison du rôle
+    (hôte d'abord, repli sur la table des serveurs, ./mcp_access.sdd), construire l'authentification qui convient, créer le connecteur, le
+    transformer en module Rhai accordé. La session interactive (./interactive/assemble.sdd) et le step batch `subagent`
+    (../workflow/subagent_step.sdd) y passent tous deux : la logique sensible (jetons, échec fermé) n'a qu'une copie. Ce fichier porte aussi la
+    couture des connecteurs MCP (fabrique de production et adaptateur objet), déplacée de ./interactive/assemble.rs pour que ni l'interactif ni le
+    batch ne dépende de l'autre. La **politique** d'un rôle refusé (fatal ou avis) reste chez l'appelant. Fichier neuf, conception ;
+    amendement de ./interactive/assemble.sdd et de ../workflow/subagent_step.sdd dans le même lot.
+
+Owns:
+  ./mcp_mount.rs
+
+References:
+  /dsd/miryad-core/lymaille.md — `DEC-20`, `DEC-27`, `FR-9`, `FR-14`, `AC-18`
+  ./mcp_access.sdd — `resolve_role`, `RoleBinding`, `build_auth`, `SeaHostMcpAuth` ; ./host.sdd — @SharedHost ; ./identity.sdd — @CallerPrincipal, @Identity ;
+  ./secret.sdd — @SecretResolver ; ./interactive/assemble.sdd — appelant interactif ; ../workflow/subagent_step.sdd — appelant batch
+  `lymaille::modules::mcp_client` — `McpConnector`, `McpAuth`, `RmcpConnector`, `mcp_module`
+
+Must:
+  `pub(crate) trait McpConnectorFactory: Send + Sync` et sa fabrique de production (un `RmcpConnector` par rôle, streamable HTTP), `DynConnector`
+    et les traits objets associés : **déplacés tels quels** de ./interactive/assemble.rs, sans changement de comportement. La couture reste `pub(crate)` :
+    la production pose la fabrique réelle, les tests injectent un connecteur espion.
+  `pub(crate) async fn mount_role(deps: &MountDeps<'_>, caller: &CallerPrincipal, context: &str, role: &str, bound_server: Option<&str>, interactive_token: Option<&Zeroizing<String>>, env: McpEnv) -> Result<GrantedModule, LymailleError>` :
+    1. `resolve_role(deps.host, deps.db, caller, context, role, bound_server)` — son erreur remonte telle quelle (`Forbidden("mcp server unavailable")`) ;
+    2. `RoleBinding::Host(grant)` → connecteur vers `grant.url` avec `SeaHostMcpAuth::new(host, Identity, caller.subject, context, role)` : le jeton est
+      redemandé à **chaque** appel d'outil, jamais gardé ; l'hôte est requis (une liaison `Host` sans hôte → `Config`, échec fermé) ;
+    3. `RoleBinding::Table(model)` → `build_auth(&model, secrets, interactive_token)` puis connecteur vers `model.url` avec les timeouts du serveur :
+      `static` et `none` sont montés ; `forward` sans jeton interactif → `Forbidden("forward auth needs an interactive session")` ;
+    4. `mcp_module(role, connecteur, env)` puis `GrantedModule::new(role, module)` ; un nom de rôle invalide → `InvalidDefinition`.
+  `pub(crate) struct MountDeps<'a>` : `db`, `secrets`, `host: Option<&SharedHost>`, `mcp: &dyn McpConnectorFactory`. Emprunts seulement : le
+    constructeur de l'appelant garde la propriété.
+  Le `Grant` de l'hôte n'est ni persisté ni tracé : l'URL est consommée à la construction du connecteur, le jeton n'est jamais lu ici.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Décider la politique d'un rôle refusé (fatal ou avis) ; mettre en cache le droit, l'URL ou le jeton ; distinguer « absent » et « non autorisé » ;
+    inclure un texte de l'hôte dans une erreur ; monter un client pour une session `Config` (l'appelant ne l'appelle pas).
+
+Depends on:
+  ./mcp_access.rs, ./host.rs, ./identity.rs, ./secret.rs, ./error.rs, ./definitions/mcp_server.rs, @zeroize, @sea_orm, `lymaille`
+
+Exposes:
+  `McpConnectorFactory`, `MountDeps`, `mount_role` (tous `pub(crate)`)
+
+Tasks:
+  [ ] Tests d'abord depuis les `Scenario` (SQLite mémoire, hôte factice de ./host.sdd, connecteur espion), puis ./mcp_mount.rs : déplacement de la couture
+    hors de ./interactive/assemble.rs et `mount_role` ; ./interactive/assemble.rs ne garde que la boucle et la politique (amendement ci-dessous).
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; les `Scenario` existants de ./interactive/assemble.sdd restent verts sans modification ; la spec est
+    relue et approuvée avant ./mcp_mount.rs.
+
+Scenario: un rôle servi par l'hôte monte un client dont le jeton est redemandé à chaque appel
+  Given un hôte qui accorde `sandbox` à `alice` avec un jeton qui change à chaque `resolve_mcp`, et un connecteur espion
+  When `mount_role` est appelé puis deux outils du module sont appelés
+  Then le client vise l'URL du `Grant`, l'espion a vu deux jetons différents, et aucun jeton n'est resté dans le module
+
+Scenario: un rôle refusé par l'hôte n'est pas monté
+  Given un hôte qui refuse `sandbox` à `bob`
+  When `mount_role` est appelé pour `bob`
+  Then `Forbidden("mcp server unavailable")` et aucun connecteur n'est créé
+
+Scenario: un serveur static est monté avec son en-tête
+  Given un serveur de la table en mode `static` lié au rôle, sans hôte
+  When `mount_role` est appelé avec `interactive_token = None`
+  Then le module est accordé et l'espion reçoit `Authorization: Bearer <secret résolu>`
+
+Scenario: un serveur sans authentification est monté sans en-tête
+  Given un serveur de la table en mode `none` lié au rôle
+  When `mount_role` est appelé
+  Then le module est accordé et l'espion ne reçoit aucun en-tête d'authentification
+
+Scenario: un serveur forward sans jeton interactif est refusé
+  Given un serveur en mode `forward` lié au rôle
+  When `mount_role` est appelé avec `interactive_token = None`, puis avec un jeton
+  Then `Forbidden("forward auth needs an interactive session")`, puis un module accordé dont le jeton n'atteint que ce serveur
+
+Scenario: un jeton hôte expiré fait échouer le montage
+  Given un hôte dont le `Grant` est déjà expiré
+  When `mount_role` est appelé
+  Then `Forbidden("mcp server unavailable")`, sans texte de l'hôte
+
+Scenario: une liaison hôte sans hôte est un échec fermé
+  Given un `RoleBinding::Host` obtenu puis un `MountDeps` dont `host` est `None`
+  When `mount_role` poursuit le montage
+  Then `LymailleError::Config`

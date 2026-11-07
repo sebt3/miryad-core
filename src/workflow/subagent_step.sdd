@@ -116,9 +116,15 @@ Tasks:
     Arbitrages du 2026-11-06 (développeur principal), à appliquer en spec puis en code :
     [x] Volet alice : le `Then` est amendé (porte ouverte, grant jeté) ; le montage du client hôte sort de R15 vers la tâche « Montage du client hôte » ci-dessous.
     [x] Littéral du Scenario « config invalide » figé à `3601` (plafond d'application par défaut + 1).
-    [ ] Retirer `MAX_SECS_CEILING` de ./subagent_step.rs (plus d'usage normatif, retiré de l'`Exposes`) et corriger le commentaire de `DEFAULT_MAX_SECS`/plafond qui le cite. Code seul, Haiku.
+    [x] Retirer `MAX_SECS_CEILING` de ./subagent_step.rs (plus d'usage normatif, retiré de l'`Exposes`) et corriger le commentaire de `DEFAULT_MAX_SECS`/plafond qui le cite. Code seul, Haiku. Validé 2026-11-07 (validator PASS : constante absente du code et de l'`Exposes`, batterie complète 38/38 conforme).
     [x] `Depends on` corrigé (../lymaille/host.rs, ../lymaille/mcp_access.rs).
-  [ ] Montage du client hôte (DSD `DEC-27` : « appelé à l'assemblage et à chaque appel d'outil ») : monter le client MCP du `Grant` hôte à l'assemblage et le ré-évaluer à chaque appel d'outil ; le `Grant` n'est jamais persisté ni tracé. Couvre aussi le `[?]` « serveur `static`/`none` jamais monté » du lot 2. Spec à détailler (Must, Scenario) et à faire approuver avant tout code.
+  [ ] Montage du client hôte (DSD `DEC-27` : « appelé à l'assemblage et à chaque appel d'outil ») — amendement approuvé le 2026-11-07 (développeur principal) : chaque rôle MCP du contexte lié est **monté**
+    en client dans le moteur du run par `mount_role` de ../lymaille/mcp_mount.sdd (remplace la porte `check_context_roles`, qui disparaît), avec `interactive_token = None`, sous le principal du déclencheur.
+    `SubagentDeps` gagne la couture `mcp: Arc<dyn McpConnectorFactory>` (`pub(crate)`, fabrique de production par défaut, comme `AssembleDeps`), l'horloge système et un `EventSink` sans effet
+    (le batch n'a pas de hub). Un rôle MCP refusé, en panne de l'hôte ou `forward` est **toujours fatal** en batch : `StepError` non retryable, avant le premier tour, sans repli ni avis
+    (pas de dérive d'un rejeu). Le `Grant` n'est ni persisté ni tracé. Solde le `[?]` du lot 2 « serveur `static`/`none` jamais monté ». Tests d'abord depuis les `Scenario` ci-dessous, puis ./subagent_step.rs,
+    après ../lymaille/mcp_mount.rs.
+    Les `Scenario` « rôle MCP fourni par l'hôte » et « un serveur MCP en forward » ci-dessous sont amendés dans ce lot (le `Then` d'alice passe de « porte ouverte, grant jeté » à « client monté »).
   [x] Amendement lot 2 : `ResourceRegistry` + `WriteScope`, rôles MCP via `mcp_access`, scenarios (rejeu sans doublon d'écriture, `forward` refusé) d'abord, puis ./subagent_step.rs. Après ../lymaille/resource_module.rs et ../lymaille/mcp_access.rs.
     Validé 2026-11-06 (validator PASS : les deux Scenario ont leur test au Then réel — rejeu dédupliqué par le journal sous les clés du step, même `create` ré-émis sous un autre id d'appel ; forward → `StepError` non retryable au message exact de ../lymaille/mcp_access.rs, aucune inférence ; `check_context_roles` avant tout effet de bord, R15 non touché (attendu) ; workflow et workflow,lymaille verts en tests et clippy `-D warnings`, `fmt`).
     [?] (implementer et validator) : `CONTEXT_TYPE` renommé `workflow-subagent` → `workflow_subagent` — le premier était mort-né (@classify refuse le `-`, `get_context` rendait `Ok(None)` sans requête) ; le littéral n'est figé dans aucune spec. C'est une surface effective : c'est sous ce nom que l'utilisateur lie son contexte. Le contractualiser (`Must`/`Exposes`, voire `pub const`) ou l'assumer comme détail de fichier ?
@@ -203,3 +209,18 @@ Scenario: un rôle MCP fourni par l'hôte est résolu sous le déclencheur (DEC-
   Given un hôte qui accorde le rôle `sandbox` au subject `alice` et le refuse à `bob`, et un step déclenché par `alice` puis par `bob`
   When le step est exécuté dans chaque cas
   Then pour `alice` la décision de l'hôte fait foi : la porte (`resolve_role`) est ouverte et le `Grant` est jeté, sans montage du serveur (le montage relève de la tâche dédiée ci-dessous) ; pour `bob` le step échoue (`retryable: false`) sans message de l'hôte
+
+Scenario: le client de l'hôte est monté et son jeton redemandé à chaque appel (DEC-27, tâche « Montage du client hôte »)
+  Given un hôte qui accorde `sandbox` à `alice` avec un jeton qui change à chaque `resolve_mcp`, un connecteur espion, et un agent qui appelle deux fois l'outil du rôle
+  When le step déclenché par `alice` est exécuté
+  Then le client vise l'URL du `Grant`, l'espion voit deux jetons différents, et le journal, la session et les erreurs ne contiennent ni l'URL ni un jeton
+
+Scenario: un serveur static lié au contexte est monté en batch
+  Given un contexte dont le rôle est lié à un serveur `static`, sans hôte, et un agent qui appelle l'outil du rôle
+  When le step est exécuté
+  Then l'outil est appelé sur le connecteur espion avec l'en-tête `Authorization` résolu, et le résultat du step est la sortie validée
+
+Scenario: un rôle MCP refusé échoue le step avant tout tour
+  Given un hôte qui refuse le rôle au déclencheur, puis un rôle déclaré optionnel par le type de contexte et refusé de la même façon
+  When le step est exécuté dans chaque cas
+  Then `StepError { retryable: false }` dans les deux cas, sans avis ni run commencé, et aucune requête d'inférence
