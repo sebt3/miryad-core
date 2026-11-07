@@ -2080,7 +2080,7 @@ mod tests {
             if request.role == "sandbox" && caller.subject == "alice" {
                 Ok(McpDecision::Granted(McpGrant {
                     url: "https://sbx.example/mcp".to_owned(),
-                    token: Zeroizing::new(format!("jeton-{rang}")),
+                    token: Zeroizing::new(format!("JETON-FICTIF-{rang}")),
                     expires_at: None,
                 }))
             } else {
@@ -2182,6 +2182,13 @@ mod tests {
             .expect("le client de l'hôte est monté : le run aboutit");
 
         assert_eq!(output, json!({ "verdict": "ok" }));
+        // La sortie validée ne porte ni l'URL du Grant ni le jeton fictif de l'hôte. Le chemin
+        // testé réussit : aucun message d'erreur n'est produit à comparer.
+        let sortie = output.to_string();
+        assert!(
+            !sortie.contains("sbx.example") && !sortie.contains("JETON-FICTIF"),
+            "la sortie ne porte ni l'URL ni le jeton : {sortie}"
+        );
         assert_eq!(spy.montes(), vec!["https://sbx.example/mcp".to_owned()]);
         // Listage au montage, puis deux appels d'outil : trois relevés porteurs.
         assert_eq!(
@@ -2194,6 +2201,9 @@ mod tests {
 
     // ── Scenario: un serveur static lié au contexte est monté en batch ────────────────────────
 
+    /// Serveur `static` lié au rôle, sans hôte : seule la présence de l'en-tête d'authentification
+    /// est vérifiée (`McpHeaders` n'expose pas sa valeur) ; aucune assertion ne porte sur la
+    /// valeur du secret.
     #[tokio::test(flavor = "multi_thread")]
     async fn un_serveur_static_lie_au_contexte_est_monte_en_batch() {
         let db = test_db().await;
@@ -2221,7 +2231,8 @@ mod tests {
 
         assert_eq!(output, json!({ "verdict": "ok" }));
         assert_eq!(spy.montes(), vec!["https://mcp.example/".to_owned()]);
-        // Listage au montage puis appel de l'outil : deux relevés, chacun avec l'en-tête résolu.
+        // Listage au montage puis appel de l'outil : deux relevés, chacun avec présence d'en-tête
+        // seulement (valeur non observable).
         assert_eq!(spy.releves(), vec![("https://mcp.example/".to_owned(), true); 2]);
     }
 
@@ -2236,39 +2247,73 @@ mod tests {
         wire_catalog(&db).await;
         put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
         inserer_serveur(&db, "srv_hote", "forward", json!(["all"])).await;
-        // Deux rôles refusés : le rôle `sandbox` d'alice, et le rôle `annexe` de bob (le
-        // contexte batch n'a pas de rôle optionnel : tout rôle refusé est fatal).
+        inserer_serveur(&db, "srv_nu", "none", json!(["all"])).await;
         lier_contexte(&db, "alice", &[("sandbox", "srv_hote")]).await;
-        lier_contexte(&db, "bob", &[("annexe", "srv_hote")]).await;
+        // Nom de rôle invalide : un tiret n'est pas un identifiant Rhai, `mcp_module` le refuse
+        // avant tout listage, en `Store` (retryable par défaut) que le montage rend non retryable.
+        lier_contexte(&db, "bob", &[("bad-role", "srv_nu")]).await;
+
+        // Refus de l'hôte au déclencheur (`Forbidden`) : aucun client, aucune inférence.
         let hote: SharedHost = Arc::new(HoteRefusant);
+        let spy = Arc::new(SpyMcp::default());
+        let mcp: Arc<dyn McpConnectorFactory> = spy.clone();
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let step = step_with_seams(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider))),
+            Some(hote),
+            mcp,
+        );
+        let error = step
+            .run(
+                &run_info("t-refus-hote", "s1", Some("alice")),
+                config("G_sub", "inspecter"),
+                HashMap::new(),
+            )
+            .await
+            .expect_err("un rôle MCP refusé par l'hôte échoue le step");
+        assert!(!error.retryable, "refus de l'hôte, non retryable : {error}");
+        assert!(
+            error.message.contains("mcp server unavailable"),
+            "phrase fermée du refus : {error}"
+        );
+        assert!(
+            spy.montes().is_empty(),
+            "aucun client monté pour un refus de l'hôte"
+        );
+        assert!(
+            provider.requests().is_empty(),
+            "aucune inférence avant le premier tour (refus de l'hôte)"
+        );
 
-        for (sujet, cle) in [("alice", "t-refus-alice"), ("bob", "t-refus-bob")] {
-            let spy = Arc::new(SpyMcp::default());
-            let mcp: Arc<dyn McpConnectorFactory> = spy.clone();
-            let provider = Arc::new(ScriptedProvider::new(Vec::new()));
-            let step = step_with_seams(
-                db.clone(),
-                Arc::new(ScriptFactory(Arc::clone(&provider))),
-                Some(Arc::clone(&hote)),
-                mcp,
-            );
-            let run = run_info(cle, "s1", Some(sujet));
-
-            let error = step
-                .run(&run, config("G_sub", "inspecter"), HashMap::new())
-                .await
-                .expect_err("un rôle MCP refusé par l'hôte échoue le step");
-
-            assert!(!error.retryable, "refus de l'hôte, non retryable : {error}");
-            assert!(
-                error.message.contains("mcp server unavailable"),
-                "phrase fermée du refus : {error}"
-            );
-            assert!(spy.montes().is_empty(), "aucun client monté pour {sujet}");
-            assert!(
-                provider.requests().is_empty(),
-                "aucune inférence avant le premier tour pour {sujet}"
-            );
-        }
+        // Nom de rôle invalide, sans hôte : l'échec de `mcp_module` (`Store`) est rendu non
+        // retryable par le montage ; le run n'a pas commencé.
+        let provider_nom = Arc::new(ScriptedProvider::new(Vec::new()));
+        let step_nom = step_with_seams(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider_nom))),
+            None,
+            Arc::new(SpyMcp::default()),
+        );
+        let error_nom = step_nom
+            .run(
+                &run_info("t-refus-nom", "s1", Some("bob")),
+                config("G_sub", "inspecter"),
+                HashMap::new(),
+            )
+            .await
+            .expect_err("un nom de rôle invalide échoue le montage");
+        assert!(
+            error_nom.message.contains("bad-role"),
+            "l'échec vient de mcp_module, qui nomme le rôle refusé : {error_nom}"
+        );
+        assert!(
+            !error_nom.retryable,
+            "l'échec de mcp_module (Store) est forcé non retryable : {error_nom}"
+        );
+        assert!(
+            provider_nom.requests().is_empty(),
+            "aucune inférence : le run n'a pas commencé (nom de rôle invalide)"
+        );
     }
 }
