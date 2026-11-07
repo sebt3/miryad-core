@@ -93,7 +93,7 @@ Forbids:
   `restate_sdk::*` dans ./subagent_step.rs (kind ordinaire, ./step.sdd)
 
 Depends on:
-  ./step.rs, ../lymaille/{identity,error,secret,tls,resource_module,host,mcp_access}.rs, ../lymaille/store/mod.rs, @sha2, @hex, @serde, @serde_json, @tokio, `lymaille`
+  ./step.rs, ../lymaille/{identity,error,secret,tls,resource_module,host,mcp_access,mcp_mount}.rs, ../lymaille/store/mod.rs, @sha2, @hex, @serde, @serde_json, @tokio, `lymaille`
 
 Exposes:
   `SubagentStep`, `SubagentDeps`, `DEFAULT_MAX_SECS` ; ré-exporté `miryad_core::workflow::{SubagentStep, SubagentDeps}` sous
@@ -214,14 +214,14 @@ Scenario: un rôle MCP fourni par l'hôte est résolu sous le déclencheur (DEC-
 Scenario: le client de l'hôte est monté et son jeton redemandé à chaque appel (DEC-27, tâche « Montage du client hôte »)
   Given un hôte qui accorde `sandbox` à `alice` avec un jeton qui change à chaque `resolve_mcp`, un connecteur espion, et un agent qui appelle deux fois l'outil du rôle
   When le step déclenché par `alice` est exécuté
-  Then le client vise l'URL du `Grant`, l'espion voit deux jetons différents, et le journal, la session et les erreurs ne contiennent ni l'URL ni un jeton
+  Then le client vise l'URL du `Grant`, l'hôte est consulté au montage puis à chaque relevé et appel d'outil (compteur de `resolve_mcp` ; la valeur du bearer n'est pas observable depuis `McpHeaders`), et la sortie du step ne contient ni l'URL ni un jeton
 
 Scenario: un serveur static lié au contexte est monté en batch
   Given un contexte dont le rôle est lié à un serveur `static`, sans hôte, et un agent qui appelle l'outil du rôle
   When le step est exécuté
-  Then l'outil est appelé sur le connecteur espion avec l'en-tête `Authorization` résolu, et le résultat du step est la sortie validée
+  Then l'outil est appelé sur le connecteur espion avec un en-tête d'authentification (présence seulement, valeur non observable), et le résultat du step est la sortie validée
 
 Scenario: un rôle MCP refusé échoue le step avant tout tour
-  Given un hôte qui refuse le rôle au déclencheur, puis un rôle déclaré optionnel par le type de contexte et refusé de la même façon
+  Given un hôte qui refuse le rôle au déclencheur, puis un nom de rôle invalide (échec de `mcp_module`, `Store` retryable par défaut)
   When le step est exécuté dans chaque cas
-  Then `StepError { retryable: false }` dans les deux cas, sans avis ni run commencé, et aucune requête d'inférence
+  Then `StepError { retryable: false }` dans les deux cas (forçage prouvé sur le `Store`), aucun run commencé, aucune requête d'inférence ; le batch n'a pas de rôle optionnel : tout rôle refusé est fatal
