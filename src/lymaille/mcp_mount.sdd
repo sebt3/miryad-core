@@ -28,7 +28,9 @@ Must:
       redemandé à **chaque** appel d'outil, jamais gardé ; l'hôte est requis (une liaison `Host` sans hôte → `Config`, échec fermé) ;
     3. `RoleBinding::Table(model)` → `build_auth(&model, secrets, interactive_token)` puis connecteur vers `model.url` avec les timeouts du serveur :
       `static` et `none` sont montés ; `forward` sans jeton interactif → `Forbidden("forward auth needs an interactive session")` ;
-    4. `mcp_module(role, connecteur, env)` puis `GrantedModule::new(role, module)` ; un nom de rôle invalide → `InvalidDefinition`.
+    4. `mcp_module(role, connecteur, env)` puis `GrantedModule::new(role, module)` ; un nom de rôle invalide fait échouer `mcp_module` en premier, l'erreur est celle du
+      code actuel de ./interactive/assemble.rs (`Store`), conservée telle quelle (refactor sans changement de comportement ; `InvalidDefinition` reste le repli de `GrantedModule::new`).
+    Le choix du connecteur selon la liaison est isolé dans un helper privé `connector_for(deps, caller, context, role, binding, token)` (hors `Exposes`), pour que la liaison `Host` sans hôte soit testable.
   `pub(crate) struct MountDeps<'a>` : `db`, `secrets`, `host: Option<&SharedHost>`, `mcp: &dyn McpConnectorFactory`. Emprunts seulement : le
     constructeur de l'appelant garde la propriété.
   Le `Grant` de l'hôte n'est ni persisté ni tracé : l'URL est consommée à la construction du connecteur, le jeton n'est jamais lu ici.
@@ -55,7 +57,7 @@ Done when:
 Scenario: un rôle servi par l'hôte monte un client dont le jeton est redemandé à chaque appel
   Given un hôte qui accorde `sandbox` à `alice` avec un jeton qui change à chaque `resolve_mcp`, et un connecteur espion
   When `mount_role` est appelé puis deux outils du module sont appelés
-  Then le client vise l'URL du `Grant`, l'espion a vu deux jetons différents, et aucun jeton n'est resté dans le module
+  Then le client vise l'URL du `Grant`, l'hôte est consulté à chaque relevé et à chaque appel d'outil (compteur de `resolve_mcp`), et aucun jeton n'est resté dans le module (la valeur du bearer n'est pas observable depuis `McpHeaders` : le jeton frais par appel est prouvé au niveau de `SeaHostMcpAuth`, ./mcp_access.sdd)
 
 Scenario: un rôle refusé par l'hôte n'est pas monté
   Given un hôte qui refuse `sandbox` à `bob`
@@ -65,7 +67,7 @@ Scenario: un rôle refusé par l'hôte n'est pas monté
 Scenario: un serveur static est monté avec son en-tête
   Given un serveur de la table en mode `static` lié au rôle, sans hôte
   When `mount_role` est appelé avec `interactive_token = None`
-  Then le module est accordé et l'espion reçoit `Authorization: Bearer <secret résolu>`
+  Then le module est accordé et l'espion reçoit un en-tête d'authentification (présence seulement : la valeur n'est pas observable depuis `McpHeaders`)
 
 Scenario: un serveur sans authentification est monté sans en-tête
   Given un serveur de la table en mode `none` lié au rôle
@@ -84,5 +86,5 @@ Scenario: un jeton hôte expiré fait échouer le montage
 
 Scenario: une liaison hôte sans hôte est un échec fermé
   Given un `RoleBinding::Host` obtenu puis un `MountDeps` dont `host` est `None`
-  When `mount_role` poursuit le montage
+  When le choix du connecteur (`connector_for`) est appelé avec cette liaison
   Then `LymailleError::Config`
