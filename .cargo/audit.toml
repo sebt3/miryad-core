@@ -1,0 +1,32 @@
+# Configuration de `cargo audit` (CI : ../.github/workflows/audit.yml, informative).
+# Chaque `ignore` est motivé ; une advisory corrigeable par un simple `cargo update`
+# n'est JAMAIS ignorée. Les advisories corrigées en amont mais bloquées par une
+# dépendance épinglée (rmcp, matrix-sdk, restate-sdk) restent volontairement visibles.
+# Revue à chaque release.
+
+[advisories]
+ignore = [
+  # --- Hors du graphe compilé : présentes dans Cargo.lock par une feature optionnelle non activée
+  #     (`cargo tree --all-features -i <crate>` ne rend rien).
+  "RUSTSEC-2026-0235", # rkyv 0.7
+  "RUSTSEC-2026-0442", # arrow-data 58
+  "RUSTSEC-2024-0388", # derivative (unmaintained)
+
+  # --- Dev-dependencies seulement (tests SQLite) : libsqlite3-sys via sqlx-sqlite, absent du graphe normal.
+  "RUSTSEC-2026-0459", # libsqlite3-sys 0.35 — à lever avec la montée de sqlx
+
+  # --- Build-dependency seulement : `zip` extrait l'archive de swagger-ui embarquée par `utoipa-swagger-ui`
+  #     au build, contenu de confiance (aucune archive fournie par un utilisateur).
+  "RUSTSEC-2026-0429", "RUSTSEC-2026-0368", "RUSTSEC-2026-0367", "RUSTSEC-2026-0369", # zip 3.0.0
+
+  # --- Sans correctif publié, API non utilisée.
+  "RUSTSEC-2026-0386", # tokio : `AsyncFd::new` unsound, la crate n'utilise pas `AsyncFd` (grep src/ tests/ vide)
+
+  # --- Crates non maintenues, transitives, sans alternative côté consommateur.
+  "RUSTSEC-2024-0449", # unsafe-libyaml (via serde_yaml)
+  "RUSTSEC-2026-0249", # smartstring (via rhai)
+  "RUSTSEC-2026-0173", # proc-macro-error2 (via aquamarine, proc-macro à la compilation)
+  "RUSTSEC-2026-0247", # bitmaps (via imbl, matrix-sdk)
+  "RUSTSEC-2025-0167", # bitmaps : `Bitmap::try_from(&[u8])`, non appelé par la crate
+  "RUSTSEC-2026-0319", # anymap2 (via matrix-sdk) — remplaçant `anymap3` à la charge de matrix-sdk
+]

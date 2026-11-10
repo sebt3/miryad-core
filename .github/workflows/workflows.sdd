@@ -49,7 +49,9 @@ Must:
     porte sur `Cargo.lock` (versionné) et non sur les features. Le job est **informatif** : il ne bloque jamais
     un merge ni une publication (`continue-on-error: true`), pour qu'une advisory amont qui tombe un jour ne
     rougisse pas des PR sans rapport ; son résultat reste lisible. Action `rustsec/audit-check` épinglée par
-    tag explicite, avec les seules permissions qu'elle exige.
+    tag explicite, avec les seules permissions qu'elle exige. Amendement 2026-11-10 (arbitré par le développeur principal) : `../.cargo/audit.toml` porte les `ignore`
+    de l'audit, chacun motivé (hors graphe compilé, dev ou build-dependency, API non utilisée, crate non maintenue) ; une advisory corrigeable par `cargo update` n'y entre jamais,
+    et celles corrigées en amont mais bloquées par une dépendance épinglée (`rmcp`, `matrix-sdk`, `restate-sdk`) y restent visibles.
   Faire surveiller chaque semaine par Dependabot (`../dependabot.yml`) les écosystèmes `cargo` et
     `github-actions` ; ses PR passent par la même CI que les autres, aucun auto-merge.
   **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute liste de combinaisons ci-dessus : les matrices de test et de clippy de
