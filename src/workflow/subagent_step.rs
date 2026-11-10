@@ -119,11 +119,14 @@ use super::step::StepError;
 /// strictement sous la borne ≈ 11 min d'un `ctx.run` par défaut.
 pub const DEFAULT_MAX_SECS: u64 = 480;
 
-/// Nom du contexte de toolsets et type de contexte des sessions produites par le step : la même
-/// clé partout, pour que la reprise retrouve un contexte homologue. Identifiant valide au sens de
-/// `identity::classify` (amendement lot 2 : c'est aussi le nom sous lequel le store des contextes
-/// est lu pour les rôles MCP liés — un nom avec `-` n'y serait jamais relu).
-const CONTEXT_TYPE: &str = "workflow_subagent";
+/// Type de contexte sous lequel le step lit ses rôles MCP liés, et nom du contexte de toolsets des
+/// sessions qu'il produit : la même clé partout, pour que la reprise retrouve un contexte homologue.
+/// Identifiant valide au sens de `identity::classify` (`_`, jamais `-` : un nom avec `-` ne serait
+/// jamais relu).
+///
+/// **Contrat** : c'est le nom sous lequel l'utilisateur lie ses serveurs MCP au step. Un renommage
+/// laisse silencieusement sans effet les contextes déjà liés en base.
+pub const SUBAGENT_CONTEXT_TYPE: &str = "workflow_subagent";
 
 /// Modules dont l'accord par une définition est réservé aux admins (DSD `FR-9`, défense en
 /// profondeur à l'étape 5 du `Must`). Vide au lot 1 : aucun module connu n'y figure encore — le
@@ -604,7 +607,7 @@ fn mcp_redactor(api_key: Option<&Zeroizing<String>>) -> ::lymaille::Redactor {
 }
 
 /// Fin de l'étape 7 (DSD `DEC-27`, `DEC-20`) : chaque rôle MCP du contexte lié à la session
-/// (`CONTEXT_TYPE`, relu sous le sujet du déclencheur) est **monté** en client par `mount_role`
+/// (`SUBAGENT_CONTEXT_TYPE`, relu sous le sujet du déclencheur) est **monté** en client par `mount_role`
 /// (`./mcp_mount.sdd`), `interactive_token = None`, sous le principal du déclencheur. Les modules
 /// obtenus rejoignent les modules accordés du run. Tout échec (refus, panne de l'hôte, `forward`,
 /// nom invalide) est fatal et précède le premier tour, sans avis ni repli. Le `Grant` de l'hôte
@@ -620,7 +623,7 @@ async fn mount_context_roles(
     let context: Option<ToolsetContext> = resolved
         .stores
         .contexts()
-        .get_context(CONTEXT_TYPE)
+        .get_context(SUBAGENT_CONTEXT_TYPE)
         .await
         .map_err(from_toolsets)?;
     let Some(context) = context else {
@@ -645,7 +648,7 @@ async fn mount_context_roles(
         let module = mount_role(
             &deps,
             &resolved.caller,
-            CONTEXT_TYPE,
+            SUBAGENT_CONTEXT_TYPE,
             &role,
             Some(&server),
             None,
@@ -689,7 +692,7 @@ async fn assemble_and_engine(
             .ok_or_else(|| permanent(format!("unknown toolset: {name}")))?;
         toolsets.push(toolset);
     }
-    let context = ToolsetContext::new(CONTEXT_TYPE.to_owned(), ContextLevel::Session)
+    let context = ToolsetContext::new(SUBAGENT_CONTEXT_TYPE.to_owned(), ContextLevel::Session)
         .map_err(from_toolsets)?
         .resolve(std::iter::empty::<(String, String, Value)>())
         .map_err(from_toolsets)?;
@@ -747,7 +750,7 @@ async fn restore_or_new(
     let state = SessionState::new(
         session_id.clone(),
         AgentRef::new(definition.id(), definition.fingerprint()),
-        CONTEXT_TYPE,
+        SUBAGENT_CONTEXT_TYPE,
         toolset_versions.clone(),
         clock.now(),
     )
@@ -1047,12 +1050,22 @@ mod tests {
         actif.insert(db).await.expect("ligne mcp_servers de test");
     }
 
-    /// Contexte lié du step (`CONTEXT_TYPE`, privé sous `subject`) liant chaque rôle donné à un
+    /// Contexte lié du step (`SUBAGENT_CONTEXT_TYPE`, privé sous `subject`) liant chaque rôle donné à un
     /// serveur — écrit par `subject` lui-même via le store (les hooks de `put_context` valident
     /// la liaison, `store/toolset.sdd`).
     async fn lier_contexte(db: &DatabaseConnection, subject: &str, roles: &[(&str, &str)]) {
-        let mut context = ToolsetContext::new(super::CONTEXT_TYPE.to_owned(), ContextLevel::Session)
-            .expect("contexte de test");
+        lier_contexte_de_type(db, subject, super::SUBAGENT_CONTEXT_TYPE, roles).await;
+    }
+
+    /// Contexte lié de type `context_type`, privé sous `subject` (même écriture que `lier_contexte`).
+    async fn lier_contexte_de_type(
+        db: &DatabaseConnection,
+        subject: &str,
+        context_type: &str,
+        roles: &[(&str, &str)],
+    ) {
+        let mut context =
+            ToolsetContext::new(context_type.to_owned(), ContextLevel::Session).expect("contexte de test");
         for (role, server) in roles {
             context = context
                 .with_role((*role).to_owned(), (*server).to_owned())
@@ -2123,13 +2136,19 @@ mod tests {
         }
     }
 
-    /// Ligne `static` de la table, référence d'authentification `FIXED_KEY` (résolue en test).
+    /// Ligne `static` de la table, référence d'authentification `FIXED_KEY` (résolue en test), à
+    /// l'URL `https://mcp.example/`.
     async fn inserer_serveur_statique(db: &DatabaseConnection, nom: &str) {
+        inserer_serveur_statique_a(db, nom, "https://mcp.example/").await;
+    }
+
+    /// Ligne `static` de la table, à l'URL donnée (même référence `FIXED_KEY`).
+    async fn inserer_serveur_statique_a(db: &DatabaseConnection, nom: &str, url: &str) {
         use sea_orm::ActiveValue::NotSet;
         let actif = mcp_server::ActiveModel {
             id: NotSet,
             name: Set(nom.to_owned()),
-            url: Set("https://mcp.example/".to_owned()),
+            url: Set(url.to_owned()),
             request_timeout_secs: Set(30),
             connect_timeout_secs: Set(5),
             auth_mode: Set("static".to_owned()),
@@ -2254,6 +2273,75 @@ mod tests {
         // Listage au montage puis appel de l'outil : deux relevés, chacun avec présence d'en-tête
         // seulement (valeur non observable).
         assert_eq!(spy.releves(), vec![("https://mcp.example/".to_owned(), true); 2]);
+    }
+
+    // ── Scenario: le contexte des rôles MCP est lu sous le type workflow_subagent ─────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn le_contexte_des_roles_mcp_est_lu_sous_le_type_workflow_subagent() {
+        // (a) le nom du type est un contrat : c'est sous ce nom que les serveurs sont liés.
+        assert_eq!(SUBAGENT_CONTEXT_TYPE, "workflow_subagent");
+
+        // (b) deux contextes privés d'alice : seul celui de type `workflow_subagent` est monté.
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "carol", false).await;
+        user(&db, "root", true).await;
+        wire_catalog(&db).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        inserer_serveur_statique(&db, "srv_stat").await;
+        inserer_serveur_statique_a(&db, "srv_autre", "https://autre.example/").await;
+        lier_contexte(&db, "alice", &[("sandbox", "srv_stat")]).await;
+        lier_contexte_de_type(&db, "alice", "autre_type", &[("sandbox", "srv_autre")]).await;
+        let spy = Arc::new(SpyMcp::default());
+        let mcp: Arc<dyn McpConnectorFactory> = spy.clone();
+        let provider = Arc::new(ScriptedProvider::new(vec![Ok(pad_call(
+            r#"sandbox::ping(#{}); result::submit(#{ verdict: "ok" })"#,
+        ))]));
+        let step = step_with_seams(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider))),
+            None,
+            mcp,
+        );
+        let output = step
+            .run(
+                &run_info("t-type-contexte", "s1", Some("alice")),
+                config("G_sub", "inspecter"),
+                HashMap::new(),
+            )
+            .await
+            .expect("le step aboutit avec le seul serveur du contexte workflow_subagent");
+        assert_eq!(output, json!({ "verdict": "ok" }));
+        assert_eq!(spy.montes(), vec!["https://mcp.example/".to_owned()]);
+
+        // (c) sans contexte de type `workflow_subagent`, le step s'exécute sans rôle MCP lié :
+        // carol n'a qu'un contexte `autre_type`, rien n'est monté.
+        lier_contexte_de_type(&db, "carol", "autre_type", &[("sandbox", "srv_autre")]).await;
+        let spy_sans = Arc::new(SpyMcp::default());
+        let mcp_sans: Arc<dyn McpConnectorFactory> = spy_sans.clone();
+        let provider_sans = Arc::new(ScriptedProvider::new(vec![Ok(pad_call(
+            r#"result::submit(#{ verdict: "ok" })"#,
+        ))]));
+        let step_sans = step_with_seams(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider_sans))),
+            None,
+            mcp_sans,
+        );
+        let output_sans = step_sans
+            .run(
+                &run_info("t-sans-contexte", "s1", Some("carol")),
+                config("G_sub", "inspecter"),
+                HashMap::new(),
+            )
+            .await
+            .expect("sans contexte workflow_subagent, le step aboutit sans rôle MCP");
+        assert_eq!(output_sans, json!({ "verdict": "ok" }));
+        assert!(
+            spy_sans.montes().is_empty(),
+            "aucun serveur monté sans contexte de type workflow_subagent"
+        );
     }
 
     // ── Scenario: un rôle MCP refusé échoue le step avant tout tour ───────────────────────────
