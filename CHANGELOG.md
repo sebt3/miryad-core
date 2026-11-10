@@ -3,6 +3,57 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). L'API reste
 instable avant `1.0` : un changement de version mineure peut être cassant.
 
+## [Unreleased]
+
+### Ruptures
+
+- **`PrincipalSource::Agent`** : nouvelle variante (enum non `#[non_exhaustive]`) — un `match` exhaustif
+  côté appelant doit être complété.
+- **`workflow`** :
+  - `RunInfo` gagne `vars` et `trigger` (un littéral de struct doit les renseigner) et perd `Eq` ;
+  - `trigger_run` prend les `vars` du run, et le handler `run` reçoit un `RunInput` ;
+  - nouvelle variante `ScriptTimeout` (`MRD-WORKFLOW-009`).
+- **Migrations** : les migrations `miryad_lymaille_*` (feature `lymaille`) s'ajoutent au `Migrator` ; elles
+  n'existent pas en 0.2.0, aucune base existante n'est touchée sans la feature.
+
+### Ajouts
+
+- **Feature `lymaille`** (hors défaut, implique `db`) : hôte de la bibliothèque d'agents LLM `lymaille` 0.2.0.
+  - Définitions (agents, toolsets, profils, providers, serveurs MCP, types de contexte, contextes) exposées en
+    `MiryadResource` : REST, MCP et OpenAPI, avec leurs politiques de lecture et d'écriture. Providers réservés
+    aux admins, références de secret seules (jamais de valeur).
+  - Stores SeaORM cloisonnés par propriétaire (sessions, mémoires, brouillons, index de sessions, audit, journal
+    d'écritures), SQLite et PostgreSQL ; rétention configurable et `purge_sessions`.
+  - Définitions privées (agents et toolsets d'un utilisateur) et sessions de configuration : un non-admin
+    écrit et active un sous-agent, sans pouvoir s'accorder un module réservé à l'admin.
+  - Sessions interactives (nature `Work` ou `Config`) : hub d'événements, reprise après redémarrage, tour
+    concurrent refusé, ouverture par contexte.
+  - Surface REST + SSE de conversation, événements typés exportés en TypeScript (`ts-rs`).
+  - Pont Matrix (`lymaille,matrix`) : salle ↔ session, annuaire mxid → principal, dédoublonnage, mise en forme des
+    sorties longues.
+  - `LymailleHost` : l'application fournit URL et jeton frais des serveurs MCP par rôle (identifiants `H_…`),
+    repli sur la table `mcp_servers`.
+  - Module Rhai `resources` (lecture et écritures idempotentes) avec parité sur les politiques REST et MCP.
+  - Codes d'erreur `MRD-LYMAILLE-001` à `-012`.
+- **`workflow`** :
+  - step `subagent` (session déterministe reprise au rejeu, plafond d'application de durée, clients MCP du contexte
+    lié montés en batch, clé masquée par le `Redactor`) ;
+  - `SUBAGENT_CONTEXT_TYPE` (`"workflow_subagent"`) : type de contexte sous lequel l'utilisateur lie les serveurs MCP du step ;
+  - handler `execute_long` aux options de durée relevées ;
+  - `vars` de run lisibles et modifiables en Rhai, héritage du `trigger` par les runs enfants ;
+  - moteur de gabarits et Rhai par liste blanche, `timeout_secs` et annulation coopérative, évaluation sur fil
+    dédié à pile de 256 Mio.
+- **CI** : seize combinaisons de test et de clippy (croisements `workflow,lymaille`, `lymaille,matrix`),
+  contrôles `cargo tree` prouvant que `lymaille` et `ts-rs` sont absents du graphe par défaut.
+
+### Limites connues
+
+- Le step `subagent` ne masque la clé d'API que sur les échecs d'outil MCP (limite amont de `lymaille` 0.2.0).
+- La preuve de reprise du step `subagent` après kill du service (`#[ignore]`, hors CI) valide le mécanisme Restate avec un journal de fixture,
+  pas le `SubagentStep` réel.
+- Le kind `pad` de workflow attend une release de `lymaille` (nature `Workflow`).
+- `matrix` : la persistance des rotations de session contre un MAS réel n'a jamais été éprouvée.
+
 ## [0.2.0] — 2026-10-20
 
 ### Ruptures

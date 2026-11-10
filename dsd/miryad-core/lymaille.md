@@ -533,8 +533,8 @@ et appels d'MCP externes depuis les scripts.
 
 ## Contour du lot 2
 
-Le lot 2 est **un seul lot, sans sous-découpage** (arbitré le 2026-11-03 : la spec Matrix n'a pas besoin du code REST). Il est **posé, non spécifié** :
-aucune tâche n'est ouverte, aucune spec n'est écrite. Périmètre (`DEC-6`, `DEC-13`, `DEC-20` à `DEC-23`) :
+Le lot 2 est **un seul lot, sans sous-découpage** (arbitré le 2026-11-03 : la spec Matrix n'a pas besoin du code REST). Il est **spécifié et réalisé**
+(statut : « SpecDD Realization » ci-dessous). Périmètre (`DEC-6`, `DEC-13`, `DEC-20` à `DEC-23`) :
 
 - **Socle commun d'une session interactive** : ouvrir (nature `Work` ou `Config`), envoyer un message, suivre les événements
   (`EventSink`), annuler, reprendre. Indépendant du canal.
@@ -566,14 +566,14 @@ aucune tâche n'est ouverte, aucune spec n'est écrite. Périmètre (`DEC-6`, `D
 
 ## SpecDD Realization
 
-Specs du lot 0 écrites et livrées le 2026-11-02. **Specs du lot 1 rédigées le 2026-11-02, en attente d'approbation** (`DEC-6`, `DEC-13` à
+Specs du lot 0 écrites et livrées le 2026-11-02. **Specs du lot 1 rédigées le 2026-11-02, approuvées et réalisées (tâches 1 à 17, clôture de `mod.sdd` le 2026-11-03)** (`DEC-6`, `DEC-13` à
 `DEC-18`), un fichier source = une spec : `/src/lymaille/mod.sdd` (feature et diff `Cargo.toml`, `FR-1`), `error.sdd` (`MRD-LYMAILLE-*`),
 `tls.sdd` (`FR-5`), `secret.sdd` (`DEC-16`), `migration.sdd` (`FR-3`), `identity.sdd` (`FR-4`, `FR-8`, `FR-9`), `store/mod.sdd`, `store/session.sdd`,
 `store/catalog.sdd`, `store/toolset.sdd`, `store/memory.sdd` (`FR-3`, huit traits), `definitions/mod.sdd`, `definitions/agent.sdd`,
 `definitions/toolset.sdd`, `definitions/profile.sdd`, `definitions/provider.sdd` (`DEC-14`, `DEC-17`, `DEC-18`), `resource_module.sdd` (`FR-2`,
 lecture seule), `/src/workflow/subagent_step.sdd` (`FR-6`, `FR-10`). Amendements d'accompagnement : `/src/lib.sdd`, `/src/migration/mod.sdd`,
 `/src/workflow/mod.sdd`, `/src/auth/principal.sdd` (variante `PrincipalSource::Agent`), `/miryad-core.sdd`, `/tooling.sdd` ; `/AGENTS.md`, la CI et
-`workflows.sdd` restent à amender avec accord. **Lot 2 : specs rédigées le 2026-11-03, en attente d'approbation** (`FR-11` à `FR-13`, `DEC-20` à `DEC-26`) : `/src/lymaille/interactive/{mod,hub,manager,assemble,activation}.sdd`, `/src/lymaille/http/{mod,routes,sse}.sdd`, `/src/lymaille/chat/{mod,link,render,bridge}.sdd`, `/src/lymaille/mcp_access.sdd`, `/src/lymaille/definitions/{mcp_server,context_type,catalog_context,user_context,private_agent,private_toolset}.sdd`, `/src/lymaille/store/{draft,session_index,audit,purge,write_journal}.sdd` ; amendements : `error.sdd`, `migration.sdd`, `store/{mod,toolset}.sdd`, `definitions/mod.sdd`, `resource_module.sdd`, `mod.sdd`, `/src/workflow/subagent_step.sdd`. Lot 3 : `/src/workflow/pad_step.sdd`.
+`workflows.sdd` restent à amender avec accord. **Lot 2 : specs rédigées le 2026-11-03, approuvées le 2026-11-04 après réalignement (`DEC-27` à `DEC-30`)** (`FR-11` à `FR-13`, `DEC-20` à `DEC-26`) : `/src/lymaille/interactive/{mod,hub,manager,assemble,activation}.sdd`, `/src/lymaille/http/{mod,routes,sse}.sdd`, `/src/lymaille/chat/{mod,link,render,bridge}.sdd`, `/src/lymaille/mcp_access.sdd`, `/src/lymaille/definitions/{mcp_server,context_type,catalog_context,user_context,private_agent,private_toolset}.sdd`, `/src/lymaille/store/{draft,session_index,audit,purge,write_journal}.sdd` ; amendements : `error.sdd`, `migration.sdd`, `store/{mod,toolset}.sdd`, `definitions/mod.sdd`, `resource_module.sdd`, `mod.sdd`, `/src/workflow/subagent_step.sdd`. Lot 3 : `/src/workflow/pad_step.sdd`.
 
 **Réalignement du 2026-11-03 (`DEC-27` à `DEC-30`) :** le code du lot 2 est à l'arrêt le temps de l'amendement. Specs à ré-aligner avant approbation : `identity.sdd`,
 `mcp_access.sdd`, `definitions/{context_type,user_context}.sdd`, `interactive/{mod,hub,manager,assemble}.sdd`, `http/{routes,sse}.sdd`, `chat/{bridge,link}.sdd`,
@@ -582,7 +582,12 @@ lecture seule), `/src/workflow/subagent_step.sdd` (`FR-6`, `FR-10`). Amendements
 **Statut du réalignement (2026-11-04) :** specs approuvées par Sébastien ; R1 à R5 réalisées et validées (checkpoint commité). Arbitrages rendus le même jour :
 nommage `G_` des types de contexte — option (a), la porte `classify` est retirée pour cette seule entité (`G_` conventionnel, garantie `AdminOnly` + table,
 conséquence de `DEC-20`/`DEC-9`) ; chaîne `down` du lot 2 — exception tracée `AGENTS.md` du 2026-11-04 sur `m20261103_000001` (`context_types`/`contexts` ne se
-créent plus, drop conditionnel au lot 2). R6 à R15 en cours.
+créent plus, drop conditionnel au lot 2).
+
+**Statut du 2026-11-10 :** lot 2 réalisé et validé — R1 à R15 (hôte, contextes, interactif, REST + SSE, pont Matrix, écritures du module des ressources, rétention,
+handler `execute_long`, plafond d'application du step `subagent`), `mod.rs` finalisé le 2026-11-06, dernier jalon le lot « montage des clients MCP du contexte lié en batch »
+(2026-11-07, `mcp_mount`, garde de collision de nom de rôle, `Redactor` configuré). Reste hors lot : le kind `pad` (lot 3, `OI-3`). Les `AC-12` à `AC-20` sont à
+recouper avec leurs tests nommés avant la release.
 
 ## Acceptance Criteria
 
@@ -610,6 +615,9 @@ créent plus, drop conditionnel au lot 2). R6 à R15 en cours.
 - **AC-10:** Un step `subagent` dont le processus est tué en milieu de run reprend sur la session sauvegardée au rejeu : le
   nombre de tours déjà terminés n'est pas refait, et le résultat est journalisé une seule fois. Preuve par la méthode du
   spike de `workflow#AC-8` (non verrouillée par la CI).
+  - Limite assumée le 2026-11-10 (développeur principal) : la preuve `reprise_apres_kill_du_service_sur_step_subagent` rejoue le mécanisme Restate contre un vrai
+    `restate-server` avec un journal-fichier de fixture comme « session sauvegardée » ; le `SubagentStep` réel et `restore_session` n'y sont pas exercés (la reprise
+    côté `lymaille` est couverte par les tests de rejeu en mémoire).
 - **AC-11:** Un run déclenché par un utilisateur A donne à ses steps et à ses runs enfants le `subject` de A ; un run sans
   identité fait échouer un step `subagent` en `StepError` non retryable.
   - État 2026-11-02 (lot 0) : première moitié prouvée (tests nommés de T1–T6 et intégration `subworkflow_lenfant_hérite_du_trigger_du_parent` rejouée contre `restate-server`) ; le step `subagent` est du lot 1 (`DEC-13`) et verrouillera la seconde.
@@ -670,7 +678,7 @@ créent plus, drop conditionnel au lot 2). R6 à R15 en cours.
   (`ServiceOptions::inactivity_timeout` / `abort_timeout`, Observed in: `restate-sdk-0.12.1/src/endpoint/builder.rs`) ; (3) au-delà,
   Restate relance la fermeture **depuis zéro**, ce qui confirme le besoin de reprise sur session déterministe (`DEC-10`) ; (4) le
   réglage vit sur le service `StepDispatcher`, donc il s'applique à tous les kinds : le relever retarde aussi la détection d'un
-  step ordinaire bloqué. **Décidé dans `subagent_step.sdd` (en attente d'approbation) :** `recommended_options()` inchangé au lot 1 ; `max_secs` plafonné à 540 s, défaut 480 s. **Amendé le 2026-11-03 : handler dédié, `DEC-29`.**
+  step ordinaire bloqué. **Décidé dans `subagent_step.sdd` (spec approuvée le 2026-11-05) :** `recommended_options()` inchangé au lot 1 ; `max_secs` plafonné à 540 s, défaut 480 s. **Amendé le 2026-11-03 : handler dédié, `DEC-29`.**
     - **Source:** spike du 2026-11-02, résultats ci-dessus ; user instruction, 2026-11-02
 - **OI-5:** **Glue Matrix** (`matrix` + `lymaille`) : mapping salle ↔ session, dédoublonnage des messages remis deux
   fois après bascule de bail, mise en forme des sorties longues, annuaire mxid → principal (inexistant :
