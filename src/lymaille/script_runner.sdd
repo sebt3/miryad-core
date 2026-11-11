@@ -24,9 +24,9 @@ Must:
   `pub async fn run(&self, context: &str, subject: &str, source: &str, limits: &ScriptLimits, token: Option<Zeroizing<String>>) -> Result<serde_json::Value, LymailleError>` :
     1. `caller_of(db, subject)` : `subject` sans compte → `UnknownSubject` ; le principal est relu à chaque appel de module par l'enrobage (`host_module`) et par `resources` ;
     2. le contexte `context` (privé de l'appelant, `G_…` du catalogue ou `H_…` de l'hôte, jamais celui d'un autre) puis son **type** sont résolus comme à l'étape 4 de `assemble_session` ; la version **active**
-      de ce type fournit `script_grants` ; contexte ou type absent, sans version active, ou `script_grants` illisible → `Forbidden("script grants unavailable")` (échec fermé : aucun droit sans type) ;
+      de ce type fournit `script_grants` ; contexte ou type absent, sans version active, ou `script_grants` illisible → `Forbidden("script grants unavailable")` (échec fermé : aucun droit sans type ; **y compris un contexte `H_…`** de l'hôte, qui n'a pas de type en base — `scripts-hote#OI-6`) ; un toolset granté sans version active échoue de la même façon ;
     3. modules montés, et seulement ceux-là : `resources_module` (avec écritures, sans journal), `mount_host_modules(…, Named(script_grants.modules))`, et pour chaque toolset de `script_grants.toolsets`
-      (version **active**, jamais un brouillon) ses rôles MCP par `mount_role` (même résolution `resolve_role` puis `build_auth` que l'assemblage, `token` passé à `build_auth` pour l'auth `forward`) avec la
+      (version **active**, jamais un brouillon) ses rôles MCP **seuls** par `mount_role` (la source Rhai propre du toolset n'est **jamais** montée : le code d'un autre auteur ne s'exécute pas sous le principal de l'appelant, `FR-5`) (même résolution `resolve_role` puis `build_auth` que l'assemblage, `token` passé à `build_auth` pour l'auth `forward`) avec la
       **même politique** que `assemble_session` : un rôle requis refusé fait échouer `run` (`Forbidden("mcp server unavailable")`), un rôle optionnel refusé est omis. Les modules natifs de
       `lymaille` (mémoire, todo), `fs`, `shell` et les modules de configuration ne sont pas montés ;
     4. `Engine::set_max_operations(max_operations)` ; une progression (`on_progress`) interrompt au-delà de `max_duration` ; plafonds de taille de chaîne, de tableau et de table de l'`Engine`
@@ -51,10 +51,8 @@ Exposes:
 Tasks:
   [x] Tests d'abord (SQLite mémoire, module d'hôte factice, connecteur MCP espion, ressource `recipes`), puis ./script_runner.rs.
     Validé 2026-11-11 : 8 tests ↔ 8 `Scenario` nommés (`un_spectateur_*` … `une_erreur_de_script_*`), rouge d'abord par imports non résolus ; batterie ciblée `lymaille` + contrôle `workflow,lymaille` + clippy 5 graphes + fmt verts ; synthèse tenue par le primary (`validator` indisponible).
+    Arbitrages du 2026-11-11 (développeur principal) : toolset sans version active → `Forbidden` confirmé ; rôles MCP seuls, source Rhai jamais montée, figé au `Must` ; contexte `H_…` : échec fermé, Open Issue `scripts-hote#OI-6`.
     Ratifié 2026-11-11 : `role_requirements` et `toolset_context_roles` (./interactive/assemble.rs) et `dynamic_to_json` (./resource_module.rs) passés `pub(crate)` (jamais `pub`), hors `Owns`, logique inchangée ; `pub mod script_runner;` repris par ./mod.sdd (commit 8a0dd19).
-    [?] (implementer) : toolset granté sans version active → `Forbidden("script grants unavailable")` (cohérence avec le type absent, le `Must` ne tranche pas). Confirmé ?
-    [?] (implementer) : un toolset granté monte ses rôles MCP uniquement, pas sa source Rhai propre — lecture littérale du `Must` ; DSD `FR-4` ambigu. Avez-vous voulu la source aussi ?
-    [?] (implementer) : un contexte `H_…` rendu par l'hôte ne peut pas porter de `script_grants` (pas de colonne `context_type` en base) → échec fermé à l'exécution de script. Contrat voulu, ou ouverture par `resolve_context` ?
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./script_runner.rs.

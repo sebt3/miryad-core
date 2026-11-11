@@ -25,7 +25,7 @@ Must:
   `before_create` / `before_update` (premier échec interrompt, `HookError` sans code) : au moins un de `active`/`draft` non nul ; puis la porte
     `DEC-28` : `allowed_agents` posé (`ActiveValue::NotSet` = absent, refus) et tableau JSON de chaînes ; puis `classify(name) == Catalog` (préfixe `G_`, comme ./agent.sdd) ; puis (amendement 2026-11-11) `script_grants` posé (`NotSet` = refus) et objet à **exactement** les deux clés `toolsets` et `modules`, tableaux de chaînes, sans doublon ;
     chaque identifiant de `toolsets` est de classe `Catalog` et existe dans la table des toolsets du catalogue, relu par la connexion du hook (toolset absent : refus ; panne de lecture : `HookError::new("authorization check unavailable")`, texte fixe) ;
-    chaque nom de `modules` est un identifiant Rhai valide, **sans** vérification d'existence (le registre `HostModules` est hors de portée d'un hook, la vérification a lieu à l'exécution par ../script_runner.sdd) ;
+    chaque nom de `modules` satisfait `is_module_name` (../host_module.sdd, seule copie de la grammaire ASCII), **sans** vérification d'existence (le registre `HostModules` est hors de portée d'un hook, la vérification a lieu à l'exécution par ../script_runner.sdd) ;
     Chaque colonne non nulle se désérialise ensuite en `lymaille::ContextType` (le constructeur compile le schéma : un schéma invalide est refusé avec le
     message de `lymaille`, jamais le schéma — la grammaire du nom est vérifiée par cette désérialisation) ; si le `ContextType` porte un `default_agent`, il doit
     être membre de `allowed_agents` par comparaison de chaînes exacte (un type **sans** agent par défaut est admis : l'ouverture exigera alors un agent explicite) ;
@@ -58,9 +58,10 @@ Tasks:
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les hooks de ./context_type.rs passent à la signature asynchrone (`db` ignoré : la validation reste pure, aucune lecture en base ajoutée par cette tâche) ; les tests `before_*` du fichier passent à `.await` avec une connexion simulée, assertions inchangées. Le contrôle à la sauvegarde que la connexion rend possible (DSD `hooks-async` `FR-3`) n'est **pas** dans cette tâche : il fera l'objet d'un amendement de spec distinct. Dépend de /src/resource.sdd (même amendement).
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
   [x] Amendement du 2026-11-11 (DSD `scripts-hote` `DEC-2`) : colonne `script_grants` et sa validation par le hook ; test d'abord (`Scenario` ci-dessous), puis ./context_type.rs. Après ../migration.sdd.
+    Arbitrages du 2026-11-11 : « toolset existant » = existence de la ligne (actif ou brouillon, l'exécution exige l'actif et échoue fermé) confirmé ; grammaire ASCII figée par `is_module_name`.
     Validé 2026-11-11 (tests `before_create_refuse_script_grants_mal_forme_ou_toolset_absent` et `before_create_accepte_des_grants_d_un_toolset_existant_sans_chercher_les_modules` ; batterie ciblée `lymaille` verte ; synthèse tenue par le primary).
-    [?] (implementer) : « toolset existant » = existence de la LIGNE par `toolset_id` (table `UNIQUE(toolset_id)`, active ou brouillon), pas de filtre `active` — le Must dit « existe dans la table », le script montera lui-même la version active. Confirmation voulue ?
-    [?] (implementer) : grammaire des noms de `modules` retenue `[A-Za-z_][A-Za-z0-9_]*` ASCII (convention `identity::classify`) ; la grammaire Rhai réelle est unicode-aware, le Scenario ne verrouille que `"bad name"`. À figer ou laisser tel quel ?
+
+  [ ] Amendement du 2026-11-11 : le hook appelle `host_module::is_module_name` au lieu de sa copie locale de la grammaire ; tests existants verts sans retouche. Après ../host_module.sdd.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./context_type.rs.

@@ -34,6 +34,8 @@ Must:
       rôle optionnel refusé est omis (avis `notices`) ;
     4 bis. (amendement 2026-11-11, DSD `scripts-hote` `FR-1` à `FR-3`) `check_grants` porte sur `ADMIN_ONLY_MODULES` **augmenté** de `HostModules::admin_only_names()` : un module d'hôte `AdminOnly` accordé à un non-admin est refusé à l'assemblage
       (l'enrobage de ../host_module.sdd revalide à chaque appel) ;
+    4 ter. (amendement 2026-11-11, DSD `scripts-hote` `FR-1`) la garde de collision de `mount_mcp_roles` reçoit en `taken` les modules de base (`resources`) **et** les noms des modules d'hôte accordés par la définition et enregistrés
+      (ceux que l'étape 5 montera) : un rôle MCP du nom d'un tel module est refusé comme un rôle du nom d'un module de base — même garde que ../script_runner.sdd ;
     5. modules : `resources` pour tous ; les modules d'hôte accordés par la définition (`def.modules()`) et enregistrés, montés par `mount_host_modules(…, All)` (session interactive) ; si `kind = Config` : `config_registration(...)` (stores = nos `Sea*`, index = `SeaSessionIndex`, slot
       d'inspection par session), l'agent `Config` n'appelle aucun serveur MCP, ne délègue pas et n'active rien (`agent-sessions#BR-8`, garanti par
       la définition de l'agent et par ce fichier : aucun client MCP monté pour `Config`) ;
@@ -72,9 +74,10 @@ Tasks:
   [x] Amendement du 2026-11-11 (DSD `scripts-hote`) : `HostModules` dans `AssembleDeps`, `check_grants` augmenté, montage des modules d'hôte accordés ; test d'abord (`Scenario` ci-dessous), puis ./assemble.rs. Après ../host_module.sdd.
     Validé 2026-11-11 : test `un_module_hote_reserve_refuse_assemblage` (rouge d'abord ; refus nommé pour le non-admin, montage pour l'admin, module absent du registre ignoré) ; batterie ciblée `lymaille` et `workflow,lymaille` tests+clippy + fmt verte ; synthèse tenue par le primary.
     Ratifié 2026-11-11 : les lignes `host_modules: Arc::new(HostModules::new())` ajoutées aux littéraux `#[cfg(test)]` de ./manager.rs, ../http/sse.rs, ../http/routes.rs et ../chat/bridge.rs (hors `Owns`, aucune assertion touchée) sont acceptées.
-    [?] (implementer) : la liste `taken` de `mount_mcp_roles` reste les modules de base (`resources`) — un rôle MCP du nom d'un module d'hôte monté à l'étape 5 passerait la garde de collision. Hors amendement, rien ajouté ; faut-il tracer cet écart (Open Issue `scripts-hote`) ?
   [x] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : retirer la déclaration locale de ./assemble.rs, importer `identity::ADMIN_ONLY_MODULES` ; `assemble_with` garde sa liste en paramètre ; tests verts.
     Validé 2026-11-11 (batterie ciblée `lymaille` et `workflow,lymaille` verte ; synthèse tenue par le primary, `validator` indisponible — voir le `[?]` de `../identity.sdd`).
+
+  [ ] Amendement du 2026-11-11 (étape 4 ter, arbitrage du développeur principal : « oui, tâche 1 ») : test d'abord (`Scenario` « un rôle du nom d'un module d'hôte monté est refusé »), puis ./assemble.rs ; ne passe à `[x]` qu'avec le `validator` en vert.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./assemble.rs.
@@ -88,6 +91,11 @@ Scenario: un rôle requis vers un serveur interdit fait échouer
   Given un contexte qui lie le rôle requis `kubectl` à un serveur `["admin"]` et un non-admin
   When `assemble_session`
   Then `Forbidden("mcp server unavailable")`
+
+Scenario: un rôle du nom d'un module d'hôte monté est refusé
+  Given une définition qui accorde le module d'hôte `dashboard` (enregistré) et un contexte qui lie un rôle MCP nommé `dashboard`
+  When `assemble_session`
+  Then le montage du rôle échoue sur la garde de collision (même erreur que pour `resources`) ; le module d'hôte n'est pas écrasé
 
 Scenario: un rôle optionnel refusé est omis avec avis
   Given un rôle optionnel lié à un serveur interdit

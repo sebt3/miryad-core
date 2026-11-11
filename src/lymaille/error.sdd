@@ -47,13 +47,15 @@ Must:
   **Amendement (2026-11-05, nommé le 2026-11-06)** : `Serialization(String)` → `MRD-LYMAILLE-012` → `MRD-LYMAILLE-012: serialization error: {0}` (panne de sérialisation
     sur le canal SSE, texte expurgé) ; `retryable()` `false`. Émise par `../http/sse.rs` (`serialization_error_event`).
 
+  `pub fn code(&self) -> String` : le code `MRD-LYMAILLE-NNN` de la variante, dérivé du préfixe de `Display` avant le premier `:` (une seule source de vérité : le `#[error(...)]`, aucun littéral dupliqué).
+
 Must not:
   Embarquer une clé d'API, un jeton, un prompt, un message de session ou un contenu de ressource dans un message d'erreur ou un
     `Debug`.
   Porter un `DbErr` ou un type de `lymaille` : les causes sont des `String` (stabilité d'API).
 
 Exposes:
-  `LymailleError`, `retryable`.
+  `LymailleError`, `retryable`, `code`.
 
 Tasks:
   [x] Variante `Serialization(String)` → `MRD-LYMAILLE-012` (arbitrage de Sébastien du 2026-11-05) : panne de sérialisation sur le canal SSE, texte
@@ -76,6 +78,8 @@ Tasks:
   [x] Amendement du 2026-11-11 (DSD `scripts-hote#FR-7`) : quatre variantes `ScriptTimeout`, `ScriptOperationLimit`, `ScriptResultTooLarge`, `ScriptFailed`, `retryable()` faux ; tests d'abord, puis ./error.rs.
     Validé 2026-11-11 : codes `-013` à `-016` et retryabilité verrouillés par tests, batterie ciblée `lymaille` verte ; synthèse tenue par le primary (`validator` indisponible). Branches compagnons ajoutées à `code_de` de ./chat/bridge.rs pour la compilation sous `lymaille,matrix` — voir le `[?]` ouvert dans ./chat/bridge.sdd.
 
+  [ ] Amendement du 2026-11-11 (arbitrage du développeur principal) : `code()` ; test d'abord (`Scenario` « `code()` égale le préfixe de `Display` pour chaque variante »), puis ./error.rs ; ./http/sse.sdd et ./chat/bridge.sdd l'emploient ensuite.
+
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./error.rs.
 
@@ -83,6 +87,11 @@ Scenario: les codes sont stables
   Given une variante de chaque sorte
   When `to_string()` est appelé
   Then chaque message commence par `MRD-LYMAILLE-001` à `-012`
+
+Scenario: `code()` égale le préfixe de `Display` pour chaque variante
+  Given une variante de chaque sorte (`-001` à `-016`)
+  When `code()` et `to_string()` sont appelés
+  Then `code()` est le préfixe de `to_string()` avant le premier `:`, sans contenu de cause
 
 Scenario: la retryabilité suit la variante
   Given `Run { retryable: true }`, `Run { retryable: false }`, `Store`, `Inference`, `Forbidden`, `SecretUnresolved`

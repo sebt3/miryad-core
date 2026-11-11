@@ -76,7 +76,7 @@ Tasks:
     de l'ouverture à la demande ; figer le couple `ChatBridge::new(… Arc<MatrixClient> …)` public + `with_sender`/`with_clock` `pub(crate)`
     (résolution `private_interfaces` du code en place). Amender le point 5 du `Must` et les textes de confirmation en même temps.
   [?] Mise à jour d'un message par édition (streaming) et salles multi-utilisateurs : hors lot 2.
-  [?] (spec-dd, cycle `error.rs` du 2026-11-11) : `code_de` de ./bridge.rs a reçu quatre branches littérales `Script*` (`-013` à `-016`), adaptées à la compilation sous `lymaille,matrix` (précédent `Serialization(_)` ratifié le 2026-11-06). Choix provisoire : rester sur les littéraux ; l'alignement sur la dérivation `Display` (proposé par le `[?]` de ../http/sse.sdd) reste à trancher au cycle de ./bridge.rs.
+  [ ] Amendement du 2026-11-11 (arbitrage du développeur principal) : `code_de` est supprimée au profit de `LymailleError::code()` (../error.sdd) ; plus aucun code `MRD-LYMAILLE` en littéral dans ./bridge.rs ; tests existants verts, verrou « les codes sont stables » inchangé. Après ../error.sdd.
   [?] Le banc live (`tests/matrix_live.rs`, cluster media-test) pourra porter un test `#[ignore]` de bout en bout ; non exigé par ce lot.
 
 Done when:

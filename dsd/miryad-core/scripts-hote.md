@@ -38,7 +38,7 @@ peut accorder que ce que son propriétaire peut utiliser), `FR-10` (identité du
     - **Verified by:** `AC-2`
 
 - **FR-4 - MUST:** Un `ScriptRunner` exécute un script Rhai avec les `Grants` d'un contexte, **sans boucle d'inférence**, sous le principal donné. Il réutilise
-  l'assemblage de session : modules d'hôte, `resources`, toolsets accordés et leurs rôles MCP (`miryad-core/lymaille#DEC-27`). Il rend une valeur sérialisée. Un script peut agir (écrire une ressource, appeler un rôle MCP ou un module d'hôte) : un bouton de widget qui approuve une MR est un cas visé ; ce qu'un script rejoue ou non est l'affaire de l'hôte, qui décide quand il l'exécute.
+  l'assemblage de session : modules d'hôte, `resources`, toolsets accordés — **leurs rôles MCP seuls, jamais leur source Rhai** (arbitrage du 2026-11-11) — (`miryad-core/lymaille#DEC-27`). Il rend une valeur sérialisée. Un script peut agir (écrire une ressource, appeler un rôle MCP ou un module d'hôte) : un bouton de widget qui approuve une MR est un cas visé ; ce qu'un script rejoue ou non est l'affaire de l'hôte, qui décide quand il l'exécute.
     - **Source:** user instruction, 2026-11-03
     - **Verified by:** `AC-3`
 
@@ -109,3 +109,4 @@ Aucune.
   (`miryad-core#FR-1`). L'hôte l'expose à sa guise.
 - **OI-4:** **Soldé le 2026-11-05 (user instruction)** : aucun cache dans la crate (`FR-7`). Le résultat dépend du principal et du contenu : une clé de cache correcte est celle de l'hôte.
 - **OI-5:** **Soldé le 2026-11-11 (user instruction)** : les rôles MCP et toolsets sont montés dans un script comme dans une session, sans filtre d'outils ni lecture seule (`FR-6` retiré). Les modules natifs de `lymaille` (mémoire, todo) ne sont pas montés.
+- **OI-6:** **Ouverte le 2026-11-11** : un contexte `H_…` fourni par l'hôte (`LymailleHost`) n'a pas de type en base, donc pas de `script_grants` : `ScriptRunner::run` échoue fermé (`Forbidden("script grants unavailable")`). **Arbitré le 2026-11-11 (user instruction)** : on garde l'échec fermé ; ouvrir `resolve_context` pour qu'il rende le type d'un contexte hôte attend un besoin constaté de `vanyline` (widgets exécutés sous un contexte d'hôte).
