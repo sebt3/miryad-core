@@ -229,7 +229,7 @@ Tasks:
     table (`Must`). Sébastien (2026-09-23) : aucun garde-fou de code — une fois `workflow` activée,
     plus de retour en arrière supporté, documenté comme tel (`docs/architecture.md`, à la clôture),
     rien de plus.
-  [ ] Convertir les dix `Scenario` en au moins dix tests nommés distincts dans le
+  [x] Convertir les dix `Scenario` en au moins dix tests nommés distincts dans le
     `#[cfg(test)] mod tests` de ./mod.rs, sur `sqlite::memory:` (pattern du test inline
     existant), la batterie de /tooling.sdd sans base externe : le test inline existant
     @composes_with_an_independent_migrator_sharing_the_default_table_name couvre le scénario de
@@ -241,6 +241,12 @@ Tasks:
     d'avant l'amendement 2026-09-23 — le `Done when` dit « dix »), dix tests nommés distincts
     verts, dont cinq verrous du réel portant commentaire « Écart consigné » — cette `[ ]` se
     clôture dans le même commit que l'amendement Q3 et son extension ci-dessous.
+    Validé 2026-11-12 (validator GO, sans changement de code : la tâche est réalisée par les
+    commits antérieurs — B5f `4dff41d` puis extensions `matrix`/`lymaille` ; les 12 `Scenario`
+    réels (texte « neuf tests » périmé par la note d'état, les amendements ont ajouté les
+    graphes `matrix` et `lymaille`) ont chacun leur test nommé distinct à assertions réelles,
+    verts sur `db` défaut, `db`, `workflow` et `all-features` ; clause de clôture tenue,
+    l'amendement Q3 et son extension sont commités).
   [x] Avertissement dans le doc-comment de @Migrator sur @fresh/@reset (arbitré par Sébastien le
     2026-09-29, `Must`) — documentation seule, aucun wrapper.
     Réalisé 2026-10-03 (B5f, validator PASS) : doc @Migrator complétée (droppe toutes les tables
