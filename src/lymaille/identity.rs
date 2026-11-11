@@ -45,6 +45,8 @@ impl Identity {
 
     /// Reconstruit le principal du `subject` : lecture directe de `miryad_users` par `subject`
     /// (**sans création de compte**, à la différence de `resolve_user`) puis `is_admin` frais.
+    /// Délègue à [`caller_of`] sur sa connexion (amendement du 2026-11-11, DSD `hooks-async`
+    /// `DEC-7`) — comportement et erreurs inchangés.
     ///
     /// # Errors
     ///
@@ -52,21 +54,34 @@ impl Identity {
     ///   jamais un principal vide ni par défaut (DSD `DEC-3`).
     /// - [`LymailleError::Store`] : `DbErr` d'une des deux lectures, texte expurgé.
     pub async fn resolve(&self, subject: &str) -> Result<CallerPrincipal, LymailleError> {
-        let account = user::Entity::find()
-            .filter(user::Column::Subject.eq(subject))
-            .one(&self.db)
-            .await
-            .map_err(|err| LymailleError::Store(db_text(&err)))?
-            .ok_or(LymailleError::UnknownSubject)?;
-        let is_admin = group::is_admin(&self.db, account.id)
-            .await
-            .map_err(|err| LymailleError::Store(db_text(&err)))?;
-        Ok(CallerPrincipal {
-            user_id: account.id,
-            subject: account.subject,
-            is_admin,
-        })
+        caller_of(&self.db, subject).await
     }
+}
+
+/// Reconstruit le principal du `subject` sur une connexion générique (amendement du 2026-11-11,
+/// DSD `hooks-async` `DEC-7`) : un hook reçoit `&impl ConnectionTrait`, pas la
+/// `DatabaseConnection` d'`Identity`. Corps de [`Identity::resolve`], qui y délègue — mêmes
+/// erreurs, mêmes garanties (aucune création de compte, droit admin relu à l'appel).
+///
+/// # Errors
+///
+/// - [`LymailleError::UnknownSubject`] : aucune ligne `miryad_users` pour ce `subject`.
+/// - [`LymailleError::Store`] : `DbErr` d'une des deux lectures, texte expurgé.
+pub async fn caller_of<C: ConnectionTrait>(db: &C, subject: &str) -> Result<CallerPrincipal, LymailleError> {
+    let account = user::Entity::find()
+        .filter(user::Column::Subject.eq(subject))
+        .one(db)
+        .await
+        .map_err(|err| LymailleError::Store(db_text(&err)))?
+        .ok_or(LymailleError::UnknownSubject)?;
+    let is_admin = group::is_admin(db, account.id)
+        .await
+        .map_err(|err| LymailleError::Store(db_text(&err)))?;
+    Ok(CallerPrincipal {
+        user_id: account.id,
+        subject: account.subject,
+        is_admin,
+    })
 }
 
 /// Nature d'un identifiant de définition, tranchée par le préfixe seul (DSD `DEC-9`, `DEC-27`).
@@ -171,7 +186,7 @@ mod tests {
     use crate::migration::Migrator;
     use crate::users::membership::{self, sync_group_memberships};
     use crate::users::{resolve_user, user};
-    use sea_orm::EntityTrait;
+    use sea_orm::{EntityTrait, TransactionTrait};
     use sea_orm_migration::MigratorTrait;
 
     async fn test_db() -> DatabaseConnection {
@@ -238,6 +253,83 @@ mod tests {
             !second.is_admin,
             "un principal n'est jamais mis en cache : le droit admin est \
             relu à chaque appel"
+        );
+    }
+
+    /// `Scenario` : « `caller_of` rend le principal de resolve sur une connexion générique »
+    /// (amendement du 2026-11-11, DSD `hooks-async` `DEC-7`) — même `CallerPrincipal` sur la
+    /// `DatabaseConnection` et sur une `DatabaseTransaction` ouverte, droit admin relu après
+    /// retrait du groupe, `UnknownSubject` pour un sujet sans compte.
+    #[tokio::test]
+    async fn caller_of_returns_resolve_principal_on_a_generic_connection() {
+        let db = test_db().await;
+        let alice = resolve_user(&db, "alice", None)
+            .await
+            .expect("compte local d'alice");
+        sync_group_memberships(&db, alice.id, &["admin".to_string()])
+            .await
+            .expect("alice membre du groupe admin seedé");
+        let identity = Identity::new(db.clone());
+
+        // Sur la `DatabaseConnection` : identique au résultat d'`Identity::resolve`.
+        let via_resolve = identity.resolve("alice").await.expect("resolve de référence");
+        let via_conn = caller_of(&db, "alice").await.expect("caller_of sur la connexion");
+        assert_eq!(
+            (via_conn.user_id, via_conn.subject.as_str(), via_conn.is_admin),
+            (
+                via_resolve.user_id,
+                via_resolve.subject.as_str(),
+                via_resolve.is_admin
+            ),
+            "`caller_of` sur une `DatabaseConnection` rend le même principal que `resolve`"
+        );
+        assert!(via_conn.is_admin, "`alice` est membre du groupe admin");
+
+        // Sur une `DatabaseTransaction` ouverte sur la même base : même principal.
+        let transaction = db
+            .begin()
+            .await
+            .expect("une transaction s'ouvre sur la base de test");
+        let via_txn = caller_of(&transaction, "alice")
+            .await
+            .expect("caller_of sur la transaction");
+        assert_eq!(
+            (via_txn.user_id, via_txn.subject.as_str(), via_txn.is_admin),
+            (
+                via_resolve.user_id,
+                via_resolve.subject.as_str(),
+                via_resolve.is_admin
+            ),
+            "`caller_of` sur une `DatabaseTransaction` rend le même principal que `resolve`"
+        );
+        transaction
+            .rollback()
+            .await
+            .expect("transaction de test annulée proprement");
+
+        // Retrait du groupe admin (fixture de test, comme dans le `Scenario` de `resolve`) :
+        // le droit est relu à l'appel, sur les deux surfaces.
+        membership::Entity::delete_many()
+            .filter(membership::Column::UserId.eq(alice.id))
+            .exec(&db)
+            .await
+            .expect("retrait des appartenances d'alice");
+        let after_conn = caller_of(&db, "alice").await.expect("caller_of après retrait");
+        assert!(
+            !after_conn.is_admin,
+            "`caller_of` relit le droit admin : {after_conn:?}"
+        );
+        let after_resolve = identity.resolve("alice").await.expect("resolve après retrait");
+        assert!(
+            !after_resolve.is_admin,
+            "`resolve`, déléguant à `caller_of`, relit le droit admin : {after_resolve:?}"
+        );
+
+        // Un `subject` sans compte : mêmes erreurs que `resolve`, jamais un principal par défaut.
+        let ghost = caller_of(&db, "ghost").await;
+        assert!(
+            matches!(ghost, Err(LymailleError::UnknownSubject)),
+            "`caller_of` d'un subject sans compte refuse par `UnknownSubject` : {ghost:?}"
         );
     }
 

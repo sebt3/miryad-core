@@ -170,7 +170,7 @@ mod tests {
         witness_evenements(None, None, None, None, None);
         std::hint::black_box(crate::lymaille::migrations);
         std::hint::black_box(crate::lymaille::install_crypto_provider);
-        std::hint::black_box(crate::lymaille::server_for);
+        std::hint::black_box(crate::lymaille::server_for::<sea_orm::DatabaseConnection>);
         // `S = MiryadAuthState` : le `FromRef` recouvrement d'`axum` suffit — référence en valeur
         // sans montage réel (le test de montage complet est dans `http/mod.rs`).
         std::hint::black_box(crate::lymaille::conversations_router::<crate::auth::MiryadAuthState>);

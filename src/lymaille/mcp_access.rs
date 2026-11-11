@@ -165,13 +165,16 @@ fn auth_mode(mode: &str) -> McpAuthMode {
 /// `all`, ou contient `admin` et `caller.is_admin`, ou le caller est membre de l'un des groupes
 /// (**relu en base**, aucun cache).
 ///
+/// Connexion générique (amendement du 2026-11-11, DSD `hooks-async` `DEC-7`) : appelé par le
+/// hook de `./definitions/user_context.sdd` avec la connexion de l'appel ; comportement inchangé.
+///
 /// # Errors
 ///
 /// - `LymailleError::Forbidden` : serveur absent **ou** non autorisé — le même texte dans les
 ///   deux cas, pas d'oracle d'existence (`SERVER_UNAVAILABLE`).
 /// - `LymailleError::Store` : `DbErr` d'une des lectures (`db_text` expurgé).
-pub async fn server_for(
-    db: &DatabaseConnection,
+pub async fn server_for<C: ConnectionTrait>(
+    db: &C,
     caller: &CallerPrincipal,
     name: &str,
 ) -> Result<mcp_server::Model, LymailleError> {
@@ -193,8 +196,8 @@ pub async fn server_for(
 /// `admin` pour un admin (`caller.is_admin`, reconstruit à chaque appel par `Identity`), sinon
 /// appartenance à l'un des groupes — **relu en base à chaque appel, aucun cache** (DSD `FR-4`).
 /// Une valeur hors du tableau de noms garanti par les hooks n'autorise personne.
-async fn autorise(
-    db: &DatabaseConnection,
+async fn autorise<C: ConnectionTrait>(
+    db: &C,
     caller: &CallerPrincipal,
     groupes: &serde_json::Value,
 ) -> Result<bool, LymailleError> {

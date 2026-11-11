@@ -68,7 +68,8 @@ Tasks:
   [x] Le nom d'un contexte `H_…` passe la validation de `lymaille` : levé par la 0.2.0 (ticket #5, grammaire `[A-Za-z0-9_-]+` depuis `toolsets` FR-20), sans effet sur ce fichier. Vérifié dans la source de `lymaille` 0.2.0 le 2026-11-05.
   [x] Tests d'abord (SQLite mémoire pour `resolve`, tests purs pour le reste), puis ./identity.rs. Validé 2026-11-02
     (validator PASS, batterie ciblée ; batterie complète de `tooling.sdd` à la clôture du lot).
-  [ ] Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) : tests d'abord (`Scenario` ci-dessous), puis ./identity.rs ; `Identity::resolve` délègue à `caller_of`.
+  [x] Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) : tests d'abord (`Scenario` ci-dessous), puis ./identity.rs ; `Identity::resolve` délègue à `caller_of`.
+    Validé 2026-11-11 : test `caller_of_returns_resolve_principal_on_a_generic_connection` (connexion + transaction, relecture du droit, `UnknownSubject`) ; batterie ciblée `lymaille` et `workflow,lymaille` verte ; synthèse tenue par le primary, `validator` indisponible — voir le `[?]` de cette spec, tâche de consolidation.
   [x] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : poser la constante dans ./identity.rs ; vérifier par recherche dans `src/` qu'aucun autre `const ADMIN_ONLY_MODULES` ni `ADMIN_ONLY` n'est déclaré (AC ci-dessous).
     Validé 2026-11-11 : déclaration unique verrouillée par le test `admin_only_modules_has_a_single_declaration` ; batterie ciblée `lymaille` et `workflow,lymaille` verte (tests, clippy `-D warnings`, fmt).
     [?] (spec-dd) : l'agent `validator` était indisponible ce jour (expiration système de sa session, 4 tentatives) — la synthèse est tenue par le primary, relecture spec ↔ code ↔ tests comprise. Valides-tu ce mode dégradé pour ce lot ?
