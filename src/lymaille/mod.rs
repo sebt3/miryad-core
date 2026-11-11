@@ -37,6 +37,11 @@ pub mod error;
 /// `McpGrant`, `HostError`, `SharedHost` (amendement DEC-27/DEC-30 de ./mod.sdd).
 pub mod host;
 
+/// TEMPORAIRE (tâche ./mod.sdd distincte) : la déclaration et les ré-exports de `host_module`
+/// seront posés par la tâche de montage ; déclarés ici pour faire tourner les tests inline de
+/// `src/lymaille/host_module.sdd`.
+pub mod host_module;
+
 /// Surface REST+SSE des sessions interactives (`src/lymaille/http/mod.sdd`) : routeur
 /// auto-monté `conversations_router`, hors parité des ressources (acté 2026-11-03).
 pub mod http;
