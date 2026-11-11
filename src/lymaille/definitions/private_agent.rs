@@ -161,22 +161,32 @@ impl MiryadResource for Entity {
     }
 
     /// Valide la définition et réécrit les colonnes dérivées — voir [`Entity::valider_et_deriver`].
-    fn before_create(
+    fn before_create<C>(
+        db: &C,
         active: Self::ActiveModel,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        Entity::valider_et_deriver(active, None)
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move { Entity::valider_et_deriver(active, None) }
     }
 
     /// Mêmes étapes que [`Self::before_create`] sur la nouvelle définition, plus l'identité :
     /// renommer un agent change son identité et est refusé ; `created_at` reste celui de la ligne
     /// existante.
-    fn before_update(
+    fn before_update<C>(
+        db: &C,
         active: Self::ActiveModel,
         existing: &Self::Model,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        Entity::valider_et_deriver(active, Some(existing))
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move { Entity::valider_et_deriver(active, Some(existing)) }
     }
 
     // `before_delete` volontairement non surdéclaré : aucun contrôle d'usage, le défaut identité
@@ -186,6 +196,12 @@ impl MiryadResource for Entity {
 #[cfg(test)]
 mod tests {
     use super::ActiveModel;
+
+    /// Connexion simulée pour appeler les hooks depuis les tests : la validation de ce module
+    /// est pure et n'émet aucune requête ; une connexion à file vide suffit.
+    fn hook_db() -> sea_orm::DatabaseConnection {
+        sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite).into_connection()
+    }
     use super::Column;
     use super::Entity;
     use super::Model;
@@ -281,12 +297,14 @@ mod tests {
     /// Scenario « un agent privé valide est accepté » : la définition `triage` (id privé) passe,
     /// les colonnes fausses de l'entrée sont réécrites depuis la définition, et `created_at` est
     /// posé quand il manque.
-    #[test]
-    fn before_create_accepte_un_agent_prive_valide_et_derive_les_colonnes() {
+    #[tokio::test]
+    async fn before_create_accepte_un_agent_prive_valide_et_derive_les_colonnes() {
         let rendu = Entity::before_create(
+            &hook_db(),
             active_avec(definition("triage", AgentKind::Sub, "trie", "qwen")),
             &principal(),
         )
+        .await
         .expect("une définition `triage` à l'identifiant privé est acceptée");
         assert_eq!(
             rendu.agent_id,
@@ -317,13 +335,15 @@ mod tests {
     /// Scenario « le préfixe catalogue est refusé » : `G_triage` (`Catalog`) puis `g_triage`
     /// (`ReservedPrefix`) sont refusés par le même message, sans code `MRD-*` (`Must` étape 4 :
     /// `classify` doit rendre `Private`).
-    #[test]
-    fn before_create_refuse_le_prefixe_catalogue() {
+    #[tokio::test]
+    async fn before_create_refuse_le_prefixe_catalogue() {
         for id in ["G_triage", "g_triage"] {
             let rendu = Entity::before_create(
+                &hook_db(),
                 active_avec(definition(id, AgentKind::Sub, "trie", "qwen")),
                 &principal(),
-            );
+            )
+            .await;
             match rendu {
                 Err(erreur) => {
                     assert!(
@@ -343,12 +363,14 @@ mod tests {
     /// Scenario « le préfixe hôte est refusé » (moitié majuscule, arbitré le 2026-11-06) :
     /// `H_triage` (`classify` = `Host`, DSD `DEC-27`) est refusé sous le message contractualisé
     /// « agent id cannot use the host prefix », sans code `MRD-*` (`Must` étape 4).
-    #[test]
-    fn before_create_refuse_un_identifiant_hote() {
+    #[tokio::test]
+    async fn before_create_refuse_un_identifiant_hote() {
         let rendu = Entity::before_create(
+            &hook_db(),
             active_avec(definition("H_triage", AgentKind::Sub, "trie", "qwen")),
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(
@@ -368,12 +390,14 @@ mod tests {
     /// 2026-11-06 sur `./user_context.sdd`) : `h_triage` — `ReservedPrefix` au sens de `classify`,
     /// préfixe `h_` — est refusé sous le **même** message que `H_triage`, « agent id cannot use
     /// the host prefix », et non sous « catalog prefix ».
-    #[test]
-    fn before_create_refuse_le_prefixe_hote_minuscule() {
+    #[tokio::test]
+    async fn before_create_refuse_le_prefixe_hote_minuscule() {
         let rendu = Entity::before_create(
+            &hook_db(),
             active_avec(definition("h_triage", AgentKind::Sub, "trie", "qwen")),
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(
@@ -392,17 +416,23 @@ mod tests {
 
     /// `Must` (étape 1 des étapes de ./agent.sdd) : `definition` absente ou non objet est refusée
     /// avant toute désérialisation.
-    #[test]
-    fn before_create_refuse_une_definition_absente_ou_non_objet() {
+    #[tokio::test]
+    async fn before_create_refuse_une_definition_absente_ou_non_objet() {
         let sans = ActiveModel {
             definition: NotSet,
             ..active_avec(serde_json::Value::Null)
         };
-        match Entity::before_create(sans, &principal()) {
+        match Entity::before_create(&hook_db(), sans, &principal()).await {
             Err(erreur) => assert_eq!(erreur.message, "agent definition is required"),
             Ok(_) => panic!("une `definition` `NotSet` doit être refusée"),
         }
-        match Entity::before_create(active_avec(json!(["pas", "un", "objet"])), &principal()) {
+        match Entity::before_create(
+            &hook_db(),
+            active_avec(json!(["pas", "un", "objet"])),
+            &principal(),
+        )
+        .await
+        {
             Err(erreur) => assert_eq!(erreur.message, "agent definition is required"),
             Ok(_) => panic!("une `definition` non objet doit être refusée"),
         }
@@ -411,8 +441,8 @@ mod tests {
     /// `Must` (étape 3 des étapes de ./agent.sdd) / `Must not` : une définition que
     /// `AgentDefinition::validate` refuse est rejetée avec la cause de lymaille, et le prompt ne
     /// traverse jamais le message.
-    #[test]
-    fn before_create_refuse_une_definition_invalide_sans_citer_le_prompt() {
+    #[tokio::test]
+    async fn before_create_refuse_une_definition_invalide_sans_citer_le_prompt() {
         let prompt = "prompt-a-ne-jamais-citer-9f3c";
         let refusee = AgentDefinition::new(
             "triage".to_string(),
@@ -427,7 +457,7 @@ mod tests {
             "précondition : la fixture est bien refusée par `AgentDefinition::validate`"
         );
         let valeur = serde_json::to_value(refusee).expect("la fixture se sérialise");
-        match Entity::before_create(active_avec(valeur), &principal()) {
+        match Entity::before_create(&hook_db(), active_avec(valeur), &principal()).await {
             Err(erreur) => {
                 assert!(
                     erreur.message.starts_with("invalid agent definition:"),
@@ -444,13 +474,15 @@ mod tests {
 
     /// Scenario « renommer est refusé » : la nouvelle définition d'id `y` ne doit pas être
     /// acceptée sur la ligne `x`.
-    #[test]
-    fn before_update_refuse_un_renommage() {
+    #[tokio::test]
+    async fn before_update_refuse_un_renommage() {
         let rendu = Entity::before_update(
+            &hook_db(),
             active_avec(definition("y", AgentKind::Sub, "trie", "qwen")),
             &modele(1, "x"),
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(erreur.code.is_none(), "aucun code `MRD-*` sur un `HookError`");
@@ -462,14 +494,16 @@ mod tests {
 
     /// `Must` (`before_update`, étapes de ./agent.sdd) : une mise à jour qui garde l'id derive
     /// les colonnes et laisse `created_at` à celui de la ligne existante.
-    #[test]
-    fn before_update_derive_les_colonnes_et_conserve_la_date_de_creation() {
+    #[tokio::test]
+    async fn before_update_derive_les_colonnes_et_conserve_la_date_de_creation() {
         let existing = modele(1, "x");
         let rendu = Entity::before_update(
+            &hook_db(),
             active_avec(definition("x", AgentKind::Sub, "trie affiné", "qwen")),
             &existing,
             &principal(),
         )
+        .await
         .expect("une mise à jour qui garde l'id est acceptée");
         assert_eq!(rendu.agent_id, Set("x".to_string()));
         assert_eq!(rendu.kind, Set("sub".to_string()));

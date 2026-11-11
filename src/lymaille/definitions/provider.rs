@@ -112,20 +112,30 @@ impl MiryadResource for Entity {
     }
 
     /// Valide le provider et dérive `name`, `kind` et `level` — voir [`Entity::valider_et_deriver`].
-    fn before_create(
+    fn before_create<C>(
+        db: &C,
         active: Self::ActiveModel,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        Entity::valider_et_deriver(active, None)
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move { Entity::valider_et_deriver(active, None) }
     }
 
     /// Mêmes étapes que [`Self::before_create`], plus le nom : renommer un provider est refusé.
-    fn before_update(
+    fn before_update<C>(
+        db: &C,
         active: Self::ActiveModel,
         existing: &Self::Model,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        Entity::valider_et_deriver(active, Some(existing))
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move { Entity::valider_et_deriver(active, Some(existing)) }
     }
 
     // `before_delete` volontairement non surdéclaré : le défaut identité du trait s'applique
@@ -135,6 +145,12 @@ impl MiryadResource for Entity {
 #[cfg(test)]
 mod tests {
     use super::ActiveModel;
+
+    /// Connexion simulée pour appeler les hooks depuis les tests : la validation de ce module
+    /// est pure et n'émet aucune requête ; une connexion à file vide suffit.
+    fn hook_db() -> sea_orm::DatabaseConnection {
+        sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite).into_connection()
+    }
     use super::Column;
     use super::Entity;
     use super::Model;
@@ -199,9 +215,10 @@ mod tests {
 
     /// Scenario « un provider valide dérive nom, type et niveau » : les colonnes fausses de
     /// l'entrée sont réécrites depuis le provider, l'horodatage de création est posé.
-    #[test]
-    fn before_create_accepte_un_provider_valide_et_derive_ses_colonnes() {
+    #[tokio::test]
+    async fn before_create_accepte_un_provider_valide_et_derive_ses_colonnes() {
         let rendu = Entity::before_create(
+            &hook_db(),
             active_avec(provider_json(
                 "local",
                 "openai",
@@ -210,6 +227,7 @@ mod tests {
             )),
             &principal(),
         )
+        .await
         .expect("un provider de références valides est accepté");
         assert_eq!(rendu.name, Set("local".to_string()));
         assert_eq!(rendu.kind, Set("openai".to_string()));
@@ -223,8 +241,8 @@ mod tests {
     /// Scenario « un secret en clair est refusé sans être cité » : une référence d'authentification
     /// en forme de jeton est rejetée par la désérialisation (`Provider::new`), et le message
     /// n'offre ni l'adresse, ni la référence, ni la valeur.
-    #[test]
-    fn before_create_refuse_un_secret_en_clair_sans_le_citer() {
+    #[tokio::test]
+    async fn before_create_refuse_un_secret_en_clair_sans_le_citer() {
         let jeton = "sk-abc123supersecretpasaciter";
         let valeur = json!({
             "name": "local",
@@ -233,7 +251,7 @@ mod tests {
             "auth": jeton,
             "level": "user",
         });
-        match Entity::before_create(active_avec(valeur), &principal()) {
+        match Entity::before_create(&hook_db(), active_avec(valeur), &principal()).await {
             Err(erreur) => {
                 assert!(erreur.code.is_none(), "aucun code sur un `HookError` de la crate");
                 assert_eq!(erreur.message, "invalid provider");
@@ -247,26 +265,27 @@ mod tests {
     }
 
     /// `Must` : `provider` absent (`NotSet`) ou non objet est refusé avant toute désérialisation.
-    #[test]
-    fn before_create_refuse_un_provider_absent_ou_non_objet() {
+    #[tokio::test]
+    async fn before_create_refuse_un_provider_absent_ou_non_objet() {
         let sans = ActiveModel {
             provider: NotSet,
             ..active_avec(serde_json::Value::Null)
         };
-        match Entity::before_create(sans, &principal()) {
+        match Entity::before_create(&hook_db(), sans, &principal()).await {
             Err(erreur) => assert_eq!(erreur.message, "provider is required"),
             Ok(_) => panic!("un provider `NotSet` doit être refusé"),
         }
-        match Entity::before_create(active_avec(json!(["local"])), &principal()) {
+        match Entity::before_create(&hook_db(), active_avec(json!(["local"])), &principal()).await {
             Err(erreur) => assert_eq!(erreur.message, "provider is required"),
             Ok(_) => panic!("un provider non objet doit être refusé"),
         }
     }
 
     /// `Must` (`before_update`) : `name` inchangé.
-    #[test]
-    fn before_update_refuse_un_renommage() {
+    #[tokio::test]
+    async fn before_update_refuse_un_renommage() {
         let rendu = Entity::before_update(
+            &hook_db(),
             active_avec(provider_json(
                 "autre",
                 "openai",
@@ -275,7 +294,8 @@ mod tests {
             )),
             &modele("local"),
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(erreur.code.is_none(), "aucun code sur un `HookError` de la crate");

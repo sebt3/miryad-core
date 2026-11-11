@@ -1037,20 +1037,28 @@ mod tests {
                 None
             }
 
-            fn before_create(
+            fn before_create<C>(
+                db: &C,
+
                 active: ActiveModel,
                 _principal: &crate::auth::AuthPrincipal,
-            ) -> Result<ActiveModel, HookError> {
-                let label = match &active.label {
-                    sea_orm::ActiveValue::Set(value) | sea_orm::ActiveValue::Unchanged(value) => {
-                        value.clone()
+            ) -> impl std::future::Future<Output = Result<ActiveModel, HookError>> + Send
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                let _ = db;
+                async move {
+                    let label = match &active.label {
+                        sea_orm::ActiveValue::Set(value) | sea_orm::ActiveValue::Unchanged(value) => {
+                            value.clone()
+                        }
+                        sea_orm::ActiveValue::NotSet => String::new(),
+                    };
+                    if label.is_empty() {
+                        return Err(HookError::new("label must not be empty"));
                     }
-                    sea_orm::ActiveValue::NotSet => String::new(),
-                };
-                if label.is_empty() {
-                    return Err(HookError::new("label must not be empty"));
+                    Ok(active)
                 }
-                Ok(active)
             }
         }
     }

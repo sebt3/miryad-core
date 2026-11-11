@@ -428,18 +428,26 @@ mod tests {
             fn owner_column() -> Option<Column> {
                 None
             }
-            fn before_create(
+            fn before_create<C>(
+                db: &C,
+
                 active: Self::ActiveModel,
                 principal: &AuthPrincipal,
-            ) -> Result<Self::ActiveModel, HookError> {
-                let _ = principal;
-                // `mark_all_set` de `rest::core` est passé avant : le corps client arrive en `Set`.
-                if let Set(title) = &active.title
-                    && title.is_empty()
-                {
-                    return Err(HookError::with_code("WIDGET-001", "label must not be empty"));
+            ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                let _ = db;
+                async move {
+                    let _ = principal;
+                    // `mark_all_set` de `rest::core` est passé avant : le corps client arrive en `Set`.
+                    if let Set(title) = &active.title
+                        && title.is_empty()
+                    {
+                        return Err(HookError::with_code("WIDGET-001", "label must not be empty"));
+                    }
+                    Ok(active)
                 }
-                Ok(active)
             }
         }
     }

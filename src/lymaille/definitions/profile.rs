@@ -102,20 +102,30 @@ impl MiryadResource for Entity {
     }
 
     /// Valide le profil et dérive `name` — voir [`Entity::valider_et_deriver`].
-    fn before_create(
+    fn before_create<C>(
+        db: &C,
         active: Self::ActiveModel,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        Entity::valider_et_deriver(active, None)
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move { Entity::valider_et_deriver(active, None) }
     }
 
     /// Mêmes étapes que [`Self::before_create`], plus le nom : renommer un profil est refusé.
-    fn before_update(
+    fn before_update<C>(
+        db: &C,
         active: Self::ActiveModel,
         existing: &Self::Model,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        Entity::valider_et_deriver(active, Some(existing))
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move { Entity::valider_et_deriver(active, Some(existing)) }
     }
 
     // `before_delete` volontairement non surdéclaré : le défaut identité du trait s'applique
@@ -125,6 +135,12 @@ impl MiryadResource for Entity {
 #[cfg(test)]
 mod tests {
     use super::ActiveModel;
+
+    /// Connexion simulée pour appeler les hooks depuis les tests : la validation de ce module
+    /// est pure et n'émet aucune requête ; une connexion à file vide suffit.
+    fn hook_db() -> sea_orm::DatabaseConnection {
+        sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite).into_connection()
+    }
     use super::Column;
     use super::Entity;
     use super::Model;
@@ -179,10 +195,15 @@ mod tests {
 
     /// Scenario « un profil valide dérive son nom » : le `name` faux de l'entrée est réécrit
     /// depuis le profil, l'horodatage de création est posé.
-    #[test]
-    fn before_create_accepte_un_profil_valide_et_derive_son_nom() {
-        let rendu = Entity::before_create(active_avec(profil_json("qwen", "local", "qwen3")), &principal())
-            .expect("un profil valide est accepté");
+    #[tokio::test]
+    async fn before_create_accepte_un_profil_valide_et_derive_son_nom() {
+        let rendu = Entity::before_create(
+            &hook_db(),
+            active_avec(profil_json("qwen", "local", "qwen3")),
+            &principal(),
+        )
+        .await
+        .expect("un profil valide est accepté");
         assert_eq!(rendu.name, Set("qwen".to_string()), "`name` est dérivé du profil");
         assert!(
             matches!(rendu.created_at, Set(_)),
@@ -192,10 +213,10 @@ mod tests {
 
     /// Scenario « un profil invalide est refusé » : sans `provider`, la désérialisation échoue et
     /// sa cause est citée.
-    #[test]
-    fn before_create_refuse_un_profil_invalide() {
+    #[tokio::test]
+    async fn before_create_refuse_un_profil_invalide() {
         let sans_fournisseur = json!({ "name": "x", "model": "qwen3" });
-        match Entity::before_create(active_avec(sans_fournisseur), &principal()) {
+        match Entity::before_create(&hook_db(), active_avec(sans_fournisseur), &principal()).await {
             Err(erreur) => {
                 assert!(erreur.code.is_none(), "aucun code sur un `HookError` de la crate");
                 assert!(
@@ -208,27 +229,27 @@ mod tests {
     }
 
     /// `Must` : `profile` absent (`NotSet`) ou non objet est refusé avant toute désérialisation.
-    #[test]
-    fn before_create_refuse_un_profil_absent_ou_non_objet() {
+    #[tokio::test]
+    async fn before_create_refuse_un_profil_absent_ou_non_objet() {
         let sans = ActiveModel {
             profile: NotSet,
             ..active_avec(serde_json::Value::Null)
         };
-        match Entity::before_create(sans, &principal()) {
+        match Entity::before_create(&hook_db(), sans, &principal()).await {
             Err(erreur) => assert_eq!(erreur.message, "profile is required"),
             Ok(_) => panic!("un profil `NotSet` doit être refusé"),
         }
-        match Entity::before_create(active_avec(json!("qwen")), &principal()) {
+        match Entity::before_create(&hook_db(), active_avec(json!("qwen")), &principal()).await {
             Err(erreur) => assert_eq!(erreur.message, "profile is required"),
             Ok(_) => panic!("un profil non objet doit être refusé"),
         }
     }
 
     /// `Must` : un profil au nom vide est refusé (le nom dérivé serait inutilisable).
-    #[test]
-    fn before_create_refuse_un_profil_sans_nom() {
+    #[tokio::test]
+    async fn before_create_refuse_un_profil_sans_nom() {
         let sans_nom = json!({ "name": " ", "provider": "local", "model": "qwen3" });
-        match Entity::before_create(active_avec(sans_nom), &principal()) {
+        match Entity::before_create(&hook_db(), active_avec(sans_nom), &principal()).await {
             Err(erreur) => assert!(
                 erreur.message.starts_with("invalid profile:"),
                 "le refus cite sa cause : {erreur:?}"
@@ -239,13 +260,15 @@ mod tests {
 
     /// Scenario « renommer est refusé » : le nouveau profil nommé `autre` ne doit pas être
     /// accepté sur la ligne `qwen`.
-    #[test]
-    fn before_update_refuse_un_renommage() {
+    #[tokio::test]
+    async fn before_update_refuse_un_renommage() {
         let rendu = Entity::before_update(
+            &hook_db(),
             active_avec(profil_json("autre", "local", "qwen3")),
             &modele("qwen"),
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(erreur.code.is_none(), "aucun code sur un `HookError` de la crate");

@@ -113,61 +113,87 @@ pub trait MiryadResource: EntityTrait {
         None
     }
 
-    /// Hook métier exécuté après RBAC (`can_create`), avant l'insertion — peut muter
+    /// Hook métier asynchrone exécuté après RBAC (`can_create`), avant l'insertion — peut muter
     /// l'`ActiveModel` (champ dérivé, valeur calculée) ou rejeter l'opération avec une erreur
-    /// métier. Défaut : no-op.
+    /// métier. Amendement 2026-11-11 (`DEC-2`) : le hook reçoit en premier paramètre la connexion
+    /// de l'appel, générique sur `C: sea_orm::ConnectionTrait` — appelable avec une
+    /// `DatabaseConnection` comme avec une `DatabaseTransaction` — et rend un futur `Send` (ce que
+    /// les handlers `axum` exigent). La connexion est empruntée pour la durée du hook, utilisable
+    /// en lecture par l'override (une écriture de hook sort du contrat, `DEC-3`/`DEC-6`).
+    /// Défaut : no-op — n'attend rien, ne touche pas la base. La borne `Self::ActiveModel: Send`
+    /// est la condition technique du futur `Send` : c'est l'`ActiveModel` que le hook déplace dans
+    /// son futur ; tout `ActiveModel` dérivé (`DeriveEntityModel`) la satisfait.
     ///
     /// # Errors
     ///
     /// Un `Err(HookError)` remonté par l'override de l'application consommatrice (code applicatif
     /// libre, jamais un code `MRD-*` de la crate). Le défaut ne rejette jamais.
-    fn before_create(
+    fn before_create<C>(
+        db: &C,
         active: Self::ActiveModel,
         principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        let _ = principal;
-        Ok(active)
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+        Self::ActiveModel: Send,
+    {
+        let _ = (db, principal);
+        async move { Ok(active) }
     }
 
-    /// Hook métier de la mise à jour — position symétrique de [`before_create`](Self::before_create)
-    /// sur la création : après RBAC (`can_write`, évalué sur la ligne relue) et après
-    /// `rest::core::mark_all_set`, avant les deux invariants de `rest::core::update` (forçage de la
+    /// Hook métier asynchrone de la mise à jour — position symétrique de
+    /// [`before_create`](Self::before_create) sur la création : après RBAC (`can_write`, évalué sur
+    /// la ligne relue) et après `rest::core::mark_all_set`, avant les deux invariants de
+    /// `rest::core::update` (forçage de la
     /// clé primaire à l'id du chemin, reconduction de `owner_column` depuis `existing`) — un hook
     /// hostile est défait par le même ordre que sur la création. `existing` (le `Model` relu avant
     /// mise à jour, la même ligne qu'a évaluée `can_write`) est prêté en lecture seule : comparer
     /// avant/après (ex. valider une transition d'état) ne demande pas de relire la base soi-même.
-    /// Déclenché sur REST et MCP. Défaut : identité — `Ok(active)`, `existing` et `principal`
-    /// ignorés.
+    /// Comme `before_create`, le hook reçoit la connexion de l'appel (`db: &C`, `C:
+    /// sea_orm::ConnectionTrait`) et rend un futur `Send` (amendement 2026-11-11, `DEC-2`).
+    /// Déclenché sur REST et MCP. Défaut : identité — `Ok(active)`, `db`, `existing` et
+    /// `principal` ignorés.
     ///
     /// # Errors
     ///
     /// Un `Err(HookError)` remonté par l'override de l'application consommatrice (code applicatif
     /// libre, jamais un code `MRD-*` de la crate). Le défaut ne rejette jamais.
-    fn before_update(
+    fn before_update<C>(
+        db: &C,
         active: Self::ActiveModel,
         existing: &Self::Model,
         principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        let _ = existing;
-        let _ = principal;
-        Ok(active)
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+        Self::ActiveModel: Send,
+    {
+        let _ = (db, existing, principal);
+        async move { Ok(active) }
     }
 
-    /// Hook métier de la suppression : exécuté après RBAC (`can_write`, évalué sur la ligne
-    /// relue), avant l'exécution du `DELETE` — un `Err` interrompt avant toute requête. Aucun
+    /// Hook métier asynchrone de la suppression : exécuté après RBAC (`can_write`, évalué sur la
+    /// ligne relue), avant l'exécution du `DELETE` — un `Err` interrompt avant toute requête. Aucun
     /// `ActiveModel` n'existe pour une suppression, seul `existing` (le `Model` relu) est prêté,
-    /// en lecture seule. Déclenché sur REST et MCP. Défaut : `Ok(())`, `existing` et `principal`
-    /// ignorés.
+    /// en lecture seule. Comme les deux autres hooks, il reçoit la connexion de l'appel (`db: &C`,
+    /// `C: sea_orm::ConnectionTrait`) et rend un futur `Send` (amendement 2026-11-11, `DEC-2`).
+    /// Déclenché sur REST et MCP. Défaut : `Ok(())`, `db`, `existing` et `principal` ignorés.
     ///
     /// # Errors
     ///
     /// Un `Err(HookError)` remonté par l'override de l'application consommatrice (code applicatif
     /// libre, jamais un code `MRD-*` de la crate) — il interrompt avant toute requête `DELETE`.
     /// Le défaut ne rejette jamais.
-    fn before_delete(existing: &Self::Model, principal: &AuthPrincipal) -> Result<(), HookError> {
-        let _ = existing;
-        let _ = principal;
-        Ok(())
+    fn before_delete<C>(
+        db: &C,
+        existing: &Self::Model,
+        principal: &AuthPrincipal,
+    ) -> impl std::future::Future<Output = Result<(), HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = (db, existing, principal);
+        async move { Ok(()) }
     }
 }
 
@@ -177,6 +203,7 @@ mod tests {
     use crate::auth::{AuthPrincipal, PrincipalSource};
     use sea_orm::ActiveValue::Set;
     use sea_orm::Iden;
+    use sea_orm::TransactionTrait;
 
     /// Entité avec propriétaire — lecture `Public`, écriture `OwnerOnly`, aucune surdéclaration
     /// de `filter_column`/`label_column`/`before_create` (défauts du trait exercés par ce
@@ -284,20 +311,27 @@ mod tests {
                 None
             }
 
-            fn before_create(
+            fn before_create<C>(
+                db: &C,
                 active: ActiveModel,
                 _principal: &AuthPrincipal,
-            ) -> Result<ActiveModel, HookError> {
-                let label = match &active.label {
-                    sea_orm::ActiveValue::Set(v) | sea_orm::ActiveValue::Unchanged(v) => v.clone(),
-                    sea_orm::ActiveValue::NotSet => String::new(),
-                };
-                if label.is_empty() {
-                    return Err(HookError::with_code("WIDGET-001", "label must not be empty"));
+            ) -> impl std::future::Future<Output = Result<ActiveModel, HookError>> + Send
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                let _ = db;
+                async move {
+                    let label = match &active.label {
+                        sea_orm::ActiveValue::Set(v) | sea_orm::ActiveValue::Unchanged(v) => v.clone(),
+                        sea_orm::ActiveValue::NotSet => String::new(),
+                    };
+                    if label.is_empty() {
+                        return Err(HookError::with_code("WIDGET-001", "label must not be empty"));
+                    }
+                    let mut active = active;
+                    active.label = Set(label.to_uppercase());
+                    Ok(active)
                 }
-                let mut active = active;
-                active.label = Set(label.to_uppercase());
-                Ok(active)
             }
         }
     }
@@ -558,15 +592,17 @@ mod tests {
     /// `Scenario` « `before_create` par défaut est une identité sans égard au principal » —
     /// principal de token API puis de session, `ActiveModel` à valeurs posées conservé champ par
     /// champ, sans panic ni comportement conditionnel.
-    #[test]
-    fn default_before_create_is_identity_on_any_principal() {
+    #[tokio::test]
+    async fn default_before_create_is_identity_on_any_principal() {
         let active = recipes::ActiveModel {
             id: Set(1),
             title: Set("beetroot soup".to_string()),
             owner_id: Set(7),
         };
+        let db = mock_db();
         for principal in [api_principal(), session_principal()] {
-            let outcome = recipes::Entity::before_create(active.clone(), &principal)
+            let outcome = recipes::Entity::before_create(&db, active.clone(), &principal)
+                .await
                 .expect("le défaut ne rejette jamais");
             assert_eq!(outcome, active, "le défaut conserve l'ActiveModel inchangé");
         }
@@ -574,14 +610,15 @@ mod tests {
 
     /// `Scenario` « mutation de l'`ActiveModel` par un override de `before_create` » — `gadget`
     /// ressort `GADGET`, l'override remplace bien l'`ActiveModel` transmis.
-    #[test]
-    fn before_create_override_mutates_the_active_model() {
+    #[tokio::test]
+    async fn before_create_override_mutates_the_active_model() {
         let active = widgets::ActiveModel {
             id: Set(1),
             label: Set("gadget".to_string()),
         };
-        let outcome =
-            widgets::Entity::before_create(active, &api_principal()).expect("un libellé non vide passe");
+        let outcome = widgets::Entity::before_create(&mock_db(), active, &api_principal())
+            .await
+            .expect("un libellé non vide passe");
         assert!(
             matches!(&outcome.label, Set(label) if label == "GADGET"),
             "{outcome:?}"
@@ -591,14 +628,15 @@ mod tests {
     /// `Scenario` « rejet par un override de `before_create` avec code libre » — libellé vide :
     /// `Err` avec `code` `WIDGET-001` et `message` porté ; ni le code ni le message ne portent le
     /// préfixe `MRD-`.
-    #[test]
-    fn before_create_override_rejects_with_free_form_error() {
+    #[tokio::test]
+    async fn before_create_override_rejects_with_free_form_error() {
         let active = widgets::ActiveModel {
             id: Set(2),
             label: Set(String::new()),
         };
-        let error =
-            widgets::Entity::before_create(active, &api_principal()).expect_err("un libellé vide est rejeté");
+        let error = widgets::Entity::before_create(&mock_db(), active, &api_principal())
+            .await
+            .expect_err("un libellé vide est rejeté");
         assert_eq!(error.code.as_deref(), Some("WIDGET-001"));
         assert_eq!(error.message, "label must not be empty");
         assert!(!error.code.expect("code vérifié ci-dessus").starts_with("MRD-"));
@@ -637,5 +675,265 @@ mod tests {
             serde_json::to_string(&AccessPolicy::OwnerOnly).expect("json"),
             "\"OwnerOnly\""
         );
+    }
+
+    // ── Amendement 2026-11-11 (hooks asynchrones, `resource.sdd` `DEC-2` à `DEC-6`) ──
+
+    /// Entité à hooks asynchrones qui lisent la base par la connexion reçue — fixture des quatre
+    /// `Scenario` de l'amendement : `before_create`/`before_update`/`before_delete` interrogent
+    /// l'existence d'une ligne référencée (`refs`) et `holders` rendent `WIDGET-REF` quand elle
+    /// manque.
+    mod refhooks {
+        use super::{AccessPolicy, AuthPrincipal, HookError, MiryadResource};
+        use sea_orm::entity::prelude::*;
+
+        /// La ligne référencée que lisent les hooks de `holders` par la connexion reçue.
+        pub mod refs {
+            use sea_orm::entity::prelude::*;
+
+            #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+            #[sea_orm(table_name = "refhook_refs")]
+            pub struct Model {
+                #[sea_orm(primary_key)]
+                pub id: i32,
+                pub label: String,
+            }
+
+            #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+            pub enum Relation {}
+
+            impl ActiveModelBehavior for ActiveModel {}
+        }
+
+        #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+        #[sea_orm(table_name = "refhook_holders")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub label: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        /// Lit `refs` par la connexion reçue : absent, `WIDGET-REF` ; présent, acceptation.
+        /// Les trois hooks attendent réellement (`Scenario` « le futur d'un hook est Send »).
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "refhooks"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::AdminOnly
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+
+            async fn before_create<C>(
+                db: &C,
+                active: ActiveModel,
+                _principal: &AuthPrincipal,
+            ) -> Result<ActiveModel, HookError>
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                match refs::Entity::find().one(db).await {
+                    Ok(Some(_)) => Ok(active),
+                    Ok(None) => Err(HookError::with_code("WIDGET-REF", "referenced row is missing")),
+                    Err(erreur) => Err(HookError::new(format!("referenced row read failed: {erreur}"))),
+                }
+            }
+
+            async fn before_update<C>(
+                db: &C,
+                active: ActiveModel,
+                _existing: &Self::Model,
+                _principal: &AuthPrincipal,
+            ) -> Result<ActiveModel, HookError>
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                match refs::Entity::find().one(db).await {
+                    Ok(Some(_)) => Ok(active),
+                    Ok(None) => Err(HookError::with_code("WIDGET-REF", "referenced row is missing")),
+                    Err(erreur) => Err(HookError::new(format!("referenced row read failed: {erreur}"))),
+                }
+            }
+
+            async fn before_delete<C>(
+                db: &C,
+                _existing: &Self::Model,
+                _principal: &AuthPrincipal,
+            ) -> Result<(), HookError>
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                match refs::Entity::find().one(db).await {
+                    Ok(_) => Ok(()),
+                    Err(erreur) => Err(HookError::new(format!("referenced row read failed: {erreur}"))),
+                }
+            }
+        }
+    }
+
+    /// Connexion simulée sans résultat scripté — les hooks purs et les défauts n'émettent aucune
+    /// requête, un appel qui en émettrait une buterait sur un `DbErr` de file vide.
+    fn mock_db() -> sea_orm::DatabaseConnection {
+        sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite).into_connection()
+    }
+
+    /// `Scenario` « hook asynchrone qui lit la base par la connexion reçue et refuse » — la
+    /// lecture vide fait rejeter `WIDGET-REF`, la lecture qui rend la ligne laisse passer
+    /// l'`ActiveModel` inchangé, et la lecture est bien émise sur la connexion fournie.
+    #[tokio::test]
+    async fn hook_async_reads_db_and_rejects() {
+        let active = refhooks::ActiveModel {
+            id: Set(1),
+            label: Set("gadget".to_string()),
+        };
+
+        let empty = sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite)
+            .append_query_results::<refhooks::refs::Model, _, _>([[]])
+            .into_connection();
+        let rejected = refhooks::Entity::before_create(&empty, active.clone(), &api_principal()).await;
+        let Err(error) = rejected else {
+            panic!("la lecture sans ligne référencée doit rejeter");
+        };
+        assert_eq!(error.code.as_deref(), Some("WIDGET-REF"));
+        let read_emitted = empty
+            .into_transaction_log()
+            .iter()
+            .flat_map(sea_orm::Transaction::statements)
+            .any(|stmt| stmt.to_string().contains("refhook_refs"));
+        assert!(
+            read_emitted,
+            "la lecture a été émise sur la connexion fournie, pas sur une autre"
+        );
+
+        let full = sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite)
+            .append_query_results([[refhooks::refs::Model {
+                id: 1,
+                label: "référencée".to_string(),
+            }]])
+            .into_connection();
+        let accepted = refhooks::Entity::before_create(&full, active.clone(), &api_principal())
+            .await
+            .expect("la lecture qui rend la ligne laisse passer");
+        assert_eq!(accepted, active, "l'ActiveModel traverse inchangé");
+    }
+
+    /// `Scenario` « les trois hooks par défaut n'émettent aucune requête » — `recipe` ne
+    /// surdéclare aucun hook : identité, identité, `Ok(())`, et le journal de la connexion
+    /// simulée reste vide.
+    #[tokio::test]
+    async fn default_hooks_emit_no_query() {
+        let db = mock_db();
+        let active = recipes::ActiveModel {
+            id: Set(1),
+            title: Set("beetroot soup".to_string()),
+            owner_id: Set(7),
+        };
+        let existing = recipes::Model {
+            id: 1,
+            title: "beetroot soup".to_string(),
+            owner_id: 7,
+        };
+        let principal = api_principal();
+
+        let created = recipes::Entity::before_create(&db, active.clone(), &principal)
+            .await
+            .expect("le défaut ne rejette jamais");
+        assert_eq!(created, active);
+        let updated = recipes::Entity::before_update(&db, active.clone(), &existing, &principal)
+            .await
+            .expect("le défaut ne rejette jamais");
+        assert_eq!(updated, active);
+        recipes::Entity::before_delete(&db, &existing, &principal)
+            .await
+            .expect("le défaut autorise");
+
+        assert!(
+            db.into_transaction_log().is_empty(),
+            "une entité sans hook ne coûte aucune requête"
+        );
+    }
+
+    /// `Scenario` « un hook s'appelle avec une transaction comme avec une connexion » — le même
+    /// code de `before_update` compile et rend le même résultat sur une `DatabaseConnection`
+    /// simulée et sur une `DatabaseTransaction` ouverte sur la même simulation.
+    #[tokio::test]
+    async fn hook_accepts_connection_and_transaction() {
+        let active = refhooks::ActiveModel {
+            id: Set(1),
+            label: Set("gadget".to_string()),
+        };
+        let existing = refhooks::Model {
+            id: 1,
+            label: "gadget".to_string(),
+        };
+        let principal = api_principal();
+        let scripted = || {
+            sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite).append_query_results([[
+                refhooks::refs::Model {
+                    id: 1,
+                    label: "référencée".to_string(),
+                },
+            ]])
+        };
+
+        let connection = scripted().into_connection();
+        let via_connection =
+            refhooks::Entity::before_update(&connection, active.clone(), &existing, &principal)
+                .await
+                .expect("appel par connexion simple");
+
+        let transactional_db = scripted().into_connection();
+        let transaction = transactional_db
+            .begin()
+            .await
+            .expect("la simulation ouvre une transaction");
+        let via_transaction =
+            refhooks::Entity::before_update(&transaction, active.clone(), &existing, &principal)
+                .await
+                .expect("appel par transaction, même code d'entité");
+        transaction
+            .rollback()
+            .await
+            .expect("transaction de fixture refermée");
+
+        assert_eq!(
+            via_connection, via_transaction,
+            "les deux appels rendent le même résultat"
+        );
+    }
+
+    /// `Scenario` « le futur d'un hook est Send » — la preuve est la compilation : chaque futur,
+    /// obtenu par un override qui attend réellement, passe à une fonction qui exige `Send`
+    /// (l'équivalent de ce qu'impose un handler `axum`).
+    #[test]
+    fn hook_future_is_send() {
+        fn assert_send_future<F: std::future::Future + Send>(_future: F) {}
+
+        let db = mock_db();
+        let principal = api_principal();
+        let active = refhooks::ActiveModel {
+            id: Set(1),
+            label: Set("gadget".to_string()),
+        };
+        let existing = refhooks::Model {
+            id: 1,
+            label: "gadget".to_string(),
+        };
+
+        assert_send_future(refhooks::Entity::before_create(&db, active.clone(), &principal));
+        assert_send_future(refhooks::Entity::before_update(
+            &db, active, &existing, &principal,
+        ));
+        assert_send_future(refhooks::Entity::before_delete(&db, &existing, &principal));
     }
 }

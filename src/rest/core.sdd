@@ -572,7 +572,8 @@ Tasks:
     la résidence inline ./core.rs est jugée trop lourde pour les scénarios d’intégration
     (multi-connexions, features), la décision de les placer dans ./tests/ rattaché est à rendre avec
     la relecture de cette spec, jamais en silence.
-  [ ] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`) : dans ./core.rs, passer `db` aux trois hooks et les attendre à leur position
+  [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`) : dans ./core.rs, passer `db` aux trois hooks et les attendre à leur position
+    Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
     actuelle (aucune transaction, aucun réordonnancement) ; fixtures de test de ./core.rs et de ./mod.rs portées au nouveau trait (réécriture
     totale, `DEC-4`) ; convertir les trois nouveaux `Scenario` en tests nommés (`hook_lit_la_base_par_la_connexion_de_l_appel`, `hook_refus_en_base_bloque_l_ecriture`,
     `hook_couvre_le_module_resources_de_lymaille`). Dépend de /src/resource.sdd (même amendement) — relues et approuvées ensemble.

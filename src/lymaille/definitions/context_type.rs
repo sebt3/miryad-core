@@ -211,21 +211,31 @@ impl MiryadResource for Entity {
 
     /// Valide les versions présentes et dérive `name` et `version` — voir
     /// [`Entity::valider_et_deriver`].
-    fn before_create(
+    fn before_create<C>(
+        db: &C,
         active: Self::ActiveModel,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        Entity::valider_et_deriver(active, None)
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move { Entity::valider_et_deriver(active, None) }
     }
 
     /// Mêmes étapes que [`Self::before_create`], plus l'identité : un `name` qui change est
     /// refusé (`Must` de `./context_type.sdd`, précédent `./toolset.rs`).
-    fn before_update(
+    fn before_update<C>(
+        db: &C,
         active: Self::ActiveModel,
         existing: &Self::Model,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        Entity::valider_et_deriver(active, Some(existing))
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move { Entity::valider_et_deriver(active, Some(existing)) }
     }
 
     // `before_delete` volontairement non surdéclaré : aucun contrôle d'usage au lot 2, le défaut
@@ -235,6 +245,12 @@ impl MiryadResource for Entity {
 #[cfg(test)]
 mod tests {
     use super::ActiveModel;
+
+    /// Connexion simulée pour appeler les hooks depuis les tests : la validation de ce module
+    /// est pure et n'émet aucune requête ; une connexion à file vide suffit.
+    fn hook_db() -> sea_orm::DatabaseConnection {
+        sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite).into_connection()
+    }
     use super::Entity;
     use super::Model;
     use crate::auth::AuthPrincipal;
@@ -321,9 +337,9 @@ mod tests {
 
     /// Scenario « un type valide du catalogue est accepté, ses colonnes dérivées » : nom `G_…`
     /// de la grammaire `lymaille` 0.2.0, porte `classify` franchie.
-    #[test]
-    fn before_create_accepte_un_type_valide_du_catalogue_et_derive_les_colonnes() {
-        let rendu = Entity::before_create(
+    #[tokio::test]
+    async fn before_create_accepte_un_type_valide_du_catalogue_et_derive_les_colonnes() {
+        let rendu = Entity::before_create(&hook_db(),
             active_avec(
                 Some(type_json(
                     "G_cluster",
@@ -333,7 +349,7 @@ mod tests {
                 None,
             ),
             &principal(),
-        )
+        ).await
         .expect("un type `G_cluster` 1.0.0 du catalogue est accepté");
         assert_eq!(
             rendu.name,
@@ -348,14 +364,16 @@ mod tests {
     }
 
     /// Scenario « ni active ni draft » : les deux colonnes absentes (`None`) ou JSON `null`.
-    #[test]
-    fn before_create_refuse_un_type_sans_version() {
+    #[tokio::test]
+    async fn before_create_refuse_un_type_sans_version() {
         let rendus = vec![
-            Entity::before_create(active_avec(None, None), &principal()),
+            Entity::before_create(&hook_db(), active_avec(None, None), &principal()).await,
             Entity::before_create(
+                &hook_db(),
                 active_avec(Some(serde_json::Value::Null), Some(serde_json::Value::Null)),
                 &principal(),
-            ),
+            )
+            .await,
         ];
         for rendu in rendus {
             match rendu {
@@ -373,16 +391,18 @@ mod tests {
 
     /// Scenario « un schéma invalide est refusé » : la cause de `lymaille` traverse, le message
     /// ne cite jamais le schéma (marque plantée dans le schéma pour le prouver).
-    #[test]
-    fn before_create_refuse_un_schema_invalide_sans_le_citer() {
+    #[tokio::test]
+    async fn before_create_refuse_un_schema_invalide_sans_le_citer() {
         let marque = "SCHEMA-A-NE-JAMAIS-CITER-7c21";
         let rendu = Entity::before_create(
+            &hook_db(),
             active_avec(
                 Some(type_json("G_cluster", "1.0.0", json!({"type": marque}))),
                 None,
             ),
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(
@@ -402,9 +422,10 @@ mod tests {
     /// JSON ne porte aucun `default_agent`, l'ensemble est non vide — l'ouverture exigera alors
     /// un agent explicite (`../interactive/manager.sdd`). La nature est `session_kind` amont,
     /// validée à la désérialisation : aucune porte « nature » ici.
-    #[test]
-    fn before_create_accepte_un_type_sans_agent_par_defaut() {
+    #[tokio::test]
+    async fn before_create_accepte_un_type_sans_agent_par_defaut() {
         let rendu = Entity::before_create(
+            &hook_db(),
             active_avec_agents(
                 json!(["G_alpha"]),
                 Some(type_json("G_cluster", "1.0.0", json!({"type": "object"}))),
@@ -412,6 +433,7 @@ mod tests {
             ),
             &principal(),
         )
+        .await
         .expect("un type sans agent par défaut est admis");
         assert_eq!(rendu.name, Set("G_cluster".to_string()));
     }
@@ -419,15 +441,17 @@ mod tests {
     /// Scenario (alignement `lymaille` 0.2.0) « un nom sans préfixe G_ est refusé » : la porte
     /// `classify(name) == Catalog` est rétablie (arbitrage du 2026-11-05 — la grammaire amont
     /// `[A-Za-z0-9_-]+` de `lymaille` 0.2.0 rend les noms `G_…` désérialisables).
-    #[test]
-    fn before_create_refuse_un_nom_sans_prefixe_g() {
+    #[tokio::test]
+    async fn before_create_refuse_un_nom_sans_prefixe_g() {
         let rendu = Entity::before_create(
+            &hook_db(),
             active_avec(
                 Some(type_json("cluster", "1.0.0", json!({"type": "object"}))),
                 None,
             ),
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(
@@ -446,8 +470,8 @@ mod tests {
     /// Scenario (alignement `lymaille` 0.2.0) « `allowed_agents` absent ou mal formé est refusé »
     /// : `ActiveValue::NotSet` compte comme absent et refuse ; un objet, ou un tableau contenant
     /// un nombre, ne sont pas un tableau de chaînes.
-    #[test]
-    fn before_create_refuse_allowed_agents_absent_ou_mal_forme() {
+    #[tokio::test]
+    async fn before_create_refuse_allowed_agents_absent_ou_mal_forme() {
         let valide = type_json("G_cluster", "1.0.0", json!({"type": "object"}));
         let mut mal_formes = vec![
             (NotSet, "absent (`NotSet`)"),
@@ -457,7 +481,7 @@ mod tests {
         for (valeur, cause) in mal_formes.drain(..) {
             let mut active = active_avec(Some(valide.clone()), None);
             active.allowed_agents = valeur;
-            let rendu = Entity::before_create(active, &principal());
+            let rendu = Entity::before_create(&hook_db(), active, &principal()).await;
             match rendu {
                 Err(erreur) => {
                     assert!(
@@ -477,16 +501,18 @@ mod tests {
     /// Scenario (alignement `lymaille` 0.2.0) « un agent par défaut hors de l'ensemble autorisé
     /// est refusé », lu **dans le JSON** : la colonne `default_agent` n'existe plus, c'est le
     /// `ContextType` amont qui porte l'agent, comparé par chaînes exactes à `allowed_agents`.
-    #[test]
-    fn before_create_refuse_un_agent_par_defaut_hors_ensemble_lu_dans_le_json() {
+    #[tokio::test]
+    async fn before_create_refuse_un_agent_par_defaut_hors_ensemble_lu_dans_le_json() {
         let rendu = Entity::before_create(
+            &hook_db(),
             active_avec_agents(
                 json!(["G_beta"]),
                 Some(type_json_avec_defaut("G_cluster", "G_alpha")),
                 None,
             ),
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(
@@ -504,9 +530,10 @@ mod tests {
 
     /// Scenario (alignement `lymaille` 0.2.0) « un agent par défaut membre de l'ensemble autorisé
     /// est accepté », lu dans le JSON.
-    #[test]
-    fn before_create_accepte_un_agent_par_defaut_membre_de_l_ensemble() {
+    #[tokio::test]
+    async fn before_create_accepte_un_agent_par_defaut_membre_de_l_ensemble() {
         Entity::before_create(
+            &hook_db(),
             active_avec_agents(
                 json!(["G_alpha", "G_beta"]),
                 Some(type_json_avec_defaut("G_cluster", "G_alpha")),
@@ -514,14 +541,15 @@ mod tests {
             ),
             &principal(),
         )
+        .await
         .expect("un agent par défaut membre de l'ensemble est accepté");
     }
 
     /// Scenario « le nom ne change pas à la mise à jour » : une ligne `G_cluster`, un
     /// `ActiveModel` dont le JSON porte `G_cluster2` — `before_update` refuse, le message cite la
     /// règle ; aucun code `MRD-*` sur un `HookError`.
-    #[test]
-    fn before_update_refuse_un_changement_de_nom() {
+    #[tokio::test]
+    async fn before_update_refuse_un_changement_de_nom() {
         let existing = Model {
             id: 1,
             name: "G_cluster".to_string(),
@@ -532,13 +560,15 @@ mod tests {
             created_at: chrono::Utc::now(),
         };
         let rendu = Entity::before_update(
+            &hook_db(),
             active_avec(
                 Some(type_json("G_cluster2", "1.1.0", json!({"type": "object"}))),
                 None,
             ),
             &existing,
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(

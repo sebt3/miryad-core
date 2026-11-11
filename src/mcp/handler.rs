@@ -345,11 +345,68 @@ mod tests {
             fn owner_column() -> Option<Column> {
                 Some(Column::OwnerId)
             }
-            fn before_create(
+            fn before_create<C>(
+                db: &C,
+
                 _active: ActiveModel,
                 _principal: &AuthPrincipal,
-            ) -> Result<ActiveModel, HookError> {
-                Err(HookError::with_code("HOOK-42", "titre vide"))
+            ) -> impl std::future::Future<Output = Result<ActiveModel, HookError>> + Send
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                let _ = db;
+                async move { Err(HookError::with_code("HOOK-42", "titre vide")) }
+            }
+        }
+    }
+
+    /// Fixture de l'amendement 2026-11-11 (DSD `hooks-async` `AC-1`) — `before_create` lit la
+    /// table `recipes` par la connexion reçue et rejette `WIDGET-REF` quand elle est vide. La
+    /// fixture `recipe` conserve son rejet `HOOK-42` : c'est une entité distincte, et la table
+    /// `recipes` sert de référentiel lu. `[?]` — le `Scenario` nomme l'outil `recipes_create` ;
+    /// ce nom appartient à la fixture `recipe`, la fixture de lecture est donc `refrecipes`.
+    mod refrecipe {
+        use super::*;
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "refrecipes")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub title: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "refrecipes"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+            async fn before_create<C>(
+                db: &C,
+                active: ActiveModel,
+                _principal: &AuthPrincipal,
+            ) -> Result<ActiveModel, HookError>
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                match super::recipe::Entity::find().one(db).await {
+                    Ok(Some(_)) => Ok(active),
+                    Ok(None) => Err(HookError::with_code("WIDGET-REF", "referenced row is missing")),
+                    Err(erreur) => Err(HookError::new(format!("referenced row read failed: {erreur}"))),
+                }
             }
         }
     }
@@ -1297,6 +1354,63 @@ mod tests {
         assert_eq!(body["error"]["code"], -32000);
         assert_eq!(body["error"]["message"].as_str().expect("message"), "titre vide");
         assert_eq!(body["error"]["data"], json!({ "code": "HOOK-42" }));
+    }
+
+    /// `Scenario` : « hook qui lit la base et refuse rend le même -32000 que le hook sans base »
+    /// (amendement 2026-11-11, DSD `hooks-async` `AC-1`) — le refus fondé sur une lecture en base
+    /// traverse `rest::core` et `From<RestError>` sans décision propre à MCP ; rien n'est écrit.
+    /// `[?]` — le `Scenario` nomme `recipes_create`/`recipes_get`, noms portés par la fixture
+    /// `recipe` (hook `HOOK-42`) ; la fixture de lecture est `refrecipes`, les outils sont donc
+    /// `refrecipes_create`/`refrecipes_get`, contrat par ailleurs identique.
+    #[tokio::test]
+    async fn hook_qui_lit_la_base_refuse_en_32000() {
+        let _tour = serial_turn();
+        let state = migrated_state().await;
+        let schema = Schema::new(state.db.get_database_backend());
+        state
+            .db
+            .execute(&schema.create_table_from_entity(refrecipe::Entity))
+            .await
+            .expect("refrecipes table creates");
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register::<recipe::Entity>();
+        registry.register::<refrecipe::Entity>();
+        let router = mcp_router(registry).with_state(state.clone());
+        let token = bearer_for(&state.db, "alice").await;
+
+        let served = post_json(
+            router.clone(),
+            &token,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"refrecipes_create","arguments":{"id":0,"title":"Gaspacho"}}}"#,
+        )
+        .await;
+        assert_eq!(served.status, StatusCode::OK);
+        let body = served.json();
+        assert_eq!(body["error"]["code"], -32000);
+        assert_eq!(
+            body["error"]["message"].as_str().expect("message"),
+            "referenced row is missing",
+            "le message nu du hook, sans préfixe de la crate"
+        );
+        assert_eq!(body["error"]["data"], json!({ "code": "WIDGET-REF" }));
+        assert!(
+            !body["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("MRD-"),
+            "aucun code MRD-* sur le chemin d'un hook : {body}"
+        );
+
+        // Aucune écriture n'a eu lieu : la table `refrecipes` est vide, le rejeu du `get` échoue
+        // en `-32002`.
+        let served = post_json(
+            router,
+            &token,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"refrecipes_get","arguments":{"id":1}}}"#,
+        )
+        .await;
+        let body = served.json();
+        assert_eq!(body["error"]["code"], -32002);
     }
 
     /// `Scenario` : « delete valide rend la confirmation fixe, sous tout format » —

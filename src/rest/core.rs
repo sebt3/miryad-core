@@ -115,7 +115,9 @@ pub(crate) async fn create<E: RestEntity>(
     // Le hook métier s'exécute avant le PK-stripping/l'injection du propriétaire ci-dessous, pour
     // que ces deux invariants de sécurité restent les derniers mots — un hook buggé ne peut pas
     // les contourner en mutant l'ActiveModel.
-    active = E::before_create(active, principal).map_err(RestError::Application)?;
+    active = E::before_create(db, active, principal)
+        .await
+        .map_err(RestError::Application)?;
     // La BD attribue l'id — jamais une PK choisie par le client.
     active.not_set(primary_key_column::<E>());
     // Un utilisateur ne peut jamais créer une ressource au nom de quelqu'un d'autre, même en le
@@ -156,7 +158,9 @@ pub(crate) async fn update<E: RestEntity>(
     // create() : ces deux invariants restent les derniers mots — un hook buggé ou hostile ne peut
     // ni déplacer la cible ni transférer la propriété (amendement `rest/core.sdd` 2026-09-23).
     // `existing` n'est prêté qu'en lecture seule, `Err` traverse en Application sans code `MRD-*`.
-    active = E::before_update(active, &existing, principal).map_err(RestError::Application)?;
+    active = E::before_update(db, active, &existing, principal)
+        .await
+        .map_err(RestError::Application)?;
     // Force la PK depuis le chemin — ignore toute divergence dans le corps de la requête, y compris
     // celle que poserait le hook.
     active.set(primary_key_column::<E>(), sea_orm::Value::from(id));
@@ -206,7 +210,9 @@ pub(crate) async fn delete<E: RestEntity>(
     // toute émission de `DELETE` : un `Err` interrompt là, `delete_by_id` n'est jamais atteint
     // (amendement `rest/core.sdd` 2026-09-23). Aucun ActiveModel n'existe ici, `existing` est prêté
     // en lecture seule ; `Err` traverse en Application sans code `MRD-*`.
-    E::before_delete(&existing, principal).map_err(RestError::Application)?;
+    E::before_delete(db, &existing, principal)
+        .await
+        .map_err(RestError::Application)?;
 
     // Depuis l'arbitrage `rest/core.sdd` 2026-09-27, le résultat SQL est lu : la ligne relue a
     // disparu entre la relecture et le `DELETE` (course tolérée, pas de verrou) quand
@@ -459,12 +465,20 @@ mod tests {
                 None
             }
 
-            fn before_create(
+            fn before_create<C>(
+                db: &C,
+
                 active: ActiveModel,
                 _principal: &crate::auth::AuthPrincipal,
-            ) -> Result<ActiveModel, HookError> {
-                WATCHED_CREATE_CALLS.fetch_add(1, Ordering::SeqCst);
-                Ok(active)
+            ) -> impl std::future::Future<Output = Result<ActiveModel, HookError>> + Send
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                let _ = db;
+                async move {
+                    WATCHED_CREATE_CALLS.fetch_add(1, Ordering::SeqCst);
+                    Ok(active)
+                }
             }
         }
     }
@@ -506,15 +520,23 @@ mod tests {
                 Some(Column::OwnerId)
             }
 
-            fn before_create(
+            fn before_create<C>(
+                db: &C,
+
                 active: ActiveModel,
                 _principal: &crate::auth::AuthPrincipal,
-            ) -> Result<ActiveModel, HookError> {
-                let mut active = active;
-                active.id = Set(77);
-                active.owner_id = Set(999_999);
-                active.label = Set("FORGE".to_string());
-                Ok(active)
+            ) -> impl std::future::Future<Output = Result<ActiveModel, HookError>> + Send
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                let _ = db;
+                async move {
+                    let mut active = active;
+                    active.id = Set(77);
+                    active.owner_id = Set(999_999);
+                    active.label = Set("FORGE".to_string());
+                    Ok(active)
+                }
             }
         }
     }
@@ -593,12 +615,20 @@ mod tests {
                 None
             }
 
-            fn before_create(
+            fn before_create<C>(
+                db: &C,
+
                 active: ActiveModel,
                 _principal: &crate::auth::AuthPrincipal,
-            ) -> Result<ActiveModel, HookError> {
-                NEVER_CREATE_CALLS.fetch_add(1, Ordering::SeqCst);
-                Ok(active)
+            ) -> impl std::future::Future<Output = Result<ActiveModel, HookError>> + Send
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                let _ = db;
+                async move {
+                    NEVER_CREATE_CALLS.fetch_add(1, Ordering::SeqCst);
+                    Ok(active)
+                }
             }
         }
     }
@@ -693,23 +723,31 @@ mod tests {
                 None
             }
 
-            fn before_delete(
+            fn before_delete<C>(
+                db: &C,
+
                 _existing: &Self::Model,
                 _principal: &crate::auth::AuthPrincipal,
-            ) -> Result<(), HookError> {
-                VANISH_REQ
-                    .get()
-                    .expect("le test pose le déclencheur avant l'appel")
-                    .send(())
-                    .map_err(|_| HookError::new("balai mort"))?;
-                VANISH_DONE
-                    .get()
-                    .expect("le test pose la voie d'acquittement avant l'appel")
-                    .lock()
-                    .expect("acquittement non empoisonné")
-                    .recv()
-                    .map_err(|_| HookError::new("balai sans acquittement"))?;
-                Ok(())
+            ) -> impl std::future::Future<Output = Result<(), HookError>> + Send
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                let _ = db;
+                async move {
+                    VANISH_REQ
+                        .get()
+                        .expect("le test pose le déclencheur avant l'appel")
+                        .send(())
+                        .map_err(|_| HookError::new("balai mort"))?;
+                    VANISH_DONE
+                        .get()
+                        .expect("le test pose la voie d'acquittement avant l'appel")
+                        .lock()
+                        .expect("acquittement non empoisonné")
+                        .recv()
+                        .map_err(|_| HookError::new("balai sans acquittement"))?;
+                    Ok(())
+                }
             }
         }
     }
@@ -748,17 +786,220 @@ mod tests {
                 None
             }
 
-            fn before_create(
+            fn before_create<C>(
+                db: &C,
+
                 active: ActiveModel,
                 _principal: &crate::auth::AuthPrincipal,
-            ) -> Result<ActiveModel, HookError> {
-                let label = match &active.label {
-                    sea_orm::ActiveValue::Set(v) | sea_orm::ActiveValue::Unchanged(v) => v.clone(),
-                    sea_orm::ActiveValue::NotSet => String::new(),
-                };
-                if label.is_empty() {
-                    return Err(HookError::with_code("PARITY-001", "label must not be empty"));
+            ) -> impl std::future::Future<Output = Result<ActiveModel, HookError>> + Send
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                let _ = db;
+                async move {
+                    let label = match &active.label {
+                        sea_orm::ActiveValue::Set(v) | sea_orm::ActiveValue::Unchanged(v) => v.clone(),
+                        sea_orm::ActiveValue::NotSet => String::new(),
+                    };
+                    if label.is_empty() {
+                        return Err(HookError::with_code("PARITY-001", "label must not be empty"));
+                    }
+                    Ok(active)
                 }
+            }
+        }
+    }
+
+    // ── Amendement 2026-11-11 (hooks asynchrones, `rest/core.sdd`, DSD `hooks-async`) ──
+
+    /// Ligne référencée que lisent les hooks de `journal_entry` — fixture seule, jamais exposée.
+    mod journal_ref {
+        use sea_orm::entity::prelude::*;
+
+        #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+        #[sea_orm(table_name = "journal_refs")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub label: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+    }
+
+    /// Fixture des trois hooks asynchrones qui lisent la base par la connexion reçue — `Public`
+    /// aux deux politiques pour que RBAC rende son verdict sans requête et que la séquence
+    /// journalisée soit exactement « lecture du hook, puis écriture ».
+    mod journal_entry {
+        use super::journal_ref;
+        use crate::resource::{AccessPolicy, HookError, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "journal_entries")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub label: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        /// Lit `journal_refs` par la connexion reçue, accepte quelle que soit la lecture — seule
+        /// une `DbErr` rejetterait. La lecture est la trace : elle est visible dans le journal de
+        /// la connexion simulée, avant l'écriture de l'opération.
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "journal_entries"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+
+            async fn before_create<C>(
+                db: &C,
+                active: ActiveModel,
+                _principal: &crate::auth::AuthPrincipal,
+            ) -> Result<ActiveModel, HookError>
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                journal_ref::Entity::find()
+                    .one(db)
+                    .await
+                    .map_err(|erreur| HookError::new(format!("hook read failed: {erreur}")))?;
+                Ok(active)
+            }
+
+            async fn before_update<C>(
+                db: &C,
+                active: ActiveModel,
+                _existing: &Self::Model,
+                _principal: &crate::auth::AuthPrincipal,
+            ) -> Result<ActiveModel, HookError>
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                journal_ref::Entity::find()
+                    .one(db)
+                    .await
+                    .map_err(|erreur| HookError::new(format!("hook read failed: {erreur}")))?;
+                Ok(active)
+            }
+
+            async fn before_delete<C>(
+                db: &C,
+                _existing: &Self::Model,
+                _principal: &crate::auth::AuthPrincipal,
+            ) -> Result<(), HookError>
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                journal_ref::Entity::find()
+                    .one(db)
+                    .await
+                    .map_err(|erreur| HookError::new(format!("hook read failed: {erreur}")))?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Ligne référencée du scenario « refus fondé sur une lecture en base » — sa présence ou son
+    /// absence décide du refus de `db_guard::before_create` ; sa table disparue fait échouer la
+    /// lecture de `before_update`.
+    mod other_ref {
+        use sea_orm::entity::prelude::*;
+
+        #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+        #[sea_orm(table_name = "other_refs")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub label: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+    }
+
+    /// Fixture du scenario « un refus fondé sur une lecture en base interrompt avant toute
+    /// écriture » : `before_create` rend `WIDGET-REF` quand la référence manque, `before_update`
+    /// convertit une `DbErr` de lecture en `WIDGET-DB`.
+    mod db_guard {
+        use super::other_ref;
+        use crate::resource::{AccessPolicy, HookError, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "db_guards")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub label: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "db_guards"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+
+            async fn before_create<C>(
+                db: &C,
+                active: ActiveModel,
+                _principal: &crate::auth::AuthPrincipal,
+            ) -> Result<ActiveModel, HookError>
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                match other_ref::Entity::find().one(db).await {
+                    Ok(Some(_)) => Ok(active),
+                    Ok(None) => Err(HookError::with_code("WIDGET-REF", "referenced row is missing")),
+                    Err(erreur) => Err(HookError::new(format!("referenced row read failed: {erreur}"))),
+                }
+            }
+
+            async fn before_update<C>(
+                db: &C,
+                active: ActiveModel,
+                _existing: &Self::Model,
+                _principal: &crate::auth::AuthPrincipal,
+            ) -> Result<ActiveModel, HookError>
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                other_ref::Entity::find().one(db).await.map_err(|erreur| {
+                    HookError::with_code("WIDGET-DB", format!("db read failed: {erreur}"))
+                })?;
                 Ok(active)
             }
         }
@@ -1995,5 +2236,253 @@ mod tests {
         .await
         .expect("create succeeds");
         assert_eq!(created.owner_id, alice_id);
+    }
+
+    // ── Amendement 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-5`) ──
+
+    /// Les statements de la connexion simulée, dans l'ordre d'émission — le journal est drainé à
+    /// chaque appel, chaque retour couvre donc la séquence d'une seule opération.
+    fn journal_of(db: &DatabaseConnection) -> Vec<String> {
+        db.clone()
+            .into_transaction_log()
+            .iter()
+            .flat_map(sea_orm::Transaction::statements)
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    /// Position du premier statement contenant l'aiguille, `assert` sur sa présence.
+    fn journal_position(journal: &[String], needle: &str) -> usize {
+        journal
+            .iter()
+            .position(|stmt| stmt.contains(needle))
+            .unwrap_or_else(|| panic!("aucun statement ne contient {needle:?} : {journal:#?}"))
+    }
+
+    /// Scenario « le hook lit la base par la connexion de l'appel, aux trois opérations » — sur
+    /// une base simulée qui journalise ses requêtes, la lecture de `journal_refs` par le hook est
+    /// le deuxième statement de chaque opération (après le `SELECT` de `resolve_user`), avant
+    /// l'`INSERT`/l'`UPDATE`/le `DELETE` sur la même connexion ; aucun `BEGIN` nulle part : la
+    /// séquence RBAC → hook → écriture reste simple et sans transaction (`DEC-3`).
+    #[tokio::test]
+    async fn hook_lit_la_base_par_la_connexion_de_l_appel() {
+        use sea_orm::{DbBackend, MockDatabase, MockExecResult};
+
+        let alice = user::Model {
+            id: 7,
+            subject: "alice".to_string(),
+            email: None,
+            display_name: None,
+            created_at: chrono::Utc::now(),
+        };
+        let row = journal_entry::Model {
+            id: 3,
+            label: "tarte".to_string(),
+        };
+        // Par opération : SELECT de resolve_user, SELECT du hook sur journal_refs, puis
+        // l'écriture (INSERT/UPDATE en RETURNING voie de requête ; DELETE par le fil d'exécution).
+        let db = MockDatabase::new(DbBackend::Sqlite)
+            .append_query_results([[alice.clone()]])
+            .append_query_results::<journal_ref::Model, _, _>([[]])
+            .append_query_results([[row.clone()]])
+            .append_query_results([[alice.clone()]])
+            .append_query_results([[row.clone()]])
+            .append_query_results::<journal_ref::Model, _, _>([[]])
+            .append_query_results([[row.clone()]])
+            .append_query_results([[alice]])
+            .append_query_results([[row.clone()]])
+            .append_query_results::<journal_ref::Model, _, _>([[]])
+            .append_exec_results([MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        create::<journal_entry::Entity>(
+            &db,
+            &principal("alice"),
+            journal_entry::Model {
+                id: 0,
+                label: "tarte".to_string(),
+            },
+        )
+        .await
+        .expect("le hook qui lit accepte");
+        let journal = journal_of(&db);
+        let read = journal_position(&journal, "journal_refs");
+        let write = journal_position(&journal, "INSERT INTO \"journal_entries\"");
+        assert!(read < write, "la lecture du hook précède l'INSERT : {journal:#?}");
+        assert!(
+            journal.iter().all(|stmt| !stmt.contains("BEGIN")),
+            "aucune transaction ouverte : {journal:#?}"
+        );
+
+        update::<journal_entry::Entity>(
+            &db,
+            &principal("alice"),
+            3,
+            journal_entry::Model {
+                id: 3,
+                label: "tarte aux pommes".to_string(),
+            },
+        )
+        .await
+        .expect("le hook qui lit accepte");
+        let journal = journal_of(&db);
+        let read = journal_position(&journal, "journal_refs");
+        let write = journal_position(&journal, "UPDATE \"journal_entries\"");
+        assert!(read < write, "la lecture du hook précède l'UPDATE : {journal:#?}");
+        assert!(
+            journal.iter().all(|stmt| !stmt.contains("BEGIN")),
+            "aucune transaction ouverte : {journal:#?}"
+        );
+
+        delete::<journal_entry::Entity>(&db, &principal("alice"), 3)
+            .await
+            .expect("le hook qui lit accepte");
+        let journal = journal_of(&db);
+        let read = journal_position(&journal, "journal_refs");
+        let write = journal_position(&journal, "DELETE FROM \"journal_entries\"");
+        assert!(
+            read < write,
+            "la lecture du hook précède le DELETE : {journal:#?}"
+        );
+        assert!(
+            journal.iter().all(|stmt| !stmt.contains("BEGIN")),
+            "aucune transaction ouverte : {journal:#?}"
+        );
+    }
+
+    /// Scenario « un refus fondé sur une lecture en base interrompt avant toute écriture » —
+    /// `before_create` lit la référence et rend `WIDGET-REF` quand elle manque ; `before_update`
+    /// convertit la `DbErr` d'une table de référence disparue en `WIDGET-DB`. Les deux traversent
+    /// en `RestError::Application` intacts, sans code `MRD-*` et sans écriture ; une référence
+    /// présente laisse la création aboutir.
+    #[tokio::test]
+    async fn hook_refus_en_base_bloque_l_ecriture() {
+        let db = migrated_db().await;
+        create_entity_table(&db, db_guard::Entity).await;
+        create_entity_table(&db, other_ref::Entity).await;
+
+        // Référence absente : le hook rejette, aucune ligne écrite.
+        let refused = create::<db_guard::Entity>(
+            &db,
+            &principal("alice"),
+            db_guard::Model {
+                id: 0,
+                label: "tarte".to_string(),
+            },
+        )
+        .await;
+        let error = match refused {
+            Err(RestError::Application(error)) => error,
+            other => panic!("le refus vient du hook : {other:?}"),
+        };
+        assert_eq!(error.code.as_deref(), Some("WIDGET-REF"));
+        assert!(
+            !error.message.contains("MRD-") && !error.code.as_deref().is_some_and(|c| c.starts_with("MRD-")),
+            "aucun code de la crate sur un refus de hook : {error:?}"
+        );
+        assert_eq!(
+            db_guard::Entity::find().all(&db).await.expect("lisible").len(),
+            0,
+            "aucune écriture n'a été émise"
+        );
+
+        // Référence présente : le rejet était conditionnel à la lecture, la création aboutit.
+        other_ref::Entity::insert(other_ref::ActiveModel {
+            id: NotSet,
+            label: Set("référence".to_string()),
+        })
+        .exec(&db)
+        .await
+        .expect("seed ref");
+        let created = create::<db_guard::Entity>(
+            &db,
+            &principal("alice"),
+            db_guard::Model {
+                id: 0,
+                label: "tarte".to_string(),
+            },
+        )
+        .await
+        .expect("la référence présente laisse passer");
+
+        // Table de référence retirée : la `DbErr` de lecture du hook devient `WIDGET-DB`, et
+        // l'`UPDATE` n'est jamais émis — la ligne garde son libellé.
+        db.execute_unprepared("DROP TABLE other_refs")
+            .await
+            .expect("the reference table drops");
+        let refused = update::<db_guard::Entity>(
+            &db,
+            &principal("alice"),
+            created.id,
+            db_guard::Model {
+                id: created.id,
+                label: "modifiée".to_string(),
+            },
+        )
+        .await;
+        let error = match refused {
+            Err(RestError::Application(error)) => error,
+            other => panic!("la DbErr du hook est convertie : {other:?}"),
+        };
+        assert_eq!(error.code.as_deref(), Some("WIDGET-DB"));
+        assert!(
+            !error.message.contains("MRD-"),
+            "aucun code de la crate sur un refus de hook : {error:?}"
+        );
+        let unchanged = db_guard::Entity::find_by_id(created.id)
+            .one(&db)
+            .await
+            .expect("lisible")
+            .expect("la ligne existe encore");
+        assert_eq!(unchanged.label, "tarte", "aucune écriture n'a été émise");
+    }
+
+    /// Scenario « le module resources de lymaille subit le même hook » (`DEC-5`) — la fixture de
+    /// refus est montée comme ressource inscriptible du module ; l'écriture par `resources.create`
+    /// rend le refus du hook tel quel, texte applicatif sans code `MRD-*` ni décision propre à
+    /// `lymaille`, et rien n'est écrit.
+    #[cfg(feature = "lymaille")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hook_couvre_le_module_resources_de_lymaille() {
+        use crate::lymaille::resource_module::{ResourceRegistry, resources_module};
+        use rhai::{Dynamic, EvalAltResult};
+        use std::sync::Arc;
+
+        let db = migrated_db().await;
+        create_entity_table(&db, db_guard::Entity).await;
+        create_entity_table(&db, other_ref::Entity).await;
+        crate::users::resolve_user(&db, "alice", None)
+            .await
+            .expect("le compte local d'alice");
+
+        let mut registry = ResourceRegistry::new();
+        registry.register::<db_guard::Entity>();
+        let module = resources_module(Arc::new(registry), db.clone(), "alice".to_string(), None);
+        let mut engine = rhai::Engine::new();
+        let _registered = engine.register_static_module("resources", Arc::new(module));
+
+        let outcome = engine.eval::<Dynamic>(r#"resources::create("db_guards", #{ id: 0, label: "tarte" })"#);
+        let message = match outcome {
+            Err(error) => match *error {
+                EvalAltResult::ErrorRuntime(value, _) => {
+                    value.into_string().unwrap_or_else(ToString::to_string)
+                }
+                other => panic!("le refus doit remonter comme erreur runtime : {other:?}"),
+            },
+            Ok(value) => panic!("le script doit échouer, il a rendu {value:?}"),
+        };
+        assert_eq!(message, "hook refused: referenced row is missing");
+        assert!(
+            !message.contains("MRD-"),
+            "jamais de code de la crate sur le chemin d'un hook : {message}"
+        );
+        assert_eq!(
+            db_guard::Entity::find().all(&db).await.expect("lisible").len(),
+            0,
+            "le refus du hook interrompt avant l'écriture"
+        );
     }
 }

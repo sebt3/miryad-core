@@ -280,24 +280,38 @@ impl MiryadResource for Entity {
     /// Valide le DAG avant insertion, sans mutation de l'`ActiveModel` (contrairement à un hook
     /// applicatif typique qui dériverait un champ) ; see `rejeter_si_dag_invalide` pour la
     /// traduction de l'erreur.
-    fn before_create(
+    fn before_create<C>(
+        db: &C,
         active: Self::ActiveModel,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        rejeter_si_dag_invalide(&active.steps)?;
-        Ok(active)
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move {
+            rejeter_si_dag_invalide(&active.steps)?;
+            Ok(active)
+        }
     }
 
     /// Même traitement que [`Self::before_create`], appliqué au nouveau DAG dans l'absolu :
     /// `existing` n'est jamais lu, la validation ne compare pas l'ancien et le nouveau graphe —
     /// une correction d'un DAG invalide hérité passe exactement comme une première écriture.
-    fn before_update(
+    fn before_update<C>(
+        db: &C,
         active: Self::ActiveModel,
         _existing: &Self::Model,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        rejeter_si_dag_invalide(&active.steps)?;
-        Ok(active)
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move {
+            rejeter_si_dag_invalide(&active.steps)?;
+            Ok(active)
+        }
     }
 
     // `before_delete` volontairement non surdéclaré : aucune règle métier ne s'oppose à la
@@ -308,6 +322,12 @@ impl MiryadResource for Entity {
 #[cfg(test)]
 mod tests {
     use super::ActiveModel;
+
+    /// Connexion simulée pour appeler les hooks depuis les tests : la validation de ce module
+    /// est pure et n'émet aucune requête ; une connexion à file vide suffit.
+    fn hook_db() -> sea_orm::DatabaseConnection {
+        sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite).into_connection()
+    }
     use super::Column;
     use super::DagSteps;
     use super::Entity;
@@ -487,9 +507,9 @@ mod tests {
 
     /// Scenario « `before_create` traduit `InvalidDag` en `HookError` sans code » : seule la partie
     /// libre du message traverse, jamais le préfixe `MRD-WORKFLOW-004:` de la `Display`.
-    #[test]
-    fn before_create_traduit_invalid_dag_en_hookerror_sans_code() {
-        let resultat = Entity::before_create(active_avec(dag_cycle()), &principal());
+    #[tokio::test]
+    async fn before_create_traduit_invalid_dag_en_hookerror_sans_code() {
+        let resultat = Entity::before_create(&hook_db(), active_avec(dag_cycle()), &principal()).await;
         match resultat {
             Err(erreur) => {
                 assert!(
@@ -508,11 +528,11 @@ mod tests {
 
     /// Scenario « `before_create` laisse passer un DAG valide sans le muter » : `Ok(active)`
     /// strictement identique à l'entrée, même valeur et même variante `ActiveValue`.
-    #[test]
-    fn before_create_laisse_passer_un_dag_valide_sans_le_muter() {
+    #[tokio::test]
+    async fn before_create_laisse_passer_un_dag_valide_sans_le_muter() {
         let active = active_avec(dag_valide());
         let entre = active.clone();
-        match Entity::before_create(active, &principal()) {
+        match Entity::before_create(&hook_db(), active, &principal()).await {
             Ok(rendu) => {
                 assert_eq!(
                     rendu, entre,
@@ -531,14 +551,16 @@ mod tests {
     /// `existing` contient justement l'id `"absent"` ; une validation qui comparerait avant/après
     /// aurait laissé passer la mise à jour. Le rejet prouve que seul le nouveau DAG est jugé,
     /// dans l'absolu, comme à la création.
-    #[test]
-    fn before_update_rejette_dag_invalide_en_ignorant_existing() {
+    #[tokio::test]
+    async fn before_update_rejette_dag_invalide_en_ignorant_existing() {
         let existing = modele_avec(vec![etape("A", &[]), etape("absent", &[])]);
         let resultat = Entity::before_update(
+            &hook_db(),
             active_avec(vec![etape("A", &[]), etape("X", &["absent"])]),
             &existing,
             &principal(),
-        );
+        )
+        .await;
         match resultat {
             Err(erreur) => {
                 assert!(erreur.code.is_none(), "hook de la crate : `HookError` sans code");
@@ -551,12 +573,12 @@ mod tests {
     /// Scenario « `before_update` laisse passer une mise à jour vers un DAG valide » : un
     /// `existing` lui-même cyclique (écrit avant l'existence de la validation) ne bloque pas la
     /// mise à jour qui le corrige ; l'`ActiveModel` est rendu inchangé.
-    #[test]
-    fn before_update_accepte_dag_valide_malgre_existing_invalide() {
+    #[tokio::test]
+    async fn before_update_accepte_dag_valide_malgre_existing_invalide() {
         let existing = modele_avec(dag_cycle());
         let active = active_avec(dag_valide());
         let entre = active.clone();
-        match Entity::before_update(active, &existing, &principal()) {
+        match Entity::before_update(&hook_db(), active, &existing, &principal()).await {
             Ok(rendu) => assert_eq!(rendu, entre, "aucune mutation, `existing` jamais lu"),
             Err(erreur) => {
                 panic!("un `existing` invalide ne doit pas bloquer une mise à jour valide : {erreur:?}")
@@ -568,10 +590,10 @@ mod tests {
     /// surdéclaration n'existe dans ./definition.rs, le défaut identité atteint donc même une
     /// ligne au DAG structurellement invalide — la suppression d'une définition n'est gardée par
     /// aucune règle dans cette itération.
-    #[test]
-    fn before_delete_defaut_du_trait_autorise_meme_un_dag_invalide() {
+    #[tokio::test]
+    async fn before_delete_defaut_du_trait_autorise_meme_un_dag_invalide() {
         let existing = modele_avec(dag_cycle());
-        let resultat = Entity::before_delete(&existing, &principal());
+        let resultat = Entity::before_delete(&hook_db(), &existing, &principal()).await;
         assert!(
             matches!(resultat, Ok(())),
             "le défaut `Ok(())` s'applique : {resultat:?}"

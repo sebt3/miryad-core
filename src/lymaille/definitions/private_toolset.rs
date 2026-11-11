@@ -183,21 +183,31 @@ impl MiryadResource for Entity {
 
     /// Valide les versions présentes et dérive `toolset_id` et `version` — voir
     /// [`Entity::valider_et_deriver`].
-    fn before_create(
+    fn before_create<C>(
+        db: &C,
         active: Self::ActiveModel,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        Entity::valider_et_deriver(active, None)
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move { Entity::valider_et_deriver(active, None) }
     }
 
     /// Mêmes étapes que [`Self::before_create`], plus l'identité : un `toolset_id` qui change est
     /// refusé.
-    fn before_update(
+    fn before_update<C>(
+        db: &C,
         active: Self::ActiveModel,
         existing: &Self::Model,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        Entity::valider_et_deriver(active, Some(existing))
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move { Entity::valider_et_deriver(active, Some(existing)) }
     }
 
     // `before_delete` volontairement non surdéclaré : aucun contrôle d'usage, le défaut identité
@@ -207,6 +217,12 @@ impl MiryadResource for Entity {
 #[cfg(test)]
 mod tests {
     use super::ActiveModel;
+
+    /// Connexion simulée pour appeler les hooks depuis les tests : la validation de ce module
+    /// est pure et n'émet aucune requête ; une connexion à file vide suffit.
+    fn hook_db() -> sea_orm::DatabaseConnection {
+        sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite).into_connection()
+    }
     use super::Column;
     use super::Entity;
     use super::Model;
@@ -305,12 +321,14 @@ mod tests {
 
     /// Scenario « un toolset privé avec brouillon seul est accepté » : `git` en `draft`, `active`
     /// nul, passe ; `toolset_id` et `version` sont dérivés du brouillon, `created_at` est posé.
-    #[test]
-    fn before_create_accepte_un_brouillon_prive_seul_et_derive_les_colonnes() {
+    #[tokio::test]
+    async fn before_create_accepte_un_brouillon_prive_seul_et_derive_les_colonnes() {
         let rendu = Entity::before_create(
+            &hook_db(),
             active_avec(None, Some(version_json("git", "1.0.0"))),
             &principal(),
         )
+        .await
         .expect("un brouillon `git` à l'identifiant privé est accepté");
         assert_eq!(
             rendu.toolset_id,
@@ -336,14 +354,16 @@ mod tests {
 
     /// `Must` (étape 1 des étapes de ./toolset.sdd) : `active` et `draft` tous deux absents ou
     /// `null` sont refusés avant toute désérialisation.
-    #[test]
-    fn before_create_refuse_un_toolset_sans_version() {
+    #[tokio::test]
+    async fn before_create_refuse_un_toolset_sans_version() {
         let rendus = vec![
-            Entity::before_create(active_avec(None, None), &principal()),
+            Entity::before_create(&hook_db(), active_avec(None, None), &principal()).await,
             Entity::before_create(
+                &hook_db(),
                 active_avec(Some(serde_json::Value::Null), Some(serde_json::Value::Null)),
                 &principal(),
-            ),
+            )
+            .await,
         ];
         for rendu in rendus {
             match rendu {
@@ -359,11 +379,15 @@ mod tests {
     /// Scenario « le préfixe catalogue est refusé » : `G_git` (`Catalog`) puis `g_git`
     /// (`ReservedPrefix`) sont refusés par le même message, sans code `MRD-*` (`Must` :
     /// `classify(name)` doit rendre `Private`).
-    #[test]
-    fn before_create_refuse_le_prefixe_catalogue() {
+    #[tokio::test]
+    async fn before_create_refuse_le_prefixe_catalogue() {
         for name in ["G_git", "g_git"] {
-            let rendu =
-                Entity::before_create(active_avec(Some(version_json(name, "1.0.0")), None), &principal());
+            let rendu = Entity::before_create(
+                &hook_db(),
+                active_avec(Some(version_json(name, "1.0.0")), None),
+                &principal(),
+            )
+            .await;
             match rendu {
                 Err(erreur) => {
                     assert!(
@@ -383,12 +407,14 @@ mod tests {
     /// Scenario « le préfixe hôte est refusé » (moitié majuscule, arbitré le 2026-11-06) :
     /// `H_git` (`classify` = `Host`, DSD `DEC-27`) est refusé sous le message contractualisé
     /// « toolset id cannot use the host prefix », sans code `MRD-*` (`Must`).
-    #[test]
-    fn before_create_refuse_un_identifiant_hote() {
+    #[tokio::test]
+    async fn before_create_refuse_un_identifiant_hote() {
         let rendu = Entity::before_create(
+            &hook_db(),
             active_avec(Some(version_json("H_git", "1.0.0")), None),
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(
@@ -408,12 +434,14 @@ mod tests {
     /// 2026-11-06 sur `./user_context.sdd`) : `h_git` — `ReservedPrefix` au sens de `classify`,
     /// préfixe `h_` — est refusé sous le **même** message que `H_git`, « toolset id cannot use
     /// the host prefix », et non sous « catalog prefix ».
-    #[test]
-    fn before_create_refuse_le_prefixe_hote_minuscule() {
+    #[tokio::test]
+    async fn before_create_refuse_le_prefixe_hote_minuscule() {
         let rendu = Entity::before_create(
+            &hook_db(),
             active_avec(Some(version_json("h_git", "1.0.0")), None),
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(
@@ -433,12 +461,12 @@ mod tests {
     /// Scenario « un toolset invalide est refusé sans fuite de source » (`Must not` de
     /// `./private_toolset.sdd`) : un module qui ne compile pas est refusé via le `check_toolset`
     /// partagé, et le texte de la source ne traverse pas.
-    #[test]
-    fn before_create_refuse_un_toolset_invalide_sans_fuir_le_source() {
+    #[tokio::test]
+    async fn before_create_refuse_un_toolset_invalide_sans_fuir_le_source() {
         let marque = "SOURCE-A-NE-JAMAIS-CITER-7c21";
         let valeur = serde_json::to_value(toolset("git", "1.0.0", &format!("let x = {marque}(((")))
             .expect("la fixture se sérialise");
-        match Entity::before_create(active_avec(Some(valeur), None), &principal()) {
+        match Entity::before_create(&hook_db(), active_avec(Some(valeur), None), &principal()).await {
             Err(erreur) => {
                 assert!(
                     erreur.message.starts_with("invalid toolset:"),
@@ -455,13 +483,15 @@ mod tests {
 
     /// `Must` (`before_update`) : `toolset_id` ne change pas — la nouvelle version nommée `autre`
     /// est refusée sur la ligne `git`.
-    #[test]
-    fn before_update_refuse_un_changement_d_identifiant() {
+    #[tokio::test]
+    async fn before_update_refuse_un_changement_d_identifiant() {
         let rendu = Entity::before_update(
+            &hook_db(),
             active_avec(Some(version_json("autre", "2.0.0")), None),
             &modele(1, "git"),
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(erreur.code.is_none(), "aucun code sur un `HookError` de la crate");
@@ -475,14 +505,16 @@ mod tests {
     /// dérive `version` depuis la nouvelle version. Comme au précédent ./toolset.rs, le hook ne
     /// touche pas `created_at` à la mise à jour : la valeur de la ligne existante traverse
     /// l'`ActiveModel` (posée par `mark_all_set` avant le hook) et le hook ne la réécrit pas.
-    #[test]
-    fn before_update_derive_les_colonnes_et_ne_touche_pas_la_date_de_creation() {
+    #[tokio::test]
+    async fn before_update_derive_les_colonnes_et_ne_touche_pas_la_date_de_creation() {
         let existing = modele(1, "git");
         let rendu = Entity::before_update(
+            &hook_db(),
             active_avec(Some(version_json("git", "2.0.0")), None),
             &existing,
             &principal(),
         )
+        .await
         .expect("une mise à jour qui garde le nom est acceptée");
         assert_eq!(rendu.toolset_id, Set("git".to_string()));
         assert_eq!(rendu.version, Set("2.0.0".to_string()));

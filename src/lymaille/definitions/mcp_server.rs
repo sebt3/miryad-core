@@ -226,24 +226,38 @@ impl MiryadResource for Entity {
 
     /// Applique les cinq premières portes du `Must` et pose `created_at` — voir
     /// [`Entity::valider`].
-    fn before_create(
+    fn before_create<C>(
+        db: &C,
         mut active: Self::ActiveModel,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        Entity::valider(&mut active, None)?;
-        Ok(active)
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move {
+            Entity::valider(&mut active, None)?;
+            Ok(active)
+        }
     }
 
     /// Mêmes portes que [`Self::before_create`], plus l'identité : renommer un serveur est
     /// refusé car les contextes y renvoient par nom ; `created_at` reste celui de la ligne
     /// existante.
-    fn before_update(
+    fn before_update<C>(
+        db: &C,
         mut active: Self::ActiveModel,
         existing: &Self::Model,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        Entity::valider(&mut active, Some(existing))?;
-        Ok(active)
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move {
+            Entity::valider(&mut active, Some(existing))?;
+            Ok(active)
+        }
     }
 
     // `before_delete` volontairement non surdéclaré : le défaut identité du trait s'applique
@@ -268,6 +282,12 @@ pub fn client_config(modele: &Model) -> ::lymaille::McpClientConfig {
 #[cfg(test)]
 mod tests {
     use super::ActiveModel;
+
+    /// Connexion simulée pour appeler les hooks depuis les tests : la validation de ce module
+    /// est pure et n'émet aucune requête ; une connexion à file vide suffit.
+    fn hook_db() -> sea_orm::DatabaseConnection {
+        sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite).into_connection()
+    }
     use super::Column;
     use super::Entity;
     use super::Model;
@@ -352,9 +372,10 @@ mod tests {
     /// Scenario « un serveur statique valide est accepté » : le Given complet passe
     /// `before_create`, et l'horodatage de création est posé par le hook (`created_at` arrivait
     /// `NotSet`).
-    #[test]
-    fn before_create_accepte_un_serveur_statique_valide() {
-        let rendu = Entity::before_create(serveur_kubectl(), &principal())
+    #[tokio::test]
+    async fn before_create_accepte_un_serveur_statique_valide() {
+        let rendu = Entity::before_create(&hook_db(), serveur_kubectl(), &principal())
+            .await
             .expect("le serveur `kubectl` statique du Scenario est accepté");
         assert!(
             matches!(rendu.created_at, Set(_)),
@@ -364,8 +385,8 @@ mod tests {
 
     /// Scenario « static sans référence, none avec référence » : deux refus, `HookError` sans
     /// code `MRD-*`, et `auth_ref` jamais cité dans le message (`Must not`).
-    #[test]
-    fn before_create_refuse_static_sans_reference_et_none_avec_reference() {
+    #[tokio::test]
+    async fn before_create_refuse_static_sans_reference_et_none_avec_reference() {
         let sans_reference = serveur(
             "kubectl",
             "https://mcp.example/",
@@ -375,7 +396,7 @@ mod tests {
             None,
             json!(["ops"]),
         );
-        match Entity::before_create(sans_reference, &principal()) {
+        match Entity::before_create(&hook_db(), sans_reference, &principal()).await {
             Err(erreur) => {
                 assert!(
                     erreur.code.is_none(),
@@ -397,7 +418,7 @@ mod tests {
             Some("KUBECTL_TOKEN"),
             json!(["ops"]),
         );
-        match Entity::before_create(avec_reference, &principal()) {
+        match Entity::before_create(&hook_db(), avec_reference, &principal()).await {
             Err(erreur) => {
                 assert!(
                     erreur.code.is_none(),
@@ -418,11 +439,11 @@ mod tests {
 
     /// Scenario « un schéma non http est refusé sans citer l'URL » : le message du `Must`
     /// exactement, sans la moindre trace de l'URL refusée.
-    #[test]
-    fn before_create_refuse_un_schema_non_http_sans_citer_l_url() {
+    #[tokio::test]
+    async fn before_create_refuse_un_schema_non_http_sans_citer_l_url() {
         let url = "file:///etc/passwd";
         let rendu = serveur("kubectl", url, 30, 5, "none", None, json!(["ops"]));
-        match Entity::before_create(rendu, &principal()) {
+        match Entity::before_create(&hook_db(), rendu, &principal()).await {
             Err(erreur) => {
                 assert!(
                     erreur.code.is_none(),
@@ -440,10 +461,10 @@ mod tests {
 
     /// Scenario « groupes autorisés » : liste vide refusée (refus par défaut, dit à la
     /// sauvegarde), `["all", "ops"]` refusé (`all` exclusif), `["admin"]` seul accepté.
-    #[test]
-    fn before_create_refuse_les_groupes_vides_et_all_combine_puis_accepte_admin() {
+    #[tokio::test]
+    async fn before_create_refuse_les_groupes_vides_et_all_combine_puis_accepte_admin() {
         let vide = serveur("kubectl", "https://mcp.example/", 30, 5, "none", None, json!([]));
-        match Entity::before_create(vide, &principal()) {
+        match Entity::before_create(&hook_db(), vide, &principal()).await {
             Err(erreur) => {
                 assert!(
                     erreur.code.is_none(),
@@ -465,7 +486,7 @@ mod tests {
             None,
             json!(["all", "ops"]),
         );
-        match Entity::before_create(combine, &principal()) {
+        match Entity::before_create(&hook_db(), combine, &principal()).await {
             Err(erreur) => {
                 assert!(
                     erreur.code.is_none(),
@@ -487,13 +508,14 @@ mod tests {
             None,
             json!(["admin"]),
         );
-        Entity::before_create(admin, &principal())
+        Entity::before_create(&hook_db(), admin, &principal())
+            .await
             .expect("`[\"admin\"]` seul est un tableau de groupes valide");
     }
 
     /// Scenario « le nom ne change pas » : les contextes renvoient au serveur par nom.
-    #[test]
-    fn before_update_refuse_un_renommage() {
+    #[tokio::test]
+    async fn before_update_refuse_un_renommage() {
         let rendu = serveur(
             "autre",
             "https://mcp.example/",
@@ -503,7 +525,7 @@ mod tests {
             Some("KUBECTL_TOKEN"),
             json!(["ops"]),
         );
-        match Entity::before_update(rendu, &modele("kubectl"), &principal()) {
+        match Entity::before_update(&hook_db(), rendu, &modele("kubectl"), &principal()).await {
             Err(erreur) => {
                 assert!(
                     erreur.code.is_none(),
@@ -517,12 +539,13 @@ mod tests {
 
     /// `Must` (`before_update`, étape 6) : une mise à jour qui garde le nom passe et `created_at`
     /// reste celui de la ligne existante, même si le corps en apporte un autre.
-    #[test]
-    fn before_update_garde_le_nom_et_conserve_la_date_de_creation() {
+    #[tokio::test]
+    async fn before_update_garde_le_nom_et_conserve_la_date_de_creation() {
         let existing = modele("kubectl");
         let mut rendu_serveur = serveur_kubectl();
         rendu_serveur.created_at = Set(Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap());
-        let rendu = Entity::before_update(rendu_serveur, &existing, &principal())
+        let rendu = Entity::before_update(&hook_db(), rendu_serveur, &existing, &principal())
+            .await
             .expect("une mise à jour qui garde le nom est acceptée");
         assert_eq!(
             rendu.created_at,
@@ -550,11 +573,11 @@ mod tests {
 
     /// `Must` étape 1 : `name` est un identifiant Rhai `[A-Za-z0-9_]+` — vide, espace ou tiret
     /// sont refusés.
-    #[test]
-    fn before_create_refuse_un_nom_hors_identifiant_rhai() {
+    #[tokio::test]
+    async fn before_create_refuse_un_nom_hors_identifiant_rhai() {
         for nom in ["", "mon serveur", "kubectl-v2"] {
             let rendu = serveur(nom, "https://mcp.example/", 30, 5, "none", None, json!(["ops"]));
-            match Entity::before_create(rendu, &principal()) {
+            match Entity::before_create(&hook_db(), rendu, &principal()).await {
                 Err(erreur) => {
                     assert!(
                         erreur.code.is_none(),
@@ -572,8 +595,8 @@ mod tests {
 
     /// `Must` étape 3 : délais bornés — `request_timeout_secs` ∈ [1, 600],
     /// `connect_timeout_secs` ∈ [1, 60].
-    #[test]
-    fn before_create_refuse_les_delais_hors_plage() {
+    #[tokio::test]
+    async fn before_create_refuse_les_delais_hors_plage() {
         for (request, connect) in [(0, 5), (601, 5), (30, 0), (30, 61)] {
             let rendu = serveur(
                 "kubectl",
@@ -584,7 +607,7 @@ mod tests {
                 None,
                 json!(["ops"]),
             );
-            match Entity::before_create(rendu, &principal()) {
+            match Entity::before_create(&hook_db(), rendu, &principal()).await {
                 Err(erreur) => {
                     assert!(
                         erreur.code.is_none(),
@@ -602,8 +625,8 @@ mod tests {
 
     /// `Must` étape 4 : `auth_mode` hors `{none, static, forward}` est refusé ; `forward` avec
     /// référence est refusé comme `none`.
-    #[test]
-    fn before_create_refuse_un_auth_mode_inconnu_et_forward_avec_reference() {
+    #[tokio::test]
+    async fn before_create_refuse_un_auth_mode_inconnu_et_forward_avec_reference() {
         let inconnu = serveur(
             "kubectl",
             "https://mcp.example/",
@@ -613,7 +636,7 @@ mod tests {
             None,
             json!(["ops"]),
         );
-        match Entity::before_create(inconnu, &principal()) {
+        match Entity::before_create(&hook_db(), inconnu, &principal()).await {
             Err(erreur) => assert_eq!(erreur.message, "invalid mcp server auth mode"),
             Ok(_) => panic!("`oauth` n'est pas un mode d'authentification du contrat"),
         }
@@ -626,7 +649,7 @@ mod tests {
             Some("KUBECTL_TOKEN"),
             json!(["ops"]),
         );
-        match Entity::before_create(forward, &principal()) {
+        match Entity::before_create(&hook_db(), forward, &principal()).await {
             Err(erreur) => assert_eq!(
                 erreur.message,
                 "mcp server auth_ref requires the static auth mode"
@@ -638,8 +661,8 @@ mod tests {
     /// `Must` étape 5 : `allowed_groups` est un tableau JSON de noms `[A-Za-z0-9_.-]+` (ou
     /// `all`/`admin`) — non-tableau, élément non texte et nom avec espace ou caractère interdit
     /// sont refusés.
-    #[test]
-    fn before_create_refuse_des_groupes_de_forme_invalide() {
+    #[tokio::test]
+    async fn before_create_refuse_des_groupes_de_forme_invalide() {
         for groupes in [
             json!({"groupe": "ops"}),
             json!([1]),
@@ -655,7 +678,7 @@ mod tests {
                 None,
                 groupes.clone(),
             );
-            match Entity::before_create(rendu, &principal()) {
+            match Entity::before_create(&hook_db(), rendu, &principal()).await {
                 Err(erreur) => {
                     assert!(
                         erreur.code.is_none(),

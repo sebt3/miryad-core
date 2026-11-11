@@ -395,20 +395,28 @@ mod tests {
 
             // Hook de test : rejette un label vide, sinon le passe en majuscules — de quoi
             // vérifier à la fois le blocage (feature 7b) et la mutation de l'ActiveModel.
-            fn before_create(
+            fn before_create<C>(
+                db: &C,
+
                 active: ActiveModel,
                 _principal: &crate::auth::AuthPrincipal,
-            ) -> Result<ActiveModel, HookError> {
-                let label = match &active.label {
-                    sea_orm::ActiveValue::Set(v) | sea_orm::ActiveValue::Unchanged(v) => v.clone(),
-                    sea_orm::ActiveValue::NotSet => String::new(),
-                };
-                if label.is_empty() {
-                    return Err(HookError::with_code("WIDGET-001", "label must not be empty"));
+            ) -> impl std::future::Future<Output = Result<ActiveModel, HookError>> + Send
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                let _ = db;
+                async move {
+                    let label = match &active.label {
+                        sea_orm::ActiveValue::Set(v) | sea_orm::ActiveValue::Unchanged(v) => v.clone(),
+                        sea_orm::ActiveValue::NotSet => String::new(),
+                    };
+                    if label.is_empty() {
+                        return Err(HookError::with_code("WIDGET-001", "label must not be empty"));
+                    }
+                    let mut active = active;
+                    active.label = Set(label.to_uppercase());
+                    Ok(active)
                 }
-                let mut active = active;
-                active.label = Set(label.to_uppercase());
-                Ok(active)
             }
         }
     }
@@ -454,37 +462,53 @@ mod tests {
                 Some(Column::OwnerId)
             }
 
-            fn before_update(
+            fn before_update<C>(
+                db: &C,
+
                 active: ActiveModel,
                 _existing: &Self::Model,
                 _principal: &crate::auth::AuthPrincipal,
-            ) -> Result<ActiveModel, HookError> {
-                let label = match &active.label {
-                    sea_orm::ActiveValue::Set(v) | sea_orm::ActiveValue::Unchanged(v) => v.clone(),
-                    sea_orm::ActiveValue::NotSet => String::new(),
-                };
-                if label.is_empty() {
-                    return Err(HookError::with_code(
-                        "WIDGET-002",
-                        "label must not be updated to empty",
-                    ));
+            ) -> impl std::future::Future<Output = Result<ActiveModel, HookError>> + Send
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                let _ = db;
+                async move {
+                    let label = match &active.label {
+                        sea_orm::ActiveValue::Set(v) | sea_orm::ActiveValue::Unchanged(v) => v.clone(),
+                        sea_orm::ActiveValue::NotSet => String::new(),
+                    };
+                    if label.is_empty() {
+                        return Err(HookError::with_code(
+                            "WIDGET-002",
+                            "label must not be updated to empty",
+                        ));
+                    }
+                    let mut active = active;
+                    active.label = Set(label.to_uppercase());
+                    Ok(active)
                 }
-                let mut active = active;
-                active.label = Set(label.to_uppercase());
-                Ok(active)
             }
 
-            fn before_delete(
+            fn before_delete<C>(
+                db: &C,
+
                 existing: &Self::Model,
                 _principal: &crate::auth::AuthPrincipal,
-            ) -> Result<(), HookError> {
-                if existing.status == "locked" {
-                    return Err(HookError::with_code(
-                        "WIDGET-LOCKED",
-                        "locked widgets must not be deleted",
-                    ));
+            ) -> impl std::future::Future<Output = Result<(), HookError>> + Send
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                let _ = db;
+                async move {
+                    if existing.status == "locked" {
+                        return Err(HookError::with_code(
+                            "WIDGET-LOCKED",
+                            "locked widgets must not be deleted",
+                        ));
+                    }
+                    Ok(())
                 }
-                Ok(())
             }
         }
     }
@@ -528,16 +552,24 @@ mod tests {
                 Some(Column::OwnerId)
             }
 
-            fn before_update(
+            fn before_update<C>(
+                db: &C,
+
                 active: ActiveModel,
                 _existing: &Self::Model,
                 _principal: &crate::auth::AuthPrincipal,
-            ) -> Result<ActiveModel, HookError> {
-                let mut active = active;
-                active.id = Set(4242);
-                active.owner_id = Set(999_999);
-                active.label = Set("FORGED".to_string());
-                Ok(active)
+            ) -> impl std::future::Future<Output = Result<ActiveModel, HookError>> + Send
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                let _ = db;
+                async move {
+                    let mut active = active;
+                    active.id = Set(4242);
+                    active.owner_id = Set(999_999);
+                    active.label = Set("FORGED".to_string());
+                    Ok(active)
+                }
             }
         }
     }

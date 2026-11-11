@@ -329,7 +329,8 @@ Tasks:
     `before_create` : retirer « miroir de `before_active_model_save` » et la justification Seaography ; `before_update`/`before_delete` :
     « se déclenchent sur REST et MCP » sans « jamais sur GraphQL »). Aucun changement de comportement ; `tests/resource.rs` ne change pas.
     Validé 2026-10-19 (validator Sonnet GO) : cinq tests/aides GraphQL supprimés, doc-comments réécrits, batterie verte.
-  [ ] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`) : dans ./resource.rs, passer les trois hooks en génériques `C: ConnectionTrait`
+  [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`) : dans ./resource.rs, passer les trois hooks en génériques `C: ConnectionTrait`
+    Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
     (`db: &C` en premier paramètre, futur `Send` déclaré dans le trait), défauts sans effet ; convertir les quatre nouveaux `Scenario` en tests nommés
     (`hook_async_reads_db_and_rejects`, `default_hooks_emit_no_query`, `hook_accepts_connection_and_transaction`, `hook_future_is_send`) et passer les tests
     existants des hooks à `.await`. Réécrire les doc-comments des trois hooks (asynchrone, connexion, principal non rafraîchi, pas d'effet externe). Dépend de

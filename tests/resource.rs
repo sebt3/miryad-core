@@ -166,19 +166,26 @@ mod gadget {
             None
         }
 
-        fn before_update(
+        fn before_update<C>(
+            db: &C,
             active: ActiveModel,
             existing: &Self::Model,
             _principal: &AuthPrincipal,
-        ) -> Result<ActiveModel, HookError> {
-            let no_op = match &active.label {
-                ActiveValue::Set(label) | ActiveValue::Unchanged(label) => label == &existing.label,
-                ActiveValue::NotSet => false,
-            };
-            if no_op {
-                return Err(HookError::new(LABEL_NO_OP_MESSAGE));
+        ) -> impl std::future::Future<Output = Result<ActiveModel, HookError>> + Send
+        where
+            C: sea_orm::ConnectionTrait,
+        {
+            let _ = db;
+            async move {
+                let no_op = match &active.label {
+                    ActiveValue::Set(label) | ActiveValue::Unchanged(label) => label == &existing.label,
+                    ActiveValue::NotSet => false,
+                };
+                if no_op {
+                    return Err(HookError::new(LABEL_NO_OP_MESSAGE));
+                }
+                Ok(active)
             }
-            Ok(active)
         }
     }
 }
@@ -219,11 +226,21 @@ mod widget {
             None
         }
 
-        fn before_delete(existing: &Self::Model, _principal: &AuthPrincipal) -> Result<(), HookError> {
-            if existing.status == "locked" {
-                return Err(HookError::with_code("WIDGET-LOCKED", LOCKED_REJECTION_MESSAGE));
+        fn before_delete<C>(
+            db: &C,
+            existing: &Self::Model,
+            _principal: &AuthPrincipal,
+        ) -> impl std::future::Future<Output = Result<(), HookError>> + Send
+        where
+            C: sea_orm::ConnectionTrait,
+        {
+            let _ = db;
+            async move {
+                if existing.status == "locked" {
+                    return Err(HookError::with_code("WIDGET-LOCKED", LOCKED_REJECTION_MESSAGE));
+                }
+                Ok(())
             }
-            Ok(())
         }
     }
 }
@@ -248,8 +265,14 @@ fn api_principal() -> AuthPrincipal {
     }
 }
 
-#[test]
-fn default_before_update_is_identity_and_ignores_existing() {
+/// Connexion simulée sans résultat scripté — les hooks de ces fixtures sont purs et les défauts
+/// n'émettent aucune requête ; une file vide suffit.
+fn mock_db() -> sea_orm::DatabaseConnection {
+    sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite).into_connection()
+}
+
+#[tokio::test]
+async fn default_before_update_is_identity_and_ignores_existing() {
     let active = recipe::ActiveModel {
         id: Set(3),
         title: Set("beetroot soup".to_string()),
@@ -263,8 +286,9 @@ fn default_before_update_is_identity_and_ignores_existing() {
         owner_id: 1,
     };
 
+    let db = mock_db();
     for principal in [session_principal(), api_principal()] {
-        let outcome = recipe::Entity::before_update(active.clone(), &existing, &principal);
+        let outcome = recipe::Entity::before_update(&db, active.clone(), &existing, &principal).await;
         assert!(
             matches!(outcome, Ok(ref unchanged) if *unchanged == active),
             "le défaut de before_update doit rendre l'ActiveModel inchangé, champ par champ"
@@ -272,19 +296,20 @@ fn default_before_update_is_identity_and_ignores_existing() {
     }
 }
 
-#[test]
-fn before_update_override_can_compare_existing_and_reject() {
+#[tokio::test]
+async fn before_update_override_can_compare_existing_and_reject() {
     let principal = session_principal();
     let existing = gadget::Model {
         id: 1,
         label: "draft".to_string(),
     };
+    let db = mock_db();
 
     let no_op = gadget::ActiveModel {
         id: Set(1),
         label: Set("draft".to_string()),
     };
-    let rejected = gadget::Entity::before_update(no_op.clone(), &existing, &principal);
+    let rejected = gadget::Entity::before_update(&db, no_op.clone(), &existing, &principal).await;
     assert!(
         rejected.is_err(),
         "une transition no-op sur label doit être rejetée par l'override"
@@ -298,37 +323,42 @@ fn before_update_override_can_compare_existing_and_reject() {
         id: Set(1),
         label: Set("published".to_string()),
     };
-    let accepted = gadget::Entity::before_update(changed.clone(), &existing, &principal);
+    let accepted = gadget::Entity::before_update(&db, changed.clone(), &existing, &principal).await;
     assert!(
         matches!(accepted, Ok(ref passed) if *passed == changed),
         "un label qui change passe inchangé"
     );
 }
 
-#[test]
-fn default_before_delete_is_ok_and_ignores_existing() {
+#[tokio::test]
+async fn default_before_delete_is_ok_and_ignores_existing() {
     let existing = ingredient::Model {
         id: 4,
         name: "salt".to_string(),
     };
 
+    let db = mock_db();
     for principal in [session_principal(), api_principal()] {
         assert!(
-            matches!(ingredient::Entity::before_delete(&existing, &principal), Ok(())),
+            matches!(
+                ingredient::Entity::before_delete(&db, &existing, &principal).await,
+                Ok(())
+            ),
             "le défaut de before_delete autorise, quel que soit le principal"
         );
     }
 }
 
-#[test]
-fn before_delete_override_rejects_with_free_form_error() {
+#[tokio::test]
+async fn before_delete_override_rejects_with_free_form_error() {
     let principal = api_principal();
+    let db = mock_db();
 
     let locked = widget::Model {
         id: 1,
         status: "locked".to_string(),
     };
-    let rejected = widget::Entity::before_delete(&locked, &principal);
+    let rejected = widget::Entity::before_delete(&db, &locked, &principal).await;
     assert!(
         rejected.is_err(),
         "une ligne « locked » doit être rejetée par l'override"
@@ -347,7 +377,10 @@ fn before_delete_override_rejects_with_free_form_error() {
         status: "open".to_string(),
     };
     assert!(
-        matches!(widget::Entity::before_delete(&open, &principal), Ok(())),
+        matches!(
+            widget::Entity::before_delete(&db, &open, &principal).await,
+            Ok(())
+        ),
         "une ligne hors verrouillage passe"
     );
 }

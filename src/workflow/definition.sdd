@@ -302,7 +302,8 @@ Tasks:
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./definition.rs`, retirer GraphQL de l'en-tête `//!` (ligne ~4 :
     « REST/MCP ») et de la doc de l'`impl MiryadResource` (lignes ~250-252 : « REST et MCP », supprimer la phrase sur l'asymétrie
     GraphQL). Aucun changement de comportement.
-  [ ] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : @WorkflowDefinition passe `before_create` et `before_update` à la signature asynchrone (`db` ignoré : `validate_dag` reste pure), `before_delete` garde son défaut ; les cinq tests `before_*` de ./definition.rs passent à `.await` avec une connexion simulée, assertions inchangées. Dépend de /src/resource.sdd (même amendement).
+  [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : @WorkflowDefinition passe `before_create` et `before_update` à la signature asynchrone (`db` ignoré : `validate_dag` reste pure), `before_delete` garde son défaut ; les cinq tests `before_*` de ./definition.rs passent à `.await` avec une connexion simulée, assertions inchangées. Dépend de /src/resource.sdd (même amendement).
+    Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.

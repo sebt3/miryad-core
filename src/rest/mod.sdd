@@ -413,7 +413,8 @@ Tasks:
     `cargo test --doc` pour le @compile_fail) après création des tests.
   [x] Amendement 2026-10-19 (`db`) : dans `./mod.rs`, poser `#[cfg(feature = "db")]` sur les cinq `mod` enfants gatés, le trait @RestEntity,
     @resource_router, leurs `use` et le module de tests ; laisser `pub mod openapi;` nu.
-  [ ] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les fixtures de test de ./mod.rs (hooks `before_create`, `before_update`, `before_delete`, ~lignes 398-531) sont portées au nouveau trait asynchrone ; les tests `before_*_hook_*` existants restent verts sans changement d'assertion (statuts `422` et corps inchangés). Dépend de /src/resource.sdd (même amendement).
+  [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les fixtures de test de ./mod.rs (hooks `before_create`, `before_update`, `before_delete`, ~lignes 398-531) sont portées au nouveau trait asynchrone ; les tests `before_*_hook_*` existants restent verts sans changement d'assertion (statuts `422` et corps inchangés). Dépend de /src/resource.sdd (même amendement).
+    Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
 
 Done when:
   Chaque `Scenario` de la présente spec dispose d'au moins un test nommé distinct vérifiant son

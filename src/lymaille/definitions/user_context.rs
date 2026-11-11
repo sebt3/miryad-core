@@ -206,21 +206,31 @@ impl MiryadResource for Entity {
     }
 
     /// Valide le contexte et réécrit `name` — voir [`Entity::valider_et_deriver`].
-    fn before_create(
+    fn before_create<C>(
+        db: &C,
         active: Self::ActiveModel,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        Entity::valider_et_deriver(active, None)
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move { Entity::valider_et_deriver(active, None) }
     }
 
     /// Mêmes étapes que [`Self::before_create`], plus l'identité : un `name` qui change est
     /// refusé (`Must` de `./user_context.sdd`, précédent `./catalog_context.rs`).
-    fn before_update(
+    fn before_update<C>(
+        db: &C,
         active: Self::ActiveModel,
         existing: &Self::Model,
         _principal: &AuthPrincipal,
-    ) -> Result<Self::ActiveModel, HookError> {
-        Entity::valider_et_deriver(active, Some(existing))
+    ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        let _ = db;
+        async move { Entity::valider_et_deriver(active, Some(existing)) }
     }
 
     // `before_delete` volontairement non surdéclaré : aucun contrôle d'usage au lot 2, le défaut
@@ -230,6 +240,12 @@ impl MiryadResource for Entity {
 #[cfg(test)]
 mod tests {
     use super::ActiveModel;
+
+    /// Connexion simulée pour appeler les hooks depuis les tests : la validation de ce module
+    /// est pure et n'émet aucune requête ; une connexion à file vide suffit.
+    fn hook_db() -> sea_orm::DatabaseConnection {
+        sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite).into_connection()
+    }
     use super::Column;
     use super::Entity;
     use super::Model;
@@ -362,12 +378,14 @@ mod tests {
 
     /// Le Given valide des Scenarios : `before_create` accepte un contexte `dev` de niveau
     /// `user` et réécrit `name` depuis le contexte ; `created_at` est posé quand il manque.
-    #[test]
-    fn before_create_accepte_un_contexte_valide_et_derive_le_nom() {
+    #[tokio::test]
+    async fn before_create_accepte_un_contexte_valide_et_derive_le_nom() {
         let rendu = Entity::before_create(
+            &hook_db(),
             active_avec(contexte("dev", ContextLevel::User, json!({"namespace": "dev"}))),
             &principal(),
         )
+        .await
         .expect("un contexte `dev` de niveau user est accepté");
         assert_eq!(
             rendu.name,
@@ -382,13 +400,15 @@ mod tests {
 
     /// Scenario « le préfixe catalogue est refusé » : `G_x` (et `g_x`, préfixe réservé) ne
     /// commencent pas comme un nom privé.
-    #[test]
-    fn before_create_refuse_le_prefixe_catalogue() {
+    #[tokio::test]
+    async fn before_create_refuse_le_prefixe_catalogue() {
         for nom in ["G_x", "g_x"] {
             let rendu = Entity::before_create(
+                &hook_db(),
                 active_avec(contexte(nom, ContextLevel::User, json!({}))),
                 &principal(),
-            );
+            )
+            .await;
             match rendu {
                 Err(erreur) => {
                     assert!(
@@ -404,13 +424,15 @@ mod tests {
 
     /// Scenario « un identifiant hôte n'est jamais écrit » (réalignement R4, DSD `DEC-27`) :
     /// `H_sandbox` (et `h_sandbox`, préfixe réservé) relèvent de l'hôte, pas de cette table.
-    #[test]
-    fn before_create_refuse_un_identifiant_hote() {
+    #[tokio::test]
+    async fn before_create_refuse_un_identifiant_hote() {
         for nom in ["H_sandbox", "h_sandbox"] {
             let rendu = Entity::before_create(
+                &hook_db(),
                 active_avec(contexte(nom, ContextLevel::User, json!({}))),
                 &principal(),
-            );
+            )
+            .await;
             match rendu {
                 Err(erreur) => {
                     assert!(
@@ -425,12 +447,14 @@ mod tests {
     }
 
     /// Scenario « un niveau shared est refusé dans la table privée » : `level` doit être `user`.
-    #[test]
-    fn before_create_refuse_un_niveau_shared() {
+    #[tokio::test]
+    async fn before_create_refuse_un_niveau_shared() {
         let rendu = Entity::before_create(
+            &hook_db(),
             active_avec(contexte("dev", ContextLevel::Shared, json!({}))),
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(erreur.code.is_none(), "aucun code `MRD-*` sur un `HookError`");
@@ -442,16 +466,18 @@ mod tests {
 
     /// Scenario « un secret est refusé sans écho » : le message porte la règle, jamais la
     /// valeur (`Must not`).
-    #[test]
-    fn before_create_refuse_un_secret_sans_le_citer() {
+    #[tokio::test]
+    async fn before_create_refuse_un_secret_sans_le_citer() {
         let rendu = Entity::before_create(
+            &hook_db(),
             active_avec(contexte(
                 "dev",
                 ContextLevel::User,
                 json!({"api_key": "sk-abcdef"}),
             )),
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(
@@ -472,17 +498,23 @@ mod tests {
     }
 
     /// `Must` : `context` absent ou non objet est refusé avant toute désérialisation.
-    #[test]
-    fn before_create_refuse_un_contexte_absent_ou_non_objet() {
+    #[tokio::test]
+    async fn before_create_refuse_un_contexte_absent_ou_non_objet() {
         let sans = ActiveModel {
             context: NotSet,
             ..active_avec(serde_json::Value::Null)
         };
-        match Entity::before_create(sans, &principal()) {
+        match Entity::before_create(&hook_db(), sans, &principal()).await {
             Err(erreur) => assert_eq!(erreur.message, "user context is required"),
             Ok(_) => panic!("un `context` `NotSet` doit être refusé"),
         }
-        match Entity::before_create(active_avec(json!(["pas", "un", "objet"])), &principal()) {
+        match Entity::before_create(
+            &hook_db(),
+            active_avec(json!(["pas", "un", "objet"])),
+            &principal(),
+        )
+        .await
+        {
             Err(erreur) => assert_eq!(erreur.message, "user context is required"),
             Ok(_) => panic!("un `context` non objet doit être refusé"),
         }
@@ -493,14 +525,14 @@ mod tests {
     /// `lymaille`, `classify` = `Private`), jamais un préfixe réservé (`G_`/`H_` et leurs casses
     /// réservées), non vide. L'existence du type n'est pas vérifiée ici (hook sans connexion).
     /// Le `HookError` ne porte aucun code `MRD-*`.
-    #[test]
-    fn before_create_refuse_un_context_type_de_forme_invalide() {
+    #[tokio::test]
+    async fn before_create_refuse_un_context_type_de_forme_invalide() {
         for reference in ["", "G_cluster", "g_cluster", "h_cluster", "cluster-x"] {
             let active = ActiveModel {
                 context_type: Set(Some(reference.to_string())),
                 ..active_avec(contexte("dev", ContextLevel::User, json!({})))
             };
-            match Entity::before_create(active, &principal()) {
+            match Entity::before_create(&hook_db(), active, &principal()).await {
                 Err(erreur) => {
                     assert!(
                         erreur.code.is_none(),
@@ -518,12 +550,14 @@ mod tests {
 
     /// `Must` : `context_type` absent (`None`) passe, et une référence de forme valide traverse
     /// le hook inchangée — l'existence est vérifiée à l'ouverture de session, pas ici.
-    #[test]
-    fn before_create_accepte_un_context_type_de_forme_valide() {
+    #[tokio::test]
+    async fn before_create_accepte_un_context_type_de_forme_valide() {
         let sans = Entity::before_create(
+            &hook_db(),
             active_avec(contexte("dev", ContextLevel::User, json!({}))),
             &principal(),
         )
+        .await
         .expect("un contexte sans type est accepté par le hook");
         assert!(
             matches!(sans.context_type, NotSet),
@@ -531,12 +565,14 @@ mod tests {
             sans.context_type
         );
         let avec = Entity::before_create(
+            &hook_db(),
             ActiveModel {
                 context_type: Set(Some("cluster".to_string())),
                 ..active_avec(contexte("dev", ContextLevel::User, json!({})))
             },
             &principal(),
         )
+        .await
         .expect("une référence de forme valide est acceptée sans contrôle d'existence");
         assert_eq!(
             avec.context_type,
@@ -546,9 +582,10 @@ mod tests {
     }
 
     /// Scenario (`before_update`) : `name` ne change pas.
-    #[test]
-    fn before_update_refuse_un_renommage() {
+    #[tokio::test]
+    async fn before_update_refuse_un_renommage() {
         let rendu = Entity::before_update(
+            &hook_db(),
             active_avec(contexte(
                 "staging",
                 ContextLevel::User,
@@ -556,7 +593,8 @@ mod tests {
             )),
             &modele(1, "dev"),
             &principal(),
-        );
+        )
+        .await;
         match rendu {
             Err(erreur) => {
                 assert!(erreur.code.is_none(), "aucun code `MRD-*` sur un `HookError`");
@@ -568,14 +606,16 @@ mod tests {
 
     /// `Must` (`before_update`) : une mise à jour qui garde le nom le réécrit depuis le contexte
     /// et laisse `created_at` à celui de la ligne existante.
-    #[test]
-    fn before_update_derive_le_nom_et_conserve_la_date_de_creation() {
+    #[tokio::test]
+    async fn before_update_derive_le_nom_et_conserve_la_date_de_creation() {
         let existing = modele(1, "dev");
         let rendu = Entity::before_update(
+            &hook_db(),
             active_avec(contexte("dev", ContextLevel::User, json!({"namespace": "dev"}))),
             &existing,
             &principal(),
         )
+        .await
         .expect("une mise à jour qui garde le nom est acceptée");
         assert_eq!(rendu.name, Set("dev".to_string()));
         assert_eq!(
