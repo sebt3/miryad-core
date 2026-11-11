@@ -63,7 +63,8 @@ type HostCall = Arc<dyn Fn(&mut [Dynamic]) -> Result<Dynamic, HostCallError> + S
 /// Une fonction publiée par un [`HostModule`] : `call` reçoit les arguments Rhai déjà déballés
 /// en [`Dynamic`] (taille `params`) et rend une valeur Rhai ou un [`HostCallError`].
 pub struct HostFunction {
-    /// Nom de la fonction — identifiant Rhai valide, appelée par `module::nom(...)`.
+    /// Nom de la fonction — identifiant ASCII (`[A-Za-z_][A-Za-z0-9_]*`, contrat de
+    /// [`is_module_name`]), appelée par `module::nom(...)`.
     pub name: &'static str,
     /// Arité contractuelle : un appel d'une arité différente est une fonction inconnue pour Rhai.
     pub params: usize,
@@ -75,8 +76,9 @@ pub struct HostFunction {
 /// (DSD `scripts-hote#FR-1`). La politique n'est jamais redécidée par le module : l'enrobage
 /// central la vérifie avant chaque appel (`FR-2`).
 pub trait HostModule: Send + Sync {
-    /// Nom du module — un identifiant Rhai valide, ni réservé ni déjà pris (contrôlé à
-    /// l'enregistrement, [`HostModules::register`]).
+    /// Nom du module — un nom de module valide ([`is_module_name`], grammaire ASCII : le nom doit
+    /// aussi pouvoir servir de nom de module pour l'enregistrement), ni réservé ni déjà pris
+    /// (contrôlé à l'enregistrement, [`HostModules::register`]).
     fn name(&self) -> &'static str;
 
     /// Politique d'accès fermée du module.
@@ -116,14 +118,12 @@ impl HostModules {
     /// # Errors
     ///
     /// [`LymailleError::Config`] nommant le module si son nom est réservé
-    /// ([`RESERVED_MODULE_NAMES`]), déjà enregistré, ou n'est pas un identifiant Rhai valide —
-    /// une collision échoue au démarrage (DSD `scripts-hote#FR-1`).
+    /// ([`RESERVED_MODULE_NAMES`]), déjà enregistré, ou n'est pas un nom de module valide
+    /// ([`is_module_name`], grammaire ASCII) — une collision échoue au démarrage (DSD
+    /// `scripts-hote#FR-1`).
     pub fn register(&mut self, module: Arc<dyn HostModule>) -> Result<&mut Self, LymailleError> {
         let name = module.name();
-        if RESERVED_MODULE_NAMES.contains(&name)
-            || self.modules.contains_key(name)
-            || !is_valid_rhai_identifier(name)
-        {
+        if RESERVED_MODULE_NAMES.contains(&name) || self.modules.contains_key(name) || !is_module_name(name) {
             return Err(LymailleError::Config(format!(
                 "host module name reserved or taken: {name}"
             )));
@@ -156,20 +156,16 @@ impl HostModules {
     }
 }
 
-/// Vrai si `name` est un identifiant Rhai valide : première lettre alphabétique ou `_`, puis
-/// alphanumérique ou `_` (règle de `rhai::is_valid_identifier`, non exportée sans la feature
-/// `internals` de `rhai`).
-fn is_valid_rhai_identifier(name: &str) -> bool {
-    let mut first_alphabetic = false;
-    for ch in name.chars() {
-        match ch {
-            '_' => (),
-            _ if ch.is_alphabetic() => first_alphabetic = true,
-            _ if first_alphabetic && ch.is_alphanumeric() => (),
-            _ => return false,
-        }
-    }
-    first_alphabetic
+/// Vrai si `name` est un nom de module valide : grammaire ASCII `[A-Za-z_][A-Za-z0-9_]*`, non
+/// vide (`host_module.sdd`). Volontairement plus stricte que celle de Rhai, unicode-aware
+/// (`rhai::is_valid_identifier` n'est public que sous la feature `internals`, absente du graphe)
+/// : le nom doit aussi pouvoir servir de nom de module pour l'enregistrement. Seule copie de la
+/// crate — `definitions::context_type` l'appellera au cycle suivant.
+#[must_use]
+pub fn is_module_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if matches!(c, 'a'..='z' | 'A'..='Z' | '_'))
+        && chars.all(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'))
 }
 
 /// Message Rhai fixe porté par `ErrorRuntime` (forme de `resource_module`).
@@ -399,7 +395,7 @@ mod tests {
         assert!(
             matches!(&registry.register(module), Err(LymailleError::Config(message))
                 if message == "host module name reserved or taken: bad name"),
-            "`bad name` n'est pas un identifiant Rhai valide"
+            "`bad name` n'est pas un nom de module valide (`is_module_name`)"
         );
 
         for name in RESERVED_MODULE_NAMES {
@@ -420,6 +416,36 @@ mod tests {
             "un refusé n'est jamais entré"
         );
         assert_eq!(registry.names(), vec!["dashboard"], "`names()` est trié");
+    }
+
+    // ——— Amendement 2026-11-11 : `register` sous grammaire ASCII stricte ———
+    #[test]
+    fn register_refuses_a_non_ascii_module_name() {
+        let mut registry = HostModules::default();
+        let module = fixture("café", HostAccess::Authenticated).0;
+        assert!(
+            matches!(&registry.register(module), Err(LymailleError::Config(message))
+                if message == "host module name reserved or taken: café"),
+            "`café` n'est pas un nom de module ASCII : `register` doit rendre `Config` nommant le module"
+        );
+        assert!(
+            registry.get("café").is_none(),
+            "un nom refusé n'entre jamais dans le registre"
+        );
+    }
+
+    // ——— Amendement 2026-11-11 : grammaire ASCII `[A-Za-z_][A-Za-z0-9_]*` ———
+    #[test]
+    fn is_module_name_accepts_ascii_and_refuses_the_rest() {
+        for name in ["a", "_a", "a1"] {
+            assert!(is_module_name(name), "`{name}` est un nom de module valide");
+        }
+        for name in ["1a", "a b", "a-b", "", "é"] {
+            assert!(
+                !is_module_name(name),
+                "`{name}` n'est pas un nom de module valide"
+            );
+        }
     }
 
     // ——— Scenario : « un module réservé à l'admin est refusé après le retrait du groupe » ———

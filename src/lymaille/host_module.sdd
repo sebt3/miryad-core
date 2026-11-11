@@ -52,7 +52,9 @@ Tasks:
     Soldé 2026-11-11 : `Module::set_raw_fn` n'existe pas dans `rhai` 1.27 ; le `Must` nomme désormais l'API réelle, `FuncRegistration::set_into_module_raw` (contrat identique).
     [?] (spec-dd) : `pub mod host_module;` déclaré TEMPORAIREMENT dans ../mod.rs (hors `Owns`) pour faire tourner les tests inline ; la tâche « déclarations et ré-exports » de ../mod.sdd le remplacera — à ne pas oublier. — SOLDÉ 2026-11-11 : déclaration propre + ré-exports posés par la tâche de ../mod.sdd (commit 8a0dd19).
 
-  [ ] Amendement du 2026-11-11 (arbitrage du développeur principal) : `is_module_name` exposée (test d'abord : `a`, `_a`, `a1` valides ; `1a`, `a b`, `a-b`, ``, `é` refusés), le `register` de ./host_module.rs l'utilise ; ne passe à `[x]` qu'avec le `validator` en vert. Avant ../definitions/context_type.sdd.
+  [x] Amendement du 2026-11-11 (arbitrage du développeur principal) : `is_module_name` exposée (test d'abord : `a`, `_a`, `a1` valides ; `1a`, `a b`, `a-b`, ``, `é` refusés), le `register` de ./host_module.rs l'utilise ; ne passe à `[x]` qu'avec le `validator` en vert. Avant ../definitions/context_type.sdd.
+    Validé 2026-11-11 (validator PASS : `pub fn is_module_name` ASCII strict `[A-Za-z_][A-Za-z0-9_]*`, `register` branché dessus, copie unicode-aware `is_valid_rhai_identifier` supprimée, docs reprises au contrat ASCII ; 2 tests ajoutés dont le verrou du resserrement `register_refuses_a_non_ascii_module_name` (`café` → `Config`, rouge d'abord prouvé) ; batterie ciblée `lymaille` verte, `check` hors `lymaille` vert).
+    [?] (validator, cycle du 2026-11-11) : le contrat de ré-exports plats de ../mod.sdd ne liste pas `is_module_name` (exposée au chemin `lymaille::host_module::is_module_name`, comme `mount_host_modules`). Amender le `Must` de ../mod.sdd pour un ré-export à plat, ou s'en tenir au chemin du module ? Choix provisoire : chemin du module (le cycle ../definitions/context_type.sdd appelle `host_module::is_module_name`, le contrat est couvert).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./host_module.rs.
