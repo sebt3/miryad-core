@@ -101,7 +101,7 @@ use sea_orm::DatabaseConnection;
 
 use crate::lymaille::error::LymailleError;
 use crate::lymaille::host::SharedHost;
-use crate::lymaille::identity::{CallerPrincipal, Identity, check_grants};
+use crate::lymaille::identity::{ADMIN_ONLY_MODULES, CallerPrincipal, Identity, check_grants};
 use crate::lymaille::install_crypto_provider;
 use crate::lymaille::mcp_mount::{McpConnectorFactory, MountDeps, RmcpConnectorFactory, mount_role};
 use crate::lymaille::resource_module::{ResourceRegistry, resources_module};
@@ -127,11 +127,6 @@ pub const DEFAULT_MAX_SECS: u64 = 480;
 /// **Contrat** : c'est le nom sous lequel l'utilisateur lie ses serveurs MCP au step. Un renommage
 /// laisse silencieusement sans effet les contextes déjà liés en base.
 pub const SUBAGENT_CONTEXT_TYPE: &str = "workflow_subagent";
-
-/// Modules dont l'accord par une définition est réservé aux admins (DSD `FR-9`, défense en
-/// profondeur à l'étape 5 du `Must`). Vide au lot 1 : aucun module connu n'y figure encore — le
-/// mécanisme (`check_grants`) est posé et testé (`src/lymaille/identity.sdd`).
-pub(crate) const ADMIN_ONLY_MODULES: &[&str] = &[];
 
 /// Requêtes d'inférence par tour de batch : `1`. Un tour est alors « une requête, un appel d'outil
 /// éventuel » ; le résultat de l'outil ouvre le tour suivant du batch (message de rappel de

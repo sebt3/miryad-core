@@ -69,7 +69,8 @@ Tasks:
   [?] À vérifier à l'ouverture de la tâche dans le source de `lymaille` : la voie exacte pour injecter des clients MCP par rôle dans
     `assemble(...)`/`ScratchpadEngine::builder` et la construction de `TurnRunner` pour une session non batch (le lot 1 n'a assemblé que le batch).
   [ ] Amendement du 2026-11-11 (DSD `scripts-hote`) : `HostModules` dans `AssembleDeps`, `check_grants` augmenté, montage des modules d'hôte accordés ; test d'abord (`Scenario` ci-dessous), puis ./assemble.rs. Après ../host_module.sdd.
-  [ ] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : retirer la déclaration locale de ./assemble.rs, importer `identity::ADMIN_ONLY_MODULES` ; `assemble_with` garde sa liste en paramètre ; tests verts.
+  [x] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : retirer la déclaration locale de ./assemble.rs, importer `identity::ADMIN_ONLY_MODULES` ; `assemble_with` garde sa liste en paramètre ; tests verts.
+    Validé 2026-11-11 (batterie ciblée `lymaille` et `workflow,lymaille` verte ; synthèse tenue par le primary, `validator` indisponible — voir le `[?]` de `../identity.sdd`).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./assemble.rs.

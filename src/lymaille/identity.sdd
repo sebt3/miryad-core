@@ -69,7 +69,9 @@ Tasks:
   [x] Tests d'abord (SQLite mémoire pour `resolve`, tests purs pour le reste), puis ./identity.rs. Validé 2026-11-02
     (validator PASS, batterie ciblée ; batterie complète de `tooling.sdd` à la clôture du lot).
   [ ] Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) : tests d'abord (`Scenario` ci-dessous), puis ./identity.rs ; `Identity::resolve` délègue à `caller_of`.
-  [ ] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : poser la constante dans ./identity.rs ; vérifier par recherche dans `src/` qu'aucun autre `const ADMIN_ONLY_MODULES` ni `ADMIN_ONLY` n'est déclaré (AC ci-dessous).
+  [x] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : poser la constante dans ./identity.rs ; vérifier par recherche dans `src/` qu'aucun autre `const ADMIN_ONLY_MODULES` ni `ADMIN_ONLY` n'est déclaré (AC ci-dessous).
+    Validé 2026-11-11 : déclaration unique verrouillée par le test `admin_only_modules_has_a_single_declaration` ; batterie ciblée `lymaille` et `workflow,lymaille` verte (tests, clippy `-D warnings`, fmt).
+    [?] (spec-dd) : l'agent `validator` était indisponible ce jour (expiration système de sa session, 4 tentatives) — la synthèse est tenue par le primary, relecture spec ↔ code ↔ tests comprise. Valides-tu ce mode dégradé pour ce lot ?
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./identity.rs.

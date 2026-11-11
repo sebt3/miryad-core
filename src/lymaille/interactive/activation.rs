@@ -13,16 +13,11 @@ use ::lymaille::{DraftKind, DraftStore, Toolset};
 
 use crate::lymaille::definitions::toolset::check_toolset;
 use crate::lymaille::error::LymailleError;
-use crate::lymaille::identity::{CallerPrincipal, IdKind, Identity, check_grants, classify};
+use crate::lymaille::identity::{
+    ADMIN_ONLY_MODULES, CallerPrincipal, IdKind, Identity, check_grants, classify,
+};
 use crate::lymaille::store::SeaDraftStore;
 use crate::lymaille::store::db_text;
-
-/// Modules réservés : un non-admin ne peut ni les employer ni les accorder (DSD `FR-9`). Vide à
-/// ce jour, parité avec `ADMIN_ONLY_MODULES` de `../../workflow/subagent_step.rs` — les deux
-/// listes doivent rester identiques (`interactive/assemble.sdd`). Les fonctions internes prennent
-/// la liste en paramètre : c'est le séparateur du `Scenario` « module réservé », vide en
-/// production.
-pub(crate) const ADMIN_ONLY_MODULES: &[&str] = &[];
 
 /// Tables de la promotion (../migration.sdd, colonnes de ./activation.sdd).
 const PRIVATE_TOOLSETS_TABLE: &str = "miryad_lymaille_toolsets";

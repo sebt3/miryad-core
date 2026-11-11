@@ -77,7 +77,7 @@ use ::lymaille::rhai_pad_definition;
 
 use crate::lymaille::error::LymailleError;
 use crate::lymaille::host::SharedHost;
-use crate::lymaille::identity::{CallerPrincipal, check_grants};
+use crate::lymaille::identity::{ADMIN_ONLY_MODULES, CallerPrincipal, check_grants};
 use crate::lymaille::install_crypto_provider;
 use crate::lymaille::mcp_mount::{McpConnectorFactory, MountDeps, RmcpConnectorFactory, mount_role};
 use crate::lymaille::resource_module::{ResourceRegistry, resources_module};
@@ -86,12 +86,6 @@ use crate::lymaille::store::LymailleStores;
 use crate::lymaille::store::SeaSessionStore;
 
 use super::hub::EventHub;
-
-/// Modules dont l'accord par une définition est réservé (DSD `FR-9`) : parité avec
-/// `ADMIN_ONLY_MODULES` de `../../workflow/subagent_step.rs` — les deux listes doivent rester
-/// identiques ; la liste est vide à ce jour, le mécanisme (`check_grants`) est câblé et testé
-/// par injection (`Scenario` de la spec).
-pub(crate) const ADMIN_ONLY_MODULES: &[&str] = &[];
 
 /// Couture d'inférence (test) : produit le client d'inférence d'un provider, là où la production
 /// construit un [`RigProvider`]. duplicat assumé de la couture de

@@ -134,6 +134,12 @@ pub fn check_write(caller: &CallerPrincipal, id: &str) -> Result<IdKind, Lymaill
     }
 }
 
+/// Modules réservés à l'admin (DSD `FR-9`) : la **seule** déclaration de cette liste dans la
+/// crate — `check_grants` de l'assemblage, de l'activation, du step `subagent` et des hooks de
+/// sauvegarde la lisent ici, aucun autre fichier n'en déclare une copie (amendement
+/// `identity.sdd` du 2026-11-11). Vide au lot 1 : mécanisme présent, aucun module réservé connu.
+pub(crate) const ADMIN_ONLY_MODULES: &[&str] = &[];
+
 /// Contrôle d'accord de modules d'une définition : une définition ne peut accorder que des
 /// modules que son propriétaire pourrait utiliser lui-même (DSD `FR-9`).
 ///
@@ -382,5 +388,78 @@ mod tests {
             matches!(granted_plain, Ok(())),
             "aucun module réservé accordé : {granted_plain:?}"
         );
+    }
+
+    /// Lit `root` récursivement et relève les lignes de code (hors commentaire) contenant
+    /// `needle`. `Scenario` de grep source, précédent des tests lisant le source du crate.
+    fn collect_code_lines(
+        root: &std::path::Path,
+        needle: &str,
+        hits: &mut Vec<String>,
+    ) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(root)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                collect_code_lines(&path, needle, hits)?;
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let content = std::fs::read_to_string(&path)?;
+                for (no, line) in content.lines().enumerate() {
+                    let code = line.trim_start();
+                    if code.starts_with("//") {
+                        continue;
+                    }
+                    if code.contains(needle) {
+                        hits.push(format!("{}:{}", path.display(), no + 1));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `Scenario` : « la liste des modules réservés à l'admin n'a qu'une déclaration »
+    /// (amendement `identity.sdd` du 2026-11-11) — une seule ligne `const ADMIN_ONLY…` dans tout
+    /// `src/`, dans ce fichier ; et `interactive/assemble.rs`, `interactive/activation.rs`,
+    /// `workflow/subagent_step.rs` l'importent (la nomment sans la déclarer).
+    #[test]
+    fn admin_only_modules_has_a_single_declaration() {
+        // Le motif est reconstruit par concat pour que ce test ne se relève pas lui-même.
+        let needle = concat!("const ", "ADMIN_ONLY");
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut declarations = Vec::new();
+        collect_code_lines(&src, needle, &mut declarations)
+            .expect("l'arbre src/ doit être lisible par le test");
+        declarations.sort();
+        assert_eq!(
+            declarations.len(),
+            1,
+            "la liste des modules réservés à l'admin n'a qu'une déclaration, trouvées : \
+             {declarations:?}"
+        );
+        let here = std::path::Path::new(file!()).file_name().expect("nom du fichier");
+        let found = declarations
+            .first()
+            .and_then(|hit| hit.split(':').next())
+            .expect("au moins une déclaration");
+        assert_eq!(
+            std::path::Path::new(found).file_name(),
+            Some(here),
+            "l'unique déclaration doit être dans ./identity.rs, trouvée dans {found}"
+        );
+
+        // Les trois consommateurs nomment la constante (import + usage) sans la déclarer.
+        for importer in [
+            "src/lymaille/interactive/assemble.rs",
+            "src/lymaille/interactive/activation.rs",
+            "src/workflow/subagent_step.rs",
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(importer);
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("{importer} doit être lisible : {err}"));
+            assert!(
+                content.contains("ADMIN_ONLY_MODULES"),
+                "{importer} doit importer et employer ADMIN_ONLY_MODULES de ./identity.rs"
+            );
+        }
     }
 }

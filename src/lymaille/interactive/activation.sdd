@@ -42,7 +42,8 @@ Exposes:
 
 Tasks:
   [x] Tests d'abord (SQLite mémoire), puis ./activation.rs. Validé 2026-11-05 (validator PASS checkpoint 5 — atomicité et AdminOnly prouvés).
-  [ ] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : retirer la déclaration locale de ./activation.rs, importer `identity::ADMIN_ONLY_MODULES` ; `activate_with` garde sa liste en paramètre ; tests verts.
+  [x] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : retirer la déclaration locale de ./activation.rs, importer `identity::ADMIN_ONLY_MODULES` ; `activate_with` garde sa liste en paramètre ; tests verts.
+    Validé 2026-11-11 (batterie ciblée `lymaille` et `workflow,lymaille` verte ; synthèse tenue par le primary, `validator` indisponible — voir le `[?]` de `../identity.sdd`).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./activation.rs.
