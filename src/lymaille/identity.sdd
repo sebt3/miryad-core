@@ -25,6 +25,8 @@ Must:
     `subject` est égal (**sans la créer**, à la différence de `resolve_user`) puis `is_admin(db, user_id)` ; aucune ligne →
     `UnknownSubject` (jamais un principal vide ni par défaut) ; `DbErr` → `Store(<texte du DbErr>)`. Un utilisateur retiré du groupe
     admin entre deux appels est non-admin au second (DSD `AC-5`).
+  `pub async fn caller_of<C: ConnectionTrait>(db: &C, subject: &str) -> Result<CallerPrincipal, LymailleError>` (amendement 2026-11-11, `hooks-async#DEC-7`) : le corps de `resolve`, sur une connexion
+    générique (un hook reçoit `&impl ConnectionTrait`, pas la `DatabaseConnection` d'`Identity`) ; mêmes erreurs. `Identity::resolve` y délègue.
   `pub enum IdKind { Catalog, Private, Host }` et `pub fn classify(id: &str) -> Result<IdKind, LymailleError>` (pure) :
     1. identifiant vide ou contenant un caractère hors `[A-Za-z0-9_]` → `InvalidDefinition("invalid identifier")` (un identifiant est un
       identifiant Rhai valide, DSD `DEC-9`) ;
@@ -51,7 +53,7 @@ Depends on:
   ./error.rs, ../users/user.rs, ../users/group.rs, @sea_orm
 
 Exposes:
-  `CallerPrincipal`, `Identity::{new, resolve}`, `IdKind`, `classify`, `check_write`, `check_grants`
+  `CallerPrincipal`, `Identity::{new, resolve}`, `caller_of`, `IdKind`, `classify`, `check_write`, `check_grants`
 
 Tasks:
   [x] Réalignement R5 (DSD `DEC-27`, 2026-11-03) : spec amendée le 2026-11-03 (variante `IdKind::Host`, préfixe `H_`, refus d'écriture, `Scenario` ci-dessous),
@@ -64,6 +66,7 @@ Tasks:
   [x] Le nom d'un contexte `H_…` passe la validation de `lymaille` : levé par la 0.2.0 (ticket #5, grammaire `[A-Za-z0-9_-]+` depuis `toolsets` FR-20), sans effet sur ce fichier. Vérifié dans la source de `lymaille` 0.2.0 le 2026-11-05.
   [x] Tests d'abord (SQLite mémoire pour `resolve`, tests purs pour le reste), puis ./identity.rs. Validé 2026-11-02
     (validator PASS, batterie ciblée ; batterie complète de `tooling.sdd` à la clôture du lot).
+  [ ] Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) : tests d'abord (`Scenario` ci-dessous), puis ./identity.rs ; `Identity::resolve` délègue à `caller_of`.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./identity.rs.
@@ -97,3 +100,8 @@ Scenario: un module réservé à l'admin n'est pas accordé à un non-admin
   Given `admin_only = ["secrets"]` et un appelant non-admin
   When `check_grants` est appelé avec `["resources", "secrets"]`, puis avec `["resources"]`
   Then le premier résultat est `Forbidden`, le second `Ok`
+
+Scenario: caller_of rend le principal de resolve sur une connexion générique
+  Given un utilisateur `alice` du groupe admin, une `DatabaseConnection` puis une `DatabaseTransaction` ouverte sur la même base
+  When `caller_of(db, "alice")` est appelé avec chacune, puis après retrait du groupe admin
+  Then les deux rendent le même `CallerPrincipal` (`is_admin` vrai) que `Identity::resolve`, puis `is_admin` faux ; un `subject` sans compte rend `UnknownSubject`

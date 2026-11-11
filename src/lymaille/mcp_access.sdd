@@ -5,9 +5,8 @@ Purpose:
     Un serveur (../definitions/mcp_server.sdd) porte `allowed_groups` ; ce fichier décide, **à chaque appel et sur une relecture en base**, si un
     `subject` peut le lier ou l'appeler (`all` = tout authentifié, `admin` = admin, sinon appartenance à l'un des groupes ; aucun cache).
     Il implémente `lymaille::McpAuth` en deux modes : `static` (en-tête `Authorization: Bearer <secret>` résolu par le @SecretResolver à
-    chaque connexion) et `forward` (jeton de l'utilisateur d'une session **interactive**, jamais persisté). Les hooks `MiryadResource` sont
-    synchrones et sans connexion : le refus « à la sauvegarde » ne peut donc pas vivre dans un hook de `user_context` ; le **contrôle
-    d'autorité** est celui-ci, à l'assemblage et à l'appel (défense en profondeur de `FR-9`). Amendé le 2026-11-03 (`DEC-27`) : un serveur peut aussi être fourni par
+    chaque connexion) et `forward` (jeton de l'utilisateur d'une session **interactive**, jamais persisté). Le contrôle
+    d'autorité est celui-ci, à l'assemblage et à l'appel, et à la sauvegarde d'un contexte par le hook de `user_context` (amendement 2026-11-11, `hooks-async#DEC-7`) : défense en profondeur de `FR-9`. Amendé le 2026-11-03 (`DEC-27`) : un serveur peut aussi être fourni par
     l'hôte (./host.sdd), sans ligne `mcp_servers` ; l'hôte tranche alors l'autorité et rend URL et jeton frais. Fichier neuf, conception.
 
 Owns:
@@ -20,7 +19,7 @@ References:
   `lymaille::modules::mcp_client` — trait `McpAuth` (`headers() -> Result<McpHeaders, McpError>`), `McpHeaders`
 
 Must:
-  `pub async fn server_for(db, caller: &CallerPrincipal, name: &str) -> Result<mcp_server::Model, LymailleError>` : cherche le serveur par `name` ;
+  `pub async fn server_for<C: ConnectionTrait>(db: &C, caller: &CallerPrincipal, name: &str) -> Result<mcp_server::Model, LymailleError>` : cherche le serveur par `name` ;
     absent **ou** non autorisé → la **même** erreur `Forbidden("mcp server unavailable")` (pas d'oracle d'existence) ; autorisé : `allowed_groups`
     contient `all`, ou contient `admin` et `caller.is_admin`, ou le caller est membre d'un des groupes (relu en base ; une `DbErr` → `Store`).
   `pub enum McpAuthMode { None, Static, Forward }` (pur, depuis `auth_mode`).
@@ -60,6 +59,7 @@ Exposes:
 Tasks:
   [x] Réalignement R6 (DSD `DEC-27`, 2026-11-03) : spec amendée (`resolve_role`, `RoleBinding`, `SeaHostMcpAuth`) et trait créé dans ./host.sdd. Spec approuvée le 2026-11-04 ; validé 2026-11-04 (validator PASS checkpoint 4).
   [x] Tests d'abord (SQLite mémoire, `ScriptedResolver` de test, hôte factice de ./host.sdd), puis ./mcp_access.rs, après ./host.rs. Validé 2026-11-04 (validator PASS checkpoint 4 — 15 Scenario verrouillés).
+  [ ] Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) : `server_for` devient générique sur `ConnectionTrait` (appelé par le hook de ./definitions/user_context.sdd avec la connexion de l'appel) ; comportement inchangé, tests existants verts.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./mcp_access.rs.

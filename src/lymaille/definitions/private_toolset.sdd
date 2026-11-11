@@ -4,8 +4,7 @@ Purpose:
   Porter l'entité @MiryadResource de la table privée `miryad_lymaille_toolsets` (seconde ressource de la paire `DEC-19`) : une ligne porte la version
     **active** et le **brouillon** d'un toolset de l'utilisateur (`DEC-18`). `OwnerOnly`. L'**activation self-service** (DSD `FR-9`, `DEC-8`) est
     l'écriture de `active` par le propriétaire : par l'entité ici, ou par l'action d'activation de la session de configuration
-    (../interactive/activation.sdd). Même limite que ./private_agent.sdd : les droits d'accord de modules du propriétaire exigent l'état admin relu
-    en base, donc ne sont pas vérifiés dans le hook (synchrone, sans connexion) mais à l'activation (../interactive/activation.sdd) et à l'appel.
+    (../interactive/activation.sdd). Comme ./private_agent.sdd, les droits d'accord de modules (`FR-9`) sont contrôlés **à la sauvegarde par le hook** (amendement 2026-11-11, DSD `hooks-async#DEC-7`, état admin relu par la connexion), puis à l'activation (../interactive/activation.sdd) et à l'appel.
     Fichier neuf, conception.
 
 Owns:
@@ -22,13 +21,16 @@ Must:
     `filter_column()` = `None` ; `label_column()` = `Some(Column::ToolsetId)`.
   `before_create` / `before_update` : les étapes de ./toolset.sdd (`check_toolset` partagé), sauf `classify(name) = Private`, avec la distinction par préfixe de `./user_context.sdd` : `G_`/`g_` → « toolset id cannot use the catalog prefix » ;
     `H_`/`h_` → « toolset id cannot use the host prefix » ; identifiant invalide au sens Rhai → « invalid toolset id » ; `toolset_id` ne change pas à la mise à jour.
+  Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) — après `check_toolset`, `before_create` / `before_update` appellent `check_grants(caller_of(db, principal.subject), modules, liste)` pour chacune des versions posées
+    (`active` et `draft`) avec les modules extraits par la même fonction que `activate_toolset` (../interactive/activation.sdd) et la liste `ADMIN_ONLY_MODULES` de ce fichier (jamais
+    une copie) ; corps interne paramétré par la liste (précédent `activate_with`). un refus est un `HookError` sans code (`422` en REST, `-32000` en MCP) ; une panne de lecture (`DbErr`) ou un `subject` inconnu → `HookError::new("authorization check unavailable")`, texte fixe sans détail de l'erreur (échec fermé). Le message nomme le module, jamais le source.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
-  Contrôler `check_grants` dans le hook ; citer le source d'un module dans une erreur ; coder un `MRD-*`.
+  Contrôler `check_grants` avant `check_toolset` ; mettre en cache un `CallerPrincipal` ; citer le source d'un module dans une erreur ; coder un `MRD-*`.
 
 Depends on:
-  ../identity.rs, ./toolset.rs (`check_toolset`), @sea_orm, @serde_json, `lymaille::Toolset`
+  ../identity.rs (`caller_of`, `check_grants`), ../interactive/activation.rs (`ADMIN_ONLY_MODULES`, extraction des modules), ./toolset.rs (`check_toolset`), @sea_orm, @serde_json, `lymaille::Toolset`
 
 Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`
@@ -48,6 +50,7 @@ Tasks:
     Validé 2026-11-06 (validator PASS : dispatch du payload `ReservedPrefix` isomorphe au jumeau `./private_agent.rs` (5bf170a) ; Scenario hôte couvert aux deux casses au message exact, catalogue et `G_` intacts ; lymaille vert en tests et clippy `-D warnings`, `fmt`).
     [?] (validator, porté du cycle `./private_agent.sdd`) : la convention « un test par casse » est appliquée deux fois — mérite-t-elle une ligne dans la checklist de production des specs de `/miryad-core.sdd` ?
   [ ] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les hooks de ./private_toolset.rs passent à la signature asynchrone (`db` ignoré : la validation reste pure, aucune lecture en base ajoutée par cette tâche) ; les tests `before_*` du fichier passent à `.await` avec une connexion simulée, assertions inchangées. Le contrôle à la sauvegarde que la connexion rend possible (DSD `hooks-async` `FR-3`) n'est **pas** dans cette tâche : il fera l'objet d'un amendement de spec distinct. Dépend de /src/resource.sdd (même amendement).
+  [ ] Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) : tests d'abord (deux `Scenario` ci-dessous), puis ./private_toolset.rs ; dépend de ../identity.sdd (`caller_of`) et de ../interactive/activation.sdd (extraction des modules partagée).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./private_toolset.rs.
@@ -71,3 +74,13 @@ Scenario: cloisonnement par propriétaire
   Given `alice` et `bob` ont chacun un toolset `git`
   When chacun liste `lymaille_toolsets`
   Then chacun ne voit que le sien
+
+Scenario: un module réservé à l'admin, dans le brouillon ou la version active, est refusé à la sauvegarde
+  Given la fonction interne avec la liste `["secrets"]`, un propriétaire non-admin, puis un toolset dont le `draft` accorde `secrets`, puis un dont l'`active` l'accorde
+  When le hook de création, puis de mise à jour, sont attendus
+  Then chaque appel rend un `HookError` sans code nommant le module et ne citant pas le source ; un admin passe, et le droit est relu à chaque sauvegarde
+
+Scenario: une panne de lecture est un refus fermé sans détail
+  Given une connexion simulée dont la lecture du groupe échoue
+  When le hook est attendu
+  Then `HookError` de message exactement `authorization check unavailable`

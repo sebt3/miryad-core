@@ -36,8 +36,7 @@ Must:
     `draft` réservée à ./draft.sdd) ; `SeaContextStore` route par le préfixe : `G_…` → `catalog_contexts` (niveau `Shared`, écriture admin), nom
     privé → `user_contexts` avec `owner_id = user_id` (niveau `User`). `get_context` ne rend jamais le contexte privé d'un autre. `put_context` applique,
     en plus de la validation de `lymaille`, le **droit d'usage des serveurs** : chaque rôle lié doit passer `server_for` (../mcp_access.sdd) ; sinon
-    `ToolsetsError::Store("MRD-LYMAILLE-002…")` (chemin de la session de configuration ; le chemin REST/MCP des entités ne contrôle pas ici, hook
-    synchrone — le contrôle d'autorité reste à l'assemblage et à l'appel). **Défense en profondeur actée le 2026-11-05** : le contrôle est
+    `ToolsetsError::Store("MRD-LYMAILLE-002…")` (chemin de la session de configuration ; le chemin REST/MCP des entités applique le même contrôle par le hook de `user_context`, amendement 2026-11-11 ; le contrôle d'autorité reste aussi à l'assemblage et à l'appel). **Défense en profondeur actée le 2026-11-05** : le contrôle est
     `server_for` (table seule) — un rôle pointant un serveur **fourni par l'hôte** (sans ligne `mcp_servers`) est refusé à l'écriture ici, même
     si l'assemblage le servirait. Le niveau `Session` d'un contexte reste interne (aucune table).
     Une ligne de type créée par le store (brouillon seul) ne porte **pas** `allowed_agents` (vide) — seule colonne DEC-28 restante depuis `lymaille` 0.2.0, `kind` et `default_agent` étant dans le JSON du type : le store ne l'invente pas ; les hooks de l'entité refuseront l'activation tant que l'admin n'aura pas complété

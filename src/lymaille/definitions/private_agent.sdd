@@ -4,10 +4,9 @@ Purpose:
   Porter l'entité @MiryadResource de la table privée `miryad_lymaille_agents` (seconde ressource de la paire `DEC-19`, entité annoncée au lot 2) :
     un utilisateur crée, lit, modifie et supprime ses propres agents par REST et MCP, hors session de configuration. `OwnerOnly` ; l'identifiant est
     un identifiant `Private` (jamais `G_`/`g_`). Mêmes colonnes dérivées que ./agent.sdd (la colonne JSON `definition` est la source de vérité).
-    **Limite assumée :** les hooks sont synchrones et sans connexion ; le contrôle des droits d'accord de modules du propriétaire (`FR-9`,
-    `check_grants`) exige l'état admin relu en base et n'est donc **pas** fait ici. Il est fait par `put_agent` (chemin des stores et de la
-    session de configuration, ../store/catalog.sdd) et, en défense en profondeur, à l'appel d'un module (`FR-4`, ../identity.sdd). Un agent écrit par
-    REST peut donc porter une accord de module que son propriétaire n'a pas : il échoue à l'usage, jamais n'élève un droit. Fichier neuf, conception.
+    Le contrôle des droits d'accord de modules (`FR-9`, `check_grants`) est fait **ici à la sauvegarde** (amendement 2026-11-11, DSD `hooks-async#DEC-7`), l'état admin étant relu par
+    la connexion du hook, puis par `put_agent` (chemin des stores et de la session de configuration, ../store/catalog.sdd) et, en défense en profondeur, à l'appel d'un module (`FR-4`).
+    Il est tranché sous l'**appelant** du hook : un admin qui écrit la ligne d'un autre utilisateur n'est pas bridé à la sauvegarde, l'appel relit alors le propriétaire. Fichier neuf, conception.
 
 Owns:
   ./private_agent.rs
@@ -23,13 +22,16 @@ Must:
     `filter_column()` = `Some(Column::Kind)` ; `label_column()` = `Some(Column::AgentId)`.
   `before_create` / `before_update` : les étapes de ./agent.sdd, sauf l'étape 4 qui exige `classify(def.id()) = Private`, avec la distinction par préfixe de `./user_context.sdd` :
     `G_`/`g_` → « agent id cannot use the catalog prefix » ; `H_`/`h_` → « agent id cannot use the host prefix » ; identifiant invalide au sens Rhai → « invalid agent id » ; `agent_id` ne change pas à la mise à jour.
+  Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) — après les étapes de validation, `before_create` / `before_update` appellent `check_grants(caller_of(db, principal.subject), def.modules(), liste)` avec la liste
+    `ADMIN_ONLY_MODULES` de ../interactive/activation.rs (même constante, jamais une copie) ; le corps est une fonction interne paramétrée par la liste (précédent
+    `activate_with`) pour être testable avec une liste non vide. un refus est un `HookError` sans code (`422` en REST, `-32000` en MCP) ; une panne de lecture (`DbErr`) ou un `subject` inconnu → `HookError::new("authorization check unavailable")`, texte fixe sans détail de l'erreur (échec fermé). Le message du refus nomme le module, jamais le prompt.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
-  Contrôler `check_grants` dans le hook (état admin non disponible) ; écrire au catalogue ; coder un `MRD-*` ; citer le prompt.
+  Contrôler `check_grants` avant la validation de la définition ; relire l'état admin ailleurs que par la connexion du hook ; mettre en cache un `CallerPrincipal` ; écrire au catalogue ; coder un `MRD-*` ; citer le prompt.
 
 Depends on:
-  ../identity.rs, @sea_orm, @serde_json, `lymaille::AgentDefinition`
+  ../identity.rs (`caller_of`, `check_grants`), ../interactive/activation.rs (`ADMIN_ONLY_MODULES`), @sea_orm, @serde_json, `lymaille::AgentDefinition`
 
 Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`
@@ -47,6 +49,7 @@ Tasks:
     [?] (validator) : le jumeau `./private_toolset.sdd` porte la même case encore ouverte — traité par le cycle suivant, prévu au lot.
     [?] (validator, noté `[!]` informatif dans sa synthèse — le contrat du `Then` est intégralement asserté, le point porte sur la convention de découpage des tests) : le Scenario hôte est couvert par deux tests distincts (une casse chacun) plutôt qu'un test bouclant les deux ids — convention déjà tenue implicitement le 2026-11-05 ; à figer dans la checklist de production des specs si ce n'est pas déjà fait.
   [ ] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les hooks de ./private_agent.rs passent à la signature asynchrone (`db` ignoré : la validation reste pure, aucune lecture en base ajoutée par cette tâche) ; les tests `before_*` du fichier passent à `.await` avec une connexion simulée, assertions inchangées. Le contrôle à la sauvegarde que la connexion rend possible (DSD `hooks-async` `FR-3`) n'est **pas** dans cette tâche : il fera l'objet d'un amendement de spec distinct. Dépend de /src/resource.sdd (même amendement).
+  [ ] Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) : tests d'abord (quatre `Scenario` ci-dessous), puis ./private_agent.rs ; dépend de ../identity.sdd (`caller_of`) et de /src/resource.sdd (hooks asynchrones).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./private_agent.rs.
@@ -75,3 +78,23 @@ Scenario: renommer est refusé
   Given un agent `x`
   When `before_update` avec une définition d'id `y`
   Then `Err(HookError)` « agent id cannot change »
+
+Scenario: un accord de module réservé à l'admin est refusé à la sauvegarde
+  Given la fonction interne avec la liste `["secrets"]`, un propriétaire non-admin et une définition valide qui accorde `secrets`
+  When le hook de création, puis celui de mise à jour, sont attendus
+  Then les deux rendent un `HookError` sans code dont le message nomme le module réservé et ne cite pas le prompt, avant toute écriture
+
+Scenario: un admin, ou une définition sans module réservé, est accepté
+  Given la même liste, puis un appelant admin avec la définition qui accorde `secrets`, puis un non-admin avec une définition qui n'accorde que `resources`
+  When le hook est attendu
+  Then `Ok` dans les deux cas, ActiveModel inchangé hors colonnes dérivées
+
+Scenario: le droit admin est relu à chaque sauvegarde
+  Given un admin qui sauve une définition accordant `secrets`, puis retiré du groupe admin
+  When il sauve à nouveau la même définition
+  Then la première sauvegarde est acceptée, la seconde refusée
+
+Scenario: une panne de lecture est un refus fermé sans détail
+  Given une connexion simulée dont la lecture du groupe échoue (`DbErr` détaillée), puis un `subject` sans compte
+  When le hook est attendu
+  Then `HookError` de message exactement `authorization check unavailable`, sans texte de la `DbErr`, dans les deux cas

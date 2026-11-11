@@ -4,8 +4,8 @@ Purpose:
   Porter l'entité @MiryadResource des contextes personnels (table `miryad_lymaille_user_contexts`, DSD `DEC-20`, seconde ressource de la paire `DEC-19`) :
     chaque utilisateur décrit ses environnements (paramètres, liaisons rôle → serveur MCP). `OwnerOnly` : l'utilisateur lit et écrit ses lignes, un
     admin lit et écrit toutes les lignes (règle du moteur d'accès). Le niveau `Session` d'un contexte est interne, sans entité. Un contexte ne
-    contient jamais de secret. Le droit de lier un rôle à un serveur est contrôlé à l'assemblage et à l'appel (../mcp_access.sdd), pas ici
-    (hook synchrone, sans connexion) ; et par `ContextStore::put_context` quand la session de configuration écrit (../store/toolset.sdd). Fichier
+    contient jamais de secret. Le droit de lier un rôle à un serveur est contrôlé à l'assemblage et à l'appel (../mcp_access.sdd), par `ContextStore::put_context` quand la session de configuration écrit (../store/toolset.sdd) et,
+    depuis l'amendement du 2026-11-11 (DSD `hooks-async#DEC-7`), **à la sauvegarde par le hook**. Fichier
     neuf, conception.
 
 Owns:
@@ -27,13 +27,16 @@ Must:
     « user context name cannot use the host prefix » ; `context_type` posé : de forme identifiant valide (grammaire `lymaille`, sans préfixe
     réservé — même porte que `catalog_context.sdd`, symétrisée 2026-11-05 ; existence du type vérifiée à l'ouverture, pas ici) ; `name`
     réécrit depuis le contexte ; `before_update` : `name` ne change pas.
+  Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) — après la validation de `context`, `before_create` / `before_update` contrôlent chaque rôle lié : `server_for(db, caller_of(db, principal.subject), nom)` (../mcp_access.sdd), exactement la règle de
+    `put_context` — un serveur **fourni par l'hôte** (sans ligne `mcp_servers`) est refusé à l'écriture, comme dans le store. Refus → `HookError` sans code (`mcp server unavailable`, texte de `server_for`, sans oracle
+    d'existence ; `422` en REST, `-32000` en MCP) ; panne de lecture ou `subject` inconnu → `HookError::new("authorization check unavailable")`.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
-  Lire ou écrire la ligne d'un autre utilisateur par une voie autre que le moteur ; contrôler en base un serveur lié ; coder un `MRD-*`.
+  Lire ou écrire la ligne d'un autre utilisateur par une voie autre que le moteur ; contrôler le serveur avant la validation de `context` ; mettre en cache un `CallerPrincipal` ; coder un `MRD-*`.
 
 Depends on:
-  ../identity.rs, @sea_orm, @serde_json, `lymaille::{ToolsetContext, ContextLevel}`
+  ../identity.rs (`caller_of`), ../mcp_access.rs (`server_for`), @sea_orm, @serde_json, `lymaille::{ToolsetContext, ContextLevel}`
 
 Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`
@@ -43,6 +46,7 @@ Tasks:
     contrat inchangé pour le reste. Approuvé le 2026-11-04.
   [x] Tests d'abord (hooks purs, politiques sur SQLite mémoire), puis ./user_context.rs. Validé 2026-11-04 (validator PASS checkpoint R1–R5).
   [ ] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les hooks de ./user_context.rs passent à la signature asynchrone (`db` ignoré : la validation reste pure, aucune lecture en base ajoutée par cette tâche) ; les tests `before_*` du fichier passent à `.await` avec une connexion simulée, assertions inchangées. Le contrôle à la sauvegarde que la connexion rend possible (DSD `hooks-async` `FR-3`) n'est **pas** dans cette tâche : il fera l'objet d'un amendement de spec distinct. Dépend de /src/resource.sdd (même amendement).
+  [ ] Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) : tests d'abord (quatre `Scenario` ci-dessous), puis ./user_context.rs ; dépend de ../mcp_access.sdd (`server_for` générique) et ../identity.sdd (`caller_of`).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./user_context.rs.
@@ -71,3 +75,23 @@ Scenario: un identifiant hôte n'est jamais écrit
   Given un contexte de niveau `user` nommé `H_sandbox`
   When `before_create`
   Then `Err(HookError)`
+
+Scenario: un rôle lié à un serveur dont l'utilisateur n'a pas l'usage est refusé à la sauvegarde
+  Given un serveur `s1` d'`allowed_groups` `["ops"]`, un utilisateur hors du groupe `ops`, et un contexte dont un rôle est lié à `s1`
+  When le hook de création, puis de mise à jour, sont attendus
+  Then les deux rendent un `HookError` sans code, message `mcp server unavailable` ; le même contexte lié à un serveur `all`, ou à `s1` par un membre de `ops`, est accepté
+
+Scenario: un serveur inexistant et un serveur interdit sont indiscernables
+  Given un rôle lié à un serveur absent de `mcp_servers`, puis un autre lié à un serveur interdit
+  When le hook est attendu
+  Then le même `HookError` dans les deux cas (pas d'oracle d'existence)
+
+Scenario: un serveur fourni par l'hôte est refusé à l'écriture
+  Given un rôle lié à un nom que seul l'hôte pourvoit (aucune ligne `mcp_servers`)
+  When le hook est attendu
+  Then refus, comme `put_context` ; l'assemblage reste libre de le servir
+
+Scenario: une panne de lecture est un refus fermé sans détail
+  Given une connexion simulée dont la lecture échoue
+  When le hook est attendu
+  Then `HookError` de message exactement `authorization check unavailable`
