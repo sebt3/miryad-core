@@ -314,9 +314,19 @@ async fn assemble_with(
     // `Config`) — puis le moteur assemblé de tout cela.
     let mut granted = base_modules(deps, caller)?;
     // Noms réservés à la garde de collision (`./mcp_mount.sdd`, étape 0) : les modules déjà
-    // accordés. Aucun module d'office de `lymaille` n'est à ajouter (`lymaille` 0.2.0 n'en déclare
-    // aucun : `assemble` ne grant que ce qu'il reçoit).
-    let granted_names: Vec<&str> = granted.iter().map(GrantedModule::name).collect();
+    // accordés **et** les modules d'hôte que l'étape 5 montera — accordés par la définition **et**
+    // enregistrés, intersection `def.modules()` ∩ registre (amendement du 2026-11-11, étape 4 ter,
+    // DSD `scripts-hote` `FR-1` ; même garde que `../script_runner.rs`). La garde doit précéder
+    // tout montage MCP. Aucun module d'office de `lymaille` n'est à ajouter (`lymaille` 0.2.0
+    // n'en déclare aucun : `assemble` ne grant que ce qu'il reçoit).
+    let mut granted_names: Vec<&str> = granted.iter().map(GrantedModule::name).collect();
+    let def_modules = resolved.definition.modules();
+    granted_names.extend(
+        deps.host_modules
+            .names()
+            .into_iter()
+            .filter(|name| def_modules.iter().any(|granted| granted.as_str() == *name)),
+    );
     let (mcp_granted, mut notices) = mount_mcp_roles(
         deps,
         caller,
@@ -1701,6 +1711,70 @@ mod tests {
             spy.calls(),
             0,
             "aucun connecteur n'est monté pour le rôle en collision"
+        );
+    }
+
+    /// Scenario « un rôle du nom d'un module d'hôte monté est refusé » (amendement du
+    /// 2026-11-11, étape 4 ter, DSD `scripts-hote` `FR-1`) : la garde de collision de
+    /// `../mcp_mount.rs` reçoit en `taken` les modules de base **et** les modules d'hôte
+    /// accordés par la définition et enregistrés — un rôle MCP nommé `dashboard` est refusé
+    /// comme un rôle nommé `resources` : `Config` fixe avant toute résolution, aucun
+    /// connecteur monté, et le module d'hôte n'est pas écrasé (l'assemblage échoue avant
+    /// tout montage, MCP comme hôte).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_role_du_nom_dun_module_hote_monte_est_refuse() {
+        let db = db_test().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
+        // `dashboard` est enregistré (module d'hôte montable par un compte authentifié) et
+        // accordé par la définition — c'est le module que l'étape 5 montera.
+        let mut registry = HostModules::new();
+        registry
+            .register(Arc::new(Temoignage {
+                name: "dashboard",
+                access: HostAccess::Authenticated,
+            }))
+            .expect("`dashboard` s'enregistre");
+        put_type(&db, "prodtype", &[("dashboard", false)]).await;
+        put_active_toolset(&db, &toolset("G_kube", "1.0.0", Some("prodtype")), None).await;
+        put_agent(
+            &db,
+            &alice,
+            &agent("dev", AgentKind::Work, vec!["G_kube".to_owned()])
+                .with_modules(vec!["resources".to_owned(), "dashboard".to_owned()]),
+        )
+        .await;
+        inserer_serveur(
+            &db,
+            "public_srv",
+            "http://espion.invalid/public",
+            "none",
+            json!(["all"]),
+        )
+        .await;
+        inserer_contexte_prive(&db, alice.user_id, "moncontexte", &[("dashboard", "public_srv")]).await;
+        let spy = SpyFactory::new();
+        let mut deps = deps_with(
+            db.clone(),
+            Arc::new(ScriptedProvider::new(Vec::new())),
+            Arc::clone(&spy),
+        );
+        deps.host_modules = Arc::new(registry);
+        let session = SessionId::new("s-collision-hote").expect("identifiant de session de test");
+        inserer_session(&deps, &alice, &session, "moncontexte", SessionKind::Work).await;
+
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+            .await
+            .expect_err("un rôle nommé `dashboard` entre en collision avec le module d'hôte monté");
+        assert!(
+            matches!(&refus, LymailleError::Config(message)
+                if message == "mcp role name collides with a module: dashboard"),
+            "la collision avec un module d'hôte est la même `Config` que pour `resources` : {refus:?}"
+        );
+        assert_eq!(
+            spy.calls(),
+            0,
+            "aucun connecteur n'est monté pour le rôle en collision, et le module d'hôte n'est pas écrasé"
         );
     }
 

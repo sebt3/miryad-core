@@ -77,7 +77,8 @@ Tasks:
   [x] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : retirer la déclaration locale de ./assemble.rs, importer `identity::ADMIN_ONLY_MODULES` ; `assemble_with` garde sa liste en paramètre ; tests verts.
     Validé 2026-11-11 (batterie ciblée `lymaille` et `workflow,lymaille` verte ; synthèse tenue par le primary, `validator` indisponible — voir le `[?]` de `../identity.sdd`).
 
-  [ ] Amendement du 2026-11-11 (étape 4 ter, arbitrage du développeur principal : « oui, tâche 1 ») : test d'abord (`Scenario` « un rôle du nom d'un module d'hôte monté est refusé »), puis ./assemble.rs ; ne passe à `[x]` qu'avec le `validator` en vert.
+  [x] Amendement du 2026-11-11 (étape 4 ter, arbitrage du développeur principal : « oui, tâche 1 ») : test d'abord (`Scenario` « un rôle du nom d'un module d'hôte monté est refusé »), puis ./assemble.rs ; ne passe à `[x]` qu'avec le `validator` en vert.
+    Validé 2026-11-12 (validator PASS : `taken` = modules de base + intersection définition ∩ registre (exactement ce que l'étape 5 monte, parité avec ./script_runner.rs vérifiée), garde avant tout montage, collision fatale même pour un rôle optionnel ; test `un_role_du_nom_dun_module_hote_monte_est_refuse` (rouge d'abord prouvé), batteries ciblées `lymaille` et `workflow,lymaille` vertes, clippy `-D warnings` et `fmt` verts ; le `[?]` ligne 69 n'est pas aggravé).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./assemble.rs.
