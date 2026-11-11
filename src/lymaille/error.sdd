@@ -78,7 +78,8 @@ Tasks:
   [x] Amendement du 2026-11-11 (DSD `scripts-hote#FR-7`) : quatre variantes `ScriptTimeout`, `ScriptOperationLimit`, `ScriptResultTooLarge`, `ScriptFailed`, `retryable()` faux ; tests d'abord, puis ./error.rs.
     Validé 2026-11-11 : codes `-013` à `-016` et retryabilité verrouillés par tests, batterie ciblée `lymaille` verte ; synthèse tenue par le primary (`validator` indisponible). Branches compagnons ajoutées à `code_de` de ./chat/bridge.rs pour la compilation sous `lymaille,matrix` — voir le `[?]` ouvert dans ./chat/bridge.sdd.
 
-  [ ] Amendement du 2026-11-11 (arbitrage du développeur principal) : `code()` ; test d'abord (`Scenario` « `code()` égale le préfixe de `Display` pour chaque variante »), puis ./error.rs ; ./http/sse.sdd et ./chat/bridge.sdd l'emploient ensuite.
+  [x] Amendement du 2026-11-11 (arbitrage du développeur principal) : `code()` ; test d'abord (`Scenario` « `code()` égale le préfixe de `Display` pour chaque variante »), puis ./error.rs ; ./http/sse.sdd et ./chat/bridge.sdd l'emploient ensuite.
+    Validé 2026-11-11 : `pub fn code(&self) -> String` dérivé du préfixe de `Display` (`split_once(':')`, littéral dupliqué nul), test `code_equals_display_prefix` sur les seize variantes `-001` à `-016` (rouge d'abord par `E0599`) ; batterie ciblée `lymaille` verte (913 tests + intégration, clippy `-D warnings`, `fmt`), `check lymaille,matrix` vert. Synthèse tenue par le primary (`validator` indisponible : trois timeouts).
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./error.rs.

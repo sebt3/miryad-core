@@ -82,6 +82,18 @@ impl LymailleError {
             _ => false,
         }
     }
+
+    /// Code `MRD-LYMAILLE-NNN` de la variante (amendement du 2026-11-11) : le préfixe de
+    /// `Display` avant le premier `:`. Le `#[error(...)]` reste l'unique source de vérité du
+    /// code, aucun littéral n'est dupliqué ici ; le test `code_equals_display_prefix` verrouille
+    /// l'égalité pour les variantes `-001` à `-016`.
+    #[must_use]
+    pub fn code(&self) -> String {
+        let message = self.to_string();
+        message
+            .split_once(':')
+            .map_or_else(|| message.clone(), |(code, _)| code.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +221,66 @@ mod tests {
             "le Debug ne porte que le message Rhai fourni par l'appelant, sans source"
         );
         assert!(!failed.retryable(), "un échec du script ne se rejoue pas");
+    }
+
+    // Scenario: `code()` égale le préfixe de `Display` pour chaque variante (amendement du
+    // 2026-11-11) : pour les seize variantes `-001` à `-016`, `code()` est exactement la partie
+    // de `to_string()` avant le premier `:`, sans contenu de cause.
+    #[test]
+    fn code_equals_display_prefix() {
+        let cases = [
+            (LymailleError::UnknownSubject, "MRD-LYMAILLE-001"),
+            (LymailleError::Forbidden("cause x".into()), "MRD-LYMAILLE-002"),
+            (
+                LymailleError::ReservedPrefix("cause x".into()),
+                "MRD-LYMAILLE-003",
+            ),
+            (
+                LymailleError::InvalidDefinition("cause x".into()),
+                "MRD-LYMAILLE-004",
+            ),
+            (
+                LymailleError::SecretUnresolved("cause x".into()),
+                "MRD-LYMAILLE-005",
+            ),
+            (LymailleError::Inference("cause x".into()), "MRD-LYMAILLE-006"),
+            (
+                LymailleError::Run {
+                    message: "cause x".into(),
+                    retryable: false,
+                },
+                "MRD-LYMAILLE-007",
+            ),
+            (LymailleError::Config("cause x".into()), "MRD-LYMAILLE-008"),
+            (LymailleError::Store("cause x".into()), "MRD-LYMAILLE-009"),
+            (LymailleError::NotFound("cause x".into()), "MRD-LYMAILLE-010"),
+            (LymailleError::Conflict("cause x".into()), "MRD-LYMAILLE-011"),
+            (LymailleError::Serialization("cause x".into()), "MRD-LYMAILLE-012"),
+            (LymailleError::ScriptTimeout, "MRD-LYMAILLE-013"),
+            (LymailleError::ScriptOperationLimit, "MRD-LYMAILLE-014"),
+            (LymailleError::ScriptResultTooLarge, "MRD-LYMAILLE-015"),
+            (LymailleError::ScriptFailed("cause x".into()), "MRD-LYMAILLE-016"),
+        ];
+        for (err, expected) in cases {
+            let msg = err.to_string();
+            // Le préfixe de Display avant le premier `:`, calculé dans le test indépendamment
+            // de `code()` : une seule source de vérité, aucun littéral dupliqué en production.
+            let prefix = msg.split_once(':').map_or(msg.as_str(), |(code, _)| code);
+            assert_eq!(
+                err.code(),
+                prefix,
+                "code() doit égaler le préfixe de Display avant le premier `:` : {msg}"
+            );
+            assert_eq!(
+                err.code(),
+                expected,
+                "le code verrouillé de la variante ne doit porter aucun contenu de cause : {msg}"
+            );
+            assert!(
+                !err.code().contains("cause"),
+                "code() ne doit contenir aucun contenu de cause : {msg}"
+            );
+        }
     }
 
     // Scenario: la retryabilité suit la variante
