@@ -352,17 +352,25 @@ mod m20261104_000001_lymaille_lot2 {
     pub(super) struct Migration;
 
     /// Colonnes de `catalog_context_types` : la forme catalogue (`id`, `name` unique, `version`,
-    /// versions actives et brouillon, horodatage) plus `allowed_agents`, seule colonne DEC-28
-    /// restante depuis `lymaille` 0.2.0 (`DSD DEC-28` révisé le 2026-11-05 : nature et agent par
-    /// défaut sont portés par le `ContextType` amont dans la colonne `active`, plus par des
-    /// colonnes — modification en place, exception `/AGENTS.md` du 2026-11-05, table jamais
-    /// déployée). Contrat de l'entité : `../definitions/context_type.sdd`.
+    /// versions actives et brouillon, horodatage) plus `allowed_agents`, colonne DEC-28 portée par
+    /// le type depuis `lymaille` 0.2.0 (`DSD DEC-28` révisé le 2026-11-05 : nature et agent par
+    /// défaut vivent dans le `ContextType` amont, colonne `active`, plus par des colonnes —
+    /// modification en place, exception `/AGENTS.md` du 2026-11-05, table jamais déployée), plus
+    /// `script_grants` (amendement du 2026-11-11, DSD `scripts-hote` `DEC-2` : objet JSON
+    /// `{"toolsets":[…],"modules":[…]}` des droits accordés aux scripts, `NOT NULL` par défaut
+    /// droits vides — retouche **en place** de cette migration, exception `/AGENTS.md` à poser,
+    /// feature jamais déployée). Contrat de l'entité : `../definitions/context_type.sdd`.
     fn context_type_columns() -> Vec<ColumnDef> {
         vec![
             id(),
             unique_text("name"),
             text("version"),
             json("allowed_agents"),
+            ColumnDef::new(Alias::new("script_grants"))
+                .json()
+                .not_null()
+                .default(Expr::val(serde_json::json!({ "toolsets": [], "modules": [] })))
+                .to_owned(),
             opt_json("active"),
             opt_json("draft"),
             timestamp("created_at"),
@@ -371,9 +379,9 @@ mod m20261104_000001_lymaille_lot2 {
 
     /// Les dix tables de l'amendement, dans l'ordre de `up` (`down` le parcourt à l'envers).
     /// `catalog_context_types` et `catalog_contexts` suivent la forme catalogue (PK entière, nom
-    /// unique) — le nom de `catalog_context_types` suit la grammaire `lymaille` sans préfixe `G_`
-    /// (arbitrage (a) du 2026-11-04, `../definitions/context_type.sdd`), celui de
-    /// `catalog_contexts` garde le `G_` du catalogue (`../definitions/catalog_context.sdd`) ;
+    /// unique) — les noms des deux tables portent le `G_` du catalogue (grammaire `lymaille`
+    /// 0.2.0 `[A-Za-z0-9_-]+`, arbitrage du 2026-11-05 qui renverse l'option (a) du 2026-11-04,
+    /// `../definitions/context_type.sdd`) ;
     /// `user_contexts` la forme privée (`owner_id`, unicité par propriétaire) ;
     /// `write_journal` a une PK composée (spec `../store/write_journal.sdd`).
     fn table_specs() -> Vec<TableSpec> {
@@ -682,7 +690,9 @@ mod tests {
 
     /// Les dix tables de l'« Amendement lot 2 », suffixe + colonnes déclarées, dans l'ordre de
     /// `up` (`down` le parcourt à l'envers). `catalog_context_types` porte la colonne des agents
-    /// autorisés (`allowed_agents`, DSD `DEC-28` révisé le 2026-11-05) ; `kind` et `default_agent`
+    /// autorisés (`allowed_agents`, DSD `DEC-28` révisé le 2026-11-05) et la colonne des droits de
+    /// script (`script_grants`, amendement du 2026-11-11, DSD `scripts-hote` `DEC-2`, JSON `NOT
+    /// NULL` par défaut `{"toolsets":[],"modules":[]}`) ; `kind` et `default_agent`
     /// ne sont plus des colonnes — nature et agent par défaut vivent dans le `ContextType` de
     /// `lymaille` 0.2.0, colonne `active`. Les deux tables de contextes portent en plus
     /// `context_type` (TEXT nullable, référence par `name` à un type du catalogue — arbitrage
@@ -698,6 +708,7 @@ mod tests {
                 "name",
                 "version",
                 "allowed_agents",
+                "script_grants",
                 "active",
                 "draft",
                 "created_at",
@@ -1027,6 +1038,82 @@ mod tests {
                 "la table {name} ne porte plus la colonne {column} (lymaille 0.2.0, DSD `DEC-28` révisé)"
             );
         }
+    }
+
+    /// Scenario (amendement du 2026-11-11, DSD `scripts-hote` `DEC-2`) : `catalog_context_types`
+    /// porte la colonne des droits de script. `script_grants` (`JSON NOT NULL` par défaut
+    /// `{"toolsets":[],"modules":[]}`) est posée à côté de `allowed_agents` en retouche **en
+    /// place** de `m20261104_000001` (feature jamais déployée, exception `/AGENTS.md`). Le rejeu
+    /// du `up` est idempotent (`if_not_exists`) et le `down` est cohérent : la table tombe avec sa
+    /// colonne, aucune colonne isolée ne survit.
+    #[tokio::test]
+    async fn lot2_catalog_context_types_porte_la_colonne_des_grants_de_script() {
+        let db = fresh_db().await;
+        LymailleMigrator::up(&db, None)
+            .await
+            .expect("le up complet pose les schémas des deux lots");
+        let manager = SchemaManager::new(&db);
+        let name = table("catalog_context_types");
+        assert!(
+            manager
+                .has_column(name.as_str(), "script_grants")
+                .await
+                .expect("has_column probe succeeds"),
+            "la table {name} porte la colonne script_grants (DSD `scripts-hote` `DEC-2`)"
+        );
+        lot2()
+            .up(&manager)
+            .await
+            .expect("le up du lot 2 rejoué retourne Ok(()) — if_not_exists sur la création");
+        assert!(
+            manager
+                .has_column(name.as_str(), "script_grants")
+                .await
+                .expect("has_column probe succeeds"),
+            "la colonne script_grants subsiste au rejeu du up (up idempotent)"
+        );
+        // `NOT NULL DEFAULT {"toolsets":[],"modules":[]}` : une ligne insérée sans la colonne la
+        // porte à la valeur par défaut du contrat.
+        db.execute_unprepared(&format!(
+            "INSERT INTO {name} (name, version, allowed_agents, created_at) \
+             VALUES ('G_t', '1.0.0', '[]', '2026-11-11T00:00:00Z')"
+        ))
+        .await
+        .expect("une ligne sans script_grants se pose avec le défaut de la colonne");
+        let mut lecture = sea_orm::sea_query::Query::select();
+        lecture
+            .column(sea_orm::sea_query::Alias::new("script_grants"))
+            .from(sea_orm::sea_query::Alias::new(name.as_str()));
+        let row = db
+            .query_one(&lecture)
+            .await
+            .expect("la colonne relue est lisible")
+            .expect("la ligne insérée est relue");
+        let brut: String = row
+            .try_get("", "script_grants")
+            .or_else(|_| {
+                row.try_get::<serde_json::Value>("", "script_grants")
+                    .map(|v| v.to_string())
+            })
+            .expect("script_grants est une colonne JSON lisible en texte");
+        let rendu: serde_json::Value =
+            serde_json::from_str(&brut).expect("le défaut posé est un JSON valide");
+        assert_eq!(
+            rendu,
+            serde_json::json!({"toolsets": [], "modules": []}),
+            "le défaut de script_grants est `{{\"toolsets\":[],\"modules\":[]}}`"
+        );
+        lot2()
+            .down(&manager)
+            .await
+            .expect("le down du lot 2 retourne Ok(())");
+        assert!(
+            !manager
+                .has_table(name.as_str())
+                .await
+                .expect("has_table probe succeeds"),
+            "le down du lot 2 emporte la table avec sa colonne script_grants (chaîne down cohérente)"
+        );
     }
 
     /// Scenarios (réalignement R10, DSD `DEC-28`, arbitrage du 2026-11-05) : « les contextes

@@ -10,11 +10,13 @@
 //! `lymaille` 0.2.0 (`[A-Za-z0-9_-]+`, majuscules et `_` admis — ticket amont #5) et porte le
 //! préfixe `G_` du catalogue (arbitrage du 2026-11-04 renversé le 2026-11-05 : la porte `classify`
 //! redevient faisable). Nature et agent par défaut sont portés par le `ContextType` amont
-//! (`session_kind`, `default_agent`) dans `active`/`draft` : seule `allowed_agents` vit en colonne
-//! miryad-core (DSD `DEC-28` révisé, `./context_type.sdd`).
+//! (`session_kind`, `default_agent`) dans `active`/`draft` : les colonnes miryad-core sont
+//! `allowed_agents` et, depuis l'amendement du 2026-11-11 (DSD `scripts-hote` `DEC-2`),
+//! `script_grants` (`./context_type.sdd`).
 
 use sea_orm::ActiveValue;
 use sea_orm::entity::prelude::*;
+use sea_orm::sea_query::{Alias, Expr, ExprTrait, Query};
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -23,6 +25,17 @@ use crate::lymaille::identity;
 use crate::resource::AccessPolicy;
 use crate::resource::HookError;
 use crate::resource::MiryadResource;
+
+/// Table des toolsets du catalogue, relue par la connexion du hook pour contrôler l'existence des
+/// toolsets accordés aux scripts (`./context_type.sdd`, amendement du 2026-11-11, DSD
+/// `scripts-hote` `DEC-2` ; table de `../migration.rs`, motif des constantes de
+/// `../interactive/activation.rs`).
+const CATALOG_TOOLSETS_TABLE: &str = "miryad_lymaille_catalog_toolsets";
+
+/// Texte fixe du refus de forme de `script_grants` : objet à exactement les deux clés `toolsets`
+/// et `modules`, tableaux de chaînes sans doublon (`Must`, amendement du 2026-11-11).
+const GRANTS_FORME: &str =
+    "context type script grants must be an object with `toolsets` and `modules` arrays of unique strings";
 
 /// Type de contexte du catalogue persisté — la table `miryad_lymaille_catalog_context_types`
 /// posée par `../migration.rs` (`m20261104_000001_lymaille_lot2`), colonnes du contrat `Must` de
@@ -41,12 +54,19 @@ pub struct Model {
     /// hooks.
     pub version: String,
     /// Ensemble des agents autorisés à l'ouverture, tableau JSON d'identifiants (DSD `DEC-28`) :
-    /// **seule** colonne miryad-core des champs du type — depuis `lymaille` 0.2.0 le
+    /// colonne miryad-core des champs du type — depuis `lymaille` 0.2.0 le
     /// `ContextType` porte lui-même `default_agent` et `session_kind`, source de vérité unique
     /// dans `active`/`draft`. L'agent par défaut doit être membre de cet ensemble ; un agent
     /// explicite hors de l'ensemble est refusé à l'ouverture (`mcp_access`/`assemble`, hors de
     /// cette entité).
     pub allowed_agents: serde_json::Value,
+    /// Droits accordés aux scripts de ce type, objet `{"toolsets":[…],"modules":[…]}` (DSD
+    /// `scripts-hote` `DEC-2`, amendement du 2026-11-11) : toolsets du catalogue (`G_…`) et noms
+    /// de modules d'hôte que le `script_runner` peut monter. Validé en forme par les hooks — les
+    /// toolsets sont relus en base par la connexion du hook, les noms de module ne sont PAS
+    /// vérifiés ici (le registre `HostModules` est hors de portée d'un hook, la vérification a
+    /// lieu à l'exécution, `../script_runner.sdd`).
+    pub script_grants: serde_json::Value,
     /// Le `lymaille::ContextType` actif, colonne JSON nullable — `None` tant qu'aucune version
     /// n'est activée (DSD `DEC-18`).
     pub active: Option<serde_json::Value>,
@@ -123,20 +143,108 @@ impl Entity {
             .ok_or_else(|| HookError::new("context type allowed agents must be an array of agent names"))
     }
 
+    /// Liste d'un tableau JSON de chaînes, sans doublon (`Must` de la porte `script_grants`,
+    /// amendement du 2026-11-11) : ni objet, ni nombre dans le tableau, ni deux occurrences de la
+    /// même chaîne.
+    fn liste_sans_doublon(valeur: &serde_json::Value) -> Result<Vec<String>, HookError> {
+        let tableaux = valeur
+            .as_array()
+            .ok_or_else(|| HookError::new(GRANTS_FORME.to_string()))?;
+        let mut rendues: Vec<String> = Vec::with_capacity(tableaux.len());
+        for entree in tableaux {
+            let chaine = entree
+                .as_str()
+                .ok_or_else(|| HookError::new(GRANTS_FORME.to_string()))?;
+            if rendues.iter().any(|deja| deja == chaine) {
+                return Err(HookError::new(
+                    "context type script grants must not contain duplicates",
+                ));
+            }
+            rendues.push(chaine.to_owned());
+        }
+        Ok(rendues)
+    }
+
+    /// Porte `script_grants` (DSD `scripts-hote` `DEC-2`, amendement du 2026-11-11) : posée
+    /// (`ActiveValue::NotSet` compte comme absent et refuse) et objet à **exactement** les deux
+    /// clés `toolsets` et `modules`, chacune un tableau de chaînes sans doublon. Rend les deux
+    /// listes pour les portes d'existence et de grammaire qui suivent.
+    fn grants_script(active: &ActiveModel) -> Result<(Vec<String>, Vec<String>), HookError> {
+        let brute = match &active.script_grants {
+            ActiveValue::Set(grants) | ActiveValue::Unchanged(grants) => grants,
+            ActiveValue::NotSet => {
+                return Err(HookError::new(GRANTS_FORME.to_string()));
+            }
+        };
+        let Some(cartes) = brute.as_object() else {
+            return Err(HookError::new(GRANTS_FORME.to_string()));
+        };
+        if cartes.len() != 2 || !cartes.contains_key("toolsets") || !cartes.contains_key("modules") {
+            return Err(HookError::new(GRANTS_FORME.to_string()));
+        }
+        let toolsets = Self::liste_sans_doublon(
+            cartes
+                .get("toolsets")
+                .ok_or_else(|| HookError::new(GRANTS_FORME.to_string()))?,
+        )?;
+        let modules = Self::liste_sans_doublon(
+            cartes
+                .get("modules")
+                .ok_or_else(|| HookError::new(GRANTS_FORME.to_string()))?,
+        )?;
+        Ok((toolsets, modules))
+    }
+
+    /// Relecture d'existence d'un toolset du catalogue par la **connexion du hook** (`Must`,
+    /// amendement du 2026-11-11) : une ligne de `miryad_lymaille_catalog_toolsets` porte le
+    /// `toolset_id` (`UNIQUE` par la migration — « n'importe quelle ligne », sans filtre sur
+    /// `active`). Une panne de lecture est un refus fermé au texte fixe du `Must`.
+    async fn toolset_existe<C: sea_orm::ConnectionTrait>(
+        db: &C,
+        toolset_id: &str,
+    ) -> Result<bool, HookError> {
+        let mut select = Query::select();
+        select
+            .columns([Alias::new("toolset_id")])
+            .from(Alias::new(CATALOG_TOOLSETS_TABLE))
+            .and_where(Expr::col(Alias::new("toolset_id")).eq(Expr::val(toolset_id)));
+        db.query_one(&select)
+            .await
+            .map(|ligne| ligne.is_some())
+            .map_err(|_| HookError::new("authorization check unavailable"))
+    }
+
+    /// La porte des noms de modules : un nom est un identifiant valide à la grammaire de la crate
+    /// (`[A-Za-z_][A-Za-z0-9_]*`, celle de `../identity.rs::classify`) — **sans** vérification
+    /// d'existence : le registre `HostModules` est hors de portée d'un hook, la vérification a
+    /// lieu à l'exécution par `../script_runner.sdd` (DSD `scripts-hote` `DEC-2`, précision du
+    /// 2026-11-11).
+    fn est_nom_de_module(nom: &str) -> bool {
+        let mut caracteres = nom.chars();
+        matches!(caracteres.next(), Some(c) if c == '_' || c.is_ascii_alphabetic())
+            && caracteres.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
     /// Porte commune de `before_create` (`existing` absent) et `before_update`, dans l'ordre du
     /// `Must` de `./context_type.sdd`, interrompue au premier échec : au moins une version ; la
     /// porte `DEC-28` (`allowed_agents` posé et tableau de chaînes) ; `classify(name) == Catalog`
     /// (préfixe `G_`, comme `./agent.sdd` — arbitrage du 2026-11-05, la grammaire amont 0.2.0
     /// rend les noms `G_…` désérialisables ; tout autre rendu de `classify`, y compris une
-    /// erreur, est le même refus) ; chaque version non nulle désérialisée en
-    /// `lymaille::ContextType` (le constructeur compile le schéma et vérifie la grammaire du nom)
-    /// et, si le type porte un `default_agent`, appartenance à l'ensemble autorisé par comparaison
-    /// de chaînes exacte (un type sans agent par défaut est admis : l'ouverture exigera alors un
-    /// agent explicite) ; sur une mise à jour `name` ne change pas. `name` et `version` (celle de
-    /// l'active, à défaut du brouillon) sont toujours réécrits. L'existence de l'agent dans le
-    /// catalogue et la cohérence de la nature (`session_kind` ↔ nature de l'agent) sont contrôlées
-    /// à l'ouverture par `lymaille::resolve_start` (`../interactive/manager.sdd`), pas ici.
-    fn valider_et_deriver(
+    /// erreur, est le même refus) ; la porte `script_grants` (amendement du 2026-11-11, DSD
+    /// `scripts-hote` `DEC-2` : posée et bien formée, chaque toolset de classe `Catalog` **et**
+    /// existant dans la table relue par la connexion du hook — panne de lecture : refus fermé au
+    /// texte fixe, chaque nom de module un identifiant valide, existence non vérifiée) ; chaque
+    /// version non nulle désérialisée en `lymaille::ContextType` (le constructeur compile le
+    /// schéma et vérifie la grammaire du nom) et, si le type porte un `default_agent`, appartenance
+    /// à l'ensemble autorisé par comparaison de chaînes exacte (un type sans agent par défaut est
+    /// admis : l'ouverture exigera alors un agent explicite) ; sur une mise à jour `name` ne change
+    /// pas. `name` et `version` (celle de l'active, à défaut du brouillon) sont toujours réécrits ;
+    /// `script_grants` traverse l'`ActiveModel` inchangé, comme `allowed_agents`. L'existence de
+    /// l'agent dans le catalogue et la cohérence de la nature (`session_kind` ↔ nature de l'agent)
+    /// sont contrôlées à l'ouverture par `lymaille::resolve_start` (`../interactive/manager.sdd`),
+    /// pas ici.
+    async fn valider_et_deriver<C: sea_orm::ConnectionTrait>(
+        db: &C,
         mut active: ActiveModel,
         existing: Option<&Model>,
     ) -> Result<ActiveModel, HookError> {
@@ -154,6 +262,26 @@ impl Entity {
         let name = Self::champ_texte(brute, "name")?;
         if !matches!(identity::classify(&name), Ok(identity::IdKind::Catalog)) {
             return Err(HookError::new("context type name must start with G_ (catalog)"));
+        }
+        let (toolsets, modules) = Self::grants_script(&active)?;
+        for toolset in toolsets {
+            if !matches!(identity::classify(&toolset), Ok(identity::IdKind::Catalog)) {
+                return Err(HookError::new(
+                    "context type script grant toolset must start with G_ (catalog)",
+                ));
+            }
+            if !Self::toolset_existe(db, &toolset).await? {
+                return Err(HookError::new(format!(
+                    "context type script grant toolset `{toolset}` does not exist"
+                )));
+            }
+        }
+        for module in modules {
+            if !Self::est_nom_de_module(&module) {
+                return Err(HookError::new(
+                    "context type script grant module must be a valid identifier",
+                ));
+            }
         }
         for brute_version in brute_active.into_iter().chain(brute_draft) {
             let type_valide = Self::charger(brute_version)?;
@@ -210,7 +338,8 @@ impl MiryadResource for Entity {
     }
 
     /// Valide les versions présentes et dérive `name` et `version` — voir
-    /// [`Entity::valider_et_deriver`].
+    /// [`Entity::valider_et_deriver`]. Les toolsets de `script_grants` sont relus en existence par
+    /// la connexion `db` (amendement du 2026-11-11, DSD `scripts-hote` `DEC-2`).
     fn before_create<C>(
         db: &C,
         active: Self::ActiveModel,
@@ -219,8 +348,7 @@ impl MiryadResource for Entity {
     where
         C: sea_orm::ConnectionTrait,
     {
-        let _ = db;
-        async move { Entity::valider_et_deriver(active, None) }
+        Entity::valider_et_deriver(db, active, None)
     }
 
     /// Mêmes étapes que [`Self::before_create`], plus l'identité : un `name` qui change est
@@ -234,8 +362,7 @@ impl MiryadResource for Entity {
     where
         C: sea_orm::ConnectionTrait,
     {
-        let _ = db;
-        async move { Entity::valider_et_deriver(active, Some(existing)) }
+        Entity::valider_et_deriver(db, active, Some(existing))
     }
 
     // `before_delete` volontairement non surdéclaré : aucun contrôle d'usage au lot 2, le défaut
@@ -246,8 +373,9 @@ impl MiryadResource for Entity {
 mod tests {
     use super::ActiveModel;
 
-    /// Connexion simulée pour appeler les hooks depuis les tests : la validation de ce module
-    /// est pure et n'émet aucune requête ; une connexion à file vide suffit.
+    /// Connexion simulée à file vide : suffisante pour les hooks dont les `script_grants` sont
+    /// vides ou mal formés avant la relecture — ils n'émettent alors aucune requête. Une requête
+    /// inattendue bute sur un `DbErr` de file vide et fait échouer le test.
     fn hook_db() -> sea_orm::DatabaseConnection {
         sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite).into_connection()
     }
@@ -312,7 +440,8 @@ mod tests {
     }
 
     /// `ActiveModel` dans la forme qui atteint le hook : colonnes dérivées fausses (le hook doit
-    /// les réécrire), `allowed_agents` et versions voulus, clé et horodatage non posés.
+    /// les réécrire), `allowed_agents` et versions voulus, `script_grants` vide (les Scenarios qui
+    /// portent sur cette colonne la remplacent), clé et horodatage non posés.
     fn active_avec_agents(
         allowed_agents: serde_json::Value,
         active: Option<serde_json::Value>,
@@ -323,10 +452,17 @@ mod tests {
             name: Set("faux-nom".to_string()),
             version: Set("0.0.0".to_string()),
             allowed_agents: Set(allowed_agents),
+            script_grants: Set(grants_vide()),
             active: Set(active),
             draft: Set(draft),
             created_at: NotSet,
         }
+    }
+
+    /// Valeur par défaut de `script_grants` (celle que pose la migration) : droits vides, aucune
+    /// porte de relecture de toolset n'est franchie, la connexion du hook n'émet aucune requête.
+    fn grants_vide() -> serde_json::Value {
+        serde_json::json!({"toolsets": [], "modules": []})
     }
 
     /// `ActiveModel` avec un ensemble autorisé ordinaire non vide, pour que les Scenarios
@@ -555,6 +691,7 @@ mod tests {
             name: "G_cluster".to_string(),
             version: "1.0.0".to_string(),
             allowed_agents: json!(["G_triage"]),
+            script_grants: grants_vide(),
             active: Some(type_json("G_cluster", "1.0.0", json!({"type": "object"}))),
             draft: None,
             created_at: chrono::Utc::now(),
@@ -582,5 +719,143 @@ mod tests {
             }
             Ok(_) => panic!("un changement de nom à la mise à jour doit être refusé"),
         }
+    }
+
+    /// Connexion simulée scriptant une réponse de relecture : une liste de jeux de lignes, vidée
+    /// dans l'ordre des requêtes émises. Une requête de trop bute sur un `DbErr` de file vide —
+    /// c'est aussi cela que le test verrouille quand il compte les requêtes.
+    fn hook_db_avec_lignes(
+        lignes: Vec<Vec<crate::lymaille::definitions::toolset::Model>>,
+    ) -> sea_orm::DatabaseConnection {
+        let mut mock = sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite);
+        for jeu in lignes {
+            mock = mock.append_query_results(vec![jeu]);
+        }
+        mock.into_connection()
+    }
+
+    /// Scenario « `script_grants` mal formé ou référençant un toolset absent est refusé » (portion
+    /// refus) : absent (`NotSet`), objet à clé manquante, doublon dans `modules`, toolset `G_…`
+    /// absent de la table relue par la connexion du hook, et nom de module hors grammaire Rhai
+    /// rendent chacun un `HookError` **sans code**, avant toute écriture. S'y ajoutent deux cas du
+    /// `Must` que le Scenario implique : un toolset qui n'est pas de classe `Catalog` (refus sans
+    /// relecture) et une panne de lecture (texte fixe `authorization check unavailable`).
+    #[tokio::test]
+    async fn before_create_refuse_script_grants_mal_forme_ou_toolset_absent() {
+        let valide = type_json("G_cluster", "1.0.0", json!({"type": "object"}));
+        // File vide : toute requête émise sur ces cas buterait sur un `DbErr`, alors qu'aucune
+        // relecture n'est attendue (la forme refuse avant, ou l'identifiant n'est pas du catalogue).
+        let vide = || sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite).into_connection();
+        // Une relecture scriptée, rendant zéro ligne : le toolset `G_inconnu` n'existe pas.
+        let absent = || hook_db_avec_lignes(vec![Vec::new()]);
+        let cas: Vec<(sea_orm::ActiveValue<serde_json::Value>, _, &str)> = vec![
+            (NotSet, vide(), "absent (`NotSet`)"),
+            (
+                Set(json!({"toolsets": []})),
+                vide(),
+                "objet à clé `modules` manquante",
+            ),
+            (
+                Set(json!({"toolsets": [], "modules": ["a", "a"]})),
+                vide(),
+                "doublon dans `modules`",
+            ),
+            (
+                Set(json!({"toolsets": ["G_inconnu"], "modules": []})),
+                absent(),
+                "toolset absent du catalogue",
+            ),
+            (
+                Set(json!({"toolsets": [], "modules": ["bad name"]})),
+                vide(),
+                "nom de module hors grammaire Rhai",
+            ),
+            (
+                Set(json!({"toolsets": ["prive"], "modules": []})),
+                vide(),
+                "toolset hors catalogue (pas de classe Catalog)",
+            ),
+        ];
+        for (valeur, db, cause) in cas {
+            let mut active = active_avec(Some(valide.clone()), None);
+            active.script_grants = valeur;
+            let rendu = Entity::before_create(&db, active, &principal()).await;
+            match rendu {
+                Err(erreur) => {
+                    assert!(
+                        erreur.code.is_none(),
+                        "aucun code `MRD-*` sur un `HookError` ({cause}) : {erreur:?}"
+                    );
+                    assert!(!erreur.message.is_empty(), "le refus motive la règle ({cause})");
+                }
+                Ok(_) => panic!("un `script_grants` {cause} doit être refusé"),
+            }
+        }
+        // `Must` : la panne de lecture de la table des toolsets rend le texte fixe, sans code.
+        let mut active = active_avec(Some(valide), None);
+        active.script_grants = Set(json!({"toolsets": ["G_existant"], "modules": []}));
+        let rendu = Entity::before_create(&vide(), active, &principal()).await;
+        match rendu {
+            Err(erreur) => {
+                assert!(erreur.code.is_none(), "aucun code `MRD-*` : {erreur:?}");
+                assert_eq!(
+                    erreur.message, "authorization check unavailable",
+                    "la panne de lecture rend le texte fixe du `Must`"
+                );
+            }
+            Ok(_) => panic!("une panne de relecture du catalogue doit refuser"),
+        }
+    }
+
+    /// Scenario « `script_grants` mal formé ou référençant un toolset absent est refusé » (portion
+    /// acceptation) : `{"toolsets":["G_existant"],"modules":["view"]}` est accepté **sans** que
+    /// `view` soit cherché au registre (`HostModules` est hors de portée d'un hook, DSD
+    /// `scripts-hote` `DEC-2` précision du 2026-11-11). Une seule requête est émise — la relecture
+    /// d'existence du toolset — et la colonne traverse l'`ActiveModel` inchangée.
+    #[tokio::test]
+    async fn before_create_accepte_des_grants_d_un_toolset_existant_sans_chercher_les_modules() {
+        let grants = json!({"toolsets": ["G_existant"], "modules": ["view"]});
+        let db = hook_db_avec_lignes(vec![vec![crate::lymaille::definitions::toolset::Model {
+            id: 1,
+            toolset_id: "G_existant".to_string(),
+            version: "1.0.0".to_string(),
+            active: None,
+            draft: None,
+            created_at: chrono::Utc::now(),
+        }]]);
+        let mut active = active_avec(
+            Some(type_json("G_cluster", "1.0.0", json!({"type": "object"}))),
+            None,
+        );
+        active.script_grants = Set(grants.clone());
+        let rendu = Entity::before_create(&db, active, &principal())
+            .await
+            .expect("des grants dont le toolset existe sont acceptés, le nom de module n'est pas vérifié");
+        assert_eq!(rendu.name, Set("G_cluster".to_string()));
+        assert_eq!(
+            match &rendu.script_grants {
+                Set(valeur) | sea_orm::ActiveValue::Unchanged(valeur) => Some(valeur.clone()),
+                sea_orm::ActiveValue::NotSet => None,
+            },
+            Some(grants),
+            "la colonne script_grants n'est pas réécrite par le hook"
+        );
+        let requetes: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(sea_orm::Transaction::statements)
+            .map(std::string::ToString::to_string)
+            .collect();
+        assert_eq!(
+            requetes.len(),
+            1,
+            "une seule requête — la relecture du toolset, jamais le registre des modules : {requetes:?}"
+        );
+        assert!(
+            requetes
+                .first()
+                .is_some_and(|stmt| stmt.contains("miryad_lymaille_catalog_toolsets")),
+            "la requête porte sur la table des toolsets du catalogue : {requetes:?}"
+        );
     }
 }
