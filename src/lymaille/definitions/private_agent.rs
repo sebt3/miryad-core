@@ -8,11 +8,13 @@
 //! `definition` (une `lymaille::AgentDefinition` complète) est la source de vérité (DSD
 //! `DEC-17`), `agent_id`, `kind` et `profile` en sont des copies posées par les hooks.
 //!
-//! **Limite assumée** (DSD `FR-9`, `Purpose` de `./private_agent.sdd`) : les hooks sont synchrones
-//! et sans connexion ; le contrôle des droits d'accord de modules du propriétaire (`check_grants`)
-//! est fait par `put_agent` (../store/catalog.sdd) et, en défense en profondeur, à l'appel d'un
-//! module (`../identity.sdd`). Un agent écrit par REST peut porter un accord que son propriétaire
-//! n'a pas : il échoue à l'usage, jamais n'élève un droit.
+//! **Contrôle à la sauvegarde** (DSD `FR-9`, amendement du 2026-11-11, DSD `hooks-async`
+//! `DEC-7`) : le hook asynchrone reçoit la connexion de l'appel — `check_grants` est fait **ici**,
+//! l'état admin reconstruit par `identity::caller_of` à chaque sauvegarde (jamais mis en cache),
+//! puis par `put_agent` (chemin des stores et de la session de configuration,
+//! `../store/catalog.sdd`) et, en défense en profondeur, à l'appel d'un module (`../identity.sdd`).
+//! Le contrôle est tranché sous l'**appelant** du hook : un admin qui écrit la ligne d'un autre
+//! utilisateur n'est pas bridé à la sauvegarde, l'appel relit alors le propriétaire.
 
 use sea_orm::ActiveValue;
 use sea_orm::entity::prelude::*;
@@ -85,6 +87,11 @@ impl Entity {
         }
     }
 
+    /// Texte fixe du refus fermé : panne de lecture (`DbErr`) ou `subject` sans compte lors du
+    /// contrôle d'autorité à la sauvegarde (`Must`, amendement du 2026-11-11, DSD `hooks-async`
+    /// `DEC-7`) — aucun détail de l'erreur ne traverse.
+    const PANNE_AUTORISATION: &'static str = "authorization check unavailable";
+
     /// Porte commune de `before_create` (`existing` absent) et `before_update` : les étapes 1 à 5
     /// de ./agent.rs dans le même ordre, interrompues au premier échec — `definition` objet JSON
     /// présent, désérialisable en `lymaille::AgentDefinition` et validée par sa `validate` (la
@@ -92,11 +99,42 @@ impl Entity {
     /// ([`Self::verifier_identifiant`], à la place de l'étape `G_` du catalogue) ; sur une mise à jour
     /// l'identifiant ne change pas et `created_at` reste celui de la ligne existante. Les colonnes
     /// dérivées sont toujours réécrites ; `owner_id` n'est jamais touché (injection du moteur
-    /// d'accès). Aucun `check_grants` : hook synchrone sans connexion (limite du `Purpose`).
+    /// d'accès). **Après** cette validation (`Must not` de `./private_agent.sdd`), le contrôle des
+    /// droits d'accord de modules (`FR-9`, amendement du 2026-11-11, DSD `hooks-async` `DEC-7`) :
+    /// le principal de l'appelant est reconstruit par [`identity::caller_of`] sur la **connexion
+    /// du hook** — état admin relu, jamais mis en cache —, puis [`identity::check_grants`] tranche
+    /// les modules de la définition contre la liste `reserved` injectée (la fonction publique
+    /// passe `identity::ADMIN_ONLY_MODULES`, le test une liste non vide — précédent
+    /// `activate_with`). Un module réservé refusé rend un `HookError` sans code nommant le module,
+    /// jamais le prompt ; une panne de lecture ou un `subject` inconnu rendent le texte fixe
+    /// [`Self::PANNE_AUTORISATION`] (échec fermé).
+    async fn sauvegarde_avec<C: sea_orm::ConnectionTrait>(
+        db: &C,
+        active: ActiveModel,
+        existing: Option<&Model>,
+        principal: &AuthPrincipal,
+        reserved: &[&str],
+    ) -> Result<ActiveModel, HookError> {
+        let (active, definition) = Self::valider_et_deriver(active, existing)?;
+        let caller = identity::caller_of(db, &principal.subject)
+            .await
+            .map_err(|_| HookError::new(Self::PANNE_AUTORISATION))?;
+        identity::check_grants(&caller, definition.modules(), reserved).map_err(|cause| match cause {
+            // Le message interne de `Forbidden` nomme le module ; son affichage porterait un
+            // code `MRD-*` (`Must not`), seule la charge utile traverse.
+            crate::lymaille::error::LymailleError::Forbidden(message) => HookError::new(message),
+            _ => HookError::new(Self::PANNE_AUTORISATION),
+        })?;
+        Ok(active)
+    }
+
+    /// Validation des étapes de ./agent.rs, puis dérivation des colonnes : rend l'`ActiveModel`
+    /// dérivé **et** la définition désérialisée, dont [`Self::sauvegarde_avec`] lit les modules
+    /// accordés pour le contrôle `FR-9`.
     fn valider_et_deriver(
         mut active: ActiveModel,
         existing: Option<&Model>,
-    ) -> Result<ActiveModel, HookError> {
+    ) -> Result<(ActiveModel, ::lymaille::AgentDefinition), HookError> {
         let brute = match &active.definition {
             ActiveValue::Set(valeur) | ActiveValue::Unchanged(valeur) if valeur.is_object() => Some(valeur),
             ActiveValue::Set(_) | ActiveValue::Unchanged(_) | ActiveValue::NotSet => None,
@@ -128,7 +166,7 @@ impl Entity {
             }
             None => {}
         }
-        Ok(active)
+        Ok((active, definition))
     }
 }
 
@@ -160,17 +198,17 @@ impl MiryadResource for Entity {
         Some(Column::AgentId)
     }
 
-    /// Valide la définition et réécrit les colonnes dérivées — voir [`Entity::valider_et_deriver`].
+    /// Valide la définition, contrôle les modules accordés et réécrit les colonnes dérivées —
+    /// voir [`Entity::sauvegarde_avec`].
     fn before_create<C>(
         db: &C,
         active: Self::ActiveModel,
-        _principal: &AuthPrincipal,
+        principal: &AuthPrincipal,
     ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
     where
         C: sea_orm::ConnectionTrait,
     {
-        let _ = db;
-        async move { Entity::valider_et_deriver(active, None) }
+        Entity::sauvegarde_avec(db, active, None, principal, identity::ADMIN_ONLY_MODULES)
     }
 
     /// Mêmes étapes que [`Self::before_create`] sur la nouvelle définition, plus l'identité :
@@ -180,13 +218,18 @@ impl MiryadResource for Entity {
         db: &C,
         active: Self::ActiveModel,
         existing: &Self::Model,
-        _principal: &AuthPrincipal,
+        principal: &AuthPrincipal,
     ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
     where
         C: sea_orm::ConnectionTrait,
     {
-        let _ = db;
-        async move { Entity::valider_et_deriver(active, Some(existing)) }
+        Entity::sauvegarde_avec(
+            db,
+            active,
+            Some(existing),
+            principal,
+            identity::ADMIN_ONLY_MODULES,
+        )
     }
 
     // `before_delete` volontairement non surdéclaré : aucun contrôle d'usage, le défaut identité
@@ -217,7 +260,9 @@ mod tests {
     use chrono::Utc;
     use sea_orm::ActiveValue::NotSet;
     use sea_orm::ActiveValue::Set;
+    use sea_orm::ColumnTrait as _;
     use sea_orm::EntityTrait as _;
+    use sea_orm::QueryFilter as _;
     use sea_orm_migration::MigratorTrait;
     use serde_json::json;
 
@@ -269,6 +314,91 @@ mod tests {
         }
     }
 
+    /// Base migrée **sans aucun compte** : le hook qui consulte la connexion bute sur un sujet
+    /// inconnu — cas « `subject` sans compte » du Scenario panne.
+    async fn db_migree_sans_compte() -> sea_orm::DatabaseConnection {
+        let db = sea_orm::Database::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite connects");
+        Migrator::up(&db, None).await.expect("migrations apply cleanly");
+        db
+    }
+
+    /// Base migrée portant un compte local pour `subject` : les hooks qui reconstruisent le
+    /// principal par `caller_of` (amendement du 2026-11-11, DSD `hooks-async` `DEC-7`) exigent
+    /// la ligne réelle — motif des tests de `../identity.rs`.
+    async fn db_avec_compte(subject: &str) -> sea_orm::DatabaseConnection {
+        let db = db_migree_sans_compte().await;
+        resolve_user(&db, subject, None)
+            .await
+            .expect("compte local de test");
+        db
+    }
+
+    /// Compte local mis dans le groupe `admin` (par la réconciliation OIDC, seul chemin de
+    /// production des appartenances — motif de `../identity.rs`).
+    async fn compte_admin(db: &sea_orm::DatabaseConnection, subject: &str) {
+        let compte = resolve_user(db, subject, None)
+            .await
+            .expect("compte local de test");
+        crate::users::membership::sync_group_memberships(db, compte.id, &["admin".to_string()])
+            .await
+            .expect("compte membre du groupe admin seedé");
+    }
+
+    /// Retrait de toute appartenance de l'utilisateur (fixture de test — le Scenario « le droit
+    /// admin est relu » est muet sur le chemin de retrait, `../identity.rs` fait de même).
+    async fn retirer_appartenances(db: &sea_orm::DatabaseConnection, user_id: i32) {
+        crate::users::membership::Entity::delete_many()
+            .filter(crate::users::membership::Column::UserId.eq(user_id))
+            .exec(db)
+            .await
+            .expect("retrait des appartenances de fixture");
+    }
+
+    /// Définition valide accordant les modules `modules` — la colonne `definition` construite par
+    /// la bibliothèque elle-même, comme la fixture [`definition`].
+    fn definition_avec_modules(id: &str, prompt: &str, profile: &str, modules: &[&str]) -> serde_json::Value {
+        serde_json::to_value(
+            AgentDefinition::new(
+                id.to_string(),
+                AgentKind::Sub,
+                prompt.to_string(),
+                profile.to_string(),
+            )
+            .with_modules(modules.iter().map(|module| (*module).to_string()).collect()),
+        )
+        .expect("la fixture se sérialise")
+    }
+
+    /// Verrou d'un refus de module réservé : `HookError` sans code, nommant le module, ne citant
+    /// jamais le prompt.
+    fn assert_refus_module_reserve(erreur: &crate::resource::HookError, prompt: &str) {
+        assert!(
+            erreur.code.is_none(),
+            "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
+        );
+        assert!(
+            erreur.message.contains("secrets"),
+            "le refus nomme le module réservé : {erreur:?}"
+        );
+        assert!(
+            !erreur.message.contains(prompt),
+            "le prompt ne traverse jamais un `HookError` : {erreur:?}"
+        );
+    }
+
+    /// Connexion simulée dont **toute lecture** échoue d'un `DbErr` porteur d'une marque — le
+    /// test verrouille que cette marque ne traverse jamais le `HookError` (motif des pannes de
+    /// `src/users/group.rs`).
+    fn db_lecture_en_echec() -> sea_orm::DatabaseConnection {
+        sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite)
+            .append_query_errors([sea_orm::DbErr::Query(sea_orm::RuntimeErr::Internal(
+                "PANNE-DE-LECTURE-marquee-4e1a".to_string(),
+            ))])
+            .into_connection()
+    }
+
     /// Ligne existante des hooks `before_update`.
     fn modele(owner_id: i32, agent_id: &str) -> Model {
         Model {
@@ -299,8 +429,9 @@ mod tests {
     /// posé quand il manque.
     #[tokio::test]
     async fn before_create_accepte_un_agent_prive_valide_et_derive_les_colonnes() {
+        let db = db_avec_compte("sujet-de-test").await;
         let rendu = Entity::before_create(
-            &hook_db(),
+            &db,
             active_avec(definition("triage", AgentKind::Sub, "trie", "qwen")),
             &principal(),
         )
@@ -496,9 +627,10 @@ mod tests {
     /// les colonnes et laisse `created_at` à celui de la ligne existante.
     #[tokio::test]
     async fn before_update_derive_les_colonnes_et_conserve_la_date_de_creation() {
+        let db = db_avec_compte("sujet-de-test").await;
         let existing = modele(1, "x");
         let rendu = Entity::before_update(
-            &hook_db(),
+            &db,
             active_avec(definition("x", AgentKind::Sub, "trie affiné", "qwen")),
             &existing,
             &principal(),
@@ -513,6 +645,162 @@ mod tests {
             Set(existing.created_at),
             "`created_at` reste celui de la ligne existante"
         );
+    }
+
+    /// Scenario « un accord de module réservé à l'admin est refusé à la sauvegarde » (amendement
+    /// du 2026-11-11) : la fonction interne avec la liste `["secrets"]`, un propriétaire non-admin
+    /// et une définition valide qui accorde `secrets` — le hook de création puis celui de mise à
+    /// jour rendent un `HookError` sans code nommant le module réservé, sans citer le prompt,
+    /// avant toute écriture.
+    #[tokio::test]
+    async fn sauvegarde_refuse_un_accord_de_module_reserve_a_la_creation_et_a_la_mise_a_jour() {
+        let db = db_avec_compte("alice").await;
+        let marque = "PROMPT-A-NE-JAMAIS-CITER-b7d2";
+        let accordee = definition_avec_modules("triage", marque, "qwen", &["resources", "secrets"]);
+        let principal = principal_sujet("alice");
+        let rendu_creation =
+            Entity::sauvegarde_avec(&db, active_avec(accordee.clone()), None, &principal, &["secrets"]).await;
+        match rendu_creation {
+            Err(erreur) => assert_refus_module_reserve(&erreur, marque),
+            Ok(_) => panic!("`secrets` réservé à l'admin est refusé à un non-admin à la création"),
+        }
+        let rendu_mise_a_jour = Entity::sauvegarde_avec(
+            &db,
+            active_avec(accordee),
+            Some(&modele(1, "triage")),
+            &principal,
+            &["secrets"],
+        )
+        .await;
+        match rendu_mise_a_jour {
+            Err(erreur) => assert_refus_module_reserve(&erreur, marque),
+            Ok(_) => panic!("`secrets` réservé à l'admin est refusé à un non-admin à la mise à jour"),
+        }
+    }
+
+    /// Scenario « un admin, ou une définition sans module réservé, est accepté » (amendement du
+    /// 2026-11-11) : même liste `["secrets"]`, un appelant admin avec la définition qui accorde
+    /// `secrets`, puis un non-admin avec une définition qui n'accorde que `resources` — `Ok` dans
+    /// les deux cas, l'`ActiveModel` inchangé hors colonnes dérivées.
+    #[tokio::test]
+    async fn sauvegarde_accepte_un_admin_ou_une_definition_sans_module_reserve() {
+        let db = db_migree_sans_compte().await;
+        compte_admin(&db, "root").await;
+        let marque = "PROMPT-A-NE-JAMAIS-CITER-b7d2";
+        let accordee = definition_avec_modules("triage", marque, "qwen", &["secrets"]);
+        let rendu_admin = Entity::sauvegarde_avec(
+            &db,
+            active_avec(accordee.clone()),
+            None,
+            &principal_sujet("root"),
+            &["secrets"],
+        )
+        .await
+        .expect("un admin sauve une définition accordant `secrets`");
+        assert_eq!(rendu_admin.agent_id, Set("triage".to_string()));
+        assert_eq!(rendu_admin.kind, Set("sub".to_string()));
+        assert_eq!(rendu_admin.profile, Set("qwen".to_string()));
+        assert!(
+            matches!(rendu_admin.owner_id, NotSet),
+            "`owner_id` n'est jamais touché par le hook : {:?}",
+            rendu_admin.owner_id
+        );
+        assert!(
+            matches!(rendu_admin.created_at, Set(_)),
+            "`created_at` est posé à la création : {:?}",
+            rendu_admin.created_at
+        );
+        assert_eq!(
+            rendu_admin.definition,
+            Set(accordee),
+            "la colonne `definition` traverse inchangée hors colonnes dérivées"
+        );
+        // Un non-admin avec une définition qui n'accorde que `resources` passe aussi.
+        resolve_user(&db, "alice", None)
+            .await
+            .expect("compte local d'alice");
+        let rendue = definition_avec_modules("triage", marque, "qwen", &["resources"]);
+        Entity::sauvegarde_avec(
+            &db,
+            active_avec(rendue),
+            None,
+            &principal_sujet("alice"),
+            &["secrets"],
+        )
+        .await
+        .expect("aucun module réservé accordé : la sauvegarde passe");
+    }
+
+    /// Scenario « le droit admin est relu à chaque sauvegarde » (amendement du 2026-11-11) : un
+    /// admin qui sauve une définition accordant `secrets`, retiré du groupe admin, se la voit
+    /// refuser à la seconde sauvegarde — le principal n'est jamais mis en cache.
+    #[tokio::test]
+    async fn sauvegarde_relit_le_droit_admin_a_chaque_salvegarde() {
+        let db = db_migree_sans_compte().await;
+        let alice = resolve_user(&db, "alice", None)
+            .await
+            .expect("compte local d'alice");
+        crate::users::membership::sync_group_memberships(&db, alice.id, &["admin".to_string()])
+            .await
+            .expect("alice membre du groupe admin");
+        let marque = "PROMPT-A-NE-JAMAIS-CITER-b7d2";
+        let accordee = definition_avec_modules("triage", marque, "qwen", &["secrets"]);
+        let principal = principal_sujet("alice");
+        Entity::sauvegarde_avec(&db, active_avec(accordee.clone()), None, &principal, &["secrets"])
+            .await
+            .expect("la première sauvegarde, par un admin, est acceptée");
+        retirer_appartenances(&db, alice.id).await;
+        match Entity::sauvegarde_avec(&db, active_avec(accordee), None, &principal, &["secrets"]).await {
+            Err(erreur) => assert_refus_module_reserve(&erreur, marque),
+            Ok(_) => panic!("retirée du groupe admin, alice n'est plus bridée ? le droit doit être relu"),
+        }
+    }
+
+    /// Scenario « une panne de lecture est un refus fermé sans détail » (amendement du
+    /// 2026-11-11, DSD `hooks-async` `DEC-7`) : la lecture du compte échoue d'un `DbErr`
+    /// détaillée, puis le `subject` n'a aucun compte — les deux rendent le `HookError` sans code
+    /// de message **exactement** `authorization check unavailable`, sans texte de la `DbErr`.
+    #[tokio::test]
+    async fn sauvegarde_refuse_en_ferme_sur_panne_de_lecture() {
+        let definition = definition("triage", AgentKind::Sub, "prompt-a-ne-jamais-citer-9f3c", "qwen");
+        // Cas 1 : la lecture du compte échoue d'un `DbErr` porteur d'une marque.
+        let rendu = Entity::before_create(
+            &db_lecture_en_echec(),
+            active_avec(definition.clone()),
+            &principal(),
+        )
+        .await;
+        match rendu {
+            Err(erreur) => {
+                assert!(erreur.code.is_none(), "aucun code `MRD-*` : {erreur:?}");
+                assert_eq!(
+                    erreur.message, "authorization check unavailable",
+                    "la panne de lecture rend le texte fixe du `Must`"
+                );
+                assert!(
+                    !erreur.message.contains("PANNE-DE-LECTURE-marquee-4e1a"),
+                    "le texte de la `DbErr` ne traverse jamais : {erreur:?}"
+                );
+            }
+            Ok(_) => panic!("une panne de lecture du compte devait refuser la sauvegarde"),
+        }
+        // Cas 2 : un `subject` sans compte sur une base migrée.
+        let rendu = Entity::before_create(
+            &db_migree_sans_compte().await,
+            active_avec(definition),
+            &principal(),
+        )
+        .await;
+        match rendu {
+            Err(erreur) => {
+                assert!(erreur.code.is_none(), "aucun code `MRD-*` : {erreur:?}");
+                assert_eq!(
+                    erreur.message, "authorization check unavailable",
+                    "un `subject` inconnu est le même refus fermé"
+                );
+            }
+            Ok(_) => panic!("un `subject` sans compte devait refuser la sauvegarde"),
+        }
     }
 
     /// Scenario « chacun ne voit que ses agents » : `alice` et `bob` ont chacun un agent `x`, et

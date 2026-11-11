@@ -9,9 +9,10 @@
 //! un identifiant `Private` au sens de `crate::lymaille::identity` (jamais `G_`/`g_`, DSD
 //! `DEC-9`). Les contrôles de version sont le `check_toolset` partagé de ./toolset.rs.
 //!
-//! **Limite assumée** (comme `./private_agent.rs`) : les droits d'accord de modules du
-//! propriétaire exigent l'état admin relu en base et ne sont pas vérifiés dans le hook (synchrone,
-//! sans connexion) mais à l'activation (`../interactive/activation.sdd`) et à l'appel.
+//! **Contrôle à la sauvegarde** (comme `./private_agent.rs`, amendement du 2026-11-11, DSD
+//! `hooks-async` `DEC-7`) : les droits d'accord de modules du propriétaire, relu en base par la
+//! connexion du hook, sont vérifiés ici pour chacune des versions posées — puis à l'activation
+//! (`../interactive/activation.sdd`) et à l'appel, en défense en profondeur.
 
 use sea_orm::ActiveValue;
 use sea_orm::entity::prelude::*;
@@ -85,6 +86,57 @@ impl Entity {
             }
             Err(_) => Err(HookError::new("invalid toolset id")),
         }
+    }
+
+    /// Texte fixe du refus fermé : panne de lecture (`DbErr`) ou `subject` sans compte lors du
+    /// contrôle d'autorité à la sauvegarde (`Must`, amendement du 2026-11-11, DSD `hooks-async`
+    /// `DEC-7`) — aucun détail de l'erreur ne traverse.
+    const PANNE_AUTORISATION: &'static str = "authorization check unavailable";
+
+    /// Porte commune de `before_create` (`existing` absent) et `before_update`, `after` : les étapes
+    /// de ./toolset.sdd dans le même ordre — au moins une version, chacune valide via le
+    /// [`check_toolset`] partagé, les deux présentes portent le même `name` — sauf l'étape
+    /// d'identifiant : ici `classify(name) = Private` ([`Self::verifier_identifiant`], à la place
+    /// de l'étape `G_` du catalogue). Sur une mise à jour le `name` ne change pas. `toolset_id`
+    /// et `version` (celle de l'active, à défaut du brouillon) sont toujours réécrits ; `owner_id`
+    /// n'est jamais touché (injection du moteur d'accès). **Après** `check_toolset` (`Must not` de
+    /// `./private_toolset.sdd`), le contrôle des droits d'accord de modules (`FR-9`, amendement du
+    /// 2026-11-11, DSD `hooks-async` `DEC-7`) : le principal de l'appelant est reconstruit par
+    /// [`identity::caller_of`] sur la **connexion du hook** — état admin relu, jamais mis en
+    /// cache —, puis [`identity::check_grants`] tranche, pour **chacune des versions posées**
+    /// (`active` et `draft`), les modules extraits de la forme JSON par la fonction partagée avec
+    /// l'activation ([`crate::lymaille::interactive::activation::toolset_json_modules`]), contre
+    /// la liste `reserved` injectée (la fonction publique passe `identity::ADMIN_ONLY_MODULES`, le
+    /// test une liste non vide — précédent `activate_with`). Un module réservé refusé rend un
+    /// `HookError` sans code nommant le module, jamais le source ; une panne de lecture ou un
+    /// `subject` inconnu rendent le texte fixe [`Self::PANNE_AUTORISATION`] (échec fermé).
+    async fn sauvegarde_avec<C: sea_orm::ConnectionTrait>(
+        db: &C,
+        active: ActiveModel,
+        existing: Option<&Model>,
+        principal: &AuthPrincipal,
+        reserved: &[&str],
+    ) -> Result<ActiveModel, HookError> {
+        let active = Self::valider_et_deriver(active, existing)?;
+        let caller = identity::caller_of(db, &principal.subject)
+            .await
+            .map_err(|_| HookError::new(Self::PANNE_AUTORISATION))?;
+        for brute in [
+            Self::version_presents(&active.active),
+            Self::version_presents(&active.draft),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let modules = crate::lymaille::interactive::activation::toolset_json_modules(brute);
+            identity::check_grants(&caller, &modules, reserved).map_err(|cause| match cause {
+                // Le message interne de `Forbidden` nomme le module ; son affichage porterait un
+                // code `MRD-*` (`Must not`), seule la charge utile traverse.
+                crate::lymaille::error::LymailleError::Forbidden(message) => HookError::new(message),
+                _ => HookError::new(Self::PANNE_AUTORISATION),
+            })?;
+        }
+        Ok(active)
     }
 
     /// Version réellement présente d'une colonne `Option<Json>` : posée (ou inchangée), non `None`,
@@ -181,18 +233,17 @@ impl MiryadResource for Entity {
         Some(Column::ToolsetId)
     }
 
-    /// Valide les versions présentes et dérive `toolset_id` et `version` — voir
-    /// [`Entity::valider_et_deriver`].
+    /// Valide les versions, contrôle les modules accordés et dérive `toolset_id` et `version` —
+    /// voir [`Entity::sauvegarde_avec`].
     fn before_create<C>(
         db: &C,
         active: Self::ActiveModel,
-        _principal: &AuthPrincipal,
+        principal: &AuthPrincipal,
     ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
     where
         C: sea_orm::ConnectionTrait,
     {
-        let _ = db;
-        async move { Entity::valider_et_deriver(active, None) }
+        Entity::sauvegarde_avec(db, active, None, principal, identity::ADMIN_ONLY_MODULES)
     }
 
     /// Mêmes étapes que [`Self::before_create`], plus l'identité : un `toolset_id` qui change est
@@ -201,13 +252,18 @@ impl MiryadResource for Entity {
         db: &C,
         active: Self::ActiveModel,
         existing: &Self::Model,
-        _principal: &AuthPrincipal,
+        principal: &AuthPrincipal,
     ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
     where
         C: sea_orm::ConnectionTrait,
     {
-        let _ = db;
-        async move { Entity::valider_et_deriver(active, Some(existing)) }
+        Entity::sauvegarde_avec(
+            db,
+            active,
+            Some(existing),
+            principal,
+            identity::ADMIN_ONLY_MODULES,
+        )
     }
 
     // `before_delete` volontairement non surdéclaré : aucun contrôle d'usage, le défaut identité
@@ -237,7 +293,9 @@ mod tests {
     use chrono::Utc;
     use sea_orm::ActiveValue::NotSet;
     use sea_orm::ActiveValue::Set;
+    use sea_orm::ColumnTrait as _;
     use sea_orm::EntityTrait as _;
+    use sea_orm::QueryFilter as _;
     use sea_orm_migration::MigratorTrait;
     use vynil_core::Semver;
 
@@ -294,6 +352,78 @@ mod tests {
         }
     }
 
+    /// Base migrée **sans aucun compte**.
+    async fn db_migree_sans_compte() -> sea_orm::DatabaseConnection {
+        let db = sea_orm::Database::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite connects");
+        Migrator::up(&db, None).await.expect("migrations apply cleanly");
+        db
+    }
+
+    /// Base migrée portant un compte local pour `subject` : les hooks qui reconstruisent le
+    /// principal par `caller_of` (amendement du 2026-11-11, DSD `hooks-async` `DEC-7`) exigent
+    /// la ligne réelle — motif des tests de `../identity.rs`.
+    async fn db_avec_compte(subject: &str) -> sea_orm::DatabaseConnection {
+        let db = db_migree_sans_compte().await;
+        resolve_user(&db, subject, None)
+            .await
+            .expect("compte local de test");
+        db
+    }
+
+    /// Retrait de toute appartenance de l'utilisateur (fixture de test — même motif que
+    /// `../identity.rs`).
+    async fn retirer_appartenances(db: &sea_orm::DatabaseConnection, user_id: i32) {
+        crate::users::membership::Entity::delete_many()
+            .filter(crate::users::membership::Column::UserId.eq(user_id))
+            .exec(db)
+            .await
+            .expect("retrait des appartenances de fixture");
+    }
+
+    /// Version de `git` en `version` accordant les modules `modules` — la clé `modules` est une
+    /// clé JSON additionnelle, ignorée par la désérialisation `Toolset` mais lue par l'extraction
+    /// partagée (`../interactive/activation.rs`) — motif des fixtures de `activate_with`.
+    fn version_avec_modules(version: &str, modules: &[&str]) -> serde_json::Value {
+        let mut valeur = version_json("git", version);
+        valeur["modules"] = serde_json::Value::Array(
+            modules
+                .iter()
+                .map(|module| serde_json::Value::String((*module).to_string()))
+                .collect(),
+        );
+        valeur
+    }
+
+    /// Verrou d'un refus de module réservé : `HookError` sans code, nommant le module, ne citant
+    /// jamais le source des modules.
+    fn assert_refus_module_reserve(erreur: &crate::resource::HookError) {
+        assert!(
+            erreur.code.is_none(),
+            "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
+        );
+        assert!(
+            erreur.message.contains("secrets"),
+            "le refus nomme le module réservé : {erreur:?}"
+        );
+        assert!(
+            !erreur.message.contains("fn ping"),
+            "le source des modules ne traverse jamais un `HookError` : {erreur:?}"
+        );
+    }
+
+    /// Connexion simulée dont **toute lecture** échoue d'un `DbErr` porteur d'une marque — le
+    /// test verrouille que cette marque ne traverse jamais le `HookError` (motif des pannes de
+    /// `src/users/group.rs`).
+    fn db_lecture_en_echec() -> sea_orm::DatabaseConnection {
+        sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite)
+            .append_query_errors([sea_orm::DbErr::Query(sea_orm::RuntimeErr::Internal(
+                "PANNE-DE-LECTURE-marquee-4e1a".to_string(),
+            ))])
+            .into_connection()
+    }
+
     /// Ligne existante des hooks `before_update`.
     fn modele(owner_id: i32, toolset_id: &str) -> Model {
         Model {
@@ -323,8 +453,9 @@ mod tests {
     /// nul, passe ; `toolset_id` et `version` sont dérivés du brouillon, `created_at` est posé.
     #[tokio::test]
     async fn before_create_accepte_un_brouillon_prive_seul_et_derive_les_colonnes() {
+        let db = db_avec_compte("sujet-de-test").await;
         let rendu = Entity::before_create(
-            &hook_db(),
+            &db,
             active_avec(None, Some(version_json("git", "1.0.0"))),
             &principal(),
         )
@@ -507,9 +638,10 @@ mod tests {
     /// l'`ActiveModel` (posée par `mark_all_set` avant le hook) et le hook ne la réécrit pas.
     #[tokio::test]
     async fn before_update_derive_les_colonnes_et_ne_touche_pas_la_date_de_creation() {
+        let db = db_avec_compte("sujet-de-test").await;
         let existing = modele(1, "git");
         let rendu = Entity::before_update(
-            &hook_db(),
+            &db,
             active_avec(Some(version_json("git", "2.0.0")), None),
             &existing,
             &principal(),
@@ -524,6 +656,115 @@ mod tests {
              ./toolset.rs : {:?}",
             rendu.created_at
         );
+    }
+
+    /// Scenario « un module réservé à l'admin, dans le brouillon ou la version active, est refusé
+    /// à la sauvegarde » (amendement du 2026-11-11) : la fonction interne avec la liste
+    /// `["secrets"]`, un propriétaire non-admin — chaque appel (création puis mise à jour, `draft`
+    /// qui accorde `secrets`, puis `active` qui l'accorde) rend un `HookError` sans code nommant
+    /// le module et ne citant pas le source.
+    #[tokio::test]
+    async fn sauvegarde_refuse_un_module_reserve_du_brouillon_ou_de_la_version_active() {
+        let db = db_avec_compte("alice").await;
+        let principal = principal_sujet("alice");
+        for version_reservee in ["draft", "active"] {
+            let accordee = version_avec_modules("2.0.0", &["secrets"]);
+            let (active, draft) = if version_reservee == "active" {
+                (Some(accordee.clone()), None)
+            } else {
+                (None, Some(accordee.clone()))
+            };
+            let rendu_creation = Entity::sauvegarde_avec(
+                &db,
+                active_avec(active.clone(), draft.clone()),
+                None,
+                &principal,
+                &["secrets"],
+            )
+            .await;
+            match rendu_creation {
+                Err(erreur) => assert_refus_module_reserve(&erreur),
+                Ok(_) => panic!("`secrets` réservé, posé en {version_reservee}, est refusé à la création"),
+            }
+            let rendu_mise_a_jour = Entity::sauvegarde_avec(
+                &db,
+                active_avec(active, draft),
+                Some(&modele(1, "git")),
+                &principal,
+                &["secrets"],
+            )
+            .await;
+            match rendu_mise_a_jour {
+                Err(erreur) => assert_refus_module_reserve(&erreur),
+                Ok(_) => panic!("`secrets` réservé, posé en {version_reservee}, est refusé à la mise à jour"),
+            }
+        }
+    }
+
+    /// Seconde moitié du Scenario « un module réservé à l'admin … est refusé à la sauvegarde » :
+    /// un admin passe avec la même définition, et le droit est relu à chaque sauvegarde — retiré
+    /// du groupe admin, le même appel est refusé.
+    #[tokio::test]
+    async fn sauvegarde_accepte_un_admin_et_relit_son_droit_a_chaque_salvegarde() {
+        let db = db_migree_sans_compte().await;
+        let alice = resolve_user(&db, "alice", None)
+            .await
+            .expect("compte local d'alice");
+        crate::users::membership::sync_group_memberships(&db, alice.id, &["admin".to_string()])
+            .await
+            .expect("alice membre du groupe admin");
+        let accordee = version_avec_modules("1.0.0", &["secrets"]);
+        let principal = principal_sujet("alice");
+        Entity::sauvegarde_avec(
+            &db,
+            active_avec(Some(accordee.clone()), None),
+            None,
+            &principal,
+            &["secrets"],
+        )
+        .await
+        .expect("la première sauvegarde, par un admin, est acceptée");
+        retirer_appartenances(&db, alice.id).await;
+        match Entity::sauvegarde_avec(
+            &db,
+            active_avec(Some(accordee), None),
+            None,
+            &principal,
+            &["secrets"],
+        )
+        .await
+        {
+            Err(erreur) => assert_refus_module_reserve(&erreur),
+            Ok(_) => panic!("retirée du groupe admin, alice doit être bridée : le droit est relu"),
+        }
+    }
+
+    /// Scenario « une panne de lecture est un refus fermé sans détail » (amendement du
+    /// 2026-11-11, DSD `hooks-async` `DEC-7`) : la lecture du compte échoue d'un `DbErr`
+    /// détaillée — le `HookError` rendu, sans code, a pour message **exactement**
+    /// `authorization check unavailable`, sans texte de la `DbErr` ni source des modules.
+    #[tokio::test]
+    async fn sauvegarde_refuse_en_ferme_sur_panne_de_lecture() {
+        let rendu = Entity::before_create(
+            &db_lecture_en_echec(),
+            active_avec(None, Some(version_json("git", "1.0.0"))),
+            &principal(),
+        )
+        .await;
+        match rendu {
+            Err(erreur) => {
+                assert!(erreur.code.is_none(), "aucun code `MRD-*` : {erreur:?}");
+                assert_eq!(
+                    erreur.message, "authorization check unavailable",
+                    "la panne de lecture rend le texte fixe du `Must`"
+                );
+                assert!(
+                    !erreur.message.contains("PANNE-DE-LECTURE-marquee-4e1a"),
+                    "le texte de la `DbErr` ne traverse jamais : {erreur:?}"
+                );
+            }
+            Ok(_) => panic!("une panne de lecture du compte devait refuser la sauvegarde"),
+        }
     }
 
     /// Scenario « cloisonnement par propriétaire » : `alice` et `bob` ont chacun un toolset `git`,

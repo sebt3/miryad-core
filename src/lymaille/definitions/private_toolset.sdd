@@ -51,7 +51,8 @@ Tasks:
     [?] (validator, porté du cycle `./private_agent.sdd`) : la convention « un test par casse » est appliquée deux fois — mérite-t-elle une ligne dans la checklist de production des specs de `/miryad-core.sdd` ?
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les hooks de ./private_toolset.rs passent à la signature asynchrone (`db` ignoré : la validation reste pure, aucune lecture en base ajoutée par cette tâche) ; les tests `before_*` du fichier passent à `.await` avec une connexion simulée, assertions inchangées. Le contrôle à la sauvegarde que la connexion rend possible (DSD `hooks-async` `FR-3`) n'est **pas** dans cette tâche : il fera l'objet d'un amendement de spec distinct. Dépend de /src/resource.sdd (même amendement).
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
-  [ ] Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) : tests d'abord (deux `Scenario` ci-dessous), puis ./private_toolset.rs ; dépend de ../identity.sdd (`caller_of`) et de ../interactive/activation.sdd (extraction des modules partagée).
+  [x] Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) : tests d'abord (deux `Scenario` ci-dessous), puis ./private_toolset.rs ; dépend de ../identity.sdd (`caller_of`) et de ../interactive/activation.sdd (extraction des modules partagée).
+    Validé 2026-11-11 (contrôle à la sauvegarde branché, tests des Scenario ci-dessous nommés `sauvegarde_*`/`serveur_inexistant_*`/`un_serveur_pourvu_*` ; batterie ciblée `lymaille` et `workflow,lymaille` tests + clippy + fmt verts ; synthèse tenue par le primary, `validator` indisponible).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./private_toolset.rs.

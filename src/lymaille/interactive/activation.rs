@@ -75,6 +75,24 @@ pub async fn discard_draft(
         .map_err(from_toolsets)
 }
 
+/// Extraction des modules qu'accorde la forme JSON d'un toolset : la clé `modules`, tableau de
+/// chaînes ; absent, non tableau ou entrées non chainaires, la liste est vide. **Fonction
+/// partagée** (amendement du 2026-11-11, DSD `hooks-async` `DEC-7`) : `activate_with` et les
+/// hooks de sauvegarde de `../definitions/private_toolset.sdd` appliquent la même règle — une
+/// seule extraction des modules du JSON toolset dans la crate.
+pub(crate) fn toolset_json_modules(brute: &serde_json::Value) -> Vec<String> {
+    brute
+        .get("modules")
+        .and_then(serde_json::Value::as_array)
+        .map_or_else(Vec::new, |entries| {
+            entries
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+}
+
 /// Cœur de `activate_toolset` avec la liste de modules réservés et un point de panne injectés —
 /// séparateurs des `Scenario` « module réservé » et « atomicité » ; la fonction publique passe la
 /// liste vide et `false`.
@@ -118,16 +136,7 @@ async fn activate_with(
         LymailleError::InvalidDefinition(format!("stored toolset {name} is unreadable"))
     })?;
     check_toolset(&toolset).map_err(from_toolsets)?;
-    let modules: Vec<String> = draft
-        .get("modules")
-        .and_then(serde_json::Value::as_array)
-        .map_or_else(Vec::new, |entries| {
-            entries
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        });
+    let modules = toolset_json_modules(&draft);
     check_grants(caller, &modules, reserved)?;
 
     // Version dérivée du brouillon ; la colonne `version` rend la précédente (`DEC-17`).

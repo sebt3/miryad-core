@@ -8,9 +8,11 @@
 //! par l'injection du propriétaire dans `rest::core`). Le niveau `Session` d'un contexte est
 //! interne, sans entité. Un contexte ne contient **aucun secret** : le constructeur de
 //! `lymaille` applique son détecteur à la désérialisation. Les liaisons rôle → serveur ne sont
-//! pas contrôlées ici (hook synchrone et sans connexion) : le droit d'usage est contrôlé à
-//! l'assemblage et à l'appel (`../mcp_access.sdd`), et par `ContextStore::put_context` quand la
-//! session de configuration écrit (`../store/toolset.sdd`).
+//! Les liaisons rôle → serveur sont contrôlées **à la sauvegarde par le hook** (amendement du
+//! 2026-11-11, DSD `hooks-async` `DEC-7`) — exactement la règle de `ContextStore::put_context`
+//! (`../store/toolset.sdd`) : chaque rôle lié passe par `server_for` (`../mcp_access.rs`) sous le
+//! principal relu par la connexion du hook — et l'usage est recontrôlé à l'assemblage et à
+//! l'appel, en défense en profondeur.
 
 use sea_orm::ActiveValue;
 use sea_orm::entity::prelude::*;
@@ -122,6 +124,61 @@ impl Entity {
         }
     }
 
+    /// Texte fixe du refus fermé : panne de lecture (`DbErr`) ou `subject` sans compte lors du
+    /// contrôle d'usage des serveurs liés (`Must`, amendement du 2026-11-11, DSD `hooks-async`
+    /// `DEC-7`) — aucun détail de l'erreur ne traverse.
+    const PANNE_AUTORISATION: &'static str = "authorization check unavailable";
+
+    /// Porte commune de `before_create` (`existing` absent) et `before_update`, dans l'ordre du
+    /// `Must` de `./user_context.sdd` : d'abord [`Self::valider_et_deriver`] (`context` désérialisé
+    /// sans secret, `level` = `User`, `name` privé, `context_type` de forme valide, nom inchangé à
+    /// la mise à jour) — `Must not` : aucun contrôle de serveur avant cette validation. Ensuite
+    /// (amendement du 2026-11-11, DSD `hooks-async` `DEC-7`), **chaque rôle lié** passe par
+    /// [`crate::lymaille::mcp_access::server_for`] sous le principal reconstruit par
+    /// [`identity::caller_of`] sur la **connexion du hook** — exactement la règle de
+    /// `ContextStore::put_context` (`../store/toolset.sdd`) : un serveur que seul l'hôte pourvoit,
+    /// sans ligne `mcp_servers`, est refusé à l'écriture comme dans le store ; absent et interdit
+    /// rendent le même `HookError` sans code `mcp server unavailable`, sans oracle d'existence.
+    /// Une panne de lecture ou un `subject` inconnu rendent le texte fixe
+    /// [`Self::PANNE_AUTORISATION`] (échec fermé). Le principal est reconstruit **une fois par
+    /// sauvegarde**, jamais mis en cache entre deux écritures (`Must not`).
+    async fn valider_et_controler_serveurs<C: sea_orm::ConnectionTrait>(
+        db: &C,
+        active: ActiveModel,
+        existing: Option<&Model>,
+        principal: &AuthPrincipal,
+    ) -> Result<ActiveModel, HookError> {
+        let active = Self::valider_et_deriver(active, existing)?;
+        let brute = match &active.context {
+            // `valider_et_deriver` vient de l'exiger objet : branche de garde sans `unwrap`.
+            ActiveValue::Set(brute) | ActiveValue::Unchanged(brute) => brute.clone(),
+            ActiveValue::NotSet => return Err(HookError::new("user context is required")),
+        };
+        let caller = identity::caller_of(db, &principal.subject)
+            .await
+            .map_err(|_| HookError::new(Self::PANNE_AUTORISATION))?;
+        if let Some(roles) = brute.get("roles").and_then(serde_json::Value::as_object) {
+            for reference in roles.values() {
+                let Some(nom_serveur) = reference.as_str() else {
+                    // La désérialisation en `ToolsetContext` (réussie plus haut) garantit des
+                    // valeurs textuelles : branche de garde, même refus fermé que `server_for`
+                    // — absent et interdit se confondent, pas d'oracle d'existence.
+                    return Err(HookError::new("mcp server unavailable"));
+                };
+                crate::lymaille::mcp_access::server_for(db, &caller, nom_serveur)
+                    .await
+                    .map_err(|cause| match cause {
+                        // `Forbidden` porte le texte de refus d'usage, sans oracle d'existence ;
+                        // son affichage complet porterait un code `MRD-*` (`Must not`), seule la
+                        // charge utile traverse. `Store` et les autres rendent le texte fixe.
+                        crate::lymaille::error::LymailleError::Forbidden(message) => HookError::new(message),
+                        _ => HookError::new(Self::PANNE_AUTORISATION),
+                    })?;
+            }
+        }
+        Ok(active)
+    }
+
     /// Porte commune de `before_create` (`existing` absent) et `before_update`, dans l'ordre du
     /// `Must` de `./user_context.sdd`, interrompue au premier échec : `context` objet JSON
     /// présent, désérialisable en `lymaille::ToolsetContext` (le constructeur refuse un secret,
@@ -205,17 +262,17 @@ impl MiryadResource for Entity {
         Some(Column::Name)
     }
 
-    /// Valide le contexte et réécrit `name` — voir [`Entity::valider_et_deriver`].
+    /// Valide le contexte, contrôle l'usage des serveurs liés et réécrit `name` — voir
+    /// [`Entity::valider_et_controler_serveurs`].
     fn before_create<C>(
         db: &C,
         active: Self::ActiveModel,
-        _principal: &AuthPrincipal,
+        principal: &AuthPrincipal,
     ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
     where
         C: sea_orm::ConnectionTrait,
     {
-        let _ = db;
-        async move { Entity::valider_et_deriver(active, None) }
+        Entity::valider_et_controler_serveurs(db, active, None, principal)
     }
 
     /// Mêmes étapes que [`Self::before_create`], plus l'identité : un `name` qui change est
@@ -224,13 +281,12 @@ impl MiryadResource for Entity {
         db: &C,
         active: Self::ActiveModel,
         existing: &Self::Model,
-        _principal: &AuthPrincipal,
+        principal: &AuthPrincipal,
     ) -> impl std::future::Future<Output = Result<Self::ActiveModel, HookError>> + Send
     where
         C: sea_orm::ConnectionTrait,
     {
-        let _ = db;
-        async move { Entity::valider_et_deriver(active, Some(existing)) }
+        Entity::valider_et_controler_serveurs(db, active, Some(existing), principal)
     }
 
     // `before_delete` volontairement non surdéclaré : aucun contrôle d'usage au lot 2, le défaut
@@ -325,6 +381,206 @@ mod tests {
         }
     }
 
+    /// Connexion simulée dont **toute lecture** échoue d'un `DbErr` porteur d'une marque — le
+    /// test verrouille que cette marque ne traverse jamais le `HookError` (motif des pannes de
+    /// `src/users/group.rs`).
+    fn db_lecture_en_echec() -> sea_orm::DatabaseConnection {
+        sea_orm::MockDatabase::new(sea_orm::DbBackend::Sqlite)
+            .append_query_errors([sea_orm::DbErr::Query(sea_orm::RuntimeErr::Internal(
+                "PANNE-DE-LECTURE-marquee-4e1a".to_string(),
+            ))])
+            .into_connection()
+    }
+
+    /// Base migrée portant un compte local pour `subject` : les hooks qui reconstruisent le
+    /// principal par `caller_of` (amendement du 2026-11-11, DSD `hooks-async` `DEC-7`) exigent
+    /// la ligne réelle — motif des tests de `../identity.rs`.
+    async fn db_avec_compte(subject: &str) -> sea_orm::DatabaseConnection {
+        let db = sea_orm::Database::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite connects");
+        Migrator::up(&db, None).await.expect("migrations apply cleanly");
+        resolve_user(&db, subject, None)
+            .await
+            .expect("compte local de test");
+        db
+    }
+
+    /// Forme sérialisée d'un contexte nommé `name`, de niveau `user`, liant un rôle `r` au
+    /// serveur `serveur` — la porte du contrôle d'usage (`../mcp_access.sdd`).
+    fn contexte_lie(name: &str, serveur: &str) -> serde_json::Value {
+        let construit = ToolsetContext::new(name.to_string(), ContextLevel::User)
+            .expect("la fixture se construit")
+            .with_role("r".to_string(), serveur.to_string())
+            .expect("la fixture lie un rôle à un nom de serveur, pas à un secret");
+        serde_json::to_value(construit).expect("la fixture se sérialise")
+    }
+
+    /// Ligne de `miryad_lymaille_mcp_servers` nommée `nom`, en `auth_mode = none` — le contrôle
+    /// d'usage ne regarde que `name` et `allowed_groups` (motif de `../mcp_access.rs`).
+    async fn inserer_serveur(db: &sea_orm::DatabaseConnection, nom: &str, groupes: serde_json::Value) {
+        crate::lymaille::definitions::mcp_server::Entity::insert(
+            crate::lymaille::definitions::mcp_server::ActiveModel {
+                id: NotSet,
+                name: Set(nom.to_string()),
+                url: Set("https://mcp.example/".to_string()),
+                request_timeout_secs: Set(30),
+                connect_timeout_secs: Set(5),
+                auth_mode: Set("none".to_string()),
+                auth_ref: Set(None),
+                allowed_groups: Set(groupes),
+                created_at: Set(Utc::now()),
+            },
+        )
+        .exec(db)
+        .await
+        .expect("ligne mcp_servers de test");
+    }
+
+    /// Scenario « un rôle lié à un serveur dont l'utilisateur n'a pas l'usage est refusé à la
+    /// sauvegarde » (amendement du 2026-11-11, DSD `hooks-async` `DEC-7`) : `alice` hors du
+    /// groupe `ops`, serveur `s1` réservé à `ops` — le hook de création puis celui de mise à
+    /// jour rendent le `HookError` sans code `mcp server unavailable` ; le même contexte lié à
+    /// un serveur `all`, ou à `s1` par un membre de `ops`, est accepté.
+    #[tokio::test]
+    async fn sauvegarde_refuse_un_role_lie_a_un_serveur_interdit() {
+        let db = sea_orm::Database::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite connects");
+        Migrator::up(&db, None).await.expect("migrations apply cleanly");
+        let alice = resolve_user(&db, "alice", None)
+            .await
+            .expect("compte local d'alice");
+        inserer_serveur(&db, "s1", json!(["ops"])).await;
+        let principal = principal_sujet("alice");
+        // Refus à la création, puis à la mise à jour.
+        for rendu in [
+            Entity::before_create(&db, active_avec(contexte_lie("dev", "s1")), &principal).await,
+            Entity::before_update(
+                &db,
+                active_avec(contexte_lie("dev", "s1")),
+                &modele(1, "dev"),
+                &principal,
+            )
+            .await,
+        ] {
+            match rendu {
+                Err(erreur) => {
+                    assert!(erreur.code.is_none(), "aucun code `MRD-*` : {erreur:?}");
+                    assert_eq!(
+                        erreur.message, "mcp server unavailable",
+                        "le refus est le texte de `server_for`, sans oracle d'existence"
+                    );
+                }
+                Ok(_) => panic!("un serveur dont l'usage est refusé ne doit pas être lié"),
+            }
+        }
+        // Accepté : un serveur `all`.
+        inserer_serveur(&db, "public", json!(["all"])).await;
+        Entity::before_create(&db, active_avec(contexte_lie("dev2", "public")), &principal)
+            .await
+            .expect("un serveur ouvert à tous est liable");
+        // Accepté : `alice` est devenue membre de `ops`.
+        crate::users::membership::sync_group_memberships(&db, alice.id, &["ops".to_string()])
+            .await
+            .expect("alice rejoint le groupe ops");
+        Entity::before_create(&db, active_avec(contexte_lie("dev3", "s1")), &principal)
+            .await
+            .expect("un membre du groupe autorisé peut lier `s1`");
+    }
+
+    /// Scenario « un serveur inexistant et un serveur interdit sont indiscernables »
+    /// (amendement du 2026-11-11) : le même `HookError` sans code dans les deux cas — pas
+    /// d'oracle d'existence, le texte est celui de `server_for`.
+    #[tokio::test]
+    async fn serveur_inexistant_et_serveur_interdit_sont_indiscernables() {
+        let db = sea_orm::Database::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite connects");
+        Migrator::up(&db, None).await.expect("migrations apply cleanly");
+        resolve_user(&db, "alice", None)
+            .await
+            .expect("compte local d'alice");
+        inserer_serveur(&db, "s1", json!(["ops"])).await;
+        let principal = principal_sujet("alice");
+        let messages: Vec<String> = vec![
+            Entity::before_create(&db, active_avec(contexte_lie("dev", "inconnu")), &principal).await,
+            Entity::before_create(&db, active_avec(contexte_lie("dev", "s1")), &principal).await,
+        ]
+        .into_iter()
+        .map(|rendu| match rendu {
+            Err(erreur) => {
+                assert!(erreur.code.is_none(), "aucun code `MRD-*` : {erreur:?}");
+                erreur.message
+            }
+            Ok(_) => panic!("les deux serveurs devaient être refusés"),
+        })
+        .collect();
+        assert_eq!(
+            messages[0], messages[1],
+            "absent et interdit rendent le même refus fermé"
+        );
+        assert_eq!(messages[0], "mcp server unavailable");
+    }
+
+    /// Scenario « un serveur fourni par l'hôte est refusé à l'écriture » (amendement du
+    /// 2026-11-11) : un nom que seul l'hôte pourvoit n'a aucune ligne `mcp_servers` — le hook
+    /// refuse, comme `put_context` ; l'assemblage reste libre de le servir.
+    #[tokio::test]
+    async fn un_serveur_pourvu_par_l_hote_est_refuse_a_l_ecriture() {
+        let db = sea_orm::Database::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite connects");
+        Migrator::up(&db, None).await.expect("migrations apply cleanly");
+        resolve_user(&db, "alice", None)
+            .await
+            .expect("compte local d'alice");
+        // Aucune ligne `mcp_servers` : seul l'hôte connaît `hote_sandbox`.
+        match Entity::before_create(
+            &db,
+            active_avec(contexte_lie("dev", "hote_sandbox")),
+            &principal_sujet("alice"),
+        )
+        .await
+        {
+            Err(erreur) => {
+                assert!(erreur.code.is_none(), "aucun code `MRD-*` : {erreur:?}");
+                assert_eq!(
+                    erreur.message, "mcp server unavailable",
+                    "le refus est le même texte que `put_context`, sans oracle"
+                );
+            }
+            Ok(_) => panic!("un serveur que seul l'hôte pourvoit ne doit pas être écrit ici"),
+        }
+    }
+
+    /// Scenario « une panne de lecture est un refus fermé sans détail » (amendement du
+    /// 2026-11-11) : la lecture échoue d'un `DbErr` détaillée — `HookError` de message
+    /// **exactement** `authorization check unavailable`, sans texte de la `DbErr`.
+    #[tokio::test]
+    async fn sauvegarde_refuse_en_ferme_sur_panne_de_lecture() {
+        let rendu = Entity::before_create(
+            &db_lecture_en_echec(),
+            active_avec(contexte_lie("dev", "s1")),
+            &principal(),
+        )
+        .await;
+        match rendu {
+            Err(erreur) => {
+                assert!(erreur.code.is_none(), "aucun code `MRD-*` : {erreur:?}");
+                assert_eq!(
+                    erreur.message, "authorization check unavailable",
+                    "la panne de lecture rend le texte fixe du `Must`"
+                );
+                assert!(
+                    !erreur.message.contains("PANNE-DE-LECTURE-marquee-4e1a"),
+                    "le texte de la `DbErr` ne traverse jamais : {erreur:?}"
+                );
+            }
+            Ok(_) => panic!("une panne de lecture devait refuser la sauvegarde"),
+        }
+    }
+
     /// Scenario « chacun ne lit que ses contextes » : `alice` et `bob` ont chacun un contexte
     /// `dev`, et la liste de chacun ne rend que sa ligne (`OwnerOnly` + colonne propriétaire,
     /// tranchés par le moteur d'accès, pas par le hook).
@@ -380,8 +636,9 @@ mod tests {
     /// `user` et réécrit `name` depuis le contexte ; `created_at` est posé quand il manque.
     #[tokio::test]
     async fn before_create_accepte_un_contexte_valide_et_derive_le_nom() {
+        let db = db_avec_compte("sujet-de-test").await;
         let rendu = Entity::before_create(
-            &hook_db(),
+            &db,
             active_avec(contexte("dev", ContextLevel::User, json!({"namespace": "dev"}))),
             &principal(),
         )
@@ -552,8 +809,9 @@ mod tests {
     /// le hook inchangée — l'existence est vérifiée à l'ouverture de session, pas ici.
     #[tokio::test]
     async fn before_create_accepte_un_context_type_de_forme_valide() {
+        let db = db_avec_compte("sujet-de-test").await;
         let sans = Entity::before_create(
-            &hook_db(),
+            &db,
             active_avec(contexte("dev", ContextLevel::User, json!({}))),
             &principal(),
         )
@@ -565,7 +823,7 @@ mod tests {
             sans.context_type
         );
         let avec = Entity::before_create(
-            &hook_db(),
+            &db,
             ActiveModel {
                 context_type: Set(Some("cluster".to_string())),
                 ..active_avec(contexte("dev", ContextLevel::User, json!({})))
@@ -608,9 +866,10 @@ mod tests {
     /// et laisse `created_at` à celui de la ligne existante.
     #[tokio::test]
     async fn before_update_derive_le_nom_et_conserve_la_date_de_creation() {
+        let db = db_avec_compte("sujet-de-test").await;
         let existing = modele(1, "dev");
         let rendu = Entity::before_update(
-            &hook_db(),
+            &db,
             active_avec(contexte("dev", ContextLevel::User, json!({"namespace": "dev"}))),
             &existing,
             &principal(),
