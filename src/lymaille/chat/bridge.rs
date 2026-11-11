@@ -1373,6 +1373,7 @@ mod tests {
         SessionManager::new(ManagerDeps {
             assemble: AssembleDeps {
                 db: db.clone(),
+                host_modules: Arc::new(crate::lymaille::host_module::HostModules::new()),
                 readers: Arc::new(ResourceRegistry::new()),
                 secrets: Arc::new(FixedSecret("cle-fixe")),
                 hub,

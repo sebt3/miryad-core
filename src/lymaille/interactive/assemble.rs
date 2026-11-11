@@ -77,6 +77,7 @@ use ::lymaille::rhai_pad_definition;
 
 use crate::lymaille::error::LymailleError;
 use crate::lymaille::host::SharedHost;
+use crate::lymaille::host_module::{HostModules, HostSelect, mount_host_modules};
 use crate::lymaille::identity::{ADMIN_ONLY_MODULES, CallerPrincipal, check_grants};
 use crate::lymaille::install_crypto_provider;
 use crate::lymaille::mcp_mount::{McpConnectorFactory, MountDeps, RmcpConnectorFactory, mount_role};
@@ -163,6 +164,10 @@ impl Summarizer for NoSummarizer {
 pub struct AssembleDeps {
     /// Connexion à la base de l'application (identité, stores, module des ressources).
     pub db: DatabaseConnection,
+    /// Registre des modules d'hôte enregistrés (`../host_module.rs`, DSD `scripts-hote`) :
+    /// ceux que la définition accorde sont montés à l'étape 5, les noms `AdminOnly` augmentent
+    /// la liste réservée de `check_grants` (amendement du 2026-11-11). `Default` est vide.
+    pub host_modules: Arc<HostModules>,
     /// Registre des entités lisibles et écrivable par les agents (`../resource_module.rs`).
     pub readers: Arc<ResourceRegistry>,
     /// Résolveur des références d'authentification (`../secret.rs`).
@@ -183,8 +188,9 @@ pub struct AssembleDeps {
 }
 
 impl AssembleDeps {
-    /// Construit les dépendances de production : fabriques `rig` et `rmcp`, horloge système, sans
-    /// hôte (l'application ajoute `host` par construction du champ).
+    /// Construit les dépendances de production : fabriques `rig` et `rmcp`, horloge système,
+    /// registre d'hôte vide et sans hôte (l'application ajoute `host` et `host_modules` par
+    /// construction des champs).
     #[must_use]
     pub fn new(
         db: DatabaseConnection,
@@ -194,6 +200,7 @@ impl AssembleDeps {
     ) -> Self {
         Self {
             db,
+            host_modules: Arc::new(HostModules::new()),
             readers,
             secrets,
             hub,
@@ -322,6 +329,10 @@ async fn assemble_with(
     )
     .await?;
     granted.extend(mcp_granted);
+    // Modules d'hôte (`Must` étape 5, amendement du 2026-11-11, DSD `scripts-hote`) : ceux
+    // accordés par la définition **et** enregistrés, montés par `mount_host_modules(…, All)` ;
+    // la définition filtre, un module non accordé ou absent du registre n'est pas monté.
+    granted.extend(granted_host_modules(deps, caller, &resolved.definition)?);
     let engine = build_engine(deps, &resolved, kind, session, &scope, &granted, token.as_ref())?;
     let toolset_versions: BTreeMap<String, String> = scope
         .toolsets
@@ -424,7 +435,12 @@ async fn resolve_inference(
         .map_err(from_agents)?
         .ok_or_else(|| LymailleError::NotFound(format!("unknown agent: {agent_id}")))?;
     // Défense en profondeur sur les modules : refus à l'assemblage, l'appel du module revalide.
-    check_grants(caller, definition.modules(), reserved)?;
+    // La liste réservée est combinée à l'appel (amendement du 2026-11-11, DSD `scripts-hote`
+    // `FR-2`) : `ADMIN_ONLY_MODULES` de `../identity.rs` augmenté des noms `AdminOnly` du
+    // registre d'hôte — aucune nouvelle constante déclarée ici.
+    let mut reserved: Vec<&str> = reserved.to_vec();
+    reserved.extend(deps.host_modules.admin_only_names());
+    check_grants(caller, definition.modules(), &reserved)?;
     let profile = stores
         .profiles()
         .resolve_profile(definition.profile(), None)
@@ -722,6 +738,32 @@ fn base_modules(deps: &AssembleDeps, caller: &CallerPrincipal) -> Result<Vec<Gra
     ])
 }
 
+/// Les modules d'hôte de la session (`Must` étape 5, amendement du 2026-11-11, DSD
+/// `scripts-hote`) : `mount_host_modules(…, All)` rend les modules enregistrés, la définition
+/// filtre — un module non accordé n'est pas monté, un module accordé absent du registre non
+/// plus (pas d'erreur). L'enrobage d'autorité de `../host_module.rs` revalide la politique à
+/// chaque appel.
+fn granted_host_modules(
+    deps: &AssembleDeps,
+    caller: &CallerPrincipal,
+    definition: &AgentDefinition,
+) -> Result<Vec<GrantedModule>, LymailleError> {
+    let modules = definition.modules();
+    mount_host_modules(
+        &deps.host_modules,
+        deps.db.clone(),
+        &caller.subject,
+        HostSelect::All,
+    )
+    .into_iter()
+    .filter(|(name, _)| modules.iter().any(|granted| granted.as_str() == *name))
+    .map(|(name, module)| {
+        GrantedModule::new(name, module.into())
+            .ok_or_else(|| LymailleError::InvalidDefinition(format!("invalid module name: {name}")))
+    })
+    .collect()
+}
+
 /// Le `Redactor` d'une session : les secrets connus du tour (clé d'API du provider, jeton
 /// forward) y entrent à la construction et n'en sortent jamais.
 fn configured_redactor(
@@ -771,6 +813,7 @@ fn from_session(error: SessionError) -> LymailleError {
 mod tests {
     use super::*;
     use crate::lymaille::definitions::mcp_server;
+    use crate::lymaille::host_module::{HostAccess, HostFunction, HostModule};
     use crate::lymaille::identity::Identity;
     use crate::lymaille::mcp_mount::{DynMcpAuth, DynMcpConnector, McpConnectorFactory};
     use crate::lymaille::store::test_support::test_db;
@@ -1016,6 +1059,7 @@ mod tests {
     ) -> AssembleDeps {
         AssembleDeps {
             db,
+            host_modules: Arc::new(HostModules::new()),
             readers: Arc::new(ResourceRegistry::new()),
             secrets: Arc::new(FixedSecret("cle-fixe")),
             hub: Arc::new(EventHub::new(None, 16)),
@@ -1511,6 +1555,145 @@ mod tests {
             matches!(&refus, LymailleError::Forbidden(message)
                 if message == "forward auth needs an interactive session"),
             "la phrase fixe de `build_auth` : {refus:?}"
+        );
+    }
+
+    /// Module d'hôte de fixture : une fonction `show(x)` d'arité 1 qui rend `x`, politique au
+    /// choix (précédent : la fixture de `../host_module.rs`).
+    struct Temoignage {
+        name: &'static str,
+        access: HostAccess,
+    }
+
+    impl HostModule for Temoignage {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn access(&self) -> HostAccess {
+            self.access
+        }
+        fn functions(&self, _subject: &str) -> Vec<HostFunction> {
+            vec![HostFunction {
+                name: "show",
+                params: 1,
+                call: Arc::new(|args: &mut [rhai::Dynamic]| {
+                    Ok(args.first().cloned().unwrap_or(rhai::Dynamic::UNIT))
+                }),
+            }]
+        }
+    }
+
+    /// Scenario « un module d'hôte réservé à l'admin accordé à un non-admin est refusé à
+    /// l'assemblage » (amendement du 2026-11-11, DSD `scripts-hote`) : `Forbidden` nommant le
+    /// module pour un non-admin ; pour un admin le module enregistré accordé est monté, et un
+    /// module accordé absent du registre n'est pas monté, sans erreur.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_module_hote_reserve_refuse_assemblage() {
+        let db = db_test().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
+        let bob = compte(&db, "bob", true).await;
+        let mut registry = HostModules::new();
+        registry
+            .register(Arc::new(Temoignage {
+                name: "dashboard",
+                access: HostAccess::AdminOnly,
+            }))
+            .expect("`dashboard` s'enregistre");
+        // `dashboard` est accordé et enregistré (AdminOnly) ; `fantome` est accordé sans être
+        // enregistré — il ne doit être ni monté, ni une erreur.
+        let definition = agent("dev", AgentKind::Work, Vec::new()).with_modules(vec![
+            "resources".to_owned(),
+            "dashboard".to_owned(),
+            "fantome".to_owned(),
+        ]);
+        put_agent(&db, &alice, &definition).await;
+        put_agent(&db, &bob, &definition).await;
+        let mut deps = deps_with(
+            db.clone(),
+            Arc::new(ScriptedProvider::new(Vec::new())),
+            SpyFactory::new(),
+        );
+        deps.host_modules = Arc::new(registry);
+        let session = SessionId::new("s-hote").expect("identifiant de session de test");
+        inserer_session(&deps, &alice, &session, "", SessionKind::Work).await;
+
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+            .await
+            .expect_err("un module d'hôte AdminOnly accordé à un non-admin est refusé");
+        assert!(
+            matches!(&refus, LymailleError::Forbidden(message) if message.contains("dashboard")),
+            "le refus nomme le module d'hôte : {refus:?}"
+        );
+
+        let admin_session = SessionId::new("s-hote-admin").expect("identifiant de session de test");
+        inserer_session(&deps, &bob, &admin_session, "", SessionKind::Work).await;
+        let assembled = assemble_session(&deps, &bob, SessionKind::Work, "dev", &admin_session, None)
+            .await
+            .expect("l'admin assemble avec le module d'hôte accordé");
+        let pad = Scratchpad::new(assembled.engine());
+        let clock = SystemClock::new();
+        let redactor = Redactor::default();
+        let env = RunEnv::new("dev", &redactor, &clock);
+        let monte = pad.run("dashboard::show(42)", &CancelHandle::new(), &env).await;
+        assert!(
+            matches!(monte.status(), RunStatus::Ok),
+            "`dashboard`, accordé et enregistré, est monté : {:?}",
+            monte.status()
+        );
+        let absent = pad.run("fantome::show(42)", &CancelHandle::new(), &env).await;
+        assert!(
+            !matches!(absent.status(), RunStatus::Ok),
+            "`fantome`, absent du registre, n'est pas monté (et l'assemblage n'a pas échoué)"
+        );
+    }
+
+    /// Scenario « un rôle optionnel au nom d'un module accordé fait échouer l'assemblage » :
+    /// verrou de non-régression de la garde de collision (étape 0 de `../mcp_mount.rs`,
+    /// commit `a01e406`) — `Config` fatale même pour un optionnel, sans avis et sans connecteur.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_role_optionnel_au_nom_dun_module_accorde_fait_echouer() {
+        let db = db_test().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
+        put_type(&db, "prodtype", &[("resources", false)]).await;
+        put_active_toolset(&db, &toolset("G_kube", "1.0.0", Some("prodtype")), None).await;
+        put_agent(
+            &db,
+            &alice,
+            &agent("dev", AgentKind::Work, vec!["G_kube".to_owned()]),
+        )
+        .await;
+        inserer_serveur(
+            &db,
+            "public_srv",
+            "http://espion.invalid/public",
+            "none",
+            json!(["all"]),
+        )
+        .await;
+        inserer_contexte_prive(&db, alice.user_id, "moncontexte", &[("resources", "public_srv")]).await;
+        let spy = SpyFactory::new();
+        let deps = deps_with(
+            db.clone(),
+            Arc::new(ScriptedProvider::new(Vec::new())),
+            Arc::clone(&spy),
+        );
+        let session = SessionId::new("s-collision").expect("identifiant de session de test");
+        inserer_session(&deps, &alice, &session, "moncontexte", SessionKind::Work).await;
+
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+            .await
+            .expect_err("un rôle optionnel nommé `resources` entre en collision avec le module accordé");
+        assert!(
+            matches!(&refus, LymailleError::Config(message)
+                if message == "mcp role name collides with a module: resources"),
+            "la collision est une `Config` fatale, pas un avis : {refus:?}"
+        );
+        assert_eq!(
+            spy.calls(),
+            0,
+            "aucun connecteur n'est monté pour le rôle en collision"
         );
     }
 
