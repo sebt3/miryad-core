@@ -408,7 +408,7 @@ et appels d'MCP externes depuis les scripts.
       est fait **à l'assemblage de la session et à l'appel** (`mcp_access`), et à `ContextStore::put_context` pour la session de configuration. **Correction
       du 2026-11-03 :** un hook `MiryadResource` est synchrone et sans connexion, il ne peut ni relire les groupes ni l'état admin ; le refus « à la sauvegarde »
       par REST/MCP n'existe donc pas (même limite pour `check_grants` des agents et toolsets privés, `FR-9`) ; un accord excessif échoue à l'usage, il n'élève jamais un droit.
-      Lever cette limite demanderait des hooks asynchrones dans le moteur de ressources : hors lot 2, arbitré le 2026-11-03 : `miryad-core/hooks-async` ; l'appartenance est relue en base à chaque appel, jamais mise en cache. (5) **modes d'auth** : `static`
+      Lever cette limite demande des hooks asynchrones dans le moteur de ressources : hors lot 2, arbitré le 2026-11-03 : `miryad-core/hooks-async`. **Amendé le 2026-11-11 :** limite levée, voir `hooks-async#DEC-7` ; l'appartenance est relue en base à chaque appel, jamais mise en cache. (5) **modes d'auth** : `static`
       (référence de secret, compte de service) et `forward` (le serveur reçoit le jeton de l'utilisateur) ; `forward` n'est valable qu'en
       session interactive, avec le jeton frais de la requête, jamais persisté ; un step batch qui lie un serveur `forward` échoue en `StepError`
       non retryable. **Amendé le 2026-11-03 (`DEC-27`) :** un serveur MCP propre à un contexte est fourni par l'hôte, sans ligne `mcp_servers` ni mode d'auth supplémentaire.
@@ -474,8 +474,8 @@ et appels d'MCP externes depuis les scripts.
       rend `Refusé` ou `Accordé{url, jeton, expiration}` ; il est appelé à l'assemblage **et** à chaque appel d'outil. Aucune liaison n'est stockée
       en table ; un rôle que l'hôte ne pourvoit pas retombe sur la liaison de contexte classique (`mcp_servers`, `DEC-20`). Le cache du jeton est
       l'affaire de l'hôte : miryad-core ne garde ni ne persiste aucun jeton. En batch, l'autorité est tranchée sous le `subject` du déclencheur
-      (`FR-10`) ; sans `subject`, le step échoue en `StepError` non retryable. Pas de contrôle à la sauvegarde (hooks synchrones, `DEC-20`) : un accord
-      excessif échoue à l'usage. La session `Config` voit ces liaisons en lecture seule, à titre informatif, sans les éditer et sans monter de client.
+      (`FR-10`) ; sans `subject`, le step échoue en `StepError` non retryable. Pas de contrôle de l'hôte à la sauvegarde : un accord
+      excessif échoue à l'usage (amendé le 2026-11-11 : `hooks-async#DEC-7`). La session `Config` voit ces liaisons en lecture seule, à titre informatif, sans les éditer et sans monter de client.
       (3) `resolve_context(id, principal)` rend `Option<ToolsetContext>` pour un identifiant de préfixe `H_` : jamais stocké, jamais écrit par REST,
       MCP ni la session `Config`, aiguillé vers le trait par `identity::classify`. (4) Une panne de l'hôte est un refus (échec fermé).
     - **Alternatives:** troisième mode d'auth `host` dans `mcp_servers` (écarté : une ligne administrée par sandbox dynamique) ; deux traits

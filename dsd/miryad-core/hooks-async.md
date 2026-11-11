@@ -93,6 +93,11 @@ et les effets de bord d'une ressource se décident **à la sauvegarde**, par RES
     - **Alternatives:** lever le non-goal « hook après » dans ce lot (écarté : pas de besoin avéré).
     - **Source:** user instruction, 2026-11-11, après lecture des DSD `workspaces` de `vanyline`
 
+- **DEC-7 - Portée du contrôle à la sauvegarde (`FR-3`)** (2026-11-11)
+    - **Decision:** trois contrôles entrent dans les hooks, en plus de l'assemblage et de l'appel : `check_grants` pour `private_agent` et `private_toolset` (état admin relu par la connexion),
+      droit d'usage du serveur de `mcp_servers` lié pour `user_context`. Les hooks appellent la même fonction que les stores. Un serveur fourni par l'hôte (`H_…`) reste tranché par l'hôte.
+    - **Source:** user instruction, 2026-11-11
+
 ## SpecDD Realization
 
 Aucune. `SpecDD /src/resource.sdd` et ses consommateurs seront amendés quand les Open Issues ci-dessous seront tranchées.

@@ -69,6 +69,7 @@ peut accorder que ce que son propriétaire peut utiliser), `FR-10` (identité du
 - **DEC-2 - Les grants d'un script sont ceux du type de contexte** (2026-11-03)
     - **Decision:** le type de contexte déclare les toolsets et modules accordables aux scripts ; le principal du spectateur est intersecté à chaque appel.
     - **Alternatives:** une famille `ScriptProfile` dédiée (écarté : une troisième définition à stocker, valider et exposer).
+    - **Précision du 2026-11-11 :** `script_grants` = `{"toolsets":[…],"modules":[…]}` (toolsets du catalogue `G_…` et noms de `HostModule`), validé par le hook du type de contexte.
     - **Consequences:** le type de contexte (`miryad-core/lymaille#DEC-28`) porte un champ de plus. **Arbitré le 2026-11-05 (user instruction)** : colonne JSON `script_grants` (toolsets et modules accordables aux scripts) sur la table des types de contexte, à côté de `allowed_agents`, ni réutilisation des toolsets de la session LLM ni champ amont ; coûte une retouche de migration en place de plus, à tracer dans `AGENTS.md` à l'ouverture du lot.
     - **Source:** user instruction, 2026-11-03
 
@@ -77,6 +78,14 @@ peut accorder que ce que son propriétaire peut utiliser), `FR-10` (identité du
     - **Decision:** mode `ReadOnly` unique du `ScriptRunner` (`FR-6`) ; la déclaration `read_only` d'un `HostModule` engage l'hôte, pas la crate.
     - **Alternatives:** aucune politique d'effets (écarté : un affichage déclencherait des écritures ou des actions externes).
     - **Source:** user instruction, 2026-11-03
+
+- **DEC-4 - Registre des `HostModule` : valeur dédiée** (2026-11-11)
+    - **Decision:** builder `HostModules::new().register(module)?` passé au montage, distinct de `LymailleHost` : la collision échoue au démarrage (`FR-1`).
+    - **Source:** user instruction, 2026-11-11
+
+- **DEC-5 - Le texte du script est fourni par l'hôte** (2026-11-11)
+    - **Decision:** `ScriptRunner::run` reçoit le script en `&str` ; miryad-core n'en stocke aucun (`OI-3`).
+    - **Source:** user instruction, 2026-11-11
 
 ## SpecDD Realization
 
