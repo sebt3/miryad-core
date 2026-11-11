@@ -22,7 +22,7 @@ Must:
   `before_create` / `before_update` : les étapes de ./toolset.sdd (`check_toolset` partagé), sauf `classify(name) = Private`, avec la distinction par préfixe de `./user_context.sdd` : `G_`/`g_` → « toolset id cannot use the catalog prefix » ;
     `H_`/`h_` → « toolset id cannot use the host prefix » ; identifiant invalide au sens Rhai → « invalid toolset id » ; `toolset_id` ne change pas à la mise à jour.
   Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) — après `check_toolset`, `before_create` / `before_update` appellent `check_grants(caller_of(db, principal.subject), modules, liste)` pour chacune des versions posées
-    (`active` et `draft`) avec les modules extraits par la même fonction que `activate_toolset` (../interactive/activation.sdd) et la liste `ADMIN_ONLY_MODULES` de ce fichier (jamais
+    (`active` et `draft`) avec les modules extraits par la même fonction que `activate_toolset` (../interactive/activation.sdd) et la liste `ADMIN_ONLY_MODULES` de ../identity.rs (jamais
     une copie) ; corps interne paramétré par la liste (précédent `activate_with`). un refus est un `HookError` sans code (`422` en REST, `-32000` en MCP) ; une panne de lecture (`DbErr`) ou un `subject` inconnu → `HookError::new("authorization check unavailable")`, texte fixe sans détail de l'erreur (échec fermé). Le message nomme le module, jamais le source.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
@@ -30,7 +30,7 @@ Must not:
   Contrôler `check_grants` avant `check_toolset` ; mettre en cache un `CallerPrincipal` ; citer le source d'un module dans une erreur ; coder un `MRD-*`.
 
 Depends on:
-  ../identity.rs (`caller_of`, `check_grants`), ../interactive/activation.rs (`ADMIN_ONLY_MODULES`, extraction des modules), ./toolset.rs (`check_toolset`), @sea_orm, @serde_json, `lymaille::Toolset`
+  ../identity.rs (`caller_of`, `check_grants`, `ADMIN_ONLY_MODULES`), ../interactive/activation.rs (extraction des modules), ./toolset.rs (`check_toolset`), @sea_orm, @serde_json, `lymaille::Toolset`
 
 Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`

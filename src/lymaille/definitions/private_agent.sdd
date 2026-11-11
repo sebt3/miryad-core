@@ -23,7 +23,7 @@ Must:
   `before_create` / `before_update` : les étapes de ./agent.sdd, sauf l'étape 4 qui exige `classify(def.id()) = Private`, avec la distinction par préfixe de `./user_context.sdd` :
     `G_`/`g_` → « agent id cannot use the catalog prefix » ; `H_`/`h_` → « agent id cannot use the host prefix » ; identifiant invalide au sens Rhai → « invalid agent id » ; `agent_id` ne change pas à la mise à jour.
   Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) — après les étapes de validation, `before_create` / `before_update` appellent `check_grants(caller_of(db, principal.subject), def.modules(), liste)` avec la liste
-    `ADMIN_ONLY_MODULES` de ../interactive/activation.rs (même constante, jamais une copie) ; le corps est une fonction interne paramétrée par la liste (précédent
+    `ADMIN_ONLY_MODULES` de ../identity.rs (constante unique, jamais une copie) ; le corps est une fonction interne paramétrée par la liste (précédent
     `activate_with`) pour être testable avec une liste non vide. un refus est un `HookError` sans code (`422` en REST, `-32000` en MCP) ; une panne de lecture (`DbErr`) ou un `subject` inconnu → `HookError::new("authorization check unavailable")`, texte fixe sans détail de l'erreur (échec fermé). Le message du refus nomme le module, jamais le prompt.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
@@ -31,7 +31,7 @@ Must not:
   Contrôler `check_grants` avant la validation de la définition ; relire l'état admin ailleurs que par la connexion du hook ; mettre en cache un `CallerPrincipal` ; écrire au catalogue ; coder un `MRD-*` ; citer le prompt.
 
 Depends on:
-  ../identity.rs (`caller_of`, `check_grants`), ../interactive/activation.rs (`ADMIN_ONLY_MODULES`), @sea_orm, @serde_json, `lymaille::AgentDefinition`
+  ../identity.rs (`caller_of`, `check_grants`, `ADMIN_ONLY_MODULES`), @sea_orm, @serde_json, `lymaille::AgentDefinition`
 
 Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`

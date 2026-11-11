@@ -20,7 +20,7 @@ Must:
     1. `classify(name)` = `Private` (le catalogue n'est pas activable ici : `Forbidden("catalog publication requires admin")` pour un non-admin ; pour un
       admin, l'activation d'un `G_…` est permise par cette fonction comme équivalent de l'écriture de `active` par l'entité) ;
     2. lit la ligne du propriétaire (`owner_id = caller.user_id`) ; pas de brouillon → `NotFound("no draft to activate")` ;
-    3. `check_toolset` (mêmes contrôles que `put_draft`) puis `check_grants(caller, modules du toolset, ADMIN_ONLY)` ; refus → `Forbidden` nommant le
+    3. `check_toolset` (mêmes contrôles que `put_draft`) puis `check_grants(caller, modules du toolset, ADMIN_ONLY_MODULES)` (constante de ../identity.sdd) ; refus → `Forbidden` nommant le
       module réservé, jamais le source ;
     4. dans **une transaction** : `active ← draft`, `draft ← NULL`, `version` dérivée ; rend `ActivationReport { name, version, previous_version }`.
   `pub async fn activate_agent(...)` n'existe pas : un agent privé est actif dès son écriture (pas de brouillon, `DEC-8`) ; cette spec ne couvre que
@@ -42,6 +42,7 @@ Exposes:
 
 Tasks:
   [x] Tests d'abord (SQLite mémoire), puis ./activation.rs. Validé 2026-11-05 (validator PASS checkpoint 5 — atomicité et AdminOnly prouvés).
+  [ ] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : retirer la déclaration locale de ./activation.rs, importer `identity::ADMIN_ONLY_MODULES` ; `activate_with` garde sa liste en paramètre ; tests verts.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./activation.rs.

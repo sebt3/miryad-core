@@ -51,7 +51,7 @@ Must:
     3. `install_crypto_provider()` (idempotent) ; `Identity::resolve(trigger)` → `UnknownSubject`/`Forbidden` non retryable.
     4. `LymailleStores::new(db, trigger)` ; `agents().get_agent(agent)` : absent → non retryable « unknown agent » ; sa nature doit être `Sub`
       (sinon « agent is not a sub-agent ») et son `output_schema` présent (sinon « sub-agent has no output schema »).
-    5. `check_grants(caller, definition.modules, ADMIN_ONLY_MODULES)` (`ADMIN_ONLY_MODULES` : constante vide au lot 1, mécanisme présent ;
+    5. `check_grants(caller, definition.modules, ADMIN_ONLY_MODULES)` (`ADMIN_ONLY_MODULES` : constante unique de ../lymaille/identity.sdd, vide au lot 1, mécanisme présent ;
       défense en profondeur de DSD `FR-9`).
     6. Profil : `profiles().resolve_profile(definition.profile, None)` ; provider : `providers().get_provider(<nom du profil>)` ; absents ou
       taille de contexte inconnue → non retryable. Secret : `secrets.resolve(provider.auth)` si `auth` est défini (`SecretUnresolved` non
@@ -150,6 +150,7 @@ Tasks:
     Validé 2026-11-10 (implementer Haiku, relu et relancé par Claude : diff confiné à ./subagent_step.rs, `pub const SUBAGENT_CONTEXT_TYPE` rustdoc du contrat, test `le_contexte_des_roles_mcp_est_lu_sous_le_type_workflow_subagent` — (a) valeur figée, (b) seul le contexte `workflow_subagent` est monté malgré un second contexte `autre_type`, (c) sans contexte de ce type aucun rôle monté ; le rouge est de compilation (constante absente), (b) et (c) caractérisent le contrat sans changement de comportement ; `workflow,lymaille` 20/20, clippy `-D warnings` vert sur `workflow,lymaille` et `--all-features`, `fmt`, `specdd lint` 0/0 ; batterie ciblée, la complète reste à passer en fin de lot).
   [x] Garde de collision et redactor configuré (arbitrages du 2026-11-07) : tests d'abord depuis les Scenario « un échec d'outil MCP qui écho la clé du provider est masqué » et « un rôle MCP au nom d'un module du run échoue le step », puis ./subagent_step.rs (`Redactor` configuré avec la clé résolue ; `taken` = modules déjà accordés + `result`). Après ../lymaille/mcp_mount.rs (paramètre `taken`).
     Validé 2026-11-07 (validator PASS : redactor configuré, garde de collision `resources`/`result` ; batterie complète 39/39 conforme, `specdd lint` vert, rustdoc sans nouveau warning).
+  [ ] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : retirer la déclaration locale de `ADMIN_ONLY_MODULES` de ./subagent_step.rs et importer celle de `../lymaille/identity.rs` ; aucun changement de comportement, tests existants verts.
 
 Done when:
   Les `Scenario` unitaires sont verts sous `all(workflow, lymaille)` et `--all-features` ; les specs de ../lymaille/ sont approuvées avant

@@ -25,6 +25,8 @@ Must:
     `subject` est égal (**sans la créer**, à la différence de `resolve_user`) puis `is_admin(db, user_id)` ; aucune ligne →
     `UnknownSubject` (jamais un principal vide ni par défaut) ; `DbErr` → `Store(<texte du DbErr>)`. Un utilisateur retiré du groupe
     admin entre deux appels est non-admin au second (DSD `AC-5`).
+  `pub(crate) const ADMIN_ONLY_MODULES: &[&str] = &[];` (amendement 2026-11-11) : la **seule** liste des modules réservés à l'admin, vide au lot 1, mécanisme présent (DSD `FR-9`). Tous les contrôles
+    de droits d'accord la lisent ici (`check_grants` de l'assemblage, de l'activation, du step `subagent` et des hooks de sauvegarde) ; aucun autre fichier n'en déclare une copie.
   `pub async fn caller_of<C: ConnectionTrait>(db: &C, subject: &str) -> Result<CallerPrincipal, LymailleError>` (amendement 2026-11-11, `hooks-async#DEC-7`) : le corps de `resolve`, sur une connexion
     générique (un hook reçoit `&impl ConnectionTrait`, pas la `DatabaseConnection` d'`Identity`) ; mêmes erreurs. `Identity::resolve` y délègue.
   `pub enum IdKind { Catalog, Private, Host }` et `pub fn classify(id: &str) -> Result<IdKind, LymailleError>` (pure) :
@@ -53,7 +55,7 @@ Depends on:
   ./error.rs, ../users/user.rs, ../users/group.rs, @sea_orm
 
 Exposes:
-  `CallerPrincipal`, `Identity::{new, resolve}`, `caller_of`, `IdKind`, `classify`, `check_write`, `check_grants`
+  `CallerPrincipal`, `Identity::{new, resolve}`, `caller_of`, `ADMIN_ONLY_MODULES`, `IdKind`, `classify`, `check_write`, `check_grants`
 
 Tasks:
   [x] Réalignement R5 (DSD `DEC-27`, 2026-11-03) : spec amendée le 2026-11-03 (variante `IdKind::Host`, préfixe `H_`, refus d'écriture, `Scenario` ci-dessous),
@@ -67,6 +69,7 @@ Tasks:
   [x] Tests d'abord (SQLite mémoire pour `resolve`, tests purs pour le reste), puis ./identity.rs. Validé 2026-11-02
     (validator PASS, batterie ciblée ; batterie complète de `tooling.sdd` à la clôture du lot).
   [ ] Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) : tests d'abord (`Scenario` ci-dessous), puis ./identity.rs ; `Identity::resolve` délègue à `caller_of`.
+  [ ] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : poser la constante dans ./identity.rs ; vérifier par recherche dans `src/` qu'aucun autre `const ADMIN_ONLY_MODULES` ni `ADMIN_ONLY` n'est déclaré (AC ci-dessous).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./identity.rs.
@@ -105,3 +108,8 @@ Scenario: caller_of rend le principal de resolve sur une connexion générique
   Given un utilisateur `alice` du groupe admin, une `DatabaseConnection` puis une `DatabaseTransaction` ouverte sur la même base
   When `caller_of(db, "alice")` est appelé avec chacune, puis après retrait du groupe admin
   Then les deux rendent le même `CallerPrincipal` (`is_admin` vrai) que `Identity::resolve`, puis `is_admin` faux ; un `subject` sans compte rend `UnknownSubject`
+
+Scenario: la liste des modules réservés à l'admin n'a qu'une déclaration
+  Given l'arbre `src/` après consolidation
+  When une recherche du motif `const ADMIN_ONLY` est faite
+  Then une seule déclaration existe, dans ./identity.rs, et ./interactive/assemble.rs, ./interactive/activation.rs, ../workflow/subagent_step.rs et les hooks de sauvegarde l'importent
