@@ -474,7 +474,10 @@ impl ResourceRegistry {
 /// Convertit une valeur Rhai (corps de script) en `serde_json::Value` — réciproque de
 /// [`json_to_dynamic`] ; une valeur de forme non convertible (fonction, tableau interne) rend
 /// `None`, traduite en `invalid body` par l'appelant.
-fn dynamic_to_json(value: &Dynamic) -> Option<JsonValue> {
+///
+/// `pub(crate)` (amendement du 2026-11-11, `../script_runner.sdd`) : l'exécuteur de script convertit
+/// le `Dynamic` rendu **par la même conversion** que le module des ressources — une seule copie.
+pub(crate) fn dynamic_to_json(value: &Dynamic) -> Option<JsonValue> {
     if value.is::<()>() {
         Some(JsonValue::Null)
     } else if value.is::<bool>() {

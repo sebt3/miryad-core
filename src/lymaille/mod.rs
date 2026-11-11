@@ -84,6 +84,11 @@ pub mod resource_module;
 /// Résolution des références d'authentification des providers (`src/lymaille/secret.sdd`).
 pub mod secret;
 
+/// TEMPORAIRE (tâche ./mod.sdd distincte) : la déclaration et les ré-exports de `script_runner`
+/// seront posés par la tâche de montage ; déclarés ici pour faire tourner les tests inline de
+/// `src/lymaille/script_runner.sdd`.
+pub mod script_runner;
+
 /// Stores SeaORM des traits hôte de `lymaille` : huit stores liés à un `subject`, fabriqués par
 /// `LymailleStores` (`src/lymaille/store/mod.sdd`).
 pub mod store;

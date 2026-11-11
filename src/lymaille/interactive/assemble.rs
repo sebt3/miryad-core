@@ -647,7 +647,11 @@ fn build_engine(
 /// Rôles requis et optionnels exigés par les toolsets actifs : leurs déclarations propres et
 /// l'aplatissement des types de contexte requis (DSD `DEC-28`). Un type absent est une lacune de
 /// `check_context` (ouverture), pas un échec d'assemblage : il n'ajoute aucun rôle.
-async fn role_requirements(
+///
+/// `pub(crate)` (amendement du 2026-11-11, `../script_runner.sdd`) : l'exécuteur de script applique
+/// la **même politique** de rôles requis et optionnels que l'assemblage — la résolution n'a qu'une
+/// copie.
+pub(crate) async fn role_requirements(
     toolsets: &[Toolset],
     stores: &LymailleStores,
 ) -> Result<(BTreeSet<String>, BTreeSet<String>), LymailleError> {
@@ -698,7 +702,10 @@ async fn role_requirements(
 
 /// Liaisons rôle → serveur de la forme sérialisée d'un contexte (champ `roles` du JSON stocké —
 /// `ToolsetContext` ne rend que les noms des rôles, jamais leurs références).
-fn toolset_context_roles(context: &ToolsetContext) -> BTreeMap<String, String> {
+///
+/// `pub(crate)` (amendement du 2026-11-11, `../script_runner.sdd`) : l'exécuteur de script résout
+/// les liaisons **comme à l'étape 4 de `assemble_session`** — la résolution n'a qu'une copie.
+pub(crate) fn toolset_context_roles(context: &ToolsetContext) -> BTreeMap<String, String> {
     serde_json::to_value(context)
         .ok()
         .and_then(|value| {
