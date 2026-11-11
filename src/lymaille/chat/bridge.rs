@@ -97,10 +97,6 @@ const NOTHING_TO_RESUME: &str = "Aucune session à reprendre.";
 /// Confirme un `!new` réussi.
 const NEW_SESSION: &str = "Nouvelle session ouverte.";
 
-/// Code rendu par `format_error` quand un tour se termine `Failed` — la variante
-/// `LymailleError::Run` du moteur (`../error.rs`).
-const RUN_FAILED_CODE: &str = "MRD-LYMAILLE-007";
-
 /// Seuil d'âpre-première de l'élagage interne (une purge par heure au plus).
 const PURGE_EVERY_SECS: u64 = 3600;
 
@@ -560,7 +556,14 @@ impl ChatBridge {
                             return Ok(());
                         }
                         SessionOutcome::Failed => {
-                            return self.dire(room_id, &render::format_error(RUN_FAILED_CODE)).await;
+                            // Code rendu par `format_error` — la variante `LymailleError::Run`
+                            // du moteur (`../error.rs`), dérivée par `code()`, sans littéral ici.
+                            let code = LymailleError::Run {
+                                message: String::new(),
+                                retryable: false,
+                            }
+                            .code();
+                            return self.dire(room_id, &render::format_error(&code)).await;
                         }
                         SessionOutcome::Cancelled => {
                             return self.dire(room_id, CANCELLED_TEXT).await;
@@ -785,29 +788,7 @@ fn texte_erreur(erreur: &LymailleError) -> String {
     match erreur {
         LymailleError::NotFound(_) => CONTEXT_UNAVAILABLE.to_owned(),
         LymailleError::Forbidden(_) => AGENT_REFUSED.to_owned(),
-        other => render::format_error(code_de(other)),
-    }
-}
-
-/// Code `MRD-LYMAILLE-NNN` de la variante (`../error.rs`) — le message n'est jamais cité.
-fn code_de(erreur: &LymailleError) -> &'static str {
-    match erreur {
-        LymailleError::UnknownSubject => "MRD-LYMAILLE-001",
-        LymailleError::Forbidden(_) => "MRD-LYMAILLE-002",
-        LymailleError::ReservedPrefix(_) => "MRD-LYMAILLE-003",
-        LymailleError::InvalidDefinition(_) => "MRD-LYMAILLE-004",
-        LymailleError::SecretUnresolved(_) => "MRD-LYMAILLE-005",
-        LymailleError::Inference(_) => "MRD-LYMAILLE-006",
-        LymailleError::Run { .. } => "MRD-LYMAILLE-007",
-        LymailleError::Config(_) => "MRD-LYMAILLE-008",
-        LymailleError::Store(_) => "MRD-LYMAILLE-009",
-        LymailleError::NotFound(_) => "MRD-LYMAILLE-010",
-        LymailleError::Conflict(_) => "MRD-LYMAILLE-011",
-        LymailleError::Serialization(_) => "MRD-LYMAILLE-012",
-        LymailleError::ScriptTimeout => "MRD-LYMAILLE-013",
-        LymailleError::ScriptOperationLimit => "MRD-LYMAILLE-014",
-        LymailleError::ScriptResultTooLarge => "MRD-LYMAILLE-015",
-        LymailleError::ScriptFailed(_) => "MRD-LYMAILLE-016",
+        other => render::format_error(&other.code()),
     }
 }
 

@@ -76,7 +76,9 @@ Tasks:
     de l'ouverture à la demande ; figer le couple `ChatBridge::new(… Arc<MatrixClient> …)` public + `with_sender`/`with_clock` `pub(crate)`
     (résolution `private_interfaces` du code en place). Amender le point 5 du `Must` et les textes de confirmation en même temps.
   [?] Mise à jour d'un message par édition (streaming) et salles multi-utilisateurs : hors lot 2.
-  [ ] Amendement du 2026-11-11 (arbitrage du développeur principal) : `code_de` est supprimée au profit de `LymailleError::code()` (../error.sdd) ; plus aucun code `MRD-LYMAILLE` en littéral dans ./bridge.rs ; tests existants verts, verrou « les codes sont stables » inchangé. Après ../error.sdd.
+  [x] Amendement du 2026-11-11 (arbitrage du développeur principal) : `code_de` est supprimée au profit de `LymailleError::code()` (../error.sdd) ; plus aucun code `MRD-LYMAILLE` en littéral dans ./bridge.rs ; tests existants verts, verrou « les codes sont stables » inchangé. Après ../error.sdd.
+    Validé 2026-11-11 (validator PASS : `code_de` et `RUN_FAILED_CODE` disparues, zéro littéral `MRD-LYMAILLE` en production dans ./bridge.rs, verrou intact, 19/19 tests du pont verts sous `lymaille,matrix`, clippy `-D warnings` et `fmt` verts).
+    [?] (validator, cycle du 2026-11-11) : le site `SessionOutcome::Failed` dérive `-007` via une instance `Run { message: String::new(), retryable: false }` fabriquée — `code()` ne dépend d'aucun champ, comportement observable identique, mais la valeur `retryable: false` fictive pourrait prêter à lire une sémantique qui n'existe pas. Options : garder (recommandé, verrouillé par test) ou exposer plus tard une formulation sans champ fictif (constante de variante). Choix provisoire : garder la forme actuelle.
   [?] Le banc live (`tests/matrix_live.rs`, cluster media-test) pourra porter un test `#[ignore]` de bout en bout ; non exigé par ce lot.
 
 Done when:
