@@ -804,6 +804,10 @@ fn code_de(erreur: &LymailleError) -> &'static str {
         LymailleError::NotFound(_) => "MRD-LYMAILLE-010",
         LymailleError::Conflict(_) => "MRD-LYMAILLE-011",
         LymailleError::Serialization(_) => "MRD-LYMAILLE-012",
+        LymailleError::ScriptTimeout => "MRD-LYMAILLE-013",
+        LymailleError::ScriptOperationLimit => "MRD-LYMAILLE-014",
+        LymailleError::ScriptResultTooLarge => "MRD-LYMAILLE-015",
+        LymailleError::ScriptFailed(_) => "MRD-LYMAILLE-016",
     }
 }
 

@@ -53,6 +53,22 @@ pub enum LymailleError {
     /// est un texte expurgé, sans contenu de session. Code propre, distinct de `-009` (`Store`).
     #[error("MRD-LYMAILLE-012: serialization error: {0}")]
     Serialization(String),
+    /// Exécuteur de script : délai dépassé (amendement du 2026-11-11, DSD `scripts-hote#FR-7`) ;
+    /// non retryable, sans contenu de script ni de ligne.
+    #[error("MRD-LYMAILLE-013: script exceeded its time limit")]
+    ScriptTimeout,
+    /// Exécuteur de script : limite d'opérations dépassée (amendement du 2026-11-11, DSD
+    /// `scripts-hote#FR-7`) ; non retryable, sans contenu de script ni de ligne.
+    #[error("MRD-LYMAILLE-014: script exceeded its operation limit")]
+    ScriptOperationLimit,
+    /// Exécuteur de script : résultat dépassant la taille autorisée (amendement du 2026-11-11,
+    /// DSD `scripts-hote#FR-7`) ; non retryable, sans contenu de script ni de ligne.
+    #[error("MRD-LYMAILLE-015: script result exceeds its size limit")]
+    ScriptResultTooLarge,
+    /// Exécuteur de script : le script a échoué (amendement du 2026-11-11, DSD
+    /// `scripts-hote#FR-7`) ; `{0}` est le message d'erreur Rhai, sans source. Non retryable.
+    #[error("MRD-LYMAILLE-016: script failed: {0}")]
+    ScriptFailed(String),
 }
 
 impl LymailleError {
@@ -72,8 +88,8 @@ impl LymailleError {
 mod tests {
     use super::*;
 
-    // Scenario: les codes sont stables — tâche `Serialization` (2026-11-05) : couvre désormais
-    // `-001` à `-012`.
+    // Scenario: les codes sont stables — tâche `Serialization` (2026-11-05) : `-001` à `-012` ;
+    // amendement du 2026-11-11 (DSD `scripts-hote#FR-7`) : désormais `-001` à `-016`.
     #[test]
     fn codes_are_stable() {
         let cases = [
@@ -95,6 +111,11 @@ mod tests {
             (LymailleError::NotFound("x".into()), "MRD-LYMAILLE-010"),
             (LymailleError::Conflict("x".into()), "MRD-LYMAILLE-011"),
             (LymailleError::Serialization("x".into()), "MRD-LYMAILLE-012"),
+            // Amendement du 2026-11-11 (DSD `scripts-hote#FR-7`) : exécuteur de script.
+            (LymailleError::ScriptTimeout, "MRD-LYMAILLE-013"),
+            (LymailleError::ScriptOperationLimit, "MRD-LYMAILLE-014"),
+            (LymailleError::ScriptResultTooLarge, "MRD-LYMAILLE-015"),
+            (LymailleError::ScriptFailed("x".into()), "MRD-LYMAILLE-016"),
         ];
         for (err, code) in cases {
             let msg = err.to_string();
@@ -145,6 +166,51 @@ mod tests {
         assert!(!err.retryable(), "une panne de sérialisation ne se rejoue pas");
     }
 
+    // Amendement du 2026-11-11 (DSD `scripts-hote#FR-7`) : message exact et `Debug` même forme
+    // que les autres variantes (code, texte contractuel, message Rhai fourni par l'appelant sans
+    // source de script, rien de plus), et les quatre exécutions de script non rejouables.
+    #[test]
+    fn amendement_scripts_hote_messages_debug_et_retryabilite() {
+        let timeout = LymailleError::ScriptTimeout;
+        assert_eq!(
+            timeout.to_string(),
+            "MRD-LYMAILLE-013: script exceeded its time limit"
+        );
+        assert_eq!(format!("{timeout:?}"), "ScriptTimeout");
+        assert!(!timeout.retryable(), "un dépassement de délai ne se rejoue pas");
+
+        let operations = LymailleError::ScriptOperationLimit;
+        assert_eq!(
+            operations.to_string(),
+            "MRD-LYMAILLE-014: script exceeded its operation limit"
+        );
+        assert_eq!(format!("{operations:?}"), "ScriptOperationLimit");
+        assert!(
+            !operations.retryable(),
+            "un dépassement de limite d'opérations ne se rejoue pas"
+        );
+
+        let too_large = LymailleError::ScriptResultTooLarge;
+        assert_eq!(
+            too_large.to_string(),
+            "MRD-LYMAILLE-015: script result exceeds its size limit"
+        );
+        assert_eq!(format!("{too_large:?}"), "ScriptResultTooLarge");
+        assert!(!too_large.retryable(), "un résultat trop gros ne se rejoue pas");
+
+        let failed = LymailleError::ScriptFailed("0:1 - 1:2: syntax error".into());
+        assert_eq!(
+            failed.to_string(),
+            "MRD-LYMAILLE-016: script failed: 0:1 - 1:2: syntax error"
+        );
+        assert_eq!(
+            format!("{failed:?}"),
+            r#"ScriptFailed("0:1 - 1:2: syntax error")"#,
+            "le Debug ne porte que le message Rhai fourni par l'appelant, sans source"
+        );
+        assert!(!failed.retryable(), "un échec du script ne se rejoue pas");
+    }
+
     // Scenario: la retryabilité suit la variante
     #[test]
     fn retryable_follows_variant() {
@@ -172,6 +238,12 @@ mod tests {
             (LymailleError::Conflict("x".into()), false),
             // Tâche `Serialization` (2026-11-05) : une panne de sérialisation ne se rejoue pas.
             (LymailleError::Serialization("x".into()), false),
+            // Amendement du 2026-11-11 (DSD `scripts-hote#FR-7`) : les quatre variantes
+            // d'exécuteur de script ne se rejouent pas.
+            (LymailleError::ScriptTimeout, false),
+            (LymailleError::ScriptOperationLimit, false),
+            (LymailleError::ScriptResultTooLarge, false),
+            (LymailleError::ScriptFailed("x".into()), false),
         ];
         for (err, expected) in cases {
             assert_eq!(err.retryable(), expected, "variante : {err}");

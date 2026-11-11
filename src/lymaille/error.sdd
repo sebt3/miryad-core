@@ -73,7 +73,8 @@ Tasks:
   [x] Verrouiller par un assert exact le `Debug` du `Scenario` « aucune valeur secrète » (`format!("{:?}", e)` == `SecretUnresolved("LLM_API_KEY")`) au lieu de `contains` (arbitrage du développeur principal, 2026-11-05). Test seul, sans changement de ./error.rs.
     Validé 2026-11-06 (validator PASS : assert exact sur Display et `Debug`, production intacte — diff confiné à `mod tests` ; lymaille vert en tests et clippy `-D warnings`, `fmt`).
     [?] du validator (la coche exige-t-elle la batterie complète ou la ciblée suffit pour un changement confiné à `mod tests`) : tranché par Sébastien en session du 2026-11-06 — batterie ciblée par cycle, batterie complète en fin de lot.
-  [ ] Amendement du 2026-11-11 (DSD `scripts-hote#FR-7`) : quatre variantes `ScriptTimeout`, `ScriptOperationLimit`, `ScriptResultTooLarge`, `ScriptFailed`, `retryable()` faux ; tests d'abord, puis ./error.rs.
+  [x] Amendement du 2026-11-11 (DSD `scripts-hote#FR-7`) : quatre variantes `ScriptTimeout`, `ScriptOperationLimit`, `ScriptResultTooLarge`, `ScriptFailed`, `retryable()` faux ; tests d'abord, puis ./error.rs.
+    Validé 2026-11-11 : codes `-013` à `-016` et retryabilité verrouillés par tests, batterie ciblée `lymaille` verte ; synthèse tenue par le primary (`validator` indisponible). Branches compagnons ajoutées à `code_de` de ./chat/bridge.rs pour la compilation sous `lymaille,matrix` — voir le `[?]` ouvert dans ./chat/bridge.sdd.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./error.rs.
