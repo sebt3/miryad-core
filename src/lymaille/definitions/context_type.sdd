@@ -61,7 +61,8 @@ Tasks:
     Arbitrages du 2026-11-11 : « toolset existant » = existence de la ligne (actif ou brouillon, l'exécution exige l'actif et échoue fermé) confirmé ; grammaire ASCII figée par `is_module_name`.
     Validé 2026-11-11 (tests `before_create_refuse_script_grants_mal_forme_ou_toolset_absent` et `before_create_accepte_des_grants_d_un_toolset_existant_sans_chercher_les_modules` ; batterie ciblée `lymaille` verte ; synthèse tenue par le primary).
 
-  [ ] Amendement du 2026-11-11 : le hook appelle `host_module::is_module_name` au lieu de sa copie locale de la grammaire ; tests existants verts sans retouche. Après ../host_module.sdd.
+  [x] Amendement du 2026-11-11 : le hook appelle `host_module::is_module_name` au lieu de sa copie locale de la grammaire ; tests existants verts sans retouche. Après ../host_module.sdd.
+    Validé 2026-11-11 (validator PASS : copie locale `est_nom_de_module` supprimée, hook branché sur `host_module::is_module_name`, grammaires prouvées équivalentes ASCII — 19 tests `context_type` verts sans retouche ; condition « seule copie » du `Must` de ../host_module.sdd atteinte ; batterie ciblée `lymaille` verte).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./context_type.rs.

@@ -21,6 +21,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::auth::AuthPrincipal;
+use crate::lymaille::host_module;
 use crate::lymaille::identity;
 use crate::resource::AccessPolicy;
 use crate::resource::HookError;
@@ -214,17 +215,6 @@ impl Entity {
             .map_err(|_| HookError::new("authorization check unavailable"))
     }
 
-    /// La porte des noms de modules : un nom est un identifiant valide à la grammaire de la crate
-    /// (`[A-Za-z_][A-Za-z0-9_]*`, celle de `../identity.rs::classify`) — **sans** vérification
-    /// d'existence : le registre `HostModules` est hors de portée d'un hook, la vérification a
-    /// lieu à l'exécution par `../script_runner.sdd` (DSD `scripts-hote` `DEC-2`, précision du
-    /// 2026-11-11).
-    fn est_nom_de_module(nom: &str) -> bool {
-        let mut caracteres = nom.chars();
-        matches!(caracteres.next(), Some(c) if c == '_' || c.is_ascii_alphabetic())
-            && caracteres.all(|c| c.is_ascii_alphanumeric() || c == '_')
-    }
-
     /// Porte commune de `before_create` (`existing` absent) et `before_update`, dans l'ordre du
     /// `Must` de `./context_type.sdd`, interrompue au premier échec : au moins une version ; la
     /// porte `DEC-28` (`allowed_agents` posé et tableau de chaînes) ; `classify(name) == Catalog`
@@ -277,7 +267,10 @@ impl Entity {
             }
         }
         for module in modules {
-            if !Self::est_nom_de_module(&module) {
+            // `is_module_name` de `../host_module.sdd` : seule copie de la grammaire ASCII ; pas de
+            // vérification d'existence — le registre `HostModules` est hors de portée d'un hook, elle
+            // a lieu à l'exécution par `../script_runner.sdd` (DSD `scripts-hote` `DEC-2`).
+            if !host_module::is_module_name(&module) {
                 return Err(HookError::new(
                     "context type script grant module must be a valid identifier",
                 ));
