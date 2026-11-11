@@ -72,7 +72,7 @@ Tasks:
     Validé 2026-11-11 : test `caller_of_returns_resolve_principal_on_a_generic_connection` (connexion + transaction, relecture du droit, `UnknownSubject`) ; batterie ciblée `lymaille` et `workflow,lymaille` verte ; synthèse tenue par le primary, `validator` indisponible — voir le `[?]` de cette spec, tâche de consolidation.
   [x] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : poser la constante dans ./identity.rs ; vérifier par recherche dans `src/` qu'aucun autre `const ADMIN_ONLY_MODULES` ni `ADMIN_ONLY` n'est déclaré (AC ci-dessous).
     Validé 2026-11-11 : déclaration unique verrouillée par le test `admin_only_modules_has_a_single_declaration` ; batterie ciblée `lymaille` et `workflow,lymaille` verte (tests, clippy `-D warnings`, fmt).
-    [?] (spec-dd) : l'agent `validator` était indisponible ce jour (expiration système de sa session, 4 tentatives) — la synthèse est tenue par le primary, relecture spec ↔ code ↔ tests comprise. Valides-tu ce mode dégradé pour ce lot ?
+    Ratifié 2026-11-11 : mode dégradé accepté pour ce lot (synthèse tenue par le primary, preuve portée par la batterie complète de fin de lot, 33/33). Pas un précédent : un passage `validator` (ou relecture croisée) est exigé à la clôture de `lymaille`, et l'indisponibilité du `validator` est à diagnostiquer.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./identity.rs.

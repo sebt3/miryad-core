@@ -268,7 +268,7 @@ pub fn mount_host_modules(
                     call: function.call,
                 };
                 // Enregistrement brut à `params` emplacements de `Dynamic` (précédent
-                // `resource_module` pour le pont, `Module::set_raw_fn` sous son nom de
+                // `resource_module` pour le pont, `FuncRegistration::set_into_module_raw` sous son nom de
                 // l'API `FuncRegistration` en rhai 1.27) : l'arité porte la clé de résolution,
                 // un appel d'une autre arité est `Function not found`.
                 let _metadata = FuncRegistration::new(function.name).set_into_module_raw(

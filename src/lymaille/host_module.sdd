@@ -25,7 +25,7 @@ Must:
   `pub fn mount_host_modules(registry: &HostModules, db: DatabaseConnection, subject: &str, select: HostSelect<'_>) -> Vec<(&'static str, rhai::Module)>` où
     `pub enum HostSelect<'a> { All, Named(&'a BTreeSet<String>) }` : `All` monte tous les modules enregistrés (session interactive et steps batch, `FR-3`) ; `Named(noms)` ne monte que ceux
     qui sont dans `noms` (scripts, `script_grants.modules`). Un nom inconnu du registre est ignoré.
-  Enrobage central (`FR-2`) : chaque fonction est enregistrée par `Module::set_raw_fn` et, **avant chaque appel**, `caller_of(db, subject)` relit le principal (via `vynil_core::rt::block_on`, pont de
+  Enrobage central (`FR-2`) : chaque fonction est enregistrée par `FuncRegistration::set_into_module_raw` et, **avant chaque appel**, `caller_of(db, subject)` relit le principal (via `vynil_core::rt::block_on`, pont de
     `resource_module`) puis applique la politique : `AdminOnly` exige `is_admin`, `Authenticated` exige un compte. Erreurs Rhai à message fixe : politique non satisfaite → `forbidden` ; `subject` sans compte →
     `no account for this session` ; panne de lecture → `internal error` (détail en `tracing::warn!`, sans contenu) ; `HostCallError` → son texte. Arité différente de `params` → erreur Rhai de fonction inconnue.
     Aucun principal n'est gardé entre deux appels.
@@ -46,7 +46,7 @@ Exposes:
 Tasks:
   [x] Tests d'abord (SQLite mémoire, module factice `dashboard`), puis ./host_module.rs.
     Validé 2026-11-11 : 5 tests ↔ 5 `Scenario`, rouge d'abord démontré (34 symboles absents), batterie ciblée `lymaille` tests+clippy et clippy `--all-features` + fmt verts ; synthèse tenue par le primary (`validator` indisponible).
-    [?] (implementer) : `Module::set_raw_fn` (cité au `Must`) n'existe pas dans `rhai` 1.27.0 — l'API brute réelle est `FuncRegistration::set_into_module_raw` (`PluginFunc`), contrat identique (enregistrement brut, `Dynamic`, arité = clé de résolution). Choix provisoire : `FuncRegistration` ; nommer l'API réelle à la relecture du `Must`.
+    Soldé 2026-11-11 : `Module::set_raw_fn` n'existe pas dans `rhai` 1.27 ; le `Must` nomme désormais l'API réelle, `FuncRegistration::set_into_module_raw` (contrat identique).
     [?] (implementer) : validité d'identifiant Rhai réimplémentée localement (première lettre alphabétique ou `_`, puis alphanumérique/`_`) — `rhai::is_valid_identifier` n'est public que sous la feature `internals`, absente du graphe. À figer ou assumer ?
     [?] (implementer) : `AdminOnly` + `subject` sans compte → l'ordre des refus n'est pas tranché par le contrat ; rendu actuel : `no account for this session` (résolution avant politique). Préciser dans le `Must` si l'autre ordre est voulu.
     [?] (spec-dd) : `pub mod host_module;` déclaré TEMPORAIREMENT dans ../mod.rs (hors `Owns`) pour faire tourner les tests inline ; la tâche « déclarations et ré-exports » de ../mod.sdd le remplacera — à ne pas oublier. — SOLDÉ 2026-11-11 : déclaration propre + ré-exports posés par la tâche de ../mod.sdd (commit 8a0dd19).

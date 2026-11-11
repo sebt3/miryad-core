@@ -105,7 +105,7 @@ Tasks:
     « ordre d'enregistrement » de ../migration/m20260930_000001_index_api_tokens_subject.sdd amendé d'une ligne.
   [x] Amendement du 2026-11-11 (DSD `scripts-hote` `DEC-2`) : colonne `script_grants` sur `catalog_context_types` par retouche en place de `m20261104_000001` (`up` et `down` cohérents) ; test d'abord, puis ./migration.rs. L'exception correspondante de `/AGENTS.md` est à poser avec accord.
     Validé 2026-11-11 (test `lot2_catalog_context_types_porte_la_colonne_des_grants_de_script` : `has_column`, idempotence, défaut relu, `down` cohérent ; batterie ciblée `lymaille` et `lymaille,matrix` verte ; synthèse tenue par le primary, `validator` indisponible).
-    [!] Exception `/AGENTS.md` non posée : la retouche en place de `m20261104_000001` (colonne `script_grants`, DSD `scripts-hote` `DEC-2` du 2026-11-05, feature jamais déployée) est implémentée mais sa ligne d'exception reste à écrire par le développeur principal — le code et les tests la citent comme « à poser ».
+    Ratifié 2026-11-11 : l'exception correspondante est posée dans `/AGENTS.md` (quatrième retouche en place de `m20261104_000001`, feature jamais déployée).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./migration.rs.

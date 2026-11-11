@@ -100,7 +100,7 @@ et les effets de bord d'une ressource se décident **à la sauvegarde**, par RES
 
 ## SpecDD Realization
 
-Aucune. `SpecDD /src/resource.sdd` et ses consommateurs seront amendés quand les Open Issues ci-dessous seront tranchées.
+Réalisée le 2026-11-11 (commit 64638c5) : `SpecDD /src/resource.sdd`, `/src/rest/core.sdd`, `/src/mcp/handler.sdd`, `/src/mcp/registry.sdd`, `/src/workflow/definition.sdd`, `/src/lymaille/resource_module.sdd` et les dix `/src/lymaille/definitions/*.sdd` ; contrôles à la sauvegarde (`FR-3`) : `private_agent`, `private_toolset`, `user_context` (commit 0361a89).
 
 ## Acceptance Criteria
 

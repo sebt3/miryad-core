@@ -13,6 +13,10 @@ instable avant `1.0` : un changement de version mineure peut être cassant.
   - `RunInfo` gagne `vars` et `trigger` (un littéral de struct doit les renseigner) et perd `Eq` ;
   - `trigger_run` prend les `vars` du run, et le handler `run` reçoit un `RunInput` ;
   - nouvelle variante `ScriptTimeout` (`MRD-WORKFLOW-009`).
+- **`MiryadResource`** : `before_create`, `before_update` et `before_delete` deviennent asynchrones et reçoivent la
+  connexion de l'appel (`db: &C`, `C: sea_orm::ConnectionTrait`, connexion ou transaction) ; ils rendent un futur
+  `Send`. Aucun trait de compatibilité : tout hook surchargé doit être réécrit (`async`, paramètre `db`).
+  Corollaires : `server_for` et `caller_of` deviennent génériques sur `ConnectionTrait`.
 - **Migrations** : les migrations `miryad_lymaille_*` (feature `lymaille`) s'ajoutent au `Migrator` ; elles
   n'existent pas en 0.2.0, aucune base existante n'est touchée sans la feature.
 
@@ -34,7 +38,12 @@ instable avant `1.0` : un changement de version mineure peut être cassant.
   - `LymailleHost` : l'application fournit URL et jeton frais des serveurs MCP par rôle (identifiants `H_…`),
     repli sur la table `mcp_servers`.
   - Module Rhai `resources` (lecture et écritures idempotentes) avec parité sur les politiques REST et MCP.
-  - Codes d'erreur `MRD-LYMAILLE-001` à `-012`.
+  - `HostModule` et registre `HostModules` : l'application accorde ses propres modules Rhai à une session, sous une
+    politique d'accès relue avant chaque appel ; un module réservé à l'admin ne peut être accordé par un non-admin.
+  - `ScriptRunner` : exécution d'un script Rhai à droits bornés (`script_grants` du type de contexte), sans boucle
+    d'inférence, sous l'identité du principal donné.
+  - Contrôles d'autorité à la sauvegarde (agents privés, toolsets privés, contextes) par les hooks asynchrones.
+  - Codes d'erreur `MRD-LYMAILLE-001` à `-012` ; variantes `ScriptTimeout`, `ScriptOperationLimit`, `ScriptResultTooLarge`, `ScriptFailed`.
 - **`workflow`** :
   - step `subagent` (session déterministe reprise au rejeu, plafond d'application de durée, clients MCP du contexte
     lié montés en batch, clé masquée par le `Redactor`) ;

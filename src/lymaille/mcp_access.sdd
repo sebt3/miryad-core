@@ -61,7 +61,7 @@ Tasks:
   [x] Tests d'abord (SQLite mémoire, `ScriptedResolver` de test, hôte factice de ./host.sdd), puis ./mcp_access.rs, après ./host.rs. Validé 2026-11-04 (validator PASS checkpoint 4 — 15 Scenario verrouillés).
   [x] Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) : `server_for` devient générique sur `ConnectionTrait` (appelé par le hook de ./definitions/user_context.sdd avec la connexion de l'appel) ; comportement inchangé, tests existants verts.
     Validé 2026-11-11 : généricité étendue à l'auxiliaire privé `autorise`, surface de `resolve_role` inchangée, 14 tests existants verts sans retouche ; batterie ciblée verte ; synthèse tenue par le primary (`validator` indisponible).
-    [!] (implementer, ratifié en apparence par le primary, décision à rendre par Sébastien) : le témoin `std::hint::black_box(server_for)` de ../mod.rs (ligne ~173, `#[cfg(test)]`) ne peut plus inférer `C` — turbofish `::<sea_orm::DatabaseConnection>` posé hors `Owns` des deux specs, seule adaptation possible pour garder la compilation, zéro sémantique.
+    Ratifié 2026-11-11 : le turbofish `::<sea_orm::DatabaseConnection>` du témoin `black_box(server_for)` de ../mod.rs (`#[cfg(test)]`), hors `Owns`, est accepté — seule adaptation possible, zéro sémantique.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./mcp_access.rs.
