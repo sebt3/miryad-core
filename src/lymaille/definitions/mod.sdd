@@ -50,6 +50,9 @@ Tasks:
     `mcp_server.rs`) — introduits par le lot 1 (`3c005f8`), invisibles tant que la doc `--all-features` ne couvrait pas `lymaille`, et qui
     font échouer le critère « doc sans warnings » de la batterie. Le code et les specs ne sont pas touchés en attente d'arbitrage : lien public, lien
     conditionnel `#[cfg(doc)]`, ou dette tracée dans `/tooling.sdd`. **Arbitrage de Sébastien requis.**
+    Comptage 2026-11-12 : **12 warnings** — les 10 connus plus deux dans `./host_module.rs` (lien
+    `mount_host_modules` non résolu, lien `Guarded` vers un item `pub(crate)`), introduits par le lot
+    scripts-hote (`53cdb81`). Même arbitrage attendu pour les douze.
   [?] (implementer, lot 3) : les deux liens [`check_toolset`] de la doc de `./toolset.rs` et `./private_toolset.rs` sont passés en texte
     inline car la cible est `pub(crate)` — un lien vers son chemin aurait créé un warning `private_intra_doc_links` de plus. Si un lien
     est souhaité, il faut rendre `check_toolset` pub (changement de surface). Choix provisoire : texte inline.
