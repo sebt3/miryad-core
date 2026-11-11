@@ -151,7 +151,8 @@ Tasks:
     @--all-features}, @lymaille}, @rig-core} et @rmcp} à un exemplaire ; bascule `rhai` 1.27 prouvée par les batteries @workflow}
     et @workflow,lymaille} vertes.
   [x] Wording de la preuve : aligné le 2026-11-06 sur `/tooling.sdd` (critère = sortie stdout vide, cargo 1.99 rend 101 sur le nom absent) ; « nothing to print » reste exact pour `sea-orm` sans `db`.
-  [ ] Amendement du 2026-11-11 (DSD `scripts-hote`) : déclarations et ré-exports de `host_module` et `script_runner` ; test d'import d'abord, puis ./mod.rs.
+  [x] Amendement du 2026-11-11 (DSD `scripts-hote`) : déclarations et ré-exports de `host_module` et `script_runner` ; test d'import d'abord, puis ./mod.rs.
+    Validé 2026-11-11 : blocs TEMPORAIRE remplacés par les déclarations et les deux lignes de ré-exports exactes du `Must` ; témoins witness_host_modules/witness_script_runner ajoutés au test « les chemins plats existent » (rouge d'abord) ; batterie ciblée `lymaille` verte ; synthèse tenue par le primary (`validator` indisponible). La déclaration posée temporairement par ./script_runner.sdd est reprise ici (le `[!]` de cette spec-là est soldé sur ce point).
 
 Done when:
   Les `Scenario` sont verts ; `cargo build --no-default-features --features lymaille` et `--all-features` compilent sans

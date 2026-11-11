@@ -37,9 +37,11 @@ pub mod error;
 /// `McpGrant`, `HostError`, `SharedHost` (amendement DEC-27/DEC-30 de ./mod.sdd).
 pub mod host;
 
-/// TEMPORAIRE (tâche ./mod.sdd distincte) : la déclaration et les ré-exports de `host_module`
-/// seront posés par la tâche de montage ; déclarés ici pour faire tourner les tests inline de
-/// `src/lymaille/host_module.sdd`.
+/// Modules Rhai de l'hôte et registre `HostModules` (`src/lymaille/host_module.sdd`) : modules
+/// déclarés par l'application (nom, politique d'accès, fonctions), montés et enrobés d'un contrôle
+/// d'autorité central ; `register` échoue sur un nom réservé ou en double. Ré-exports à plat :
+/// `HostAccess`, `HostModule`, `HostFunction`, `HostCallError`, `HostModules`, `HostSelect`
+/// (amendement 2026-11-11, DSD `scripts-hote`, de ./mod.sdd).
 pub mod host_module;
 
 /// Surface REST+SSE des sessions interactives (`src/lymaille/http/mod.sdd`) : routeur
@@ -84,9 +86,10 @@ pub mod resource_module;
 /// Résolution des références d'authentification des providers (`src/lymaille/secret.sdd`).
 pub mod secret;
 
-/// TEMPORAIRE (tâche ./mod.sdd distincte) : la déclaration et les ré-exports de `script_runner`
-/// seront posés par la tâche de montage ; déclarés ici pour faire tourner les tests inline de
-/// `src/lymaille/script_runner.sdd`.
+/// Exécuteur de script Rhai sans boucle d'inférence (`src/lymaille/script_runner.sdd`) : le
+/// script fourni par l'hôte s'exécute sous son identité, à droits bornés par le type du contexte,
+/// sous plafonds de durée, d'opérations et de taille (`ScriptLimits`). Ré-exports à plat :
+/// `ScriptRunner`, `ScriptLimits` (amendement 2026-11-11, DSD `scripts-hote`, de ./mod.sdd).
 pub mod script_runner;
 
 /// Stores SeaORM des traits hôte de `lymaille` : huit stores liés à un `subject`, fabriqués par
@@ -98,14 +101,16 @@ pub mod store;
 mod tls;
 
 // Ré-exports à plat (ordre alphabétique des sous-modules, comme les déclarations ci-dessus) —
-// exactement la liste fermée du `Must` de ./mod.sdd et de ses deux amendements : lot 1
+// exactement la liste fermée du `Must` de ./mod.sdd et de ses amendements : lot 1
 // (`error`, `identity`, `migration`, `secret`, `store`, `tls`), amendement lot 2 (`host`, `http`,
-// `interactive`, `mcp_access`, `store`) et amendement DEC-27/DEC-30 (`host`, `interactive` par son
-// chemin `event::export_typescript`, `mcp_access`). `store` et `definitions` restent aussi
+// `interactive`, `mcp_access`, `store`), amendement DEC-27/DEC-30 (`host`, `interactive` par son
+// chemin `event::export_typescript`, `mcp_access`) et amendement 2026-11-11 DSD `scripts-hote`
+// (`host_module`, `script_runner`). `store` et `definitions` restent aussi
 // atteignables par leur chemin : leurs entités et stores se nomment par sous-module (collisions
 // de noms).
 pub use error::LymailleError;
 pub use host::{HostError, LymailleHost, McpDecision, McpGrant, McpRequest, SharedHost};
+pub use host_module::{HostAccess, HostCallError, HostFunction, HostModule, HostModules, HostSelect};
 pub use http::conversations_router;
 pub use identity::{CallerPrincipal, Identity};
 pub use interactive::{
@@ -113,6 +118,7 @@ pub use interactive::{
 };
 pub use mcp_access::{RoleBinding, SeaHostMcpAuth, SeaMcpAuth, resolve_role, server_for};
 pub use migration::migrations;
+pub use script_runner::{ScriptLimits, ScriptRunner};
 pub use secret::{EnvSecretResolver, SecretResolver};
 pub use store::{AuditWriter, LymailleStores, PurgeReport, purge_sessions};
 pub use tls::install_crypto_provider;
@@ -128,7 +134,10 @@ mod tests {
     /// `host::{LymailleHost, McpRequest, McpDecision, McpGrant, HostError, SharedHost}`,
     /// `interactive::{SessionEvent, SessionEventKind, SessionOutcome}`,
     /// `interactive::event::export_typescript` (promis par son chemin, non à plat),
-    /// `mcp_access::{resolve_role, RoleBinding, SeaHostMcpAuth}` — chaque item résout depuis
+    /// `mcp_access::{resolve_role, RoleBinding, SeaHostMcpAuth}` ; amendement 2026-11-11
+    /// (DSD `scripts-hote`) : `host_module::{HostAccess, HostModule, HostFunction, HostCallError,
+    /// HostModules, HostSelect}` et `script_runner::{ScriptRunner, ScriptLimits}` — chaque item
+    /// résout depuis
     /// `crate::lymaille::` sans nommer les sous-modules (sauf le chemin `event::export_typescript`
     /// promis tel quel par l'amendement). Compilation seule — témoins de type en position de
     /// paramètre, rien n'est instancié ni appelé (forme des témoins `Option<>` de
@@ -174,10 +183,29 @@ mod tests {
             _: Option<crate::lymaille::SeaHostMcpAuth>,
         ) {
         }
+        // Amendement 2026-11-11 (DSD `scripts-hote`) : modules Rhai de l'hôte. `HostModule` est un
+        // trait (témoin `dyn`), `HostSelect` porte une durée de vie.
+        fn witness_host_modules(
+            _: Option<crate::lymaille::HostAccess>,
+            _: Option<&dyn crate::lymaille::HostModule>,
+            _: Option<crate::lymaille::HostFunction>,
+            _: Option<crate::lymaille::HostCallError>,
+            _: Option<crate::lymaille::HostModules>,
+            _: Option<crate::lymaille::HostSelect<'_>>,
+        ) {
+        }
+        // Amendement 2026-11-11 (DSD `scripts-hote`) : exécutateur de scripts et ses limites.
+        fn witness_script_runner(
+            _: Option<crate::lymaille::ScriptRunner>,
+            _: Option<crate::lymaille::ScriptLimits>,
+        ) {
+        }
         witness(None, None, None, None, None, None);
         witness_lotte2(None, None, None, None, None, None);
         witness_hote(None, None, None, None, None, None);
         witness_evenements(None, None, None, None, None);
+        witness_host_modules(None, None, None, None, None, None);
+        witness_script_runner(None, None);
         std::hint::black_box(crate::lymaille::migrations);
         std::hint::black_box(crate::lymaille::install_crypto_provider);
         std::hint::black_box(crate::lymaille::server_for::<sea_orm::DatabaseConnection>);
