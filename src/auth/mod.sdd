@@ -304,8 +304,12 @@ Tasks:
     (vague B1, validator PASS) : `; Secure` inséré après `HttpOnly` à la pose (`handler_login`) et
     à la purge (`handler_callback` succès) selon `secure_cookies`, motif identique à
     @cookie::build_set_cookie ; un test par valeur × pose/purge, chaînes complètes affirmées.
-  [ ] Garde de montage OwnerOnly-sans-colonne : voir ./../rest/mod.sdd (`assert!` plutôt que
+  [x] Garde de montage OwnerOnly-sans-colonne : voir ./../rest/mod.sdd (`assert!` plutôt que
     `#[allow(clippy::panic)]`) — pas de changement ici.
+    Validé 2026-11-12 (ratification, validator PASS sur HEAD 3d47a06 : la tâche citée de
+    ./../rest/mod.sdd est `[x]` ; ./../rest/mod.rs porte l'`assert!` au message explicite (zéro
+    `#[allow` dans le fichier), test `owner_only_without_column_panics_at_mount` avec
+    `should_panic` concordant vert. Formalité de clôture, aucun changement ici comme annoncé).
   [x] Élargir @MockOidcClient pour rendre le callback réussi testable (arbitré par Sébastien le
     2026-09-27, cross-file avec ./oidc.sdd) : ajouter un mode configurable où @exchange_code rend
     un @OidcLoginResult fourni au lieu de paniquer — le mode panique reste le défaut (aucun test

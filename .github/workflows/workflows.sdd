@@ -144,9 +144,6 @@ Tasks:
     vertes.
     Revu 2026-10-19 (Claude) : la matrice a depuis grandi avec `systemone` et `matrix` (onze entrées de test, huit de
     clippy, toujours sans graphe `graphql`), sans `continue-on-error`.
-  [ ] Confirmer que le job clippy garde `-- -D warnings` dès que `../../tooling.sdd` est à zéro
-    dette : le harnais est en `deny` à l'adoption, donc la CI est rouge tant que la purge n'est
-    pas finie — c'est l'effet voulu, pas une raison de retirer le drapeau.
   [x] Amendement 2026-11-03 (`lymaille`) : dans `./ci.yml`, passer chaque matrice à quinze entrées nommées (les treize de
     l'amendement 2026-10-19 plus `lymaille` et `workflow-lymaille`) et ajouter au job de preuve de graphe les deux contrôles
     de l'amendement `lymaille` du `Must` (sortie vide exigée pour `-i lymaille` sans la feature, code de sortie non bloquant
@@ -159,6 +156,11 @@ Tasks:
     Confirmé 2026-11-03 (validator PASS) : le drapeau est porté par l'unique step partagé du job clippy
     (`cargo clippy --all-targets ${{ matrix.args }} -- -D warnings`), donc sur les quinze entrées ; `tooling.sdd`
     est à zéro dette (dernière batterie complète prouvée sur 5bd049f).
+    Ratifié 2026-11-12 (validator PASS sur HEAD 3d47a06) : la présente ligne succède à l'originale `[ ]`
+    que l'amendement du 2026-11-03 avait ajoutée sans retirer (doublon résolu par cette clôture) ;
+    drapeau `-D warnings` confirmé sur les 16 entrées de matrice actuelles, `tooling.sdd` toujours à zéro
+    dette — clippy `-D warnings` vert sur les 16 combinaisons (9 rejouées ce jour sur HEAD, 7 déjà vertes),
+    `cargo fmt --check` vert.
   [ ] Décider s'il faut séparer `test`, `fmt` et `clippy` en jobs dédiés dès que la matrice est
     jouée (parallélisme, lisibilité des échecs).
   [x] Tension matrice complète / carve-out du pont : arbitré par Sébastien le 2026-10-03, option

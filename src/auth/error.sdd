@@ -275,12 +275,18 @@ Tasks:
     2026-09-30 (vague B1, validator PASS) : variante + match groupé nommément `Database(_) |
     Internal(_)`, deux `Scenario` ci-dessus verrouillés par
     `display_018_internal_payload_verbatim` et `http_render_018_internal_is_500`.
-  [ ] Troisième variante ajoutée sur arbitrage en session avec Sébastien (2026-09-27) :
+  [x] Troisième variante ajoutée sur arbitrage en session avec Sébastien (2026-09-27) :
     @AuthError::TokenHashConflict (`MRD-AUTH-017`, `409` @StatusCode::CONFLICT, variante unitaire,
     littéral `MRD-AUTH-017: token hash already provisioned for another subject`) — émise par
     @ensure_token (./token.sdd `Tasks`, rejet de l'empreinte détenue par un autre `subject`),
     @Error::source @None. Consommateur aval : @to_rest_error de /src/rest/tokens.rs doit mapper
     cette variante.
+    Validé 2026-11-12 (ratification, validator PASS sur HEAD 3d47a06 — le travail avait été fait par
+    les commits antérieurs sans que la case bouge : variante + Display exact + `409` + `source` `@None`
+    dans ./error.rs (`display_017_token_hash_conflict`, `http_render_017_token_hash_conflict_is_409`,
+    `source_is_none_on_non_database_variants`), émission par @ensure_token testée sans écriture parasite,
+    mapping @to_rest_error → @RestError::Conflict verrouillé dans /src/rest/tokens.rs, bout-en-bout
+    `users/service_account.rs` vert ; vert en défaut et `--no-default-features`).
   [x] Deux nouvelles variantes @AuthError::InvalidCallback (`MRD-AUTH-012`, `400`) et
     @AuthError::CsrfMismatch (`MRD-AUTH-013`, `400`) — arbitré 2026-09-27, `Must`, `Exposes`,
     `Raises`. Cross-file avec ./mod.sdd : les deux points de construction actuels
