@@ -57,7 +57,7 @@ Must:
       `down` complète est de nouveau cohérente ; remplacées ci-dessous :
       `ContextTypeStore` et `ContextStore` lisent désormais les tables à identifiant entier, ../store/toolset.sdd) ;
     `catalog_context_types` — `id` PK auto ; `name` TEXT NOT NULL **UNIQUE** (`G_…`) ; `version` TEXT NOT NULL ; `allowed_agents` JSON NOT NULL (tableau
-      d'identifiants, DSD `DEC-28`) ; `active` JSON NULL ; `draft` JSON NULL ; `created_at`. La colonne `allowed_agents` est posée en
+      d'identifiants, DSD `DEC-28`) ; `script_grants` JSON NOT NULL DEFAULT `{"toolsets":[],"modules":[]}` (amendement 2026-11-11, DSD `scripts-hote` `DEC-2`, retouche en place de `m20261104_000001`, exception `/AGENTS.md` à tracer, feature jamais déployée) ; `active` JSON NULL ; `draft` JSON NULL ; `created_at`. La colonne `allowed_agents` est posée en
       modification en place de `m20261104_000001` (exceptions `/AGENTS.md` des 2026-11-03 et 2026-11-05, feature jamais déployée) ; `kind` et `default_agent`
       **ne sont plus des colonnes** (le `ContextType` de `lymaille` 0.2.0 les porte, DSD `DEC-28` révisé le 2026-11-05) ; contrat de l'entité :
       ./definitions/context_type.sdd.
@@ -103,6 +103,7 @@ Tasks:
   [x] Amender ../migration/mod.sdd et mod.rs (ajout conditionnel `lymaille` en fin de liste) dans le même lot. Validé
     2026-11-02 ; Scenario d'ordre ajouté à ../migration/mod.sdd (miroir du précédent matrix) et Scenario
     « ordre d'enregistrement » de ../migration/m20260930_000001_index_api_tokens_subject.sdd amendé d'une ligne.
+  [ ] Amendement du 2026-11-11 (DSD `scripts-hote` `DEC-2`) : colonne `script_grants` sur `catalog_context_types` par retouche en place de `m20261104_000001` (`up` et `down` cohérents) ; test d'abord, puis ./migration.rs. L'exception correspondante de `/AGENTS.md` est à poser avec accord.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./migration.rs.

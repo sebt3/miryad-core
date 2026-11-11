@@ -56,6 +56,9 @@ Must:
     à vérifier, sinon amendement soumis à accord). La combinaison `lymaille,matrix` s'ajoute à la batterie (/tooling.sdd, /.github/workflows/workflows.sdd,
     /AGENTS.md) : tests, clippy `-D warnings` ; `cargo tree --features lymaille,matrix -e normal -i matrix-sdk` doit imprimer une ligne.
 
+  **Amendement 2026-11-11 (DSD `scripts-hote`)** : déclarer `pub mod host_module;` (./host_module.sdd) et `pub mod script_runner;` (./script_runner.sdd) ; ré-exports plats `host_module::{HostAccess, HostModule, HostFunction, HostCallError, HostModules, HostSelect}` et
+    `script_runner::{ScriptRunner, ScriptLimits}`. L'application construit un `HostModules` au démarrage (`register` échoue sur un nom réservé ou en double) et le fournit à `AssembleDeps`, aux dépendances du step `subagent` et au `ScriptRunner`.
+
   **Amendement DEC-27 et DEC-30 (2026-11-03)** : déclarer en plus `pub mod host;` (./host.sdd). Ré-exports plats ajoutés : `host::{LymailleHost, McpRequest, McpDecision, McpGrant, HostError,
     SharedHost}`, `interactive::{SessionEvent, SessionEventKind, SessionOutcome}`, `interactive::event::export_typescript` ; `mcp_access::{resolve_role, RoleBinding, SeaHostMcpAuth}`
     (en plus de `server_for` et `SeaMcpAuth`). Le bloc `//!` documente l'hôte applicatif : l'application fournit un `SharedHost` (optionnel) à `LymailleStores::with_host`, à `SubagentDeps::host`
@@ -148,6 +151,7 @@ Tasks:
     @--all-features}, @lymaille}, @rig-core} et @rmcp} à un exemplaire ; bascule `rhai` 1.27 prouvée par les batteries @workflow}
     et @workflow,lymaille} vertes.
   [x] Wording de la preuve : aligné le 2026-11-06 sur `/tooling.sdd` (critère = sortie stdout vide, cargo 1.99 rend 101 sur le nom absent) ; « nothing to print » reste exact pour `sea-orm` sans `db`.
+  [ ] Amendement du 2026-11-11 (DSD `scripts-hote`) : déclarations et ré-exports de `host_module` et `script_runner` ; test d'import d'abord, puis ./mod.rs.
 
 Done when:
   Les `Scenario` sont verts ; `cargo build --no-default-features --features lymaille` et `--all-features` compilent sans

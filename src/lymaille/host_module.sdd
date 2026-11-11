@@ -1,0 +1,75 @@
+Spec: host_module — modules Rhai de l'hôte, registre `HostModules` et enrobage d'autorité
+
+Purpose:
+  Permettre à l'application d'accorder à une session ou à un script ses propres modules Rhai (« présenter un tableau de bord », « naviguer vers une page ») sous
+    les règles d'autorité de la crate (DSD `scripts-hote#FR-1` à `FR-3`, `DEC-4`). L'hôte déclare un `HostModule` : nom, politique d'accès fermée
+    et fonctions. La crate monte le module et **enrobe chaque fonction** d'un contrôle central, exécuté avant chaque appel, sur un principal relu en base
+    (`lymaille#FR-4`) : un module n'a pas à réimplémenter l'autorité. Le registre `HostModules` est une valeur du montage (précédent : `ResourceRegistry`), distincte de
+    `LymailleHost` : une collision de nom échoue au démarrage. Fichier neuf, conception.
+
+Owns:
+  ./host_module.rs
+
+References:
+  /dsd/miryad-core/scripts-hote.md — `FR-1`, `FR-2`, `FR-3`, `DEC-4`, `OI-1`, `AC-1`, `AC-2`
+  ./identity.sdd — `caller_of`, `CallerPrincipal` ; ./resource_module.sdd — précédent (pont `block_on`, erreurs Rhai à message fixe) ; ./host.sdd — `LymailleHost` (distinct)
+
+Must:
+  `#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum HostAccess { Authenticated, AdminOnly }` — énumération fermée : pas de décision de l'hôte par appel.
+  `pub trait HostModule: Send + Sync` : `fn name(&self) -> &'static str` (identifiant Rhai valide) ; `fn access(&self) -> HostAccess` ; `fn functions(&self, subject: &str) -> Vec<HostFunction>` (appelée au montage, pour un `subject`).
+  `pub struct HostFunction { pub name: &'static str, pub params: usize, pub call: Arc<dyn Fn(&mut [rhai::Dynamic]) -> Result<rhai::Dynamic, HostCallError> + Send + Sync> }` ;
+    `pub struct HostCallError(String)` avec `HostCallError::new(impl Into<String>)` : texte applicatif rendu tel quel, sans contenu secret (responsabilité de l'hôte).
+  `pub struct HostModules` : `new()`, `register(&mut self, module: Arc<dyn HostModule>) -> Result<&mut Self, LymailleError>` ; échec `LymailleError::Config("host module name reserved or taken: <nom>")` si
+    le nom est dans `RESERVED_MODULE_NAMES` (`resources`, `result`, `contexts`, `inspect`, `sessions`), déjà enregistré, ou n'est pas un identifiant Rhai valide. `get(name)`, `names()` (triés),
+    `admin_only_names() -> Vec<&'static str>`. `Default` = registre vide.
+  `pub fn mount_host_modules(registry: &HostModules, db: DatabaseConnection, subject: &str, select: HostSelect<'_>) -> Vec<(&'static str, rhai::Module)>` où
+    `pub enum HostSelect<'a> { All, Named(&'a BTreeSet<String>) }` : `All` monte tous les modules enregistrés (session interactive et steps batch, `FR-3`) ; `Named(noms)` ne monte que ceux
+    qui sont dans `noms` (scripts, `script_grants.modules`). Un nom inconnu du registre est ignoré.
+  Enrobage central (`FR-2`) : chaque fonction est enregistrée par `Module::set_raw_fn` et, **avant chaque appel**, `caller_of(db, subject)` relit le principal (via `vynil_core::rt::block_on`, pont de
+    `resource_module`) puis applique la politique : `AdminOnly` exige `is_admin`, `Authenticated` exige un compte. Erreurs Rhai à message fixe : politique non satisfaite → `forbidden` ; `subject` sans compte →
+    `no account for this session` ; panne de lecture → `internal error` (détail en `tracing::warn!`, sans contenu) ; `HostCallError` → son texte. Arité différente de `params` → erreur Rhai de fonction inconnue.
+    Aucun principal n'est gardé entre deux appels.
+  Les modules d'hôte sont disponibles en session interactive et en step batch par ce même registre ; en batch, `subject` est celui du déclencheur (`lymaille#FR-10`).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Décider d'un accès par une règle propre au module ; mettre un principal en cache ; passer au module la connexion à la base ; enregistrer un nom réservé ou en double ; inclure un contenu de ligne ou de session
+    dans une erreur ou une trace.
+  Lire le registre depuis un hook `MiryadResource` (fonction statique sans état) : le contrôle à la sauvegarde d'un accord de module d'hôte réservé à l'admin se fait à l'assemblage et à l'appel, jamais ici.
+
+Depends on:
+  ./identity.rs, ./error.rs, @vynil_core, @rhai, @sea_orm
+
+Exposes:
+  `HostAccess`, `HostModule`, `HostFunction`, `HostCallError`, `HostModules`, `HostSelect`, `mount_host_modules`, `RESERVED_MODULE_NAMES`
+
+Tasks:
+  [ ] Tests d'abord (SQLite mémoire, module factice `dashboard`), puis ./host_module.rs.
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./host_module.rs.
+
+Scenario: un nom réservé ou en double échoue à l'enregistrement
+  Given un registre vide et des modules nommés `resources`, `dashboard`, `dashboard`, `bad name`
+  When chacun est enregistré dans l'ordre
+  Then `resources`, le second `dashboard` et `bad name` rendent `Config` nommant le module ; le premier `dashboard` est accepté
+
+Scenario: un module réservé à l'admin est refusé après le retrait du groupe
+  Given un module `AdminOnly` monté pour un admin, en session interactive puis en step batch (subject du déclencheur)
+  When une fonction est appelée, l'utilisateur est retiré du groupe admin, puis la fonction est rappelée
+  Then le premier appel réussit, le second échoue en `forbidden`, dans les deux modes
+
+Scenario: un subject sans compte est refusé
+  Given un module `Authenticated` monté pour un `subject` qui n'a pas de compte
+  When une fonction est appelée
+  Then l'erreur Rhai est `no account for this session`
+
+Scenario: Named ne monte que les modules demandés et connus
+  Given deux modules `a` et `b`, et un ensemble `{a, inconnu}`
+  When `mount_host_modules` est appelé avec `Named` puis avec `All`
+  Then le premier ne rend que `a` ; le second rend `a` et `b`
+
+Scenario: une panne de lecture est un échec fermé sans détail
+  Given une connexion dont la lecture du groupe échoue
+  When une fonction est appelée
+  Then l'erreur Rhai est `internal error`, sans texte de la `DbErr`, et la fonction de l'hôte n'est pas exécutée

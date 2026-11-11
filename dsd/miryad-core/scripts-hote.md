@@ -9,7 +9,7 @@ l'identité de celui qui le regarde.
 ## Scope and Non-goals
 
 - **Ouverte le 2026-11-03**, rien n'est implémenté ni spécifié ; lot non fixé. Sous la feature `lymaille` (donc `db`).
-- Couvre le registre des modules d'hôte, leur contrôle d'autorité, l'exécuteur de script et sa politique d'effets.
+- Couvre le registre des modules d'hôte, leur contrôle d'autorité, l'exécuteur de script.
 - **Non-goal :** les widgets, tableaux de bord et pages de l'application `vanyline` ; le rendu de l'interface ; toute interprétation de HTML ou de code
   exécutable fourni par un LLM (l'application ne reçoit que des descriptions déclaratives).
 - **Non-goal :** les `fs` et `shell` de `lymaille`, jamais activés (`miryad-core/lymaille#OI-1`).
@@ -21,7 +21,7 @@ peut accorder que ce que son propriétaire peut utiliser), `FR-10` (identité du
 
 ## Functional Requirements
 
-- **FR-1 - MUST:** L'hôte enregistre ses modules par un registre de `HostModule` : nom, politique d'accès, déclaration `read_only`, fabrique du module
+- **FR-1 - MUST:** L'hôte enregistre ses modules par un registre de `HostModule` : nom, politique d'accès, fabrique du module
   pour un `subject`. Un nom réservé (`resources`, `result`, …) ou déjà pris fait échouer l'enregistrement au démarrage.
     - **Source:** user instruction, 2026-11-03 ; précédent : `miryad-core/lymaille#FR-2` (`ResourceReaders`)
     - **Verified by:** `AC-1`
@@ -38,7 +38,7 @@ peut accorder que ce que son propriétaire peut utiliser), `FR-10` (identité du
     - **Verified by:** `AC-2`
 
 - **FR-4 - MUST:** Un `ScriptRunner` exécute un script Rhai avec les `Grants` d'un contexte, **sans boucle d'inférence**, sous le principal donné. Il réutilise
-  l'assemblage de session : modules d'hôte, `resources`, rôles MCP (`miryad-core/lymaille#DEC-27`). Il rend une valeur sérialisée.
+  l'assemblage de session : modules d'hôte, `resources`, toolsets accordés et leurs rôles MCP (`miryad-core/lymaille#DEC-27`). Il rend une valeur sérialisée. Un script peut agir (écrire une ressource, appeler un rôle MCP ou un module d'hôte) : un bouton de widget qui approuve une MR est un cas visé ; ce qu'un script rejoue ou non est l'affaire de l'hôte, qui décide quand il l'exécute.
     - **Source:** user instruction, 2026-11-03
     - **Verified by:** `AC-3`
 
@@ -47,12 +47,9 @@ peut accorder que ce que son propriétaire peut utiliser), `FR-10` (identité du
     - **Source:** `NOTE-vanyline-orientation-lymaille.md` §4 ; user instruction, 2026-11-03
     - **Verified by:** `AC-3`
 
-- **FR-6 - MUST:** Le `ScriptRunner` impose la **lecture seule** : le module `resources` est monté sans écritures, un module d'hôte ou un rôle MCP n'est
-  monté que s'il se déclare `read_only`.
-    - **Source:** user instruction, 2026-11-03
-    - **Verified by:** `AC-4`
+- **FR-6 - Retiré le 2026-11-11 (user instruction)** : la lecture seule imposée aux scripts était une erreur de relecture ; un script agit sous les droits de son spectateur, sans mode d'effets propre (`DEC-3`).
 
-- **FR-7 - MUST:** Les `ScriptLimits` (durée, opérations Rhai, taille du résultat) sont fournies par l'application avec des défauts serrés ; un dépassement est une erreur
+- **FR-7 - MUST:** Les `ScriptLimits` (durée, opérations Rhai, taille du résultat) sont fournies par l'application avec des défauts (5 s, 1 000 000 opérations, 256 KiB, arbitrage du 2026-11-11) ; un dépassement est une erreur
   typée `MRD-LYMAILLE-*`, jamais une troncature silencieuse. Cache et concurrence restent à l'hôte.
     - **Source:** user instruction, 2026-11-03
     - **Verified by:** `AC-5`
@@ -69,15 +66,13 @@ peut accorder que ce que son propriétaire peut utiliser), `FR-10` (identité du
 - **DEC-2 - Les grants d'un script sont ceux du type de contexte** (2026-11-03)
     - **Decision:** le type de contexte déclare les toolsets et modules accordables aux scripts ; le principal du spectateur est intersecté à chaque appel.
     - **Alternatives:** une famille `ScriptProfile` dédiée (écarté : une troisième définition à stocker, valider et exposer).
-    - **Précision du 2026-11-11 :** `script_grants` = `{"toolsets":[…],"modules":[…]}` (toolsets du catalogue `G_…` et noms de `HostModule`), validé par le hook du type de contexte.
+    - **Précision du 2026-11-11 :** `script_grants` = `{"toolsets":[…],"modules":[…]}` (toolsets du catalogue `G_…` et noms de `HostModule`), validé en forme par le hook du type de contexte (toolsets existants relus par la connexion) ; les noms de module sont vérifiés à l'exécution, un hook étant une fonction statique sans accès au registre `HostModules`.
     - **Consequences:** le type de contexte (`miryad-core/lymaille#DEC-28`) porte un champ de plus. **Arbitré le 2026-11-05 (user instruction)** : colonne JSON `script_grants` (toolsets et modules accordables aux scripts) sur la table des types de contexte, à côté de `allowed_agents`, ni réutilisation des toolsets de la session LLM ni champ amont ; coûte une retouche de migration en place de plus, à tracer dans `AGENTS.md` à l'ouverture du lot.
     - **Source:** user instruction, 2026-11-03
 
-- **DEC-3 - Lecture seule imposée par la crate** (2026-11-03)
-    - **Context:** un script de widget s'exécute à chaque affichage, par un spectateur qui n'a rien demandé d'écrire, et un rechargement le rejoue.
-    - **Decision:** mode `ReadOnly` unique du `ScriptRunner` (`FR-6`) ; la déclaration `read_only` d'un `HostModule` engage l'hôte, pas la crate.
-    - **Alternatives:** aucune politique d'effets (écarté : un affichage déclencherait des écritures ou des actions externes).
-    - **Source:** user instruction, 2026-11-03
+- **DEC-3 - Révisé le 2026-11-11 : pas de lecture seule imposée** (décidé le 2026-11-03, renversé)
+    - **Decision:** le `ScriptRunner` ne restreint pas les effets : `resources` avec écritures, rôles MCP et modules d'hôte sans déclaration `read_only`. Un widget qui agit (approuver une MR par un bouton) est voulu ; les droits restent ceux du spectateur.
+    - **Source:** user instruction, 2026-11-11 (renverse l'instruction du 2026-11-03)
 
 - **DEC-4 - Registre des `HostModule` : valeur dédiée** (2026-11-11)
     - **Decision:** builder `HostModules::new().register(module)?` passé au montage, distinct de `LymailleHost` : la collision échoue au démarrage (`FR-1`).
@@ -85,6 +80,11 @@ peut accorder que ce que son propriétaire peut utiliser), `FR-10` (identité du
 
 - **DEC-5 - Le texte du script est fourni par l'hôte** (2026-11-11)
     - **Decision:** `ScriptRunner::run` reçoit le script en `&str` ; miryad-core n'en stocke aucun (`OI-3`).
+    - **Source:** user instruction, 2026-11-11
+
+- **DEC-6 - Le `ScriptRunner` tourne sur un `rhai::Engine` dédié** (2026-11-11)
+    - **Decision:** un `Engine` propre à la crate monte les mêmes `rhai::Module` que l'assemblage ; opérations, durée et taille sont des limites Rhai natives, le résultat est un `Dynamic` converti en `serde_json::Value`.
+      Le pad de `lymaille` rend un texte masqué et plafonné, sans plafond d'opérations : écarté.
     - **Source:** user instruction, 2026-11-11
 
 ## SpecDD Realization
@@ -95,8 +95,8 @@ Aucune.
 
 - **AC-1:** L'enregistrement d'un nom réservé ou en double échoue au démarrage.
 - **AC-2:** Un `HostModule` réservé à l'admin est refusé à l'appel suivant le retrait du groupe, en interactif comme en batch.
-- **AC-3:** Un script d'un contexte de moindre confiance ne lit rien de plus que ce que son spectateur peut lire ; un autre spectateur obtient un autre résultat.
-- **AC-4:** Un script qui appelle une écriture, un module ou un rôle non `read_only` est refusé.
+- **AC-3:** Un script ne lit ni n'écrit rien de plus que ce que son spectateur peut ; un autre spectateur obtient un autre résultat.
+- **AC-4:** Retiré avec `FR-6` (2026-11-11).
 - **AC-5:** Un script qui dépasse la durée, les opérations ou la taille de résultat échoue en erreur typée.
 
 ## Open Issues
@@ -108,3 +108,4 @@ Aucune.
 - **OI-3:** **Soldé le 2026-11-05 (user instruction)** : fonction de bibliothèque seule (`ScriptRunner::run`) ; aucune route REST ni outil MCP dans la crate, donc pas de question de parité
   (`miryad-core#FR-1`). L'hôte l'expose à sa guise.
 - **OI-4:** **Soldé le 2026-11-05 (user instruction)** : aucun cache dans la crate (`FR-7`). Le résultat dépend du principal et du contenu : une clé de cache correcte est celle de l'hôte.
+- **OI-5:** **Soldé le 2026-11-11 (user instruction)** : les rôles MCP et toolsets sont montés dans un script comme dans une session, sans filtre d'outils ni lecture seule (`FR-6` retiré). Les modules natifs de `lymaille` (mémoire, todo) ne sont pas montés.

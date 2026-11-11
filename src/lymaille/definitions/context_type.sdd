@@ -17,13 +17,15 @@ References:
 Must:
   `Entity`/`Model`/`ActiveModel`, `table_name = "miryad_lymaille_catalog_context_types"`, `Model` : `id: i32` (PK), `name: String` (unique, `G_…`), `version: String` (semver),
     `allowed_agents: serde_json::Value` (tableau JSON d'identifiants, DSD `DEC-28`), `active: Option<serde_json::Value>`,
-    `draft: Option<serde_json::Value>`, `created_at: DateTimeUtc`. **Seule** `allowed_agents` vit en colonne miryad-core : depuis `lymaille` 0.2.0 le
+    `draft: Option<serde_json::Value>`, `created_at: DateTimeUtc`, et (amendement 2026-11-11) `script_grants: serde_json::Value` (objet `{"toolsets":[…],"modules":[…]}`, DSD `scripts-hote` `DEC-2`). **Seule** `allowed_agents` vit en colonne miryad-core : depuis `lymaille` 0.2.0 le
     `ContextType` porte lui-même `default_agent` et `session_kind` (optionnels, `with_default_agent`/`with_session_kind`), source de vérité unique dans `active`/`draft` ;
     les colonnes `kind` et `default_agent` de R1/R2 sont retirées (arbitrage du 2026-11-05).
   `impl MiryadResource` : `resource_name()` = `"lymaille_catalog_context_types"` ; lecture `Public` ; écriture `AdminOnly` ; `owner_column()` = `None` ;
     `filter_column()` = `None` ; `label_column()` = `Some(Column::Name)`.
   `before_create` / `before_update` (premier échec interrompt, `HookError` sans code) : au moins un de `active`/`draft` non nul ; puis la porte
-    `DEC-28` : `allowed_agents` posé (`ActiveValue::NotSet` = absent, refus) et tableau JSON de chaînes ; puis `classify(name) == Catalog` (préfixe `G_`, comme ./agent.sdd).
+    `DEC-28` : `allowed_agents` posé (`ActiveValue::NotSet` = absent, refus) et tableau JSON de chaînes ; puis `classify(name) == Catalog` (préfixe `G_`, comme ./agent.sdd) ; puis (amendement 2026-11-11) `script_grants` posé (`NotSet` = refus) et objet à **exactement** les deux clés `toolsets` et `modules`, tableaux de chaînes, sans doublon ;
+    chaque identifiant de `toolsets` est de classe `Catalog` et existe dans la table des toolsets du catalogue, relu par la connexion du hook (toolset absent : refus ; panne de lecture : `HookError::new("authorization check unavailable")`, texte fixe) ;
+    chaque nom de `modules` est un identifiant Rhai valide, **sans** vérification d'existence (le registre `HostModules` est hors de portée d'un hook, la vérification a lieu à l'exécution par ../script_runner.sdd) ;
     Chaque colonne non nulle se désérialise ensuite en `lymaille::ContextType` (le constructeur compile le schéma : un schéma invalide est refusé avec le
     message de `lymaille`, jamais le schéma — la grammaire du nom est vérifiée par cette désérialisation) ; si le `ContextType` porte un `default_agent`, il doit
     être membre de `allowed_agents` par comparaison de chaînes exacte (un type **sans** agent par défaut est admis : l'ouverture exigera alors un agent explicite) ;
@@ -54,6 +56,7 @@ Tasks:
     entité : le `G_` n'est plus qu'une convention, la garantie de catalogue est `AdminOnly` + la table. Le Scenario « un type valide » perd son
     `#[ignore]`, le Scenario « un nom privé est refusé » est retiré.
   [ ] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les hooks de ./context_type.rs passent à la signature asynchrone (`db` ignoré : la validation reste pure, aucune lecture en base ajoutée par cette tâche) ; les tests `before_*` du fichier passent à `.await` avec une connexion simulée, assertions inchangées. Le contrôle à la sauvegarde que la connexion rend possible (DSD `hooks-async` `FR-3`) n'est **pas** dans cette tâche : il fera l'objet d'un amendement de spec distinct. Dépend de /src/resource.sdd (même amendement).
+  [ ] Amendement du 2026-11-11 (DSD `scripts-hote` `DEC-2`) : colonne `script_grants` et sa validation par le hook ; test d'abord (`Scenario` ci-dessous), puis ./context_type.rs. Après ../migration.sdd.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./context_type.rs.
@@ -97,3 +100,8 @@ Scenario: le nom ne change pas à la mise à jour
   Given une ligne existante nommée `cluster` et un `ActiveModel` dont le JSON porte `cluster2`
   When `before_update`
   Then `Err(HookError)` « name cannot change »
+
+Scenario: script_grants mal formé ou référençant un toolset absent est refusé
+  Given un `script_grants` absent, puis `{"toolsets":[]}` (clé manquante), puis `{"toolsets":[],"modules":["a","a"]}`, puis `{"toolsets":["G_inconnu"],"modules":[]}`, puis `{"toolsets":[],"modules":["bad name"]}`
+  When `before_create` est attendu avec chacun
+  Then chaque appel rend un `HookError` sans code, avant toute écriture ; `{"toolsets":["G_existant"],"modules":["view"]}` est accepté, sans que `view` soit cherché au registre
