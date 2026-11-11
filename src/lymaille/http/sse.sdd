@@ -52,7 +52,8 @@ Tasks:
   [x] Tests d'abord depuis le `Scenario` « panne de sérialisation » (encodeur défaillant injecté), puis seam minimal dans ./sse.rs. Code seul, Haiku.
     Validé 2026-11-07 (validator PASS : `une_panne_de_serialisation_n_interrompt_pas_le_flux` au Then réel, seam d'encodeur privé, chemin réel inchangé, verrous unitaires conservés ; batterie complète 38/38 conforme, `specdd lint` vert).
     Arbitré le 2026-11-11 : la dérivation par `Display` devient `LymailleError::code()` (../error.sdd), employée aussi par ../chat/bridge.sdd ; `serialization_error_body` l'appellera à sa place (tâche ci-dessous).
-  [ ] Amendement du 2026-11-11 : `serialization_error_body` appelle `LymailleError::code()` au lieu de dériver localement ; test `panne_de_serialisation_rend_le_code_012` inchangé. Après ../error.sdd.
+  [x] Amendement du 2026-11-11 : `serialization_error_body` appelle `LymailleError::code()` au lieu de dériver localement ; test `panne_de_serialisation_rend_le_code_012` inchangé. Après ../error.sdd.
+    Validé 2026-11-11 (validator GO : diff confiné à ./sse.rs, verrou byte-identique, doc cohérente, plus aucune dérivation locale en production dans ce fichier ; batterie ciblée `lymaille` verte — tests, clippy `-D warnings`, `fmt`).
   [?] `Last-Event-ID` / rejeu des événements manqués : écarté au lot 2 (les événements ne sont pas persistés ; l'état de la session l'est). À rouvrir si un
     client se déconnecte souvent pendant un tour.
 

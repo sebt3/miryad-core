@@ -30,15 +30,12 @@ const KEEPALIVE_PERIOD: Duration = Duration::from_secs(15);
 /// (`Must` de `./sse.sdd`) — un code `MRD-*` nu, aucun contenu de session. Le chemin est
 /// quasi-inatteignable (`SessionEvent` est un type serde ordinaire). Le code est **dérivé** de la
 /// variante `Serialization` de @`LymailleError` (`../error.sdd`, code `MRD-LYMAILLE-012`, arbitrage
-/// du 2026-11-06) : préfixe de la `Display` avant le premier `:`, verrouillé par le `Scenario`
-/// « les codes sont stables » de `../error.sdd` — plus aucune constante nue dans ce fichier.
+/// du 2026-11-06) par @`LymailleError::code` (amendement du 2026-11-11), verrouillé par le
+/// `Scenario` « les codes sont stables » de `../error.sdd` — plus aucune constante nue ni dérivation
+/// locale dans ce fichier.
 fn serialization_error_body() -> String {
     let error = LymailleError::Serialization("session event serialization failed".to_owned());
-    let display = error.to_string();
-    let code = display
-        .split_once(':')
-        .map_or(display.as_str(), |(code, _cause)| code);
-    json!({ "code": code }).to_string()
+    json!({ "code": error.code() }).to_string()
 }
 
 /// Traduction de la rupture d'abonnement en erreur REST (même table que `to_rest` de
