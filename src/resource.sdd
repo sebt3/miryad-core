@@ -18,6 +18,10 @@ Purpose:
     Amendement du 2026-10-19 : la surface GraphQL, seule source de l'exception de parité qu'ils
     portaient (Seaography `2.0.0-rc.9` ne pilotait son hook équivalent qu'à l'insertion), est
     supprimée ; le principe de parité de /miryad-core.sdd s'applique sans exception.
+  Amendement du 2026-11-11 (DSD /dsd/miryad-core/hooks-async.md, `DEC-2` à `DEC-6`) : les trois hooks deviennent **asynchrones** et reçoivent la
+    connexion de l'appel, pour qu'un contrôle d'autorité ou de référence se lise en base à la sauvegarde. Le fichier reste sans IO propre : les
+    défauts n'attendent rien et ne touchent pas la base ; seul l'override de l'application consommatrice le peut. Les hooks restent des
+    contrôles et des mutations de l'ActiveModel, jamais le lieu d'un effet externe (`DEC-6`).
 
 Owns:
   ./resource.rs
@@ -65,9 +69,18 @@ Must:
     seul `existing` (le @Model relu) est prêté en lecture seule ; un @Err interrompt avant toute
     requête `DELETE`.
   Fixer la signature de @MiryadResource::before_create, @MiryadResource::before_update et
-    @MiryadResource::before_delete comme synchrones, sans point d'attente : parce
-    qu'aucun besoin d'IO n'a été identifié pour un hook de validation — un hook qui aurait besoin
-    d'IO reste un cas non couvert par ce contrat, à instruire séparément s'il se présente.
+    @MiryadResource::before_delete comme **asynchrones** (amendement 2026-11-11, `DEC-2` et `DEC-4`, remplace le contrat synchrone du
+    2026-09-23) : chaque hook est générique sur la connexion — `fn before_x<C: ConnectionTrait>(db: &C, …, principal: &AuthPrincipal)` rendant
+    `impl Future<Output = Result<…, HookError>> + Send` — pour rester appelable avec une `DatabaseConnection`, une `DatabaseTransaction` ou
+    une connexion de migration (`miryad-core#CON-7`). Le futur est déclaré `Send` dans le trait (une `async fn` nue ne le garantit pas : les
+    handlers `axum` l'exigent) ; la connexion est le premier paramètre, avant l'ActiveModel ou `existing`. Aucun hook synchrone n'est
+    conservé : pas de trait de compatibilité ni d'adaptateur.
+  Fixer le principal passé au hook comme celui de l'appel, tel que le reçoit la surface : un hook qui a besoin des groupes ou du statut
+    d'administrateur à jour les relit lui-même par la connexion qu'il reçoit (le principal n'est pas rafraîchi par la crate avant le hook).
+  Garder les défauts sans effet : les trois défauts ne lisent pas la connexion, n'attendent rien d'autre que leur propre retour et rendent
+    leur résultat comme avant (identité, identité, `Ok(())`) ; une entité sans hook ne coûte aucune requête.
+  Faire valoir le hook par la séquence de @rest::core, donc sur REST, MCP et le module `resources` de `lymaille` (`DEC-5`) sans code propre
+    à ces surfaces ; la séquence ne change pas : RBAC, hook, invariants de sécurité, écriture simple, sans transaction (`DEC-3`).
   Garantir qu'une implémentation de @MiryadResource::before_create ne peut pas contourner les
     invariants appliqués après elle sur la création : le retrait de la clé primaire choisie par le
     client et l'injection du propriétaire sous `OwnerOnly` restent les derniers mots — comportement
@@ -131,8 +144,10 @@ Must not:
     les deux surfaces).
   Construire @HookError depuis le runtime de miryad-core pour une panne qui ne vient pas d'un hook
     applicatif : une erreur interne de la crate porte son propre code `MRD-*` dans son module.
-  Introduire de l'asynchrone, de l'IO ou de l'état partageable dans ce contrat : les déclarations
-    restent des fonctions totales sans effet de bord.
+  Introduire de l'IO ou de l'état partageable dans les déclarations du contrat : les accesseurs restent des fonctions totales sans effet de bord ;
+    seul un hook, par son override, peut attendre et lire la base (amendement 2026-11-11 : l'asynchrone est permis aux trois hooks seulement).
+  Faire d'un hook le lieu d'un effet externe (création d'une CR Kubernetes, appel réseau mutateur) ou d'une transaction : un hook contrôle ou
+    mute l'ActiveModel (`DEC-3`, `DEC-6`) ; pas de hook « après », pas de hook de lecture.
 
 Depends on:
   @sea_orm::EntityTrait — supertrait de @MiryadResource, source du type @Column associé ;
@@ -141,6 +156,8 @@ Depends on:
     feature `derive`, jamais optionnelle : le dérivé survit à toutes les combinaisons de features.
   ./auth/principal.rs — @crate::auth::AuthPrincipal, paramètre commun aux trois hooks @before_create,
     @before_update et @before_delete.
+  @sea_orm::ConnectionTrait — borne de la connexion générique reçue par les trois hooks (amendement 2026-11-11) ; type seul, ce fichier
+    n'ouvre ni ne détient de connexion.
   # Direction de dépendance respectée : @rbac, @ir, @rest et @mcp dépendent de ce
   # fichier, jamais l'inverse ; ils ne sont nommés en amont que comme preuves de contrat (parité,
   # signature, effacement de type), jamais comme dépendances.
@@ -166,11 +183,12 @@ Exposes:
     `fn owner_column() -> Option<<Self as EntityTrait>::Column>`
     (`None` = entité sans notion de propriétaire, référentiel partagé).
     Méthodes avec défaut : `fn filter_column()` → `None` (pas de filtre de liste),
-    `fn label_column()` → `None`, `fn before_create(active, principal)` → identité (`Ok` de
-    l'ActiveModel inchangé, principal ignoré via `let _ =`), `fn before_update(active, existing,
-    principal)` → identité (`Ok` de l'ActiveModel inchangé, `existing` et `principal` ignorés),
-    `fn before_delete(existing, principal)` → `Ok(())` (`existing` et `principal` ignorés).
-    Aucune méthode à récepteur : distribution statique uniquement, pas de forme @dyn.
+    `fn label_column()` → `None`, puis les trois hooks asynchrones (amendement 2026-11-11), chacun générique sur `C: ConnectionTrait`
+    et rendant `impl Future<Output = …> + Send` : `fn before_create(db, active, principal)` → identité (`Ok` de
+    l'ActiveModel inchangé, connexion et principal ignorés via `let _ =`), `fn before_update(db, active, existing,
+    principal)` → identité (`Ok` de l'ActiveModel inchangé, connexion, `existing` et `principal` ignorés),
+    `fn before_delete(db, existing, principal)` → `Ok(())` (connexion, `existing` et `principal` ignorés).
+    Aucune méthode à récepteur : distribution statique uniquement, pas de forme @dyn (la connexion générique la rend de toute façon impossible).
   Aucun ré-export de la racine : chemins publics @miryad_core::resource::HookError,
     @miryad_core::resource::AccessPolicy, @miryad_core::resource::MiryadResource (convention de
     ./lib.sdd).
@@ -180,6 +198,8 @@ Accepts:
     une valeur calculée à l'exécution (`String`) n'est pas acceptable à ces deux places.
   @HookError::new et @HookError::with_code acceptent indifféremment `&str` et `String` (paramètres
     en `impl Into<String>`).
+  Les trois hooks reçoivent en premier paramètre `db: &C` avec `C: ConnectionTrait` (amendement 2026-11-11) : la connexion de l'appel, empruntée pour
+    la durée du hook, utilisable en lecture comme en écriture par l'override (une écriture de hook sort du contrat : `DEC-3`, `DEC-6`) ; les défauts l'ignorent.
   @MiryadResource::before_create reçoit l'ActiveModel complet de l'entité (valeurs `Set`,
     `Unchanged` ou `NotSet` telles que fournies par l'appelant — côté REST, la clé primaire client y
     est encore présente) et une référence @crate::auth::AuthPrincipal (@subject, @email optionnel,
@@ -200,6 +220,7 @@ Returns:
     déclarée, telle quelle.
   @MiryadResource::owner_column, @MiryadResource::filter_column, @MiryadResource::label_column —
     @Some de la colonne déclarée ou `None` (défauts de @filter_column et @label_column).
+  Les trois hooks rendent un futur `Send` qui produit le résultat ci-dessous (amendement 2026-11-11).
   @MiryadResource::before_create et @MiryadResource::before_update — @Ok de l'ActiveModel (inchangé
     par défaut, muté par override) ou @Err d'un @HookError (@code `None` ou libre, @message porté).
   @MiryadResource::before_delete — @Ok(()) par défaut ou @Err d'un @HookError.
@@ -215,7 +236,9 @@ Raises:
     @MiryadResource::before_create, @MiryadResource::before_update ou @MiryadResource::before_delete
     — erreur de l'application que chaque surface restitue dans son vocabulaire propre sans lui
     imposer de code de la crate.
-  Aucune erreur de base de données possible : @sea_orm n'est utilisé qu'au niveau des types.
+  Aucune erreur de base de données n'est émise par ce fichier : @sea_orm n'y est utilisé qu'au niveau des types. Une erreur de base rencontrée par
+    l'override d'un hook (`DbErr`) est convertie par l'application en @HookError (code applicatif libre) : le contrat n'ajoute aucune variante
+    d'erreur de la crate, et un hook qui laisse passer une panne sans la convertir est une faute de l'application, pas un `MRD-*`.
 
 Handles:
   Entités avec propriétaire (colonne déclarée) et sans propriétaire (référentiel partagé, `None`).
@@ -227,6 +250,8 @@ Handles:
     @before_delete) comme avec hook mutateur ou rejetant (@HookError avec ou sans code) — les trois
     hooks suivent le même patron indépendamment l'un de l'autre : une entité peut surdéclarer
     @before_create seul, @before_update seul, les deux, ou aucun.
+  Hook qui lit la base par la connexion reçue puis refuse (contrôle d'autorité ou de référence), hook qui lit et accepte, hook sans lecture (défaut) ;
+    connexion de type `DatabaseConnection` comme `DatabaseTransaction` (amendement 2026-11-11).
   Incohérence déclarative `OwnerOnly` sans @owner_column : compilable, sans enforcement de ce
     fichier — arbitré le 2026-09-27 (Sébastien) comme une déclaration invalide, refusée au montage
     du routeur REST (panic, ./rest/mod.sdd) plutôt que tolérée comme un cas runtime ;
@@ -304,8 +329,15 @@ Tasks:
     `before_create` : retirer « miroir de `before_active_model_save` » et la justification Seaography ; `before_update`/`before_delete` :
     « se déclenchent sur REST et MCP » sans « jamais sur GraphQL »). Aucun changement de comportement ; `tests/resource.rs` ne change pas.
     Validé 2026-10-19 (validator Sonnet GO) : cinq tests/aides GraphQL supprimés, doc-comments réécrits, batterie verte.
+  [ ] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`) : dans ./resource.rs, passer les trois hooks en génériques `C: ConnectionTrait`
+    (`db: &C` en premier paramètre, futur `Send` déclaré dans le trait), défauts sans effet ; convertir les quatre nouveaux `Scenario` en tests nommés
+    (`hook_async_reads_db_and_rejects`, `default_hooks_emit_no_query`, `hook_accepts_connection_and_transaction`, `hook_future_is_send`) et passer les tests
+    existants des hooks à `.await`. Réécrire les doc-comments des trois hooks (asynchrone, connexion, principal non rafraîchi, pas d'effet externe). Dépend de
+    ./rest/core.sdd et ./mcp/handler.sdd (appels `.await` et séquence inchangée) et de chaque entité qui implémente un hook (`workflow::definition`, entités `lymaille`,
+    fixtures de tests) : réécriture totale, une entité par tâche.
 
 Done when:
+  [Amendement 2026-11-11 : quatre `Scenario` s'ajoutent, soit vingt-huit au total, chacun vérifié par au moins un test nommé distinct.]
   La spec porte exactement vingt-quatre `Scenario` (dix-huit originaux depuis la suppression de GraphQL, six de l'amendement
     @before_update/@before_delete du 2026-09-23) et chaque `Scenario` est vérifié par au moins un
     test nommé distinct au total : 17 tests rattachés créés inline dans le `#[cfg(test)] mod tests`
@@ -498,3 +530,25 @@ Scenario: rejet par un override de @before_delete
   When @rest::core::delete est exécuté sur une ligne `"locked"` puis sur une ligne d'un autre statut
   Then le premier appel rend @Err(HookError { code: Some("WIDGET-LOCKED"), .. }) et aucun `DELETE`
     n'est émis ; le second supprime normalement
+
+Scenario: hook asynchrone qui lit la base par la connexion reçue et refuse
+  Given une entité de test dont @MiryadResource::before_create interroge, par la connexion reçue, l'existence d'une ligne référencée et rejette par un
+    @HookError de code `WIDGET-REF` quand elle manque, et une connexion simulée dont la lecture rend aucune ligne
+  When le hook est attendu avec un ActiveModel référençant une ligne absente
+  Then le résultat est @Err(HookError { code: Some("WIDGET-REF"), .. }) et la lecture a été émise sur la connexion fournie, pas sur une autre
+  And avec une connexion simulée dont la lecture rend la ligne, le même hook rend @Ok de l'ActiveModel inchangé
+
+Scenario: les trois hooks par défaut n'émettent aucune requête
+  Given l'entité `recipe`, qui ne surdéclare aucun hook, et une connexion simulée dont le journal de transactions est vide
+  When @MiryadResource::before_create, @MiryadResource::before_update et @MiryadResource::before_delete sont attendus avec cette connexion
+  Then les trois rendent leur résultat par défaut (identité, identité, `Ok(())`) et le journal de la connexion reste vide
+
+Scenario: un hook s'appelle avec une transaction comme avec une connexion
+  Given une entité de test dont @MiryadResource::before_update lit une ligne par la connexion reçue
+  When le hook est attendu une fois avec une `DatabaseConnection` simulée et une fois avec une `DatabaseTransaction` ouverte sur la même simulation
+  Then les deux appels compilent sans changement de code de l'entité et rendent le même résultat
+
+Scenario: le futur d'un hook est Send
+  Given une entité de test qui surdéclare les trois hooks avec des attentes réelles
+  When chaque futur de hook est passé à une fonction qui exige `Send` (équivalent de ce qu'impose un handler `axum`)
+  Then le test compile — la preuve est la compilation, pas une assertion à l'exécution

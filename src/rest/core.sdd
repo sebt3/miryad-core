@@ -308,8 +308,11 @@ Accepts:
     prévue (les surfaces construisent @by leurs extracteurs)
   Comme entrée du hook (position intermédiaire) : l’ActiveModel marqué par @rest::core::mark_all_set
     avec la PK du corps encore @Unchanged→promue, puis @ActiveValue::NotSet après
-    @ActiveModelTrait::not_set — @MiryadResource::before_create est synchrone et rend @Ok de
-    l’ActiveModel ou @Err(@HookError)
+    @ActiveModelTrait::not_set — @MiryadResource::before_create est asynchrone (amendement 2026-11-11), reçoit la connexion de l’appel
+    et rend @Ok de l’ActiveModel ou @Err(@HookError)
+  Comme connexion des hooks (amendement 2026-11-11, DSD `hooks-async` `DEC-2`) : la même connexion `db` que celle des lectures et de l’écriture de
+    l’opération, empruntée sans ouverture de transaction (`DEC-3`) ; @rest::core::create, @rest::core::update et @rest::core::delete la passent en
+    premier paramètre des trois hooks et les attendent (`.await`) à la position actuelle, sans autre changement de séquence
 
 Returns:
   @rest::core::list — un @query::PagedResult : @items = tranche rendue par @sea_orm::Paginator::fetch_page
@@ -448,7 +451,7 @@ Example:
   # Ordre contractuel de @rest::core::create — l’ordre est le contrat.
   @users::resolve_user → @rbac::can_create (sur @MiryadResource::write_policy seule) →
     @RestError::Forbidden sinon, hook jamais appelé → @rest::core::mark_all_set →
-    @MiryadResource::before_create → @RestError::Application(@HookError) sans code `MRD-*` sinon →
+    @MiryadResource::before_create(db, active, principal) (attendu) → @RestError::Application(@HookError) sans code `MRD-*` sinon →
     @ActiveModelTrait::not_set de @rest::core::primary_key_column → @ActiveModelTrait::set de
     @MiryadResource::owner_column à @users::user::Model::id quand @write_policy ==
     @AccessPolicy::OwnerOnly et @MiryadResource::owner_column @Some → @ActiveModelTrait::insert.
@@ -457,7 +460,7 @@ Example:
   # Ordre contractuel de @rest::core::update (amendement 2026-09-23) — même discipline.
   @users::resolve_user → @sea_orm::EntityTrait::find_by_id(id).one → @RestError::NotFound sinon →
     @rbac::can_write sur @existing → @RestError::Forbidden sinon, hook jamais appelé →
-    @rest::core::mark_all_set → @MiryadResource::before_update(active, existing, principal) →
+    @rest::core::mark_all_set → @MiryadResource::before_update(db, active, existing, principal) (attendu) →
     @RestError::Application(@HookError) sinon → @ActiveModelTrait::set de la PK à l’id du chemin →
     @ActiveModelTrait::set de @MiryadResource::owner_column depuis @existing →
     @ActiveModelTrait::update.
@@ -465,7 +468,7 @@ Example:
   # Ordre contractuel de @rest::core::delete (amendement 2026-09-23).
   @users::resolve_user → @sea_orm::EntityTrait::find_by_id(id).one → @RestError::NotFound sinon →
     @rbac::can_write sur @existing → @RestError::Forbidden sinon, hook jamais appelé →
-    @MiryadResource::before_delete(existing, principal) → @RestError::Application(@HookError) sinon →
+    @MiryadResource::before_delete(db, existing, principal) (attendu) → @RestError::Application(@HookError) sinon →
     @sea_orm::EntityTrait::delete_by_id.
 
 Tasks:
@@ -569,6 +572,10 @@ Tasks:
     la résidence inline ./core.rs est jugée trop lourde pour les scénarios d’intégration
     (multi-connexions, features), la décision de les placer dans ./tests/ rattaché est à rendre avec
     la relecture de cette spec, jamais en silence.
+  [ ] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`) : dans ./core.rs, passer `db` aux trois hooks et les attendre à leur position
+    actuelle (aucune transaction, aucun réordonnancement) ; fixtures de test de ./core.rs et de ./mod.rs portées au nouveau trait (réécriture
+    totale, `DEC-4`) ; convertir les trois nouveaux `Scenario` en tests nommés (`hook_lit_la_base_par_la_connexion_de_l_appel`, `hook_refus_en_base_bloque_l_ecriture`,
+    `hook_couvre_le_module_resources_de_lymaille`). Dépend de /src/resource.sdd (même amendement) — relues et approuvées ensemble.
 
 Done when:
   Les trente-cinq `Scenario` (vingt-sept originaux, quatre de l’amendement
@@ -925,3 +932,22 @@ Scenario: @rest::core::mark_all_set ne touche pas ce qui n’est pas posé et se
     s’en sert pour remplir la `SET` ; ce qui reste @ActiveValue::NotSet — la PK retirée par
     @ActiveModelTrait::not_set dans @rest::core::create — n’entre ni dans l’`INSERT` ni dans la
     `SET` (vérifié @sea_orm `2.0.2`)
+
+Scenario: le hook lit la base par la connexion de l'appel, aux trois opérations
+  Given une fixture dont @MiryadResource::before_create, @MiryadResource::before_update et @MiryadResource::before_delete interrogent la base par la connexion
+    reçue et dont chaque hook consigne la connexion qu'il a reçue, une base simulée qui journalise ses requêtes
+  When @rest::core::create, @rest::core::update puis @rest::core::delete sont appelés, RBAC accordé
+  Then chaque hook a lu par la connexion de l'appel (même base que l'écriture), sa lecture précède l'`INSERT`, l'`UPDATE` ou le `DELETE` dans le journal, et aucune
+    transaction n'est ouverte (aucun `BEGIN` dans le journal)
+
+Scenario: un refus fondé sur une lecture en base interrompt avant toute écriture
+  Given une fixture dont @MiryadResource::before_create lit une ligne référencée et rejette par un @HookError `WIDGET-REF` quand elle manque, et dont
+    @MiryadResource::before_update convertit une erreur de lecture (`DbErr`) en @HookError `WIDGET-DB`
+  When @rest::core::create est appelé avec une référence absente, puis @rest::core::update avec une base dont la lecture du hook échoue
+  Then les deux rendent @RestError::Application portant le @HookError intact (`WIDGET-REF`, `WIDGET-DB`), sans code `MRD-*`, et aucune requête d'écriture n'est émise
+  And une référence présente laisse la création aboutir — le rejet est conditionnel à la lecture, pas systématique
+
+Scenario: le module resources de lymaille subit le même hook
+  Given sous `feature lymaille`, la fixture de refus ci-dessus montée comme ressource du module `resources` (./../lymaille/resource_module.rs)
+  When une écriture par ce module délègue à @rest::core::create
+  Then le refus du hook est le même @RestError::Application qu'en REST et en MCP, sans code propre à `lymaille` (DSD `hooks-async` `DEC-5`)

@@ -312,6 +312,9 @@ Tasks:
     de @Display dans le corps), @error! avec détail @DbErr complet dans la trace seule, @warn! sur
     `-32001` sans arguments ni token (test d'absence affirmé).
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./handler.rs`, doc (ligne ~32) : « comme REST » (retirer `/GraphQL`). Aucun changement de comportement.
+  [ ] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`) : aucun changement de code dans ./handler.rs (le dispatch délègue à ./registry.rs puis @rest::core) ;
+    la fixture de test (@MiryadResource::before_create à l'ancienne signature, ~ligne 348) est portée au nouveau trait ; convertir le scénario ci-dessous en test nommé
+    `hook_qui_lit_la_base_refuse_en_32000`. Dépend de /src/resource.sdd et /src/rest/core.sdd (même amendement).
 
 Done when:
   Chaque `Scenario` a au moins un test nommé distinct et vert, joués sur
@@ -466,6 +469,14 @@ Scenario: hook applicatif rend -32000 avec son code dans data
   And `error.message` est exactement `titre vide` — préfixe `MRD-` aucun (taxonomie réservée de la
     crate exclue de @HookError)
   And `error.data` vaut exactement `{"code":"HOOK-42"}`
+
+Scenario: hook qui lit la base et refuse rend le même -32000 que le hook sans base
+  Given une entité fixture dont @MiryadResource::before_create lit par la connexion reçue une ligne référencée et rejette par un @HookError de code `WIDGET-REF` quand elle manque, et un
+    `tools/call` `recipes_create` authentifié référençant une ligne absente
+  When la requête arrive
+  Then le statut est `200`, `error.code` vaut `-32000` et `error.data` vaut exactement `{"code":"WIDGET-REF"}` — le même refus que celui de @rest::core::create en REST (parité,
+    DSD `hooks-async` `AC-1`)
+  And aucune écriture n'a eu lieu : un `recipes_get` ultérieur de la ligne échoue en `-32002`
 
 Scenario: delete valide rend la confirmation fixe, sous tout format
   Given le registre en @OutputFormat::Json puis en @OutputFormat::Markdown, et un enregistrement

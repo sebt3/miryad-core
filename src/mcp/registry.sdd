@@ -402,6 +402,7 @@ Tasks:
     l'exemple de @Raises est lu comme illustratif. Les commentaires « Écart consigné » de
     ./registry.rs deviennent obsolètes : une tâche autorisée les retire.
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./registry.rs`, doc (ligne ~20) : retirer « comme en GraphQL — cf. `graphql::PolicyRegistry` » (dispatch par nom d'entité à l'exécution). Aucun changement de comportement.
+  [ ] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : la fixture de test (@MiryadResource::before_create, ~ligne 431 de ./registry.rs) est portée au nouveau trait ; aucun changement de comportement ni de dispatch (le registre délègue à @rest::core). Dépend de /src/resource.sdd (même amendement).
 
 Done when:
   La spec porte exactement dix-neuf `Scenario` et chacun est vérifié par au moins un test nommé

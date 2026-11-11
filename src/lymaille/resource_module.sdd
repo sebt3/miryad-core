@@ -94,6 +94,7 @@ Tasks:
     ajoutés à ../auth/dual.rs, aucun match de production sur `source`).
   [x] Tests d'abord (SQLite mémoire, entités de test comme ../mcp/registry.sdd), puis ./resource_module.rs. Validé 2026-11-03
     (validator PASS, scripts Rhai réels, parité chiffrée avec `rest::core::list`).
+  [ ] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : la fixture de test (@MiryadResource::before_create, ~ligne 1040 de ./resource_module.rs) est portée au nouveau trait ; aucun changement de comportement (la délégation à @rest::core::create/update/delete suffit, DSD `hooks-async` `DEC-5`). Dépend de /src/resource.sdd (même amendement).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./resource_module.rs.

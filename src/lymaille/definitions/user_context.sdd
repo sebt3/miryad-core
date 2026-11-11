@@ -42,6 +42,7 @@ Tasks:
   [x] Réalignement R4 (DSD `DEC-27, DEC-28`, 2026-11-03) : Renommer `Project` en `Shared` ; un identifiant `H_…` n'est jamais écrit par cette ressource (`Scenario` de refus ajouté) ;
     contrat inchangé pour le reste. Approuvé le 2026-11-04.
   [x] Tests d'abord (hooks purs, politiques sur SQLite mémoire), puis ./user_context.rs. Validé 2026-11-04 (validator PASS checkpoint R1–R5).
+  [ ] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les hooks de ./user_context.rs passent à la signature asynchrone (`db` ignoré : la validation reste pure, aucune lecture en base ajoutée par cette tâche) ; les tests `before_*` du fichier passent à `.await` avec une connexion simulée, assertions inchangées. Le contrôle à la sauvegarde que la connexion rend possible (DSD `hooks-async` `FR-3`) n'est **pas** dans cette tâche : il fera l'objet d'un amendement de spec distinct. Dépend de /src/resource.sdd (même amendement).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./user_context.rs.
