@@ -3,7 +3,7 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). L'API reste
 instable avant `1.0` : un changement de version mineure peut être cassant.
 
-## [Unreleased]
+## [0.3.0] — 2026-11-12
 
 ### Ruptures
 
