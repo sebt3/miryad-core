@@ -3,6 +3,18 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). L'API reste
 instable avant `1.0` : un changement de version mineure peut être cassant.
 
+## [0.3.1] — 2026-11-12
+
+### Corrections
+
+- **`vynil-core` 0.9.1** : la dépendance exige désormais `0.9.1` au minimum. La 0.9.1 a fusionné les registrars Rhai
+  `core_pure`, `chrono`, `glob`, `yaml` dans `core_rhai_register` et déplacé `sha256` vers `crypto_rhai_register` ;
+  `miryad-core` 0.3.0 ne compilait plus (feature `workflow`) dès que le lock résolvait vers la 0.9.1.
+- **`workflow`** : `RhaiStep` enregistre `core`, `crypto` et `semver` (liste blanche inchangée pour l'hôte, `fs` et `shell`).
+  `sleep(INT)` est désormais interrompu par l'annulation (timeout) ; `sleep(FLOAT)` reste non coopératif.
+- **`lymaille`** : la dépendance passe à `0.2.1` (aligné sur `vynil-core` 0.9.1 ; la 0.2.0 ne compilait plus avec lui) ;
+  `rmcp` monte de 3.8.0 à 3.9.0 dans le lock.
+
 ## [0.3.0] — 2026-11-12
 
 ### Ruptures

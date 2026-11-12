@@ -131,9 +131,11 @@ Must:
     directe) ; résolveur de modules = un `ModuleResolversCollection` portant un `FileModuleResolver::new_with_path` par entrée
     de `resolver_path`, dans l'ordre (vide ⇒ tout `import` échoue, fail-closed, comme `new_bare`) ;
     `set_max_expr_depths(256, 128)` et `set_max_call_levels(512)` (valeurs de `new_bare`, voir le `Scenario` de récursion) ;
-    puis, **dans cet ordre exact** : `core_pure_rhai_register`, `chrono_rhai_register`, `hashes_rhai_register`,
-    `semver_rhai_register`, `yaml_rhai_register`, `glob_rhai_register` (chemins et signatures de la 0.9 à relire dans le source
-    local de `vynil-core`, `Script::new_bare` en est le modèle), les quatre fonctions `log_*`, puis `script.add_common()` (shims
+    puis, **dans cet ordre exact** : `core_rhai_register` (groupe `core` de `vynil_core::engine` : encodages, texte, `glob`, YAML,
+    temps — `date_now`, `format`, `DateTimeHandler` — et `sleep`), `crypto_rhai_register` (`vynil_core::hashes` : `sha256`,
+    `crc32_hash`), `semver_rhai_register` (amendement 2026-11-12, alignement sur `vynil-core` `0.9.1` — la 0.9.1 a fusionné
+    `core_pure`, `chrono`, `glob` et `yaml` dans `core` et déplacé `sha256` vers `crypto` ; chemins et signatures à relire dans le
+    source local de `vynil-core`, `Script::new_bare` en est le modèle), les quatre fonctions `log_*`, puis `script.add_common()` (shims
     `assert`, `import_run`, `import_template` ; leur chemin de saut appelle `log_debug`, qui doit donc être enregistré avant).
   Fil d'exécution du script (amendé 2026-11-01, `dsd/miryad-core/workflow.md` `OI-9` tranché par le développeur
     principal, DEC-10) : l'**évaluation** (`eval_map_json` sous `cancel::scope`, étape 3) s'exécute dans un **fil dédié**
@@ -146,20 +148,19 @@ Must:
     (`Send`) ; le jeton d'annulation est partagé (`Send + Sync`), `on_progress` inchangé. Panique dans le fil d'évaluation :
     canal fermé sans valeur — traduite à l'étape 4 sous le même message. Le `Scenario` « une récursion jusqu'au plafond »
     le verrouille.
-  Liste blanche : ne sont **jamais** enregistrés `core_host_rhai_register` (`get_env` et les `log_*` du processus),
-    `core_sleep_rhai_register`, ni les registrars
-    `fs`, `shell`, `password`, `crypto`, `oci`, `http`, `s3`, `k8s`, quelles que soient les features de `vynil-core` activées dans
+  Liste blanche (amendée 2026-11-12) : ne sont **jamais** enregistrés `host_rhai_register` (`get_env`, les `log_*` du processus et,
+    sous leurs features, les fonctions `fs` et `shell` — la 0.9.1 les range toutes dans le groupe hôte), ni les registrars
+    `password`, `oci`, `http`, `s3`, `k8s`, quelles que soient les features de `vynil-core` activées dans
     le graphe. Un registrar ajouté plus tard par `vynil-core` n'atteint les scripts que par un amendement de cette spec ; la liste
     est relue à chaque montée de `vynil-core`.
-  Substrat accepté (amendé 2026-11-01) : ne pas enregistrer `core_sleep` ne retire pas `sleep(INT)` ni `sleep(FLOAT)`, que
-    **rhai lui-même** enregistre dans son `lang_core` sur tout `Engine::new` (vérifié au source de rhai 1.26.1,
-    `src/packages/lang_core.rs` ; indissociable du cœur sans casser le langage). `sleep` reste donc appelable dans tout script :
-    substrat accepté par le développeur principal (arbitrage du 2026-11-01 sur `dsd/miryad-core/workflow.md` `DEC-8`),
-    bloquant pour le fil de travail, non interrompu par l'annulation coopérative — voir « Durée d'exécution ».
-    Un sommeil durable reste la prérogative de `MiryadDurableStep` (./durable.sdd).
-  `log_debug`, `log_info`, `log_warn`, `log_error` : fonctions Rhai `fn(message: ImmutableString)`, enregistrées par ce fichier sur
-    chaque moteur neuf, qui émettent `tracing::debug!/info!/warn!/error!` avec les champs structurés `run_key` et `step_id` (clones
-    capturés de `run`) et le message ; elles ne font rien d'autre. Le journal est celui du step, pas celui du processus.
+  `crypto_rhai_register` enregistre `sha256` et `crc32_hash` sans condition ; sous la feature `crypto` de `vynil-core`, **unifiée
+    ailleurs dans le graphe**, il ajoute `bcrypt_hash`, `Argon` et `gen_private_key` : risque connu, identique à celui de
+    `hashes_rhai_register` en 0.9.0 et accepté à ce stade (arbitrage du 2026-11-12). De même, sous la feature `quantity`
+    unifiée, `core_rhai_register` ajoute `cpu_millis_of` et `memory_bytes_of` (fonctions pures, acceptées).
+  `sleep` (amendé 2026-11-12) : `core_rhai_register` enregistre `sleep(INT)` de `vynil-core`, qui attend sur le jeton d'annulation
+    du fil (`cancel::scope`, « Durée d'exécution ») et rend `CANCEL-001` dès qu'il est annulé. `sleep(FLOAT)` reste le substrat du
+    `lang_core` de **rhai** (enregistré sur tout `Engine::new`, non coopératif), accepté par le développeur principal
+    (arbitrage du 2026-11-01). Un sommeil durable reste la prérogative de `MiryadDurableStep` (./durable.sdd).
   Durée d'exécution (amendement 2026-10-30, `FR-18`) : `RhaiConfig` gagne un champ `timeout_secs: Option<u64>` (`#[serde(default)]`,
     en secondes ; absent ⇒ `DEFAULT_TIMEOUT_SECS = 300`) ; hors de `1..=MAX_TIMEOUT_SECS` (`MAX_TIMEOUT_SECS = 3600`) ⇒ @StepError
     { retryable: false, message: "config rhai invalide: timeout_secs doit être compris entre 1 et 3600" }. Valeur par défaut et
@@ -173,10 +174,11 @@ Must:
     @StepError { retryable: false, message: WorkflowError::ScriptTimeout { seconds: t }.to_string() } (`MRD-WORKFLOW-009`), sans
     attendre la fin du fil. Une closure de `setups` non coopérative peut donc survivre à l'erreur le temps de rendre la main ; c'est un
     risque d'app, à documenter dans la rustdoc de `with_setup`. Un script qui échoue pour une autre cause garde son message habituel.
-    `sleep` (substrat rhai, voir « Liste blanche », 2026-11-01) n'est pas coopératif non plus : un `sleep` plus long que le
-    timeout survit à @WorkflowError::ScriptTimeout dans son fil de travail jusqu'à son terme — comportement connu, accepté,
-    seul un sommeil durable (`MiryadDurableStep`, ./durable.sdd) est pilotable ; verrouillé par le `Scenario` « un script
-    bloqué dans sleep rend le timeout sans attendre le fil ».
+    `sleep(INT)` (`vynil-core`, voir « Liste blanche », 2026-11-12) est coopératif : annulé à l'expiration, il rend la main au fil
+    peu après. `sleep(FLOAT)` (substrat rhai) ne l'est pas : un `sleep(FLOAT)` plus long que le timeout survit à
+    @WorkflowError::ScriptTimeout dans son fil de travail jusqu'à son terme — comportement connu, accepté, seul un sommeil
+    durable (`MiryadDurableStep`, ./durable.sdd) est pilotable ; verrouillé par les `Scenario` « un script bloqué dans sleep
+    rend le timeout sans attendre le fil » et « sleep(INT) est interrompu par l'annulation ».
   Variables de run (amendement 2026-10-30, lot B, `FR-14`, `CON-8`) : `set_dynamic("vars", ..)` avec `run.vars` (objet JSON, `{}` sans
     variables), à côté de `inputs` et `run`, avant les closures de `setups`. `vars`, `inputs`, `run` et `config` sont posées comme
     **variables ordinaires** (`set_dynamic`), jamais comme constantes (`Scope::push_constant`) : modifier une propriété d'une constante
@@ -466,15 +468,15 @@ Scenario: le moteur n'expose ni l'environnement du processus ni les accès hôte
 
 Scenario: fichiers et shell restent absents même quand les features de vynil-core sont actives (2026-10-30)
   Given le graphe de test où `vynil-core` est compilé avec `fs` et `shell` (dev-dependency, /miryad-core.sdd tâche A1)
-  When `run` exécute un script qui appelle une fonction du groupe `fs` (nom lu au source de `fs_rhai_register`), puis un script
+  When `run` exécute un script qui appelle une fonction du groupe `fs` (nom lu au source de `host_rhai_register`, 2026-11-12), puis un script
     qui appelle `shell_run("true")`
   Then chacun rend @Err(StepError { retryable: false, .. }) — fonction inconnue ; une sonde `Script::new_bare` du même test prouve
     que ces fonctions existent bien dans ce graphe (le contraste attribue l'absence à la liste blanche)
 
 Scenario: les helpers purs restent disponibles (2026-10-30)
   Given le step `rhai`
-  When `run` exécute un script qui appelle au moins une fonction de chacun des registrars `core_pure`, `chrono`, `hashes`, `semver`,
-    `yaml` et `glob` (par exemple `sha256("hello")`, `yaml_encode`, une comparaison semver…)
+  When `run` exécute un script qui appelle au moins une fonction de chacun des groupes `core` (encodages, `glob`, YAML, temps), `crypto` (`sha256`, `crc32_hash`)
+    et `semver` (amendé 2026-11-12 ; par exemple `sha256("hello")`, `yaml_encode`, une comparaison semver…)
   Then le résultat porte les valeurs attendues ; `import_run` et `import_template` d'un module absent sautent silencieusement
 
 Scenario: log_info émet un événement tracing du step (2026-10-30)
@@ -495,8 +497,15 @@ Scenario: un script bloqué dans sleep rend le timeout sans attendre le fil (202
   Given le step `rhai` et le `config` `{"script": "sleep(10); #{}", "timeout_secs": 1}`
   When `run` est appelé
   Then le résultat est @Err(StepError { retryable: false, message }), `message` commence par `MRD-WORKFLOW-009` et le rendu
-    survient en moins de 5 s — le retour n'attend pas le `sleep`, qui survit dans son fil de travail jusqu'à son terme
-    (comportement accepté du substrat, voir « Liste blanche »)
+    survient en moins de 5 s — le retour n'attend pas le `sleep` (2026-11-12 : `sleep(INT)` est désormais interrompu par
+    l'annulation, voir le `Scenario` suivant ; seul `sleep(FLOAT)` survit dans son fil, substrat accepté de rhai)
+
+Scenario: sleep(INT) est interrompu par l'annulation (2026-11-12)
+  Given le step `rhai` avec un `with_setup` dont la closure capture un `Arc` neuf par exécution (le test en garde un `Weak`), et
+    le `config` `{"script": "sleep(10); #{}", "timeout_secs": 1}`
+  When `run` est appelé (il rend @Err `MRD-WORKFLOW-009`), puis le `Weak` est sondé pendant 3 s au plus
+  Then son compteur fort tombe à zéro dans ces 3 s — le `sleep(10)` s'est réveillé à l'annulation (le script est terminé par
+    `on_progress`, non rattrapable par `try/catch`) et le fil a libéré son moteur au lieu de dormir 10 s
 
 Scenario: timeout_secs hors bornes est une config invalide (2026-10-30)
   Given `config = {"script": "#{}", "timeout_secs": 0}` puis `{"script": "#{}", "timeout_secs": 3601}`

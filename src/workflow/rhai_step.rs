@@ -21,11 +21,12 @@
 //! l'autre.
 //!
 //! Ce fichier ne connaît ni accès DB, ni appel HTTP, ni client MCP. Son moteur Rhai est construit
-//! par liste blanche explicite (amendement 2026-10-30, `DEC-8`) : six registrars purs de
-//! `vynil-core`, quatre fonctions `log_*` propres au step, les shims d'`add_common` et `render` —
+//! par liste blanche explicite (amendement 2026-10-30, `DEC-8`) : trois registrars de
+//! `vynil-core` (`core`, `crypto`, `semver`), quatre fonctions `log_*` propres au step, les shims d'`add_common` et `render` —
 //! jamais `get_env`, les fichiers ou le shell, quelles que soient les features de `vynil-core`
-//! activées ailleurs dans le graphe. Le registrar `sleep` de `vynil-core` n'est pas enregistré,
-//! mais `sleep` reste appelable : substrat du `lang_core` de rhai accepté le 2026-11-01 (`DEC-8`).
+//! activées ailleurs dans le graphe. `sleep(INT)` vient du groupe `core` de `vynil-core` et est
+//! interrompu par l'annulation ; `sleep(FLOAT)` reste le substrat non coopératif du `lang_core` de
+//! rhai (`DEC-8`, 2026-11-01 et 2026-11-12).
 //! Le point d'extension est
 //! [`RhaiStep::with_setup`] (issue sebt3/miryad-core#27) : l'application empile des closures
 //! qui, à chaque exécution, enregistrent leurs fonctions hôte sur le moteur neuf — jamais un
@@ -42,15 +43,12 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::Value;
 use vynil_core::cancel::{self, CancelToken};
-use vynil_core::chrono::chrono_rhai_register;
 use vynil_core::engine::{
     Dynamic, Engine, FileModuleResolver, ImmutableString, ModuleResolversCollection, Scope, Script,
-    core_pure_rhai_register,
+    core_rhai_register,
 };
-use vynil_core::glob::glob_rhai_register;
-use vynil_core::hashes::hashes_rhai_register;
+use vynil_core::hashes::crypto_rhai_register;
 use vynil_core::semver::semver_rhai_register;
-use vynil_core::yaml::yaml_rhai_register;
 use vynil_core::{RhaiRes, rhai_err_str};
 
 use super::error::WorkflowError;
@@ -221,18 +219,17 @@ impl Default for RhaiStep {
 /// `DEC-8`, `FR-16`) : `Script` à la main (`Engine::new()`, `Scope::new()`), résolveur de modules =
 /// `ModuleResolversCollection` portant un `FileModuleResolver` par entrée de `resolver_path`, dans
 /// l'ordre (vide ⇒ tout `import` échoue, fail-closed, comme `new_bare`) ; plafonds d'expression et
-/// d'appels de `new_bare` (`256`/`128`, `512`) ; puis, **dans cet ordre exact**, les six registrars
-/// purs de `vynil-core` (`core_pure`, `chrono`, `hashes`, `semver`, `yaml`, `glob`), les quatre
+/// d'appels de `new_bare` (`256`/`128`, `512`) ; puis, **dans cet ordre exact**, les trois registrars
+/// de `vynil-core` 0.9.1 (`core`, `crypto`, `semver`), les quatre
 /// `log_*` du step ([`register_step_logs`]) et les shims de [`Script::add_common`] (`assert`,
 /// `import_run`, `import_template` — leur chemin de saut appelle `log_debug`, enregistré avant).
-/// Ne sont **jamais** enregistrés : le groupe hôte (`get_env`, les `log_*` du processus), le
-/// registrar `core_sleep` de `vynil-core`, ni les registrars `fs`, `shell`, `password`, `crypto`,
-/// `oci`, `http`, `s3`, `k8s` — quelles que soient les features de `vynil-core` activées ailleurs
+/// Ne sont **jamais** enregistrés : le groupe hôte (`host_rhai_register` : `get_env`, les `log_*`
+/// du processus, `fs`, `shell`), ni les registrars `password`, `oci`, `http`, `s3`, `k8s` — quelles que soient les features de `vynil-core` activées ailleurs
 /// dans le graphe. Un registrar ajouté plus tard par `vynil-core` n'atteint les scripts que par un
 /// amendement de la spec ; la liste est relue à chaque montée de `vynil-core`. Substrat accepté
-/// (`./rhai_step.sdd` « Liste blanche », arbitrage 2026-11-01) : `sleep(INT)`/`sleep(FLOAT)` est
-/// enregistré par rhai lui-même dans son `lang_core` sur tout `Engine::new` et reste donc
-/// appelable, bloquant pour le fil de travail.
+/// (`./rhai_step.sdd` « Liste blanche », arbitrage 2026-11-01) : `sleep(FLOAT)` est enregistré par
+/// rhai lui-même dans son `lang_core` sur tout `Engine::new`, bloquant et non coopératif ;
+/// `sleep(INT)` vient de `core` et se réveille à l'annulation.
 fn build_script(resolver_path: Vec<String>, run: &RunInfo) -> Script {
     let mut script = Script {
         engine: Engine::new(),
@@ -245,12 +242,9 @@ fn build_script(resolver_path: Vec<String>, run: &RunInfo) -> Script {
     script.engine.set_module_resolver(resolver);
     script.engine.set_max_expr_depths(256, 128);
     script.engine.set_max_call_levels(512);
-    core_pure_rhai_register(&mut script.engine);
-    chrono_rhai_register(&mut script.engine);
-    hashes_rhai_register(&mut script.engine);
+    core_rhai_register(&mut script.engine);
+    crypto_rhai_register(&mut script.engine);
     semver_rhai_register(&mut script.engine);
-    yaml_rhai_register(&mut script.engine);
-    glob_rhai_register(&mut script.engine);
     register_step_logs(&mut script.engine, run);
     script.add_common();
     script
@@ -1101,9 +1095,9 @@ mod tests {
     }
 
     /// Scenario « les helpers purs restent disponibles » (A4, `FR-16`) : la liste blanche garde les
-    /// six registrars purs — au moins une fonction de chacun : `core_pure` (`sha256`), `chrono`
-    /// (`date_now`/`format`), `hashes` (`crc32_hash`), `semver` (`semver_from` et `<`), `yaml`
-    /// (`yaml_encode`), `glob` (`glob`) ; les shims `import_run`/`import_template` d'`add_common`
+    /// trois registrars — au moins une fonction de chaque groupe : `crypto` (`sha256`,
+    /// `crc32_hash`), `core` (`date_now`/`format`, `yaml_encode`, `glob`), `semver` (`semver_from`
+    /// et `<`) ; les shims `import_run`/`import_template` d'`add_common`
     /// sautent silencieusement un module absent (trace `log_debug`, jamais erreur). Test
     /// d'invariance : vert d'emblée sous le `new_bare` actuel — il rougit si `build_script`
     /// enregistrait trop peu.
@@ -1136,12 +1130,12 @@ import_template("zz_module_absent", #{});
         assert_eq!(
             rendu["sha"],
             json!("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"),
-            "`core_pure` : sha256(\"hello\")"
+            "`crypto` : sha256(\"hello\")"
         );
         assert_eq!(
             rendu["crc"],
             json!("907060870"),
-            "`hashes` : crc32(\"hello\") = 0x3610A686"
+            "`crypto` : crc32(\"hello\") = 0x3610A686"
         );
         assert_eq!(rendu["glob_hit"], json!(true), "`glob` : match de *.txt");
         assert_eq!(rendu["glob_miss"], json!(false), "`glob` : non-match *.rs");
@@ -1292,6 +1286,54 @@ import_template("zz_module_absent", #{});
                 );
             }
         }
+    }
+
+    /// Scenario « `sleep(INT)` est interrompu par l'annulation » (2026-11-12) : `sleep(INT)` de
+    /// `core` se réveille à l'annulation du jeton, le script est terminé (`ErrorTerminated`,
+    /// non rattrapable) et le fil libère son moteur. Sonde : une closure de `setups` enregistre
+    /// une fonction qui capture un `Arc` neuf par exécution ; le `Weak` correspondant doit tomber
+    /// à zéro dans les 3 s suivant le `ScriptTimeout` (un fil dormant ~10 s garderait le moteur).
+    #[tokio::test]
+    async fn sleep_int_est_interrompu_par_l_annulation() {
+        let sonde: std::sync::Arc<std::sync::Mutex<Option<std::sync::Weak<()>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let partage = std::sync::Arc::clone(&sonde);
+        let etape = RhaiStep::default().with_setup(move |s, _, _| {
+            let jeton = std::sync::Arc::new(());
+            if let Ok(mut case) = partage.lock() {
+                *case = Some(std::sync::Arc::downgrade(&jeton));
+            }
+            s.engine.register_fn("sonde", move || {
+                let _ = &jeton;
+            });
+        });
+        let resultat = etape
+            .run(
+                &run_info(),
+                json!({ "script": "sleep(10); #{}", "timeout_secs": 1 }),
+                no_inputs(),
+            )
+            .await;
+        let erreur = resultat.expect_err("le timeout de 1 s doit expirer");
+        assert!(
+            erreur.message.starts_with("MRD-WORKFLOW-009"),
+            "{:#?}",
+            erreur.message
+        );
+        let faible = sonde
+            .lock()
+            .ok()
+            .and_then(|case| case.clone())
+            .expect("la closure de setup a dû s'exécuter");
+        let limite = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while faible.strong_count() > 0 && std::time::Instant::now() < limite {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            faible.strong_count(),
+            0,
+            "`sleep(INT)` aurait dû être interrompu : le moteur est resté vivant"
+        );
     }
 
     /// Scenario « un script bloqué dans `sleep` rend le timeout sans attendre le fil »

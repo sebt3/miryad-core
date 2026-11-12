@@ -126,12 +126,14 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
     - **Realized by:** SpecDD /src/workflow/subworkflow.sdd
     - **Verified by:** `AC-14`
 
-- **FR-16 - MUST:** `RhaiStep` construit son moteur par **liste blanche explicite** : le groupe pur du cœur de
-  `vynil-core` (`core_pure_rhai_register`) et les registrars purs `chrono`, `hashes`, `semver`, `yaml` et `glob`. Il
-  n'enregistre ni le groupe hôte (`get_env`, `log_*`), ni `sleep`, ni les accès fichiers, `shell`, `http`, `s3`, `oci`
-  ou `k8s`, quelles que soient les features de `vynil-core` activées ailleurs dans le graphe de dépendances. L'inscription
-  « ne pas enregistrer » ne couvre pas le substrat de rhai lui-même : `sleep(INT)`/`sleep(FLOAT)` est enregistré par le
-  `lang_core` de rhai sur tout `Engine::new` et reste appelable — substrat accepté (`DEC-8`, amendé le 2026-11-01).
+- **FR-16 - MUST:** `RhaiStep` construit son moteur par **liste blanche explicite** : le groupe `core` de `vynil-core`
+  (`core_rhai_register` : encodages, texte, `glob`, YAML, temps, `sleep`), le groupe `crypto` (`crypto_rhai_register` :
+  `sha256`, `crc32_hash`) et `semver` (alignement sur `vynil-core` 0.9.1, 2026-11-12). Il n'enregistre ni le groupe
+  hôte (`host_rhai_register` : `get_env`, `log_*`, fichiers, `shell`), ni `http`, `s3`, `oci`, `k8s` ou `password`,
+  quelles que soient les features de `vynil-core` activées ailleurs dans le graphe de dépendances. `sleep(INT)` vient de
+  `core` et est interrompu par l'annulation ; `sleep(FLOAT)` reste le substrat du `lang_core` de rhai, non coopératif
+  (`DEC-8`, amendé le 2026-11-01 puis le 2026-11-12). Risque accepté : la feature `crypto` de `vynil-core`, si elle est
+  unifiée dans le graphe, ajoute `bcrypt_hash` et `Argon` à `crypto_rhai_register`.
     - **Source:** user instruction, 2026-10-30 ; vynil-core `CHANGELOG` 0.9.0 (#18) ; substrat `sleep`, vérifié au source
       de rhai 1.26.1 et arbitré par le développeur principal le 2026-11-01
     - **Rationale:** `Script::new_bare` enregistre tout ce que les features unifiées activent ; un auteur de workflow
@@ -282,6 +284,9 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
       2026-11-01 — il vient du `lang_core` de rhai, pas d'un registrar `vynil-core`, et une surcharge le laisserait
       de toute façon appelable sous un autre nom) ; demander un constructeur à sélection de
       groupes à `vynil-core` (non retenu pour ce lot).
+    - **Amendement 2026-11-12 :** `vynil-core` 0.9.1 (rupture d'API en patch, sans consommateur touché) a fusionné `core_pure`,
+      `chrono`, `glob`, `yaml` et `sleep` dans `core_rhai_register`, déplacé `sha256` vers `crypto_rhai_register` et regroupé
+      `get_env`, `log_*`, `fs` et `shell` dans `host_rhai_register` ; `miryad-core` 0.3.1 s'y aligne (`FR-16`).
     - **Consequences:** la liste de registrars est dupliquée de `new_bare` et doit être relue à chaque montée de
       `vynil-core`. Un script qui employait `get_env` casse. `sleep` **ne casse pas** : correction actée le 2026-11-01,
       vérifiée au source de rhai 1.26.1 (`src/packages/lang_core.rs`), `sleep(INT)`/`sleep(FLOAT)` est un substrat du langage
