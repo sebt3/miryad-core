@@ -1,7 +1,6 @@
 ---
 description: Validation spec ↔ implémentation ↔ tests pour miryad-core, plus la batterie tests/features/clippy/fmt. Lecture seule, produit une synthèse d'écarts.
 mode: subagent
-model: smart/qwen3.8-flash-next
 temperature: 0.7
 color: warning
 permission:
