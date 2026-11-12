@@ -331,7 +331,7 @@ impl MiryadResource for Entity {
     }
 
     /// Valide les versions présentes et dérive `name` et `version` — voir
-    /// [`Entity::valider_et_deriver`]. Les toolsets de `script_grants` sont relus en existence par
+    /// `Entity::valider_et_deriver`. Les toolsets de `script_grants` sont relus en existence par
     /// la connexion `db` (amendement du 2026-11-11, DSD `scripts-hote` `DEC-2`).
     fn before_create<C>(
         db: &C,

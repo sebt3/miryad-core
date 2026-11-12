@@ -153,7 +153,7 @@ impl MiryadResource for Entity {
     }
 
     /// Valide les versions présentes et dérive `toolset_id` et `version` — voir
-    /// [`Entity::valider_et_deriver`].
+    /// `Entity::valider_et_deriver`.
     fn before_create<C>(
         db: &C,
         active: Self::ActiveModel,

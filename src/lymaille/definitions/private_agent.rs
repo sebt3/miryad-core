@@ -199,7 +199,7 @@ impl MiryadResource for Entity {
     }
 
     /// Valide la définition, contrôle les modules accordés et réécrit les colonnes dérivées —
-    /// voir [`Entity::sauvegarde_avec`].
+    /// voir `Entity::sauvegarde_avec`.
     fn before_create<C>(
         db: &C,
         active: Self::ActiveModel,

@@ -1,7 +1,7 @@
 //! Modules Rhai de l'hôte, registre `HostModules` et enrobage d'autorité (`src/lymaille/
 //! host_module.sdd`, DSD `scripts-hote#FR-1` à `FR-3`, `DEC-4`). L'application déclare un
 //! [`HostModule`] : nom, politique d'accès fermée ([`HostAccess`]) et fonctions ([`HostFunction`]).
-//! [`mount_host_modules`] monte le module et **enrobe chaque fonction** d'un contrôle central,
+//! `mount_host_modules` monte le module et **enrobe chaque fonction** d'un contrôle central,
 //! exécuté avant chaque appel sur un principal relu en base (`lymaille#FR-4`, précédent :
 //! `resource_module`) : un module n'a pas à réimplémenter l'autorité. Le registre [`HostModules`]
 //! est une valeur du montage (précédent : `ResourceRegistry`), distincte de `LymailleHost` : une
@@ -234,7 +234,7 @@ impl PluginFunc for Guarded {
 
 /// Monte les modules du registre pour `subject` : `All` pour une session interactive ou un step
 /// batch (`FR-3`), `Named` pour un script (`script_grants.modules`, DSD `DEC-2`) — un nom inconnu
-/// est ignoré. Chaque fonction est enregistrée en brut (enrobage [`Guarded`], `FR-2`) sous son
+/// est ignoré. Chaque fonction est enregistrée en brut (enrobage `Guarded`, `FR-2`) sous son
 /// arité `params` : un appel d'une arité différente est une fonction inconnue pour Rhai. Le
 /// montage ne lit pas la base ; la politique est relue à chaque appel, aucun principal en cache.
 // signature contractuelle de ./host_module.sdd : `db` est passé par valeur, à la manière de

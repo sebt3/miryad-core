@@ -161,7 +161,7 @@ Tasks:
     drapeau `-D warnings` confirmé sur les 16 entrées de matrice actuelles, `tooling.sdd` toujours à zéro
     dette — clippy `-D warnings` vert sur les 16 combinaisons (9 rejouées ce jour sur HEAD, 7 déjà vertes),
     `cargo fmt --check` vert.
-  [ ] Décider s'il faut séparer `test`, `fmt` et `clippy` en jobs dédiés dès que la matrice est
+  [x] Ratifié 2026-11-12 : `test`, `fmt` et `clippy` sont déjà des jobs dédiés dans `./ci.yml` (décision actée, rien à changer). Décider s'il faut séparer `test`, `fmt` et `clippy` en jobs dédiés dès que la matrice est
     jouée (parallélisme, lisibilité des échecs).
   [x] Tension matrice complète / carve-out du pont : arbitré par Sébastien le 2026-10-03, option
     A — matrice des tests étendue, clippy sans graphe `graphql`. Le pont est un prototype qui ne

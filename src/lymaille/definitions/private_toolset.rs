@@ -234,7 +234,7 @@ impl MiryadResource for Entity {
     }
 
     /// Valide les versions, contrôle les modules accordés et dérive `toolset_id` et `version` —
-    /// voir [`Entity::sauvegarde_avec`].
+    /// voir `Entity::sauvegarde_avec`.
     fn before_create<C>(
         db: &C,
         active: Self::ActiveModel,

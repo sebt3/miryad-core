@@ -263,7 +263,7 @@ impl MiryadResource for Entity {
     }
 
     /// Valide le contexte, contrôle l'usage des serveurs liés et réécrit `name` — voir
-    /// [`Entity::valider_et_controler_serveurs`].
+    /// `Entity::valider_et_controler_serveurs`.
     fn before_create<C>(
         db: &C,
         active: Self::ActiveModel,

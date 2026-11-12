@@ -128,7 +128,7 @@ impl MiryadResource for Entity {
         Some(Column::AgentId)
     }
 
-    /// Valide la définition et réécrit les colonnes dérivées — voir [`Entity::valider_et_deriver`].
+    /// Valide la définition et réécrit les colonnes dérivées — voir `Entity::valider_et_deriver`.
     fn before_create<C>(
         db: &C,
         active: Self::ActiveModel,

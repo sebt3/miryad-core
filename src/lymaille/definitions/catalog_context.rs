@@ -188,7 +188,7 @@ impl MiryadResource for Entity {
         Some(Column::Name)
     }
 
-    /// Valide le contexte et réécrit `name` — voir [`Entity::valider_et_deriver`].
+    /// Valide le contexte et réécrit `name` — voir `Entity::valider_et_deriver`.
     fn before_create<C>(
         db: &C,
         active: Self::ActiveModel,

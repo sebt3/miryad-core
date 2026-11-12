@@ -81,7 +81,7 @@ Tasks:
   [x] Amendement du 2026-11-11 (arbitrage du développeur principal) : `code()` ; test d'abord (`Scenario` « `code()` égale le préfixe de `Display` pour chaque variante »), puis ./error.rs ; ./http/sse.sdd et ./chat/bridge.sdd l'emploient ensuite.
     Validé 2026-11-11 : `pub fn code(&self) -> String` dérivé du préfixe de `Display` (`split_once(':')`, littéral dupliqué nul), test `code_equals_display_prefix` sur les seize variantes `-001` à `-016` (rouge d'abord par `E0599`) ; batterie ciblée `lymaille` verte (913 tests + intégration, clippy `-D warnings`, `fmt`), `check lymaille,matrix` vert. Synthèse tenue par le primary (`validator` indisponible : trois timeouts).
     Ravalidé 2026-11-11 par le `validator` (rattrapage lot scripts-hote : GO).
-    [?] (validator, rattrapage du 2026-11-11) : le `Scenario` « les codes sont stables » s'arrête textuellement à `-012` alors que le test couvre `-016` — le Then devrait être amendé d'une ligne à `-016` (le test est déjà plus fort que le contrat écrit). Amender le `Scenario` relève du développeur principal. Choix provisoire : laisser le test tel quel, plus fort que le Then.
+    Ratifié 2026-11-12 (arbitrage du développeur principal) — Then amendé à `-016`. (validator, rattrapage du 2026-11-11) : le `Scenario` « les codes sont stables » s'arrête textuellement à `-012` alors que le test couvre `-016` — le Then devrait être amendé d'une ligne à `-016` (le test est déjà plus fort que le contrat écrit). Amender le `Scenario` relève du développeur principal. Choix provisoire : laisser le test tel quel, plus fort que le Then.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./error.rs.
@@ -89,7 +89,7 @@ Done when:
 Scenario: les codes sont stables
   Given une variante de chaque sorte
   When `to_string()` est appelé
-  Then chaque message commence par `MRD-LYMAILLE-001` à `-012`
+  Then chaque message commence par `MRD-LYMAILLE-001` à `-016`
 
 Scenario: `code()` égale le préfixe de `Display` pour chaque variante
   Given une variante de chaque sorte (`-001` à `-016`)

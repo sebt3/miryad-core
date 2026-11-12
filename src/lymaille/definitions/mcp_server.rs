@@ -225,7 +225,7 @@ impl MiryadResource for Entity {
     }
 
     /// Applique les cinq premières portes du `Must` et pose `created_at` — voir
-    /// [`Entity::valider`].
+    /// `Entity::valider`.
     fn before_create<C>(
         db: &C,
         mut active: Self::ActiveModel,

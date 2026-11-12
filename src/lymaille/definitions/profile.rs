@@ -101,7 +101,7 @@ impl MiryadResource for Entity {
         Some(Column::Name)
     }
 
-    /// Valide le profil et dérive `name` — voir [`Entity::valider_et_deriver`].
+    /// Valide le profil et dérive `name` — voir `Entity::valider_et_deriver`.
     fn before_create<C>(
         db: &C,
         active: Self::ActiveModel,

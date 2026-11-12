@@ -512,7 +512,8 @@ mod tests {
     /// `Scenario` : « la liste des modules réservés à l'admin n'a qu'une déclaration »
     /// (amendement `identity.sdd` du 2026-11-11) — une seule ligne `const ADMIN_ONLY…` dans tout
     /// `src/`, dans ce fichier ; et `interactive/assemble.rs`, `interactive/activation.rs`,
-    /// `workflow/subagent_step.rs` l'importent (la nomment sans la déclarer).
+    /// `workflow/subagent_step.rs`, `definitions/private_agent.rs` et `definitions/private_toolset.rs`
+    /// l'importent (la nomment sans la déclarer).
     #[test]
     fn admin_only_modules_has_a_single_declaration() {
         // Le motif est reconstruit par concat pour que ce test ne se relève pas lui-même.
@@ -539,11 +540,13 @@ mod tests {
             "l'unique déclaration doit être dans ./identity.rs, trouvée dans {found}"
         );
 
-        // Les trois consommateurs nomment la constante (import + usage) sans la déclarer.
+        // Les cinq consommateurs (dont les deux hooks de sauvegarde) nomment la constante (import + usage) sans la déclarer.
         for importer in [
             "src/lymaille/interactive/assemble.rs",
             "src/lymaille/interactive/activation.rs",
             "src/workflow/subagent_step.rs",
+            "src/lymaille/definitions/private_agent.rs",
+            "src/lymaille/definitions/private_toolset.rs",
         ] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(importer);
             let content = std::fs::read_to_string(&path)
