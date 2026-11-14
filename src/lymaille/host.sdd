@@ -3,7 +3,7 @@ Spec: host — LymailleHost, extension de l'application hôte (serveurs MCP et c
 Purpose:
   Définir le **seul** point d'extension par lequel l'application consommatrice fournit à miryad-core ce qu'elle seule connaît (DSD `DEC-27`,
     `FR-14`) : le serveur MCP propre à un contexte (URL, jeton frais de courte durée, décision d'autorité) et les contextes de niveau projet
-    (identifiants `H_…`, jamais stockés). Un hôte typique : une sandbox dont l'URL est créée et détruite dynamiquement, dont le jeton est minté à
+    (identifiants `H_…`, jamais stockés), puis (amendement du 2026-11-13, issues #70, #75, #82) les droits de script de ces contextes, le profil par défaut des agents et le jeton `forward` hors session interactive. Un hôte typique : une sandbox dont l'URL est créée et détruite dynamiquement, dont le jeton est minté à
     la demande et dont l'autorité est un lien utilisateur↔propriétaire que miryad-core ne connaît pas. Le trait est optionnel : sans lui,
     le comportement est celui de `DEC-20` seul. Ce fichier ne porte que le trait et ses types ; leur emploi est dans ./mcp_access.sdd et
     ./store/toolset.sdd. Fichier neuf, conception.
@@ -17,12 +17,22 @@ References:
   `lymaille::ToolsetContext`
 
 Must:
-  `#[async_trait] pub trait LymailleHost: Send + Sync` (objet-trait : l'application le fournit en `Arc<dyn LymailleHost>`), deux méthodes avec une
+  `#[async_trait] pub trait LymailleHost: Send + Sync` (objet-trait : l'application le fournit en `Arc<dyn LymailleHost>`), cinq méthodes (deux d'origine, trois de l'amendement du 2026-11-13) avec une
     implémentation **par défaut** (l'hôte n'implémente que ce qu'il fournit) :
     `async fn resolve_mcp(&self, request: &McpRequest<'_>, caller: &CallerPrincipal) -> Result<McpDecision, HostError>` — défaut `Ok(Unprovided)`.
     `async fn resolve_context(&self, id: &str, caller: &CallerPrincipal) -> Result<Option<ToolsetContext>, HostError>` — défaut `Ok(None)` ;
       `id` est un identifiant `Host` (`H_…`, ./identity.sdd) ; l'hôte y tranche aussi l'autorité de `caller` sur ce contexte (`None` = absent
       **ou** interdit).
+    `async fn script_grants(&self, context: &str, caller: &CallerPrincipal) -> Result<Option<ScriptGrants>, HostError>` (amendement du 2026-11-13, issue #70) — défaut `Ok(None)` ; `context` est un
+      identifiant `Host` ; les droits de script que l'hôte accorde à ce contexte pour `caller` (équivalent, pour un `H_…`, de la colonne `script_grants` d'un type de contexte, ./definitions/context_type.sdd) ;
+      `None` = aucun droit. L'hôte ne peut accorder que ce que `check_grants` laisse passer (./identity.sdd, `FR-9`) : le consommateur (./script_runner.sdd) applique cette porte.
+    `async fn default_profile(&self) -> Result<Option<String>, HostError>` (amendement du 2026-11-13, issue #75) — défaut `Ok(None)` ; le nom du profil de modèle d'un agent qui n'en désigne pas ; relu à
+      chaque ouverture de session ou exécution de step, jamais mis en cache par la crate.
+    `async fn forward_token(&self, request: &McpRequest<'_>, caller: &CallerPrincipal) -> Result<Option<Zeroizing<String>>, HostError>` (amendement du 2026-11-13, issue #82) — défaut `Ok(None)` ; le jeton
+      qu'un serveur MCP en mode `forward` doit recevoir quand aucun jeton interactif n'existe (step batch, script de widget, pont) ; l'audience, la durée et la portée du jeton (échange RFC 8693 ou autre)
+      sont l'affaire exclusive de l'hôte ; `McpGrant::expires_at` ne s'y applique pas.
+  `pub struct ScriptGrants { pub toolsets: Vec<String>, pub modules: Vec<String> }` (amendement du 2026-11-13) : les noms de toolsets (version active) et de modules d'hôte accordés à un script ; `Clone`, `Debug`,
+    `Default`, `PartialEq`, `Eq`. Même forme que la colonne `script_grants` (objet à exactement les deux clés `toolsets` et `modules`).
   `pub struct McpRequest<'a> { pub context: &'a str, pub role: &'a str }` — l'identifiant du contexte de la session et le rôle MCP demandé par un
     toolset accordé. `Clone`, `Copy`, `Debug`.
   `pub enum McpDecision { Unprovided, Denied, Granted(McpGrant) }` — `Unprovided` : l'hôte ne pourvoit pas ce rôle (repli sur la liaison classique de
@@ -35,17 +45,33 @@ Must:
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
-  Mettre en cache, persister ou tracer le jeton ou l'URL d'un `McpGrant` ; faire porter à `HostError` un texte venu de l'hôte ; passer une connexion
+  Mettre en cache, persister ou tracer le jeton ou l'URL d'un `McpGrant`, ni le jeton rendu par `forward_token` ; faire porter à `HostError` un texte venu de l'hôte ; passer une connexion
     à la base à l'hôte (il applique ses propres règles) ; imposer à l'hôte d'implémenter les deux méthodes.
 
 Depends on:
   ./identity.rs, @async_trait, @zeroize, @chrono, `lymaille::ToolsetContext`
 
 Exposes:
-  `LymailleHost`, `McpRequest`, `McpDecision`, `McpGrant`, `HostError`, `SharedHost`
+  `LymailleHost`, `McpRequest`, `McpDecision`, `McpGrant`, `ScriptGrants`, `HostError`, `SharedHost`
 
 Tasks:
   [x] Tests d'abord (hôte factice : défauts, `is_expired`, `Debug` opaque), puis ./host.rs. Spec approuvée le 2026-11-04 ; validé 2026-11-04 (validator PASS checkpoint 2 — les 4 `Scenario` verrouillés, objet-trait prouvé).
+  [ ] Issue #70 (DSD `scripts-hote#OI-6`) — `script_grants` fourni par l'hôte pour ses contextes `H_…`. Spec d'abord (amendement à faire approuver) : ajouter au `Must` une troisième méthode à
+    implémentation par défaut `async fn script_grants(&self, context: &str, caller: &CallerPrincipal) -> Result<Option<…>, HostError>`, défaut `Ok(None)` = aucun droit (donc l'échec fermé
+    actuel de ./script_runner.sdd) ; adapter `Purpose` (le trait porte trois points d'extension) et `Exposes` ; `Scenario` : défaut → `None` ; hôte factice qui accorde. Puis tests d'abord, puis
+    ./host.rs. Ordre de lot : avant ./script_runner.sdd, qui consomme la méthode.
+    Arbitré le 2026-11-13 : type rendu : celui que lit `resolve_grants` pour la colonne `script_grants` de ./definitions/context_type.sdd (une seule forme, donc `check_grants` s'applique tel quel) ; le nommer à l'écriture du `Must`.
+    Arbitré le 2026-11-13 (recommandation retenue) : signature : `Result<Option<…>, HostError>` (recommandé : même forme que `resolve_mcp` et `resolve_context`, une panne de l'hôte devient un échec fermé et non un « aucun droit » muet) plutôt que
+    l'`Option` nu de l'issue.
+  [ ] Issue #75 — `default_profile` : profil par défaut fourni par l'hôte. Spec d'abord : quatrième méthode à défaut `async fn default_profile(&self) -> Result<Option<String>, HostError>`, défaut
+    `Ok(None)` (aucun profil par défaut : l'ouverture d'une session d'un agent sans profil échoue avec la cause nommée, voir ./interactive/assemble.sdd) ; `Scenario` : défaut → `None`, hôte qui désigne un
+    profil. Puis tests d'abord, puis ./host.rs. Dépend de ./definitions/agent.sdd (profil facultatif, arbitré le 2026-11-13) : sans lui, la méthode n'a pas de consommateur.
+  [ ] Issue #82 — `forward_token` : jeton `forward` fourni par l'hôte hors session interactive. Spec d'abord : cinquième méthode à défaut
+    `async fn forward_token(&self, request: &McpRequest<'_>, caller: &CallerPrincipal) -> Result<Option<Zeroizing<String>>, HostError>`, défaut `Ok(None)` (comportement actuel : échec typé non retryable,
+    ./mcp_access.sdd) ; le jeton n'est ni persisté, ni journalisé, ni mis en cache (déjà au `Must not`, étendu à cette valeur de retour) ; `Scenario` : défaut → `None`, hôte qui fournit, `Debug` sans jeton.
+    Puis tests d'abord, puis ./host.rs.
+    Arbitré le 2026-11-13 : forme : méthode de `LymailleHost` (recommandé : le `Purpose` de cette spec fait de ce trait « le **seul** point d'extension » de l'hôte, DSD `DEC-27`) plutôt qu'un trait `TokenProvider` distinct comme
+    le propose l'issue (deuxième objet à câbler dans `ScriptDeps`, `AssembleDeps` et `SubagentDeps`).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./host.rs.
@@ -69,3 +95,18 @@ Scenario: HostError ne porte aucun texte
   Given un `HostError`
   When `format!("{}")` et `format!("{:?}")`
   Then la sortie est fixe et ne contient rien venu de l'hôte
+
+Scenario: les trois méthodes ajoutées ont un défaut neutre
+  Given un hôte factice qui n'implémente que les méthodes d'origine
+  When `script_grants`, `default_profile` et `forward_token` sont appelées
+  Then `Ok(None)` pour les trois
+
+Scenario: un hôte qui accorde des droits de script
+  Given un hôte factice dont `script_grants("H_sandbox_alice_web", alice)` rend `ScriptGrants { toolsets: ["G_ops"], modules: ["view"] }`
+  When la méthode est appelée pour `alice`, puis pour un autre contexte
+  Then les droits pour le premier appel, `None` pour le second
+
+Scenario: forward_token ne divulgue pas le jeton
+  Given un hôte factice dont `forward_token` rend `Some("secret-token")`, et `HostError`
+  When le résultat est affiché par `Debug`, puis l'erreur par `Display`
+  Then aucun affichage ne contient `secret-token` ; `Display` de `HostError` reste « host resolution failed »

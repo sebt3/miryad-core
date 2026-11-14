@@ -34,6 +34,7 @@ Must:
   `POST /toolsets/{name}/activate` → `200` `ActivationReport` ; `DELETE /toolsets/{name}/draft` → `204` (si un brouillon existait, sinon `404`).
   Traduction d'erreur : `UnknownSubject`/`Forbidden` → `403`, `NotFound` → `404`, `Conflict` → `409`, `InvalidDefinition` → `422`, `Store`/autre → `500`
     avec code `MRD-LYMAILLE-*` ; message à texte fixe, jamais le contenu d'un message, d'un jeton, d'un prompt ni d'une URL.
+  **Amendement du 2026-11-13 (issue #72)** : les structs de corps de requête et de réponse que ./routes.rs possède (ouverture, message, historique, reprise, événements d'histoire) dérivent `ts_rs::TS` sans changer leur sérialisation (champs `u64` annotés `#[ts(type = "number")]`, dates `string`) ; ils sont exportés par `export_typescript` de ../interactive/event.sdd. Les types déjà exportés (`SessionEvent`…) ne sont pas dupliqués.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -75,6 +76,9 @@ Tasks:
     Validé 2026-11-06 (validator PASS : Purpose et Must fidèles au code réel — State(auth)+load_state vérifié handler par handler, re-DELETE 204 verrouillé par le test existant ; preuve e2e réelle par MockOidcClient, 202 ⟹ source Bearer authentique ; verrou source du mapping intact ; lymaille vert en tests et clippy `-D warnings`, `fmt`, `specdd lint`).
     [?] (implementer, analysé par le validator sans trancher) : la case disait amender le Given ; le When/Then ont été alignés faute de quoi ils décrivaient une preuve que plus rien n'établit — le validator juge le sens du contrat préservé (Some monté en e2e, None ramenée au verrou source, seul niveau observable). Choix provisoire : cet alignement. Valides-tu cette répartition de preuve comme précédent pour les Scenario où le manager concret n'est pas espionnable ?
     [?] (validator) : le 204 idempotent du re-DELETE repose sur le fait que `close` ne supprime pas la ligne persistée ; si un futur `lymaille` purgeait à la fermeture, ce serait un 404 — verrou amont à arbitrer le moment venu, pas ici.
+  [ ] Issue #72 — corps de requête et de réponse de la surface de session (`/api/v1/lymaille`) : dériver `TS` sur ceux que ./routes.rs possède, sans changer la sérialisation (champs `u64` en
+    `#[ts(type = "number")]` comme ./../interactive/event.sdd). Spec d'abord : `Must` (dérives) et `Scenario` « le `.ts` exporté déclare le corps de `POST …/send` » ; l'export lui-même est tâche de
+    ./../interactive/event.sdd. Puis test de contrat, puis ./routes.rs. Les corps qui contiennent un type de `lymaille` suivent le blocage amont de ./../mod.sdd.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./routes.rs.
@@ -125,3 +129,8 @@ Scenario: activer son brouillon
   Given un toolset privé avec brouillon
   When `POST /toolsets/{name}/activate`
   Then `200` et l'`ActivationReport`
+
+Scenario: les corps de la surface de session sont typés pour TypeScript
+  Given les corps d'ouverture (`{ context, agent? }`), de message (`{ text }`) et les réponses de session, sérialisés en JSON
+  When l'export de ../interactive/event.sdd est appelé et les déclarations lues
+  Then chaque clé du JSON est une propriété de la déclaration du corps, sans changement de sérialisation (champs `u64` en `number`)

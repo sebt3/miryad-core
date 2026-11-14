@@ -59,7 +59,7 @@ Must:
     Traçabilité : la réduction en phrase fixe est implantée par sonde sur la chaîne de l'erreur (`format!("…:?")`, motifs `ColumnDecode` /
     `Decode(`) parce que le chemin sqlx exact varie selon le graphe de features ; le pass-through d'un texte non-JSON est assumé, la
     confidentialité ne dépend pas de cette fonction — les logs ne contiennent que des bornes fixes, contrat ../error.sdd.
-  Déclarer `pub mod session; pub mod catalog; pub mod toolset; pub mod memory;` et ré-exporter à plat les huit types de store.
+  Déclarer `pub mod session; pub mod catalog; pub mod toolset; pub mod memory; pub mod publish;` (amendement du 2026-11-13, issue #73 : le chemin système de publication du catalogue, ./publish.sdd, **hors** des stores par principal, qui gardent leurs règles communes)  et ré-exporter à plat les huit types de store.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -72,13 +72,28 @@ Depends on:
 
 Exposes:
   `LymailleStores`, `LymailleStores::{new, with_host, subject, sessions, agents, profiles, providers, toolsets, context_types, contexts, memories}`,
-    `db_text` (`pub(crate)`), et les huit types de store ré-exportés.
+    `db_text` (`pub(crate)`), les huit types de store ré-exportés, et le module `publish` (`Provenance`, `PublishOutcome`, `SkipReason`, `ensure_*`, par leur chemin de module).
 
 Tasks:
   [x] Amendement DEC-27 (2026-11-03) : `with_host`, champ `host` propagé aux stores de contextes, règles 3 et 4 pour `Host` ; tests d'abord, puis ./mod.rs en dernier. Après ../host.rs et ../identity.rs.
   [x] Amendement lot 2 : accesseurs `drafts` et `session_index`, déclaration des enfants du lot 2, tests de chemins plats d'abord, puis ./mod.rs en dernier.
   [x] Tests d'abord (SQLite mémoire : cloisonnement et règles 1 à 6 sur un store de test), puis ./mod.rs en dernier du
     dossier. Validé 2026-11-02 (validator PASS ; `db_text` de ../identity.rs basculé sur `store::db_text`).
+  [ ] Issue #73 — publication du catalogue par l'hôte (chemin système, create-only, idempotent). Arbitrages du 2026-11-13 (développeur principal, recommandations retenues) : `publish.rs` dédié, types de contexte + contextes + agents du catalogue, remplacement par marque + empreinte + semver supérieur, SHA-256 du contenu stocké, hooks CRUD qui ignorent `managed_*`. Reste à ratifier le point 3 (`pub(crate)`) :
+    1. Où vit le chemin système. Recommandation : un nouveau fichier `./publish.rs` (spec `./publish.sdd` à écrire d'abord) plutôt que des `ensure_*` sur les stores — les stores sont « construits par principal »
+    et résolvent `Identity::resolve(subject)` à chaque opération (règle commune 2, DSD `DEC-3`) ; un chemin sans sujet les contredirait. Fonctions libres sur `&C: ConnectionTrait` (`CON-7`), `INSERT … ON CONFLICT DO NOTHING`
+    portable SQLite/PostgreSQL, qui rendent `Created`, `Unchanged`, `Updated` ou `Skipped` (ligne modifiée par un admin, ou non gérée).
+    2. Quelles tables : types de contexte, contextes du catalogue et agents du catalogue (liste de l'issue) ; toolsets, profils, providers : non, écrits par les admins seuls.
+    3. Mêmes validations que les hooks (critère de l'issue) : les hooks sont des méthodes d'`Entity` (`valider_et_deriver`, `valider`, privées) ; les réutiliser demande de les passer `pub(crate)` (hors `Owns` des
+    specs concernées : à ratifier comme pour `role_requirements`) — ou d'extraire une fonction de validation partagée.
+    4. Provenance : colonnes `managed_by` (nom de source), `managed_version`, `managed_digest` (empreinte du contenu publié) sur les tables visées. Le CRUD REST/MCP ne doit pas pouvoir les forger : les hooks
+    ignorent toute valeur reçue à la création et laissent intactes celles de la ligne à la mise à jour (une modification par un admin change le contenu, donc l'empreinte ne correspond plus : la ligne n'est
+    plus « non modifiée »). Empreinte : SHA-256 (`sha2`, déjà sous `db`) de la colonne de définition **telle que stockée** après dérivation, recalculée à la comparaison.
+    5. Règle de remplacement : l'hôte ne remplace une ligne que si `managed_by` est sa marque **et** si l'empreinte stockée égale celle du contenu actuel **et** si la version publiée est supérieure ; sinon
+    `Skipped` (l'hôte peut le signaler). Comparaison de versions : semver (arbitré ; les types de contexte et toolsets portent déjà une `version` semver).
+    Une fois arbitré : spec `./publish.sdd` (Owns `./publish.rs`), amendement de ./mod.sdd (déclaration, ré-export), de ./../migration.sdd (colonnes) et des hooks des définitions concernées ; DSD `lymaille` à
+    étendre (exigence, décision) par le développeur principal. `Scenario` d'acceptation : base fraîche et aucun sujet admin → publication réussie ; seconde publication → `Unchanged` partout ; ligne modifiée par un admin
+    → intacte ; ligne gérée non modifiée et version supérieure → mise à jour ; version égale ou inférieure → intacte. Parité REST/MCP sans objet (fonction de bibliothèque).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./mod.rs.

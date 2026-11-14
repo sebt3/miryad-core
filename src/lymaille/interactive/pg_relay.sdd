@@ -1,0 +1,94 @@
+Spec: pg_relay — PgEventRelay, le relais d'événements entre répliques par LISTEN/NOTIFY PostgreSQL
+
+Purpose:
+  Fournir l'implémentation **partagée** de la couture `EventRelay` de ./hub.sdd (DSD `DEC-31`, issue #81 lot 2) : les messages que le hub publie (événements, curseurs, `Missed`, commandes `Cancel` et `Close`) sont envoyés par `pg_notify`
+    sur un canal unique de la base de l'application et reçus par chaque réplique qui y écoute (`LISTEN`), de sorte qu'un abonné SSE d'une réplique voie les événements d'un tour exécuté sur une autre. Sans PostgreSQL, ou sans la
+    feature de compilation, aucun relais n'est construit et le hub reste en mémoire. Fichier neuf, conception (arbitré le 2026-11-14 : `LISTEN/NOTIFY`).
+
+Owns:
+  ./pg_relay.rs
+
+Can modify:
+  ./mod.rs : la déclaration `pub mod pg_relay;` (sous la feature de compilation du relais, `[?]` ci-dessous) et le ré-export de `PgEventRelay`, seulement.
+
+References:
+  ./hub.sdd — `EventRelay`, `RelayMessage`, `RelayBody`, `RELAY_EVENT_MAX` ; ./manager.sdd — commandes `Cancel`/`Close` ; ../turn_lock.sdd — porte de tour (même base)
+  /dsd/miryad-core/lymaille.md — `FR-11`, `DEC-24`, `DEC-31`, `AC-21`, `OI-13` ; issue sebt3/miryad-core#81
+
+Must:
+  `pub struct PgEventRelay` — `impl EventRelay` (./hub.sdd), construit par `PgEventRelay::connect(db: &DatabaseConnection, config: PgRelayConfig) -> Result<std::sync::Arc<PgEventRelay>, LymailleError>` :
+    backend autre que PostgreSQL → `InvalidDefinition("postgres required")` (l'application ne construit pas de relais sans PostgreSQL) ; échec de connexion de l'écouteur → `LymailleError::Store`.
+    `pub struct PgRelayConfig { pub channel: String, pub queue_capacity: usize, pub reconnect_max: Duration }` (`Clone`, `Debug`, `Default` : canal `miryad_lymaille_events`, 1024, 30 s ; `channel` : identifiant SQL
+    `[a-z0-9_]{1,63}`, sinon `InvalidDefinition("invalid relay channel")` ; `queue_capacity` borné [16, 65 536] ; `reconnect_max` borné [1 s, 300 s], ramenés à la borne la plus proche).
+  Émission : `publish(message)` est **synchrone et infaillible** (contrat de `EventRelay`) : le message est sérialisé en JSON compact et déposé dans une file bornée (`queue_capacity`) ; file pleine → le message est abandonné et `tracing::warn`
+    (jamais bloquant, jamais de contenu) ; une tâche d'envoi exécute `SELECT pg_notify($1, $2)` (canal et charge **liés**, jamais interpolés) sur le pool de l'application, dans l'ordre de dépôt. Une charge de plus de 7900 octets (limite de `NOTIFY` :
+    8000) est remplacée par le même message de corps `Missed` (le hub borne déjà les événements à `RELAY_EVENT_MAX` ; ceci est la dernière barrière). Une erreur d'envoi → `tracing::warn` (sans la charge), le message est perdu, la tâche continue.
+  Réception : une tâche écoute le canal sur une connexion **dédiée** (`LISTEN`, une seule par `PgEventRelay`), désérialise chaque notification en `RelayMessage` et la pousse dans le `mpsc::Receiver` rendu par `incoming()` (file bornée à `queue_capacity` ;
+    pleine → message abandonné + `warn`) ; une charge illisible est ignorée (`warn`, sans la charge). La perte de la connexion d'écoute → reconnexion avec attente exponentielle (1 s, 2 s, 4 s… plafonnée à `reconnect_max`) ; **après chaque reconnexion
+    réussie**, le relais pousse un unique `RelayMessage { origin: "", session: "*", body: Missed }` : le hub le traite comme « des événements ont pu être manqués pour toutes les sessions » (./hub.sdd).
+  Les `NOTIFY` d'une même connexion émettrice sont livrés **dans l'ordre** de leur validation : l'ordre des événements d'une session relayés depuis une seule réplique est conservé.
+  `incoming()` ne peut être appelé qu'une fois ; un second appel rend un récepteur déjà clos (jamais de panique).
+  Aucun contenu d'événement, aucun identifiant de session, aucun jeton dans les traces de niveau `info` et au-dessus.
+  Compiler sous `#[cfg(all(feature = "lymaille", feature = "lymaille-pg"))]` (feature de la crate `lymaille-pg`, arbitré le 2026-11-14, `["lymaille", "sea-orm/sqlx-postgres"]`, hors `default`).
+
+Must not:
+  Écouter sur le pool de l'application (une connexion d'écoute est dédiée) ; interpoler le canal ou la charge dans le SQL ; attendre dans `publish` ; relayer son propre `origin` (c'est le hub qui l'ignore) ; persister quoi que ce soit (le relais est volatile : un message
+    non reçu est perdu, le curseur du journal de ../store/events.sdd est le filet du lot 3) ; propager un `DbErr` nu ; créer plus d'une écoute par instance.
+
+Depends on:
+  ./hub.rs (`EventRelay`, `RelayMessage`, `RelayBody`), ../error.rs, @sea_orm (`sqlx` ré-exporté : `PgListener`, `get_postgres_connection_pool`), @tokio, @serde_json
+
+Exposes:
+  `PgEventRelay`, `PgRelayConfig`
+
+Tasks:
+  [ ] Spec approuvée par le développeur principal avant toute ligne de code (issue #81 lot 2). Après la tâche « relais » de ./hub.sdd et la tâche « Montée de dépendance à `lymaille` 0.3.0 » de ../mod.sdd.
+  [ ] Feature de compilation (`[?]` ci-dessous, à trancher avant) : `/Cargo.toml` + amendement de `/tooling.sdd` (nouvelle combinaison de tests et de clippy, contrôle `cargo tree`). Une tâche, avant ./pg_relay.rs.
+    Arbitré le 2026-11-14 : feature de la crate `lymaille-pg` = `["lymaille", "sea-orm/sqlx-postgres"]`, **hors `default`**, qui active ce fichier (`PgListener` n'existe que sous `sqlx-postgres`, absente des dépendances normales) ; la porte de tour (../turn_lock.sdd) n'en a pas besoin. Le relais par interrogation périodique est écarté.
+  [ ] Feature `lymaille-pg` — **avec l'accord explicite du développeur principal** (fichiers hors périmètre de cette spec) : `/Cargo.toml` (`lymaille-pg = ["lymaille", "sea-orm/sqlx-postgres"]`, hors `default`, métadonnées docs.rs si `all-features` en liste), `/tooling.sdd` (amendement du 2026-11-14 déjà écrit), `/AGENTS.md` (batterie amendée), `/.github/workflows/ci.yml` et `workflows.sdd` (matrices test et clippy, contrôle de graphe), agent `validator`. Contrôles : `cargo test` et `cargo clippy -D warnings` sous `--no-default-features --features lymaille-pg` ; `cargo tree --no-default-features --features lymaille -e normal -i sqlx-postgres` rend une stdout **vide** ; `cargo tree --no-default-features --features lymaille-pg -e normal -i sqlx-postgres` imprime une ligne. Avant ./pg_relay.rs.
+  [ ] Tests d'abord, puis ./pg_relay.rs. Tests sans PostgreSQL : bornage de `PgRelayConfig`, refus d'un nom de canal invalide, `connect` refusé sur SQLite mémoire, sérialisation/désérialisation d'un `RelayMessage` (aller-retour), remplacement d'une charge de plus de 7900 octets par `Missed`.
+    Tests contre un PostgreSQL réel, `#[ignore]` sauf `MIRYAD_TEST_PG_URL` : les `Scenario` ci-dessous. Après l'approbation de cette spec et de la tâche de feature.
+  [ ] Déclaration et ré-export dans ./mod.rs ; test d'import étendu d'abord. Même cycle que la tâche précédente.
+
+Done when:
+  Les `Scenario` sont verts (ceux qui exigent PostgreSQL contre un serveur réel) ; la batterie de `/AGENTS.md` est verte sur toutes ses combinaisons, y compris la nouvelle ; la spec est relue et approuvée avant ./pg_relay.rs.
+
+Scenario: connect refuse un backend qui n'est pas PostgreSQL
+  Given une connexion SQLite mémoire
+  When `PgEventRelay::connect(&db, PgRelayConfig::default())`
+  Then `Err(InvalidDefinition("postgres required"))`
+
+Scenario: un nom de canal invalide est refusé
+  Given une configuration dont `channel` vaut `a;drop table x` puis `` (vide) puis 64 caractères
+  When `connect`
+  Then trois `Err(InvalidDefinition("invalid relay channel"))`, aucune requête n'a été émise
+
+Scenario: la configuration est bornée
+  Given `queue_capacity = 0` puis 1 000 000 et `reconnect_max` de 0 s puis 1 h
+  When `connect` (PostgreSQL réel) ou la fonction de bornage
+  Then 16 puis 65 536, et 1 s puis 300 s
+
+Scenario: un message émis sur une réplique est reçu sur l'autre
+  Given PostgreSQL réel et deux `PgEventRelay` sur le même canal
+  When le premier publie trois `RelayMessage` d'une session
+  Then `incoming()` du second rend les trois, dans l'ordre, avec leur `origin` et leur `session` ; `incoming()` du premier reçoit aussi les siens (le hub les ignore)
+
+Scenario: une charge trop grosse devient Missed
+  Given un `RelayMessage` dont l'événement sérialisé fait 9000 octets
+  When il est publié
+  Then le récepteur voit `RelayBody::Missed` pour la même session, sans erreur d'envoi
+
+Scenario: un canal plein abandonne sans bloquer
+  Given `queue_capacity = 16` et une base qui ne répond plus
+  When 1000 messages sont publiés
+  Then `publish` ne bloque jamais, au plus 16 sont en file, et un `warn` sans contenu est tracé
+
+Scenario: la perte de l'écoute est signalée après reconnexion
+  Given deux relais et la session PostgreSQL de l'écouteur du second tuée côté serveur (`pg_terminate_backend`)
+  When l'écouteur se reconnecte (attente exponentielle, plafonnée)
+  Then `incoming()` rend `RelayMessage { session: "*", body: Missed }`, puis les messages suivants du premier arrivent normalement
+
+Scenario: une charge illisible est ignorée
+  Given un `pg_notify` du canal avec la charge `pas du json`
+  When le relais la reçoit
+  Then rien n'est poussé vers `incoming()`, un `warn` est tracé sans la charge, et le message valide suivant est reçu

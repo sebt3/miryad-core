@@ -24,7 +24,7 @@ Must:
   `pub async fn run(&self, context: &str, subject: &str, source: &str, limits: &ScriptLimits, token: Option<Zeroizing<String>>) -> Result<serde_json::Value, LymailleError>` :
     1. `caller_of(db, subject)` : `subject` sans compte → `UnknownSubject` ; le principal est relu à chaque appel de module par l'enrobage (`host_module`) et par `resources` ;
     2. le contexte `context` (privé de l'appelant, `G_…` du catalogue ou `H_…` de l'hôte, jamais celui d'un autre) puis son **type** sont résolus comme à l'étape 4 de `assemble_session` ; la version **active**
-      de ce type fournit `script_grants` ; contexte ou type absent, sans version active, ou `script_grants` illisible → `Forbidden("script grants unavailable")` (échec fermé : aucun droit sans type ; **y compris un contexte `H_…`** de l'hôte, qui n'a pas de type en base — `scripts-hote#OI-6`) ; un toolset granté sans version active échoue de la même façon ;
+      de ce type fournit `script_grants` ; contexte ou type absent, sans version active, ou `script_grants` illisible → `Forbidden("script grants unavailable")` (échec fermé : aucun droit sans type) ; **contexte `H_…` de l'hôte** (amendement du 2026-11-13, issue #70, solde `scripts-hote#OI-6` côté contrat) : il n'a pas de type en base, ses droits viennent de `LymailleHost::script_grants(context, caller)` (./host.sdd) après que `resolve_context` l'a rendu visible pour l'appelant ; hôte absent, méthode par défaut (`Ok(None)`) ou `Err(HostError)` → le même `Forbidden("script grants unavailable")` ; les droits accordés sont bornés comme ceux d'un type : toolsets à version active, modules nommés, `check_grants` (modules réservés admin) et principal relu à chaque appel de module — l'hôte ne peut accorder que ce que cette porte laisse passer ; un toolset granté sans version active échoue de la même façon ;
     3. modules montés, et seulement ceux-là : `resources_module` (avec écritures, sans journal), `mount_host_modules(…, Named(script_grants.modules))`, et pour chaque toolset de `script_grants.toolsets`
       (version **active**, jamais un brouillon) ses rôles MCP **seuls** par `mount_role` (la source Rhai propre du toolset n'est **jamais** montée : le code d'un autre auteur ne s'exécute pas sous le principal de l'appelant, `FR-5`) (même résolution `resolve_role` puis `build_auth` que l'assemblage, `token` passé à `build_auth` pour l'auth `forward`) avec la
       **même politique** que `assemble_session` : un rôle requis refusé fait échouer `run` (`Forbidden("mcp server unavailable")`), un rôle optionnel refusé est omis. Les modules natifs de
@@ -33,7 +33,13 @@ Must:
       ramenés à `max_result_bytes` ; l'évaluation tourne sur un thread dédié pour ne pas bloquer le runtime ;
     5. le `Dynamic` rendu est converti en `serde_json::Value` ; sa taille sérialisée > `max_result_bytes` → `ScriptResultTooLarge` (jamais de troncature silencieuse) ; durée → `ScriptTimeout` ;
       opérations → `ScriptOperationLimit` ; toute autre erreur du script → `ScriptFailed(<message Rhai sans le source>)`.
-  Le jeton `forward` n'est transmis qu'à `build_auth` et disparaît avec l'appel. Aucun cache, aucun état gardé entre deux `run` : même texte et deux sujets donnent chacun le résultat de **leur** principal.
+  `pub async fn run_cancellable(&self, context: &str, subject: &str, source: &str, limits: &ScriptLimits, token: Option<Zeroizing<String>>, cancel: &vynil_core::cancel::CancelToken) -> Result<serde_json::Value, LymailleError>`
+    (amendement du 2026-11-13, issue #71) : même contrat que `run`, plus : le crochet `on_progress` rend aussi la main quand `cancel` est annulé ; `vynil_core::cancel::scope(cancel)` est posé **dans la fermeture du thread d'évaluation**
+    (le jeton courant est un `thread_local`) pour que `sleep` et les ponts `block_on` des modules MCP observent l'annulation ; une annulation rend `LymailleError::ScriptCancelled` (./error.sdd), distincte de
+    `ScriptTimeout`, jamais un résultat partiel ; un jeton déjà annulé avant le démarrage rend `ScriptCancelled` sans qu'aucun module n'ait été appelé. `run` conserve sa signature et son comportement : il délègue à
+    `run_cancellable` avec un jeton qui n'est jamais annulé (une seule implémentation).
+  Le jeton `forward` n'est transmis qu'à `mount_role` (donc à `build_auth`) et disparaît avec l'appel. Sans `token`, `mount_role` consulte `LymailleHost::forward_token` pour un rôle `forward` (amendement du 2026-11-13, issue #82,
+    ./mcp_mount.sdd) ; le jeton venu de l'hôte disparaît lui aussi avec l'appel, n'est ni mis en cache ni tracé. Aucun cache, aucun état gardé entre deux `run` : même texte et deux sujets donnent chacun le résultat de **leur** principal.
   Ce qu'un script rejoue ou non à chaque exécution est l'affaire de l'hôte : la crate n'impose ni journal d'idempotence ni mode d'effets.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
@@ -53,6 +59,26 @@ Tasks:
     Validé 2026-11-11 : 8 tests ↔ 8 `Scenario` nommés (`un_spectateur_*` … `une_erreur_de_script_*`), rouge d'abord par imports non résolus ; batterie ciblée `lymaille` + contrôle `workflow,lymaille` + clippy 5 graphes + fmt verts ; synthèse tenue par le primary (`validator` indisponible).
     Arbitrages du 2026-11-11 (développeur principal) : toolset sans version active → `Forbidden` confirmé ; rôles MCP seuls, source Rhai jamais montée, figé au `Must` ; contexte `H_…` : échec fermé, Open Issue `scripts-hote#OI-6`.
     Ratifié 2026-11-11 : `role_requirements` et `toolset_context_roles` (./interactive/assemble.rs) et `dynamic_to_json` (./resource_module.rs) passés `pub(crate)` (jamais `pub`), hors `Owns`, logique inchangée ; `pub mod script_runner;` repris par ./mod.sdd (commit 8a0dd19).
+  [ ] Issue #70 — droits d'un contexte `H_…` : le point 2 du `Must` (« y compris un contexte `H_…` : échec fermé ») est le contrat à amender, avec la mention `scripts-hote#OI-6` (Open Issue à solder dans la
+    Solution par le développeur principal : le besoin est maintenant constaté, vanyline). Spec d'abord : pour un contexte `Host`, résolu comme à l'étape 4 de `assemble_session` (`resolve_context` rend
+    `None` = absent ou interdit → inchangé), `script_grants` vient de `LymailleHost::script_grants` (./host.sdd) au lieu de la colonne d'un type ; hôte absent, méthode par défaut (`None`) ou panne de l'hôte →
+    `Forbidden("script grants unavailable")` ; les droits restent bornés par `check_grants` (modules réservés admin) et par le principal relu à chaque appel de module (`FR-5`), l'hôte ne peut accorder
+    que ce que cette porte laisse passer. `Scenario` : contexte `H_sandbox_<owner>_<nom>` dont l'hôte accorde un rôle MCP exécute un script qui appelle ce rôle (critère d'acceptation de l'issue) ; hôte
+    sans la méthode → échec fermé ; module `AdminOnly` accordé par l'hôte à un non-admin → refusé. Étendre le `Scenario` « un type de contexte absent… » au cas `H_…`. Puis tests d'abord, puis ./script_runner.rs.
+    Après ./host.sdd.
+  [ ] Issue #71 — annulation : `run_cancellable`. Spec d'abord : `pub async fn run_cancellable(&self, context, subject, source, limits, token, cancel: &CancelToken) -> Result<serde_json::Value, LymailleError>` ;
+    `run` conserve sa signature et son comportement (délègue avec un jeton jamais annulé : une seule implémentation) ; le crochet `on_progress` rend aussi la main quand `cancel` est annulé ;
+    `vynil_core::cancel::scope(cancel)` entoure l'évaluation pour que `sleep` et les ponts `block_on` des modules MCP la voient ; une annulation rend `LymailleError::ScriptCancelled` (./error.sdd), distincte de
+    `ScriptTimeout`, jamais un résultat partiel (`Must not` « tronquer » étendu). `Scenario` : `loop {}` et `sleep(30)` interrompus dans la seconde qui suit l'annulation ; annulation avant le démarrage
+    (aucun module appelé) ; annulation et dépassement de délai simultanés → un seul résultat typé, sans panique ; `run` sans jeton inchangé. Puis tests d'abord, puis ./script_runner.rs. Après ./error.sdd.
+    Point technique à relire en source avant d'écrire : `cancel.rs` de `vynil-core` 0.9.1 garde le jeton courant dans un `thread_local` ; `scope` doit donc être posé **dans la fermeture du thread
+    d'évaluation** (`spawn_blocking`), pas sur la tâche appelante.
+    Arbitré le 2026-11-13 : type de jeton : `vynil_core::cancel::CancelToken` en signature publique (recommandé : `vynil-core` est déjà une dépendance de la feature, et c'est le type que `sleep` sait observer) ;
+    alternative : un `tokio_util::sync::CancellationToken` converti en interne (dépendance de plus dans le graphe).
+  [ ] Issue #82 — jeton `forward` obtenu de l'hôte. Spec d'abord : quand `token` est `None` et qu'un rôle monté est en `auth_mode = forward`, `build_auth` consulte `LymailleHost::forward_token` (./host.sdd, voir
+    ./mcp_access.sdd) ; le jeton `token` explicite reste prioritaire ; hôte absent ou `None` → le refus actuel (`Forbidden("forward auth needs an interactive session")`). Le `Must` « le jeton `forward` n'est
+    transmis qu'à `build_auth` et disparaît avec l'appel » s'étend au jeton venu de l'hôte. `Scenario` : script de widget appelant un serveur `forward` sans `token`, hôte factice qui fournit ; sans fournisseur → échec
+    typé ; l'erreur ne cite ni jeton ni URL. Puis tests d'abord, puis ./script_runner.rs. Après ./mcp_access.sdd.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./script_runner.rs.
@@ -80,7 +106,7 @@ Scenario: un rôle MCP d'un toolset accordé est monté comme dans une session
 Scenario: un type de contexte absent ou sans version active ne donne aucun droit
   Given un contexte inconnu, puis un contexte dont le type n'a pas de version active
   When `run` est appelé avec un script trivial `1 + 1`
-  Then `Forbidden("script grants unavailable")` dans les deux cas
+  Then `Forbidden("script grants unavailable")` dans les deux cas ; de même pour un contexte `H_…` quand l'hôte est absent, rend `None` ou tombe en panne
 
 Scenario: durée, opérations et taille échouent en erreur typée
   Given les scripts `loop {}`, une boucle de plus de `max_operations`, et un script qui rend une chaîne de plus de `max_result_bytes`, avec des limites réduites
@@ -96,3 +122,33 @@ Scenario: une erreur de script ne cite ni le source ni de ligne ni de jeton
   Given un script qui lève une erreur Rhai, un autre dont la lecture échoue côté base, et un rôle `forward` dont le connecteur échoue
   When `run` est appelé
   Then le message de `ScriptFailed` ne contient ni le texte du script, ni une valeur de ligne, ni le détail d'une `DbErr`, ni le jeton, ni l'URL du serveur
+
+Scenario: un contexte hôte dont l'hôte accorde un rôle MCP exécute un script
+  Given un hôte factice qui rend visible `H_sandbox_alice_web` pour `alice` et accorde `ScriptGrants { toolsets: ["G_ops"], modules: [] }` (rôle MCP `sandbox` lié par le toolset), et un connecteur espion
+  When `run("H_sandbox_alice_web", "alice", "sandbox::outil(#{})", …)` est appelé
+  Then le connecteur reçoit l'appel avec l'authentification résolue pour `alice` ; pour `bob`, à qui `resolve_context` rend `None`, `run` échoue en `Forbidden`
+
+Scenario: l'hôte ne contourne pas les droits réservés ni le principal
+  Given un module d'hôte `AdminOnly` que l'hôte accorde à un contexte `H_…`, un non-admin puis un admin
+  When le script appelle le module
+  Then le non-admin échoue en `ScriptFailed` (`forbidden`), l'admin passe ; un hôte sans la méthode garde l'échec fermé
+
+Scenario: un script en boucle ou en sommeil est interrompu par l'annulation
+  Given les scripts `loop {}` et `sleep(30)`, et un `CancelToken`
+  When `run_cancellable` est lancé puis le jeton annulé après 100 ms
+  Then les deux rendent `ScriptCancelled` dans la seconde qui suit l'annulation, sans résultat partiel
+
+Scenario: l'annulation avant le démarrage n'exécute rien
+  Given un `CancelToken` déjà annulé et un module d'hôte espion
+  When `run_cancellable` est appelé avec un script qui appelle le module
+  Then `ScriptCancelled` et l'espion n'a rien reçu
+
+Scenario: annulation et délai restent deux erreurs distinctes
+  Given `max_duration` court et un script `loop {}`, avec puis sans annulation
+  When `run_cancellable` est appelé
+  Then `ScriptTimeout` sans annulation, `ScriptCancelled` avec ; `run` sans jeton se comporte comme avant (`ScriptTimeout`)
+
+Scenario: un rôle forward est monté avec le jeton de l'hôte
+  Given un serveur en mode `forward` lié au rôle d'un toolset accordé, un hôte factice dont `forward_token` rend `Some(jeton)`, un connecteur espion, et `token = None`
+  When `run` appelle le rôle
+  Then le connecteur reçoit un en-tête d'authentification qui n'atteint que ce serveur ; sans fournisseur ou avec `Ok(None)`, `Forbidden("forward auth needs an interactive session")` ; l'erreur ne cite ni jeton ni URL

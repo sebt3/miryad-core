@@ -25,9 +25,16 @@ Must:
   `before_create` / `before_update` (`HookError` sans code) : `context` objet JSON, désérialisable en `lymaille::ToolsetContext` (constructeur
     qui applique le détecteur de secrets ; un secret détecté → « context holds a secret-like value », jamais la valeur) ; `level` du contexte
     égal à `ContextLevel::Shared` (jeton JSON `shared` ; `project` est relu par alias amont) sinon « catalog contexts have level shared » ;
-    `classify(name)` = `Catalog` ; `context_type` posé et de forme identifiant valide quand posé (existence du type vérifiée à l'ouverture, pas ici) ;
+    `classify(name)` = `Catalog` ; `context_type` posé : `classify(reference)` = `Catalog` (forme `G_…` : un type de contexte est un objet du catalogue, ./context_type.sdd ; un nom privé ou `H_…` est refusé ; amendement du 2026-11-13, issue #74, écart spec ↔ code corrigé) ; existence du type vérifiée à l'ouverture, pas ici ;
     `name` réécrit depuis le contexte ;
     `before_update` : `name` ne change pas.
+  **Amendement du 2026-11-13 (issue #73, colonnes de provenance)** : `Model` porte en plus `managed_by: Option<String>`, `managed_version: Option<String>`, `managed_digest: Option<String>` (colonnes nullables de
+    ../migration.sdd, lues par ../store/publish.sdd pour les lignes gérées par l'hôte). Elles sont lisibles par REST et MCP comme les autres colonnes mais **jamais écrites par le CRUD** : `before_create` les pose à `None`
+    quelle que soit la valeur reçue ; `before_update` les remplace par celles de `existing` (la ligne relue). Une modification du contenu par un administrateur laisse donc la provenance intacte et change l'empreinte
+    recalculable : la ligne cesse d'être « non modifiée » pour l'hôte. Colonnes de contenu de l'empreinte : `context`, `context_type`.
+  **Amendement du 2026-11-13 (issues #79 et #72)** : `Model` dérive `utoipa::ToSchema` — `rest::openapi::resource_openapi::<Entity>()` compile pour cette ressource, colonnes JSON `context` décrites en objet libre (`#[schema(value_type = Object)]`) tant que les types de `lymaille` n'ont pas de schéma ; `DateTimeUtc` en
+    `#[schema(value_type = String, format = DateTime)]` — et `ts_rs::TS` : colonne(s) `context` typée(s) par `ToolsetContext` de `lymaille` (dérive `TS` amont, `lymaille` 0.3.0, issue sebt3/lymaille#10), les autres colonnes JSON de forme propre à la crate (tableaux de chaînes, `script_grants` `{ toolsets: string[]; modules: string[] }`) typées par `#[ts(type = "…")]` ; `DateTimeUtc` exporté `string` (`#[ts(type = "string")]`, RFC 3339 comme sérialisé), les entiers `number`, aucune feature d'implémentation de type tiers
+    de `ts-rs`. Les dérives n'ajoutent aucun attribut `serde` et ne changent **aucune** sérialisation. Le `Model` n'est exporté que par l'export TypeScript de ../interactive/event.sdd (aucun `#[ts(export)]`).
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -45,6 +52,19 @@ Tasks:
   [x] Tests d'abord (hooks purs), puis ./catalog_context.rs. Validé 2026-11-04 (validator PASS checkpoint R1–R5 ; les 7 rouges du WIP sont verts).
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les hooks de ./catalog_context.rs passent à la signature asynchrone (`db` ignoré : la validation reste pure, aucune lecture en base ajoutée par cette tâche) ; les tests `before_*` du fichier passent à `.await` avec une connexion simulée, assertions inchangées. Le contrôle à la sauvegarde que la connexion rend possible (DSD `hooks-async` `FR-3`) n'est **pas** dans cette tâche : il fera l'objet d'un amendement de spec distinct. Dépend de /src/resource.sdd (même amendement).
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
+  [ ] Issue #74 — la référence `context_type` en forme `G_…` est refusée par le hook (écart spec ↔ code). Qualification (procédure « Correction de bug » de `/.specdd/bootstrap.project.md`) : le `Must` ne dit que
+    « de forme identifiant valide » ; ./context_type.sdd fait des noms de type des `G_…` depuis le 2026-11-05 et ./../interactive/manager.sdd ne résout `context_type` que sous cette forme ; or
+    ./catalog_context.rs exige `classify(reference) == Private` (commentaire R10, arbitrage du 2026-11-04 renversé le lendemain). Le contrat est donc incomplet **et** le code obsolète. Spec d'abord : préciser
+    au `Must` que `context_type` posé est de forme `G_…` (`classify` = `Catalog`, un type de contexte est un objet du catalogue), l'existence restant vérifiée à l'ouverture ; `Scenario` : création par un admin
+    d'un contexte `G_home` de type `G_home` → `Ok` ; référence privée (`home`) ou `H_…` → refus ; utilisateur ordinaire → refus d'écriture (inchangé, `AdminOnly`). Puis test d'abord (rouge sur le code actuel),
+    puis ./catalog_context.rs. Correctif sur branche `fix/context_type_catalogue` depuis `origin/main`, message `fix: …` + origine + correctif, test conservé comme régression.
+  [ ] Issue #79 — `Model` dérive `utoipa::ToSchema` (sous `lymaille`, qui implique `db`) pour que `resource_openapi::<Entity>()` compile sur cette ressource. Spec d'abord : amender le `Must` (dérives du `Model`) et
+    ajouter le `Scenario` « `resource_openapi::<Entity>()` compile et décrit la ressource » ; colonnes JSON `context` décrites en objet libre (`#[schema(value_type = Object)]`) tant que l'issue #72 n'a pas
+    typé les définitions ; `DateTimeUtc` selon la décision `[?]` de ./mod.sdd. Puis test d'abord (appel de `resource_openapi::<Entity>()`, présence du schéma du `Model` et des champs), puis ./catalog_context.rs. Après ./mod.sdd.
+  [ ] Issue #72 — `Model` dérive `ts-rs::TS` avec la colonne JSON `context` typée par `ToolsetContext` de `lymaille`. Dépend de la publication amont de `lymaille` 0.3.0 (hypothèse de travail du 2026-11-13) : `lymaille` 0.2.1 n'a ni feature ni dépendance `ts-rs` (voir ./../mod.sdd). Débloqué par la
+    version amont qui dérive `TS` sur ses définitions. Alors : spec (`Must`, `Scenario` « le `.ts` exporté type la colonne par `ToolsetContext` »), test de contrat (valeur construite par la crate → JSON identique
+    à la forme déclarée, JSON de la déclaration accepté par la crate), puis ./catalog_context.rs.
+  [ ] Issue #73 — colonnes de provenance (`managed_*`) sur `Model` et hooks (valeurs reçues ignorées, valeurs de la ligne préservées), arbitré le 2026-11-13, voir ./../store/mod.sdd. Spec d'abord, tests d'abord, puis ./catalog_context.rs. Après ./../migration.sdd et la tâche #74 ci-dessus.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./catalog_context.rs.
@@ -68,3 +88,33 @@ Scenario: un non-admin n'écrit pas au catalogue
   Given la ressource enregistrée
   When un non-admin crée
   Then refus (`AdminOnly`)
+
+Scenario: la référence à un type du catalogue est acceptée
+  Given un contexte `G_home` de niveau `shared` dont `context_type` vaut `G_home`
+  When `before_create`, puis `before_update` sans changer le nom
+  Then `Ok` dans les deux cas ; l'existence du type n'est pas vérifiée par le hook
+
+Scenario: une référence privée ou hôte est refusée
+  Given un contexte `G_home` dont `context_type` vaut `home`, puis `H_home`, puis `g_home`, puis `a-b`
+  When `before_create`
+  Then `Err(HookError)` dans les quatre cas, sans écho de la valeur
+
+Scenario: l'administrateur crée par le CRUD ce que l'ouverture résout
+  Given un type `G_home` actif au catalogue, un administrateur et la ressource enregistrée
+  When l'administrateur crée par REST un contexte `G_home` de type `G_home`, puis un utilisateur ordinaire tente la même création
+  Then la création de l'administrateur réussit et la session s'ouvre sur ce contexte (./../interactive/manager.sdd) ; la tentative de l'utilisateur est refusée (`AdminOnly`)
+
+Scenario: la provenance n'est pas écrite par le CRUD
+  Given un `ActiveModel` dont `managed_by`, `managed_version` et `managed_digest` sont posés par le corps de la requête, puis une ligne existante gérée par l'hôte
+  When `before_create`, puis `before_update` sur la ligne existante avec d'autres valeurs de provenance
+  Then à la création les trois colonnes valent `None` ; à la mise à jour elles valent celles de `existing`, le contenu modifié passe
+
+Scenario: resource_openapi compile et décrit la ressource
+  Given l'entité de ce fichier et `rest::openapi::resource_openapi::<Entity>()`
+  When le document est construit
+  Then l'appel compile, le schéma du `Model` porte toutes ses colonnes (`DateTime` en `string`/`date-time`), et les colonnes JSON sont des objets libres
+
+Scenario: l'export TypeScript du Model correspond à la sérialisation
+  Given un `Model` construit avec toutes ses colonnes, sérialisé en JSON, et l'export TypeScript de ../interactive/event.sdd écrit dans un répertoire temporaire
+  When la déclaration `catalog_context.ts` est lue
+  Then chaque clé du JSON est une propriété de la déclaration avec le type attendu (`string` pour les dates, `number` pour les entiers), sans propriété en plus ; la sérialisation du `Model` n'a pas changé

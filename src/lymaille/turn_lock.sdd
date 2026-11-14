@@ -1,0 +1,93 @@
+Spec: turn_lock — PgTurnLock, la porte de tour partagée entre répliques (verrou consultatif PostgreSQL)
+
+Purpose:
+  Garantir **entre processus** « au plus un tour actif par session » (DSD `FR-11`, `DEC-31`, issue #81 lot 1) : `lymaille` 0.3.0 rend la porte de tour remplaçable derrière
+    le trait `TurnLock` (`try_begin(session)` asynchrone, rend un `TurnPermit` construit par `TurnPermit::new(session, release, lost)`) et ne livre que `TurnGate`, par processus. Ce fichier est
+    l'implémentation **partagée** : un verrou consultatif PostgreSQL pris sur une connexion de la base de l'application, **tenue pendant tout le tour**. La perte de cette connexion
+    (réseau, redémarrage de la base, session tuée côté serveur) est la perte du bail : le jeton `lost` du permis est annulé et `lymaille` abandonne le tour sans sauvegarder, en émettant `TurnLeaseLost`
+    (`lymaille` 0.3.0 ; miroir ./interactive/event.sdd). Sans PostgreSQL (SQLite, tests), aucune porte partagée n'est construite et le gestionnaire garde `TurnGate` seul. Fichier neuf, conception
+    (arbitré le 2026-11-14 : verrou consultatif PostgreSQL ; bail en table et objet virtuel Restate écartés, DSD `DEC-31`).
+
+Owns:
+  ./turn_lock.rs
+
+Can modify:
+  ./mod.rs : la déclaration `mod turn_lock;` et le ré-export de `PgTurnLock` et `pg_turn_lock`, seulement.
+
+References:
+  /dsd/miryad-core/lymaille.md — `FR-11`, `DEC-24`, `DEC-31`, `AC-21`, `OI-13` ; ./interactive/manager.sdd — consommateur (`ManagerDeps::turn_lock`) ; ./error.sdd — traduction de `SessionError::TurnLock`
+  `lymaille::{TurnLock, TurnPermit, CancelHandle, SessionId, SessionError}` (`lymaille` 0.3.0, `session/turn_gate.sdd`) ; issue sebt3/miryad-core#81
+
+Must:
+  `pub struct PgTurnLock` — `Clone` (état partagé `Arc`), `impl ::lymaille::TurnLock` ; construit par `PgTurnLock::new(db: DatabaseConnection, heartbeat: Duration)` et par la fonction libre
+    `pub fn pg_turn_lock(db: &DatabaseConnection, heartbeat: Duration) -> Option<std::sync::Arc<dyn ::lymaille::TurnLock>>` qui rend `Some` **seulement** si
+    `db.get_database_backend() == DatabaseBackend::Postgres`, `None` sinon (SQLite, MySQL : l'appelant garde la porte locale). `heartbeat` est borné à [1 s, 60 s] (défaut conseillé 5 s) ;
+    hors bornes, il est ramené à la borne la plus proche (jamais d'erreur).
+  Clé du verrou : `i64` = les huit premiers octets (big-endian) du SHA-256 de `miryad_lymaille_turn:` suivi de l'identifiant de session (`sha2`, déjà au graphe par `db`). Deux sessions peuvent en théorie
+    partager une clé (collision 64 bits) : le seul effet est un `TurnActive` à tort, jamais deux tours simultanés ; la spec l'assume (`DEC-31`).
+  `try_begin(session)` : ouvre une transaction (`TransactionTrait::begin`) sur la connexion de la base, y exécute `SELECT pg_try_advisory_xact_lock($1)` (clé ci-dessus, valeur liée) ; résultat `false` →
+    transaction annulée, `Err(SessionError::TurnActive(session))` **immédiat** (jamais d'attente) ; résultat `true` → un `TurnPermit::new(session, release, lost)` dont `lost` est un `CancelHandle` neuf.
+    Échec de la base (ouverture, requête) → `Err(SessionError::TurnLock(texte))` où `texte` est le message de la base **sans** identifiant de session ni valeur de clé.
+  La transaction est **détenue par une tâche `tokio`** lancée par `try_begin` (elle n'est jamais dans le permis) : la tâche émet un `SELECT 1` sur la transaction toutes les `heartbeat` ; la première erreur →
+    `lost.cancel()`, annulation de la transaction, fin de la tâche. `release` (fermeture synchrone appelée au `Drop` du permis) prévient la tâche par un canal `oneshot` : la tâche arrête le battement, **valide**
+    la transaction (`commit`, qui libère le verrou transactionnel) puis se termine ; un canal fermé sans signal vaut relâchement. Un permis relâché ne rend jamais `lost` annulé.
+  Le verrou est lié à la **transaction** (`xact`) : tout arrêt du processus, de la connexion ou de la transaction libère le verrou côté PostgreSQL ; aucune ligne de table n'est écrite, aucune migration.
+  Un tour ne retient qu'**une** connexion du pool pendant sa durée : documenter dans le bloc `//!` que le pool de l'application doit compter, en plus de ses besoins, le nombre de tours simultanés
+    attendus par réplique.
+  Aucune trace du contenu de la clé ni de l'identifiant de session au niveau `info` ou au-dessus ; `tracing::debug!` autorisé pour le nom du cas (« acquired », « busy », « lost », « released »).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Attendre qu'un tour actif se termine (`try_begin` ne bloque jamais sur le verrou) ; garder la connexion après le relâchement ; utiliser `pg_advisory_lock` de **session** (il survivrait à une connexion rendue
+    au pool) ; écrire en base ; accepter un backend autre que PostgreSQL dans `PgTurnLock::new` (la fonction `pg_turn_lock` est la porte de sélection) ; faire échouer `Drop` ou `release` (ni panique ni `unwrap`).
+
+Depends on:
+  @sea_orm (`TransactionTrait`, `ConnectionTrait`, `Statement`), @sha2, @tokio, `lymaille::{TurnLock, TurnPermit, CancelHandle, SessionId, SessionError}`
+
+Exposes:
+  `PgTurnLock`, `pg_turn_lock`
+
+Tasks:
+  [ ] Spec approuvée par le développeur principal avant toute ligne de code (issue #81 lot 1). Après la tâche « Montée de dépendance à `lymaille` 0.3.0 » de ./mod.sdd.
+  [ ] Tests d'abord, puis ./turn_lock.rs. Tests sans PostgreSQL : `pg_turn_lock` rend `None` sur SQLite mémoire ; clé de verrou déterministe et distincte pour deux sessions (fonction privée testable) ; bornage du
+    `heartbeat`. Tests contre un PostgreSQL réel, `#[ignore]` sauf `MIRYAD_TEST_PG_URL` (même convention que le banc Matrix, `/Cargo.toml` section dev-dependencies) : les `Scenario` ci-dessous. Après l'approbation de cette spec.
+  [ ] Déclaration et ré-exports dans ./mod.rs (la ligne `mod turn_lock;` et `pub use turn_lock::{PgTurnLock, pg_turn_lock};`) ; test d'import (« les chemins plats existent ») étendu d'abord. Même cycle que la tâche précédente.
+
+Done when:
+  Les `Scenario` sont verts (ceux qui exigent PostgreSQL contre un serveur réel) ; `cargo test --no-default-features --features lymaille` et `cargo clippy --no-default-features --features lymaille --all-targets -- -D warnings` sont
+    verts sans PostgreSQL ; la spec est relue et approuvée avant ./turn_lock.rs.
+
+Scenario: sans PostgreSQL, aucune porte partagée
+  Given une connexion SQLite mémoire
+  When `pg_turn_lock(&db, 5 s)`
+  Then `None`
+
+Scenario: la clé de verrou est déterministe et propre à la session
+  Given deux identifiants de session `a` et `b`
+  When la clé est calculée deux fois pour `a`, puis pour `b`
+  Then les deux calculs de `a` sont égaux, et la clé de `b` est différente
+
+Scenario: le heartbeat est borné
+  Given des `heartbeat` de 0 s, de 5 s et de 10 min
+  When `PgTurnLock::new`
+  Then les périodes retenues valent 1 s, 5 s et 60 s
+
+Scenario: un second tour sur la même session est refusé, même depuis une autre connexion
+  Given PostgreSQL réel et deux `PgTurnLock` bâtis sur deux connexions distinctes
+  When le premier prend `try_begin("s1")`, puis le second `try_begin("s1")`
+  Then le second rend `SessionError::TurnActive` **sans attendre**, et `try_begin("s2")` réussit sur chacun des deux
+
+Scenario: relâcher le permis libère le verrou
+  Given le premier permis de `s1` tenu
+  When il est lâché (`drop`), puis le second verrou refait `try_begin("s1")`
+  Then le second réussit (après au plus une seconde), et `lost` du premier permis n'a pas été annulé
+
+Scenario: la perte de la connexion annule le bail
+  Given un permis de `s1` et la session PostgreSQL du tour tuée côté serveur (`pg_terminate_backend`)
+  When le battement suivant échoue
+  Then `permit.lost()` est annulé dans les `heartbeat` + 1 s, et un autre `PgTurnLock` peut prendre `s1`
+
+Scenario: une panne de la base est une erreur de porte, pas un conflit
+  Given une base PostgreSQL injoignable à l'ouverture
+  When `try_begin("s1")`
+  Then `Err(SessionError::TurnLock(_))` dont le texte ne contient pas `s1`

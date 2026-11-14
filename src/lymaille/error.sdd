@@ -32,6 +32,7 @@ Must:
     Amendement 2026-11-11 (DSD `scripts-hote#FR-7`), exécuteur de script, toutes non retryables, sans contenu de script ni de ligne :
       `ScriptTimeout` → `MRD-LYMAILLE-013` → `…: script exceeded its time limit` ; `ScriptOperationLimit` → `MRD-LYMAILLE-014` → `…: script exceeded its operation limit` ;
       `ScriptResultTooLarge` → `MRD-LYMAILLE-015` → `…: script result exceeds its size limit` ; `ScriptFailed(String)` → `MRD-LYMAILLE-016` → `…: script failed: {0}` (`{0}` = message d'erreur Rhai, sans source).
+    amendement du 2026-11-13 (issue #71) : `ScriptCancelled` → `MRD-LYMAILLE-017` → `MRD-LYMAILLE-017: script was cancelled` (annulation par l'appelant de `ScriptRunner::run_cancellable`, distincte de `ScriptTimeout` ; sans charge utile, `retryable()` `false`).
     `Config(String)` → `MRD-LYMAILLE-008` → `MRD-LYMAILLE-008: invalid configuration: {0}`
     `Store(String)` → `MRD-LYMAILLE-009` → `MRD-LYMAILLE-009: store error: {0}` (panne d'une opération de stockage hors trait de
       `lymaille`, texte expurgé)
@@ -82,6 +83,9 @@ Tasks:
     Validé 2026-11-11 : `pub fn code(&self) -> String` dérivé du préfixe de `Display` (`split_once(':')`, littéral dupliqué nul), test `code_equals_display_prefix` sur les seize variantes `-001` à `-016` (rouge d'abord par `E0599`) ; batterie ciblée `lymaille` verte (913 tests + intégration, clippy `-D warnings`, `fmt`), `check lymaille,matrix` vert. Synthèse tenue par le primary (`validator` indisponible : trois timeouts).
     Ravalidé 2026-11-11 par le `validator` (rattrapage lot scripts-hote : GO).
     Ratifié 2026-11-12 (arbitrage du développeur principal) — Then amendé à `-016`. (validator, rattrapage du 2026-11-11) : le `Scenario` « les codes sont stables » s'arrête textuellement à `-012` alors que le test couvre `-016` — le Then devrait être amendé d'une ligne à `-016` (le test est déjà plus fort que le contrat écrit). Amender le `Scenario` relève du développeur principal. Choix provisoire : laisser le test tel quel, plus fort que le Then.
+  [ ] Issue #71 — variante `ScriptCancelled` → `MRD-LYMAILLE-017` → `MRD-LYMAILLE-017: script was cancelled`, `retryable()` faux, sans charge utile. Spec d'abord : amender la liste des variantes, `retryable`,
+    `code()` et le `Scenario` des codes (`-001` à `-017`). Puis tests d'abord (rouge sur variante absente), puis ./error.rs. À faire avant ./script_runner.sdd (tâche #71).
+  [ ] Alignement `lymaille` 0.3.0 (2026-11-14, arbitré) — `SessionError::TurnLock(String)` (panne du verrou de tour remplaçable, `TurnLock`, `lymaille` 0.3.0) est traduit par `from_session` (./interactive/manager.rs et ./interactive/assemble.rs) en `LymailleError::Run { message: "turn lock failed: {texte}", retryable: true }` : une panne d'infrastructure, que l'appelant peut relancer ; aucun nouveau code `MRD-LYMAILLE-*`, aucun changement de ce fichier hors tests. `Scenario` à ajouter dans ./interactive/manager.sdd : un `TurnLock` de test qui échoue → `Run { retryable: true }` ; le conflit `TurnActive` reste `Conflict("turn active")`. Tests d'abord, puis ./interactive/manager.rs.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./error.rs.
@@ -89,7 +93,7 @@ Done when:
 Scenario: les codes sont stables
   Given une variante de chaque sorte
   When `to_string()` est appelé
-  Then chaque message commence par `MRD-LYMAILLE-001` à `-016`
+  Then chaque message commence par `MRD-LYMAILLE-001` à `-017` (`ScriptCancelled` ajoutée le 2026-11-13, issue #71)
 
 Scenario: `code()` égale le préfixe de `Display` pour chaque variante
   Given une variante de chaque sorte (`-001` à `-016`)

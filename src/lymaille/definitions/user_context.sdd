@@ -24,12 +24,14 @@ Must:
   `before_create` / `before_update` (`HookError` sans code) : `context` désérialisable en `ToolsetContext` sans secret ; `level` = `User` ;
     `name` ne commence ni par `G_` ni par `g_` (`classify` = `Private`, sinon « user context name cannot use the catalog prefix ») ; un
     identifiant `H_…` (résolu par l'hôte, DSD `DEC-27`) n'est jamais écrit par cette ressource, `classify` = `Host` (ou préfixe `h_`) →
-    « user context name cannot use the host prefix » ; `context_type` posé : de forme identifiant valide (grammaire `lymaille`, sans préfixe
-    réservé — même porte que `catalog_context.sdd`, symétrisée 2026-11-05 ; existence du type vérifiée à l'ouverture, pas ici) ; `name`
+    « user context name cannot use the host prefix » ; `context_type` posé : `classify(reference)` = `Catalog` (forme `G_…`, même porte que `catalog_context.sdd` ; amendement du 2026-11-13, issue #74 : les types de contexte n'existent que dans le catalogue, un contexte privé référence donc un type `G_…` et un nom privé ou `H_…` est refusé) ; existence du type vérifiée à l'ouverture, pas ici ; `name`
     réécrit depuis le contexte ; `before_update` : `name` ne change pas.
   Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) — après la validation de `context`, `before_create` / `before_update` contrôlent chaque rôle lié : `server_for(db, caller_of(db, principal.subject), nom)` (../mcp_access.sdd), exactement la règle de
     `put_context` — un serveur **fourni par l'hôte** (sans ligne `mcp_servers`) est refusé à l'écriture, comme dans le store. Refus → `HookError` sans code (`mcp server unavailable`, texte de `server_for`, sans oracle
     d'existence ; `422` en REST, `-32000` en MCP) ; panne de lecture ou `subject` inconnu → `HookError::new("authorization check unavailable")`.
+  **Amendement du 2026-11-13 (issues #79 et #72)** : `Model` dérive `utoipa::ToSchema` — `rest::openapi::resource_openapi::<Entity>()` compile pour cette ressource, colonnes JSON `context` décrites en objet libre (`#[schema(value_type = Object)]`) tant que les types de `lymaille` n'ont pas de schéma ; `DateTimeUtc` en
+    `#[schema(value_type = String, format = DateTime)]` — et `ts_rs::TS` : colonne(s) `context` typée(s) par `ToolsetContext` de `lymaille` (dérive `TS` amont, `lymaille` 0.3.0, issue sebt3/lymaille#10), les autres colonnes JSON de forme propre à la crate (tableaux de chaînes, `script_grants` `{ toolsets: string[]; modules: string[] }`) typées par `#[ts(type = "…")]` ; `DateTimeUtc` exporté `string` (`#[ts(type = "string")]`, RFC 3339 comme sérialisé), les entiers `number`, aucune feature d'implémentation de type tiers
+    de `ts-rs`. Les dérives n'ajoutent aucun attribut `serde` et ne changent **aucune** sérialisation. Le `Model` n'est exporté que par l'export TypeScript de ../interactive/event.sdd (aucun `#[ts(export)]`).
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -49,6 +51,15 @@ Tasks:
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
   [x] Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) : tests d'abord (quatre `Scenario` ci-dessous), puis ./user_context.rs ; dépend de ../mcp_access.sdd (`server_for` générique) et ../identity.sdd (`caller_of`).
     Validé 2026-11-11 (contrôle à la sauvegarde branché, tests des Scenario ci-dessous nommés `sauvegarde_*`/`serveur_inexistant_*`/`un_serveur_pourvu_*` ; batterie ciblée `lymaille` et `workflow,lymaille` tests + clippy + fmt verts ; synthèse tenue par le primary, `validator` indisponible).
+  [ ] Issue #74, périmètre étendu (arbitré le 2026-11-13) — le hook de ./user_context.rs porte la même règle `Private` pour `context_type` (symétrisée le 2026-11-05) alors que les types de contexte n'existent **que** dans le
+    catalogue (`G_…`, ./context_type.sdd) : un contexte privé ne peut donc référencer aucun type par le CRUD. L'issue propose de « garder `Private` pour un contexte privé qui référence un type privé » ; ce cas
+    n'existe pas dans le modèle actuel (pas de type privé). Décision : même correctif qu'en ./catalog_context.sdd (`Catalog` accepté, `Private` et `Host` refusés) et même `Scenario`. Extension au-delà de la lettre de l'issue, actée par le développeur principal.
+  [ ] Issue #79 — `Model` dérive `utoipa::ToSchema` (sous `lymaille`, qui implique `db`) pour que `resource_openapi::<Entity>()` compile sur cette ressource. Spec d'abord : amender le `Must` (dérives du `Model`) et
+    ajouter le `Scenario` « `resource_openapi::<Entity>()` compile et décrit la ressource » ; colonnes JSON `context` décrites en objet libre (`#[schema(value_type = Object)]`) tant que l'issue #72 n'a pas
+    typé les définitions ; `DateTimeUtc` selon la décision `[?]` de ./mod.sdd. Puis test d'abord (appel de `resource_openapi::<Entity>()`, présence du schéma du `Model` et des champs), puis ./user_context.rs. Après ./mod.sdd.
+  [ ] Issue #72 — `Model` dérive `ts-rs::TS` avec la colonne JSON `context` typée par `ToolsetContext` de `lymaille`. Dépend de la publication amont de `lymaille` 0.3.0 (hypothèse de travail du 2026-11-13) : `lymaille` 0.2.1 n'a ni feature ni dépendance `ts-rs` (voir ./../mod.sdd). Débloqué par la
+    version amont qui dérive `TS` sur ses définitions. Alors : spec (`Must`, `Scenario` « le `.ts` exporté type la colonne par `ToolsetContext` »), test de contrat (valeur construite par la crate → JSON identique
+    à la forme déclarée, JSON de la déclaration accepté par la crate), puis ./user_context.rs.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./user_context.rs.
@@ -97,3 +108,23 @@ Scenario: une panne de lecture est un refus fermé sans détail
   Given une connexion simulée dont la lecture échoue
   When le hook est attendu
   Then `HookError` de message exactement `authorization check unavailable`
+
+Scenario: un contexte privé référence un type du catalogue
+  Given un contexte privé `dev` de niveau `user` dont `context_type` vaut `G_home`
+  When `before_create`, puis `before_update`
+  Then `Ok` dans les deux cas
+
+Scenario: une référence privée ou hôte à un type est refusée
+  Given un contexte privé `dev` dont `context_type` vaut `home`, puis `H_home`
+  When `before_create`
+  Then `Err(HookError)` dans les deux cas
+
+Scenario: resource_openapi compile et décrit la ressource
+  Given l'entité de ce fichier et `rest::openapi::resource_openapi::<Entity>()`
+  When le document est construit
+  Then l'appel compile, le schéma du `Model` porte toutes ses colonnes (`DateTime` en `string`/`date-time`), et les colonnes JSON sont des objets libres
+
+Scenario: l'export TypeScript du Model correspond à la sérialisation
+  Given un `Model` construit avec toutes ses colonnes, sérialisé en JSON, et l'export TypeScript de ../interactive/event.sdd écrit dans un répertoire temporaire
+  When la déclaration `user_context.ts` est lue
+  Then chaque clé du JSON est une propriété de la déclaration avec le type attendu (`string` pour les dates, `number` pour les entiers), sans propriété en plus ; la sérialisation du `Model` n'a pas changé

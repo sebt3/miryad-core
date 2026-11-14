@@ -1,0 +1,116 @@
+Spec: events — SeaEventLog, le journal des événements de session et son curseur
+
+Purpose:
+  Persister les `SessionEvent` (../interactive/event.sdd) que le hub diffuse, avec un **curseur monotone par session**, pour que le flux SSE reprenne après une déconnexion (`Last-Event-ID`) et que des répliques
+    partagent un flux sans transporter les événements eux-mêmes (DSD `DEC-31`, issue #81 lot 3). Le journal ne remplace pas l'état de la session (`SessionStore`, ./session.sdd) : il n'en est que la trace **de diffusion**,
+    bornée (nombre et âge) et purgeable. Il est écrit par la tâche d'écriture de ../interactive/hub.sdd et lu par le hub (`read_after`) ; aucune route ne l'expose directement. Les événements portent déjà des noms, compteurs et
+    résumés masqués (`lymaille` masque, ./../interactive/event.sdd ne reflète ni texte de script ni arguments MCP) : le journal n'ajoute et ne retire aucune donnée. Fichier neuf, conception (arbitré le 2026-11-14 : persistance
+    des événements et reprise par `Last-Event-ID`, nouvelle table et **nouvelle** migration, règle par défaut de `/AGENTS.md`).
+
+Owns:
+  ./events.rs
+
+Can modify:
+  ./mod.rs : la déclaration `mod events;` et le ré-export de `SeaEventLog`, `ReplayPage`, `LoggedEvent`, seulement.
+
+References:
+  ./mod.sdd — conventions des stores ; ./session.sdd — `miryad_lymaille_sessions` (identifiants de session) ; ./purge.sdd — rétention ; ../migration.sdd — table `miryad_lymaille_session_events`
+  ../interactive/event.sdd — `SessionEvent` ; ../interactive/hub.sdd — consommateur ; ../error.sdd — `LymailleError`
+  /dsd/miryad-core/lymaille.md — `DEC-5`, `DEC-22`, `DEC-24`, `DEC-30`, `DEC-31`, `AC-21`, `OI-13` ; issue sebt3/miryad-core#81
+
+Must:
+  `pub struct SeaEventLog` — `Clone` (porte une `DatabaseConnection`, partageable), construit par `SeaEventLog::new(db: DatabaseConnection)` ;
+    **Aucun plafond par session** (arbitré le 2026-11-14 : la rétention est le seul seuil de 30 jours de la purge). `pub struct LoggedEvent { pub seq: u64, pub event: SessionEvent }`
+    (`Clone`, `Debug`, `PartialEq`). `pub struct ReplayPage { pub events: Vec<LoggedEvent>, pub missed: u64, pub truncated: bool }` (`Clone`, `Debug`) — voir `read_after`.
+  Table `miryad_lymaille_session_events` (../migration.sdd) : `session_id` TEXT, `seq` BIGINT, `created_at` TIMESTAMP, `kind` TEXT (nom `snake_case` de la variante), `event` JSON/TEXT (le `SessionEvent` sérialisé tel que le flux le sert) ;
+    clé primaire `(session_id, seq)`. Aucune entité SeaORM : requêtes `sea_query` brutes comme ../store/audit.sdd.
+  `pub async fn append(&self, session: &SessionId, events: &[SessionEvent], now: DateTimeUtc) -> Result<Vec<u64>, LymailleError>` : **une transaction** pour tout le lot ; assigne à chaque événement le curseur
+    `COALESCE(MAX(seq), 0) + 1` **calculé dans la transaction** (le premier événement d'une session a le curseur 1, les suivants s'incrémentent de 1 sans trou), rend les curseurs dans l'ordre d'entrée ; un lot vide → `Ok(vec![])`, aucune
+    transaction. Une violation d'unicité `(session_id, seq)` (écrivains concurrents de répliques différentes sur la même session) → la transaction est reprise **au plus 5 fois** avec une relecture du maximum ; au-delà → `LymailleError::Store`.
+    Aucune suppression à l'écriture (pas de plafond par session, arbitré le 2026-11-14) ; la rétention est portée par `purge_before`. `now` est un paramètre (jamais `Utc::now()` ici).
+  `pub async fn read_after(&self, session: &SessionId, after: Option<u64>, limit: usize) -> Result<ReplayPage, LymailleError>` : les lignes de curseur `> after` (toutes si `None`), en ordre croissant, au plus `limit` (borné [1, 10 000]) ;
+    `truncated` vaut `true` quand il en restait au-delà de `limit` ; `missed` est le nombre d'événements **disparus** entre `after` et la première ligne conservée (`oldest - after - 1` quand `after + 1 < oldest`, sinon 0) — jamais pour `after = None`.
+    Une ligne dont le JSON ne se relit plus en `SessionEvent` (version d'application différente) est **écartée** et comptée dans `missed` (jamais une erreur, jamais une panique).
+  `pub async fn last_seq(&self, session: &SessionId) -> Result<Option<u64>, LymailleError>` : le plus grand curseur, `None` si la session n'a aucune ligne.
+  `pub async fn delete_session(&self, session: &SessionId) -> Result<u64, LymailleError>` : supprime les lignes d'une session (rend le nombre) ; utilisé quand une session est supprimée.
+  `pub async fn purge_before(&self, cutoff: DateTimeUtc) -> Result<u64, LymailleError>` : supprime les lignes dont `created_at < cutoff`, rend le nombre ; idempotente ; appelée par `purge_sessions` (./purge.sdd, tâche ci-dessous) avec le **même** seuil que les autres traces.
+  Les curseurs sont **propres à une session** et ne sont jamais réutilisés après une purge (un curseur supprimé n'est pas redonné : le maximum ne décroît pas sauf si **toutes** les lignes d'une session sont supprimées, cas où la session repart à 1 ; le client
+    d'une session purgée est de toute façon sur une session morte).
+  Les erreurs de base sont traduites en `LymailleError::Store` par la règle commune de ./mod.sdd (texte de la base, jamais d'identifiant de session, jamais le contenu d'un événement).
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Écrire un texte de script, des arguments MCP, un jeton ou le contenu d'un message utilisateur (le journal ne reçoit que des `SessionEvent` déjà expurgés par ./../interactive/event.sdd) ; journaliser (`tracing`) un contenu d'événement ou un identifiant
+    de session ; supprimer des lignes d'une autre session que celle visée ; attendre ou prendre un verrou applicatif ; ouvrir une transaction pour une lecture ; utiliser `Utc::now()` ; propager un `DbErr` nu.
+
+Depends on:
+  ./mod.rs, ../interactive/event.rs, ../error.rs, @sea_orm, @sea_query, @serde_json, @chrono, `lymaille::SessionId`
+
+Exposes:
+  `SeaEventLog`, `LoggedEvent`, `ReplayPage`
+
+Tasks:
+  [ ] Spec approuvée par le développeur principal avant toute ligne de code (issue #81 lot 3). Après ../migration.sdd (table) et la tâche « Montée de dépendance à `lymaille` 0.3.0 » de ../mod.sdd.
+  [ ] Tests d'abord (SQLite mémoire, migrations appliquées, `test_db` de ./mod.rs, aucun PostgreSQL requis), un test par `Scenario` ci-dessous, puis ./events.rs. Après l'approbation de cette spec.
+  [ ] Déclaration et ré-exports dans ./mod.rs ; test d'import étendu d'abord. Même cycle que la tâche précédente.
+  [ ] Rétention : amender ./purge.sdd (`PurgeReport` gagne `session_events: u64`, `purge_sessions` appelle `SeaEventLog::purge_before` avec le même `cutoff` ; `Scenario` « la purge supprime les événements anciens ») **puis** ./purge.rs. Après la tâche précédente.
+    Arbitré le 2026-11-14 : rétention = **seuil unique de 30 jours** (`DEFAULT_RETENTION` de ./purge.sdd), aucun paramètre ni plafond propre au journal (le plafond de 5000 lignes par session et la rétention de 48 h, recommandés, sont écartés). Conséquence assumée : une session active produit un événement par delta de texte (des centaines par tour), la table du journal peut devenir la plus volumineuse ; la volumétrie se borne par la périodicité de la purge appelée par l'application.
+    Arbitré le 2026-11-14 : curseur calculé **en base** (`MAX + 1`), contrainte unique `(session_id, seq)`, reprise de la transaction sur conflit (au plus 5 fois) ; le compteur en mémoire est écarté (faux dès que deux répliques écrivent la même session).
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./events.rs.
+
+Scenario: les curseurs d'une session sont consécutifs à partir de 1
+  Given un journal vide et `append(s1, [e1, e2])`, puis `append(s1, [e3])`, puis `append(s2, [e4])`
+  When les curseurs rendus sont lus
+  Then `[1, 2]`, `[3]` et `[1]` ; `last_seq(s1)` vaut `Some(3)`, `last_seq(s3)` vaut `None`
+
+Scenario: un lot vide n'écrit rien
+  Given un journal
+  When `append(s1, [])`
+  Then `Ok([])` et aucune ligne n'a été écrite
+
+Scenario: la relecture rend l'ordre et respecte le curseur
+  Given les curseurs 1 à 5 de `s1`
+  When `read_after(s1, Some(3), 100)`, puis `read_after(s1, None, 2)`
+  Then `[4, 5]` sans `truncated` ni `missed`, puis `[1, 2]` avec `truncated = true`
+
+Scenario: la relecture après une purge signale ce qui a disparu
+  Given les curseurs 1 à 50 de `s1` dont 1 à 40 supprimés par `purge_before`
+  When `read_after(s1, Some(10), 100)`
+  Then `[41..50]` avec `missed = 30` (les curseurs 11 à 40) et sans `truncated`
+
+Scenario: une ligne illisible est écartée, pas fatale
+  Given les curseurs 1 à 3 de `s1` dont la colonne `event` du curseur 2 a été remplacée par un JSON qui n'est pas un `SessionEvent`
+  When `read_after(s1, None, 10)`
+  Then les curseurs 1 et 3, avec `missed = 1`, sans erreur
+
+Scenario: le journal n'a pas de plafond par session
+  Given 120 événements ajoutés à `s1` en deux lots
+  When `read_after(s1, None, 1000)`
+  Then les curseurs 1 à 120 (aucune ligne supprimée à l'écriture) ; seule `purge_before` supprime
+
+Scenario: des écrivains concurrents n'obtiennent jamais le même curseur
+  Given deux `SeaEventLog` sur la même base et deux tâches qui ajoutent 20 événements chacune à `s1`
+  When les deux se terminent
+  Then les curseurs de `s1` sont exactement 1 à 40, tous distincts, aucune erreur
+
+Scenario: purge_before ne supprime que l'ancien
+  Given des événements de `s1` créés à `t0` et à `t0 + 2 h`
+  When `purge_before(t0 + 1 h)`
+  Then seuls les premiers disparaissent, le nombre rendu est celui des lignes supprimées, un second appel rend 0
+
+Scenario: delete_session ne touche que sa session
+  Given des événements de `s1` et de `s2`
+  When `delete_session(s1)`
+  Then le nombre rendu est celui de `s1`, `last_seq(s1)` vaut `None`, `s2` est intacte
+
+Scenario: le journal ne porte ni secret ni contenu journalisé
+  Given un `SessionEvent` `Script` (résumé sans texte de script) et un `McpCall` (sans arguments)
+  When ils sont ajoutés puis relus
+  Then la colonne `event` ne contient ni texte de script ni arguments, et aucune trace `tracing` ne contient l'identifiant de session
+
+Scenario: la purge des sessions purge le journal
+  Given un journal ancien et `purge_sessions` appelée avec un seuil postérieur
+  When elle se termine
+  Then `PurgeReport::session_events` vaut le nombre de lignes supprimées et la table est vide

@@ -30,6 +30,14 @@ Must:
     `error::LymailleError`, `secret::{SecretResolver, EnvSecretResolver}`, `identity::{Identity, CallerPrincipal}`,
     `store::LymailleStores`, `migration::migrations`, `tls::install_crypto_provider`. `store` et `definitions` restent
     atteignables par leur chemin (entités et stores nommés par l'application).
+  **Amendement du 2026-11-13 (issues sebt3/lymaille#10, #11, #12 ; hypothèse de travail : `lymaille` 0.3.0 publiée)** : `/Cargo.toml` déclare `lymaille = { version = "0.3", optional = true, features = ["ts-rs"] }` (la feature amont
+    `ts-rs` dérive `TS` sur les types de définition ; version à confirmer à la publication) ; l'API de 0.3.0 change `AgentDefinition` (profil facultatif, ./definitions/agent.sdd). Les contrôles `cargo tree` de `/tooling.sdd` sont
+    inchangés : `ts-rs` reste absent du graphe sans `lymaille`. `store::publish` (./store/publish.sdd) est atteint par son chemin de module, comme `interactive::event`.
+  **Amendement du 2026-11-14 (issue #81, arbitré)** : `/Cargo.toml` déclare la feature `lymaille-pg = ["lymaille", "sea-orm/sqlx-postgres"]`, hors `default` ; elle seule compile `./interactive/pg_relay.rs` (relais `LISTEN/NOTIFY`). Une combinaison de plus dans la batterie de `/tooling.sdd` et `/AGENTS.md` (tests, clippy), un contrôle de graphe : `sqlx-postgres` absent sans `lymaille-pg`.
+  **Amendement du 2026-11-14 (issue #81, DSD `DEC-31`, haute disponibilité des sessions)** : trois fichiers neufs, déclarés par leurs propres specs (`Can modify` de ce fichier, déclaration et ré-export seulement) : ./turn_lock.sdd (`pub mod turn_lock;`, ré-exports `PgTurnLock`, `pg_turn_lock`),
+    ./store/events.sdd (le journal d'événements, atteint par `store::events`, ré-export `SeaEventLog` dans `store`) et ./interactive/pg_relay.sdd (`interactive::pg_relay`, sous la feature de compilation du relais, `[?]` de ce fichier-là). `ManagerDeps::with_turn_lock`, `EventHub::{with_relay, with_log, subscribe_from, on_command, request_cancel,
+    request_close}` et les types `EventRelay`, `RelayMessage`, `RelayBody`, `RelayCommand`, `LogConfig` sont atteints par `interactive::hub`/`interactive::manager` (chemin de module, comme `interactive::event`). Le bloc `//!` documente le déploiement multi-réplique (porte PostgreSQL, relais,
+    journal, taille du pool) et retire la limite « mono-réplique » qu'il porte, sous réserve de l'approbation des lots.
   Compiler sous `#[cfg(feature = "lymaille")]`, posé dans `/src/lib.rs`.
   Documenter dans le bloc `//!` : la promesse du module, le déploiement requis (base présente, migrations
     `lymaille::migrations()` appliquées via `miryad_core::migration::Migrator`, provider TLS installé par le montage de l'état),
@@ -153,6 +161,23 @@ Tasks:
   [x] Wording de la preuve : aligné le 2026-11-06 sur `/tooling.sdd` (critère = sortie stdout vide, cargo 1.99 rend 101 sur le nom absent) ; « nothing to print » reste exact pour `sea-orm` sans `db`.
   [x] Amendement du 2026-11-11 (DSD `scripts-hote`) : déclarations et ré-exports de `host_module` et `script_runner` ; test d'import d'abord, puis ./mod.rs.
     Validé 2026-11-11 : blocs TEMPORAIRE remplacés par les déclarations et les deux lignes de ré-exports exactes du `Must` ; témoins witness_host_modules/witness_script_runner ajoutés au test « les chemins plats existent » (rouge d'abord) ; batterie ciblée `lymaille` verte ; synthèse tenue par le primary (`validator` indisponible). La déclaration posée temporairement par ./script_runner.sdd est reprise ici (le `[!]` de cette spec-là est soldé sur ce point).
+  [ ] Issue #72 — export TypeScript des définitions et des lignes. Dépendance amont à lever d'abord (issue sebt3/lymaille#10) : `lymaille` 0.2.1 n'a pas de feature `ts-rs` (ses types `AgentDefinition`, `ModelProfile`, `Provider`, `Toolset`
+    avec `Skill`/`TypeRequirement`/`ParamDecl`/`RoleDecl`, `ContextType` avec `RoleSpec`, `ToolsetContext` avec `ContextLevel` ne dérivent pas `TS`) ; il faut une version publiée de `lymaille` avec une feature
+    optionnelle `ts-rs` (champs privés et `#[non_exhaustive]` : `TS` ne lit que la forme sérialisée), puis `lymaille = { version = "…", features = ["ts-rs"] }` dans `/Cargo.toml` sous notre feature `lymaille`,
+    amendement de `/tooling.sdd` si le graphe change (`cargo tree … -i ts-rs` : toujours vide sans `lymaille`). Tant que ce n'est pas publié : aucun miroir côté crate (le contournement de vanyline est le leur).
+    Arbitré le 2026-11-13 : fonction d'export : étendre `interactive::event::export_typescript(dir)` (recommandé : « par la même fonction », un seul appel côté hôte, un seul répertoire) plutôt qu'une seconde fonction ; elle écrit
+    alors les événements, les définitions, les lignes de ressource et les corps de la surface de session (voir ./interactive/event.sdd, ./http/routes.sdd).
+  [ ] Montée de dépendance à `lymaille` 0.3.0 (publiée ; relue en source le 2026-11-14 : `ts-rs` #10, profil facultatif #11, `TurnLock` #12). À faire **en premier**, avant #72, #73, #75 et #81 ; rien d'autre dans ce lot :
+    1. `/Cargo.toml` : `lymaille = { version = "0.3", optional = true, features = ["ts-rs"] }` ; `/Cargo.lock` mis à jour ; `/tooling.sdd` inchangé (`ts-rs` reste absent du graphe sans `lymaille`).
+    2. Changements d'API d'`AgentDefinition` : `new(id, kind, prompt)` (3 arguments, profil `None`) + `with_profile(String)` ; `profile()` rend `Option<&str>`. Sites à corriger, **mécaniquement** : les constructions
+      `AgentDefinition::new(.., profil)` du code et des tests (`store/mod.rs`, `store/catalog.rs`, `definitions/agent.rs`, `definitions/private_agent.rs`, `interactive/assemble.rs`, `interactive/manager.rs`, `chat/bridge.rs`,
+      `http/sse.rs`, `http/routes.rs`, `workflow/subagent_step.rs`) deviennent `new(..).with_profile(..)` ; les lectures de `profile()` (`definitions/agent.rs:91`, `definitions/private_agent.rs:161`, `store/catalog.rs:224,249`,
+      `interactive/assemble.rs:456`, `workflow/subagent_step.rs:473`) adoptent une conversion **provisoire** `unwrap_or_default()` (chaîne vide) qui préserve le comportement actuel ; la sémantique « sans profil → défaut de l'hôte »
+      est portée par la tâche #75, pas ici.
+    3. `EventKind` et `SessionError` ont chacune une variante de plus (`TurnLeaseLost`, `TurnLock`) : les deux enums sont `#[non_exhaustive]`, la compilation ne casse pas ; elles sont traitées par les tâches de ./interactive/event.sdd
+      et ./error.sdd (même date).
+    4. `TurnGate::try_begin` reste une méthode inhérente synchrone ; `TurnPermit` n'a plus de champ `active` (construction par `TurnPermit::new`, hors périmètre ici).
+    5. Batterie complète verte (`/AGENTS.md`), `cargo tree` inchangés.
 
 Done when:
   Les `Scenario` sont verts ; `cargo build --no-default-features --features lymaille` et `--all-features` compilent sans

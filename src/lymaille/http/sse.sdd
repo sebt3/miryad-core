@@ -20,7 +20,10 @@ Must:
   Format d'un événement : `event:` = nom de la variante de `SessionEventKind` en `snake_case` (`turn_started`, `text_delta`, `turn_ended`, `script`,
     `host`, …), `data:` = JSON complet du `SessionEvent` (../interactive/event.sdd — miroir typé, discriminant `type`, résumés sans texte de script
     ni arguments MCP ; DSD `DEC-30`). Un événement `Host` traverse le flux **sans interprétation** de la crate (`payload` rendu tel que publié).
-    `id:` = compteur croissant **propre à la connexion** (pas de rejeu : `Last-Event-ID` est ignoré, un abonné qui revient relit l'état par `resume`/la route d'historique ; voir `Tasks`).
+    `id:` = compteur croissant **propre à la connexion**, **sauf** quand le hub porte un journal (amendement du 2026-11-14, issue #81 lot 3, DSD `DEC-31`) : `id:` est alors le **curseur** de l'événement (`recv_cursor`, ./../interactive/hub.sdd), un entier propre à la session, croissant ; un événement sans curseur (panne d'écriture du journal) est servi sans ligne `id:` (le compteur de connexion n'est jamais mélangé aux curseurs). Sans journal : pas de rejeu, `Last-Event-ID` est ignoré, un abonné qui revient relit l'état par `resume`/la route d'historique.
+  **Amendement du 2026-11-14 (issue #81 lot 3)** — reprise : avec un journal, un en-tête `Last-Event-ID` qui est un entier décimal `n` (u64) fait ouvrir l'abonnement par `manager.subscribe_from(subject, id, Some(n))` : les événements de curseur > `n` sont servis d'abord (avec leur `id:`), puis le direct, sans doublon ni trou ; un `Lagged(m)`
+    du hub (événements purgés ou relecture tronquée) devient `event: lagged` `data: {"missed": m}` **en tête** de flux, comme un retard ordinaire. Un en-tête absent, vide, non numérique, négatif ou hors de `u64` est **ignoré** (comportement sans reprise, jamais une erreur `400`) ; un `n` supérieur au dernier curseur de la session est
+    traité comme `n` = dernier (aucun rejeu). La session est cloisonnée **avant** toute lecture du journal (`404` d'abord, comme aujourd'hui). Une panne de lecture du journal → `500` avant tout en-tête SSE, code `MRD-LYMAILLE-009` (`Store`) par `LymailleError` (jamais le texte de la base).
   `Lagged(n)` → un événement `event: lagged` `data: {"missed": n}` puis le flux continue ; `Closed` → le flux se termine.
   Battement : un commentaire SSE (`: keepalive`) toutes les 15 s tant qu'aucun événement n'arrive.
   Une erreur de sérialisation d'un événement → l'événement est remplacé par `event: error` `data: {"code":"MRD-LYMAILLE-…"}`, le flux continue.
@@ -54,8 +57,9 @@ Tasks:
     Arbitré le 2026-11-11 : la dérivation par `Display` devient `LymailleError::code()` (../error.sdd), employée aussi par ../chat/bridge.sdd ; `serialization_error_body` l'appellera à sa place (tâche ci-dessous).
   [x] Amendement du 2026-11-11 : `serialization_error_body` appelle `LymailleError::code()` au lieu de dériver localement ; test `panne_de_serialisation_rend_le_code_012` inchangé. Après ../error.sdd.
     Validé 2026-11-11 (validator GO : diff confiné à ./sse.rs, verrou byte-identique, doc cohérente, plus aucune dérivation locale en production dans ce fichier ; batterie ciblée `lymaille` verte — tests, clippy `-D warnings`, `fmt`).
-  [?] `Last-Event-ID` / rejeu des événements manqués : écarté au lot 2 (les événements ne sont pas persistés ; l'état de la session l'est). À rouvrir si un
-    client se déconnecte souvent pendant un tour.
+  [ ] Issue #81 lot 3 — `Last-Event-ID` et curseurs (DSD `DEC-31`, arbitré le 2026-11-14 : le rejeu est livré ; remplace la case `[?]` « `Last-Event-ID` / rejeu des événements manqués », écartée au lot 2 faute de journal). Spec d'abord (amendement ci-dessus, à faire approuver).
+    Tests d'abord (flux lu en mémoire, journal SQLite mémoire, horloge tokio en pause) : les `Scenario` de reprise ci-dessous ; puis ./sse.rs. Après ./../interactive/hub.sdd (tâche « journal ») et ./../interactive/manager.sdd (`subscribe_from`).
+    Arbitré le 2026-11-14 : un client sans curseur (premier abonnement) reçoit le **flux en direct seul** (comportement actuel : il relit l'historique par la route d'historique puis s'abonne) ; seule la **reprise** déclarée (`Last-Event-ID`) rejoue le journal. Pas de paramètre `?since=`.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./sse.rs.
@@ -99,3 +103,38 @@ Scenario: fin de session
   Given un flux ouvert
   When la session est fermée
   Then le flux se termine
+
+Scenario: la reprise sert les événements manqués puis le direct (issue #81, lot 3)
+  Given un hub avec journal, les curseurs 1 à 5 de la session et un client qui se reconnecte avec `Last-Event-ID: 3`
+  When le flux est lu et un sixième événement est publié
+  Then `id: 4`, `id: 5`, `id: 6` dans cet ordre, chacun une seule fois, sous leurs noms d'événement ordinaires
+
+Scenario: les `id` sont les curseurs du journal (issue #81, lot 3)
+  Given un hub avec journal et un abonné sans `Last-Event-ID`
+  When trois événements sont publiés
+  Then les lignes `id:` valent les curseurs du journal (par exemple 1, 2, 3), pas un compteur de connexion
+
+Scenario: un `Last-Event-ID` invalide est ignoré (issue #81, lot 3)
+  Given un hub avec journal et les en-têtes `Last-Event-ID` valant `abc`, `-1`, `` et `99999999999999999999999`
+  When le flux est ouvert avec chacun
+  Then quatre réponses `200`, aucun rejeu, et aucune erreur
+
+Scenario: un curseur au-delà du dernier ne rejoue rien (issue #81, lot 3)
+  Given les curseurs 1 à 5 et `Last-Event-ID: 99`
+  When un sixième événement est publié
+  Then le flux ne sert que le sixième
+
+Scenario: la reprise après une purge annonce le trou (issue #81, lot 3)
+  Given un journal dont les curseurs 1 à 40 ont été purgés (41 à 50 conservés) et `Last-Event-ID: 10`
+  When le flux est lu
+  Then `event: lagged` `data: {"missed":30}` en premier, puis les événements 41 à 50
+
+Scenario: sans journal, `Last-Event-ID` ne change rien (issue #81, lot 3)
+  Given un hub sans journal et `Last-Event-ID: 3`
+  When le flux est lu
+  Then aucun rejeu, `id:` est le compteur de la connexion (1, 2, 3…)
+
+Scenario: la reprise d'une session d'un autre est un 404 (issue #81, lot 3)
+  Given une session de `alice` et `Last-Event-ID: 3` envoyé par `bob`
+  When `bob` ouvre le flux
+  Then `404` sans en-tête `text/event-stream` et aucune lecture du journal n'a eu lieu

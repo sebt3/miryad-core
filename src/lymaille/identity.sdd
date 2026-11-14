@@ -31,7 +31,7 @@ Must:
     générique (un hook reçoit `&impl ConnectionTrait`, pas la `DatabaseConnection` d'`Identity`) ; mêmes erreurs. `Identity::resolve` y délègue.
   `pub enum IdKind { Catalog, Private, Host }` et `pub fn classify(id: &str) -> Result<IdKind, LymailleError>` (pure) :
     1. identifiant vide ou contenant un caractère hors `[A-Za-z0-9_]` → `InvalidDefinition("invalid identifier")` (un identifiant est un
-      identifiant Rhai valide, DSD `DEC-9`) ;
+      identifiant Rhai valide, DSD `DEC-9`) ; **exception** (amendement du 2026-11-13, issue #76) : un identifiant qui commence par `H_` exact accepte en plus `-` (jeu `[A-Za-z0-9_-]`) — un `H_…` n'est jamais stocké ni employé comme identifiant Rhai ou de module (le DSD `DEC-9` est amendé en ce sens par le développeur principal) ; `h_a-b`, `G_a-b` et `a-b` restent `InvalidDefinition` ; la crate classe, elle ne décompose pas un identifiant composé (l'hôte le fait : les noms Kubernetes n'ont pas de `_`) ;
     2. commence par `G_` (majuscule exacte) → `Catalog` ;
     3. commence par `H_` (majuscule exacte) → `Host` : identifiant d'un contexte résolu par l'hôte (`LymailleHost::resolve_context`, DSD `DEC-27`), jamais
       stocké en table, donc jamais aiguillé vers un store de table ;
@@ -74,6 +74,14 @@ Tasks:
     Validé 2026-11-11 : déclaration unique verrouillée par le test `admin_only_modules_has_a_single_declaration` ; batterie ciblée `lymaille` et `workflow,lymaille` verte (tests, clippy `-D warnings`, fmt).
     Ratifié 2026-11-11 : mode dégradé accepté pour ce lot (synthèse tenue par le primary, preuve portée par la batterie complète de fin de lot, 33/33). Pas un précédent : un passage `validator` (ou relecture croisée) est exigé à la clôture de `lymaille`, et l'indisponibilité du `validator` est à diagnostiquer. — Ravalidé 2026-11-11 par le `validator` (rattrapage lot scripts-hote : GO ; mode dégradé clos par cette relecture).
     Ratifié 2026-11-12 (arbitrage du développeur principal) — test étendu aux deux hooks. (validator, rattrapage du 2026-11-11) : le Then du Scenario cite « les hooks de sauvegarde l'importent » (01dd6a3) mais le test ne vérifie la clause d'import que pour les trois fichiers nommés — les hooks (`private_agent.rs`, `private_toolset.rs`) importent bien la constante (grep) sans que ce soit asserté. Options : étendre le test aux deux hooks (recommandé) ou réduire le Then. Choix provisoire : laisser le test tel quel, l'unicité étant verrouillée pour tout `src/`.
+  [ ] Issue #76 — noms d'hôte avec `-`. Spec d'abord (amendement à faire approuver ; le DSD `lymaille#DEC-9` dit « un identifiant est un identifiant Rhai valide », à amender côté développeur principal pour
+    les seuls `H_…`) : dans `classify`, un identifiant qui commence par `H_` exact accepte en plus le caractère `-` (jeu `[A-Za-z0-9_-]`) ; tout autre identifiant garde `[A-Za-z0-9_]` (`G_…` et privés sont des
+    identifiants Rhai, `H_…` n'est jamais stocké ni employé comme identifiant de module) ; `h_a-b` et `g_a-b` restent `InvalidDefinition("invalid identifier")` (le contrôle de jeu de caractères précède
+    la casse du préfixe, comportement actuel inchangé). `Scenario` : `H_mon-projet` → `Host` ; `H_sandbox_jean-marc_web` → `Host` ; `G_a-b` et `a-b` → `InvalidDefinition` ; la classification existante
+    inchangée. Puis tests d'abord, puis ./identity.rs. Avant tout : grep des appelants de `classify` (agents, contextes, `resource_module`, `host_module`, ./http/routes.sdd) pour vérifier qu'aucun ne suppose
+    qu'un `Host` est un identifiant Rhai ou un segment d'URL sans `-`.
+    Arbitré le 2026-11-13 (`-` après `H_` retenu) : alternative de l'issue (séparateur réservé, par exemple `__`) : non recommandée — `-` suffit à lever l'ambiguïté tant que les noms de l'hôte n'ont pas de `_` (c'est le cas des noms Kubernetes) et ne
+    demande aucun encodage côté hôte. À confirmer : la décomposition de `H_sandbox_<owner>_<nom>` reste l'affaire de l'hôte (la crate classe, elle ne décompose pas).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./identity.rs.
@@ -117,3 +125,13 @@ Scenario: la liste des modules réservés à l'admin n'a qu'une déclaration
   Given l'arbre `src/` après consolidation
   When une recherche du motif `const ADMIN_ONLY` est faite
   Then une seule déclaration existe, dans ./identity.rs, et ./interactive/assemble.rs, ./interactive/activation.rs, ../workflow/subagent_step.rs et les hooks de sauvegarde l'importent
+
+Scenario: un identifiant hôte accepte le tiret
+  Given les identifiants `H_mon-projet`, `H_sandbox_jean-marc_web`, `H_a`
+  When `classify`, puis `check_write` par un admin
+  Then `Host` pour les trois ; `check_write` refuse toujours un `Host` (`Forbidden("host identifiers are not writable")`)
+
+Scenario: le tiret reste refusé hors des identifiants hôte
+  Given les identifiants `G_a-b`, `a-b`, `h_a-b`, `H-a`
+  When `classify`
+  Then `InvalidDefinition("invalid identifier")` pour les quatre

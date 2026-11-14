@@ -47,9 +47,17 @@ Must:
       `reference` TEXT (la référence de portée), `memory_id` TEXT.
   `down` supprime toutes les tables dans l'ordre inverse de `up`. `up` sur une base où une table existe déjà est idempotent
     (`create_table` avec `if_not_exists`) ; `down` est strict, non idempotent (règle de ../migration/mod.sdd).
+  **Amendement du 2026-11-13 (issue #73)** : `migrations()` ajoute `m20261113_000001_lymaille_provenance`, après `m20261104_000001_lymaille_lot2`. Son `up` ajoute trois colonnes `TEXT NULL` — `managed_by`, `managed_version`,
+    `managed_digest` — à chacune des trois tables `catalog_context_types`, `catalog_contexts` et `catalog_agents` (une instruction `ALTER TABLE … ADD COLUMN` par colonne : portable SQLite et PostgreSQL), en testant
+    `has_column` avant chaque ajout (idempotent, SQLite n'ayant pas `ADD COLUMN IF NOT EXISTS`) ; les lignes existantes valent `NULL` (« non gérée »). Son `down` retire ces neuf colonnes si elles existent
+    (strict ailleurs, comme les autres `down`). Aucun index. Aucune autre table ni colonne ne change (la colonne `profile` des agents ne change pas : ./definitions/agent.sdd, issue #75). Contrat d'emploi : ./store/publish.sdd.
+  **Amendement du 2026-11-14 (issue #81, lot 3, DSD `DEC-31`)** : `migrations()` ajoute `m20261114_000001_lymaille_session_events`, après `m20261113_000001_lymaille_provenance` (**nouvelle** migration : règle par défaut de `/AGENTS.md`, aucune exception ;
+    la table n'existe pas encore). Son `up` crée, `IF NOT EXISTS`, `session_events` (préfixe `miryad_lymaille_`) : `session_id` TEXT NOT NULL ; `seq` BIGINT NOT NULL ; `created_at` TIMESTAMP WITH TIME ZONE NOT NULL ; `kind` TEXT NOT NULL ; `event` JSON NOT NULL
+    (`ColumnDef::json()`, jamais `json_binary()`) ; **clé primaire** `(session_id, seq)` ; un index `idx_miryad_lymaille_session_events_created` sur `created_at` (purge par âge) ; aucune `FOREIGN KEY` (couplage lâche). Son `down` supprime la table et son index si
+    elle existe (strict ailleurs). Contrat d'emploi : ./store/events.sdd. Aucune autre table ni colonne ne change.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
-  **Amendement lot 2 (2026-11-03)** : `migrations()` rend désormais `[m20261103_000001_create_lymaille_tables, m20261104_000001_lymaille_lot2]` (la première
+  **Amendement lot 2 (2026-11-03)** : `migrations()` rend désormais `[m20261103_000001_create_lymaille_tables, m20261104_000001_lymaille_lot2]` (puis `m20261113_000001_lymaille_provenance`, amendement du 2026-11-13, issue #73 : nouvelle migration, règle par défaut de `/AGENTS.md`, aucune exception) (la première
     migration committée reste **immuable**, règle de `/AGENTS.md`). `up` de la seconde, mêmes conventions que ci-dessus (préfixe `miryad_lymaille_`,
     `if_not_exists`, JSON `json()`, aucune `FOREIGN KEY`, aucun défaut serveur d'horodatage) :
     supprime les tables internes du lot 1 `context_types` et `contexts` si elles existent (suppression conditionnelle, `if exists` : depuis l'exception
@@ -106,6 +114,12 @@ Tasks:
   [x] Amendement du 2026-11-11 (DSD `scripts-hote` `DEC-2`) : colonne `script_grants` sur `catalog_context_types` par retouche en place de `m20261104_000001` (`up` et `down` cohérents) ; test d'abord, puis ./migration.rs. L'exception correspondante de `/AGENTS.md` est à poser avec accord.
     Validé 2026-11-11 (test `lot2_catalog_context_types_porte_la_colonne_des_grants_de_script` : `has_column`, idempotence, défaut relu, `down` cohérent ; batterie ciblée `lymaille` et `lymaille,matrix` verte ; synthèse tenue par le primary, `validator` indisponible).
     Ratifié 2026-11-11 : l'exception correspondante est posée dans `/AGENTS.md` (quatrième retouche en place de `m20261104_000001`, feature jamais déployée).
+  [ ] Issue #73 — provenance du catalogue : **nouvelle migration** `m2026…_lymaille_lot4` (arbitré le 2026-11-13 ; règle par défaut de `/AGENTS.md`, aucune exception). Spec d'abord (une spec par fichier de migration,
+    `/.specdd/bootstrap.project.md`) : `ADD COLUMN` nullables `managed_by` (TEXT), `managed_version` (TEXT), `managed_digest` (TEXT) sur `catalog_context_types`, `catalog_contexts` et `catalog_agents`, portables
+    SQLite/PostgreSQL ; `migrations()` amendé ; `down` strict ; `up` idempotent. `Scenario` : remontée sur base du lot 2, colonnes présentes (`has_column`), lignes existantes à `NULL`, descente. Puis tests d'abord, puis
+    le fichier de migration. Avant ./store/mod.sdd et les hooks des trois définitions. Pas de DDL pour le profil (#75) : voir ./definitions/agent.sdd.
+  [ ] Issue #81 lot 3 — migration `m20261114_000001_lymaille_session_events` (voir l'amendement du 2026-11-14 ci-dessus). Spec d'abord (cet amendement : une spec par fichier de migration, `/.specdd/bootstrap.project.md` — ici le fichier est ./migration.rs). Tests d'abord
+    (SQLite mémoire : `has_column` de chaque colonne, clé primaire composite refusant un doublon `(session_id, seq)`, `up` rejoué sans effet, `down`), puis ./migration.rs. Après la tâche « provenance » (issue #73) de ce fichier ; avant ./store/events.sdd.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./migration.rs.
@@ -134,3 +148,28 @@ Scenario: les contextes portent leur type et les sessions leur contexte
   Given les migrations appliquées sous `lymaille`
   When on inspecte `catalog_contexts`, `user_contexts` et `sessions` (`has_column`)
   Then `context_type` (TEXT nullable) existe sur les deux tables de contextes, et `context` (TEXT nullable) sur `sessions`  ; le `up` teste `has_column` avant l'`ALTER TABLE` (idempotent, SQLite n'ayant pas `ADD COLUMN IF NOT EXISTS`) et le `down` **ne retire pas** `sessions.context` (limite assumée, feature jamais déployée — arbitrage du développeur principal, 2026-11-05) ; il retire `context_type` avec les tables de contextes du lot 2
+
+Scenario: la migration de provenance ajoute neuf colonnes nullables
+  Given les migrations précédentes appliquées sous `lymaille`, avec des lignes dans `catalog_agents`, `catalog_contexts` et `catalog_context_types`
+  When `m20261113_000001_lymaille_provenance` est exécutée, puis rejouée
+  Then `managed_by`, `managed_version`, `managed_digest` (`TEXT` nullable) existent sur les trois tables (`has_column`), les lignes existantes valent `NULL`, le second `up` ne fait rien
+
+Scenario: le down retire les colonnes de provenance
+  Given la migration de provenance appliquée
+  When son `down` est exécuté
+  Then les neuf colonnes n'existent plus, les autres colonnes et les lignes sont intactes
+
+Scenario: la migration du journal d'événements crée sa table (issue #81)
+  Given les migrations précédentes appliquées sous `lymaille`
+  When `m20261114_000001_lymaille_session_events` est exécutée, puis rejouée
+  Then `miryad_lymaille_session_events` existe avec `session_id`, `seq`, `created_at`, `kind`, `event` (`has_column`), l'index `idx_miryad_lymaille_session_events_created` existe, le second `up` ne fait rien
+
+Scenario: le journal refuse un curseur en double (issue #81)
+  Given la table du journal et une ligne `(s1, 1)`
+  When on insère une seconde ligne `(s1, 1)`, puis `(s2, 1)`
+  Then la première échoue (violation d'unicité), la seconde réussit
+
+Scenario: le down retire la table du journal (issue #81)
+  Given la migration du journal appliquée
+  When son `down` est exécuté, puis le `down` de toute la chaîne
+  Then la table et l'index n'existent plus ; après la chaîne complète, plus aucune table `miryad_lymaille_*` n'existe

@@ -27,14 +27,19 @@ Must:
     `UserMessage { turn, text }` et `ToolCallSummary { turn, tool, call_id, has_result }` — **propres à l'historique** (arbitrage du 2026-11-05, `../http/routes.sdd`) :
       aucune conversion `From<&Event>` ne les produit, seule la route d'historique les émet ; `text` est déjà expurgé par l'appelant ; `ToolCallSummary` **sans arguments** ni résultat ;
     `EmptyResponse { will_retry }` (miroir de `EventKind::EmptyResponse`, `lymaille` 0.2.0 : réponse vide écartée, `will_retry` = le modèle est relancé ; `will_retry` booléen, aucun contenu) ;
+    `TurnLeaseLost { turn }` (miroir de `EventKind::TurnLeaseLost`, `lymaille` 0.3.0 : le bail de la porte de tour (`TurnLock`) a été perdu, le tour est abandonné sans sauvegarde ; `turn` annoté `#[ts(type = "number")]`, aucun contenu ; amendement du 2026-11-14, arbitré : variante propre, pas un `Other`) ;
     `Other { name: String }` (tout événement amont non reflété : `MemoryChanged`, `TargetOpened`, `RunInterrupted`, et toute variante future — `name` est le nom de variante tel que `lymaille`
       le sérialise ; aucun contenu),
     `Host { kind: String, payload: serde_json::Value }` (`payload` exporté `#[ts(type = "unknown")]` ; émis seulement par l'hôte, ./hub.sdd).
   `pub enum SessionOutcome { Valid, Failed, Cancelled }` — miroir de `Outcome` (`snake_case`), mêmes dérives.
   `impl From<&Event> for SessionEvent` — **infaillible** : variante amont reflétée → variante typée équivalente ; autre variante → `Other { name }`. Les champs textuels sont recopiés tels
     quels (déjà masqués par `lymaille`, jamais un secret) ; le `result` d'un `Script` est celui, déjà tronqué, de `ScriptRecord::result`.
+  **Amendement du 2026-11-13 (issue #72, arbitré : une seule fonction d'export)** : `export_typescript(dir)` écrit **aussi** un fichier `.ts` par type de définition de `lymaille` (`AgentDefinition`, `ModelProfile`, `Provider`,
+    `Toolset` avec `Skill`, `TypeRequirement`, `ParamDecl`, `RoleDecl`, `ContextType` avec `RoleSpec`, `ToolsetContext` avec `ContextLevel` — dérive `TS` amont, `lymaille` 0.3.0), par `Model` des dix ressources de
+    ../definitions/ (`ts_rs::TS` de chacun) et par corps de requête et de réponse de la surface de session de ../http/routes.sdd ; un seul appel, un seul répertoire, la liste rendue contient tous les chemins écrits ;
+    idempotence et erreur `Store(…)` inchangées. L'ensemble des fichiers est **déterministe** (mêmes octets à chaque appel, sans horodatage).
   Export TypeScript **côté hôte** (arbitré le 2026-11-03) : la crate ne commite ni ne publie aucun fichier `.ts` ; elle fournit l'outillage. `pub fn export_typescript(dir: &Path) -> Result<Vec<PathBuf>, LymailleError>` écrit
-    dans `dir` un fichier `.ts` par type exporté (`SessionEvent`, `SessionEventKind`, `SessionOutcome`) et rend les chemins écrits ; `dir` est créé au besoin ; échec d'entrée-sortie →
+    dans `dir` un fichier `.ts` par type exporté (`SessionEvent`, `SessionEventKind`, `SessionOutcome`, puis ceux de l'amendement ci-dessus) et rend les chemins écrits ; `dir` est créé au besoin ; échec d'entrée-sortie →
     `Store(<texte sans chemin hors de dir>)`. L'application l'appelle depuis son `build.rs`, un test ou un binaire d'outillage, et choisit où versionner le résultat. Les types dérivent `ts_rs::TS`
     sans `#[ts(export)]` (aucun fichier n'est écrit au `cargo test` de la crate).
   Compiler sous `#[cfg(feature = "lymaille")]`.
@@ -65,6 +70,11 @@ Tasks:
   [x] Arbitré le 2026-11-06 : les deux `[?]` de corps sont clos dans cette spec.
   [x] Dépendance `ts-rs` (optionnelle, feature `lymaille`) : amendement de `/Cargo.toml` et `/tooling.sdd`, déjà prévu dans `../mod.sdd` (R7), à faire avant cette tâche.
   [x] Tests d'abord (conversion de chaque variante, `Other`, sérialisation `type`, `export_typescript` dans un répertoire temporaire), puis ./event.rs. Après approbation de cette spec et de R7. Validé 2026-11-05 (validator PASS checkpoint 5 — 7 Scenario verrouillés).
+  [ ] Issue #72 — `export_typescript(dir)` écrit aussi les types de définition (`AgentDefinition`, `ModelProfile`, `Provider`, `Toolset`, `ContextType`, `ToolsetContext` et leurs types imbriqués), les `Model` des dix
+    ressources (./../definitions/mod.sdd) et les corps de la surface de session (./../http/routes.sdd). Spec d'abord : `Must` d'`export_typescript` (liste des fichiers, idempotence inchangée, erreur
+    `Store(…)` sans chemin hors du répertoire) et `Scenario` « chaque type exporté a une déclaration » ; test de contrat par type. Dépend de la version amont de `lymaille` (issue sebt3/lymaille#10, ./../mod.sdd) et par ./../definitions/*.sdd.
+    Puis tests d'abord, puis ./event.rs.
+  [ ] Alignement `lymaille` 0.3.0 (2026-11-14) — variante `TurnLeaseLost { turn }` (voir `Must` et `Scenario`). Tests d'abord (variante typée, verrou « pas un Other », export TS), puis ./event.rs. Après la tâche « Montée de dépendance à `lymaille` 0.3.0 » de ../mod.sdd.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./event.rs.
@@ -83,6 +93,11 @@ Scenario: un appel MCP est résumé sans ses arguments
   Given un `Event` amont `McpCall` aux arguments `{"token_like":"x"}`
   When il est converti puis sérialisé
   Then le JSON contient `role`, `function`, `status`, `duration_ms` et ne contient pas les arguments
+
+Scenario: la perte du bail de tour est miroitée
+  Given un `Event` amont `TurnLeaseLost { turn: 3 }`
+  When il est converti puis sérialisé
+  Then `kind` vaut `TurnLeaseLost { turn: 3 }` (jamais `Other`), le JSON porte `"type":"turn_lease_lost"` et `turn: 3`, et le `.ts` exporté type `turn` en `number`
 
 Scenario: une variante non reflétée devient Other
   Given un `Event` amont `MemoryChanged { level: "user", id: "m1" }`
@@ -109,3 +124,13 @@ Scenario: un message utilisateur et un appel d'outil se sérialisent sous des no
   Given `UserMessage { turn: 1, text: "bonjour" }` et `ToolCallSummary { turn: 1, tool: "rhai_pad", call_id: "c1", has_result: true }`
   When ils sont sérialisés en JSON
   Then `kind.type` vaut `user_message` et `tool_call_summary`, `turn` est un nombre, et aucun champ d'arguments n'existe
+
+Scenario: l'export couvre les définitions, les lignes et les corps de session
+  Given un répertoire temporaire
+  When `export_typescript(dir)` est appelé, puis une seconde fois
+  Then un fichier existe pour chacun des types de définition de `lymaille`, des dix `Model` et des corps de session, les chemins rendus les listent tous ; le second appel rend les mêmes chemins et les mêmes octets
+
+Scenario: chaque déclaration exportée correspond à la sérialisation serde
+  Given, pour chaque type de définition, une valeur construite par la crate (constructeurs de `lymaille`) et sérialisée en JSON
+  When la déclaration exportée est lue et le JSON de la valeur comparé
+  Then toutes les clés du JSON sont des propriétés de la déclaration avec le type attendu et aucune propriété obligatoire n'est en trop ; le JSON de la déclaration (valeur d'exemple) est accepté par la désérialisation de `lymaille` (test de contrat, issue #72)

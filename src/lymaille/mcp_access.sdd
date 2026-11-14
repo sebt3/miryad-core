@@ -5,7 +5,7 @@ Purpose:
     Un serveur (../definitions/mcp_server.sdd) porte `allowed_groups` ; ce fichier décide, **à chaque appel et sur une relecture en base**, si un
     `subject` peut le lier ou l'appeler (`all` = tout authentifié, `admin` = admin, sinon appartenance à l'un des groupes ; aucun cache).
     Il implémente `lymaille::McpAuth` en deux modes : `static` (en-tête `Authorization: Bearer <secret>` résolu par le @SecretResolver à
-    chaque connexion) et `forward` (jeton de l'utilisateur d'une session **interactive**, jamais persisté). Le contrôle
+    chaque connexion) et `forward` (jeton de l'utilisateur d'une session **interactive**, jamais persisté ; hors session interactive, jeton fourni par l'hôte, amendement du 2026-11-13, issue #82). Le contrôle
     d'autorité est celui-ci, à l'assemblage et à l'appel, et à la sauvegarde d'un contexte par le hook de `user_context` (amendement 2026-11-11, `hooks-async#DEC-7`) : défense en profondeur de `FR-9`. Amendé le 2026-11-03 (`DEC-27`) : un serveur peut aussi être fourni par
     l'hôte (./host.sdd), sans ligne `mcp_servers` ; l'hôte tranche alors l'autorité et rend URL et jeton frais. Fichier neuf, conception.
 
@@ -33,6 +33,11 @@ Must:
     `subagent` (traduite en `StepError` non retryable par ../workflow/subagent_step.sdd).
     Gardes de ligne jamais produite par les hooks (`mcp_server.sdd` les refuse à l'écriture) : `static` sans `auth_ref` → `Config` (fail-closed) ;
     mode hors des trois valeurs connu → traité `None` (aucune auth inventée). Non testables depuis une ligne valide, verrouillées par lecture.
+  **Amendement du 2026-11-13 (issue #82) — jeton `forward` hors session interactive :** `pub async fn forward_token(host: Option<&dyn LymailleHost>, caller: &CallerPrincipal, context: &str, role: &str, interactive: Option<&Zeroizing<String>>) -> Option<Zeroizing<String>>` :
+    un jeton interactif présent est rendu tel quel (prioritaire, l'hôte n'est pas consulté) ; sinon, avec un hôte, `forward_token(McpRequest { context, role }, caller)` : `Ok(Some(jeton))` → ce jeton ; `Ok(None)` ou
+    `Err(HostError)` → `None` (la panne de l'hôte est tracée par une phrase fixe, sans texte de l'hôte) ; sans hôte → `None`. Le résultat n'est consulté que pour un serveur en mode `Forward` ; `build_auth` est inchangée :
+    un `None` y donne le refus actuel `Forbidden("forward auth needs an interactive session")` (non retryable côté `subagent`), donc un hôte sans fournisseur garde exactement le comportement d'avant. Le jeton n'est ni persisté, ni mis en
+    cache, ni tracé, et n'atteint que le serveur `forward` demandé.
   **Amendement DEC-27 (2026-11-03) — serveur fourni par l'hôte :**
   `pub enum RoleBinding { Host(McpGrant), Table(mcp_server::Model) }`.
   `pub async fn resolve_role(host: Option<&dyn LymailleHost>, db, caller: &CallerPrincipal, context: &str, role: &str, bound_server: Option<&str>) -> Result<RoleBinding, LymailleError>` :
@@ -54,7 +59,7 @@ Depends on:
   ./host.rs, ./identity.rs, ./secret.rs, ./error.rs, ./definitions/mcp_server.rs, ../users/group.rs, @zeroize, @sea_orm, `lymaille::{McpAuth, McpHeaders, McpError}`
 
 Exposes:
-  `server_for`, `McpAuthMode`, `SeaMcpAuth`, `build_auth`, `RoleBinding`, `resolve_role`, `SeaHostMcpAuth`
+  `server_for`, `McpAuthMode`, `SeaMcpAuth`, `build_auth`, `forward_token`, `RoleBinding`, `resolve_role`, `SeaHostMcpAuth`
 
 Tasks:
   [x] Réalignement R6 (DSD `DEC-27`, 2026-11-03) : spec amendée (`resolve_role`, `RoleBinding`, `SeaHostMcpAuth`) et trait créé dans ./host.sdd. Spec approuvée le 2026-11-04 ; validé 2026-11-04 (validator PASS checkpoint 4).
@@ -62,6 +67,16 @@ Tasks:
   [x] Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) : `server_for` devient générique sur `ConnectionTrait` (appelé par le hook de ./definitions/user_context.sdd avec la connexion de l'appel) ; comportement inchangé, tests existants verts.
     Validé 2026-11-11 : généricité étendue à l'auxiliaire privé `autorise`, surface de `resolve_role` inchangée, 14 tests existants verts sans retouche ; batterie ciblée verte ; synthèse tenue par le primary (`validator` indisponible).
     Ratifié 2026-11-11 : le turbofish `::<sea_orm::DatabaseConnection>` du témoin `black_box(server_for)` de ../mod.rs (`#[cfg(test)]`), hors `Owns`, est accepté — seule adaptation possible, zéro sémantique.
+  [ ] Issue #82 — `forward` hors session interactive. Spec d'abord : le `Must` « `forward` sans jeton interactif → `Forbidden("forward auth needs an interactive session")`, erreur non retryable » devient :
+    sans jeton interactif, `build_auth` demande `LymailleHost::forward_token(request, caller)` (./host.sdd) ; `Some(jeton)` → `new_forward(jeton)` ; `None` ou hôte absent → le refus actuel, inchangé ; panne de
+    l'hôte → `Forbidden` du même texte (jamais le texte de l'hôte). Le jeton n'est ni persisté, ni mis en cache, ni tracé, et n'atteint que le serveur `forward` demandé (`Scenario` existant étendu). `Scenario` :
+    hôte qui fournit → en-tête portant le jeton sur ce seul serveur ; hôte qui rend `None` → refus ; panne de l'hôte → refus sans détail ; session interactive : le jeton de la requête reste prioritaire. Puis tests
+    d'abord, puis ./mcp_access.rs. Après ./host.sdd.
+    Sécurité (confirmé le 2026-11-14) : un jeton obtenu par échange (RFC 8693) a une audience, une durée et une portée propres à l'hôte ; la crate ne les contrôle **pas** (responsabilité entière de l'hôte), `McpGrant::expires_at` ne
+    s'applique pas à ce chemin, et le jeton n'est jamais persisté, mis en cache ni tracé. À figer dans le `Must not` et à prouver par un test (traces capturées et état de `mcp_access` sans le jeton).
+    à l'hôte, et que `McpGrant::expires_at` ne s'applique pas à ce chemin.
+    Arbitré le 2026-11-13 (le pont en bénéficie) : pont Matrix : ./chat/bridge.sdd dit « un serveur `forward` n'est pas disponible dans ces sessions » (aucun jeton côté Matrix). Avec ce chemin, le pont obtiendrait un jeton de l'hôte pour l'utilisateur lié.
+    Recommandation : le laisser bénéficier du chemin (c'est le même `build_auth`) et amender ./chat/bridge.sdd en conséquence, plutôt que de lui interdire.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./mcp_access.rs.
@@ -140,3 +155,18 @@ Scenario: Debug de SeaHostMcpAuth est opaque
   Given un `SeaHostMcpAuth` et un jeton accordé
   When `format!("{:?}")`
   Then la sortie ne contient ni jeton ni URL
+
+Scenario: un hôte fournit le jeton forward hors session interactive
+  Given un hôte factice dont `forward_token` rend `Some(jeton)`, et aucun jeton interactif
+  When `forward_token(...)` est appelé, puis `build_auth` sur un serveur `forward` avec son résultat
+  Then `Some(jeton)` puis un `SeaMcpAuth` dont l'en-tête porte ce jeton, et lui seul
+
+Scenario: le jeton interactif reste prioritaire
+  Given un jeton interactif et un hôte dont `forward_token` compte ses appels
+  When `forward_token(...)` est appelé
+  Then le jeton interactif est rendu et l'hôte n'a pas été appelé
+
+Scenario: sans fournisseur, une panne ou un refus gardent le refus actuel
+  Given un hôte absent, puis un hôte qui rend `Ok(None)`, puis un hôte qui rend `Err(HostError)`
+  When `forward_token(...)` puis `build_auth` sur un serveur `forward`
+  Then `None` dans les trois cas puis `Forbidden("forward auth needs an interactive session")`, sans texte de l'hôte

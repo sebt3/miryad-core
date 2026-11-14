@@ -32,6 +32,9 @@ Must:
       groupe n'est utilisable par personne, on le dit à la sauvegarde plutôt qu'en silence) ;
     6. `before_update` : `name` ne change pas (les contextes y renvoient par nom) ; `created_at` reste celui de `existing`.
   `pub fn client_config(model: &Model) -> McpClientConfig` (pure) : `McpClientConfig::new(url)` avec les deux délais.
+  **Amendement du 2026-11-13 (issues #79 et #72)** : `Model` dérive `utoipa::ToSchema` — `rest::openapi::resource_openapi::<Entity>()` compile pour cette ressource, colonne `allowed_groups` décrite en tableau de chaînes (`#[schema(value_type = Vec<String>)]`) ; `DateTimeUtc` en
+    `#[schema(value_type = String, format = DateTime)]` — et `ts_rs::TS` : colonne `allowed_groups` typée `string[]` par `#[ts(type = "string[]")]` ; `DateTimeUtc` exporté `string` (`#[ts(type = "string")]`, RFC 3339 comme sérialisé), les entiers `number`, aucune feature d'implémentation de type tiers
+    de `ts-rs`. Les dérives n'ajoutent aucun attribut `serde` et ne changent **aucune** sérialisation. Le `Model` n'est exporté que par l'export TypeScript de ../interactive/event.sdd (aucun `#[ts(export)]`).
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -49,6 +52,12 @@ Tasks:
   [x] Tests d'abord (hooks purs sur des `ActiveModel` construits en test, politiques), puis ./mcp_server.rs. Validé 2026-11-04 (validator PASS checkpoint 4 — verrou AdminOnly en métadonnées, motif `provider.rs`).
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les hooks de ./mcp_server.rs passent à la signature asynchrone (`db` ignoré : la validation reste pure, aucune lecture en base ajoutée par cette tâche) ; les tests `before_*` du fichier passent à `.await` avec une connexion simulée, assertions inchangées. Le contrôle à la sauvegarde que la connexion rend possible (DSD `hooks-async` `FR-3`) n'est **pas** dans cette tâche : il fera l'objet d'un amendement de spec distinct. Dépend de /src/resource.sdd (même amendement).
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
+  [ ] Issue #79 — `Model` dérive `utoipa::ToSchema` (sous `lymaille`, qui implique `db`) pour que `resource_openapi::<Entity>()` compile sur cette ressource. Spec d'abord : amender le `Must` (dérives du `Model`) et
+    ajouter le `Scenario` « `resource_openapi::<Entity>()` compile et décrit la ressource » ; colonnes JSON `allowed_groups` (tableau de noms) décrites en objet libre (`#[schema(value_type = Object)]`) tant que l'issue #72 n'a pas
+    typé les définitions ; `DateTimeUtc` selon la décision `[?]` de ./mod.sdd. Puis test d'abord (appel de `resource_openapi::<Entity>()`, présence du schéma du `Model` et des champs), puis ./mcp_server.rs. Après ./mod.sdd.
+  [ ] Issue #72 — `Model` dérive `ts-rs::TS` (`allowed_groups` (tableau de noms) : `string[]`, aucune dépendance à un type de `lymaille`, donc non bloqué par l'amont). Spec d'abord : `Must` et `Scenario` « le `.ts` exporté déclare les colonnes de
+    la ligne » ; `DateTimeUtc` exporté `string` (RFC 3339, comme sérialisé) et `i32` `number`. Puis test de contrat (valeur du `Model` sérialisée ↔ déclaration exportée), puis ./mcp_server.rs. Après ./mod.sdd et
+    ./../mod.sdd (fonction d'export).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./mcp_server.rs.
@@ -82,3 +91,13 @@ Scenario: la ressource n'est lisible que par un admin
   Given la ressource enregistrée
   When un non-admin liste puis crée
   Then deux refus (`AdminOnly`)
+
+Scenario: resource_openapi compile et décrit la ressource
+  Given l'entité de ce fichier et `rest::openapi::resource_openapi::<Entity>()`
+  When le document est construit
+  Then l'appel compile, le schéma du `Model` porte toutes ses colonnes (`DateTime` en `string`/`date-time`), et allowed_groups est un tableau de chaînes
+
+Scenario: l'export TypeScript du Model correspond à la sérialisation
+  Given un `Model` construit avec toutes ses colonnes, sérialisé en JSON, et l'export TypeScript de ../interactive/event.sdd écrit dans un répertoire temporaire
+  When la déclaration `mcp_server.ts` est lue
+  Then chaque clé du JSON est une propriété de la déclaration avec le type attendu (`string` pour les dates, `number` pour les entiers), sans propriété en plus ; la sérialisation du `Model` n'a pas changé

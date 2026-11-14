@@ -41,8 +41,9 @@ Must:
     6. la réponse : abonnement au hub **avant** l'envoi ; le pont accumule les `text_delta`, et à `turn_ended` envoie `split_message(réponse)` (une
       partie = un message, `txn_id` = `event_id` + rang pour l'idempotence d'envoi) ; issue `Failed` → `format_error` ; `Cancelled` → « Annulé. » ;
       les avis de reprise (`notices`) précèdent la réponse (`format_notice`). Aucun streaming par édition au lot 2 (`Tasks`).
-  Aucun jeton n'existe côté Matrix : un serveur MCP en mode `forward` n'est pas disponible dans ces sessions (`mcp_access` renvoie
-    `Forbidden("forward auth needs an interactive session")`).
+  Aucun jeton interactif n'existe côté Matrix. Amendement du 2026-11-14 (issue #82, arbitré : le pont en bénéficie) : un serveur MCP en mode `forward` suit le même `build_auth` que les autres sessions (./../mcp_access.sdd) :
+    `LymailleHost::forward_token` est consulté pour l'utilisateur lié ; `Some(jeton)` → serveur monté, `None` ou hôte sans fournisseur → `Forbidden("forward auth needs an interactive session")` comme avant. Aucun cas particulier du pont.
+    `Scenario` à ajouter : hôte qui fournit un jeton pour l'utilisateur lié → le pont monte le serveur `forward` ; hôte sans fournisseur → refus inchangé. Tests d'abord, puis ./bridge.rs.
   Tout échec interne répond par `format_error(code)` ; le contenu du message de l'utilisateur n'est jamais journalisé ni cité.
   La table des événements vus est élaguée (> `dedupe_window`) opportunément (au plus une fois par heure).
   Compiler sous `#[cfg(all(feature = "lymaille", feature = "matrix"))]`.

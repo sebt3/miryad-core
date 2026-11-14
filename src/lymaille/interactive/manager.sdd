@@ -45,6 +45,15 @@ Must:
     mono-réplique — plusieurs répliques nécessitent de l'affinité de session (aucune détection inter-processus, `session#DEC-1` de `lymaille`,
     dernier `save` gagne). La marque de fermeture (`close` → `send` rendu `NotFound`) vit dans la même table mémoire : accumulation bornée
     au nombre de fermetures depuis le démarrage, purgée par `resume` (arbitrage de Sébastien du 2026-11-05 — non bornée au-delà).
+  **Amendement du 2026-11-14 (issue #81, DSD `DEC-31` : la limite mono-réplique ci-dessus est levée par étapes, lots 1 à 3)** :
+    Lot 1 — `ManagerDeps` gagne `turn_lock: Option<std::sync::Arc<dyn ::lymaille::TurnLock>>` (défaut `None` : porte locale seule, comportement inchangé) et `ManagerDeps::with_turn_lock(self, lock: Arc<dyn TurnLock>) -> Self` ;
+    l'application y met `pg_turn_lock(..)` de ../turn_lock.sdd quand la base est PostgreSQL. `send` prend **deux** permis dans cet ordre : (1) `TurnGate::try_begin` local, immédiat — il reste la source de `is_active`
+    (donc de `cancel`, `close` et du déchargement `idle_ttl`, qui sont **locaux au processus**) ; (2) si `turn_lock` est `Some`, `lock.try_begin(id).await` ; `TurnActive` de la porte partagée → le permis local est lâché et
+    la réponse est `Conflict("turn active")` (même texte qu'en local) ; toute autre erreur → `from_session` (`SessionError::TurnLock` → `Run { retryable: true }`, ../error.sdd). La tâche détachée tient les deux permis jusqu'à
+    la fin du tour. Le jeton de perte de bail du permis partagé (`TurnPermit::lost()`) est transmis à l'assemblage (`AssembleDeps`/`assemble_session` reçoivent `lease: Option<CancelHandle>`, ./assemble.sdd) pour que le
+    `TurnRunner` de `lymaille` — qui prend lui-même un permis auprès de son `TurnLock` — **partage** ce jeton au lieu de reprendre un second verrou ; la perte du bail abandonne le tour sans sauvegarde
+    (`TurnLeaseLost`, ./event.sdd). Un `send` sans porte partagée (`None`) ne change rien. `cancel` et `close` ne voient que les tours de **leur** processus : annuler ou fermer une session dont le tour tourne sur une autre
+    réplique est le sujet des lots 2 et 3 (`[?]` ci-dessous).
   `send(&self, subject, id, text: String, token: Option<Zeroizing<String>>) -> Result<(), LymailleError>` : cloisonne (la session doit appartenir à
     `subject`, sinon `NotFound` indiscernable d'une session absente) ; `TurnGate::try_begin` immédiat, `TurnActive` → `Conflict("turn active")` ; lance le
     tour en tâche détachée (`run_turn` avec son `CancelHandle` enfant) et revient sans attendre ; `token` n'est vivant que pendant ce tour
@@ -78,6 +87,18 @@ Tasks:
     Validé 2026-11-06 (validator PASS : troisième cas verrouillé par un test au fixture exploitable au seul draft — rouge prouvé par mutation puis restauration ; production conforme sans changement, `context_type()` ne lit que l'`active` ; les deux premiers cas gardent leurs assertions ; lymaille vert en tests et clippy `-D warnings`, `fmt`, `specdd lint`).
     [?] (implementer et validator) : le Must du même arbitrage (« un `default_agent` introuvable refuse l'ouverture **même avec un `agent` explicite valide** ») est conforme par construction (`resolve_start` avant la sélection d'agent) mais sans test du variant « agent explicite valide + défaut fantôme » — ajouter un test de garde en prochain cycle ?
     [?] (validator, optionnel) : scinder `un_contexte_sans_type_exploitable_est_refuse` en deux tests nommés pour que les cas 1 et 2 aient « leur test distinct » au sens strict (ils partagent aujourd'hui une boucle paramétrée aux assertions dédiées) ?
+  [ ] Issue #74 — test de cohérence ouverture ↔ hooks. Un test (dans ./manager.rs ou ./../definitions/catalog_context.rs, à fixer à l'écriture de la spec) fait créer un contexte du catalogue par le
+    CRUD d'un admin (hooks réels) puis ouvre une session sur ce contexte : ce que les hooks acceptent comme `context_type` est exactement ce que l'ouverture résout. `Scenario` : « le contexte créé par REST
+    s'ouvre » (critère d'acceptation de l'issue). Après ./../definitions/catalog_context.sdd.
+  [ ] Issue #81 lot 1 — porte de tour partagée (DSD `DEC-31`). Spec d'abord (cet amendement, à faire approuver). Tests d'abord, avec un `TurnLock` de test (compteur, échec injecté, `lost` déclenchable) : les `Scenario`
+    « deux répliques, un seul tour », « la porte partagée refuse » et « la perte du bail abandonne le tour » ; puis ./manager.rs. Après la tâche « Montée de dépendance à `lymaille` 0.3.0 » de ./../mod.sdd, après la
+    tâche « `lease` » de ./assemble.sdd, après ./../turn_lock.sdd (le type est consommé en `Arc<dyn TurnLock>`, le test n'en dépend pas).
+    Arbitré le 2026-11-14 : `cancel` et `close` entre répliques passent par le relais du lot 2 (./hub.sdd : `RelayCommand::{Cancel, Close}`, même canal PostgreSQL), la réplique propriétaire du tour les exécute ; sans le lot 2 la limite reste documentée. L'affinité de session côté application n'est pas requise.
+  [ ] Issue #81 lot 2 — commandes entre répliques : `cancel` et `close` reçus du relais de ./hub.sdd (`RelayCommand::{Cancel, Close}`) s'exécutent localement sur la session si elle est active
+    ou chargée ici, sans cloisonnement supplémentaire (le cloisonnement a été fait par la réplique qui a reçu la requête) ; `cancel` rendu à l'appelant reste `true` seulement pour un tour local — la valeur d'une annulation lointaine
+    est « demandée » (`false` conservé, documenté). `Scenario` : « une annulation reçue du relais annule le tour local ». Tests d'abord, puis ./manager.rs. Après la tâche « relais » de ./hub.sdd.
+  [ ] Issue #81 lot 3 — `subscribe_from` : `subscribe_from(&self, subject, id, after: Option<u64>) -> Result<Subscription, LymailleError>` cloisonne comme `subscribe` puis `EventHub::subscribe_from` (./hub.sdd) ; `subscribe`
+    reste, et vaut `subscribe_from(.., None)`. `Scenario` : « un abonné reprend après un curseur ». Tests d'abord, puis ./manager.rs. Après la tâche « journal » de ./hub.sdd.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./manager.rs.
@@ -157,3 +178,43 @@ Scenario: le jeton n'est jamais persisté
   Given un `send` avec un jeton
   When le tour est terminé
   Then ni l'état sauvegardé, ni les événements, ni les traces ne contiennent le jeton
+
+Scenario: un contexte créé par le CRUD s'ouvre
+  Given un type de contexte `G_home` actif et un contexte `G_home` de type `G_home`, créé par les hooks réels de ./../definitions/catalog_context.sdd (administrateur), puis un contexte privé `dev` de type `G_home` créé par les hooks réels de ./../definitions/user_context.sdd
+  When une session est ouverte sur chacun
+  Then les deux s'ouvrent : ce que les hooks acceptent comme `context_type` est exactement ce que l'ouverture résout (issue #74)
+
+Scenario: deux répliques, un seul tour (issue #81)
+  Given un `ManagerDeps` dont `turn_lock` est un `TurnLock` de test **partagé** par deux gestionnaires (deux `SessionManager` sur la même base) et une session ouverte
+  When le premier gestionnaire fait `send` (tour en cours), puis le second fait `send` sur la même session
+  Then le second rend `Conflict("turn active")` sans lancer de tâche ; une fois le premier tour fini, un nouveau `send` du second réussit
+
+Scenario: la porte partagée refuse sans retenir la porte locale (issue #81)
+  Given une porte partagée qui rend `TurnActive`
+  When `send`, puis la porte partagée est libérée et `send` de nouveau
+  Then le premier `send` rend `Conflict("turn active")` **et** `is_active` local vaut `false` aussitôt ; le second `send` réussit
+
+Scenario: une panne de la porte partagée est une erreur retryable (issue #81)
+  Given une porte partagée qui rend `SessionError::TurnLock("down")`
+  When `send`
+  Then `Err(LymailleError::Run { retryable: true, .. })`, aucun tour n'est lancé et `is_active` vaut `false`
+
+Scenario: la perte du bail abandonne le tour sans sauvegarde (issue #81)
+  Given un tour en cours sous une porte partagée dont on annule le jeton `lost` pendant l'inférence
+  When le tour se termine
+  Then l'abonné reçoit `TurnLeaseLost` (jamais `TurnEnded` avec réponse), l'état de la session n'a pas été sauvegardé par ce tour, et `is_active` vaut `false`
+
+Scenario: sans porte partagée, rien ne change (issue #81)
+  Given un `ManagerDeps` sans `turn_lock`
+  When les `Scenario` « un second tour est refusé » et « ouvrir, envoyer, recevoir » sont rejoués
+  Then ils sont verts à l'identique
+
+Scenario: une annulation reçue du relais annule le tour local (issue #81, lot 2)
+  Given un tour actif sur ce gestionnaire et une commande `Cancel` de la session reçue du relais
+  When la commande est appliquée
+  Then le tour est annulé (même effet que `cancel`) ; la même commande pour une session inactive ici est ignorée sans erreur
+
+Scenario: un abonné reprend après un curseur (issue #81, lot 3)
+  Given un journal contenant les événements 1 à 5 de la session et un abonnement par `subscribe_from(.., Some(3))`
+  When un sixième événement est publié
+  Then l'abonné reçoit les événements 4, 5 puis 6, dans cet ordre, chacun avec son curseur ; une session d'un autre `subject` rend `NotFound` indiscernable

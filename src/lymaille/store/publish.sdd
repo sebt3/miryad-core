@@ -1,0 +1,100 @@
+Spec: publish — publication du catalogue par l'hôte, chemin système create-only et lignes gérées versionnées
+
+Purpose:
+  Permettre à l'application hôte de publier au démarrage un catalogue par défaut — types de contexte, contextes du catalogue, agents du catalogue — de façon **idempotente** et **sans jamais écraser une
+    définition qu'un administrateur a modifiée** (issue #73). Les stores (./mod.sdd) sont construits par principal et exigent un sujet administrateur résolu en base : ils ne peuvent pas servir au premier
+    démarrage, et leur écriture est un upsert qui remplace. Ce fichier porte donc un chemin **système** distinct : des fonctions libres sur une connexion, sans sujet, sans principal, qui n'insèrent
+    qu'une ligne absente et ne remplacent une ligne que si elle est **gérée** par l'hôte et **non modifiée** depuis sa publication. La provenance (source, version, empreinte du contenu) vit dans les colonnes
+    `managed_*` des tables du catalogue (./../migration.sdd). Les mêmes validations que les hooks de ./../definitions/ s'appliquent. Fichier neuf, conception (arbitré le 2026-11-13).
+
+Owns:
+  ./publish.rs
+
+References:
+  ./mod.sdd — conventions communes, déclaration du module ; ../migration.sdd — colonnes `managed_*`
+  ../definitions/agent.sdd, ../definitions/context_type.sdd, ../definitions/catalog_context.sdd — entités des tables et validations (hooks) à réutiliser tel quel
+  ../identity.sdd — `classify` ; ../error.sdd — `LymailleError`
+  /dsd/miryad-core/lymaille.md — `DEC-9`, `DEC-14`, `DEC-20`, `DEC-28`, `CON-7` (domaine) ; issue sebt3/miryad-core#73
+
+Must:
+  `pub struct Provenance { pub source: String, pub version: String }` — la marque de l'hôte (`source` : nom stable, non vide) et la version de son catalogue (`version` : semver valide) ; `Clone`, `Debug`.
+  `pub enum PublishOutcome { Created, Unchanged, Updated, Skipped(SkipReason) }` et `pub enum SkipReason { Unmanaged, Modified }` ; `Clone`, `Copy`, `Debug`, `PartialEq`, `Eq`.
+  Trois fonctions, **génériques sur `C: ConnectionTrait`** (`CON-7` : appelables depuis une migration ou un démarrage), `Result<PublishOutcome, LymailleError>` :
+    `pub async fn ensure_agent<C>(db: &C, provenance: &Provenance, definition: &AgentDefinition) -> …` (table `catalog_agents`, identifiant `G_…`) ;
+    `pub async fn ensure_context_type<C>(db: &C, provenance: &Provenance, definition: &ContextType, allowed_agents: &[String], script_grants: &ScriptGrants) -> …` (table `catalog_context_types`) ;
+    `pub async fn ensure_catalog_context<C>(db: &C, provenance: &Provenance, context: &ToolsetContext, context_type: Option<&str>) -> …` (table `catalog_contexts`).
+  Pour chacune : (1) la `provenance` est validée (`source` non vide, `version` semver, sinon `InvalidDefinition`) ; (2) l'objet passe **par la même fonction de validation que les hooks** de l'entité visée (jamais une
+    copie : `valider_et_deriver` des hooks, rendue `pub(crate)`), y compris `classify(id) == Catalog` ; refus → `InvalidDefinition` (ou le refus du détecteur de secrets, sans écho de la valeur), **avant toute
+    écriture** ; (3) **aucun sujet, aucun principal, aucun `check_write`** : ni `Identity`, ni compte administrateur requis (la fonction réussit sur une base fraîche) ; (4) la ligne est lue par son identifiant :
+    - **absente** → `INSERT … ON CONFLICT DO NOTHING` (portable SQLite et PostgreSQL) avec `managed_by = source`, `managed_version = version`, `managed_digest = empreinte` ; une ligne insérée → `Created` ; si
+      l'`INSERT` n'insère rien (course avec une autre instance), la ligne est relue et traitée comme existante ;
+    - **présente et non gérée par cette source** (`managed_by` `NULL`, ou autre source) → `Skipped(Unmanaged)`, ligne intacte ;
+    - **présente, gérée par cette source, empreinte stockée ≠ empreinte recalculée du contenu actuel de la ligne** → `Skipped(Modified)` (un administrateur l'a modifiée), ligne intacte ;
+    - **présente, gérée, non modifiée**, `version` publiée **strictement supérieure** (comparaison semver) à `managed_version` → `UPDATE` du contenu et de la provenance (`Updated`), gardé par
+      `WHERE managed_digest = <empreinte lue>` : zéro ligne touchée (modifiée entre-temps) → `Skipped(Modified)` ; version égale ou inférieure → `Unchanged`, aucune écriture.
+  Empreinte : SHA-256 (hex minuscule, `sha2`, déjà sous `db`) de la **sérialisation canonique** (clés triées, sans espace) des colonnes de contenu **telles que stockées** : agent → `definition` ; type de contexte →
+    `active`, `allowed_agents`, `script_grants` ; contexte → `context`, `context_type`. Elle est recalculée depuis la ligne à chaque comparaison, jamais lue d'un cache.
+  La publication est **idempotente** : la rejouer sans changement de version rend `Unchanged` partout et n'écrit rien. Aucune suppression : retirer un objet du catalogue de l'hôte n'est pas géré ici.
+  Trace : `tracing::info!` par objet (identifiant, issue : `Created`, `Updated`, `Skipped(…)`), jamais le contenu de la définition ni une valeur de paramètre.
+  Compiler sous `#[cfg(feature = "lymaille")]`.
+
+Must not:
+  Résoudre ou exiger un principal ; appeler `check_write` ; remplacer une ligne non gérée par la source ou modifiée depuis sa publication ; écrire un identifiant `H_…` ou privé (refusé par `classify`) ;
+    dupliquer une règle de validation des hooks ; faire confiance à une empreinte stockée sans la recalculer ; citer le contenu d'une définition ou d'un secret dans une erreur ou une trace ; toucher aux
+    tables privées (`agents`, `user_contexts`, `toolsets`) ou aux toolsets, profils et providers (écrits par les administrateurs seuls).
+
+Depends on:
+  ../definitions/agent.rs, ../definitions/context_type.rs, ../definitions/catalog_context.rs, ../identity.rs, ../error.rs, ../host.rs (`ScriptGrants`), @sea_orm, @sha2, @semver, @serde_json, @tracing, `lymaille`
+
+Exposes:
+  `Provenance`, `PublishOutcome`, `SkipReason`, `ensure_agent`, `ensure_context_type`, `ensure_catalog_context`
+
+Tasks:
+  [ ] Dépendance `semver` (déjà au graphe, 1.0.x) en dépendance directe de `/Cargo.toml` sous la feature `lymaille` ; amendement de `/tooling.sdd` si le graphe change. Rien d'autre dans ce lot ; avant ./publish.rs.
+  [ ] Rendre `pub(crate)` la validation partagée des trois définitions (`valider_et_deriver` de ../definitions/agent.rs et ../definitions/catalog_context.rs, `valider` de ../definitions/context_type.rs) hors de leur
+    `Owns`, logique inchangée : à ratifier par le développeur principal comme `role_requirements` (script_runner), avant ./publish.rs.
+  [ ] Tests d'abord (SQLite mémoire, migrations appliquées, aucun utilisateur en base), un test par `Scenario`, puis ./publish.rs. Après ../migration.sdd et ../definitions/{agent,context_type,catalog_context}.sdd (colonnes
+    `managed_*`).
+
+Done when:
+  Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./publish.rs.
+
+Scenario: base fraîche, aucun sujet administrateur
+  Given une base migrée sans aucun utilisateur, un type `G_home`, un contexte `G_home` de type `G_home` et un agent `G_triage`
+  When les trois objets sont publiés par `ensure_*` avec la provenance `("vanyline", "1.0.0")`
+  Then `Created` pour chacun, sans `UnknownSubject` ; les lignes portent `managed_by = "vanyline"`, `managed_version = "1.0.0"` et une empreinte non nulle
+
+Scenario: rejouer la publication ne change rien
+  Given la base du scénario précédent
+  When les trois `ensure_*` sont rappelés avec la même provenance
+  Then `Unchanged` partout et aucune ligne n'est réécrite (contenu et provenance identiques)
+
+Scenario: une ligne modifiée par un administrateur reste intacte
+  Given la base publiée en `1.0.0`, puis un administrateur modifie par REST le contexte `G_home`
+  When l'hôte publie en `1.1.0` avec un contenu différent
+  Then `Skipped(Modified)` pour le contexte, qui garde la modification de l'administrateur ; les lignes non modifiées sont mises à jour (`Updated`)
+
+Scenario: une ligne gérée et non modifiée est mise à jour par une version supérieure
+  Given la base publiée en `1.0.0`, aucune modification
+  When l'hôte publie en `1.1.0` un agent au contenu changé, puis republie en `1.1.0`, puis en `1.0.5`
+  Then `Updated` (contenu et `managed_version = "1.1.0"` écrits, empreinte recalculée), puis `Unchanged`, puis `Unchanged` (version inférieure : aucune écriture)
+
+Scenario: une ligne non gérée ou d'une autre source n'est pas touchée
+  Given un agent `G_triage` créé par un administrateur (provenance nulle), puis un contexte publié par la source `autre`
+  When l'hôte publie ces deux identifiants avec la source `vanyline`
+  Then `Skipped(Unmanaged)` dans les deux cas, lignes intactes
+
+Scenario: les mêmes validations que les hooks, avant toute écriture
+  Given un agent `triage` (nom privé), puis un contexte dont un paramètre ressemble à un secret, puis une version `pas-semver`
+  When les `ensure_*` correspondants sont appelés
+  Then `InvalidDefinition` (ou le refus du détecteur de secrets sans écho de la valeur) dans les trois cas, aucune ligne écrite
+
+Scenario: deux publications simultanées créent une seule ligne
+  Given deux appels concurrents de `ensure_agent` pour le même `G_triage` sur une base fraîche
+  When ils s'exécutent
+  Then une seule ligne existe ; un appel rend `Created`, l'autre `Unchanged` (relecture après conflit)
+
+Scenario: l'empreinte est recalculée, pas crue
+  Given une ligne gérée dont `managed_digest` est écrasé en base par la valeur attendue d'un autre contenu, alors que le contenu de la ligne a changé
+  When l'hôte publie une version supérieure
+  Then `Skipped(Modified)` : l'empreinte stockée ne correspond pas au contenu actuel

@@ -24,7 +24,7 @@ Must:
     Option<Zeroizing<String>>) -> Result<AssembledSession, LymailleError>` où `AssembledSession` porte le `TurnRunner` prêt, le `CancelHandle` racine
     et les avis de provenance :
     1. `AgentStore::get_agent(agent_id)` pour ce principal (privé de l'appelant ou catalogue) ; absent → `NotFound` ;
-    2. profil résolu (`ProfileStore::resolve_profile`) et provider (`ProviderStore`) ; la référence d'auth du provider est résolue par le
+    2. profil résolu (`ProfileStore::resolve_profile`) et provider (`ProviderStore`) ; **agent sans profil explicite** (amendement du 2026-11-13, issue #75 : la définition porte un profil facultatif, `lymaille` 0.3.0) : le profil est `LymailleHost::default_profile()` (./../host.sdd), relu à **chaque** ouverture ; hôte absent, `Ok(None)` ou `Err(HostError)` → `Config("no default profile configured")` (`MRD-LYMAILLE-008`, non retryable) ; un nom désigné qui n'existe pas → l'erreur de profil inconnu inchangée ; un agent à profil explicite ne consulte pas l'hôte ; la référence d'auth du provider est résolue par le
       @SecretResolver **à la construction du client d'inférence seulement** (`DEC-16`) ;
     3. `check_grants(caller, def.modules(), ADMIN_ONLY_MODULES)` (constante de ../identity.sdd) : un module réservé à l'admin accordé à un non-admin → `Forbidden` (refus à l'assemblage ;
       l'appel de module revalide, `FR-4`) ;
@@ -42,7 +42,7 @@ Must:
     6. `TurnConfig` : horloge, `Redactor` de la session (secrets du provider et du jeton ajoutés), le `EventHub` en `EventSink`, `Budget` du profil.
   `AssembleDeps` regroupe : connexion, `Arc<HostModules>` (registre vide par défaut), `ResourceReaders`/écrivains, `Arc<dyn SecretResolver>`, fabrique d'inférence, hub, horloge, hôte optionnel
     (`SharedHost`) ; les stores `Sea*` sont dérivés de la connexion et du `subject` à l'assemblage, non portés par la structure.
-  Le jeton `forward` n'est transmis qu'à `build_auth` et n'est conservé que dans le `SeaMcpAuth` du tour ; il disparaît avec le tour.
+  Le jeton `forward` n'est transmis qu'à `mount_role` (donc à `build_auth`, ./../mcp_mount.sdd) et n'est conservé que dans le `SeaMcpAuth` du tour ; il disparaît avec le tour.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -66,7 +66,7 @@ Tasks:
     Validé 2026-11-07 (validator PASS : `mount_mcp_roles` réduit à la boucle et à la politique, Scenario existants verts sans modification ; écart optionnel/Store acté ; batterie complète 38/38 conforme, `specdd lint` vert, rustdoc sans nouveau warning).
     Amendement 2026-11-07 (garde de collision, ../mcp_mount.sdd) : `mount_mcp_roles` passe `taken` = les noms des modules déjà accordés (`resources`) ; une collision de nom de rôle est une `Config`,
     donc **fatale même pour un rôle optionnel** (la politique n'omet que `Forbidden("mcp server unavailable")`).
-    [?] (implementer, 2026-11-07) : seul écart de comportement du refactor — un rôle **optionnel** dont la résolution échoue autrement que par `Forbidden("mcp server unavailable")` (panne de base : `Store`) est désormais fatal, alors qu'il était omis avec avis. Échec fermé plutôt que masquage d'une panne en « serveur indisponible » : à acter (recommandé) ou à rétablir.
+    Arbitré le 2026-11-14 : un rôle **optionnel** dont la résolution échoue autrement que par `Forbidden("mcp server unavailable")` (panne de base : `Store`) est fatal — échec fermé, plutôt que le masquage d'une panne en « serveur indisponible ». À figer dans le `Must` (un test : `Store` sur un rôle optionnel → `Err(Store)`, `Forbidden` → avis).
   [x] Test d'abord du cas « collision de nom de rôle optionnel » : Scenario en fin de spec, puis verrou de non-régression dans ./assemble.rs (aucun code de production attendu : la garde est livrée). Test seul.
     Validé 2026-11-11 : test `un_role_optionnel_au_nom_dun_module_accorde_fait_echouer`, vert sans code de production (garde `mcp_mount` livrée a01e406) ; synthèse tenue par le primary (`validator` indisponible).
   [?] À vérifier à l'ouverture de la tâche dans le source de `lymaille` : la voie exacte pour injecter des clients MCP par rôle dans
@@ -79,6 +79,19 @@ Tasks:
 
   [x] Amendement du 2026-11-11 (étape 4 ter, arbitrage du développeur principal : « oui, tâche 1 ») : test d'abord (`Scenario` « un rôle du nom d'un module d'hôte monté est refusé »), puis ./assemble.rs ; ne passe à `[x]` qu'avec le `validator` en vert.
     Validé 2026-11-12 (validator PASS : `taken` = modules de base + intersection définition ∩ registre (exactement ce que l'étape 5 monte, parité avec ./script_runner.rs vérifiée), garde avant tout montage, collision fatale même pour un rôle optionnel ; test `un_role_du_nom_dun_module_hote_monte_est_refuse` (rouge d'abord prouvé), batteries ciblées `lymaille` et `workflow,lymaille` vertes, clippy `-D warnings` et `fmt` verts ; le `[?]` ligne 69 n'est pas aggravé).
+  [ ] Issue #75 — profil par défaut à l'ouverture. Spec d'abord : à l'étape 2 (« profil résolu »), un agent sans profil explicite (voir ./../definitions/agent.sdd) obtient le profil de
+    `LymailleHost::default_profile()` (./../host.sdd) ; profil désigné inexistant → `UnknownProfile` inchangé ; hôte absent, `None` ou panne → `LymailleError::Config("no default profile configured")`
+    (`MRD-LYMAILLE-008`, existant, non retryable). Le défaut est relu à **chaque** ouverture : changer le profil de l'hôte change le modèle de l'agent à la session suivante, sans réécrire l'agent
+    (critère d'acceptation de l'issue). `Scenario` : agent sans profil + hôte qui désigne `qwen` → ouvre sur `qwen` ; hôte qui change de réponse → la session suivante suit ; sans défaut → erreur nommant la
+    cause ; agent à profil explicite : l'hôte n'est pas consulté. Puis tests d'abord, puis ./assemble.rs. Après ./../host.sdd et ./../definitions/agent.sdd.
+    Arbitré le 2026-11-13 : variante d'erreur : `Config` existante (recommandé, aucun nouveau code) plutôt qu'une variante dédiée `NoDefaultProfile`.
+  [ ] Issue #82 — l'assemblage passe l'hôte au montage des rôles `forward` (le jeton interactif de la requête reste prioritaire). Aucun comportement nouveau ici si ./mcp_mount.sdd absorbe le changement ;
+    sinon `Scenario` « le jeton forward n'atteint que son serveur » étendu. Après ./../mcp_mount.sdd.
+  [ ] Issue #81 lot 1 — tâche « `lease` » (DSD `DEC-31`, voir ./manager.sdd, amendement du 2026-11-14) : `assemble_session` et `assemble_with` reçoivent `lease: Option<::lymaille::CancelHandle>` (le jeton de perte de bail du permis
+    que le gestionnaire a pris auprès de la porte partagée). `Some(lost)` → `TurnConfig::with_turn_lock(Arc<dyn TurnLock>)` avec un `TurnLock` **de passage** (`pub(crate)`, privé à ce fichier) dont `try_begin(session)` rend **une fois**
+    un `TurnPermit::new(session, || {}, lost.clone())` — le `TurnRunner` ne reprend pas de verrou (le gestionnaire tient déjà le permis réel) mais voit la perte du bail ; un second appel rend `SessionError::TurnActive`.
+    `None` → aucun changement (porte par défaut de `lymaille`). `Scenario` : « le jeton de bail traverse l'assemblage » (jeton annulé pendant l'inférence → tour `Cancelled`, `TurnLeaseLost` émis) ; « sans `lease`,
+    rien ne change ». Tests d'abord (`ScriptedProvider` qui annule le jeton), puis ./assemble.rs. Après la tâche « Montée de dépendance à `lymaille` 0.3.0 » de ../mod.sdd.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./assemble.rs.
@@ -132,3 +145,13 @@ Scenario: un module d'hôte réservé à l'admin accordé à un non-admin est re
   Given un `HostModule` `AdminOnly` enregistré, un agent dont la définition l'accorde, un appelant non-admin
   When `assemble_session` est appelé
   Then `Forbidden` nommant le module ; pour un admin, le module est monté, et un module absent du registre n'est pas monté
+
+Scenario: un agent sans profil suit le profil par défaut de l'hôte
+  Given un agent sans profil explicite, un hôte factice dont `default_profile` rend `Some("qwen")`, et deux profils `qwen` et `autre`
+  When une session est assemblée, puis l'hôte passe à `Some("autre")`, puis une seconde session est assemblée
+  Then la première s'ouvre sur `qwen`, la seconde sur `autre` ; un agent à profil explicite n'a pas appelé l'hôte
+
+Scenario: sans profil par défaut, l'erreur nomme la cause
+  Given un agent sans profil explicite et un hôte absent, puis un hôte qui rend `Ok(None)`, puis `Err(HostError)`
+  When une session est assemblée
+  Then `Config("no default profile configured")` dans les trois cas, `MRD-LYMAILLE-008`, sans texte de l'hôte

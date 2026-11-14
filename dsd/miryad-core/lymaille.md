@@ -151,7 +151,7 @@ et appels d'MCP externes depuis les scripts.
     - **Verified by:** `AC-11`
 
 - **FR-11 - MUST:** Un utilisateur ouvre, suit, annule, reprend et ferme une session interactive **dans un contexte** (la nature `Work` ou `Config` et l'agent par défaut
-    découlent du type du contexte, `DEC-28`) ; au plus un tour actif par session (application mono-réplique, `DEC-24`) ; un tour survit à la déconnexion du client ; les événements sont diffusés à tous les abonnés de la session ; chaque
+    découlent du type du contexte, `DEC-28`) ; au plus un tour actif par session (par processus, `DEC-24` ; entre répliques avec la porte partagée, `DEC-31`) ; un tour survit à la déconnexion du client ; les événements sont diffusés à tous les abonnés de la session ; chaque
     appel relit le principal. Le socle est indépendant du canal.
     - **Source:** `DEC-6`, `DEC-13`, `DEC-24`, `DEC-28` ; user instruction, 2026-11-03
     - **Verified by:** `AC-15`, `AC-19`
@@ -175,6 +175,12 @@ et appels d'MCP externes depuis les scripts.
     interprète le contenu, et l'historique d'une session se relit par une route dédiée.
     - **Source:** `DEC-30` ; user instruction, 2026-11-03
     - **Verified by:** `AC-20`
+
+- **FR-16 - MUST:** Plusieurs répliques de l'application servent les sessions interactives (haute disponibilité, mise à jour sans coupure) : au plus **un tour actif par session entre toutes les répliques**, un abonné SSE
+    d'une réplique voit les événements d'un tour exécuté sur une autre, et un client qui se reconnecte reprend le flux là où il s'est arrêté (`Last-Event-ID`), y compris sur une autre réplique. La perte de la porte de tour en cours de tour
+    abandonne ce tour sans l'enregistrer (`TurnLeaseLost`) ; une application sans PostgreSQL ou sans cette configuration garde le comportement par processus, inchangé.
+    - **Source:** `DEC-31` ; issue #81 ; user instruction, 2026-11-14
+    - **Verified by:** `AC-21`
 
 ## Design Decisions
 
@@ -448,7 +454,7 @@ et appels d'MCP externes depuis les scripts.
       appel de l'agent. Les erreurs de script sont persistées par un `AuditWriter` pour `SessionIndex::script_errors`.
     - **Alternatives:** tour attaché à la requête (écarté : un onglet fermé tuerait le tour) ; rejeu d'événements par `Last-Event-ID` (écarté : les événements
       ne sont pas persistés ; l'état de la session l'est).
-    - **Consequences:** pas de coordination entre processus (`session#DEC-1` de `lymaille`). **Limite assumée le 2026-11-03 :** l'application est
+    - **Consequences:** pas de coordination entre processus (`session#DEC-1` de `lymaille`). **Limite assumée le 2026-11-03, levée par étapes par `DEC-31` (2026-11-14) :** l'application est
       **mono-réplique** pour les sessions interactives : le hub d'événements est en mémoire (un abonné SSE d'une autre réplique ne verrait rien) et un
       tour actif n'est protégé qu'au sein du processus. Un verrou en base n'est rouvert qu'avec un besoin de haute disponibilité. L'ouverture se fait
       par contexte (`DEC-28`).
@@ -521,7 +527,7 @@ et appels d'MCP externes depuis les scripts.
       au client (arbitré le 2026-11-03 : `Script` et `McpCall` en résumé, sans texte de script ni arguments ; une variante amont non reflétée devient `Other{name}`) ; l'hôte publie par
       `EventHub::publish_host` (charge bornée à 64 Kio) ; l'export TypeScript est **côté hôte** (arbitré le 2026-11-03) : la crate fournit `export_typescript(dir)`, sans commiter de `.ts`. Une route de lecture rend l'état
       persisté de la session (messages, appels d'outil) sous les mêmes types ; le client lit l'historique puis s'abonne au SSE. Les événements `Host` ne
-      sont pas rejoués, et `Last-Event-ID` reste écarté (`DEC-24`).
+      sont pas rejoués, et `Last-Event-ID` reste écarté (`DEC-24`) — **amendé par `DEC-31` (2026-11-14) : journal et reprise livrés, les événements `Host` y sont journalisés**.
     - **Alternatives:** enum générique `SessionEvent<H>` (écarté : propage un paramètre de type dans le hub, le gestionnaire et les routes) ;
       journal d'événements rejouables (écarté : volumétrie et rétention, déjà écarté par `DEC-24`).
     - **Consequences:** amende `http/routes.sdd`, `http/sse.sdd`, `interactive/hub.sdd` ; une route de plus que les neuf de `AC-16`. L'export TypeScript se fait par `ts-rs`
@@ -530,6 +536,20 @@ et appels d'MCP externes depuis les scripts.
       rechargement perd les questions de l'utilisateur. Ces deux variantes sont propres à l'historique (le flux direct ne les émet pas). **Limite** : `lymaille`
       0.2.0 n'horodate pas ses messages ; `at` vaut l'instant de création de la session pour tout l'historique.
     - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B7) ; user instruction, 2026-11-03 et 2026-11-05
+
+- **DEC-31 - Haute disponibilité des sessions : porte PostgreSQL, relais `LISTEN/NOTIFY`, journal d'événements** (2026-11-14, amende `DEC-24`, `DEC-30` ; lève la limite mono-réplique de `DEC-24` ; issue #81)
+    - **Decision:** trois lots ordonnés, tous livrés (arbitré par l'utilisateur le 2026-11-14). **(1) Porte de tour partagée** : `lymaille` 0.3.0 rend la porte remplaçable (`TurnLock`, permis `TurnPermit::new(session, release, lost)`) ;
+      `PgTurnLock` (`turn_lock.sdd`) prend un verrou consultatif **transactionnel** (`pg_try_advisory_xact_lock`) sur une transaction tenue pendant le tour, avec un battement ; la perte de la connexion annule `lost` et le tour est abandonné sans
+      sauvegarde (`TurnLeaseLost`). Le gestionnaire garde sa porte locale (source de `is_active`, `cancel`, `close`) et ajoute la porte partagée ; l'assemblage partage le jeton de bail avec le `TurnRunner`. **(2) Relais** : `EventHub` reste le type public et
+      gagne une couture `EventRelay` ; l'implémentation `PgEventRelay` (`pg_relay.sdd`) transporte événements, curseurs, commandes `cancel`/`close` par `pg_notify` ; sans relais, le comportement est inchangé. **(3) Journal** : table `session_events` (nouvelle
+      migration), curseur monotone par session calculé en base, écriture par lots puis diffusion (« persister puis diffuser »), `Last-Event-ID` servi par `subscribe_from` ; avec journal, le relais ne transporte plus qu'un curseur, ce qui lève la limite de
+      8000 octets de `NOTIFY`. Les événements `Host` sont journalisés.
+    - **Alternatives:** bail en table avec battement (écarté : portable SQLite mais plus de code, une migration, des horloges à comparer) ; objet virtuel Restate (écarté : impose le moteur de workflow à toute instance multi-réplique) ; verrou consultatif **de session**
+      (`pg_advisory_lock`, écarté : il survivrait à une connexion rendue au pool, d'où le verrou transactionnel) ; `EventHub` abstrait par un trait `EventBus` (écarté, arbitré le 2026-11-14 : change le type de ~40 sites) ;
+      objet de diffusion unique (Restate, Redis) (écartés : dépendances nouvelles pour un besoin que PostgreSQL, déjà requis par `db`, couvre).
+    - **Consequences:** un tour retient **une connexion du pool** pendant sa durée : le pool de l'application doit être dimensionné pour les tours simultanés attendus par réplique. Le relais requiert la feature `sqlx-postgres` de `sea-orm` à la compilation (feature de la crate `lymaille-pg`, hors `default`, arbitré le 2026-11-14). `cancel` et `close` sont locaux au processus sauf transport par le relais du lot 2 (arbitré le 2026-11-14). Le journal réintroduit la volumétrie et la rétention que `DEC-24` et `DEC-30` avaient
+      écartées : bornées par le seul seuil de rétention de 30 jours de la purge (`store/events.sdd`, `store/purge.sdd`, arbitré le 2026-11-14 : ni plafond par session ni rétention propre ; risque de volumétrie assumé, une ligne par delta de texte). La collision 64 bits de la clé de verrou donne au pire un `TurnActive` à tort, jamais deux tours. Sans PostgreSQL (SQLite), l'application reste mono-réplique.
+    - **Source:** issue #81 ; user instruction, 2026-11-14 (lots 1 à 3 livrés ; verrou consultatif PostgreSQL) ; proposition Claude pour le détail, à approuver
 
 ## Contour du lot 2
 
@@ -563,6 +583,11 @@ Le lot 2 est **un seul lot, sans sous-découpage** (arbitré le 2026-11-03 : la 
 - Les relais de features `fs` et `shell` de lymaille ne doivent jamais être activés par miryad-core : la discipline de
   liste blanche des moteurs Rhai (workflow `DEC-8`) s'étend au pad de lymaille ; à confirmer et à traduire en
   `Scenario` de preuve comme pour `vynil-core` (A1). **ASSUMPTION:** prolongation voulue de DEC-8, à confirmer.
+- `lymaille` 0.3.0 : le `TurnRunner` prend **lui-même** un permis de son `TurnLock` à chaque tour. Une porte partagée donnée au gestionnaire **et** au `TurnRunner` se refuserait donc à elle-même (`TurnActive`) : le gestionnaire tient le permis réel et
+  l'assemblage fournit au `TurnRunner` une porte « de passage » qui ne fait que partager le jeton `lost` (`DEC-31`). (Observed in: `lymaille-0.3.0/src/runtime/turn.rs`, `session/turn_gate.rs`, 2026-11-14.)
+- `NOTIFY` PostgreSQL : la charge est limitée à 8000 octets, le canal est volatil (un message émis pendant qu'un écouteur est déconnecté est perdu) et l'écoute exige une connexion dédiée hors du pool. Un événement `Host` peut atteindre 64 Kio (`DEC-30`) : sans journal,
+  il ne peut pas être relayé en entier (`Missed`). (Observed in: documentation PostgreSQL `NOTIFY`, 2026-11-14 ; `EventHub::publish_host`, `HOST_PAYLOAD_MAX`.)
+- La feature `sqlx-postgres` de `sea-orm` n'est pas dans les dépendances normales de `/Cargo.toml` (seules les dev-dependencies la portent) : `PgListener` n'est pas compilable sans l'activer. (Observed in: `/Cargo.toml`, 2026-11-14.)
 
 ## SpecDD Realization
 
@@ -637,6 +662,8 @@ recouper avec leurs tests nommés avant la release.
 - **AC-19:** Une session s'ouvre sur un contexte : nature et agent par défaut viennent du type ; le contexte est immuable ; un agent hors ensemble est refusé par une erreur typée ;
   une session `Config` s'ouvre sans être admin si le contexte est utilisable.
 - **AC-20:** Les événements du flux et l'historique partagent les mêmes types exportés ; un rechargement retrouve la conversation ; un événement `Host` traverse le hub sans être interprété.
+- **AC-21:** Avec une porte partagée, deux gestionnaires sur la même base refusent un second tour sur une session (`Conflict("turn active")`) ; la perte du bail abandonne le tour sans sauvegarde et émet `TurnLeaseLost` ; un événement émis sur une réplique arrive aux abonnés de
+  l'autre ; avec journal, un client qui se reconnecte avec `Last-Event-ID` reçoit les événements manqués puis le direct, sans doublon, et un `lagged` si des événements ont été purgés ; sans PostgreSQL ni journal, tout reste inchangé.
 
 ## Open Issues
 
@@ -693,6 +720,11 @@ recouper avec leurs tests nommés avant la release.
 - **OI-8:** **Fingerprint et reprise** : `restore_session` compare la `Provenance` sauvegardée à l'actuelle (empreinte de la définition,
   versions de toolsets) et rend des avis si elles diffèrent. Si l'agent est modifié entre deux tentatives d'un step, la reprise continue
   avec ces avis. **Tranché provisoirement dans `subagent_step.sdd` (en attente d'approbation) :** la reprise continue avec les avis de `lymaille`, sans échec sur empreinte différente.
+
+- **OI-13:** **Haute disponibilité des sessions** (`DEC-31`, issue #81 ; côté `lymaille`, l'Open Issue `OI-4` de son DSD, aujourd'hui `TurnLock` livré en 0.3.0). Arbitré le 2026-11-14 : lots 1 (porte PostgreSQL), 2 (relais `LISTEN/NOTIFY`), 3 (journal et `Last-Event-ID`).
+  Arbitrages du 2026-11-14 : `EventHub` concret + coutures `EventRelay`/`SeaEventLog` ; événement au-delà de 7000 octets sans journal → `Missed` ; écriture du journal par lots de 50 ms ; rétention du journal = seuil unique de 30 jours (risque de volumétrie assumé) ;
+  curseur `MAX + 1` en base ; feature `lymaille-pg` ; `cancel`/`close` entre répliques par le relais ; premier abonnement sans `Last-Event-ID` = flux en direct seul. Hors périmètre : bascule de la session MCP et des caches mémoire du gestionnaire
+  (déchargement `idle_ttl`, marque de fermeture) entre répliques.
 
 ## References
 

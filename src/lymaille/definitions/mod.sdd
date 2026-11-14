@@ -22,6 +22,7 @@ Must:
     `rest::resource_router::<definitions::agent::Entity>()` (même motif que `workflow::definition::Entity`).
   Documenter dans le bloc `//!` : les quatre ressources (`resource_name` : `lymaille_catalog_agents`, `lymaille_catalog_toolsets`, `lymaille_profiles`,
     `lymaille_providers`), leurs politiques, la règle `G_`, et que les secrets n'y figurent jamais.
+  **Amendement du 2026-11-13 (issues #79 et #72)** : le bloc `//!` documente que chacun des dix `Model` dérive `ToSchema` (sous `lymaille`) et `TS` (exporté par ../interactive/event.sdd), sans changement de sérialisation ; le contrat de chaque dérive est dans la spec de l'entité.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
   **Amendement lot 2 (2026-11-03)** : modules enfants ajoutés et ré-exportés : `private_agent`, `private_toolset`, `context_type`, `catalog_context`,
@@ -56,6 +57,10 @@ Tasks:
   [?] (implementer, lot 3) : les deux liens [`check_toolset`] de la doc de `./toolset.rs` et `./private_toolset.rs` sont passés en texte
     inline car la cible est `pub(crate)` — un lien vers son chemin aurait créé un warning `private_intra_doc_links` de plus. Si un lien
     est souhaité, il faut rendre `check_toolset` pub (changement de surface). Choix provisoire : texte inline.
+  [ ] Issues #79 et #72 — coordination des dix `Model` (aucun code propre à ce fichier hors doc `//!` : mentionner la dérivation d'OpenAPI et de TypeScript). Ordre recommandé : #79 d'abord (aucun
+    blocage amont, objet libre pour les colonnes JSON), #72 ensuite (dépend d'une version amont de `lymaille`). Les dix specs enfants portent chacune leur tâche.
+    Arbitré le 2026-11-13 : `DateTimeUtc` : `#[schema(value_type = String, format = DateTime)]` et `#[ts(type = "string")]` par colonne (recommandé : conserve la règle de ./../mod.sdd « aucune feature d'implémentation de type tiers
+    de `ts-rs` », `at` y est déjà un `String`) plutôt que d'activer la feature `chrono` d'`utoipa` et `chrono-impl` de `ts-rs`.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.

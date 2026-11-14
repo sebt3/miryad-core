@@ -26,6 +26,7 @@ Must:
       suppression dans sa propre requête (pas de transaction englobante : une purge partielle reste valide) ;
     4. rend le nombre de lignes supprimées par table ; idempotente (un second appel immédiat rend des zéros).
   L'heure `now` est **un paramètre** (jamais `Utc::now()` dans la fonction) : tests déterministes.
+  **Amendement du 2026-11-14 (issue #81, DSD `DEC-31`)** : `PurgeReport` porte en plus `session_events: u64` et `purge_sessions` supprime aussi les événements du journal (./events.sdd) antérieurs au même `cutoff` (étape 3, dans sa propre requête) ; rétention propre au journal : `[?]` de ./events.sdd.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -40,6 +41,9 @@ Exposes:
 
 Tasks:
   [x] Tests d'abord (SQLite mémoire), puis ./purge.rs.
+  [ ] Issue #81 lot 3 — la purge couvre le journal d'événements (./events.sdd, DSD `DEC-31`) : `PurgeReport` gagne `session_events: u64` ; `purge_sessions` appelle `SeaEventLog::purge_before(cutoff)` avec le **même** seuil que les autres traces (chaque suppression dans sa
+    propre requête, comme les autres ; une panne de cette suppression est une erreur `Store`, les suppressions précédentes restent valides) ; `Scenario` « la purge supprime les événements anciens ». Tests d'abord (SQLite mémoire), puis ./purge.rs.
+    Après ./events.sdd (tâche « Déclaration et ré-exports »). `[?]` de rétention propre au journal : voir ./events.sdd.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./purge.rs.
@@ -73,3 +77,8 @@ Scenario: les autres tables sont intactes
   Given des agents, des toolsets et des mémoires anciens
   When `purge_sessions`
   Then ils existent encore
+
+Scenario: la purge supprime les événements anciens (issue #81)
+  Given un journal contenant des événements créés avant et après le seuil `now - retention`
+  When `purge_sessions(db, now, retention)`
+  Then `PurgeReport::session_events` vaut le nombre d'événements antérieurs au seuil, les plus récents restent ; un second appel immédiat rend zéro

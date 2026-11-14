@@ -31,7 +31,7 @@ Must:
     2. `RoleBinding::Host(grant)` → connecteur vers `grant.url` avec `SeaHostMcpAuth::new(host, Identity, caller.subject, context, role)` : le jeton est
       redemandé à **chaque** appel d'outil, jamais gardé ; l'hôte est requis (une liaison `Host` sans hôte → `Config`, échec fermé) ;
     3. `RoleBinding::Table(model)` → `build_auth(&model, secrets, interactive_token)` puis connecteur vers `model.url` avec les timeouts du serveur :
-      `static` et `none` sont montés ; `forward` sans jeton interactif → `Forbidden("forward auth needs an interactive session")` ;
+      `static` et `none` sont montés ; `forward` : le jeton est `forward_token(deps.host, caller, context, role, interactive_token)` (amendement du 2026-11-13, issue #82, ./mcp_access.sdd : jeton interactif prioritaire, sinon celui de l'hôte) ; `None` → `Forbidden("forward auth needs an interactive session")` ;
     4. `mcp_module(role, connecteur, env)` puis `GrantedModule::new(role, module)` ; un nom de rôle invalide fait échouer `mcp_module` en premier, l'erreur est celle du
       code actuel de ./interactive/assemble.rs (`Store`), conservée telle quelle (refactor sans changement de comportement ; `InvalidDefinition` reste le repli de `GrantedModule::new`).
     Le choix du connecteur selon la liaison est isolé dans un helper privé `connector_for(deps, caller, context, role, binding, token)` (hors `Exposes`), pour que la liaison `Host` sans hôte soit testable.
@@ -57,6 +57,9 @@ Tasks:
     Validé 2026-11-07 (validator PASS : les 7 Scenario ont leur test au Then réel, couture déplacée à l'identique, aucun jeton ni URL tracé ; batterie complète 38/38 conforme, `specdd lint` vert, rustdoc sans nouveau warning).
   [x] Garde de collision (arbitrage du 2026-11-07) : test d'abord depuis le Scenario « un rôle qui porte le nom d'un module déjà accordé est refusé », puis paramètre `taken` de `mount_role` et garde dans ./mcp_mount.rs ; les deux appelants (./interactive/assemble.rs, ../../workflow/subagent_step.rs) passent `taken` (ripple acté : ils sont amendés dans le même lot).
     Validé 2026-11-07 (validator PASS : garde avant `resolve_role`, hôte jamais consulté, aucun connecteur, deux appelants à jour ; batterie complète 39/39 conforme, `specdd lint` vert, rustdoc sans nouveau warning).
+  [ ] Issue #82 — le `Scenario` « un serveur forward sans jeton interactif est refusé » est amendé avec ./mcp_access.sdd (cas hôte qui fournit un jeton, cas hôte sans fournisseur) ; `mount_role` transmet à
+    `build_auth` l'hôte de `MountDeps` (champ déjà présent pour `resolve_mcp`, vérifier avant d'écrire) sans nouveau champ si possible. Tests d'abord (jeton de l'hôte atteint le seul serveur `forward`), puis
+    ./mcp_mount.rs. Après ./mcp_access.sdd.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; les `Scenario` existants de ./interactive/assemble.sdd restent verts sans modification ; la spec est
@@ -86,6 +89,7 @@ Scenario: un serveur forward sans jeton interactif est refusé
   Given un serveur en mode `forward` lié au rôle
   When `mount_role` est appelé avec `interactive_token = None`, puis avec un jeton
   Then `Forbidden("forward auth needs an interactive session")`, puis un module accordé dont le jeton n'atteint que ce serveur
+  And avec un hôte dont `forward_token` rend `Some(jeton)` et `interactive_token = None`, le module est accordé et le jeton de l'hôte n'atteint que ce serveur ; avec `Ok(None)` ou une panne de l'hôte, le refus ci-dessus (amendement 2026-11-13, issue #82)
 
 Scenario: un jeton hôte expiré fait échouer le montage
   Given un hôte dont le `Grant` est déjà expiré

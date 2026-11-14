@@ -29,20 +29,51 @@ Must:
     de `id`, avec l'horodatage courant ; `kind` vide ou `payload` dont la forme sérialisée dépasse `HOST_PAYLOAD_MAX = 65536` octets → `InvalidDefinition("host event invalid")`, rien n'est diffusé ;
     la crate **n'interprète pas** le `payload`. Sans abonné, l'événement est abandonné comme les autres. Pas d'audit.
   Les canaux de sessions sans abonné ni tour actif sont libérés (pas de fuite pour N sessions ouvertes un jour).
+  **Amendement du 2026-11-14 (issue #81, DSD `DEC-31`, arbitré : lots 2 et 3 livrés ; `EventHub` reste le type public, le « trait » est une **couture** `EventRelay` et un **journal** `SeaEventLog`, `[?]` ci-dessous)** :
+    Lot 2 — relais entre répliques. `pub trait EventRelay: Send + Sync` : `fn publish(&self, message: RelayMessage)` (**synchrone, sans attente, infaillible** : file bornée interne, débordement → abandon du message et `tracing::warn`,
+    comme `emit`) et `fn incoming(&self) -> tokio::sync::mpsc::Receiver<RelayMessage>` (le flux des messages **venus des autres répliques** ; appelé une fois par `with_relay`). `pub struct RelayMessage { pub origin: String, pub session: String,
+    pub body: RelayBody }` et `pub enum RelayBody { Event(SessionEvent), Cursor(u64), Missed, Cancel, Close }` — `Clone`, `Debug`, `Serialize`, `Deserialize` ; `origin` est l'identifiant de réplique (UUID v4 tiré à `EventHub::new`, jamais un
+    nom d'hôte). `pub fn with_relay(self, relay: Arc<dyn EventRelay>) -> Self` (constructeur, à appeler avant tout clone du hub, dans un runtime `tokio` — hors runtime : `tracing::warn` et le relais reste inactif, jamais de panique) lance une
+    tâche qui lit `incoming()` : un message dont l'`origin` est la réplique elle-même est **ignoré** (aucune boucle) ; `Event(e)` → diffusion locale à la session, **sans audit** (l'audit appartient à la réplique émettrice) et **sans re-relais** ;
+    `Missed` → les abonnés locaux de la session reçoivent `Lagged(1)` (`session = "*"` : **tous** les abonnés locaux, message que l'implémentation ./pg_relay.sdd pousse après la reconnexion de son écoute) ; `Cancel` et `Close` → remis au gestionnaire (ci-dessous) ; `Cursor` : voir le lot 3. Chaque `emit` et chaque `publish_host` **valides** publient en plus vers le relais, **après** la diffusion locale.
+    Un événement dont la forme sérialisée dépasse `RELAY_EVENT_MAX = 7000` octets (`NOTIFY` PostgreSQL : 8000 octets de charge) n'est pas relayé en entier : le relais reçoit `Missed` à sa place (`[?]` ci-dessous). Sans relais, **rien ne change**.
+    Commandes : `pub enum RelayCommand { Cancel(SessionId), Close(SessionId) }` ; `pub fn on_command(&self, handler: Arc<dyn Fn(RelayCommand) + Send + Sync>)` (appelé une fois par ./manager.sdd à sa création) ;
+    `pub fn request_cancel(&self, id: &SessionId)` et `pub fn request_close(&self, id: &SessionId)` publient `Cancel`/`Close` vers le relais (sans relais : sans effet).
+    Lot 3 — journal et reprise. `pub fn with_log(self, log: SeaEventLog, config: LogConfig) -> Self` (mêmes règles de constructeur et de runtime) où `pub struct LogConfig { pub flush_interval: Duration, pub batch_max: usize, pub queue_capacity: usize,
+    pub replay_max: usize }` (`Clone`, `Debug`, `Default` : 50 ms, 64, 4096, 1000 ; bornes : `flush_interval` [10 ms, 1 s], `batch_max` [1, 512], `queue_capacity` [64, 65 536], `replay_max` [1, 10 000], ramenés à la borne la plus proche).
+    Avec un journal, `emit` et `publish_host` **persistent puis diffusent** : l'événement converti entre dans une file bornée (`queue_capacity`, sans attente ; file pleine → l'événement est diffusé **sans curseur** et `tracing::warn`, jamais bloquant) ;
+    une tâche d'écriture unique vide la file par lots (au plus `batch_max` événements ou `flush_interval`, une transaction par lot et par session, ../store/events.sdd) puis **diffuse dans l'ordre d'entrée**, chaque événement portant son **curseur** (le `seq` rendu par le journal).
+    Une panne d'écriture (`LymailleError::Store`) → les événements du lot sont diffusés sans curseur et `tracing::warn` (le flux continue ; un client qui se reconnecte peut manquer ces événements). Avec journal **et** relais, le relais reçoit `Cursor(seq)` à la place de
+    l'événement (jamais plus de 7000 octets) : la réplique réceptrice lit le journal (`read_after`, depuis le dernier curseur qu'elle a diffusé pour cette session) et diffuse localement ce qui manque, **si** la session a un abonné local ; sans abonné, le message est ignoré.
+    Les événements de l'historique seul (`UserMessage`, `ToolCallSummary`) ne passent jamais par le hub. Les événements `Host` sont journalisés comme les autres (DSD `DEC-30` amendé : ils étaient « non rejoués », ils le deviennent) ; la route d'historique (../http/routes.sdd) n'en rend toujours aucun.
+    `pub async fn subscribe_from(&self, subject: &str, id: &SessionId, after: Option<u64>) -> Result<Subscription, LymailleError>` : enregistre le canal **avant** de lire (aucun trou entre rejeu et direct) ; sans journal, ou `after = None`, équivaut à `subscribe` ;
+    avec journal et `after = Some(n)` : relit `read_after(id, n, replay_max)` puis sert les événements relus, **puis** les directs dont le curseur est > au dernier relu (déduplication par curseur) ; si des événements ont été purgés (`n + 1` < plus ancien curseur conservé) ou si la relecture
+    est tronquée à `replay_max`, le premier `recv` rend `Err(Lagged(manquants))` (le nombre exact quand il est connu, sinon 1), puis le flux continue. Échec de lecture du journal → `Err(LymailleError::Store(..))`.
+    `Subscription::recv_cursor(&mut self) -> Result<(Option<u64>, SessionEvent), SubscriptionError>` rend en plus le curseur (`None` sans journal ou en cas de panne d'écriture) ; `recv` reste et ignore le curseur.
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
   Bloquer ou paniquer dans `emit` ; retenir des événements sans abonné ; mélanger les événements de deux sessions ; enrichir un événement ; interpréter le `payload` d'un événement `Host`.
+  (amendement #81) Relayer un message reçu du relais ; attendre le relais ou le journal dans `emit` ; relayer ou journaliser l'audit, un secret ou un jeton ; diffuser dans le désordre à une même session ; servir un événement dont le curseur est ≤ au dernier déjà servi à ce même abonné.
 
 Depends on:
-  ./event.rs, ../store/audit.rs, ../error.rs, @tokio, @serde_json, `lymaille::{EventSink, Event, SessionId}`
+  ./event.rs, ../store/audit.rs, ../error.rs, @tokio, @serde_json, `lymaille::{EventSink, Event, SessionId}`, ../store/events.rs (lot 3), @uuid, @serde
 
 Exposes:
-  `EventHub::{new, register, subscribe, close, publish_host}`, `HOST_PAYLOAD_MAX`, `Subscription::recv`, `impl EventSink`
+  `EventHub::{new, register, subscribe, close, publish_host, with_relay, on_command, request_cancel, request_close, with_log, subscribe_from}`, `HOST_PAYLOAD_MAX`, `RELAY_EVENT_MAX`, `Subscription::{recv, recv_cursor}`, `impl EventSink`, `EventRelay`, `RelayMessage`, `RelayBody`, `RelayCommand`, `LogConfig`
 
 Tasks:
   [x] Réalignement R8 (DSD `DEC-30`, 2026-11-03) : spec amendée (diffusion de `SessionEvent`, `publish_host`) avec la spec neuve ./event.sdd. Spec approuvée le 2026-11-04.
   [x] Tests d'abord (temps tokio), puis ./hub.rs. Après ./event.rs. Validé 2026-11-05 (validator PASS checkpoint 5 — 10 Scenario verrouillés).
+  [ ] Issue #81 lot 2 — relais entre répliques (DSD `DEC-31`). Spec d'abord (cet amendement, à faire approuver). Tests d'abord : un relais de test en mémoire (deux hubs, canal partagé : `EventRelay` de test dans le module `tests`) ; les `Scenario` de relais ci-dessous ; puis ./hub.rs
+    (trait, types, `with_relay`, tâche de réception, `on_command`, `request_*`). Après ./event.sdd (aucune dépendance de code sur le journal). Un seul fichier, une tâche.
+  [ ] Issue #81 lot 2 (suite) — l'implémentation PostgreSQL du relais est ./pg_relay.sdd (fichier distinct, tâches propres), après la tâche « relais » ci-dessus. Aucun code de ce fichier ne dépend de PostgreSQL.
+  [ ] Issue #81 lot 3 — journal, curseurs et reprise (DSD `DEC-31`). Spec d'abord. Tests d'abord (SQLite mémoire, journal réel de ../store/events.sdd, horloge tokio en pause) : les `Scenario` de journal ci-dessous ; puis ./hub.rs (`with_log`, `LogConfig`, tâche d'écriture,
+    `subscribe_from`, `recv_cursor`, branche `Cursor` du relais). Après la tâche « relais » ci-dessus, après ../store/events.sdd (journal) et ../migration.sdd (table).
+    Arbitré le 2026-11-14 : `EventHub` reste concret (il est `Arc<EventHub>` dans `AssembleDeps`, `ManagerDeps`, le routeur et ~40 tests) ; seules deux coutures optionnelles sont abstraites, le **relais** (`EventRelay`) et le **journal** (`SeaEventLog`), défaut = comportement actuel. Le trait `EventBus` est écarté.
+    Arbitré le 2026-11-14 : événement au-delà de `RELAY_EVENT_MAX` **sans** journal (lot 2 seul) : le relais envoie `Missed`, les abonnés des autres répliques voient `Lagged(1)` (aucun contenu perdu en silence, le client relit l'historique) ; le lot 3 supprime la limite (le relais ne transporte plus qu'un curseur). L'ordre des lots reste 1, 2, 3.
+    Arbitré le 2026-11-14 : écriture du journal par lots de `flush_interval` = 50 ms (ajustable par `LogConfig`), ≤ 20 transactions/s/session ; jusqu'à 50 ms de latence ajoutée à la diffusion partagée (pas à la diffusion locale).
+    Arbitré le 2026-11-14 : rétention du journal = **seuil unique de 30 jours** du `purge_sessions` (voir ../store/events.sdd) ; sans purge planifiée par l'application, la table croît sans borne. Risque de volumétrie assumé : une ligne par delta de texte.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./hub.rs.
@@ -96,3 +127,68 @@ Scenario: l'audit lit l'événement amont complet
   Given un hub avec un `AuditWriter`
   When un événement amont `Script` en erreur est émis
   Then `record` reçoit l'enregistrement complet (texte de script compris) alors que l'abonné reçoit le résumé sans texte
+
+Scenario: un événement émis sur une réplique arrive aux abonnés de l'autre (issue #81, lot 2)
+  Given deux hubs `A` et `B` reliés par un relais de test, un abonné de `s1` sur chacun
+  When `A` émet trois événements pour `s1`
+  Then les deux abonnés reçoivent les trois, dans l'ordre ; l'audit d'un `Script` en erreur n'est appelé que sur `A`
+
+Scenario: un événement relayé ne repart pas (issue #81, lot 2)
+  Given deux hubs reliés, `B` recevant un événement de `A`
+  When l'événement est diffusé sur `B`
+  Then le relais n'a reçu **aucun** nouveau message de `B` ; un message dont l'`origin` est celle du hub lui-même est ignoré
+
+Scenario: un événement trop gros devient Missed (issue #81, lot 2)
+  Given deux hubs reliés et un `publish_host` dont la charge sérialisée fait 20 000 octets
+  When il est publié sur `A`
+  Then l'abonné de `A` reçoit l'événement entier ; l'abonné de `B` reçoit `Err(Lagged(1))` puis le flux continue
+
+Scenario: le relais ne bloque jamais l'émission (issue #81, lot 2)
+  Given un relais de test dont `publish` n'est jamais consommé et dont la file est pleine
+  When 10 000 événements sont émis
+  Then `emit` ne bloque jamais, les abonnés locaux reçoivent tout (aux limites de leur capacité), et un `warn` est tracé sans contenu d'événement
+
+Scenario: close et cancel traversent le relais (issue #81, lot 2)
+  Given deux hubs reliés, un gestionnaire simulé sur `B` (`on_command`)
+  When `A` appelle `request_cancel(s1)` puis `request_close(s1)`
+  Then le gestionnaire de `B` reçoit `Cancel(s1)` puis `Close(s1)` ; `A` ne reçoit pas ses propres commandes
+
+Scenario: sans relais ni journal, le hub est inchangé (issue #81)
+  Given un hub sans `with_relay` ni `with_log`
+  When les `Scenario` « deux abonnés reçoivent la même suite », « un abonné lent est décroché sans bloquer » et « close » sont rejoués
+  Then ils sont verts à l'identique, et `recv_cursor` rend un curseur `None`
+
+Scenario: avec journal, chaque événement diffusé porte un curseur croissant (issue #81, lot 3)
+  Given un hub avec un journal SQLite mémoire et un abonné de `s1`
+  When trois événements sont émis, l'horloge tokio avancée de `flush_interval`
+  Then `recv_cursor` rend `(Some(1), e1)`, `(Some(2), e2)`, `(Some(3), e3)` ; le journal contient les trois lignes dans cet ordre
+
+Scenario: reprise après un curseur sans trou ni doublon (issue #81, lot 3)
+  Given un journal contenant les curseurs 1 à 5 de `s1`, puis `subscribe_from(s1, Some(3))` et un sixième événement émis
+  When l'abonné lit
+  Then il reçoit les curseurs 4, 5, 6, dans cet ordre, chacun une seule fois, même si le sixième est émis pendant la relecture
+
+Scenario: reprise après une purge (issue #81, lot 3)
+  Given un journal dont les curseurs 1 à 40 ont été purgés (il reste 41 à 50) et `subscribe_from(s1, Some(10))`
+  When l'abonné lit
+  Then le premier `recv` rend `Err(Lagged(30))`, puis les curseurs 41 à 50
+
+Scenario: reprise tronquée à replay_max (issue #81, lot 3)
+  Given `replay_max = 100`, un journal de 250 événements et `subscribe_from(s1, Some(0))`
+  When l'abonné lit
+  Then un `Lagged` d'abord (les plus anciens non servis), puis 100 événements consécutifs, puis le direct
+
+Scenario: une panne d'écriture n'interrompt pas le flux (issue #81, lot 3)
+  Given un journal dont `append` échoue, un abonné de `s1`
+  When deux événements sont émis
+  Then l'abonné les reçoit avec un curseur `None`, un `warn` est tracé, et l'émission n'a jamais bloqué
+
+Scenario: un curseur arrive par le relais et la réplique lit le journal (issue #81, lot 3)
+  Given deux hubs sur le **même** journal reliés par un relais de test, un abonné de `s1` sur `B`
+  When `A` émet deux événements pour `s1`
+  Then `B` reçoit `Cursor(1)` puis `Cursor(2)`, lit le journal et diffuse les deux événements avec leurs curseurs ; une session sans abonné sur `B` ne déclenche aucune lecture
+
+Scenario: un hôte journalisé est rejoué (issue #81, lot 3)
+  Given un `publish_host` suivi d'un `subscribe_from(s1, Some(0))`
+  When l'abonné lit
+  Then il reçoit l'événement `Host` tel que publié, avec son curseur

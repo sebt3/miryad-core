@@ -30,12 +30,19 @@ Must:
     3. `AgentDefinition::validate()` ; échec → `HookError::new("invalid agent definition: {e}")` ;
     4. `identity::classify(def.id())` doit rendre `Catalog` ; `Private` ou `ReservedPrefix` →
       `HookError::new("agent id must start with G_ (catalog)")` ;
-    5. poser `agent_id = Set(def.id())`, `kind`/`profile` dérivés de `def`, `created_at = Set(now)` si `NotSet`.
+    5. poser `agent_id = Set(def.id())`, `kind`/`profile` dérivés de `def` (`profile` = le nom du profil, ou la chaîne vide quand la définition n'en désigne pas — amendement du 2026-11-13, issue #75 : `lymaille` 0.3.0 rend le profil facultatif, la colonne reste `String` `NOT NULL` sans migration, la chaîne vide signifie « suit le profil par défaut de l'hôte », ../interactive/assemble.sdd), `created_at = Set(now)` si `NotSet`.
   `before_update(active, existing, principal)` : mêmes étapes 1 à 5 sur la nouvelle `definition`, plus : `def.id()` doit égaler
     `existing.agent_id` (renommer un agent change son identité) sinon `HookError::new("agent id cannot change")` ; `created_at`
     reste celui de `existing`.
   `before_delete` : défaut (aucun contrôle d'usage au lot 1).
   Les `HookError` n'ont **aucun code** (`code: None`) et ne citent jamais le prompt ni un secret.
+  **Amendement du 2026-11-13 (issue #73, colonnes de provenance)** : `Model` porte en plus `managed_by: Option<String>`, `managed_version: Option<String>`, `managed_digest: Option<String>` (colonnes nullables de
+    ../migration.sdd, lues par ../store/publish.sdd pour les lignes gérées par l'hôte). Elles sont lisibles par REST et MCP comme les autres colonnes mais **jamais écrites par le CRUD** : `before_create` les pose à `None`
+    quelle que soit la valeur reçue ; `before_update` les remplace par celles de `existing` (la ligne relue). Une modification du contenu par un administrateur laisse donc la provenance intacte et change l'empreinte
+    recalculable : la ligne cesse d'être « non modifiée » pour l'hôte. Colonnes de contenu de l'empreinte : `definition`.
+  **Amendement du 2026-11-13 (issues #79 et #72)** : `Model` dérive `utoipa::ToSchema` — `rest::openapi::resource_openapi::<Entity>()` compile pour cette ressource, colonnes JSON `definition` décrites en objet libre (`#[schema(value_type = Object)]`) tant que les types de `lymaille` n'ont pas de schéma ; `DateTimeUtc` en
+    `#[schema(value_type = String, format = DateTime)]` — et `ts_rs::TS` : colonne(s) `definition` typée(s) par `AgentDefinition` de `lymaille` (dérive `TS` amont, `lymaille` 0.3.0, issue sebt3/lymaille#10), les autres colonnes JSON de forme propre à la crate (tableaux de chaînes, `script_grants` `{ toolsets: string[]; modules: string[] }`) typées par `#[ts(type = "…")]` ; `DateTimeUtc` exporté `string` (`#[ts(type = "string")]`, RFC 3339 comme sérialisé), les entiers `number`, aucune feature d'implémentation de type tiers
+    de `ts-rs`. Les dérives n'ajoutent aucun attribut `serde` et ne changent **aucune** sérialisation. Le `Model` n'est exporté que par l'export TypeScript de ../interactive/event.sdd (aucun `#[ts(export)]`).
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
   Un identifiant hors `[A-Za-z0-9_]` est rejeté sous le message unique « agent id must start with G_ (catalog) » (arbitrage du développeur principal, 2026-11-05 : pas de message distinct).
@@ -57,6 +64,19 @@ Tasks:
 
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les hooks de ./agent.rs passent à la signature asynchrone (`db` ignoré : la validation reste pure, aucune lecture en base ajoutée par cette tâche) ; les tests `before_*` du fichier passent à `.await` avec une connexion simulée, assertions inchangées. Le contrôle à la sauvegarde que la connexion rend possible (DSD `hooks-async` `FR-3`) n'est **pas** dans cette tâche : il fera l'objet d'un amendement de spec distinct. Dépend de /src/resource.sdd (même amendement).
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
+  [ ] Issue #75 — profil facultatif, **option A arbitrée le 2026-11-13** (hypothèse de travail : `lymaille` 0.3.0, issue amont sebt3/lymaille#11, `AgentDefinition::profile` en `Option<String>`). Spec d'abord : la colonne
+    dérivée `profile` reste `String` NOT NULL **sans migration** ; les hooks posent `profile = ""` pour une définition sans profil (« suit le défaut de l'hôte ») et le nom sinon ; relire en source la forme de 0.3.0
+    avant de figer l'accesseur. `Scenario` : définition sans profil → ligne `profile = ""` ; avec profil → copie inchangée. Puis tests d'abord, puis ./agent.rs. Après la montée de dépendance (./../mod.sdd).
+    Bloquait : ./../host.sdd (`default_profile`), ./../interactive/assemble.sdd et ../../workflow/subagent_step.sdd (tâches #75).
+    Arbitré le 2026-11-14 : chaîne vide = « sans profil » (aucune évolution de schéma, portable) ; colonne nullable écartée (SQLite exige la recréation de la table).
+  [ ] Issue #73 — colonnes de provenance (`managed_by`, `managed_version`, `managed_digest`) sur `Model` et hooks : valeurs reçues ignorées à la création, valeurs de la ligne préservées à la mise à jour (2026-11-13, arbitré,
+    voir ./../store/mod.sdd). Spec d'abord, tests d'abord, puis ./agent.rs. Après ./../migration.sdd.
+  [ ] Issue #79 — `Model` dérive `utoipa::ToSchema` (sous `lymaille`, qui implique `db`) pour que `resource_openapi::<Entity>()` compile sur cette ressource. Spec d'abord : amender le `Must` (dérives du `Model`) et
+    ajouter le `Scenario` « `resource_openapi::<Entity>()` compile et décrit la ressource » ; colonnes JSON `definition` décrites en objet libre (`#[schema(value_type = Object)]`) tant que l'issue #72 n'a pas
+    typé les définitions ; `DateTimeUtc` selon la décision `[?]` de ./mod.sdd. Puis test d'abord (appel de `resource_openapi::<Entity>()`, présence du schéma du `Model` et des champs), puis ./agent.rs. Après ./mod.sdd.
+  [ ] Issue #72 — `Model` dérive `ts-rs::TS` avec la colonne JSON `definition` typée par `AgentDefinition` de `lymaille`. Dépend de la publication amont de `lymaille` 0.3.0 (hypothèse de travail du 2026-11-13) : `lymaille` 0.2.1 n'a ni feature ni dépendance `ts-rs` (voir ./../mod.sdd). Débloqué par la
+    version amont qui dérive `TS` sur ses définitions. Alors : spec (`Must`, `Scenario` « le `.ts` exporté type la colonne par `AgentDefinition` »), test de contrat (valeur construite par la crate → JSON identique
+    à la forme déclarée, JSON de la déclaration accepté par la crate), puis ./agent.rs.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./agent.rs.
@@ -85,3 +105,23 @@ Scenario: politiques du catalogue
   Given l'entité
   When on lit `read_policy`, `write_policy`, `owner_column`
   Then `Public`, `AdminOnly`, `None`
+
+Scenario: la provenance n'est pas écrite par le CRUD
+  Given un `ActiveModel` dont `managed_by`, `managed_version` et `managed_digest` sont posés par le corps de la requête, puis une ligne existante gérée par l'hôte
+  When `before_create`, puis `before_update` sur la ligne existante avec d'autres valeurs de provenance
+  Then à la création les trois colonnes valent `None` ; à la mise à jour elles valent celles de `existing`, le contenu modifié passe
+
+Scenario: resource_openapi compile et décrit la ressource
+  Given l'entité de ce fichier et `rest::openapi::resource_openapi::<Entity>()`
+  When le document est construit
+  Then l'appel compile, le schéma du `Model` porte toutes ses colonnes (`DateTime` en `string`/`date-time`), et les colonnes JSON sont des objets libres
+
+Scenario: l'export TypeScript du Model correspond à la sérialisation
+  Given un `Model` construit avec toutes ses colonnes, sérialisé en JSON, et l'export TypeScript de ../interactive/event.sdd écrit dans un répertoire temporaire
+  When la déclaration `agent.ts` est lue
+  Then chaque clé du JSON est une propriété de la déclaration avec le type attendu (`string` pour les dates, `number` pour les entiers), sans propriété en plus ; la sérialisation du `Model` n'a pas changé
+
+Scenario: une définition sans profil donne une colonne profile vide
+  Given une définition `G_triage` de nature `sub` sans profil explicite, avec une colonne `profile` fausse dans l'`ActiveModel`
+  When `before_create`
+  Then `Ok`, `agent_id = "G_triage"` et `profile = ""` ; une définition avec profil `qwen` donne `profile = "qwen"` (inchangé) ; la définition JSON n'est pas modifiée
