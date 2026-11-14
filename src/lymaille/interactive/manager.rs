@@ -966,7 +966,8 @@ mod tests {
 
     /// Définition d'agent de test, sans toolset (le tour ne monte que `resources`).
     fn agent(id: &str, kind: AgentKind) -> AgentDefinition {
-        AgentDefinition::new(id.to_owned(), kind, "le prompt".to_owned(), "qwen".to_owned())
+        AgentDefinition::new(id.to_owned(), kind, "le prompt".to_owned())
+            .with_profile("qwen".to_owned())
             .with_modules(vec!["resources".to_owned()])
     }
 
@@ -1679,13 +1680,9 @@ mod tests {
         drop(sub);
 
         let alice = compte(&db, "alice", false).await;
-        let modifie = AgentDefinition::new(
-            "dev".to_owned(),
-            AgentKind::Work,
-            "un prompt revise".to_owned(),
-            "qwen".to_owned(),
-        )
-        .with_modules(vec!["resources".to_owned()]);
+        let modifie = AgentDefinition::new("dev".to_owned(), AgentKind::Work, "un prompt revise".to_owned())
+            .with_profile("qwen".to_owned())
+            .with_modules(vec!["resources".to_owned()]);
         put_agent(&db, &alice, &modifie).await;
 
         let second = Arc::new(ScriptedProvider::new(Vec::new()));

@@ -221,7 +221,10 @@ impl AgentStore for SeaAgentStore {
                     vec![
                         Expr::val(definition.id()),
                         Expr::val(nature),
-                        Expr::val(definition.profile()),
+                        // Profil sans valeur : chaîne vide, conversion provisoire
+                        // (`src/lymaille/mod.sdd`, tâche montée 0.3.0 du 2026-11-14) ; la
+                        // sémantique « sans profil » est portée par la tâche #75.
+                        Expr::val(definition.profile().unwrap_or_default()),
                         Expr::val(value),
                         now,
                     ],
@@ -246,7 +249,7 @@ impl AgentStore for SeaAgentStore {
                         Expr::val(caller.user_id),
                         Expr::val(definition.id()),
                         Expr::val(nature),
-                        Expr::val(definition.profile()),
+                        Expr::val(definition.profile().unwrap_or_default()),
                         Expr::val(value),
                         now,
                     ],
@@ -393,23 +396,15 @@ mod tests {
     }
 
     fn agent(id: &str) -> AgentDefinition {
-        AgentDefinition::new(
-            id.to_string(),
-            AgentKind::Work,
-            "prompt de test".to_string(),
-            "qwen".to_string(),
-        )
+        AgentDefinition::new(id.to_string(), AgentKind::Work, "prompt de test".to_string())
+            .with_profile("qwen".to_string())
     }
 
     /// Définition que `AgentDefinition::validate` refuse : un sous-agent délégable.
     fn invalid_agent() -> AgentDefinition {
-        AgentDefinition::new(
-            "reviewer".to_string(),
-            AgentKind::Sub,
-            "relire".to_string(),
-            "qwen".to_string(),
-        )
-        .with_delegable(vec!["other".to_string()])
+        AgentDefinition::new("reviewer".to_string(), AgentKind::Sub, "relire".to_string())
+            .with_profile("qwen".to_string())
+            .with_delegable(vec!["other".to_string()])
     }
 
     fn profile(name: &str) -> ModelProfile {

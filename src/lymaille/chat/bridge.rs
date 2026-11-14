@@ -1107,7 +1107,8 @@ mod tests {
     }
 
     fn agent(id: &str, kind: AgentKind) -> AgentDefinition {
-        AgentDefinition::new(id.to_owned(), kind, "le prompt".to_owned(), "qwen".to_owned())
+        AgentDefinition::new(id.to_owned(), kind, "le prompt".to_owned())
+            .with_profile("qwen".to_owned())
             .with_modules(vec!["resources".to_owned()])
     }
 

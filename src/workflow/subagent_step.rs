@@ -470,7 +470,10 @@ impl SubagentStep {
             .map_err(|error| from_lymaille(&error))?;
         let profile = stores
             .profiles()
-            .resolve_profile(definition.profile(), None)
+            // Profil sans valeur : nom vide résolu tel quel, conversion provisoire
+            // (`src/lymaille/mod.sdd`, tâche montée 0.3.0 du 2026-11-14) ; la sémantique
+            // « sans profil » est portée par la tâche #75.
+            .resolve_profile(definition.profile().unwrap_or_default(), None)
             .await
             .map_err(from_agents)?;
         let provider: Provider = stores
@@ -1146,14 +1149,10 @@ mod tests {
 
     /// Définition de sous-agent du catalogue, avec schéma de sortie et modules accordés.
     fn sub_agent(id: &str, prompt: &str, modules: Vec<String>) -> AgentDefinition {
-        AgentDefinition::new(
-            id.to_owned(),
-            AgentKind::Sub,
-            prompt.to_owned(),
-            "qwen".to_owned(),
-        )
-        .with_output_schema(verdict_schema())
-        .with_modules(modules)
+        AgentDefinition::new(id.to_owned(), AgentKind::Sub, prompt.to_owned())
+            .with_profile("qwen".to_owned())
+            .with_output_schema(verdict_schema())
+            .with_modules(modules)
     }
 
     /// Écrit un agent au catalogue par `root`.
@@ -1400,18 +1399,14 @@ mod tests {
                 "G_work".to_owned(),
                 AgentKind::Work,
                 "agent de travail".to_owned(),
-                "qwen".to_owned(),
-            ),
+            )
+            .with_profile("qwen".to_owned()),
         )
         .await;
         put_catalog_agent(
             &db,
-            &AgentDefinition::new(
-                "G_noschema".to_owned(),
-                AgentKind::Sub,
-                "sans schéma".to_owned(),
-                "qwen".to_owned(),
-            ),
+            &AgentDefinition::new("G_noschema".to_owned(), AgentKind::Sub, "sans schéma".to_owned())
+                .with_profile("qwen".to_owned()),
         )
         .await;
         let provider = Arc::new(ScriptedProvider::new(Vec::new()));

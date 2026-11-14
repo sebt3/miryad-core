@@ -453,7 +453,10 @@ async fn resolve_inference(
     check_grants(caller, definition.modules(), &reserved)?;
     let profile = stores
         .profiles()
-        .resolve_profile(definition.profile(), None)
+        // Profil sans valeur : nom vide résolu tel quel, conversion provisoire
+        // (`src/lymaille/mod.sdd`, tâche montée 0.3.0 du 2026-11-14) ; la sémantique
+        // « sans profil » est portée par la tâche #75.
+        .resolve_profile(definition.profile().unwrap_or_default(), None)
         .await
         .map_err(from_agents)?;
     let provider: Provider = stores
@@ -904,7 +907,8 @@ mod tests {
 
     /// Définition d'agent de test (nature `Work` par défaut des scénarios).
     fn agent(id: &str, kind: AgentKind, toolsets: Vec<String>) -> AgentDefinition {
-        AgentDefinition::new(id.to_owned(), kind, "le prompt".to_owned(), "qwen".to_owned())
+        AgentDefinition::new(id.to_owned(), kind, "le prompt".to_owned())
+            .with_profile("qwen".to_owned())
             .with_modules(vec!["resources".to_owned()])
             .with_toolsets(toolsets)
     }

@@ -302,12 +302,8 @@ mod tests {
     }
 
     fn agent(id: &str) -> AgentDefinition {
-        AgentDefinition::new(
-            id.to_string(),
-            AgentKind::Work,
-            "prompt de test".to_string(),
-            "qwen".to_string(),
-        )
+        AgentDefinition::new(id.to_string(), AgentKind::Work, "prompt de test".to_string())
+            .with_profile("qwen".to_string())
     }
 
     /// Les huit accesseurs rendent bien les huit types de store (`Exposes`), et l'amendement lot 2

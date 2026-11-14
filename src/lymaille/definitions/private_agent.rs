@@ -158,7 +158,9 @@ impl Entity {
         };
         active.agent_id = ActiveValue::Set(definition.id().to_owned());
         active.kind = ActiveValue::Set(nature);
-        active.profile = ActiveValue::Set(definition.profile().to_owned());
+        // Profil sans valeur : chaîne vide, conversion provisoire (`src/lymaille/mod.sdd`,
+        // tâche montée 0.3.0 du 2026-11-14) ; la sémantique « sans profil » est #75.
+        active.profile = ActiveValue::Set(definition.profile().unwrap_or_default().to_owned());
         match existing {
             Some(ligne) => active.created_at = ActiveValue::Set(ligne.created_at),
             None if matches!(active.created_at, ActiveValue::NotSet) => {
@@ -290,12 +292,9 @@ mod tests {
     /// `AgentDefinition` sérialisée — la colonne `definition` est construite par la bibliothèque
     /// elle-même, jamais à la main.
     fn definition(id: &str, kind: AgentKind, prompt: &str, profile: &str) -> serde_json::Value {
-        serde_json::to_value(AgentDefinition::new(
-            id.to_string(),
-            kind,
-            prompt.to_string(),
-            profile.to_string(),
-        ))
+        serde_json::to_value(
+            AgentDefinition::new(id.to_string(), kind, prompt.to_string()).with_profile(profile.to_string()),
+        )
         .expect("la fixture se sérialise")
     }
 
@@ -360,13 +359,9 @@ mod tests {
     /// la bibliothèque elle-même, comme la fixture [`definition`].
     fn definition_avec_modules(id: &str, prompt: &str, profile: &str, modules: &[&str]) -> serde_json::Value {
         serde_json::to_value(
-            AgentDefinition::new(
-                id.to_string(),
-                AgentKind::Sub,
-                prompt.to_string(),
-                profile.to_string(),
-            )
-            .with_modules(modules.iter().map(|module| (*module).to_string()).collect()),
+            AgentDefinition::new(id.to_string(), AgentKind::Sub, prompt.to_string())
+                .with_profile(profile.to_string())
+                .with_modules(modules.iter().map(|module| (*module).to_string()).collect()),
         )
         .expect("la fixture se sérialise")
     }
@@ -575,13 +570,9 @@ mod tests {
     #[tokio::test]
     async fn before_create_refuse_une_definition_invalide_sans_citer_le_prompt() {
         let prompt = "prompt-a-ne-jamais-citer-9f3c";
-        let refusee = AgentDefinition::new(
-            "triage".to_string(),
-            AgentKind::Sub,
-            prompt.to_string(),
-            "qwen".to_string(),
-        )
-        .with_delegable(vec!["sous".to_string()]);
+        let refusee = AgentDefinition::new("triage".to_string(), AgentKind::Sub, prompt.to_string())
+            .with_profile("qwen".to_string())
+            .with_delegable(vec!["sous".to_string()]);
         // `validate` refuse : un sous-agent ne peut déclarer de sous-agent délégable.
         assert!(
             refusee.validate().is_err(),

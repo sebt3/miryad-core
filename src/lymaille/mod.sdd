@@ -167,7 +167,7 @@ Tasks:
     amendement de `/tooling.sdd` si le graphe change (`cargo tree … -i ts-rs` : toujours vide sans `lymaille`). Tant que ce n'est pas publié : aucun miroir côté crate (le contournement de vanyline est le leur).
     Arbitré le 2026-11-13 : fonction d'export : étendre `interactive::event::export_typescript(dir)` (recommandé : « par la même fonction », un seul appel côté hôte, un seul répertoire) plutôt qu'une seconde fonction ; elle écrit
     alors les événements, les définitions, les lignes de ressource et les corps de la surface de session (voir ./interactive/event.sdd, ./http/routes.sdd).
-  [ ] Montée de dépendance à `lymaille` 0.3.0 (publiée ; relue en source le 2026-11-14 : `ts-rs` #10, profil facultatif #11, `TurnLock` #12). À faire **en premier**, avant #72, #73, #75 et #81 ; rien d'autre dans ce lot :
+  [x] Montée de dépendance à `lymaille` 0.3.0 (publiée ; relue en source le 2026-11-14 : `ts-rs` #10, profil facultatif #11, `TurnLock` #12). À faire **en premier**, avant #72, #73, #75 et #81 ; rien d'autre dans ce lot :
     1. `/Cargo.toml` : `lymaille = { version = "0.3", optional = true, features = ["ts-rs"] }` ; `/Cargo.lock` mis à jour ; `/tooling.sdd` inchangé (`ts-rs` reste absent du graphe sans `lymaille`).
     2. Changements d'API d'`AgentDefinition` : `new(id, kind, prompt)` (3 arguments, profil `None`) + `with_profile(String)` ; `profile()` rend `Option<&str>`. Sites à corriger, **mécaniquement** : les constructions
       `AgentDefinition::new(.., profil)` du code et des tests (`store/mod.rs`, `store/catalog.rs`, `definitions/agent.rs`, `definitions/private_agent.rs`, `interactive/assemble.rs`, `interactive/manager.rs`, `chat/bridge.rs`,
@@ -178,6 +178,12 @@ Tasks:
       et ./error.sdd (même date).
     4. `TurnGate::try_begin` reste une méthode inhérente synchrone ; `TurnPermit` n'a plus de champ `active` (construction par `TurnPermit::new`, hors périmètre ici).
     5. Batterie complète verte (`/AGENTS.md`), `cargo tree` inchangés.
+    Validé 2026-11-14 (validator PASS) : delta de lock minimal (`lymaille` 0.2.1→0.3.0, `ts-rs`+`serde_json` déclarés), sites corrigés exactement dans la liste, 16 combinaisons tests et clippy vertes, fmt vert,
+    contrôles `cargo tree` de `/tooling.sdd` conformes ; `lymaille-pg` omis de la batterie — feature pas encore déclarée (tâche #81 lot 2).
+    [?] (validator) : `store/catalog.rs:252` — second `unwrap_or_default()` de la branche update sans commentaire adjacent (la citation de la spec est posée sur le premier site du même `impl`). Compléter le
+    commentaire ou acter qu'une citation par bloc `impl` suffit.
+    [?] (validator) : `lymaille` 0.3.0 émet 12 warnings macro « ts-rs failed to parse this attribute » (`alias = "main"`/`"project"`) à la compilation de ses derives `TS` sous la feature `ts-rs` — les alias de
+    lecture amont ne seraient pas rendus dans les `.ts` exportés. Sans effet ici (aucun export avant #72) ; à prendre en compte dans la tâche #72 de cette spec ou dans ./interactive/event.sdd.
 
 Done when:
   Les `Scenario` sont verts ; `cargo build --no-default-features --features lymaille` et `--all-features` compilent sans

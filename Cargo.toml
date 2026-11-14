@@ -86,7 +86,9 @@ matrix-sdk-store-encryption = { version = "0.18", optional = true }
 zeroize = { version = "1", optional = true }
 # Hôte de la bibliothèque `lymaille` (src/lymaille/mod.sdd) : features par défaut conservées
 # (`mcp-http`, `rig`) ; `fs` et `shell` ne sont jamais activés (relais de `vynil-core`, DSD `OI-1`).
-lymaille = { version = "0.2.1", optional = true }
+# La feature amont `ts-rs` (montée 0.3.0, mod.sdd amendement 2026-11-13) dérive `TS` sur les types de
+# définition ; elle ne tire `ts-rs` dans le graphe que sous notre feature `lymaille`.
+lymaille = { version = "0.3", optional = true, features = ["ts-rs"] }
 # Provider `ring` du provider TLS de src/lymaille/tls.sdd (DSD `DEC-4`) ; `rustls` est déjà dans
 # le graphe via `reqwest`, aucune dépendance de fond nouvelle.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }

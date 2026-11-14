@@ -3179,9 +3179,9 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lymaille"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be24f31a651396ce6a9f99103c522da6e3bb92277394394e357d209aced53ae8"
+checksum = "ca502c9f54bad5215a86ff283630e9b4f07c6667052cb9960993abb341728d25"
 dependencies = [
  "base64 0.23.1",
  "handlebars",
@@ -3195,6 +3195,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "ts-rs",
  "vynil-core",
  "yaml_serde",
 ]
@@ -6947,6 +6948,7 @@ version = "12.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8"
 dependencies = [
+ "serde_json",
  "thiserror 2.0.21",
  "ts-rs-macros",
 ]
