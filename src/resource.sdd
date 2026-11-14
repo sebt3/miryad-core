@@ -183,7 +183,7 @@ Exposes:
     `fn owner_column() -> Option<<Self as EntityTrait>::Column>`
     (`None` = entité sans notion de propriétaire, référentiel partagé).
     Méthodes avec défaut : `fn filter_column()` → `None` (pas de filtre de liste),
-    `fn label_column()` → `None`, puis les trois hooks asynchrones (amendement 2026-11-11), chacun générique sur `C: ConnectionTrait`
+    `fn label_column()` → `None`, `fn filterable_columns() -> Vec<<Self as EntityTrait>::Column>` → vide et `fn sortable_columns() -> Vec<<Self as EntityTrait>::Column>` → vide (amendement du 2026-11-13, issue #78 : les colonnes que la liste REST/MCP accepte en filtre d'égalité exacte, par nom, et en tri ; `filter_column()` est conservé et compte comme une colonne filtrable de plus quand il est `Some` ; deux listes distinctes, arbitré), puis les trois hooks asynchrones (amendement 2026-11-11), chacun générique sur `C: ConnectionTrait`
     et rendant `impl Future<Output = …> + Send` : `fn before_create(db, active, principal)` → identité (`Ok` de
     l'ActiveModel inchangé, connexion et principal ignorés via `let _ =`), `fn before_update(db, active, existing,
     principal)` → identité (`Ok` de l'ActiveModel inchangé, connexion, `existing` et `principal` ignorés),
@@ -336,6 +336,10 @@ Tasks:
     existants des hooks à `.await`. Réécrire les doc-comments des trois hooks (asynchrone, connexion, principal non rafraîchi, pas d'effet externe). Dépend de
     ./rest/core.sdd et ./mcp/handler.sdd (appels `.await` et séquence inchangée) et de chaque entité qui implémente un hook (`workflow::definition`, entités `lymaille`,
     fixtures de tests) : réécriture totale, une entité par tâche.
+  [ ] Issue #78 — colonnes filtrables et triables déclarées par la ressource. Spec d'abord : méthodes à défaut `fn filterable_columns() -> Vec<<Self as EntityTrait>::Column>` (défaut vide) et
+    `fn sortable_columns() -> Vec<…>` (défaut vide) ; `filter_column()` **conservé** (rétrocompatibilité de `?filter=`) et considéré comme une colonne filtrable de plus quand il est `Some` ; doc de la trait
+    (REST et MCP lisent les mêmes déclarations). `Scenario` : défauts vides ; entité de test à trois colonnes filtrables. Tests d'abord dans ../tests/resource.rs (propriétaire unique de ce fichier), puis ./resource.rs.
+    Arbitré le 2026-11-13 : deux listes (recommandé : on peut vouloir filtrer sans trier et inversement) plutôt qu'une seule `listable_columns`.
 
 Done when:
   [Amendement 2026-11-11 : quatre `Scenario` s'ajoutent, soit vingt-huit au total, chacun vérifié par au moins un test nommé distinct.]
@@ -553,3 +557,13 @@ Scenario: le futur d'un hook est Send
   Given une entité de test qui surdéclare les trois hooks avec des attentes réelles
   When chaque futur de hook est passé à une fonction qui exige `Send` (équivalent de ce qu'impose un handler `axum`)
   Then le test compile — la preuve est la compilation, pas une assertion à l'exécution
+
+Scenario: filterable_columns et sortable_columns par défaut vides
+  Given l'entité `recipe` de ../tests/resource.rs, qui ne surdéclare ni l'une ni l'autre
+  When @MiryadResource::filterable_columns et @MiryadResource::sortable_columns sont appelées
+  Then deux `Vec` vides ; @MiryadResource::filter_column garde son défaut `None`
+
+Scenario: une entité déclare trois colonnes filtrables et deux triables
+  Given une entité de test qui surdéclare `filterable_columns` avec `project_id`, `kind`, `scope` et `sortable_columns` avec `created_at`, `kind`
+  When les deux méthodes sont appelées
+  Then les colonnes déclarées, dans l'ordre déclaré ; la liste REST et la liste MCP (./rest/core.sdd) lisent ces mêmes déclarations

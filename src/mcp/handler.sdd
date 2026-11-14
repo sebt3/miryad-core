@@ -85,7 +85,8 @@ Must:
     `_update`, `_delete` pour une même entité, descriptions littérales `List {name}, paginated`,
     `Get a single {name} by id`, `Create a new {name}`, `Update an existing {name} by id` et
     `Delete a {name} by id`, et @inputSchema exacts : page/per_page `integer` et filter `string`
-    optionnels pour `_list` ; `id` `integer` requis pour `_get` et `_delete` (le même @Value de
+    optionnels pour `_list`, plus (amendement du 2026-11-13, issue #78) une propriété par colonne de @MiryadResource::filterable_columns (type JSON dérivé de la colonne : `integer`, `boolean` ou `string`), `sort` (`string`, `enum` des
+    colonnes triables, présent seulement s'il y en a) et `order` (`enum` `asc`, `desc`) ; `filter` n'est déclaré que si @MiryadResource::filter_column est @Some (inchangé) ; aucun `additionalProperties: false` (tolérance conservée) ; `id` `integer` requis pour `_get` et `_delete` (le même @Value de
     schéma, sérialisé deux fois) et une copie littérale identique pour `_update` ; `{"type":"object"}`
     sans propriétés pour `_create` ; le fait comportemental que `id` est ignoré à la création
     (mettre `0`) et que `id` du corps est ignoré à la mise à jour au profit de l'`id` d'appel est
@@ -316,6 +317,8 @@ Tasks:
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
     la fixture de test (@MiryadResource::before_create à l'ancienne signature, ~ligne 348) est portée au nouveau trait ; convertir le scénario ci-dessous en test nommé
     `hook_qui_lit_la_base_refuse_en_32000`. Dépend de /src/resource.sdd et /src/rest/core.sdd (même amendement).
+  [ ] Issue #78 — `inputSchema` de l'outil `{name}_list` : propriétés `string`/typées pour chaque colonne filtrable déclarée, `sort` (énuméré sur les colonnes triables), `order` (`asc`|`desc`) ; `filter` seulement quand
+    `filter_column` est `Some` (inchangé) ; `additionalProperties: false`. Spec d'abord (`Must` et `Scenario` sur le schéma exact par entité de test), puis tests, puis ./handler.rs. Après ./registry.sdd.
 
 Done when:
   Chaque `Scenario` a au moins un test nommé distinct et vert, joués sur
@@ -509,3 +512,8 @@ Scenario: appel interdit trace un warn sans arguments
   When un `tools/call` `recipes_delete` avec `arguments` `{"id": 1}` arrive
   Then `error.code` vaut `-32001` et un événement `warn` est capturé
   And aucun événement ne contient la valeur des `arguments` ni un secret (arbitré 2026-09-29)
+
+Scenario: l'inputSchema de _list décrit les colonnes filtrables et triables
+  Given une entité de test qui déclare `project_id` (entier), `kind` (texte) filtrables et `created_at` triable
+  When `tools/list` est appelé
+  Then le schéma de `_list` contient `page`, `per_page`, `project_id` (`integer`), `kind` (`string`), `sort` (`enum` `["created_at"]`) et `order` ; une entité sans déclaration garde le schéma d'avant

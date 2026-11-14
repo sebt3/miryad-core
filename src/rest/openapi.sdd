@@ -71,6 +71,9 @@ Must:
     `integer` nues) — mêmes clés que les cinq champs sérialisés de @PagedResult de ../query.rs : les
     deux fichiers ne sont reliés par aucun lien de compilation, seule l'identité des clés tient le
     contrat.
+  Amendement du 2026-11-13 (issues #77 et #78) : sur l'opération `GET` de collection, un query parameter non requis par colonne de @MiryadResource::filterable_columns (type OpenAPI dérivé de la colonne), plus `sort` (`string`, `enum` des
+    colonnes triables) et `order` (`enum` `asc`, `desc`) quand la ressource déclare des colonnes triables, et une réponse `400` (`MRD-REST-008`) ; `filter` reste déclaré selon @MiryadResource::filter_column ; sur `POST` et `PUT`, une réponse
+    `409` (`MRD-REST-007`) ; sur `GET`/`PUT`/`DELETE` d'item d'une ressource dont la lecture est @AccessPolicy::OwnerOnly, le `404` couvre aussi la ligne d'autrui (description, pas de réponse `403` propre à ce cas).
   Déclarer sur l'opération `GET` de collection deux query parameters non requis — `page` et
     `per_page` (`integer`) — plus `filter` (`string`) **uniquement** quand @MiryadResource::filter_column
     est @Some (arbitré par Sébastien le 2026-09-29) (l'entité sans colonne de filtre ne déclare pas `filter`, que ./core.rs
@@ -326,6 +329,9 @@ Tasks:
   [x] Amendement 2026-10-19 (`db`) : dans `./openapi.rs`, gater sous `db` @OpenApiEntity, @resource_openapi et les items qu'ils seuls utilisent
     (laisser compiler sans avertissement `dead_code` : le gating suit l'usage) ; gater sous `db` les tests qui utilisent
     @RestEntity ou une entité `sea_orm` ; ajouter le test `openapi_router_serves_handwritten_document_without_db`.
+  [ ] Issues #77 et #78 — le document décrit les nouveautés de la liste et des écritures. Spec d'abord : (#77) les réponses `409` de `POST` et `PUT` (corps `MRD-REST-007`) et la note « `404` pour la ligne d'autrui
+    des ressources `OwnerOnly` » ; (#78) un query parameter par colonne filtrable déclarée et les paramètres `sort` et `order` (énumérés) quand la ressource déclare des colonnes triables, `filter` conservé
+    tant que `filter_column` existe. `Scenario` par ressource de test (zéro, une, trois colonnes filtrables). Puis tests d'abord, puis ./openapi.rs. Après ./core.sdd et ./../resource.sdd.
 
 Done when:
   La spec porte exactement treize `Scenario`, chacun vérifié par son test nommé distinct dans le
@@ -462,3 +468,8 @@ Scenario: un document OpenAPI écrit à la main est servi sans db (2026-10-19)
   When @openapi_router::<S>(spec) est monté et `GET /api/openapi.json` est appelé
   Then la réponse est `200` avec le JSON de ce document
   And le test ne dépend d'aucun type `sea_orm`
+
+Scenario: le document décrit critères, tri et conflit
+  Given une entité qui déclare deux colonnes filtrables et une triable, à lecture `OwnerOnly`, puis une entité sans déclaration
+  When @resource_openapi est appelée pour chacune
+  Then la première porte les query parameters des deux colonnes, `sort`, `order`, la réponse `400` de la liste, la réponse `409` de `POST` et `PUT` et le `404` décrit pour l'item ; la seconde garde exactement son document d'avant

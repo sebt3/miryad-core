@@ -1,10 +1,10 @@
 Spec: error — taxonomie @RestError et rendu REST
 
 Purpose:
-  Centraliser les échecs de la surface REST dans le seul type public @RestError à sept variantes
+  Centraliser les échecs de la surface REST dans le seul type public @RestError à neuf variantes
     (sixième @RestError::InvalidInput arbitrée 2026-09-29, posée 2026-09-30 vague B3a ; septième
-    @RestError::Conflict arbitrée 2026-10-03),
-    chacune portant soit un code unique `MRD-REST-NNN` (`001` à `006`) dans sa @Display, soit une
+    @RestError::Conflict arbitrée 2026-10-03, huitième @RestError::UniqueViolation arbitrée 2026-11-13, neuvième @RestError::InvalidQuery arbitrée 2026-11-13),
+    chacune portant soit un code unique `MRD-REST-NNN` (`001` à `008`) dans sa @Display, soit une
     @HookError — l'erreur applicative du consommateur, jamais codée `MRD-*` — et décider leur rendu
     @IntoResponse pour REST : statut exact par variante, corps `text/plain` porteur du code pour
     `001` à `004` et `006`, corps JSON à deux clés sans `MRD-*` pour @RestError::Application. Le fichier ne
@@ -78,6 +78,13 @@ Must:
       (@StatusCode::CONFLICT) → corps texte exactement `MRD-REST-006: conflict`, sans détail →
       @CONTENT_TYPE `text/plain; charset=utf-8` ; émetteur : @to_rest_error de ./tokens.rs sur
       @AuthError::TokenHashConflict (parité avec le `409` de /src/auth/error.rs)
+    @RestError::UniqueViolation, huitième variante ajoutée le 2026-11-13 (issue #77 ; variante unitaire : la violation d'une contrainte d'unicité est une décision de
+      l'appelant, pas une panne) → `MRD-REST-007` → `409` (@StatusCode::CONFLICT) → corps texte exactement `MRD-REST-007: unique constraint violated`, sans nom de contrainte,
+      de colonne ni valeur → @CONTENT_TYPE `text/plain; charset=utf-8` ; émetteur : @rest::core::create et @rest::core::update sur @sea_orm::SqlErr::UniqueConstraintViolation
+      (./core.sdd) ; distincte de @RestError::Conflict (`006`, conflit d'empreinte de jeton)
+    @RestError::InvalidQuery, neuvième variante ajoutée le 2026-11-13 (issue #78 ; tuple d'un @String de la crate, jamais une valeur de ligne) → `MRD-REST-008` → `400` (@StatusCode::BAD_REQUEST) → corps texte
+      exactement `MRD-REST-008: invalid query: ` suivi du message → @CONTENT_TYPE `text/plain; charset=utf-8` ; émetteur : @rest::core::list (critère sur une colonne non déclarée filtrable, valeur non convertible, tri
+      non déclaré, `order` invalide, plafond de critères) ; distincte de @RestError::InvalidInput (`005`, `422`, entrée de corps)
   Le code `MRD-REST-NNN` est dans le corps en texte brut pour `404`/`403`/`500` ; le corps `422` ne
     contient jamais la sous-chaîne `MRD-` — la séparation contrat transverse @HookError / taxonomie
     `MRD-*` passe par la variante, pas par un préfixe commun
@@ -173,7 +180,7 @@ Depends on:
   /src/resource.rs — @HookError, type public du contrat consommateur importé ici
 
 Exposes:
-  @RestError — enum `pub` à sept variantes, derives @Debug et @thiserror::Error uniquement, sans
+  @RestError — enum `pub` à neuf variantes, derives @Debug et @thiserror::Error uniquement, sans
     @Clone ni @PartialEq ; accessible seulement par @crate::rest::error::RestError — ./mod.rs ne le
     ré-exporte pas
     @RestError::NotFound — variante unitaire, code `MRD-REST-001`
@@ -181,6 +188,8 @@ Exposes:
     @RestError::Database — variante tuple d'un @sea_orm::DbErr sous `#[from]`, code `MRD-REST-003`
     @RestError::Application — variante tuple d'un @HookError, sans `#[from]`, sans code `MRD-*`
     @RestError::Conflict — variante unitaire, code `MRD-REST-006`
+    @RestError::UniqueViolation — variante unitaire, code `MRD-REST-007`
+    @RestError::InvalidQuery — variante tuple d'un @String, code `MRD-REST-008`
     @RestError::Internal — variante tuple d'un @String, code `MRD-REST-004` ; sa doc-comment
       n'assume atteignable qu'une variante d'un autre sous-système réellement joignable, et proscrit
       le @From générique
@@ -208,7 +217,7 @@ Returns:
     chemin d'échec ni repli
   @From<@sea_orm::DbErr> : @RestError::Database conservant l'erreur d'origine accessible par
     @Error::source
-  @Display : @String exactement celui de la table `Must` pour les cinq variantes codées, message
+  @Display : @String exactement celui de la table `Must` pour les sept variantes codées, message
     nu du hook pour @RestError::Application
 
 Raises:
@@ -219,6 +228,8 @@ Raises:
     répond @ListAccess::Forbidden ou @can_read/@can_create/@can_write répondent @false, sur
     `GET /api/v1/users` pour un non-admin (./admin.rs), et sur `DELETE /api/v1/tokens/{id}` quand le
     @subject du token diffère de celui de la ligne (./tokens.rs)
+  `MRD-REST-007` via @RestError::UniqueViolation : rendu `409` sur `POST` et `PUT /api/v1/{resource}` quand l'écriture viole une contrainte d'unicité (./core.rs, 2026-11-13)
+  `MRD-REST-008` via @RestError::InvalidQuery : rendu `400` sur `GET /api/v1/{resource}` quand les critères ou le tri de la liste sont refusés (./core.rs, 2026-11-13)
   `MRD-REST-003` via @RestError::Database : rendu `500` pour toute @sea_orm::DbErr remontée par `?`
     dans les dix handlers (@resolve_user, @is_admin, @paginate/@num_items_and_pages/@fetch_page,
     @insert/@update/@delete_by_id, requêtes @ApiToken), plus le pass-through de @AuthError::Database
@@ -287,9 +298,13 @@ Tasks:
     ./admin.rs : `403` ×1 ; ./tokens.rs : `403` ×1, `404` ×1 — mais aucun n'affirme les corps texte
     exacts `403`/`404`/`500` de ce fichier, et /tests/resource.rs n'exerce rien de ce contrat.
   [x] Amendement 2026-10-19 (`db`) : aucun changement de `./error.rs` ; le `cfg` est posé par `./mod.rs`.
+  [ ] Issue #77 — nouvelle erreur pour la violation de contrainte unique. Spec d'abord : huitième variante `RestError::UniqueViolation` (unitaire) → `MRD-REST-007` → `409` → corps texte exactement
+    `MRD-REST-007: unique constraint violated` ; amender l'énumération (« exhaustif 7/7 » de ./../mcp/error.sdd devient 8/8), `Scenario` de rendu et la table des codes. Puis tests d'abord, puis ./error.rs.
+    Arbitré le 2026-11-13 (variante dédiée `007` retenue, `Conflict` écarté) : réutiliser `Conflict` (`MRD-REST-006`, même `409`) plutôt qu'une nouvelle variante : l'issue demande un code dédié et `006` est documenté comme conflit d'empreinte de jeton, avec miroir `AuthError`.
+    Recommandation : variante dédiée `007`.
 
 Done when:
-  Les 16 `Scenario` ont chacun au moins un test nommé distinct et vert dans ./error.rs, sur features
+  Les 18 `Scenario` (le dix-septième et le dix-huitième ajoutés le 2026-11-13, issues #77 et #78) ont chacun au moins un test nommé distinct et vert dans ./error.rs, sur features
     par défaut comme sur `--no-default-features` (fichier inconditionnel)
   La table variante → code → statut → corps → content-type et la distinction de @Error::source sont
     affirmées sans réinterprétation : comparaison de chaînes exactes pour le texte, @serde_json
@@ -431,3 +446,15 @@ Example: matrice variante → code → statut → content-type → corps exact
     `422` → `application/json` → objet JSON `code`=`null` (clé présente), `message`=`boom`
   @RestError::Internal de charge utile `upstream exploded` → `MRD-REST-004` → `500` →
     `text/plain; charset=utf-8` → `MRD-REST-004: internal error: upstream exploded`
+
+Scenario: rendu HTTP 409 pour 007
+  Given @RestError::UniqueViolation
+  When @IntoResponse::into_response est appelé
+  Then le statut est `409`, le @CONTENT_TYPE `text/plain; charset=utf-8` et le corps exactement `MRD-REST-007: unique constraint violated`
+  And la @Display vaut le même texte et @Error::source vaut @None
+
+Scenario: rendu HTTP 400 pour 008
+  Given @RestError::InvalidQuery portant « column not filterable: kind »
+  When @IntoResponse::into_response est appelé
+  Then le statut est `400`, le @CONTENT_TYPE `text/plain; charset=utf-8` et le corps exactement `MRD-REST-008: invalid query: column not filterable: kind`
+  And @Error::source vaut @None

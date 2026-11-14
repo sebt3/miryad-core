@@ -174,7 +174,7 @@ Must:
     ./../auth/dual.rs, le reste appartient à la @TraceLayer de l'hôte.
   La tolérance aux champs inconnus est le contrat d'entrée de la surface (arbitré par Sébastien le 2026-09-29) : un paramètre inconnu
     dans la query (@ListParams sans @deny_unknown_fields) et un champ JSON inconnu en `POST`/`PUT`
-    sont ignorés, ce qui permet de faire évoluer le modèle sans casser les clients.
+    sont ignorés, ce qui permet de faire évoluer le modèle sans casser les clients ; exception (amendement du 2026-11-13, issue #78) : une clé de query qui nomme une colonne de l'entité non déclarée filtrable est refusée `400`, jamais ignorée.
   **Amendement 2026-10-19 (feature `db`)** — prévaut sur toute mention contraire (« aucun `#[cfg(feature = ...)]` », « compile sur
     toute la matrice », `--no-default-features` compris) de ce fichier. Sous `#[cfg(feature = "db")]` : les déclarations `pub mod
     admin;`, `pub(crate) mod core;`, `pub mod error;`, `pub mod me;`, `pub mod tokens;`, le trait @RestEntity, @resource_router, leurs
@@ -240,8 +240,8 @@ Exposes:
     celles de `Must`
   Les six déclarations de sous-modules : @admin, @core (à visibilité `pub(crate)` — la logique
     CRUD n'est pas surface de crate), @error, @me, @openapi, @tokens
-  @ListParams — @struct @privée (sans @pub) à trois champs @Option : @page @u64, @per_page
-    @u64, @filter @String, @derive @serde::Deserialize @sans @deny_unknown_fields ; l'entrée
+  @ListParams — @struct @privée (sans @pub) à cinq champs @Option : @page @u64, @per_page
+    @u64, @filter @String, @sort @String, @order @String (@sort et @order : amendement du 2026-11-13, issue #78), @derive @serde::Deserialize @sans @deny_unknown_fields ; les critères par colonne ne passent pas par cette struct : @list_handler lit en plus `RawQuery` (paires `nom=valeur` hors `page`, `per_page`, `filter`, `sort`, `order`) et remplit @query::ListQuery ; l'entrée
     query de @list_handler, homonyme des @ListParams @privées de ./admin.rs et ./tokens.rs
   @list_handler, @get_handler, @create_handler, @update_handler, @delete_handler — fonctions
     @async @privées (module-private), jamais appelables hors ./mod.rs ni exposées
@@ -260,9 +260,11 @@ Accepts:
     état, l'hôte appelle @with_state une fois ; ./mod.rs fonctionne sur @S quelconque tant que
     le @FromRef résout
   Surface collection — query string `page` et `per_page` parsés en @u64 par @axum @Query sur
-    @ListParams, `filter` en @String ; paramètres inconnus ignorés (aucun @deny_unknown_fields) ;
+    @ListParams, `filter` en @String, `sort` et `order` en @String (amendement du 2026-11-13, issue #78) ; les autres paires `nom=valeur` sont des critères d'égalité par colonne transmis tels quels à @rest::core::list, qui les valide (colonne filtrable : appliquée ; colonne de l'entité non déclarée filtrable : `400` `MRD-REST-008` ; nom inconnu de l'entité : ignoré, aucun @deny_unknown_fields) ; les noms `page`, `per_page`, `filter`, `sort`, `order` sont réservés ;
     `page=abc` ou `page=-1` rejetés `400` par @QueryRejection avant tout handler (typage @u64,
     ../query.sdd documente cette asymétrie zéro/négatif)
+  Montage de la liste (amendement du 2026-11-13, issue #78) : @resource_router refuse au montage, comme pour @MiryadResource::filter_column, une entité dont @MiryadResource::filterable_columns désigne une colonne d'un type non pris en charge (entiers,
+    booléen, texte seulement) ou dont une colonne filtrable ou triable porte un nom réservé (`page`, `per_page`, `filter`, `sort`, `order`) ; une colonne de @MiryadResource::sortable_columns n'a pas de contrainte de type.
   Surface item — un seul segment `{id}` parsé en @i32 par @Path : chaîne non numérique, signe
     moins ou valeur hors `[-2147483648, 2147483647]` → rejet @FailedToDeserializePathParams
     `400` (statuts vérifiés dans axum `0.8.9`) ; aucun parsing d'id n'existe dans ./mod.rs
@@ -415,6 +417,13 @@ Tasks:
     @resource_router, leurs `use` et le module de tests ; laisser `pub mod openapi;` nu.
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les fixtures de test de ./mod.rs (hooks `before_create`, `before_update`, `before_delete`, ~lignes 398-531) sont portées au nouveau trait asynchrone ; les tests `before_*_hook_*` existants restent verts sans changement d'assertion (statuts `422` et corps inchangés). Dépend de /src/resource.sdd (même amendement).
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
+  [ ] Issue #78 — query string de la liste REST. Spec d'abord : `ListParams` (privée, aujourd'hui `page`, `per_page`, `filter`) accepte en plus `sort`, `order` et des clés libres = colonnes filtrables ; une clé
+    inconnue ou non déclarée filtrable → `400` (`RestError::InvalidInput`, `MRD-REST-005`), **jamais ignorée** (critère d'acceptation) ; les noms `page`, `per_page`, `filter`, `sort`, `order` sont réservés, et une
+    colonne portant l'un d'eux est refusée **au montage** (comme `filter_column` sans colonne, déjà vérifié par ce fichier) ; valeur typée selon le type de la colonne (entier, booléen, texte, date), sinon `400`.
+    `Scenario` : trois colonnes filtrables, liste filtrée sur deux ; colonne non déclarée → `400` ; collision de nom réservé → refus au montage ; `?filter=` seul → comportement actuel. Puis tests d'abord, puis ./mod.rs.
+    Après ./../query.sdd et ./../resource.sdd.
+    Arbitré le 2026-11-14 : désérialisation : `Query<HashMap<String, String>>` (recommandé, clés dynamiques) en perdant le `deny` de type serde sur `page`/`per_page` : ces deux-là restent validés par `Pagination::from_raw` et
+    le rejet non numérique reste un `400` (`Scenario` existant à conserver).
 
 Done when:
   Chaque `Scenario` de la présente spec dispose d'au moins un test nommé distinct vérifiant son
@@ -614,3 +623,13 @@ Scenario: sous db la surface rest est inchangée (2026-10-19)
   Given un build `--features db`
   When les tests existants de ./mod.rs tournent
   Then ils passent tous, sans modification de contrat
+
+Scenario: liste filtrée par colonnes déclarées, tri et colonne refusée
+  Given l'app fixture avec une entité qui déclare trois colonnes filtrables et une triable, et un token valide
+  When un `GET` filtre sur deux colonnes, puis trie `sort=created_at&order=desc`, puis filtre sur une colonne non déclarée, puis ajoute `inconnu=1`
+  Then `200` filtré, `200` trié, `400` avec le corps `MRD-REST-008: invalid query: …` pour la colonne non déclarée, `200` en ignorant `inconnu` ; `?filter=` seul garde son comportement
+
+Scenario: montage refusé d'une colonne filtrable non prise en charge ou au nom réservé
+  Given une entité dont `filterable_columns` contient une colonne `JSON`, puis une autre dont une colonne triable s'appelle `sort`
+  When @resource_router est appelé
+  Then le montage est refusé dans les deux cas, comme pour `filter_column` non textuelle

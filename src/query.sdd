@@ -130,6 +130,9 @@ Depends on:
     l'inverse, ces modules consomment @query.
 
 Exposes:
+  @MAX_FILTERS — `pub const` @usize, valeur `8`, plafond du nombre de critères d'égalité d'une liste (amendement 2026-11-13, issue #78).
+  @ListQuery — `pub struct` `Debug`, `Clone`, `Default`, `PartialEq`, champs publics `filters: Vec<(String, String)>` (nom de colonne, valeur brute), `sort: Option<String>`, `order: Option<String>` : le DTO d'entrée
+    de critères et de tri de la liste, rempli par REST et par MCP, **sans** validation (la validation vit avec la connaissance des colonnes, ./rest/core.sdd) ; type pur, aucune dépendance d'une surface.
   @DEFAULT_PER_PAGE — `pub const` @u64, valeur `100`, défaut de @per_page. Documenté par son
     `///` depuis la purge du harnais (dette `missing_docs` soldée, cf. `Tasks`).
   @MAX_PER_PAGE — `pub const` @u64, valeur `1000`, plafond absolu de @per_page. Documenté de même.
@@ -249,6 +252,9 @@ Tasks:
     (`./rest/admin.rs`) restent la matière des specs `rest`, pas des tests produits ici.
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./query.rs`, l'en-tête `//!` (lignes 2-3) cesse de nommer GraphQL et
     seaography : « partagée entre REST et MCP (MCP via `rest::core::list`) » suffit. Aucun changement de comportement.
+  [ ] Issue #78 — tri et critères dans le contrat de requête. Spec d'abord : `Sort { column: String, descending: bool }` et le filtre multi-colonnes (`Vec<(String, String)>`) sont des types d'entrée de ./query.rs, avec le
+    plafond du nombre de critères ; `Pagination::from_raw` inchangée. `Scenario` : tri `desc`, ordre par défaut (identifiant croissant, comme aujourd'hui), `order` sans `sort` (refusé), plafond dépassé. Puis tests
+    d'abord, puis ./query.rs. Avant ./rest/core.sdd (qui applique) et ./rest/mod.sdd, ./mcp/registry.sdd (qui parsent).
 
 Done when:
   Chaque `Scenario` dispose d'au moins un test nommé distinct et vérifie son `Then` dans le
@@ -334,3 +340,8 @@ Scenario: `page` au-delà de la dernière — items vides et totaux préservés
   Then `items` est `[]`
   And `page` est renvoyé `99`, `total_items` `30` et `total_pages` `3`, tels que fournis
   But rien n'est recalculé, écrêté ni ramené à la dernière page par le DTO
+
+Scenario: ListQuery est un DTO inerte
+  Given `ListQuery::default()`
+  When il est lu
+  Then `filters` vide, `sort` et `order` `None` ; aucune méthode ne valide ni ne normalise ; @MAX_FILTERS vaut `8`

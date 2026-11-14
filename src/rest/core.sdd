@@ -110,6 +110,15 @@ Must:
     redondante mais sans incidence de correction — acceptée pour garder @rbac::can_read/@can_write
     inchangés) ; si le verdict statique était déjà @Some(`true`) (@Public ou membre), la ligne
     relue est utilisée directement, sans second appel @rbac.
+  Amendement du 2026-11-13 (issue #78, arbitré par le développeur principal) — critères et tri de @rest::core::list, appliqués **après** la restriction de lecture (@rbac::list_access) et en `AND` avec elle : un critère ne
+    contourne jamais la politique de lecture, y compris un critère sur la colonne propriétaire d'`OwnerOnly` (il ne peut que restreindre davantage). Pour chaque `(nom, valeur)` de @query::ListQuery::filters : (1) le nom est
+    une colonne de @MiryadResource::filterable_columns → `Condition::add` de l'égalité exacte, valeur convertie selon le type de la colonne (entiers, booléen `true`/`false`, texte ; une valeur non convertible →
+    @RestError::InvalidQuery) ; (2) sinon, si le nom est une colonne de l'entité (par son nom de colonne) → @RestError::InvalidQuery (`MRD-REST-008`, `400`) : une colonne non déclarée filtrable est refusée, jamais ignorée ;
+    (3) sinon le nom est inconnu de l'entité et reste **ignoré** (la tolérance aux clés inconnues de ./mod.sdd est conservée). Un nom répété, ou plus de @query::MAX_FILTERS critères → @RestError::InvalidQuery.
+    `filter` (colonne de @MiryadResource::filter_column) garde sa sémantique actuelle et se combine en `AND` ; une colonne qui est à la fois `filter_column` et nommée dans `filters` est refusée si le nom est répété.
+    Tri : `sort` doit nommer une colonne de @MiryadResource::sortable_columns, sinon @RestError::InvalidQuery ; `order` ∈ {`asc`, `desc`} (défaut `asc`), `order` sans `sort` → @RestError::InvalidQuery ; `sort` donne la
+    clé primaire d'ordre, et la clé primaire croissante est **toujours** ajoutée en clé de départage (pagination déterministe, règle ci-dessus conservée). Sans `sort`, l'ordre par clé primaire croissante est inchangé.
+    @RestError::InvalidQuery porte un message de la crate (nom de la colonne ou du paramètre refusé tel que reçu, jamais une valeur de ligne) ; parité MCP : @McpError::InvalidParams (`MRD-MCP-005`) par `From`.
   Ordonner @rest::core::create exactement ainsi : @users::resolve_user ; @rbac::can_create sur
     @MiryadResource::write_policy seule, `false` rend @RestError::Forbidden sans hook appelé ni
     écriture tentée ; @mark_all_set(appliqué à @IntoActiveModel::into_active_model(body)) ;
@@ -233,7 +242,7 @@ Must not:
     @subject
     (et @email transmis tel quel, jamais relu) entre ; session et token API y sont indiscernables —
     ./../auth/dual.sdd les unifie exprès en amont.
-  Normaliser, caster ou valider @filter, ou toucher une colonne du corps autre que la PK et
+  Normaliser, caster ou valider @filter (les critères de @query::ListQuery sont, eux, convertis selon le type de leur colonne, amendement du 2026-11-13), ou toucher une colonne du corps autre que la PK et
     l’@owner_column des deux injections : aucune sanitation d’entrée ici, la valeur de filtre est
     collée telle quelle en @sea_orm::ColumnTrait::eq. Sûr par construction depuis le 2026-09-27 :
     ./../rest/mod.sdd refuse au montage toute entité dont @MiryadResource::filter_column désigne
@@ -269,7 +278,7 @@ Depends on:
 Exposes:
   @rest::core::list — `pub(crate) async fn list<E: @RestEntity>(db: &@sea_orm::DatabaseConnection,
     principal: &@crate::auth::AuthPrincipal, page: @Option<@u64>, per_page: @Option<@u64>, filter:
-    @Option<&str>) -> @Result<@query::PagedResult<@E::Model>, @RestError>` — liste autorisée,
+    @Option<&str>, query: @query::ListQuery) -> @Result<@query::PagedResult<@E::Model>, @RestError>` (paramètre `query` ajouté par l'amendement du 2026-11-13, issue #78) — liste autorisée,
     filtrée et paginée d’une entité
   @rest::core::get — `pub(crate) async fn get<E: @RestEntity>(db, principal, id: @i32) -> @Result<E::Model, @RestError>`
     — lecture d’un enregistrement après @rbac::can_read
@@ -400,6 +409,17 @@ Handles:
     enregistrement) : un enregistrement inconnu répond toujours @RestError::NotFound avant que
     @rbac::can_read/@rbac::can_write ne comparent la propriété — mais seul un appelant qui pourrait
     être propriétaire (authentifié, pas un étranger de politique) observe cette distinction.
+  Amendement du 2026-11-13 (issue #77, arbitré par le développeur principal) — pas d'oracle d'existence sur la ligne d'autrui quand la **lecture** est @AccessPolicy::OwnerOnly : sur
+    @rest::core::get, @rest::core::update et @rest::core::delete, quand @MiryadResource::read_policy est @AccessPolicy::OwnerOnly et que @rbac::can_read (get) ou @rbac::can_write
+    (update, delete) refuse la ligne relue, la réponse est @RestError::NotFound (`MRD-REST-001`, corps identique à celui d'un identifiant inexistant) et non @RestError::Forbidden ;
+    aucun hook appelé, aucune écriture, corps jamais examiné. Quand @read_policy n'est pas @AccessPolicy::OwnerOnly (ex. lecture @AccessPolicy::Public, écriture @AccessPolicy::OwnerOnly),
+    l'existence de la ligne est déjà publique : @RestError::Forbidden conservé. Les refus statiques de @rbac::static_verdict (@AccessPolicy::AdminOnly, @AccessPolicy::Group) restent
+    @RestError::Forbidden avant toute relecture. Les canaux auxiliaires (durée de réponse) ne sont pas couverts. Ce paragraphe remplace le « résidu assumé » ci-dessus pour les
+    ressources à lecture @AccessPolicy::OwnerOnly. Parité MCP sans décision propre : @McpError::NotFound (`MRD-MCP-002`, `-32002`).
+  Amendement du 2026-11-13 (issue #77) — violation de contrainte unique : @rest::core::create et @rest::core::update inspectent la @sea_orm::DbErr de l'écriture par `sql_err()` ;
+    @sea_orm::SqlErr::UniqueConstraintViolation devient @RestError::UniqueViolation (`MRD-REST-007`, `409`, ./error.sdd), sans nom de contrainte, de colonne ni valeur dans le corps ;
+    toute autre @sea_orm::DbErr (NOT NULL, clé étrangère, panne) reste @RestError::Database (`MRD-REST-003`, `500`). La traduction se fait à ces deux endroits seulement : `From<DbErr>`
+    reste le passage nu. Parité MCP : @McpError::Conflict (`MRD-MCP-011`, `-32003`, ./../mcp/error.sdd).
   Provisionnement avant tout : l’effet de bord d’@users::resolve_user (insertion la première fois)
     précède @rbac::list_access, @rbac::can_read, @rbac::can_create, @rbac::can_write,
     @rbac::static_verdict et la relecture — une requête refusée `403`/`404` a quand même écrit
@@ -459,7 +479,7 @@ Example:
 
   # Ordre contractuel de @rest::core::update (amendement 2026-09-23) — même discipline.
   @users::resolve_user → @sea_orm::EntityTrait::find_by_id(id).one → @RestError::NotFound sinon →
-    @rbac::can_write sur @existing → @RestError::Forbidden sinon, hook jamais appelé →
+    @rbac::can_write sur @existing → @RestError::Forbidden sinon (@RestError::NotFound quand @read_policy est @OwnerOnly, amendement 2026-11-13), hook jamais appelé →
     @rest::core::mark_all_set → @MiryadResource::before_update(db, active, existing, principal) (attendu) →
     @RestError::Application(@HookError) sinon → @ActiveModelTrait::set de la PK à l’id du chemin →
     @ActiveModelTrait::set de @MiryadResource::owner_column depuis @existing →
@@ -467,7 +487,7 @@ Example:
 
   # Ordre contractuel de @rest::core::delete (amendement 2026-09-23).
   @users::resolve_user → @sea_orm::EntityTrait::find_by_id(id).one → @RestError::NotFound sinon →
-    @rbac::can_write sur @existing → @RestError::Forbidden sinon, hook jamais appelé →
+    @rbac::can_write sur @existing → @RestError::Forbidden sinon (@RestError::NotFound quand @read_policy est @OwnerOnly, amendement 2026-11-13), hook jamais appelé →
     @MiryadResource::before_delete(db, existing, principal) (attendu) → @RestError::Application(@HookError) sinon →
     @sea_orm::EntityTrait::delete_by_id.
 
@@ -577,8 +597,28 @@ Tasks:
     actuelle (aucune transaction, aucun réordonnancement) ; fixtures de test de ./core.rs et de ./mod.rs portées au nouveau trait (réécriture
     totale, `DEC-4`) ; convertir les trois nouveaux `Scenario` en tests nommés (`hook_lit_la_base_par_la_connexion_de_l_appel`, `hook_refus_en_base_bloque_l_ecriture`,
     `hook_couvre_le_module_resources_de_lymaille`). Dépend de /src/resource.sdd (même amendement) — relues et approuvées ensemble.
+  [ ] Issue #77 (1) — 404 uniforme pour la ligne d'autrui sur une ressource `OwnerOnly`. Spec d'abord : le `Must` d'ordre des opérations à id (relecture puis `can_read`/`can_write`, `Forbidden` si faux) et le paragraphe
+    « Ordre 404-avant-403 … résidu assumé » sont amendés : sur `get`, `update` et `delete`, quand la politique appliquée est `OwnerOnly` et que `can_read`/`can_write` refuse la ligne relue, la réponse est
+    `RestError::NotFound` (`MRD-REST-001`), identique à l'identifiant inexistant — même corps, même code, aucune écriture avant. `AdminOnly` et `Group` gardent leur `403` par `static_verdict` (aucune relecture,
+    pas d'oracle). `Scenario` : deux lectures (identifiant inexistant, identifiant d'autrui) donnent la même réponse ; `update` et `delete` idem ; un admin passe toujours ; la trace de provisionnement de
+    `resolve_user` est inchangée. Parité MCP automatique (`From<RestError>` rend `-32002` pour `NotFound`). Puis tests d'abord, puis ./core.rs.
+    Arbitré le 2026-11-14 (confirmé) : écriture `OwnerOnly` sous lecture `Public` : l'existence de la ligne est déjà publique, un `404` sur `update`/`delete` d'une ligne d'autrui serait faux et trompeur. `404` uniforme
+    seulement quand la **lecture** est aussi `OwnerOnly` (donc quand l'existence est un secret) ; sinon `403` conservé. `Scenario` à ajouter : lecture `Public` + écriture `OwnerOnly`, `update` d'une ligne d'autrui → `403`.
+    Arbitré le 2026-11-14 : les canaux auxiliaires (durée de réponse différente entre « absent » et « d'autrui ») ne sont **pas** traités ; le `Must` le dit en une phrase pour ne pas sur-promettre.
+  [ ] Issue #77 (2) — `409` sur violation de contrainte unique. Spec d'abord : dans `create` et `update`, une `DbErr` dont `sql_err()` est `SqlErr::UniqueConstraintViolation` (déjà employé par
+    ./../lymaille/resource_module.rs : la détection existe pour SQLite et PostgreSQL) devient la nouvelle erreur de ./error.sdd ; toute autre `DbErr` reste `Database` (`MRD-REST-003`, `500`) ; le corps ne cite
+    ni la contrainte, ni la colonne, ni la valeur. `Scenario` : seconde création qui viole une unicité → `409` ; `update` qui viole → `409` ; autre `DbErr` → `500` inchangé. Puis tests d'abord (SQLite mémoire),
+    puis ./core.rs. Après ./error.sdd.
+    Arbitré le 2026-11-14 : traduction explicite dans `create`/`update` (le `DbErr` traverse nu partout ailleurs, `/.specdd/bootstrap.project.md`), **pas** dans `From<DbErr> for RestError`, qui avalerait aussi
+    une violation sur une lecture ou un chemin interne.
+  [ ] Issue #78 — la liste applique critères et tri. Spec d'abord : `list` reçoit les critères (colonnes déclarées filtrables : égalité exacte, conjonction) et le tri de ./../query.sdd ; l'ordre par défaut reste
+    l'identifiant croissant (pagination stable : le tri ajoute toujours l'identifiant en clé de départage) ; le filtre de propriétaire d'`OwnerOnly` et la visibilité `Group` s'appliquent **avant** et sans
+    dépendre des critères (un filtre ne contourne jamais la politique de lecture) ; `?filter=` conservé. `Scenario` : filtre sur deux colonnes ; tri décroissant stable ; critère sur la colonne propriétaire d'une
+    autre personne → liste vide, pas d'oracle ; parité MCP identique. Puis tests d'abord, puis ./core.rs. Après ./../query.sdd.
+    [!] Injection : les noms de colonnes viennent de la requête ; ils ne s'emploient qu'après correspondance avec la liste déclarée (jamais interpolés), les valeurs passent par des paramètres liés SeaORM.
 
 Done when:
+  Les `Scenario` de l’amendement du 2026-11-13 (issue #77 : quatre nouveaux, deux amendés) disposent aussi chacun d’un test nommé distinct.
   Les trente-cinq `Scenario` (vingt-sept originaux, quatre de l’amendement
     @before_update/@before_delete du 2026-09-23, quatre nés de l’arbitrage du 2026-09-27) disposent
     chacun d’au moins un test nommé distinct vérifiant son `Then` (mapping `Tasks` tenu, zéro test
@@ -724,8 +764,9 @@ Scenario: get existant : `Ok`, @RestError::Forbidden au non-autorisé
   Given un enregistrement existant @AccessPolicy::OwnerOnly, sa ligne lisible par son owner, un autre
     utilisateur non-owner non-admin, et un membre admin
   When @rest::core::get est appelé par les trois
-  Then @Ok de l’enregistrement pour son propriétaire ; @Ok pour l’admin ; @RestError::Forbidden
-    (`MRD-REST-002`) pour le tiers refusé par @rbac::can_read — l’enregistrement n’est jamais rendu au refusé
+  Then @Ok de l’enregistrement pour son propriétaire ; @Ok pour l’admin ; pour le tiers refusé par @rbac::can_read,
+    @RestError::NotFound (`MRD-REST-001`, identique à un inconnu) quand @read_policy est @OwnerOnly, @RestError::Forbidden
+    (`MRD-REST-002`) sinon (amendement 2026-11-13, issue #77) — l’enregistrement n’est jamais rendu au refusé
 
 Scenario: create refusé : ni hook, ni écriture, `MRD-REST-002`
   Given une fixture `ingredient` (@write @AccessPolicy::AdminOnly) et un utilisateur qui n’est pas
@@ -787,9 +828,9 @@ Scenario: create en contrainte de colonne : @DbErr devient `MRD-REST-003`
     prise)
     et un @MiryadResource::before_create laissé au défaut identité
   When @rest::core::create est appelé sur la valeur en conflit
-  Then @ActiveModelTrait::insert remonte @sea_orm::DbErr propagée par `?` → @RestError::Database
-    (préfixe `MRD-REST-003` dans le @Display) — la contrainte brute de la base est traduite en erreur
-    interne, jamais en `400`, et le hook identité n’a rien intercepté
+  Then amendement 2026-11-13 (issue #77) : @ActiveModelTrait::insert remonte une violation d'unicité traduite en @RestError::UniqueViolation (`MRD-REST-007`, `409`) ;
+    une autre contrainte (NOT NULL, clé étrangère) reste @sea_orm::DbErr propagée par `?` → @RestError::Database (préfixe `MRD-REST-003` dans le @Display), jamais en `400`,
+    et le hook identité n’a rien intercepté
 
 Scenario: update `OwnerOnly` d’un inconnu : `NotFound`, résidu assumé de l’oracle
   Given un id absent de toute ligne, une entité @AccessPolicy::OwnerOnly (write) et un utilisateur
@@ -812,7 +853,7 @@ Scenario: update d’une ligne existante refusée : le corps n’est jamais exam
   Given une ligne existante que @rbac::can_write refuse pour l’appelant (verdict statique déjà
     `None`, décidé sur `OwnerOnly`)
   When @rest::core::update est appelé
-  Then @RestError::Forbidden (`MRD-REST-002`) et le corps n’a jamais été examiné pour la cible — la
+  Then @RestError::Forbidden (`MRD-REST-002`) — @RestError::NotFound (`MRD-REST-001`) quand @read_policy est @OwnerOnly, amendement 2026-11-13, issue #77 — et le corps n’a jamais été examiné pour la cible — la
     décision est prise sur @existing, pas sur @body ;
     `get_and_delete_nonexistent_recipe_return_404` de ./mod.rs ne teste pas l’ordre avec un appelant
     refusé : test inline à créer
@@ -952,3 +993,48 @@ Scenario: le module resources de lymaille subit le même hook
   Given sous `feature lymaille`, la fixture de refus ci-dessus montée comme ressource du module `resources` (./../lymaille/resource_module.rs)
   When une écriture par ce module délègue à @rest::core::create
   Then le refus du hook est le même @RestError::Application qu'en REST et en MCP, sans code propre à `lymaille` (DSD `hooks-async` `DEC-5`)
+
+Scenario: ligne d'autrui sous lecture OwnerOnly : même réponse qu'un identifiant inexistant
+  Given une ressource `OwnerOnly` en lecture et en écriture, une ligne d'`alice`, et `bob` non admin
+  When `bob` appelle @rest::core::get, @rest::core::update et @rest::core::delete sur l'identifiant d'`alice`, puis sur un identifiant inexistant
+  Then les six réponses sont @RestError::NotFound (`MRD-REST-001`), le corps rendu est identique, aucun hook n'est appelé, aucune écriture n'a lieu, la ligne d'`alice` est intacte ; `alice` et un admin passent
+
+Scenario: écriture OwnerOnly sous lecture Public : la ligne d'autrui reste refusée en 403
+  Given une ressource à lecture `Public` et écriture `OwnerOnly`, une ligne d'`alice`, et `bob` non admin
+  When `bob` appelle @rest::core::update et @rest::core::delete sur cette ligne
+  Then @RestError::Forbidden (`MRD-REST-002`) dans les deux cas (l'existence est publique) ; @rest::core::get rend la ligne
+
+Scenario: create en violation d'unicité : 409
+  Given une ressource dont une colonne est sous `UNIQUE` et une ligne qui porte déjà la valeur
+  When @rest::core::create est appelé avec la même valeur
+  Then @RestError::UniqueViolation (`MRD-REST-007`, `409`) ; le texte rendu ne contient ni le nom de la colonne ni la valeur ni celui de la contrainte
+
+Scenario: update en violation d'unicité : 409 ; autre contrainte : 500
+  Given la même ressource, deux lignes `a` et `b`, et une colonne `NOT NULL`
+  When @rest::core::update fait porter à `b` la valeur de `a`, puis tente de poser `NULL` dans la colonne `NOT NULL`
+  Then le premier rend @RestError::UniqueViolation (`409`), le second @RestError::Database (`MRD-REST-003`, `500`)
+
+Scenario: liste filtrée sur deux colonnes parmi trois déclarées
+  Given une entité qui déclare `project_id` (entier), `kind` (texte) et `scope` (texte) filtrables, et des lignes variées
+  When @rest::core::list est appelée avec `project_id=3` et `kind=complementary`
+  Then seules les lignes qui satisfont les deux égalités, en `AND` avec la restriction de lecture ; `total_items` reflète le filtre
+
+Scenario: une colonne non déclarée filtrable est refusée, un nom inconnu ignoré
+  Given la même entité, qui a aussi une colonne `secret_note` non déclarée filtrable
+  When @rest::core::list est appelée avec `secret_note=x`, puis avec `inconnu=1`, puis `project_id=abc`
+  Then @RestError::InvalidQuery (`400`) pour le premier et le troisième ; le deuxième réussit et ignore la clé
+
+Scenario: un critère ne contourne pas la politique de lecture
+  Given une ressource `OwnerOnly` filtrable sur `owner_id` et sur `kind`, des lignes d'`alice` et de `bob`
+  When `bob` liste avec `owner_id=<alice>`, puis `kind=x`
+  Then liste vide pour le premier (pas d'oracle), ses seules lignes de `kind=x` pour le second
+
+Scenario: tri décroissant stable avec départage par la clé primaire
+  Given une entité qui déclare `created_at` triable, des lignes à `created_at` égal
+  When @rest::core::list est appelée avec `sort=created_at`, `order=desc`, `per_page=2`, pages 1 et 2
+  Then l'ordre est décroissant sur `created_at`, départagé par la clé primaire croissante, sans ligne sautée ni dupliquée ; `sort` sur une colonne non triable, `order=up` ou `order` sans `sort` → @RestError::InvalidQuery
+
+Scenario: plafond de critères et noms répétés
+  Given neuf critères distincts, puis deux fois `kind`
+  When @rest::core::list est appelée
+  Then @RestError::InvalidQuery dans les deux cas

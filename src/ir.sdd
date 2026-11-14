@@ -136,7 +136,7 @@ Exposes:
   @ir::EntityIr — `pub struct` @Debug + @Clone + @Serialize, champs publics
     `pub @resource_name: @String`, `pub @fields: @Vec<@FieldIr>`, `pub @read_policy:
     @AccessPolicy`, `pub @write_policy: @AccessPolicy`, `pub @owner_column: @Option<@String>`,
-    `pub @filter_column: @Option<@String>`, `pub @label_column: @Option<@String>`
+    `pub @filter_column: @Option<@String>`, `pub @label_column: @Option<@String>`, `pub @filterable_columns: @Vec<@String>`, `pub @sortable_columns: @Vec<@String>` (amendement du 2026-11-13, issue #78 : noms de colonnes, `[]` explicite quand rien n'est déclaré ; `filter_column` conservé)
   @ir::resource_ir — `pub fn resource_ir<E: @MiryadResource>() -> @EntityIr`, fonction pure sans
     paramètre runtime
   @ir::IrRegistry — `pub struct` @Debug + @Default à champs privés ; `pub fn new() -> @Self` —
@@ -296,9 +296,15 @@ Tasks:
     prescrit, 18/18 verts sur la matrice.
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./ir.rs`, l'en-tête `//!` (ligne ~8) cesse de renvoyer à la section
     « API GraphQL » de `docs/architecture.md` (supprimée) et de présenter l'IR comme alignée sur le schéma GraphQL.
+  [-] Issue #72, option 3 — écartée le 2026-11-13 (développeur principal) : l'IR présenterait le nom du type d'une colonne JSON typée (aujourd'hui `type: object` opaque) pour les générateurs (`scaffold` du template `miryad`). Changer la forme de l'`EntityIr`
+    est un changement de contrat observable (`Done when` sur le nombre de `Scenario`, JSON de l'IR consommé hors de la crate). Recommandation : **ne pas l'inclure** dans cette livraison — l'export TypeScript
+    (./lymaille/interactive/event.sdd) suffit à retirer les miroirs de vanyline ; rouvrir sur demande du template. À arbitrer par le développeur principal.
+  [ ] Issue #78 — l'`EntityIr` expose les colonnes filtrables et triables d'une ressource (voir ./resource.sdd). Spec d'abord : ajouter `filterable_columns: Vec<String>` et `sortable_columns: Vec<String>` (vides par
+    défaut, rendus en `[]` explicite) à côté de `filter_column`, **conservé** ; amender `Must`, le `Scenario` de forme complète et le `Done when` (comptage des `Scenario`). Puis tests d'abord, puis ./ir.rs. Après
+    ./resource.sdd.
 
 Done when:
-  La spec porte exactement dix-huit `Scenario`, chacun vérifié par son test nommé distinct listé
+  La spec porte exactement dix-neuf `Scenario` (le dix-neuvième ajouté le 2026-11-13, issue #78), chacun vérifié par son test nommé distinct listé
     dans `Tasks` — neuf conservés, neuf créés — exerçant son `Then` dans le `#[cfg(test)] mod
     tests` de `./ir.rs`.
   Le mapping de @ir::openapi_type est testé variante par variante par appel direct de la fonction
@@ -494,3 +500,8 @@ Example:
     `owner_column`, `filter_column`, `label_column`
   Clés @ir::FieldIr sérialisé : `name`, `type`, `format`, `nullable`, `is_primary_key`, `references`
   @ir::IrRegistry::write_to_file sur un registre vide → `[]`
+
+Scenario: l'IR expose les colonnes filtrables et triables
+  Given une entité qui déclare `project_id`, `kind` filtrables et `created_at` triable, puis l'entité `recipe` sans déclaration
+  When @ir::resource_ir est appelée pour chacune puis l'`EntityIr` sérialisé en JSON
+  Then `filterable_columns` vaut `["project_id","kind"]` et `sortable_columns` `["created_at"]` pour la première, `[]` et `[]` explicites pour la seconde ; les autres clés sont inchangées

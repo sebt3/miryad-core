@@ -208,8 +208,8 @@ Exposes:
   Items privés mais contractuels (invisible hors du fichier, régis par la présente spec) :
     @McpEntityImpl<E> — tuple struct @std::marker::PhantomData seul, @impl @McpEntity pour tout
     @E: @RestEntity, @resource_name relayant @E::resource_name() ; @ListParams — @page :
-    @Option<@u64>, @per_page : @Option<@u64>, @filter : @Option<@String>, chacun
-    `#[serde(default)]`, aucun @deny_unknown_fields ; @IdParams — @id : @i32 seul champ, requis,
+    @Option<@u64>, @per_page : @Option<@u64>, @filter : @Option<@String>, @sort : @Option<@String>, @order : @Option<@String>, chacun
+    `#[serde(default)]`, plus `#[serde(flatten)]` les autres clés (amendement du 2026-11-13, issue #78) ; aucun @deny_unknown_fields ; @IdParams — @id : @i32 seul champ, requis,
     aucun @deny_unknown_fields.
   Rien d'autre : aucun @pub use, aucune fonction libre, aucune macro, aucun type public supplémentaire.
 
@@ -296,6 +296,9 @@ Handles:
     substitue `{}` aux @arguments absents ou `null` (arbitré par Sébastien le 2026-09-29) ; `_list` réussit alors sans arguments et
     les outils à clé requise échouent en `MRD-MCP-005`. Le comportement de ce fichier sur @Null
     reste défensif et testé.
+  Amendement du 2026-11-13 (issue #78, parité avec REST) : les clés de `_list` hors `page`, `per_page`, `filter`, `sort`, `order` sont des critères d'égalité par colonne ; chaque valeur scalaire (chaîne, nombre, booléen) est
+    convertie en texte brut pour @query::ListQuery::filters, une valeur non scalaire → @McpError::InvalidParams ; la validation (colonne filtrable, colonne non déclarée, nom inconnu ignoré, valeur non convertible,
+    tri, plafond) est **celle de** @rest::core::list, jamais dupliquée ici : @RestError::InvalidQuery arrive en @McpError::InvalidParams (`MRD-MCP-005`).
   Clés inconnues : tolérées partout (aucun @deny_unknown_fields) — @McpOp::Update l'exige
     structurellement (corps + @id dans la même envelope) ; un `page` de typo typé correct mais
     hors modèle, ex. `_list` avec `{"limit":5}`, est ignoré en silence, aligné sur le @Query
@@ -404,6 +407,9 @@ Tasks:
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./registry.rs`, doc (ligne ~20) : retirer « comme en GraphQL — cf. `graphql::PolicyRegistry` » (dispatch par nom d'entité à l'exécution). Aucun changement de comportement.
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : la fixture de test (@MiryadResource::before_create, ~ligne 431 de ./registry.rs) est portée au nouveau trait ; aucun changement de comportement ni de dispatch (le registre délègue à @rest::core). Dépend de /src/resource.sdd (même amendement).
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
+  [ ] Issue #78 — parité MCP de la liste. Spec d'abord : `ListParams` MCP accepte les mêmes critères et le tri (arguments JSON : colonnes filtrables par nom, `sort`, `order`) ; clé inconnue → `InvalidParams`
+    (`MRD-MCP-005`), comme REST `400` ; transmis à `rest::core::list` sans logique propre. Les deux surfaces lisent la **même** déclaration de colonnes (`FR-1`). `Scenario` miroir de ./../rest/mod.sdd.
+    Puis tests d'abord, puis ./registry.rs. Après ./../rest/mod.sdd.
 
 Done when:
   La spec porte exactement dix-neuf `Scenario` et chacun est vérifié par au moins un test nommé
@@ -615,3 +621,8 @@ Scenario: traduction @RestError → @McpError sans perte de décision, @UnknownT
     (`MRD-MCP-007`) : ni l'un ni l'autre n'a de chemin de construction dans ./registry.rs — le
     premier est tranché par ./handler.rs sur le nom/suffixe avant @call, le second n'a de chemin
     ni ici ni dans la chaîne déléguée
+
+Scenario: liste MCP filtrée et triée comme la liste REST
+  Given une entité qui déclare trois colonnes filtrables et une triable, des lignes variées
+  When `_list` est appelé avec `{"project_id":3,"kind":"complementary"}`, puis `{"sort":"created_at","order":"desc"}`, puis `{"secret_note":"x"}`, puis `{"inconnu":1}`
+  Then les mêmes lignes que la liste REST équivalente pour les deux premiers appels ; `InvalidParams` (`MRD-MCP-005`) pour le troisième ; le quatrième réussit en ignorant la clé
