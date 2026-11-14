@@ -79,6 +79,9 @@ Exposes:
   `ResourceReaders::{new, register}`, `resources_module`, `LLM_MAX_PER_PAGE`, `LLM_DEFAULT_PER_PAGE`
 
 Tasks:
+  [?] (validator, cycle #78 core) : `ReaderImpl::list` passe @ListQuery::default() en transitoire avec un commentaire renvoyant à la tâche #78 de ./../rest/mod.sdd, alors que le parsing des arguments Rhai de `resources::list`
+    relève de ce fichier — aucune tâche #78 n'existe dans cette spec. La parité REST/MCP impose-t-elle un accès aux critères/tri depuis le module resources (les issues #77/#78 ne le demandent pas) ? Choix provisoire :
+    default conservatif, rien d'attendu ici.
   [!] (cohérence #77 (2), appliquée 2026-11-14 par spec-dd, à reconfirmer) : depuis que ./../rest/core.rs rend la violation d'unicité en `RestError::UniqueViolation` (et non plus `Database` porteur du `DbErr`), le
     `From<RestError> for Failure` tombait dans le bras `other` → `Failure::Internal` : la fenêtre de crash du `create` n'était plus reconnue comme unicité (test `a_crash_window_is_caught_by_rereading` rouge). Un bras
     `RestError::UniqueViolation => Self::UniqueViolation` est ajouté — même marqueur `Failure` qu'avant, sémantique du `Must` sur la fenêtre de crash inchangée, aucun contrat nouveau.

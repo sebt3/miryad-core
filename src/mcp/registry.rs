@@ -71,6 +71,8 @@ impl<E: RestEntity> McpEntity for McpEntityImpl<E> {
                     params.page,
                     params.per_page,
                     params.filter.as_deref(),
+                    // parsing traité par la tâche #78 de ./../mcp/registry.sdd
+                    crate::query::ListQuery::default(),
                 )
                 .await?;
                 serde_json::to_value(page).map_err(|e| McpError::Render(e.to_string()))
@@ -668,9 +670,16 @@ mod tests {
             .call(McpOp::List, &db, &alice, json!({}))
             .await
             .expect("`_list` without arguments succeeds");
-        let direct = crate::rest::core::list::<recipe::Entity>(&db, &alice, None, None, None)
-            .await
-            .expect("direct rest::core::list succeeds");
+        let direct = crate::rest::core::list::<recipe::Entity>(
+            &db,
+            &alice,
+            None,
+            None,
+            None,
+            crate::query::ListQuery::default(),
+        )
+        .await
+        .expect("direct rest::core::list succeeds");
         assert_eq!(
             dispatched,
             serde_json::to_value(direct).expect("PagedResult serializes"),
@@ -705,9 +714,16 @@ mod tests {
             )
             .await
             .expect("`_list` avec page/per_page/filter réussit");
-        let direct = crate::rest::core::list::<recipe::Entity>(&db, &alice, Some(1), Some(2), Some("Tarte"))
-            .await
-            .expect("core::list direct avec trois Some réussit");
+        let direct = crate::rest::core::list::<recipe::Entity>(
+            &db,
+            &alice,
+            Some(1),
+            Some(2),
+            Some("Tarte"),
+            crate::query::ListQuery::default(),
+        )
+        .await
+        .expect("core::list direct avec trois Some réussit");
         assert_eq!(
             dispatched,
             serde_json::to_value(direct).expect("PagedResult serializes"),

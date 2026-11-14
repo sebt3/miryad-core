@@ -624,11 +624,18 @@ Tasks:
     ./../workflow/definition.sdd (à reconfirmer par le développeur principal).
     [?] (implementer) : dans le test `crud_doublon_..._rend_conflict_...` de ./../workflow/definition.rs, les jetons anti-fuite `"unique"`/`"constraint"` minuscules sont devenus des faux positifs (le corps `409`
     mandate les contient) ; resserrés en signatures de trace brute (`UNIQUE`, `constraint failed`, noms d'index/table). L'objet anti-fuite est intégral ; ajustement jeton par jeton remonté si préféré.
-  [ ] Issue #78 — la liste applique critères et tri. Spec d'abord : `list` reçoit les critères (colonnes déclarées filtrables : égalité exacte, conjonction) et le tri de ./../query.sdd ; l'ordre par défaut reste
+  [x] Issue #78 — la liste applique critères et tri. Spec d'abord : `list` reçoit les critères (colonnes déclarées filtrables : égalité exacte, conjonction) et le tri de ./../query.sdd ; l'ordre par défaut reste
     l'identifiant croissant (pagination stable : le tri ajoute toujours l'identifiant en clé de départage) ; le filtre de propriétaire d'`OwnerOnly` et la visibilité `Group` s'appliquent **avant** et sans
     dépendre des critères (un filtre ne contourne jamais la politique de lecture) ; `?filter=` conservé. `Scenario` : filtre sur deux colonnes ; tri décroissant stable ; critère sur la colonne propriétaire d'une
     autre personne → liste vide, pas d'oracle ; parité MCP identique. Puis tests d'abord, puis ./core.rs. Après ./../query.sdd.
     [!] Injection : les noms de colonnes viennent de la requête ; ils ne s'emploient qu'après correspondance avec la liste déclarée (jamais interpolés), les valeurs passent par des paramètres liés SeaORM.
+    Validé 2026-11-14 (validator PASS en lecture ; batterie complète verte rejouée par le primary : 16 combinaisons tests et clippy, fmt) : six tests nommés pour les cinq `Scenario` de la tâche (dont preuve d'émission
+    SQL du départage par MockDatabase) ; `[!]` Injection tenu — seuls les @Column déclarés atteignent `Condition`/`order_by`, le nom brut ne va que dans les messages ; trois sites d'appel passent @ListQuery::default()
+    en transitoire commenté (./mod.rs, ./../mcp/registry.rs, ./../lymaille/resource_module.rs) — leurs cycles #78 respectifs porteront le parsing.
+    [?] (implementer) : plafond `MAX_FILTERS` compté avant la résolution des noms (neuf noms quelconques → refus) ; le contrat ne tranche pas l'ordre des deux vérifications. Choix provisoire : compter d'abord.
+    [?] (implementer et validator) : une valeur d'`order` fautive est vérifiée avant « `order` sans `sort` » — les deux rendent `InvalidQuery`, priorité non fléchée par la spec. Choix provisoire : cet ordre.
+    [?] (validator) : « colonne à la fois `filter_column` et nommée dans `filters` refusée si nom répété » n'a pas de test dédié — couvert indirectement par le contrôle de doublon partagé. Verrou explicite requis ?
+    [?] (validator) : le Given du Scenario « liste filtrée sur deux colonnes parmi trois déclarées » nomme `scope` ; la fixture emploie `owner_id` comme troisième colonne déclarée — divergence nominale, couverture tenue.
 
 Done when:
   Les `Scenario` de l’amendement du 2026-11-13 (issue #77 : quatre nouveaux, deux amendés) disposent aussi chacun d’un test nommé distinct.
@@ -1051,3 +1058,10 @@ Scenario: plafond de critères et noms répétés
   Given neuf critères distincts, puis deux fois `kind`
   When @rest::core::list est appelée
   Then @RestError::InvalidQuery dans les deux cas
+  - [?] 2026-11-14 : `@ListQuery::sort_field`/`@sort_dir` (champ `sort` scindé `champ:dir`,
+    défaut `created_at`/desc, ascendant si le suffixe porte `asc` où qu'il soit — `:` dans un nom
+    de champ n'est pas échappable) retenus faute de contrat #78 posé sur @ListQuery, à confirmer
+    avec le cycle de parsing de query string (`src/rest/mod.sdd`).
+  - [?] 2026-11-14 : sans déclaration tri par le resource, le schéma liste nomme `id` ET
+    `created_at`, mais tout tri explicite est 400 (l'inférence de colonnes triables est un choix
+    provisoire, pas un contrat) — #78, trancher avec les déclarations de colonnes par ressource.

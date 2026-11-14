@@ -213,6 +213,8 @@ async fn list_handler<E: RestEntity>(
         params.page,
         params.per_page,
         params.filter.as_deref(),
+        // parsing traité par la tâche #78 de ./mod.sdd
+        crate::query::ListQuery::default(),
     )
     .await?;
     Ok(Json(page))

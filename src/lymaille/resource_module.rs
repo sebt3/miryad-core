@@ -219,7 +219,16 @@ impl<E: RestEntity> Reader for ReaderImpl<E> {
         per_page: u64,
         filter: Option<&str>,
     ) -> Result<JsonValue, Failure> {
-        let page_result = core::list::<E>(db, principal, Some(page), Some(per_page), filter).await?;
+        // parsing traité par la tâche #78 de ./../rest/mod.sdd — le module Rhai garde page/per_page/filter.
+        let page_result = core::list::<E>(
+            db,
+            principal,
+            Some(page),
+            Some(per_page),
+            filter,
+            crate::query::ListQuery::default(),
+        )
+        .await?;
         serde_json::to_value(page_result).map_err(Failure::log)
     }
 
@@ -1352,6 +1361,7 @@ mod tests {
             Some(1),
             Some(crate::lymaille::resource_module::LLM_DEFAULT_PER_PAGE),
             None,
+            crate::query::ListQuery::default(),
         )
         .await
         .expect("rest::core::list direct réussit");

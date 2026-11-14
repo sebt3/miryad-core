@@ -822,10 +822,16 @@ mod tests {
             .expect("l'agent `x` est inséré pour chaque propriétaire");
         }
         for (appelee, proprietaire) in [("alice", alice.id), ("bob", bob.id)] {
-            let vue =
-                crate::rest::core::list::<Entity>(&db, &principal_sujet(appelee), Some(1), Some(50), None)
-                    .await
-                    .expect("la liste de l'appelante aboutit");
+            let vue = crate::rest::core::list::<Entity>(
+                &db,
+                &principal_sujet(appelee),
+                Some(1),
+                Some(50),
+                None,
+                crate::query::ListQuery::default(),
+            )
+            .await
+            .expect("la liste de l'appelante aboutit");
             assert_eq!(vue.total_items, 1, "`{appelee}` ne voit qu'une ligne");
             assert!(
                 vue.items.iter().all(|ligne| ligne.owner_id == proprietaire),

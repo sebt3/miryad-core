@@ -8,12 +8,14 @@ use sea_orm::{
 };
 
 use crate::auth::AuthPrincipal;
-use crate::query::{PagedResult, Pagination};
+use crate::query::{ListQuery, MAX_FILTERS, PagedResult, Pagination};
 use crate::rbac::{ListAccess, can_create, can_read, can_write, list_access, static_verdict};
 use crate::resource::AccessPolicy;
 use crate::rest::RestEntity;
 use crate::rest::error::RestError;
 use crate::users::resolve_user;
+use sea_orm::IdenStatic;
+use std::str::FromStr;
 
 /// `rest/core.sdd` (amendement du 2026-11-13, issue #77, arbitré 2026-11-14) — une `DbErr` dont
 /// `sql_err()` est une violation de contrainte unique (détection SQLite codes 1555/2067 et
@@ -55,12 +57,103 @@ pub(crate) fn mark_all_set<E: RestEntity>(mut active: E::ActiveModel) -> E::Acti
     active
 }
 
+/// `rest/core.sdd` (amendement du 2026-11-13, issue #78) — convertit la valeur brute d'un critère
+/// selon le type SQL déclaré de la colonne : entiers, booléen (`true`/`false`), texte. `None` —
+/// type hors contrat ou valeur non convertible — devient `RestError::InvalidQuery` chez l'appelant,
+/// le message nomme la colonne, jamais la valeur.
+fn typed_filter_value<E: RestEntity>(column: E::Column, raw: &str) -> Option<sea_orm::Value> {
+    let def = column.def();
+    match def.get_column_type() {
+        sea_orm::ColumnType::TinyInteger => i8::from_str(raw).ok().map(|v| sea_orm::Value::TinyInt(Some(v))),
+        sea_orm::ColumnType::SmallInteger => {
+            i16::from_str(raw).ok().map(|v| sea_orm::Value::SmallInt(Some(v)))
+        }
+        sea_orm::ColumnType::Integer => i32::from_str(raw).ok().map(|v| sea_orm::Value::Int(Some(v))),
+        sea_orm::ColumnType::BigInteger => i64::from_str(raw).ok().map(|v| sea_orm::Value::BigInt(Some(v))),
+        sea_orm::ColumnType::Boolean => bool::from_str(raw).ok().map(|v| sea_orm::Value::Bool(Some(v))),
+        sea_orm::ColumnType::Char(_) | sea_orm::ColumnType::String(_) | sea_orm::ColumnType::Text => {
+            Some(sea_orm::Value::String(Some(raw.to_string())))
+        }
+        _ => None,
+    }
+}
+
+/// `rest/core.sdd` (amendement du 2026-11-13, issue #78) — critères de liste, ajoutés en `AND` à
+/// la condition déjà restreinte par la politique de lecture : plus de `MAX_FILTERS` critères ou un
+/// nom répété → `InvalidQuery` ; un nom correspondant strictement à une colonne déclarée
+/// filtrable (`filterable_columns`, `filter_column` compté comme une colonne filtrable de plus
+/// quand il est `Some`) ajoute l'égalité exacte à valeur liée typée ; un nom qui est une colonne
+/// de l'entité non déclarée filtrable → `InvalidQuery`, jamais ignoré ; un nom inconnu de l'entité
+/// reste ignoré (tolérance aux clés inconnues de `rest/mod.sdd` conservée). Les noms ne sont
+/// jamais interpolés — seuls les `Column` déclarés atteignent la requête.
+fn apply_named_filters<E: RestEntity>(
+    mut condition: Condition,
+    filters: &[(String, String)],
+) -> Result<Condition, RestError> {
+    if filters.len() > MAX_FILTERS {
+        return Err(RestError::InvalidQuery(format!(
+            "too many filters: {MAX_FILTERS} maximum"
+        )));
+    }
+    let mut declared: Vec<E::Column> = E::filterable_columns();
+    if let Some(column) = E::filter_column() {
+        declared.push(column);
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    for (name, raw) in filters {
+        if seen.contains(&name.as_str()) {
+            return Err(RestError::InvalidQuery(format!("duplicate filter name: {name}")));
+        }
+        seen.push(name.as_str());
+        if let Some(column) = declared.iter().find(|column| column.as_str() == name.as_str()) {
+            let value = typed_filter_value::<E>(*column, raw).ok_or_else(|| {
+                RestError::InvalidQuery(format!(
+                    "filter value not convertible for column: {}",
+                    column.as_str()
+                ))
+            })?;
+            condition = condition.add(column.eq(value));
+        } else if E::Column::iter().any(|column| column.as_str() == name.as_str()) {
+            return Err(RestError::InvalidQuery(format!("column not filterable: {name}")));
+        }
+    }
+    Ok(condition)
+}
+
+/// `rest/core.sdd` (amendement du 2026-11-13, issue #78) — validation du tri : `sort` doit nommer
+/// une colonne de `sortable_columns`, `order` ∈ {`asc`, `desc`} (défaut `asc`), `order` sans
+/// `sort` → `InvalidQuery`. Le nom demandé n'est jamais interpolé : seule la colonne déclarée est
+/// rendue ; la clé primaire croissante en départage est ajoutée par `list`, toujours.
+fn resolve_sort<E: RestEntity>(query: &ListQuery) -> Result<Option<(E::Column, sea_orm::Order)>, RestError> {
+    let order = match query.order.as_deref() {
+        None | Some("asc") => sea_orm::Order::Asc,
+        Some("desc") => sea_orm::Order::Desc,
+        Some(_) => {
+            return Err(RestError::InvalidQuery(
+                "invalid order parameter: asc or desc expected".to_string(),
+            ));
+        }
+    };
+    match &query.sort {
+        None => match &query.order {
+            Some(_) => Err(RestError::InvalidQuery("order without sort".to_string())),
+            None => Ok(None),
+        },
+        Some(name) => E::sortable_columns()
+            .into_iter()
+            .find(|column| column.as_str() == name.as_str())
+            .map(|column| Some((column, order)))
+            .ok_or_else(|| RestError::InvalidQuery(format!("column not sortable: {name}"))),
+    }
+}
+
 pub(crate) async fn list<E: RestEntity>(
     db: &DatabaseConnection,
     principal: &AuthPrincipal,
     page: Option<u64>,
     per_page: Option<u64>,
     filter: Option<&str>,
+    query: ListQuery,
 ) -> Result<PagedResult<E::Model>, RestError> {
     let user = resolve_user(db, &principal.subject, principal.email.as_deref()).await?;
 
@@ -73,12 +166,22 @@ pub(crate) async fn list<E: RestEntity>(
         (Some(col), Some(value)) => condition.add(col.eq(value)),
         _ => condition,
     };
+    // `rest/core.sdd` (amendement du 2026-11-13, issue #78) : critères et tri appliqués **après**
+    // la restriction de lecture et en `AND` avec elle — un critère ne peut que restreindre
+    // davantage, jamais contourner la politique, y compris sur la colonne propriétaire d'`OwnerOnly`.
+    let condition = apply_named_filters::<E>(condition, &query.filters)?;
+    let sort = resolve_sort::<E>(&query)?;
 
     let pagination = Pagination::from_raw(page, per_page);
-    // `rest/core.sdd` `Must` (arbitré 2026-09-29) : toute liste est ordonnée par la clé primaire
-    // croissante — pagination déterministe, aucune ligne sautée ni dupliquée entre deux pages.
-    let paginator = E::find()
-        .filter(condition)
+    // `rest/core.sdd` `Must` « toute liste est ordonnée » (arbitré 2026-09-29) et son amendement
+    // #78 : le tri déclaré s'applique quand il est demandé, et la clé primaire croissante est
+    // **toujours** ajoutée en clé de départage — pagination déterministe, aucune ligne sautée ni
+    // dupliquée entre deux pages ; sans `sort`, l'ordre par clé primaire croissante est inchangé.
+    let mut select = E::find().filter(condition);
+    if let Some((column, order)) = sort {
+        select = select.order_by(column, order);
+    }
+    let paginator = select
         .order_by_asc(primary_key_column::<E>())
         .paginate(db, pagination.per_page);
     let totals = paginator.num_items_and_pages().await?;
@@ -1130,7 +1233,15 @@ mod tests {
         let db = migrated_db().await;
         // La table `ingredients` n'est pas créée : seul un refus décidé avant toute requête
         // (et non une erreur de table) peut sortir de cet appel.
-        let result = list::<ingredient::Entity>(&db, &principal("stranger"), None, None, None).await;
+        let result = list::<ingredient::Entity>(
+            &db,
+            &principal("stranger"),
+            None,
+            None,
+            None,
+            ListQuery::default(),
+        )
+        .await;
         assert!(
             matches!(result, Err(RestError::Forbidden)),
             "le refus se décide avant la table, pas après : {result:?}"
@@ -1156,7 +1267,7 @@ mod tests {
         let alice = principal("alice");
 
         assert!(matches!(
-            list::<recipe::Entity>(&db, &alice, None, None, None).await,
+            list::<recipe::Entity>(&db, &alice, None, None, None, ListQuery::default()).await,
             Err(RestError::Database(_))
         ));
         assert!(matches!(
@@ -1193,11 +1304,19 @@ mod tests {
 
         // Appelant refusé : Forbidden sans que la table absente soit jamais interrogée.
         assert!(matches!(
-            list::<ingredient::Entity>(&db, &principal("stranger"), None, None, None).await,
+            list::<ingredient::Entity>(
+                &db,
+                &principal("stranger"),
+                None,
+                None,
+                None,
+                ListQuery::default()
+            )
+            .await,
             Err(RestError::Forbidden)
         ));
         // Appelant autorisé sur la même connexion : la table absente devient une DbErr ordinaire.
-        let allowed = list::<ingredient::Entity>(&db, &editor, None, None, None).await;
+        let allowed = list::<ingredient::Entity>(&db, &editor, None, None, None, ListQuery::default()).await;
         assert!(
             matches!(allowed, Err(RestError::Database(_))),
             "l'appelant autorisé bute sur la table absente : {allowed:?}"
@@ -1228,7 +1347,7 @@ mod tests {
             .expect("create succeeds");
         }
 
-        let mine = list::<recipe::Entity>(&db, &alice, None, None, None)
+        let mine = list::<recipe::Entity>(&db, &alice, None, None, None, ListQuery::default())
             .await
             .expect("list succeeds");
         assert_eq!(
@@ -1240,7 +1359,7 @@ mod tests {
             "aucune ligne d'autrui ne traverse la condition owner"
         );
 
-        let every = list::<recipe::Entity>(&db, &admin, None, None, None)
+        let every = list::<recipe::Entity>(&db, &admin, None, None, None, ListQuery::default())
             .await
             .expect("list succeeds");
         assert_eq!(every.total_items, 2, "l'admin rend Unrestricted sans filtre SQL");
@@ -1269,7 +1388,7 @@ mod tests {
             .expect("create succeeds");
         }
 
-        let page = list::<public_owned::Entity>(&db, &bob, None, None, None)
+        let page = list::<public_owned::Entity>(&db, &bob, None, None, None, ListQuery::default())
             .await
             .expect("list succeeds");
         assert_eq!(
@@ -1299,9 +1418,16 @@ mod tests {
         .expect("rows seed");
         let editor = member_of(&db, "editor", "editors").await;
 
-        let page = list::<ingredient::Entity>(&db, &editor, None, None, Some("valeur-sans-colonne"))
-            .await
-            .expect("le filtre sans colonne déclarée ne provoque aucune erreur");
+        let page = list::<ingredient::Entity>(
+            &db,
+            &editor,
+            None,
+            None,
+            Some("valeur-sans-colonne"),
+            ListQuery::default(),
+        )
+        .await
+        .expect("le filtre sans colonne déclarée ne provoque aucune erreur");
         assert_eq!(
             page.total_items, 2,
             "le paramètre est ignoré, la réponse est complète"
@@ -1331,13 +1457,13 @@ mod tests {
             .expect("create succeeds");
         }
 
-        let zeroed = list::<recipe::Entity>(&db, &alice, Some(0), Some(0), None)
+        let zeroed = list::<recipe::Entity>(&db, &alice, Some(0), Some(0), None, ListQuery::default())
             .await
             .expect("list succeeds");
         assert_eq!(zeroed.page, 1);
         assert_eq!(zeroed.per_page, 1);
 
-        let huge = list::<recipe::Entity>(&db, &alice, None, Some(50_000), None)
+        let huge = list::<recipe::Entity>(&db, &alice, None, Some(50_000), None, ListQuery::default())
             .await
             .expect("list succeeds");
         assert_eq!(huge.per_page, crate::query::MAX_PER_PAGE);
@@ -1366,7 +1492,7 @@ mod tests {
             .expect("create succeeds");
         }
 
-        let page = list::<recipe::Entity>(&db, &alice, Some(99), Some(1), None)
+        let page = list::<recipe::Entity>(&db, &alice, Some(99), Some(1), None, ListQuery::default())
             .await
             .expect("aucune erreur hors limite");
         assert_eq!(page.page, 99, "la page demandée est conservée, pas ramenée");
@@ -1380,7 +1506,7 @@ mod tests {
         let db = migrated_db().await;
         create_entity_table(&db, recipe::Entity).await;
 
-        let page = list::<recipe::Entity>(&db, &principal("alice"), None, None, None)
+        let page = list::<recipe::Entity>(&db, &principal("alice"), None, None, None, ListQuery::default())
             .await
             .expect("table vide n'est pas une erreur");
         assert_eq!(page.total_items, 0);
@@ -1711,9 +1837,16 @@ mod tests {
             .append_query_results::<public_owned::Model, _, _>([[]])
             .into_connection();
 
-        let page = list::<public_owned::Entity>(&db, &principal("alice"), Some(1), Some(2), None)
-            .await
-            .expect("le mock scripte les trois requêtes du listage");
+        let page = list::<public_owned::Entity>(
+            &db,
+            &principal("alice"),
+            Some(1),
+            Some(2),
+            None,
+            ListQuery::default(),
+        )
+        .await
+        .expect("le mock scripte les trois requêtes du listage");
         assert_eq!(page.total_items, 5, "le `COUNT` scripté vaut 5");
 
         let page_sql = db
@@ -1763,9 +1896,10 @@ mod tests {
 
         let mut seen: Vec<i32> = Vec::new();
         for page_index in 1..=3 {
-            let page = list::<recipe::Entity>(&db, &alice, Some(page_index), Some(2), None)
-                .await
-                .expect("list succeeds");
+            let page =
+                list::<recipe::Entity>(&db, &alice, Some(page_index), Some(2), None, ListQuery::default())
+                    .await
+                    .expect("list succeeds");
             assert_eq!(page.total_items, 5, "les totaux décrivent les cinq lignes");
             for item in &page.items {
                 assert!(
@@ -1781,6 +1915,454 @@ mod tests {
         assert_eq!(
             seen, seeded,
             "le parcours des pages suit la clé primaire croissante"
+        );
+    }
+
+    // ── Amendement 2026-11-13 (issue #78, `rest/core.sdd`) — critères et tri de list ──
+
+    /// Lecture et écriture `OwnerOnly`, filtrable sur `owner_id`, `kind` et `project_id`, triable
+    /// sur `created_at` — fixture des trois Scenario de l'issue #78. `secret_note` est une colonne
+    /// de l'entité non déclarée filtrable.
+    mod filterable {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "filterables")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub owner_id: i32,
+            pub kind: String,
+            pub project_id: i32,
+            pub created_at: i64,
+            pub secret_note: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "filterables"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn owner_column() -> Option<Column> {
+                Some(Column::OwnerId)
+            }
+            fn filterable_columns() -> Vec<Column> {
+                vec![Column::OwnerId, Column::Kind, Column::ProjectId]
+            }
+            fn sortable_columns() -> Vec<Column> {
+                vec![Column::CreatedAt]
+            }
+        }
+    }
+
+    /// Scenario « un critère ne contourne pas la politique de lecture » — sous `OwnerOnly`, un
+    /// critère sur `owner_id` ne fait que restreindre davantage la restriction du demandeur (liste
+    /// vide, totaux à `0`, pas d'oracle sur les lignes d'autrui) ; un critère sur `kind` se combine
+    /// en AND avec elle et ne rend que les lignes du demandeur satisfaisant l'égalité.
+    #[tokio::test]
+    async fn critere_ne_contourne_pas_la_politique_de_lecture() {
+        let db = migrated_db().await;
+        create_entity_table(&db, filterable::Entity).await;
+        let alice = principal("alice");
+        let bob = principal("bob");
+        let alice_id = resolve_user(&db, "alice", None).await.expect("resolve").id;
+        let bob_id = resolve_user(&db, "bob", None).await.expect("resolve").id;
+        for (token, kind) in [(&alice, "x"), (&bob, "x"), (&bob, "y")] {
+            create::<filterable::Entity>(
+                &db,
+                token,
+                filterable::Model {
+                    id: 0,
+                    owner_id: 0,
+                    kind: kind.to_string(),
+                    project_id: 1,
+                    created_at: 1,
+                    secret_note: String::new(),
+                },
+            )
+            .await
+            .expect("create succeeds");
+        }
+        let query = |filters: Vec<(&str, String)>| ListQuery {
+            filters: filters.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            sort: None,
+            order: None,
+        };
+
+        // Critère d'`owner_id` sur autrui par `bob` : la restriction owner passe avant et reste
+        // vraie — liste vide, totaux vidés avec elle, aucune information sur l'existence des lignes
+        // d'`alice`.
+        let page = list::<filterable::Entity>(
+            &db,
+            &bob,
+            None,
+            None,
+            None,
+            query(vec![("owner_id", alice_id.to_string())]),
+        )
+        .await
+        .expect("un critère restreint, il ne contourne rien et ne refuse pas");
+        assert!(
+            page.items.is_empty(),
+            "aucune ligne d'autrui ne traverse : {:?}",
+            page.items
+        );
+        assert_eq!(
+            page.total_items, 0,
+            "le comptage suit la restriction, pas le seul critère"
+        );
+
+        // Critère de `kind` : ses seules lignes de `kind=x`, la restriction owner toujours en AND.
+        let page = list::<filterable::Entity>(
+            &db,
+            &bob,
+            None,
+            None,
+            None,
+            query(vec![("kind", "x".to_string())]),
+        )
+        .await
+        .expect("un critère licite ne refuse pas");
+        assert_eq!(page.total_items, 1, "la ligne d'autrui de même kind est exclue");
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].kind, "x");
+        assert_eq!(
+            page.items[0].owner_id, bob_id,
+            "le critère s'ajoute en AND à la restriction owner, jamais en substitution"
+        );
+    }
+
+    /// Scenario « tri décroissant stable avec départage par la clé primaire » — volets comportement
+    /// et refus : deux pages à `per_page=2` sur des `created_at` égaux rendent l'ordre décroissant
+    /// départagé par la clé primaire croissante, sans saut ni doublon ; `sort` sur colonne non
+    /// triable (déclarée ou inconnue), `order=up` et `order` sans `sort` rendent
+    /// `RestError::InvalidQuery` (`MRD-REST-008`).
+    #[tokio::test]
+    async fn list_tri_decroissant_stable_avec_departage_cle_primaire() {
+        let db = migrated_db().await;
+        create_entity_table(&db, filterable::Entity).await;
+        let alice = principal("alice");
+        let mut seeded = Vec::new();
+        for stamp in [10, 20, 10, 20] {
+            seeded.push(
+                create::<filterable::Entity>(
+                    &db,
+                    &alice,
+                    filterable::Model {
+                        id: 0,
+                        owner_id: 0,
+                        kind: "x".to_string(),
+                        project_id: 1,
+                        created_at: stamp,
+                        secret_note: String::new(),
+                    },
+                )
+                .await
+                .expect("create succeeds")
+                .id,
+            );
+        }
+        let sorted = |order: Option<&str>| ListQuery {
+            filters: Vec::new(),
+            sort: Some("created_at".to_string()),
+            order: order.map(str::to_string),
+        };
+
+        let mut seen = Vec::new();
+        for page_index in 1..=2 {
+            let page = list::<filterable::Entity>(
+                &db,
+                &alice,
+                Some(page_index),
+                Some(2),
+                None,
+                sorted(Some("desc")),
+            )
+            .await
+            .expect("le tri paginé ne refuse pas");
+            assert_eq!(page.total_items, 4, "les totaux décrivent les quatre lignes");
+            seen.extend(page.items.iter().map(|row| (row.created_at, row.id)));
+        }
+        let expected = vec![(20, seeded[1]), (20, seeded[3]), (10, seeded[0]), (10, seeded[2])];
+        assert_eq!(
+            seen, expected,
+            "décroissant sur created_at, départagé par la clé primaire croissante, sans saut ni doublon"
+        );
+
+        // `sort` sur une colonne de l'entité non déclarée triable, et sur un nom inconnu : refus.
+        for name in ["kind", "inconnu"] {
+            let refused = list::<filterable::Entity>(
+                &db,
+                &alice,
+                None,
+                None,
+                None,
+                ListQuery {
+                    filters: Vec::new(),
+                    sort: Some(name.to_string()),
+                    order: None,
+                },
+            )
+            .await;
+            assert!(
+                matches!(refused, Err(RestError::InvalidQuery(_))),
+                "`sort={name}` hors des colonnes triables est un InvalidQuery : {refused:?}"
+            );
+        }
+        // `order` hors {asc, desc}, et `order` sans `sort` : refus.
+        let refused = list::<filterable::Entity>(&db, &alice, None, None, None, sorted(Some("up")))
+            .await
+            .expect_err("order=up est refusé");
+        assert!(
+            refused.to_string().starts_with("MRD-REST-008"),
+            "le refus nomme le code de la crate : {refused}"
+        );
+        let refused = list::<filterable::Entity>(
+            &db,
+            &alice,
+            None,
+            None,
+            None,
+            ListQuery {
+                filters: Vec::new(),
+                sort: None,
+                order: Some("desc".to_string()),
+            },
+        )
+        .await
+        .expect_err("order sans sort est refusé");
+        assert!(
+            matches!(refused, RestError::InvalidQuery(_)),
+            "`order` sans `sort` est un InvalidQuery : {refused:?}"
+        );
+    }
+
+    /// Même Scenario — preuve d'émission par `MockDatabase` : le `SELECT` paginé porte le tri
+    /// décroissant demandé suivi de la clé primaire croissante en départage (précédent
+    /// `list_applique_order_by_sur_la_cle_primaire` : sous `SQLite` le contenu seul ne prouve pas
+    /// la clause).
+    #[tokio::test]
+    async fn list_emet_le_tri_demande_departe_par_la_cle_primaire() {
+        use sea_orm::{DbBackend, MockDatabase};
+        use std::collections::BTreeMap;
+
+        let alice = user::Model {
+            id: 7,
+            subject: "alice".to_string(),
+            email: None,
+            display_name: None,
+            created_at: chrono::Utc::now(),
+        };
+        let count_row = BTreeMap::from([("num_items".to_string(), sea_orm::Value::BigInt(Some(5)))]);
+        let db = MockDatabase::new(DbBackend::Sqlite)
+            .append_query_results([[alice]])
+            // `OwnerOnly` : `rbac::list_access` consulte `is_admin` — sans appartenance, la
+            // restriction owner s'applique.
+            .append_query_results::<user::Model, _, _>([[]])
+            .append_query_results([[count_row]])
+            .append_query_results::<filterable::Model, _, _>([[]])
+            .into_connection();
+
+        let page = list::<filterable::Entity>(
+            &db,
+            &principal("alice"),
+            Some(1),
+            Some(2),
+            None,
+            ListQuery {
+                filters: Vec::new(),
+                sort: Some("created_at".to_string()),
+                order: Some("desc".to_string()),
+            },
+        )
+        .await
+        .expect("le mock scripte les trois requêtes du listage");
+        assert_eq!(page.total_items, 5, "le `COUNT` scripté vaut 5");
+
+        let page_sql = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(sea_orm::Transaction::statements)
+            .map(ToString::to_string)
+            .find(|sql| {
+                sql.starts_with("SELECT") && sql.contains(r#"FROM "filterables""#) && !sql.contains("COUNT")
+            })
+            .expect("le SELECT de la page paginée a été émis");
+        assert!(
+            page_sql.contains(r#"ORDER BY "filterables"."created_at" DESC, "filterables"."id" ASC"#),
+            "le tri demandé est suivi de la clé primaire croissante en départage : {page_sql}"
+        );
+    }
+
+    /// Scenario « liste filtrée sur deux colonnes parmi trois déclarées » — parmi `owner_id`,
+    /// `kind` (texte) et `project_id` (entier) déclarées filtrables, deux critères d'égalité : ne
+    /// remontent que les lignes satisfaisant les deux égalités, en `AND` avec la restriction de
+    /// lecture, et `total_items` reflète le filtre.
+    #[tokio::test]
+    async fn list_filtree_sur_deux_colonnes_parmi_trois_declarees() {
+        let db = migrated_db().await;
+        create_entity_table(&db, filterable::Entity).await;
+        let alice = principal("alice");
+        for (kind, project) in [("a", 1), ("a", 2), ("b", 2), ("a", 2)] {
+            create::<filterable::Entity>(
+                &db,
+                &alice,
+                filterable::Model {
+                    id: 0,
+                    owner_id: 0,
+                    kind: kind.to_string(),
+                    project_id: project,
+                    created_at: 1,
+                    secret_note: String::new(),
+                },
+            )
+            .await
+            .expect("create succeeds");
+        }
+
+        let page = list::<filterable::Entity>(
+            &db,
+            &alice,
+            None,
+            None,
+            None,
+            ListQuery {
+                filters: vec![
+                    ("kind".to_string(), "a".to_string()),
+                    ("project_id".to_string(), "2".to_string()),
+                ],
+                sort: None,
+                order: None,
+            },
+        )
+        .await
+        .expect("deux critères licites ne refusent pas");
+        assert_eq!(
+            page.total_items, 2,
+            "les totaux décrivent le filtre, pas la table"
+        );
+        assert_eq!(page.items.len(), 2);
+        assert!(
+            page.items
+                .iter()
+                .all(|row| row.kind == "a" && row.project_id == 2),
+            "les deux égalités en AND, aucune ligne hors filtre : {:?}",
+            page.items
+        );
+    }
+
+    /// Scenario « une colonne non déclarée filtrable est refusée, un nom inconnu ignoré » —
+    /// `secret_note` est une colonne de l'entité non déclarée filtrable : refus (`MRD-REST-008`,
+    /// jamais ignorée) ; `inconnu=1` : nom inconnu de l'entité, la clé est ignorée et la réponse
+    /// complète revient ; `project_id=abc` : valeur non convertible sur colonne entière, refus.
+    #[tokio::test]
+    async fn colonne_non_declaree_filtree_refusee_nom_inconnu_ignore() {
+        let db = migrated_db().await;
+        create_entity_table(&db, filterable::Entity).await;
+        let alice = principal("alice");
+        create::<filterable::Entity>(
+            &db,
+            &alice,
+            filterable::Model {
+                id: 0,
+                owner_id: 0,
+                kind: "a".to_string(),
+                project_id: 1,
+                created_at: 1,
+                secret_note: String::new(),
+            },
+        )
+        .await
+        .expect("create succeeds");
+        let query = |filters: Vec<(&str, &str)>| ListQuery {
+            filters: filters
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+            sort: None,
+            order: None,
+        };
+
+        // Colonne de l'entité non déclarée filtrable : refusée, jamais silencieusement ignorée.
+        let refused =
+            list::<filterable::Entity>(&db, &alice, None, None, None, query(vec![("secret_note", "x")]))
+                .await
+                .expect_err("une colonne non déclarée filtrable est refusée, jamais ignorée");
+        assert!(
+            matches!(refused, RestError::InvalidQuery(_))
+                && refused.to_string().starts_with("MRD-REST-008: invalid query"),
+            "secret_note hors des colonnes déclarées : {refused:?}"
+        );
+
+        // Nom inconnu de l'entité : la tolérance aux clés inconnues est conservée, réponse complète.
+        let page = list::<filterable::Entity>(&db, &alice, None, None, None, query(vec![("inconnu", "1")]))
+            .await
+            .expect("un nom inconnu est ignoré, sans erreur");
+        assert_eq!(
+            page.total_items, 1,
+            "aucune condition ajoutée : la table pleine revient"
+        );
+
+        // Valeur non convertible sur une colonne entière : refus, le message nomme la colonne.
+        let refused =
+            list::<filterable::Entity>(&db, &alice, None, None, None, query(vec![("project_id", "abc")]))
+                .await
+                .expect_err("abc n'est pas une valeur entière licite");
+        assert!(
+            matches!(refused, RestError::InvalidQuery(_)),
+            "valeur non convertible sur colonne entière : {refused:?}"
+        );
+    }
+
+    /// Scenario « plafond de critères et noms répétés » — neuf critères distincts dépassent
+    /// `MAX_FILTERS` (`8`) : `InvalidQuery` ; deux fois le même nom `kind` : `InvalidQuery`.
+    #[tokio::test]
+    async fn list_plafond_de_criteres_et_nom_repete() {
+        let db = migrated_db().await;
+        create_entity_table(&db, filterable::Entity).await;
+        let alice = principal("alice");
+
+        let nine = ListQuery {
+            filters: (1..=9)
+                .map(|index| (format!("colonne_{index}"), "1".to_string()))
+                .collect(),
+            sort: None,
+            order: None,
+        };
+        let refused = list::<filterable::Entity>(&db, &alice, None, None, None, nine)
+            .await
+            .expect_err("neuf critères dépassent le plafond de huit");
+        assert!(
+            matches!(refused, RestError::InvalidQuery(_)) && refused.to_string().starts_with("MRD-REST-008"),
+            "plus de MAX_FILTERS critères est un InvalidQuery : {refused:?}"
+        );
+
+        let duplicated = ListQuery {
+            filters: vec![
+                ("kind".to_string(), "x".to_string()),
+                ("kind".to_string(), "y".to_string()),
+            ],
+            sort: None,
+            order: None,
+        };
+        let refused = list::<filterable::Entity>(&db, &alice, None, None, None, duplicated)
+            .await
+            .expect_err("un nom répété est refusé");
+        assert!(
+            matches!(refused, RestError::InvalidQuery(_)),
+            "le nom de critère répété est un InvalidQuery : {refused:?}"
         );
     }
 
@@ -2687,9 +3269,16 @@ mod tests {
         create_entity_table(&db, recipe::Entity).await;
 
         // list_access refuse → RestError::Forbidden → McpError::Forbidden (-32001).
-        let refused = list::<ingredient::Entity>(&db, &principal("stranger"), None, None, None)
-            .await
-            .expect_err("Group sans appartenance refuse");
+        let refused = list::<ingredient::Entity>(
+            &db,
+            &principal("stranger"),
+            None,
+            None,
+            None,
+            ListQuery::default(),
+        )
+        .await
+        .expect_err("Group sans appartenance refuse");
         let refused: McpError = refused.into();
         assert!(matches!(refused, McpError::Forbidden));
         assert_eq!(
