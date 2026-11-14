@@ -55,6 +55,10 @@ Must:
     (lints `pedantic` dépendants du graphe, gating mal typé) n'est visible que là. `./AGENTS.md`, `./.github/workflows/ci.yml` et
     `./.github/workflows/workflows.sdd` amendés le 2026-11-06 (accord explicite du développeur principal sur ces fichiers hors
     périmètre, lot 3).
+    **Amendement 2026-11-14 (feature `lymaille-pg`, issue #81, DSD `DEC-31`, ./src/lymaille/interactive/pg_relay.sdd)** — complète les précédents sans les réécrire ; en cas de contradiction de comptage, cet amendement
+    prévaut : s'y ajoute la combinaison `--no-default-features --features lymaille-pg`, soit **dix-sept** combinaisons de tests et dix-sept de clippy. Elle fait exister le relais `LISTEN/NOTIFY` (`sea-orm/sqlx-postgres`). Un contrôle de graphe de plus :
+    `cargo tree --no-default-features --features lymaille -e normal -i sqlx-postgres` doit rendre une **sortie stdout vide** (le test est la stdout vide, pas le code de sortie, comme pour `ts-rs`) ; `cargo tree --no-default-features --features lymaille-pg -e normal -i sqlx-postgres`
+    doit imprimer une ligne. `./AGENTS.md`, `./.github/workflows/ci.yml`, `./.github/workflows/workflows.sdd` et l'agent `validator` à amender avec l'accord explicite du développeur principal (tâche ci-dessous).
     **Amendement 2026-10-19** : `graphql` et `graphiql` sortent de la batterie avec la suppression de la
     surface GraphQL — soit **dix** combinaisons de tests et dix de clippy, toutes en
     `--no-default-features --features <liste>` hors défaut et `--all-features`. Les
@@ -166,6 +170,7 @@ Tasks:
     `./AGENTS.md` et dans les matrices test et clippy de `./.github/workflows/ci.yml`.
   [x] Amendement 2026-10-19 (`db`) : la batterie de `./AGENTS.md`, de `./.github/workflows/ci.yml` (matrices test et clippy) et de l'agent
     `validator` est portée de dix à treize combinaisons (tâche D8 de `./miryad-core.sdd`).
+  [ ] Amendement 2026-11-14 (`lymaille-pg`) : batterie de `./AGENTS.md` (déjà reprise), de `./.github/workflows/ci.yml` (matrices test et clippy, contrôles de graphe), de `./.github/workflows/workflows.sdd` et de l'agent `validator` portée à dix-sept combinaisons. Accord explicite du développeur principal requis ; livré avec la feature de ./src/lymaille/interactive/pg_relay.sdd.
 
 Done when:
   `cargo clippy --all-targets -- -D warnings`, la même commande sur chacune des combinaisons de
