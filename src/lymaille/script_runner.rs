@@ -1052,7 +1052,7 @@ mod tests {
 
     /// Scenario « un script agit sous les droits de son spectateur » : la ligne d'alice est mise
     /// à jour (hooks et `write_policy` de `rest::core` appliqués), celle de bob échoue en
-    /// `ScriptFailed` (`forbidden`).
+    /// `ScriptFailed` (`not found` — 404 uniforme sous lecture `OwnerOnly`).
     #[tokio::test(flavor = "multi_thread")]
     async fn un_script_agit_sous_les_droits_de_son_spectateur() {
         let db = db_test().await;
@@ -1092,8 +1092,10 @@ mod tests {
             .expect_err("alice ne peut pas ecrire la ligne de bob");
         match &refus {
             LymailleError::ScriptFailed(message) => {
+                // Motif `not found` : 404 uniforme sur la ligne d'autrui sous lecture
+                // `OwnerOnly` (./script_runner.sdd #77).
                 assert!(
-                    message.contains("forbidden"),
+                    message.contains("not found"),
                     "le refus nomme le motif : {message}"
                 );
             }

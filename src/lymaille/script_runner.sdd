@@ -55,6 +55,9 @@ Exposes:
   `ScriptRunner`, `ScriptDeps`, `ScriptLimits`
 
 Tasks:
+  [!] (cohérence #77 (1), appliquée 2026-11-14 par spec-dd, à reconfirmer) : le Then du Scenario « un script agit sous les droits de son spectateur » attendait `ScriptFailed` (`forbidden`) pour l'`update` d'autrui ; la fixture
+    `recipes` étant lecture `OwnerOnly`, l'arbitrage `./../rest/core.sdd` du 2026-11-13 rend le refus en `not found` (404 uniforme, pas d'oracle d'existence). Le Then est amendé en conséquence ; le rendu `forbidden` par le
+    script reste verrouillé ailleurs dans le fichier (fixture `AdminOnly` du Scenario des modules d'hôte, `static_verdict` non affecté par #77). L'assertion du test suit l'amendement — seul le texte du motif change.
   [x] Tests d'abord (SQLite mémoire, module d'hôte factice, connecteur MCP espion, ressource `recipes`), puis ./script_runner.rs.
     Validé 2026-11-11 : 8 tests ↔ 8 `Scenario` nommés (`un_spectateur_*` … `une_erreur_de_script_*`), rouge d'abord par imports non résolus ; batterie ciblée `lymaille` + contrôle `workflow,lymaille` + clippy 5 graphes + fmt verts ; synthèse tenue par le primary (`validator` indisponible).
     Arbitrages du 2026-11-11 (développeur principal) : toolset sans version active → `Forbidden` confirmé ; rôles MCP seuls, source Rhai jamais montée, figé au `Must` ; contexte `H_…` : échec fermé, Open Issue `scripts-hote#OI-6`.
@@ -91,7 +94,7 @@ Scenario: un spectateur n'obtient que ce que son principal peut faire
 Scenario: un script agit sous les droits de son spectateur
   Given le script `resources::update("recipes", 1, #{ approved: true })` sur une ligne d'`alice`, puis sur une ligne de `bob`
   When `run` est appelé pour `alice` deux fois (chaque ligne)
-  Then la ligne d'`alice` est mise à jour (hooks et `write_policy` de `rest::core` appliqués), celle de `bob` échoue en `ScriptFailed` (`forbidden`), sans mode d'effets propre
+  Then la ligne d'`alice` est mise à jour (hooks et `write_policy` de `rest::core` appliqués), celle de `bob` échoue en `ScriptFailed` (`not found` — 404 uniforme de la ligne d'autrui sous lecture `OwnerOnly`, arbitrage `./../rest/core.sdd` du 2026-11-13, issue #77 ; le rendu `forbidden` par le script reste vérifié par le Scenario « un module d'hôte accordé est appelable, un autre non » via `static_verdict` `AdminOnly`), sans mode d'effets propre
 
 Scenario: un module d'hôte accordé est appelable, un autre non
   Given `script_grants.modules` = `["view"]`, deux modules enregistrés `view` et `act`, et des scripts qui appellent `view::show()` puis `act::go()`

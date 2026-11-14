@@ -10,6 +10,7 @@ use sea_orm::{
 use crate::auth::AuthPrincipal;
 use crate::query::{PagedResult, Pagination};
 use crate::rbac::{ListAccess, can_create, can_read, can_write, list_access, static_verdict};
+use crate::resource::AccessPolicy;
 use crate::rest::RestEntity;
 use crate::rest::error::RestError;
 use crate::users::resolve_user;
@@ -88,14 +89,19 @@ pub(crate) async fn get<E: RestEntity>(
     // `Group` sans appartenance refusent avant toute requête sur la table de l'entité — un
     // étranger n'apprend jamais si la ligne existe. `Some(true)` (Public, admin, membre) est un
     // verdict déjà rendu : la ligne relue est rendue sans second appel rbac. `None`
-    // (`OwnerOnly`, indécidable sans enregistrement) retombe sur `can_read` — résidu assumé.
+    // (`OwnerOnly`, indécidable sans enregistrement) retombe sur `can_read` — dont le refus rend
+    // `NotFound` comme un identifiant inexistant (amendement 2026-11-13, issue #77 : pas d'oracle
+    // sous lecture `OwnerOnly`).
     let verdict = static_verdict::<E>(db, E::read_policy(), &user).await?;
     if verdict == Some(false) {
         return Err(RestError::Forbidden);
     }
     let record = E::find_by_id(id).one(db).await?.ok_or(RestError::NotFound)?;
     if verdict.is_none() && !can_read::<E>(db, &user, &record).await? {
-        return Err(RestError::Forbidden);
+        // `verdict` n'est `None` que sous `OwnerOnly` (`rbac::static_verdict`) : la politique
+        // appliquée est bien `OwnerOnly` et le refus de `can_read` rend le même `NotFound` qu'un
+        // identifiant inexistant — pas d'oracle d'existence (`rest/core.sdd`, amendement #77).
+        return Err(RestError::NotFound);
     }
     Ok(record)
 }
@@ -149,7 +155,16 @@ pub(crate) async fn update<E: RestEntity>(
     let existing = E::find_by_id(id).one(db).await?.ok_or(RestError::NotFound)?;
 
     if verdict.is_none() && !can_write::<E>(db, &user, &existing).await? {
-        return Err(RestError::Forbidden);
+        // Amendement `rest/core.sdd` 2026-11-13 (issue #77) : sous lecture `OwnerOnly` l'existence
+        // de la ligne est un secret — le refus de `can_write` sur la ligne relue rend le même
+        // `NotFound` qu'un identifiant inexistant, aucune écriture, hook jamais appelé. Sous toute
+        // autre lecture (ex. `Public` avec écriture `OwnerOnly`, arbitré 2026-11-14) l'existence est
+        // publique : `Forbidden` conservé.
+        return Err(if E::read_policy() == AccessPolicy::OwnerOnly {
+            RestError::NotFound
+        } else {
+            RestError::Forbidden
+        });
     }
 
     let mut active = mark_all_set::<E>(body.into_active_model());
@@ -203,7 +218,15 @@ pub(crate) async fn delete<E: RestEntity>(
     let existing = E::find_by_id(id).one(db).await?.ok_or(RestError::NotFound)?;
 
     if verdict.is_none() && !can_write::<E>(db, &user, &existing).await? {
-        return Err(RestError::Forbidden);
+        // Amendement `rest/core.sdd` 2026-11-13 (issue #77) : lecture `OwnerOnly` ⇒ existence
+        // secrète, le refus rend le même `NotFound` qu'un identifiant inexistant et `before_delete`
+        // n'est jamais appelé ; sinon (ex. lecture `Public`, arbitré 2026-11-14) `Forbidden`
+        // conservé.
+        return Err(if E::read_policy() == AccessPolicy::OwnerOnly {
+            RestError::NotFound
+        } else {
+            RestError::Forbidden
+        });
     }
 
     // Le hook métier de la suppression s'exécute après `can_write` (statué sur `existing`) et avant
@@ -383,6 +406,44 @@ mod tests {
             }
             fn write_policy() -> AccessPolicy {
                 AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                Some(Column::OwnerId)
+            }
+        }
+    }
+
+    /// Lecture `Public`, écriture `OwnerOnly`, colonne propriétaire déclarée — fixture de
+    /// l'arbitrage 2026-11-14 (issue #77) : sous lecture `Public`, l'existence de la ligne est
+    /// publique, le refus d'écriture d'autrui reste `403` (pas de `404` uniforme).
+    mod public_read {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "public_reads")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub owner_id: i32,
+            pub label: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "public_reads"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
             }
             fn owner_column() -> Option<Column> {
                 Some(Column::OwnerId)
@@ -1340,7 +1401,9 @@ mod tests {
     }
 
     /// Scenario « get existant : `Ok`, `RestError::Forbidden` au non-autorisé » — owner, admin et
-    /// tiers sur la même ligne `OwnerOnly`.
+    /// tiers sur la même ligne `OwnerOnly`. Amendement 2026-11-13 (issue #77) : la `read_policy`
+    /// étant `OwnerOnly`, le tiers refusé par `can_read` reçoit `NotFound` — la même réponse qu'un
+    /// identifiant inexistant, l'existence de la ligne est un secret.
     #[tokio::test]
     async fn get_owner_passe_etranger_refuse() {
         let db = migrated_db().await;
@@ -1375,7 +1438,7 @@ mod tests {
         );
         assert!(matches!(
             get::<recipe::Entity>(&db, &principal("bob"), created.id).await,
-            Err(RestError::Forbidden)
+            Err(RestError::NotFound)
         ));
     }
 
@@ -1750,8 +1813,11 @@ mod tests {
     }
 
     /// Scenario « update d'une ligne existante refusée : le corps n'est jamais examiné » — la
-    /// décision est prise sur `existing` : un corps dont la PK est inconnue ne déplace pas la
-    /// réponse vers `NotFound`, l'appelant refusé reçoit `Forbidden`.
+    /// décision est prise sur `existing`, pas sur `body`. Amendement 2026-11-13 (issue #77) : la
+    /// `read_policy` de `recipe` étant `OwnerOnly`, le refus de `can_write` rend désormais
+    /// `NotFound` (uniforme avec l'identifiant inexistant) ; la branche `Forbidden` avec corps à la
+    /// PK inconnue reste observable sous lecture non-`OwnerOnly`, verrouillée par
+    /// `update_delete_ecriture_owner_only_sous_lecture_public_gardent_403`.
     #[tokio::test]
     async fn update_ligne_existante_refusee_corps_jamais_examine() {
         let db = migrated_db().await;
@@ -1782,8 +1848,14 @@ mod tests {
                 }
             )
             .await,
-            Err(RestError::Forbidden)
+            Err(RestError::NotFound)
         ));
+        let row = recipe::Entity::find_by_id(created.id)
+            .one(&db)
+            .await
+            .expect("readable")
+            .expect("la ligne d'alice est intacte");
+        assert_eq!(row.title, "Tarte", "aucune écriture avant le refus");
     }
 
     /// Scenario « update : les colonnes du corps sont écrites, PK du chemin seule cible »
@@ -2133,6 +2205,239 @@ mod tests {
             matches!(result, Err(RestError::NotFound)),
             "rows_affected == 0 est un NotFound, plus jamais un 204 muet : {result:?}"
         );
+    }
+
+    // ── Amendement 2026-11-13 (issue #77, `rest/core.sdd`) — 404 uniforme sous lecture `OwnerOnly` ──
+
+    /// Scenario « ligne d'autrui sous lecture `OwnerOnly` : même réponse qu'un identifiant
+    /// inexistant » — les six réponses de `bob` (`get`/`update`/`delete` sur la ligne d'`alice`,
+    /// puis sur un identifiant inexistant) sont `RestError::NotFound` au corps identique ; `alice`
+    /// et l'admin passent, la ligne reste intacte, la trace de provisionnement de `resolve_user`
+    /// est inchangée (le `subject` refusé est quand même écrit dans `miryad_users`).
+    #[tokio::test]
+    async fn ligne_autrui_lecture_owner_only_repond_comme_identifiant_inexistant() {
+        let db = migrated_db().await;
+        create_entity_table(&db, recipe::Entity).await;
+        let alice = principal("alice");
+        let bob = principal("bob");
+        let admin = member_of(&db, "admin-user", ADMIN_GROUP_NAME).await;
+        let tarte = || recipe::Model {
+            id: 0,
+            title: "Tarte".to_string(),
+            owner_id: 0,
+            category: "dessert".to_string(),
+        };
+        let created = create::<recipe::Entity>(&db, &alice, tarte())
+            .await
+            .expect("create succeeds");
+        let absent = created.id + 1000;
+
+        // Deux refus paires — ligne d'autrui puis identifiant inexistant — même verdict
+        // `NotFound`, corps rendu identique : la ligne d'autrui n'est pas un oracle.
+        let pair = |label: &str, stranger: RestError, ghost: RestError| {
+            assert!(
+                matches!(stranger, RestError::NotFound),
+                "{label} ligne d'autrui : {stranger:?}"
+            );
+            assert!(
+                matches!(ghost, RestError::NotFound),
+                "{label} inexistant : {ghost:?}"
+            );
+            assert_eq!(
+                stranger.to_string(),
+                ghost.to_string(),
+                "{label} : corps rendu identique : la ligne d'autrui n'est pas un oracle"
+            );
+        };
+
+        // Les deux `get` refusés à `bob` rendent la même réponse, une et une seule fois évaluées.
+        pair(
+            "get",
+            get::<recipe::Entity>(&db, &bob, created.id)
+                .await
+                .expect_err("bob ne lit pas la ligne d'autrui"),
+            get::<recipe::Entity>(&db, &bob, absent)
+                .await
+                .expect_err("bob ne lit pas un identifiant inexistant"),
+        );
+        // Idem sur `update` : aucune écriture avant le refus, corps jamais écrit.
+        let détournée = recipe::Model {
+            title: "détournée".to_string(),
+            ..tarte()
+        };
+        pair(
+            "update",
+            update::<recipe::Entity>(&db, &bob, created.id, détournée.clone())
+                .await
+                .expect_err("bob n'écrit pas la ligne d'autrui"),
+            update::<recipe::Entity>(&db, &bob, absent, détournée)
+                .await
+                .expect_err("bob n'écrit pas un identifiant inexistant"),
+        );
+        // Idem sur `delete` : aucun `DELETE` émis sur la ligne d'autrui.
+        pair(
+            "delete",
+            delete::<recipe::Entity>(&db, &bob, created.id)
+                .await
+                .expect_err("bob ne supprime pas la ligne d'autrui"),
+            delete::<recipe::Entity>(&db, &bob, absent)
+                .await
+                .expect_err("bob ne supprime pas un identifiant inexistant"),
+        );
+
+        // La ligne d'`alice` est intacte, et `alice` comme l'admin passent toujours.
+        let row = recipe::Entity::find_by_id(created.id)
+            .one(&db)
+            .await
+            .expect("readable")
+            .expect("la ligne d'alice est intacte");
+        assert_eq!(row.title, "Tarte", "aucune écriture n'a précédé les refus");
+        assert!(
+            get::<recipe::Entity>(&db, &alice, created.id)
+                .await
+                .is_ok_and(|r| r.id == created.id),
+            "alice lit toujours sa ligne"
+        );
+        let corps_admin = recipe::Model {
+            id: created.id,
+            ..tarte()
+        };
+        assert!(
+            update::<recipe::Entity>(&db, &admin, created.id, corps_admin)
+                .await
+                .is_ok_and(|r| r.id == created.id),
+            "l'admin passe toujours sur la ligne d'autrui"
+        );
+        assert!(
+            get::<recipe::Entity>(&db, &admin, created.id)
+                .await
+                .is_ok_and(|r| r.id == created.id),
+            "l'admin relit toujours la ligne"
+        );
+
+        // Trace de provisionnement inchangée : le `subject` refusé `404` a quand même écrit sa
+        // ligne `miryad_users` (`Handles` « Provisionnement avant tout »).
+        assert!(
+            user::Entity::find()
+                .filter(user::Column::Subject.eq("bob"))
+                .one(&db)
+                .await
+                .expect("miryad_users lisible")
+                .is_some(),
+            "resolve_user tourne avant toute décision, refusé ou pas"
+        );
+    }
+
+    /// Scenario « écriture `OwnerOnly` sous lecture `Public` : la ligne d'autrui reste refusée en
+    /// 403 » (arbitré 2026-11-14) — l'existence est publique : `update` et `delete` d'autrui rendent
+    /// `Forbidden` (pas `NotFound`), `get` rend la ligne. Un corps porteur d'une PK inconnue ne
+    /// déplace pas la décision : elle est prise sur `existing`, le corps n'est jamais examiné.
+    #[tokio::test]
+    async fn update_delete_ecriture_owner_only_sous_lecture_public_gardent_403() {
+        let db = migrated_db().await;
+        create_entity_table(&db, public_read::Entity).await;
+        let alice = resolve_user(&db, "alice", None).await.expect("resolve");
+        let inserted = public_read::Entity::insert(public_read::ActiveModel {
+            id: NotSet,
+            owner_id: Set(alice.id),
+            label: Set("vécue".to_string()),
+        })
+        .exec(&db)
+        .await
+        .expect("seed row");
+        let bob = principal("bob");
+
+        // get : lecture `Public`, la ligne est rendue même à un étranger en écriture.
+        assert!(
+            get::<public_read::Entity>(&db, &bob, inserted.last_insert_id)
+                .await
+                .is_ok_and(|r| r.label == "vécue")
+        );
+
+        // update : existence publique, refus conservé en `Forbidden` malgré une PK de corps inconnue.
+        let refused = update::<public_read::Entity>(
+            &db,
+            &bob,
+            inserted.last_insert_id,
+            public_read::Model {
+                id: 999_998,
+                owner_id: 0,
+                label: "détournée".to_string(),
+            },
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(RestError::Forbidden)),
+            "lecture `Public` : l'existence est publique, `403` conservé : {refused:?}"
+        );
+
+        // delete : idem.
+        let refused = delete::<public_read::Entity>(&db, &bob, inserted.last_insert_id).await;
+        assert!(
+            matches!(refused, Err(RestError::Forbidden)),
+            "lecture `Public` : l'existence est publique, `403` conservé : {refused:?}"
+        );
+
+        let row = public_read::Entity::find_by_id(inserted.last_insert_id)
+            .one(&db)
+            .await
+            .expect("readable")
+            .expect("la ligne d'alice est intacte");
+        assert_eq!(row.label, "vécue", "aucune écriture n'a précédé le refus");
+    }
+
+    /// Parité MCP de l'amendement 2026-11-13 (issue #77) — sans décision propre : le `NotFound`
+    /// rendu par `get`/`update`/`delete` sur la ligne d'autrui sous lecture `OwnerOnly` se traduit
+    /// par `From<RestError>` en `McpError::NotFound` (`MRD-MCP-002`, `-32002`), comme le `NotFound`
+    /// d'un identifiant inexistant.
+    #[cfg(feature = "mcp")]
+    #[tokio::test]
+    async fn parite_mcp_ligne_autrui_owner_only_est_not_found() {
+        use crate::mcp::McpError;
+
+        let db = migrated_db().await;
+        create_entity_table(&db, recipe::Entity).await;
+        let alice = principal("alice");
+        let created = create::<recipe::Entity>(
+            &db,
+            &alice,
+            recipe::Model {
+                id: 0,
+                title: "Tarte".to_string(),
+                owner_id: 0,
+                category: "dessert".to_string(),
+            },
+        )
+        .await
+        .expect("create succeeds");
+        let bob = principal("bob");
+
+        let refusals = [
+            get::<recipe::Entity>(&db, &bob, created.id).await.map(drop),
+            update::<recipe::Entity>(
+                &db,
+                &bob,
+                created.id,
+                recipe::Model {
+                    id: created.id,
+                    title: "détournée".to_string(),
+                    owner_id: 0,
+                    category: "dessert".to_string(),
+                },
+            )
+            .await
+            .map(drop),
+            delete::<recipe::Entity>(&db, &bob, created.id).await,
+        ];
+        for refused in refusals {
+            let translated: McpError = refused.expect_err("la ligne d'autrui refuse par NotFound").into();
+            assert!(matches!(translated, McpError::NotFound), "{translated}");
+            assert_eq!(
+                translated.rpc_code(),
+                -32002,
+                "traduction sans réévaluation : MRD-MCP-002"
+            );
+        }
     }
 
     // ----------------------------------------------------------- mark_all_set

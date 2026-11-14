@@ -411,6 +411,47 @@ mod tests {
         }
     }
 
+    /// Fixture de politique de l'amendement 2026-11-14 (issue #77, `../rest/core.sdd`) — lecture
+    /// `Public`, écriture `OwnerOnly`, colonne de possession explicite : sous lecture `Public`
+    /// l'existence de la ligne est publique, le refus d'écriture d'autrui reste
+    /// `RestError::Forbidden` → `-32001` — le seul chemin de refus qui rende encore `-32001` et la
+    /// trace `warn` depuis le 404 uniforme des lectures `OwnerOnly`.
+    /// `[?]` — le `Scenario` nomme l'outil `recipes_delete` ; ce nom appartient à la fixture
+    /// `recipe`, la fixture de politique est donc `public_reads` (même choix que `refrecipes` au
+    /// cycle `hooks-async`).
+    mod public_read {
+        use super::*;
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "public_reads")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub label: String,
+            pub owner_id: i32,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "public_reads"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn owner_column() -> Option<Column> {
+                Some(Column::OwnerId)
+            }
+        }
+    }
+
     /// Seconde entité fixture (lecture `Public`) — sert au scenario d'ordre déterministe
     /// de `tools/list` (`articles_*` avant `recipes_*`).
     mod article {
@@ -459,7 +500,7 @@ mod tests {
     }
 
     /// Base `SQLite` en mémoire migrée (table des tokens présente, `issue_token` usable)
-    /// avec les deux tables de fixtures créées.
+    /// avec les trois tables de fixtures créées.
     async fn migrated_state() -> MiryadAuthState {
         let db = Database::connect("sqlite::memory:")
             .await
@@ -472,6 +513,9 @@ mod tests {
         db.execute(&schema.create_table_from_entity(article::Entity))
             .await
             .expect("articles table creates");
+        db.execute(&schema.create_table_from_entity(public_read::Entity))
+            .await
+            .expect("public_reads table creates");
         state_around(db)
     }
 
@@ -498,6 +542,12 @@ mod tests {
         mcp_router(registry).with_state(state)
     }
 
+    fn app_with_public_reads(state: MiryadAuthState, format: OutputFormat) -> Router {
+        let mut registry = McpToolRegistry::new(format);
+        registry.register::<public_read::Entity>();
+        mcp_router(registry).with_state(state)
+    }
+
     fn principal(subject: &str) -> AuthPrincipal {
         AuthPrincipal {
             subject: subject.to_string(),
@@ -518,6 +568,17 @@ mod tests {
         recipe::ActiveModel {
             id: Set(id),
             title: Set(title.to_string()),
+            owner_id: Set(owner_id),
+        }
+        .insert(db)
+        .await
+        .expect("fixture row inserts");
+    }
+
+    async fn insert_public_read(db: &DatabaseConnection, id: i32, label: &str, owner_id: i32) {
+        public_read::ActiveModel {
+            id: Set(id),
+            label: Set(label.to_string()),
             owner_id: Set(owner_id),
         }
         .insert(db)
@@ -1299,7 +1360,10 @@ mod tests {
     }
 
     /// `Scenario` : « appel refusé par la politique rend -32001 sous 200 » — l'echec de
-    /// politique ne se dit pas en `403` comme en REST ; `data` absent.
+    /// politique ne se dit pas en `403` comme en REST ; `data` absent. Amendement 2026-11-14
+    /// (issue #77) : le Given est porte a la fixture lecture `Public` / ecriture `OwnerOnly` —
+    /// sous lecture `OwnerOnly`, le `delete` d'autrui rendrait `-32002` (404 uniforme,
+    /// `../rest/core.sdd`) et non `-32001`.
     #[tokio::test]
     async fn appel_refuse_par_la_politique_rend_moins_32001_sous_200() {
         let _tour = serial_turn();
@@ -1308,12 +1372,12 @@ mod tests {
             .await
             .expect("resolve")
             .id;
-        insert_recipe(&state.db, 1, "Tarte d'autrui", other_id).await;
+        insert_public_read(&state.db, 1, "Tarte d'autrui", other_id).await;
         let token = bearer_for(&state.db, "alice").await;
         let served = post_json(
-            app(state, OutputFormat::Json),
+            app_with_public_reads(state, OutputFormat::Json),
             &token,
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recipes_delete","arguments":{"id":1}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"public_reads_delete","arguments":{"id":1}}}"#,
         )
         .await;
         assert_eq!(
@@ -1522,7 +1586,10 @@ mod tests {
     }
 
     /// `Scenario` : « appel interdit trace un warn sans arguments » — un evenement
-    /// `warn` pour le `-32001`, jamais les arguments ni un secret.
+    /// `warn` pour le `-32001`, jamais les arguments ni un secret. Amendement 2026-11-14
+    /// (issue #77) : meme fixture que le Scenario « appel refusé par la politique rend -32001
+    /// sous 200 » (lecture `Public` / ecriture `OwnerOnly`) — seul chemin de refus rendant
+    /// encore `-32001` et donc le `warn` correspondant.
     #[tokio::test]
     async fn appel_interdit_trace_un_warn_sans_arguments() {
         let _tour = serial_turn();
@@ -1531,13 +1598,13 @@ mod tests {
             .await
             .expect("resolve")
             .id;
-        insert_recipe(&state.db, 1, "Tarte d'autrui", other_id).await;
+        insert_public_read(&state.db, 1, "Tarte d'autrui", other_id).await;
         let token = bearer_for(&state.db, "alice").await;
         let (_guard, captured) = capture_traces();
         let served = post_json(
-            app(state, OutputFormat::Json),
+            app_with_public_reads(state, OutputFormat::Json),
             &token,
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recipes_delete","arguments":{"id":1}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"public_reads_delete","arguments":{"id":1}}}"#,
         )
         .await;
         assert_eq!(served.json()["error"]["code"], -32001);
@@ -1562,6 +1629,10 @@ mod tests {
     /// `Done when` : « la parite de surface est tenue : les memes refus que REST
     /// produisent la meme decision `rest::core` rendue `-32001`/`-32002` par error.rs
     /// (test de comparaison lu, pas suppose) » — la decision vient de `rest::core` lui-meme.
+    /// Amendement 2026-11-14 (issue #77) : les deux codes restent vivants — `-32001` par refus
+    /// d'ecriture d'autrui sous lecture `Public` (fixture `public_read` : existence publique,
+    /// `Forbidden` conserve), `-32002` par `get` d'une ligne d'autrui en lecture `OwnerOnly`
+    /// (fixture `recipe` : 404 uniforme, pas d'oracle d'existence).
     #[tokio::test]
     async fn parite_refus_rest_rendus_moins_32001_et_moins_32002() {
         use crate::mcp::error::McpError;
@@ -1575,9 +1646,12 @@ mod tests {
             .expect("resolve")
             .id;
         insert_recipe(&state.db, 1, "Tarte d'autrui", other_id).await;
+        insert_public_read(&state.db, 1, "Tarte d'autrui", other_id).await;
 
-        // La decision REST nue : supprimer la ligne d'autrui est un `RestError::Forbidden`.
-        let forbidden = crate::rest::core::delete::<recipe::Entity>(&state.db, &alice, 1)
+        // La decision REST nue : ecrire la ligne d'autrui sous lecture `Public` est un
+        // `RestError::Forbidden` — l'existence est publique, le refus n'est pas masque en
+        // NotFound (arbitrage #77 du 2026-11-14).
+        let forbidden = crate::rest::core::delete::<public_read::Entity>(&state.db, &alice, 1)
             .await
             .expect_err("le refus de politique est attendu");
         assert!(matches!(forbidden, RestError::Forbidden), "{forbidden:?}");
@@ -1586,10 +1660,12 @@ mod tests {
         assert_eq!(mcp.wire_message(), "MRD-MCP-001: forbidden");
         assert_eq!(mcp.data(), None);
 
-        // La relire par le noyau REST : `RestError::NotFound` ; en MCP, `-32002`.
-        let not_found = crate::rest::core::get::<recipe::Entity>(&state.db, &alice, 999)
+        // La relire par le noyau REST : en lecture `OwnerOnly`, la ligne d'autrui est un
+        // `RestError::NotFound` — la meme reponse qu'un identifiant inexistant (amendement #77
+        // du 2026-11-13) ; en MCP, `-32002`.
+        let not_found = crate::rest::core::get::<recipe::Entity>(&state.db, &alice, 1)
             .await
-            .expect_err("la cle absente est attendue");
+            .expect_err("la ligne d'autrui en lecture OwnerOnly est un NotFound");
         assert!(matches!(not_found, RestError::NotFound), "{not_found:?}");
         let mcp: McpError = not_found.into();
         assert_eq!(mcp.rpc_code(), -32002);

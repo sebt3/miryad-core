@@ -597,7 +597,7 @@ Tasks:
     actuelle (aucune transaction, aucun réordonnancement) ; fixtures de test de ./core.rs et de ./mod.rs portées au nouveau trait (réécriture
     totale, `DEC-4`) ; convertir les trois nouveaux `Scenario` en tests nommés (`hook_lit_la_base_par_la_connexion_de_l_appel`, `hook_refus_en_base_bloque_l_ecriture`,
     `hook_couvre_le_module_resources_de_lymaille`). Dépend de /src/resource.sdd (même amendement) — relues et approuvées ensemble.
-  [ ] Issue #77 (1) — 404 uniforme pour la ligne d'autrui sur une ressource `OwnerOnly`. Spec d'abord : le `Must` d'ordre des opérations à id (relecture puis `can_read`/`can_write`, `Forbidden` si faux) et le paragraphe
+  [x] Issue #77 (1) — 404 uniforme pour la ligne d'autrui sur une ressource `OwnerOnly`. Spec d'abord : le `Must` d'ordre des opérations à id (relecture puis `can_read`/`can_write`, `Forbidden` si faux) et le paragraphe
     « Ordre 404-avant-403 … résidu assumé » sont amendés : sur `get`, `update` et `delete`, quand la politique appliquée est `OwnerOnly` et que `can_read`/`can_write` refuse la ligne relue, la réponse est
     `RestError::NotFound` (`MRD-REST-001`), identique à l'identifiant inexistant — même corps, même code, aucune écriture avant. `AdminOnly` et `Group` gardent leur `403` par `static_verdict` (aucune relecture,
     pas d'oracle). `Scenario` : deux lectures (identifiant inexistant, identifiant d'autrui) donnent la même réponse ; `update` et `delete` idem ; un admin passe toujours ; la trace de provisionnement de
@@ -605,6 +605,12 @@ Tasks:
     Arbitré le 2026-11-14 (confirmé) : écriture `OwnerOnly` sous lecture `Public` : l'existence de la ligne est déjà publique, un `404` sur `update`/`delete` d'une ligne d'autrui serait faux et trompeur. `404` uniforme
     seulement quand la **lecture** est aussi `OwnerOnly` (donc quand l'existence est un secret) ; sinon `403` conservé. `Scenario` à ajouter : lecture `Public` + écriture `OwnerOnly`, `update` d'une ligne d'autrui → `403`.
     Arbitré le 2026-11-14 : les canaux auxiliaires (durée de réponse différente entre « absent » et « d'autrui ») ne sont **pas** traités ; le `Must` le dit en une phrase pour ne pas sur-promettre.
+    Validé 2026-11-14 (validator PASS sur la lecture ; batterie complète rejouée par le primary : 16 combinaisons tests et clippy vertes, 0 échec, fmt vert) : production dans ./core.rs seulement ; cohérences cross-spec posées en `[!]` dans
+    ./mod.sdd, ./../mcp/handler.sdd et ./../lymaille/script_runner.sdd (à reconfirmer par le développeur principal).
+    [?] (implementer) : le `Must not` « Réévaluer lui-même une décision d'autorisation » ne cite que le test `write_policy == OwnerOnly` de l'injection ; l'arbitrage du 2026-11-14 oblige aussi à tester `read_policy` dans
+    `update`/`delete` (forme du rendu, pas décision). Amender cette ligne à la relecture. Choix provisoire : suivre le `Handles` amendé, qui nomme `read_policy`.
+    [?] (implementer) : le test inline `ligne_autrui_lecture_owner_only_repond_comme_identifiant_inexistant` dépassait `clippy::too_many_lines` ; comprimé par helper de paire sans `#[allow]`, assertions au bit près
+    (précédent `openapi.rs` : extraction, pas exemption). Si un autre traitement du lint est préféré, c'est de la forme, pas du contrat.
   [ ] Issue #77 (2) — `409` sur violation de contrainte unique. Spec d'abord : dans `create` et `update`, une `DbErr` dont `sql_err()` est `SqlErr::UniqueConstraintViolation` (déjà employé par
     ./../lymaille/resource_module.rs : la détection existe pour SQLite et PostgreSQL) devient la nouvelle erreur de ./error.sdd ; toute autre `DbErr` reste `Database` (`MRD-REST-003`, `500`) ; le corps ne cite
     ni la contrainte, ni la colonne, ni la valeur. `Scenario` : seconde création qui viole une unicité → `409` ; `update` qui viole → `409` ; autre `DbErr` → `500` inchangé. Puis tests d'abord (SQLite mémoire),

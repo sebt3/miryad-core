@@ -1048,7 +1048,9 @@ mod tests {
             ))
             .await
             .expect("router does not fail");
-        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+        // Amendement ./../rest/core.sdd du 2026-11-13 (issue #77) : la `PUT` d'autrui sur une
+        // ressource en lecture `OwnerOnly` rend `404`, plus `403` — pas d'oracle d'existence.
+        assert_eq!(forbidden.status(), StatusCode::NOT_FOUND);
 
         let allowed = app_ref
             .oneshot(json_request(

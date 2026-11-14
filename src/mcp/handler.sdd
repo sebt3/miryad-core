@@ -317,6 +317,11 @@ Tasks:
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
     la fixture de test (@MiryadResource::before_create à l'ancienne signature, ~ligne 348) est portée au nouveau trait ; convertir le scénario ci-dessous en test nommé
     `hook_qui_lit_la_base_refuse_en_32000`. Dépend de /src/resource.sdd et /src/rest/core.sdd (même amendement).
+  [!] (cohérence #77 (1), appliquée 2026-11-14 par spec-dd, à reconfirmer) : les deux Scenarios de refus de politique (`-32001` sous 200 ; trace `warn`) Givenaient une entité `OwnerOnly` dont le `delete` d'autrui rend
+    `-32002` (non `-32001`) et aucune trace depuis l'arbitrage `./../rest/core.sdd` du 2026-11-13 (404 uniforme en lecture `OwnerOnly`, parité MCP par `From<RestError>`). Le Given est amendé vers la fixture lecture
+    `Public` / écriture `OwnerOnly` — le seul chemin de refus qui rende encore `-32001` et la trace `warn` (arbitrage « lecture Public + écriture OwnerOnly → 403 conservé » du 2026-11-14, même issue). Les tests
+    `appel_refuse_par_la_politique_rend_moins_32001_sous_200` et `appel_interdit_trace_un_warn_sans_arguments` portent la nouvelle fixture ; `parite_refus_rest_rendus_moins_32001_et_moins_32002` garde ses deux codes
+    vivants : `-32001` par refus d'écriture sous lecture `Public`, `-32002` par ligne d'autrui en lecture `OwnerOnly`.
   [ ] Issue #78 — `inputSchema` de l'outil `{name}_list` : propriétés `string`/typées pour chaque colonne filtrable déclarée, `sort` (énuméré sur les colonnes triables), `order` (`asc`|`desc`) ; `filter` seulement quand
     `filter_column` est `Some` (inchangé) ; `additionalProperties: false`. Spec d'abord (`Must` et `Scenario` sur le schéma exact par entité de test), puis tests, puis ./handler.rs. Après ./registry.sdd.
 
@@ -458,9 +463,9 @@ Scenario: params invalides pour tools/call répond -32602 sous 200
   And quand `{"name":"recipes_list"}` arrive sans `arguments`, l'appel réussit (arbitré 2026-09-29)
 
 Scenario: appel refusé par la politique rend -32001 sous 200
-  Given une entité fixture en @AccessPolicy::OwnerOnly, un enregistrement dont la colonne
+  Given une entité fixture en lecture @AccessPolicy::Public et écriture @AccessPolicy::OwnerOnly (arbitrage `./../rest/core.sdd` du 2026-11-14, issue #77 : l'existence est publique, le refus d'écriture reste `-32001`), un enregistrement dont la colonne
     @owner_column désigne un possesseur différent du principal du bearer courant
-  When un `tools/call` `recipes_delete` ciblant cet `id` légitime arrive authentifié
+  When un `tools/call` `public_reads_delete` (la fixture du Given) ciblant cet `id` légitime arrive authentifié
   Then le statut HTTP est `200` — l'échec de politique ne se dit pas en `403` ici comme en REST
     (/src/rest/error.sdd) mais en réponse JSON-RPC `error`
   And `error.code` vaut `-32001`, `error.message` exactement `MRD-MCP-001: forbidden`, `error.data` absent
@@ -508,8 +513,8 @@ Scenario: panne de base rend un -32603 générique et trace le détail
     (arbitré 2026-09-29)
 
 Scenario: appel interdit trace un warn sans arguments
-  Given l'entité `OwnerOnly` d'un autre possesseur et un abonné @tracing de test
-  When un `tools/call` `recipes_delete` avec `arguments` `{"id": 1}` arrive
+  Given une entité en lecture @AccessPolicy::Public et écriture @AccessPolicy::OwnerOnly (même arbitrage #77 que le Scenario « appel refusé par la politique rend -32001 sous 200 » : le seul chemin de refus qui rende encore `-32001`) d'un autre possesseur, et un abonné @tracing de test
+  When un `tools/call` `public_reads_delete` (la fixture du Given) avec `arguments` `{"id": 1}` arrive
   Then `error.code` vaut `-32001` et un événement `warn` est capturé
   And aucun événement ne contient la valeur des `arguments` ni un secret (arbitré 2026-09-29)
 
