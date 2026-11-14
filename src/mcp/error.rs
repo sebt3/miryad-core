@@ -55,12 +55,17 @@ pub enum McpError {
     /// 2026-09-29).
     #[error("MRD-MCP-010: invalid request")]
     InvalidRequest,
+    /// `MRD-MCP-011` — violation de contrainte d'unicité (issue #77, arbitré 2026-11-13),
+    /// miroir MCP du `409` REST de `RestError::UniqueViolation`, code JSON-RPC `-32003`.
+    /// Message sans contenu de ligne ni nom de contrainte.
+    #[error("MRD-MCP-011: conflict")]
+    Conflict,
 }
 
 impl McpError {
     /// Code JSON-RPC 2.0 — -32700..-32600 sont réservés au protocole, -32000..-32099 est la
     /// plage libre pour l'application (spec JSON-RPC 2.0). Match exhaustif nommé sur les
-    /// onze variantes : une variante ajoutée interrompt la compilation avant qu'une
+    /// douze variantes : une variante ajoutée interrompt la compilation avant qu'une
     /// enveloppe ne parte par défaut.
     pub(crate) fn rpc_code(&self) -> i32 {
         match self {
@@ -71,6 +76,7 @@ impl McpError {
             McpError::InvalidRequest => -32600, // "Invalid request", standard JSON-RPC
             McpError::InvalidParams(_) => -32602, // "Invalid params", standard JSON-RPC
             McpError::ParseError => -32700,     // "Parse error", standard JSON-RPC
+            McpError::Conflict => -32003, // choix miryad-core dans la bande d'implémentation (issue #77)
             McpError::Database(_) | McpError::Render(_) | McpError::Internal(_) => -32603, // "Internal error", standard JSON-RPC
         }
     }
@@ -115,8 +121,9 @@ impl From<RestError> for McpError {
             RestError::InvalidInput(msg) => McpError::InvalidParams(msg),
             // Arbitré 2026-10-03 (`mcp/error.sdd`) : miroir défensif sans chemin MCP vivant — fil générique.
             RestError::Conflict => McpError::Internal(RestError::Conflict.to_string()),
-            // Parité MCP traitée par la tâche #77 de ./mcp/error.sdd — branchement minimal de compilation, miroir défensif.
-            RestError::UniqueViolation => McpError::Internal(RestError::UniqueViolation.to_string()),
+            // Arbitré 2026-11-13, issue #77 (`mcp/error.sdd`) : un `create` ou un `update` MCP
+            // qui viole une unicité n'est pas une erreur interne — miroir du `409` REST.
+            RestError::UniqueViolation => McpError::Conflict,
         }
     }
 }
@@ -389,6 +396,20 @@ mod tests {
         assert_eq!(err.data(), None);
     }
 
+    /// `Scenario` : « `From` `RestError::UniqueViolation` devient `McpError::Conflict` » —
+    /// parité MCP de la violation de contrainte unique (arbitré 2026-11-13, issue #77) :
+    /// `-32003`, message `MRD-MCP-011: conflict` sans contenu de ligne, `data` absent,
+    /// `Error::source` absent.
+    #[test]
+    fn from_rest_unique_violation_devient_conflict() {
+        let err: McpError = RestError::UniqueViolation.into();
+        assert!(matches!(err, McpError::Conflict), "{err:?}");
+        assert_eq!(err.rpc_code(), -32003);
+        assert_eq!(err.wire_message(), "MRD-MCP-011: conflict");
+        assert_eq!(err.data(), None);
+        assert!(err.source().is_none(), "Conflict ne porte aucune source");
+    }
+
     // ——— Variantes de protocole et message fil (arbitré 2026-09-29) ———
 
     /// `Scenario` : « `McpError::MethodNotFound`, `ParseError` et `InvalidRequest`
@@ -411,7 +432,7 @@ mod tests {
     }
 
     /// `Scenario` : « `Error::source` ne vaut `Some` que sur `McpError::Database` » —
-    /// une valeur de chacune des onze variantes, `#[from]` vaut `#[source]`, les dix
+    /// une valeur de chacune des douze variantes, `#[from]` vaut `#[source]`, les onze
     /// autres `None`, `Application` compris.
     #[test]
     fn error_source_ne_vaut_some_que_sur_database() {
@@ -427,8 +448,9 @@ mod tests {
             McpError::MethodNotFound("ping".to_string()),
             McpError::ParseError,
             McpError::InvalidRequest,
+            McpError::Conflict,
         ];
-        assert_eq!(errors.len(), 11, "une valeur par variante");
+        assert_eq!(errors.len(), 12, "une valeur par variante");
         let mut database_checked = false;
         for err in &errors {
             match err {
@@ -493,7 +515,7 @@ mod tests {
     /// `Scenario` : « la porte feature `mcp` gouverne toute la surface du fichier » —
     /// le fichier ne compile que sous le gate de `lib.rs`, sans aucun `#[cfg(feature
     /// = ...)]` interne : ce test ne s'exécute que sous `mcp` et `--all-features`, et
-    /// le témoin ci-dessous adresse les onze variantes et les trois fonctions
+    /// le témoin ci-dessous adresse les douze variantes et les trois fonctions
     /// `pub(crate)` sans le moindre branchement de feature. Sous
     /// `--no-default-features`, ni ce test ni aucun `MRD-MCP-*` n'existent (prouvé
     /// par le run batterie concerné, qui compile sans le module `mcp`).
@@ -511,8 +533,9 @@ mod tests {
             McpError::MethodNotFound("x".to_string()),
             McpError::ParseError,
             McpError::InvalidRequest,
+            McpError::Conflict,
         ];
-        assert_eq!(surface.len(), 11);
+        assert_eq!(surface.len(), 12);
         for err in &surface {
             assert!(err.to_string().contains("MRD-") || matches!(err, McpError::Application(_)));
             let _ = (err.rpc_code(), err.wire_message(), err.data());

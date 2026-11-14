@@ -75,20 +75,20 @@ References:
     @McpError::Internal et @McpError::Application portent une doc)
 
 Must:
-  Table d'exactitude 11/11 variantes → code numérique @rpc_code, sans dérogation et sans bras joker :
+  Table d'exactitude 12/12 variantes → code numérique @rpc_code, sans dérogation et sans bras joker :
     @McpError::Application → `-32000`, @McpError::Forbidden → `-32001`, @McpError::NotFound → `-32002`,
     @McpError::UnknownTool | @McpError::MethodNotFound → `-32601`, @McpError::ParseError → `-32700`,
-    @McpError::InvalidRequest → `-32600`, @McpError::InvalidParams → `-32602`, @McpError::Database |
+    @McpError::InvalidRequest → `-32600`, @McpError::InvalidParams → `-32602`, @McpError::Conflict → `-32003`, @McpError::Database |
     @McpError::Render | @McpError::Internal → `-32603`. Les codes restent dans les deux bandes JSON-RPC 2.0
     citées par le commentaire du fichier : `-32700`..`-32600` réservés au protocole (les trois normalisés
     `-32601` « Method not found », `-32602` « Invalid params », `-32603` « Internal error »), `-32000`..`-32099`
-    réservés aux erreurs d'implémentation (`-32000`, `-32001`, `-32002` sont le choix de miryad-core dans la
+    réservés aux erreurs d'implémentation (`-32000`, `-32001`, `-32002` et `-32003` sont le choix de miryad-core dans la
     bande d'implémentation, pas des codes JSON-RPC normalisés)
   @rpc_code est un @match exhaustif nommant les douze variantes : l'ajout d'une treizième interrompt la
     compilation avant qu'une enveloppe ne parte par défaut — même mécanique que la table @into_response de
     ./../rest/error.sdd ; @data en revanche porte un `_ => @None` muet (seul @Application peut porter un @code,
     toute future variante rendra donc `data` absent sans signal)
-  @Display exactement le littéral de la matrice `Example` : dix préfixes `MRD-MCP-NNN: ` suivis de la charge
+  @Display exactement le littéral de la matrice `Example` : onze préfixes `MRD-MCP-NNN: ` suivis de la charge
     utile verbatim aucune transformation (@sea_orm::DbErr rendu par sa propre @Display — préfixe `Custom Error: `
     de @sea_orm::DbErr::Custom vérifié dans sea-orm `2.0.2` `src/error.rs:59` ; @String recopié sans
     troncature), et pour @McpError::Application `#[error("{}", .0.message)]` : message du @HookError nu, sans
@@ -101,7 +101,7 @@ Must:
     `MRD-MCP-001` dans son @code le verrait sortir tel quel dans `data.code`
   @Error::source vaut @Some seulement pour @McpError::Database et remonte le @sea_orm::DbErr embarqué —
     `#[from]` vaut `#[source]`, vérifié dans thiserror-impl `2.0.20` (`prop.rs::source_field` retient le champ
-    `#[from]`, `expand.rs::impl_enum` émet une branche @source par variante, @None ailleurs) ; les dix autres
+    `#[from]`, `expand.rs::impl_enum` émet une branche @source par variante, @None ailleurs) ; les onze autres
     valent @None, @McpError::Application compris dont le @HookError n'est déclaré ni `#[from]` ni `#[source]` —
     miroir exact de ./../rest/error.rs
   @From<@RestError> exhaustif 9/9 sans joker (@RestError::InvalidInput → @McpError::InvalidParams, arbitré 2026-09-29 ; @RestError::Conflict → @McpError::Internal, miroir défensif sans chemin MCP vivant, arbitré 2026-10-03 ; @RestError::InvalidQuery → @McpError::InvalidParams (`MRD-MCP-005`, `-32602`, arbitré 2026-11-13, issue #78, message conservé) ; @RestError::UniqueViolation → @McpError::Conflict, arbitré 2026-11-13, issue #77 : un `create` ou un `update` MCP qui viole une unicité n'est pas une erreur interne), charges utiles déplacées intactes (@sea_orm::DbErr, @HookError,
@@ -139,7 +139,7 @@ Must:
     @serde_json::to_value) (arbitré par Sébastien le 2026-09-29) : @Display `MRD-MCP-004: output rendering error: {0}`, plus
     « template render error ».
   @data de @McpError::Application vaut toujours `{"code": <code>}` (arbitré par Sébastien le 2026-09-29), la clé valant `null` quand
-    le hook n'a pas de code — parité avec le `422` REST ; les dix autres variantes n'ont pas de
+    le hook n'a pas de code — parité avec le `422` REST ; les onze autres variantes n'ont pas de
     `data`. Un client distingue ainsi un rejet de hook des autres erreurs par `data` seul.
   @McpError::Internal reste un miroir défensif (arbitré par Sébastien le 2026-09-29) : le @From<@RestError> est exhaustif, la
     variante est obligatoire ; aucun chemin MCP vivant ne la produit aujourd'hui, son Scenario
@@ -182,7 +182,7 @@ Depends on:
   ./protocol.rs — @JsonRpcResponse est le débouché obligé du triple rendu (lecture seule, contrat propre)
 
 Exposes:
-  @McpError — enum `pub`, onze variantes, derives @Debug et @thiserror::Error uniquement ; surface publique
+  @McpError — enum `pub`, douze variantes, derives @Debug et @thiserror::Error uniquement ; surface publique
     hors crate atteignable seulement par @crate::mcp::McpError (`pub use` de ./mod.rs), donc sous feature `mcp` :
     @McpError::Forbidden (unitaire, `MRD-MCP-001`, `-32001`), @McpError::NotFound (unitaire, `MRD-MCP-002`,
     `-32002`), @McpError::Database (tuple @sea_orm::DbErr sous `#[from]`, `MRD-MCP-003`, `-32603`),
@@ -201,7 +201,7 @@ Exposes:
   @data — `pub(crate) fn data(&self) -> @Option<@serde_json::Value>` : même périmètre `pub(crate)`
 
 Accepts:
-  @rpc_code/@data/@wire_message : @McpError en `&self`, les onze variantes, sans condition — fonctions totales ; un @String de
+  @rpc_code/@data/@wire_message : @McpError en `&self`, les douze variantes, sans condition — fonctions totales ; un @String de
     charge utile vide est une entrée légale (message rendu par le préfixe seul)
   @From<@RestError> : un @RestError par valeur (cinq variantes, charges úteis déplacées) ; @From<@sea_orm::DbErr> :
     un @sea_orm::DbErr nu — conversion disponible pour l'application (type public) alors qu'aucun `?` du crate
@@ -215,9 +215,9 @@ Accepts:
     en jeu, et les requêtes sans `id` (notifications) obtiennent `202` sans enveloppe (contrat ./handler.rs)
 
 Returns:
-  @rpc_code : @i32 exactement une des valeurs `-32000`, `-32001`, `-32002`, `-32601`, `-32602`, `-32603` selon
+  @rpc_code : @i32 exactement une des valeurs `-32000`, `-32001`, `-32002`, `-32003`, `-32601`, `-32602`, `-32603` selon
     la variante (table `Example`)
-  @data : @Option::None pour dix variantes ; @Some de @serde_json::Value objet à l'unique clé `code`
+  @data : @Option::None pour onze variantes ; @Some de @serde_json::Value objet à l'unique clé `code`
     pour @McpError::Application, la clé valant `null` quand le hook n'a pas de code (arbitré 2026-09-29)
   @From<@RestError>/@From<@sea_orm::DbErr> : la variante @McpError correspondante, charge utile intacte et
     accessible par @Error::source pour @McpError::Database
@@ -289,6 +289,7 @@ Example: matrice exhaustive erreur source → code numérique → message @Displ
   @McpError::UnknownTool de `ghost_get` → `-32601` → `MRD-MCP-006: unknown tool: ghost_get` → clé absente
   @McpError::Internal de `upstream exploded` → `-32603` → `MRD-MCP-007: internal error: upstream exploded` →
     clé absente
+  @McpError::Conflict → `-32003` → `MRD-MCP-011: conflict` → clé absente (variante unitaire, issue #77 du 2026-11-13)
   @McpError::Application encapsulant @HookError::with_code `WIDGET-001` / `label must not be empty` →
     `-32000` → `label must not be empty` → `{"code":"WIDGET-001"}`
   @McpError::Application encapsulant @HookError::new `boom` → `-32000` → `boom` → clé absente
@@ -299,6 +300,8 @@ Example: matrice exhaustive erreur source → code numérique → message @Displ
     @Error::source préservés, seul le préfixe change `MRD-REST-003` → `MRD-MCP-003`)
   @From<@RestError::Application du hook `WIDGET-001`> → @McpError::Application (ligne `-32000` avec
     `{"code":"WIDGET-001"}`, aucun `MRD-*` introduit)
+  @From<@RestError::UniqueViolation> → @McpError::Conflict (ligne `-32003`, message `MRD-MCP-011: conflict` sans contenu
+    de ligne ; `MRD-REST-007` devient `MRD-MCP-011`, arbitré 2026-11-13, issue #77)
   @From<@RestError::Internal portant la @Display d'un @AuthError::Oidc de charge `discovery failed` — ce que
     produit @to_rest_error de ./../rest/tokens.rs> → @McpError::Internal (ligne `-32603`, message
     `MRD-MCP-007: internal error: MRD-AUTH-003: OIDC error: discovery failed` — double code imbriqué, `Tasks [arbitré 2026-09-29]`)
@@ -347,17 +350,22 @@ Tasks:
     trois protocole de la tâche ci-dessus, compte corrigé 2026-10-02 sur validation du validator)
     → 20 tests nommés distincts, verts sous `--features mcp` et `--all-features` ; S10 exercé sur
     les onze valeurs actuelles ; la forme sérialisée est bien verrouillée côté ./protocol.rs.
-  [ ] Issue #77 (arbitré le 2026-11-13 : `McpError::Conflict` dédié, `MRD-MCP-011` (008 à 010 sont pris), `-32003`) — parité MCP de la violation de contrainte unique. Le `From<RestError>` actuel est exhaustif 7/7 et rend `Conflict` en `McpError::Internal` (« miroir défensif sans chemin MCP vivant »). Avec
+  [x] Issue #77 (arbitré le 2026-11-13 : `McpError::Conflict` dédié, `MRD-MCP-011` (008 à 010 sont pris), `-32003`) — parité MCP de la violation de contrainte unique. Le `From<RestError>` actuel est exhaustif 7/7 et rend `Conflict` en `McpError::Internal` (« miroir défensif sans chemin MCP vivant »). Avec
     `RestError::UniqueViolation`, un `create` MCP qui viole une unicité rendrait une erreur interne opaque alors que REST rend `409` : écart de surface, donc no-go (`FR-1`). Décision retenue : nouvelle
     variante `McpError::Conflict` (code `MRD-MCP-011`, `-32003`, texte sans contenu de ligne) — recommandé — ou erreur d'invocation de l'outil (`isError`) avec message stable. Une fois
     tranché : spec (liste des variantes, `From`, `Scenario`), tests d'abord, puis ./error.rs. Après ./../rest/error.sdd.
+    Validé 2026-11-14 (validator PASS en lecture ; batterie complète rejouée par le primary : 16 combinaisons tests et clippy vertes, fmt) : variante `Conflict` + `-32003` + `MRD-MCP-011: conflict` ; les sections
+    récapitulatives manquantes de l'amendement 2026-11-13 (table 12/12, `Returns`, matrice `Example`, compteurs onze/douze, Scenario source) ont été complétées par spec-dd — récapitulatif de l'arbitrage déjà pris, rien de
+    re-décidé ; `[x]` historiques laissés tels quels.
+    [?] (implementer) : le `From<RestError>` du source est à 8 bras quand le `Must` annonce « exhaustif 9/9 » — le neuvième (`RestError::InvalidQuery`, #78) n'existe pas encore dans le code. Choix provisoire : le 9/9
+    n'est exact qu'une fois #78 livré ; aucune action ici.
 
 Done when:
   Les vingt-trois `Scenario` (les vingt-deuxième et vingt-troisième ajoutés le 2026-11-13, issues #77 et #78) disposent chacun d'au moins un test nommé distinct et vert, sous `--features mcp` et
     `--all-features` (seules combinaisons compilant le fichier), et `--no-default-features` compile sans @mcp ni
     @McpError
   La table `Example` est affirmée exhaustivement en test : chaque variante a sa cellule (code, message, `data`)
-    vérifiée, les conversions @From les six cellules, @Error::source la distinction @Some/@None sur onze valeurs
+    vérifiée, les conversions @From les six cellules, @Error::source la distinction @Some/@None sur douze valeurs
   La pureté (aucun @tracing/@println/@dbg), l'absence de statut et d'@axum et l'exhaustivité @match de
     @rpc_code sont certifiés par lecture statique du fichier
   Les six lignes [arbitré 2026-09-29] de `Tasks` (dispatch `-32601`/`-32602` nu, @McpError::Internal défensif, verbatim des
@@ -441,11 +449,11 @@ Scenario: hook sans code : `-32000` et @data `{"code":null}`
     `422` REST (arbitré 2026-09-29)
 
 Scenario: @Error::source ne vaut @Some que sur @McpError::Database
-  Given une valeur de chacune des onze variantes de @McpError, @McpError::Database encapsulant
+  Given une valeur de chacune des douze variantes de @McpError, @McpError::Database encapsulant
     @sea_orm::DbErr::Custom de texte `boom`
   When @Error::source est appelée sur chacune
   Then la réponse est @Some, égale au @sea_orm::DbErr embarqué, pour @McpError::Database seulement
-  But la réponse est @None pour les dix autres, @McpError::Application compris — le @HookError n'est pas
+  But la réponse est @None pour les onze autres, @McpError::Application compris — le @HookError n'est pas
     déclaré source (vérifié thiserror-impl `2.0.20`, miroir de ./../rest/error.rs)
 
 Scenario: la conversion dérivée @From<@sea_orm::DbErr> vaut la même monnaie que le chemin @RestError
