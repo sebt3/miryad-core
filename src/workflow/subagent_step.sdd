@@ -53,7 +53,7 @@ Must:
       (sinon « agent is not a sub-agent ») et son `output_schema` présent (sinon « sub-agent has no output schema »).
     5. `check_grants(caller, definition.modules, ADMIN_ONLY_MODULES)` (`ADMIN_ONLY_MODULES` : constante unique de ../lymaille/identity.sdd, vide au lot 1, mécanisme présent ;
       défense en profondeur de DSD `FR-9`).
-    6. Profil : `profiles().resolve_profile(definition.profile, None)` ; provider : `providers().get_provider(<nom du profil>)` ; absents ou
+    6. Profil : `profiles().resolve_profile(<profil de la définition>, None)` ; **définition sans profil explicite** (amendement du 2026-11-13, issue #75) : profil = `LymailleHost::default_profile()` (même règle que ../lymaille/interactive/assemble.sdd) ; absence, `Ok(None)` ou panne → `StepError` **non retryable** (« no default profile configured ») ; provider : `providers().get_provider(<nom du profil>)` ; absents ou
       taille de contexte inconnue → non retryable. Secret : `secrets.resolve(provider.auth)` si `auth` est défini (`SecretUnresolved` non
       retryable) ; client d'inférence : `RigProvider::new(&RigConfig::new(address, api_key))` (`[?]`). Le secret est enregistré auprès du
       `Redactor` de la session (`[?]`) et n'en sort jamais.
@@ -78,7 +78,7 @@ Must:
   **Amendement lot 2 (2026-11-03, DSD `DEC-20`, `DEC-21`)** : (1) `SubagentDeps.readers` devient `registry: Arc<ResourceRegistry>` (../lymaille/resource_module.sdd) ;
     le module `resources` du step est construit avec `scope = Some(WriteScope { run_key, step_key })` : le step peut **écrire** des ressources, de façon
     idempotente au rejeu (../lymaille/store/write_journal.sdd) ; `run_key` et `step_key` sont ceux de la session `Sub`. (2) Les rôles MCP du contexte lié passent par
-    ../lymaille/mcp_access.sdd (`server_for`, `build_auth`) avec `interactive_token = None` : un serveur `forward` fait échouer le step en `StepError`
+    ../lymaille/mcp_access.sdd (`server_for`, `build_auth`) avec `interactive_token = None` : un serveur `forward` reçoit le jeton de `LymailleHost::forward_token` quand l'hôte en fournit un (amendement du 2026-11-13, issue #82, ../lymaille/mcp_mount.sdd) ; sans fournisseur, `Ok(None)` ou panne, il fait échouer le step en `StepError`
     **non retryable** (« forward auth needs an interactive session »), un serveur refusé en `Forbidden` non retryable. (3) Les avis de reprise
     de `lymaille` (`OI-8`) restent sans échec. (4) `max_writes_per_run` borne les écritures du step.
   **Amendement 2026-11-10 (arbitrage du développeur principal) — type de contexte du step** : le contexte des rôles MCP du step est lu sous le type de contexte
@@ -152,6 +152,12 @@ Tasks:
     Validé 2026-11-07 (validator PASS : redactor configuré, garde de collision `resources`/`result` ; batterie complète 39/39 conforme, `specdd lint` vert, rustdoc sans nouveau warning).
   [x] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : retirer la déclaration locale de `ADMIN_ONLY_MODULES` de ./subagent_step.rs et importer celle de `../lymaille/identity.rs` ; aucun changement de comportement, tests existants verts.
     Validé 2026-11-11 (batterie ciblée `lymaille` et `workflow,lymaille` verte ; synthèse tenue par le primary, `validator` indisponible — voir le `[?]` de `../lymaille/identity.sdd`).
+  [ ] Issue #75 — profil par défaut dans le step. Spec d'abord : au point 6 (`profiles().resolve_profile(definition.profile, None)`), même règle que ./../lymaille/interactive/assemble.sdd : agent sans
+    profil → `LymailleHost::default_profile()` ; absence → `StepError` **non retryable** (« no default profile configured »). `Scenario` : agent sans profil, hôte qui désigne un profil ; sans défaut → step en
+    échec non retryable. Puis tests d'abord, puis ./subagent_step.rs. Après ./../lymaille/interactive/assemble.sdd.
+  [ ] Issue #82 — `forward` dans un step batch. Spec d'abord : le `Must` « un `forward` est un `StepError` non retryable, sans repli » (point `interactive_token = None`) devient : le step passe l'hôte à
+    `build_auth` (./../lymaille/mcp_access.sdd) ; jeton fourni → serveur monté ; sinon le `StepError` non retryable actuel. Amender le `Scenario` « un serveur MCP en forward fait échouer le step sans retry »
+    (cas sans fournisseur conservé) et ajouter le cas « hôte qui fournit un jeton ». Puis tests d'abord, puis ./subagent_step.rs. Après ./../lymaille/mcp_access.sdd.
 
 Done when:
   Les `Scenario` unitaires sont verts sous `all(workflow, lymaille)` et `--all-features` ; les specs de ../lymaille/ sont approuvées avant
@@ -251,3 +257,13 @@ Scenario: un rôle MCP au nom d'un module du run échoue le step
   Given un contexte dont un rôle lié s'appelle `resources`, puis un autre `result`
   When le step est exécuté dans chaque cas
   Then `StepError { retryable: false }` avant tout tour, sans requête d'inférence ni montage de connecteur
+
+Scenario: un serveur MCP en forward est monté avec le jeton de l'hôte
+  Given un contexte qui lie un rôle à un serveur `auth_mode = forward`, et un hôte dont `forward_token` rend `Some(jeton)`
+  When le step s'exécute
+  Then le module est monté, le jeton de l'hôte n'atteint que ce serveur, rien n'est persisté ni journalisé
+
+Scenario: un agent sans profil suit le profil par défaut de l'hôte
+  Given une définition `Sub` sans profil explicite, un hôte dont `default_profile` rend `Some("qwen")`, puis un hôte sans défaut
+  When le step s'exécute
+  Then il s'exécute sur `qwen` ; sans défaut, `StepError` non retryable « no default profile configured »

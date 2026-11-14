@@ -133,6 +133,27 @@ Depends on:
   @serde (derive @Serialize) — sérialisation de @DagSteps, prêtée par ./definition.rs
   ./error.rs — @WorkflowError, @classify_transport_error
 
+  Amendement du 2026-11-13 (issue #80, arbitré : statut, liste, annulation, journal ; `cancel` seul, pas `kill`) — le client lit et pilote l'**API d'administration** de Restate (`admin_url`), toutes les fonctions
+    validant d'abord `WorkflowConfig` (`InvalidConfig` sans requête, comme `trigger_run`) :
+    `pub struct InvocationStatus` (`Debug`, `Clone`, `PartialEq`) à champs publics **minimaux** : `id: String`, `status: String` (état Restate tel que lu : `pending`, `scheduled`, `ready`, `running`, `suspended`, `backing-off`,
+      `paused`, `completed`), `service: String`, `handler: String`, `key: Option<String>`, `created_at: String`, `completed_at: Option<String>`, `retry_count: u64`, `failure: Option<String>` (erreur terminale, texte de Restate
+      tel que lu, **non expurgé par la crate** : l'hôte décide de l'afficher) ; les noms de colonnes de `sys_invocation` sont **vérifiés contre un vrai Restate** (test d'intégration, voir `Scenario`) et consignés en
+      commentaire du fichier avec la version de Restate ;
+    `pub async fn invocation_statuses(config: &WorkflowConfig, http: &reqwest::Client, ids: &[String]) -> Result<Vec<InvocationStatus>, WorkflowError>` : **une** requête `POST {admin_url}/query` (`{"query": "…"}`,
+      `Accept: application/json`) sur `sys_invocation` pour N identifiants (`WHERE id IN (…)`), découpée en lots de 50 identifiants au plus (une requête par lot) ; un identifiant inconnu est **absent** du résultat ;
+      liste vide → `Ok(vec![])` sans requête ; un identifiant qui ne respecte pas la grammaire `inv_` suivie de caractères alphanumériques (`[A-Za-z0-9]`) → `WorkflowError::InvalidConfig` **sans requête** (`/query` n'a pas de paramètres
+      liés : aucun texte libre n'y est interpolé) ;
+    `pub struct InvocationFilter { pub service: Option<String>, pub handler: Option<String>, pub status: Option<String>, pub limit: Option<u32> }` (`Debug`, `Clone`, `Default`) et
+    `pub async fn list_invocations(config, http, filter: &InvocationFilter) -> Result<Vec<InvocationStatus>, WorkflowError>` : requête sur `sys_invocation` filtrée par les champs posés (valeurs validées par la même grammaire
+      stricte `[A-Za-z0-9._:-]`, sinon `InvalidConfig` sans requête), triée par `created_at` décroissant, `limit` plafonné à 1000 (défaut 100) ;
+    `pub async fn cancel_invocation(config, http, id: &str) -> Result<(), WorkflowError>` : `PATCH {admin_url}/invocations/{id}/cancel` (annulation propre : `kill` n'est pas exposé) ; `202`/`2xx` → `Ok(())` ; invocation inconnue
+      ou terminée → `Ok(())` (idempotent, la forme exacte des codes est vérifiée contre Restate) ; autre statut → erreur de transport existante ;
+    `pub struct JournalEntry { pub index: u32, pub kind: String, pub name: Option<String> }` et `pub async fn invocation_journal(config, http, id: &str) -> Result<Vec<JournalEntry>, WorkflowError>` : lecture de `sys_journal`
+      d'une invocation, ordonnée par `index`, pour lire les noms d'étapes posés par ./dispatcher.sdd (`step:<id>`, `render:<id>`).
+    Erreurs : **aucune variante nouvelle** (arbitré) — `Transport`/`Retryable` par `classify_transport_error` sur chaque `.send()`/`.json()`, `InvalidConfig` pour une entrée refusée avant requête, `Transport` pour une réponse
+      d'administration inattendue (forme de réponse, colonne absente). Les tables système ne sont servies qu'une fois le partition store prêt (environ 20 s après le démarrage de Restate, mesuré) : cette attente est une
+      erreur **retryable**, jamais un résultat vide. Aucune requête n'est faite hors `admin_url` ; aucune trace ne cite d'identifiant d'invocation avec un contenu de run.
+
 Exposes:
   @WorkflowConfig — struct `pub`, trois champs `pub` @String : `admin_url`, `ingress_url`,
     `deployment_url` (l'URL que Restate doit pouvoir appeler pour joindre ce processus — le port
@@ -145,6 +166,8 @@ Exposes:
     &reqwest::Client) -> Result<(), WorkflowError>`
   @client::trigger_run — `pub async fn trigger_run(config: &WorkflowConfig, http: &reqwest::Client,
     dag: &DagSteps, vars: &serde_json::Map<String, serde_json::Value>, trigger: Option<&str>) -> Result<RunHandle, WorkflowError>`
+  Amendement du 2026-11-13 (issue #80, administration Restate) : @InvocationStatus, @InvocationFilter, @JournalEntry — structs `pub` ; @client::invocation_statuses, @client::list_invocations, @client::cancel_invocation,
+    @client::invocation_journal — voir `Must`.
 
 Accepts:
   @WorkflowConfig : `admin_url` et `ingress_url` sont validées avant tout appel réseau (arbitré par Sébastien le 2026-09-29) — vides,
@@ -254,6 +277,25 @@ Tasks:
     Validé 2026-11-02 (validator GO) : test nouveau verrouillant les deux Then (corps avec clé et sans en-tête portant le sujet ;
     `None` sans clé), patron B5 ; trace de T4 retirée, rustdoc fidèle sans validation inventée ; huit appels adaptés dont le helper
     `send_run` des intégrations ; batterie ciblée workflow et `--all-features` verte, complète due à la fin du lot 0.
+  [ ] Issue #80 (2) — client d'administration Restate : statut, liste, annulation. Spec d'abord (nouvelles fonctions publiques de `workflow::client`, `WorkflowConfig` inchangé) :
+    `invocation_statuses(config, ids: &[String]) -> Result<Vec<InvocationStatus>, WorkflowError>` (**une** requête `POST /query` sur `sys_invocation` pour N identifiants, découpée au-delà de 50 identifiants, arbitré) ;
+    `list_invocations(config, filtre) -> Result<Vec<InvocationStatus>, WorkflowError>` ; `cancel_invocation(config, id) -> Result<(), WorkflowError>` (`PATCH /invocations/{id}/cancel` de l'API d'administration) ;
+    `invocation_journal(config, id)` (`sys_journal`, noms des étapes de la tâche ./dispatcher.sdd). `Scenario` : statut de 50 invocations en une requête ; invocation inconnue → absente du résultat ; annulation d'un run
+    en cours puis statut ; identifiant mal formé → erreur sans requête ; tables système pas encore prêtes au démarrage → erreur retryable typée. Les formes (requête, réponse, annulation) sont **vérifiées contre un
+    vrai Restate** par test d'intégration `#[ignore]` (`../../tests/workflow_restate.rs`, déjà listé en `Can modify` mais limité aux appels de `trigger_run` : étendre la mention aux tests de ce client) et consignées ici avec la version de Restate. Puis tests d'abord (stub HTTP pour les cas sans
+    serveur), puis ./client.rs.
+    [!] Injection : `/query` n'a pas de paramètres liés ; chaque identifiant interpolé est validé par une grammaire stricte (`inv_` + alphanumérique) avant la requête, aucun texte libre ne passe.
+    Arbitré le 2026-11-13 (`cancel` seul) : annuler = `cancel` (propre, exécute la compensation) ou `kill` (immédiat, sans nettoyage) : recommandé `cancel` seul, `kill` hors de cette livraison.
+    Arbitré le 2026-11-13 (minimale) : forme de `InvocationStatus` (état, dates, service/handler, erreur terminale, nombre de tentatives) : minimale d'abord, étendue à la demande ; le développeur principal tranche la liste des champs publics.
+    Arbitré le 2026-11-14 : test d'intégration `#[ignore]` contre le Restate de la DevStation (`../../tests/workflow_restate.rs`) ; la version de Restate et les formes mesurées (`POST /query`, `sys_invocation`, `sys_journal`, `PATCH …/cancel`) sont consignées ici avant la clôture de la tâche ; tables système « pas encore prêtes » (~20 s au démarrage) → erreur retryable typée.
+    Nouvelle(s) variante(s) d'erreur éventuelle(s) : voir ./error.sdd ; DSD `workflow#OI-4` (lecture du statut) à solder par le développeur principal.
+  [ ] Issue #26 (awakeable, arbitré le 2026-11-14) — résolution et rejet d'un awakeable par l'ingress. Spec d'abord (fonctions publiques de `workflow::client`, `WorkflowConfig` inchangé) :
+    `resolve_awakeable(config, id: &str, value: &serde_json::Value) -> Result<(), WorkflowError>` (`POST {ingress}/restate/awakeables/{id}/resolve`, corps JSON) et `reject_awakeable(config, id: &str, message: &str) -> Result<(), WorkflowError>`
+    (`POST …/reject`) ; l'identifiant est validé par une grammaire stricte avant toute requête (préfixe `prom_1` + base64url, aucun texte libre dans le chemin) ; échecs → variantes existantes de ./error.sdd (`Transport`, `InvalidConfig`) ;
+    ni l'identifiant ni la valeur ne sont tracés. `Scenario` : résolution d'un awakeable en attente → `Ok` et le step reprend avec la valeur ; rejet → le step échoue (message du rejet) ; identifiant mal formé → erreur sans requête ;
+    résolution tardive ou double → comportement mesuré (consigné). Les formes (chemin, corps, codes de réponse) sont **vérifiées contre le `restate-server` réel de la DevStation** par test d'intégration `#[ignore]` et consignées ici avec la version de Restate.
+    Puis tests d'abord (stub HTTP pour les cas sans serveur), puis ./client.rs. Après la tâche « Issue #80 (2) » ci-dessus et la tâche d'implémentation de ./durable.sdd (la forme d'ingress y est mesurée une première fois).
+  [ ] Issue #26 — ré-exports `resolve_awakeable` et `reject_awakeable` : étendre la liste plate de ./mod.sdd et le test `workflow_flat_paths` (voir la tâche « ré-exports #80 » de ./mod.sdd, même cycle). Après la tâche précédente.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
@@ -349,3 +391,28 @@ Scenario: trigger_run pose le trigger dans le corps, et l'omet sans déclencheur
   When @client::trigger_run est appelé avec un DAG d'un step, `vars` vide et `trigger = Some("sub-42")`, puis avec `trigger = None`
   Then le premier corps capturé est `{"dag": [<le step>], "vars": {}, "trigger": "sub-42"}` ; le second est `{"dag": [<le step>], "vars": {}}`,
     sans clé `trigger`
+
+Scenario: le statut de cinquante invocations se lit en une requête
+  Given un stub HTTP d'administration qui compte les requêtes `POST /query`, et cinquante identifiants `inv_…`
+  When `invocation_statuses` est appelé
+  Then une seule requête contient les cinquante identifiants ; un cinquante et unième déclenche une seconde requête ; un identifiant absent de la réponse est absent du résultat
+
+Scenario: un identifiant mal formé n'atteint jamais le réseau
+  Given les identifiants `inv_a'; DROP TABLE x; --` et `a b`, un stub qui compte les requêtes
+  When `invocation_statuses`, puis `list_invocations` avec un `service` mal formé, puis `cancel_invocation`
+  Then `InvalidConfig` dans les trois cas et zéro requête
+
+Scenario: annulation d'un run en cours puis statut
+  Given un run lancé par `trigger_run` contre un vrai `restate-server` (test d'intégration `#[ignore]`, podman) dont un step dort
+  When `cancel_invocation` est appelé puis `invocation_statuses`
+  Then l'annulation est acceptée et l'invocation sort de l'état `running` ; les colonnes de `sys_invocation` et la forme de `PATCH …/cancel` observées sont celles que le fichier consigne, avec la version de Restate
+
+Scenario: les tables système pas encore prêtes sont une attente retryable
+  Given un stub qui répond comme Restate au démarrage (« expecting a partition store »)
+  When `invocation_statuses` est appelé
+  Then une erreur retryable, jamais un `Vec` vide
+
+Scenario: le journal nomme les étapes
+  Given un run terminé contre un vrai Restate
+  When `invocation_journal` est appelé pour l'invocation d'un step ordinaire
+  Then des entrées de nom `render:<id>` puis `step:<id>`, ordonnées par `index`

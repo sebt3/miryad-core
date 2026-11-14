@@ -75,7 +75,7 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
     - **Realized by:** SpecDD /src/workflow/template.sdd
     - **Verified by:** `AC-5`
 
-- **FR-8 - MUST:** Un kind durable (`MiryadDurableStep`) reçoit un `StepContext` étroit (`sleep`, `run_effect`,
+- **FR-8 - MUST:** Un kind durable (`MiryadDurableStep`) reçoit un `StepContext` étroit (`sleep`, `run_effect`, `awakeable` (`FR-19`),
   `run_child_dag`) et est exécuté **sans** `ctx.run()` englobant. Tout kind reçoit un `RunInfo` en lecture seule
   (`run_key`, `step_id`, `depth`).
     - **Source:** `arch@c62a184`, « Contexte de run et kinds durables » ; issue #26 (2026-10-04)
@@ -155,6 +155,15 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
     - **Source:** user instruction, 2026-10-30 ; vynil-core `CHANGELOG` 0.9.0 (#21) ; arbitrage valeurs, user instruction, 2026-11-01
     - **Realized by:** SpecDD /src/workflow/rhai_step.sdd, SpecDD /src/workflow/error.sdd
     - **Verified by:** `AC-12`
+
+- **FR-19 - MUST:** `StepContext` offre un **awakeable** (`awakeable`, et `awakeable_timeout` à délai durable) : un kind
+  durable obtient un identifiant opaque, le remet au travail externe par un effet journalisé (`run_effect`), puis attend
+  que l'application le résolve ou le rejette par l'ingress Restate, sans connexion longue ni sondage. L'identifiant est
+  stable au rejeu, jamais tracé ni placé dans une erreur ; un rejet, un délai échu et une annulation sont des `StepError`
+  non retryables ; la valeur résolue est une donnée externe non fiable, rendue comme sortie ordinaire.
+    - **Source:** issue #26 (réouverture du 2026-10-06) ; user instruction, 2026-11-14 (« tout #26 » entre dans la livraison)
+    - **Realized by:** SpecDD /src/workflow/durable.sdd
+    - **Verified by:** `AC-15`
 
 ## Constraints
 
@@ -322,6 +331,22 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
       timeout coopératif comme celui du `spawn_blocking` ; la panique de ce fil rejoint le rendu `JoinError` de l'étape 4.
     - **Source:** user instruction, 2026-11-01 ; mesures du test A6, 2026-11-01 ; `lymaille` `dsd/agent-sessions/scratchpad.md`, DEC-3 (amendement du 2026-10-27)
 
+- **DEC-11 - Awakeable : méthodes de `StepContext`, remise par effet journalisé, délai durable**
+    - **Context:** un kind ordinaire ne peut pas créer d'awakeable (limite de `ctx.run`) ; le consommateur sondait dans un
+      step ordinaire. Le SDK `restate-sdk` `0.12.1` offre `ctx.awakeable` (identifiant + futur durable) et `select!`.
+    - **Decision:** deux méthodes de `StepContext` (`awakeable`, `awakeable_timeout`) ; l'identifiant vient de `ctx.awakeable`
+      (entrée de journal, donc stable au rejeu) et se remet au travail externe **dans un `run_effect`** (jamais rejoué) ; le
+      délai est un minuteur Restate créé à l'appel et mis en concurrence par `select!` ; les issues (rejet, délai,
+      annulation) sont des `StepError` non retryables. Le dispatcher, `StepError` et les ré-exports ne changent pas.
+    - **Alternatives:** exposer le `Context` complet (écarté, `FR-8` : couplage de l'API publique à la version du SDK) ;
+      `ctx.signal` (écarté : adressé à une invocation, pas à un appel HTTP externe) ; pas de délai (écarté : un awakeable
+      jamais résolu bloquerait le run sans issue, aucune annulation d'awakeable dans le SDK) ; sondage dans un kind
+      ordinaire (statu quo du consommateur : non durable).
+    - **Consequences:** l'identifiant est un secret porteur (qui le détient résout) : sa confidentialité relève du kind qui
+      le remet ; les formes d'ingress (`resolve`, `reject`, résolution tardive) sont mesurées contre un vrai Restate et
+      consignées ; aucune fonction de résolution côté application dans cette Solution tant que `OI-3` n'est pas soldé.
+    - **Source:** issue #26 ; user instruction, 2026-11-14
+
 ## Operations and Resilience
 
 - **Rollout :** `force: true` (CON-2) peut, selon l'OpenAPI de l'admin API de Restate, laisser des invocations en cours
@@ -348,7 +373,7 @@ leurs clients (TBD).
 
 ## Acceptance Criteria
 
-**ASSUMPTION :** `AC-1` à `AC-7` et `AC-9` à `AC-14` sont formulés d'après les requirements et les `Scenario` des specs
+**ASSUMPTION :** `AC-1` à `AC-7` et `AC-9` à `AC-15` sont formulés d'après les requirements et les `Scenario` des specs
 (`src/workflow/*.sdd`). Leur correspondance exacte avec chaque `Scenario` n'a pas été vérifiée dans ce pilote.
 
 - **AC-1:** Une `WorkflowDefinition` créée par un admin est relue à l'identique ; deux définitions de même `name`
@@ -377,6 +402,13 @@ leurs clients (TBD).
   contenu du fichier.
 - **AC-14:** Un `subworkflow` dont le `config` porte `vars = {"a": "{{inputs.x}}"}` donne à l'enfant la valeur rendue ;
   l'enfant ne voit pas les `vars` du parent.
+- **AC-15:** Un kind durable qui crée un awakeable, remet l'identifiant par `run_effect` puis attend reprend avec la valeur
+  résolue par l'ingress ; un rejet fait échouer le step sans retry avec le message de l'appelant ; un délai échu rend
+  `awakeable timed out` ; après un crash du service pendant l'attente, l'identifiant est le même et la remise n'est pas
+  rejouée.
+    - **Verification:** tests d'intégration `#[ignore]` de `tests/workflow_restate.rs` (podman, hors CI : même statut que
+      `AC-8`, voir `OI-2`).
+
 - **AC-8:** Reprise sur crash du service en milieu de couche sans rejeu des steps journalisés.
     - **Verification:** par la méthode du spike du 2026-09-22 (tuer le processus, le relancer, vérifier). Les tests
       `#[ignore]` de `tests/workflow_restate.rs` exigent `podman` et ne tournent pas en CI : AC-8 n'est donc **pas
@@ -390,9 +422,11 @@ leurs clients (TBD).
   retirer `jsonnet` lui-même), après quoi `DENIED_HELPERS` disparaît.
 - **OI-2:** AC-8 (reprise sur crash) n'a pas de test automatisable. Une preuve par spike est à refaire à toute évolution
   majeure de `restate-sdk`. **TBD :** décider si un test d'intégration en cluster de CI est souhaitable.
-- **OI-3:** Pilotage d'un run par awakeable : reporté par arbitrage tant qu'aucun besoin réel ne l'impose (le
-  consommateur sonde dans un step ordinaire). Toute feature de workflow au-delà passe par un arbitrage avant de gagner
-  une spec. Source : `roadmap@c62a184`, item 9.
+- **OI-3:** Pilotage d'un run par awakeable : **arbitré le 2026-11-14** (« tout #26 ») — livré par `FR-19` / `DEC-11`
+  (spec `/src/workflow/durable.sdd`, tâches « Issue #26 — awakeable »). **TBD (à solder à la clôture des tâches, par le
+  développeur principal) :** fonctions de résolution/rejet côté application (`workflow::client`), recommandées, à
+  spécifier dans `/src/workflow/client.sdd` après le client d'administration (#80) ; formes d'ingress mesurées à consigner.
+  Source : `roadmap@c62a184`, item 9 ; user instruction, 2026-11-14.
 - **OI-4:** Lecture du statut d'un run : `client.rs` ne fait qu'enregistrer et déclencher ; une fonction de lecture est
   « un fichier à spécifier si le besoin se confirme ». **TBD.** Source : `arch@c62a184`, « Schéma de
   déploiement ».

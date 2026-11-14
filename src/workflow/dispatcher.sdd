@@ -150,6 +150,11 @@ Must:
   Rester silencieux : aucun @tracing, @println!, @eprintln!, @dbg! — cohérent avec ./step.sdd et
     ./error.sdd, le contrat transverse.
   Compiler uniquement sous `#[cfg(feature = "workflow")]`.
+  Amendement du 2026-11-13 (issue #80, arbitré) — chaque `ctx.run` du dispatcher porte un **nom** lisible dans le journal Restate, par `RunFuture::name(…)` (trait `RunFuture` de `restate-sdk` 0.12.1,
+    `src/context/run.rs`, vérifié) : le run d'**exécution** d'un kind ordinaire s'appelle `step:<id>` et le run de **rendu** (`ctx.run` dédié au seul rendu, branches ordinaire et durable) `render:<id>`, où `<id>`
+    est l'identifiant du step du DAG tel que reçu dans `req`. Un kind durable n'a donc que `render:<id>` dans le journal du dispatcher (ses effets sont nommés par lui-même). Le **nombre** de `ctx.run` ne change pas
+    (un par invocation pour l'exécution ordinaire, aucun englobant pour un kind durable : `Must` et `Must not` inchangés) ; le nom est stable d'un rejeu à l'autre (dérivé de `req` seul, jamais d'une horloge ni d'un
+    identifiant généré). Un nom n'embarque aucune valeur de `config`, d'`inputs` ni de `vars`.
 
 Must not:
   Appeler `.retry_policy(...)` sur `ctx.run()` lui-même : la politique de retry qui gouverne à la fois
@@ -352,6 +357,13 @@ Tasks:
     `RunInfo` unique relayé intact dans les deux branches ; trace de 2 lignes dans ./interpreter.rs (`trigger: None` citant T4,
     champ requis — obligation de compilation, motif B1/B3) ; batterie ciblée workflow et `--all-features` verte, complète due à la
     fin du lot 0.
+  [ ] Issue #80 (1) — nommer les `ctx.run` du `StepDispatcher`. Spec d'abord : chaque `ctx.run` du dispatcher porte un nom lisible dans le journal Restate — le run d'exécution d'un kind ordinaire `step:<id>`, le run de
+    rendu (`ctx.run` dédié au rendu, branches ordinaire et durable) `render:<id>` — par `RunFuture::name(…)` (trait `RunFuture` de `restate-sdk` 0.12.1, `src/context/run.rs`, vérifié) ; le nombre de `ctx.run`
+    (un par invocation pour l'exécution ordinaire, aucun englobant pour un kind durable) est **inchangé** (`Must` et `Must not` actuels). `<id>` est l'identifiant du step du DAG, tel que reçu. `Scenario` :
+    le journal d'une invocation (`sys_journal`) nomme `render:A` puis `step:A`, et `render:S` seul pour un kind durable ; nom stable d'un rejeu à l'autre. Preuve par test d'intégration `#[ignore]`
+    (podman + image `restate`, `../../tests/workflow_restate.rs`, rattaché à cette spec) : aucune preuve possible en mémoire. Puis tests d'abord, puis ./dispatcher.rs.
+    Arbitré le 2026-11-13 : noms des deux runs : `step:<id>` pour l'exécution et `render:<id>` pour le rendu (recommandé) ; l'issue ne nomme que `step:<id>` (« chaque `ctx.run` ») : deux runs de même nom seraient indiscernables.
+    Compatibilité de rejeu (arbitré le 2026-11-14) : renommer un `ctx.run` change des entrées de journal ; une invocation en vol lors de la montée de version peut diverger au rejeu. Le test réel `#[ignore]` (DevStation) vérifie la forme de `/query`, les noms d'étapes dans `sys_journal` et le comportement d'une invocation en vol après une nouvelle révision de déploiement (`register_deployment`) ; le résultat est consigné ici avant livraison, et la montée est documentée comme rupture (invocations en vol à vider) dans la `CHANGELOG`.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow` — périmètre
@@ -487,3 +499,13 @@ Scenario: un step subagent est exécuté par execute_long (DEC-29, preuve d'int�
   Given un `restate-server`, un kind de fixture nommé `subagent` (journalisant `start`/`end`) et `recommended_options()`
   When un DAG à un step `subagent` est exécuté, puis la table `sys_invocation` de l'admin API est lue
   Then le run réussit et l'invocation de ce step cible le handler `execute_long` ; un step `record` cible `execute`
+
+Scenario: le journal d'une invocation nomme ses runs
+  Given un DAG dont le step `A` est un kind ordinaire et le step `S` un kind durable, joués contre un vrai `restate-server` (test d'intégration `#[ignore]`, podman, `../../tests/workflow_restate.rs`)
+  When le run est terminé et le journal des invocations est lu (`sys_journal`)
+  Then l'invocation du step `A` contient des entrées de run nommées `render:A` puis `step:A`, celle du step `S` `render:S` seule (aucune entrée `step:S`) ; le nombre de runs par invocation est celui d'avant
+
+Scenario: les noms de run sont dérivés de la requête seule
+  Given deux appels de `execute` pour la même `req` (rejeu) puis pour un autre `step_id`
+  When le nom du run d'exécution et celui du run de rendu sont calculés (fonction pure du fichier)
+  Then `step:<id>` et `render:<id>` identiques au rejeu, différents pour l'autre `step_id`, sans caractère issu de `config` ni d'`inputs`

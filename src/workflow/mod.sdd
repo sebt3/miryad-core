@@ -46,7 +46,7 @@ Must:
     pas derrière une feature séparée — décision actée lors de la rédaction de ce fichier, cohérente
     avec `mcp` qui active `vynil-core` sans sous-feature dédiée).
   Ré-exporter à plat, `pub use`, exactement : `client::{WorkflowConfig, RunHandle,
-    register_deployment, trigger_run}` ; `definition::{Entity as WorkflowDefinition, Column as
+    register_deployment, trigger_run, invocation_statuses, list_invocations, cancel_invocation, invocation_journal, InvocationStatus, InvocationFilter, JournalEntry}` (amendement du 2026-11-13, issue #80) ; `definition::{Entity as WorkflowDefinition, Column as
     WorkflowDefinitionColumn, Model as WorkflowDefinitionModel, ActiveModel as
     WorkflowDefinitionActiveModel, StepDefinition, DagSteps, WorkflowPolicy, configure_policy}` ;
     `dispatcher::{StepDispatcher, recommended_options}` ; `durable::{MiryadDurableStep, StepContext}` ; `error::WorkflowError` ;
@@ -219,6 +219,8 @@ Tasks:
     Validé 2026-10-18 (Claude) : déclarations et ré-exports posés (`matrix_step` avec le lot de ./matrix_step.sdd) ; deux
     tests gated par `cfg` dans `mod tests` et dans `tests/workflow_flat_paths.rs` (verts sous `workflow`, `workflow,systemone`,
     `workflow,matrix`) ; rustdoc du module sur l'enregistrement par l'application ; clippy des trois combinaisons sans écart.
+  [ ] Issue #80 — ré-exports des nouvelles fonctions de `workflow::client` et de leurs types (`InvocationStatus`…). Spec d'abord : la liste plate fermée de ce fichier et le test `workflow_flat_paths` sont étendus
+    (même arbitrage que le `[?]` « liste plate » de ./dispatcher.sdd : étendre la liste ou assumer l'accès par chemin de module). Puis test d'abord, puis ./mod.rs. Après ./client.sdd. Même cycle : `resolve_awakeable` et `reject_awakeable` (issue #26, arbitré le 2026-11-14) sont ajoutés en dernier à la liste plate et au test, après les tâches correspondantes de ./client.sdd.
 
 Done when:
   Les neuf specs enfants (`error`, `client`, `step`, `dispatcher`, `definition`, `interpreter`,

@@ -11,6 +11,10 @@ Purpose:
     sondage depuis le step n'est ni durable ni idempotent au rejeu (./client.sdd : aucune lecture de
     statut). Le dispatcher appelle donc un kind durable **sans** `ctx.run()` englobant, et lui remet un
     @StepContext, façade volontairement étroite de `restate_sdk::Context`.
+  État de #26 au 2026-11-14 : le sous-workflow (`run_child_dag`, ./subworkflow.sdd) et l'attente durable (`sleep`, sondage durable par `sleep` + `run_effect`) sont livrés ; **seul l'awakeable restait**
+    (arbitré le 2026-11-14 : « tout #26 » = l'awakeable, avec une variante à délai). Il s'ajoute ici sans changer le dispatcher (./dispatcher.sdd : tout kind durable est déjà appelé sans `ctx.run()` englobant), sans nouvelle
+    erreur (./error.sdd : @StepError suffit) et sans nouveau ré-export (./mod.sdd : ce sont des méthodes de @StepContext, déjà exporté).
+
   Surface étroite plutôt que le `Context` complet (recommandation du 2026-10-04, à confirmer) : une API
     publique instable avant `1.0` ne doit pas être couplée à la version de `restate-sdk` ; chaque
     capacité ajoutée à @StepContext est un engagement, et le sous-ensemble ci-dessous suffit au cas
@@ -29,6 +33,7 @@ References:
     le trait que le registre stocke
   ./dispatcher.sdd — seul appelant de @MiryadDurableStep::run (branche durable de `execute`, étape 1b)
     et seul constructeur de @StepContext
+  ../../tests/workflow_restate.rs — intégrations `#[ignore]` contre un vrai `restate-server` (détenu par ./interpreter.sdd ; les `Scenario` d'awakeable y vivent)
   ./interpreter.sdd — lit l'en-tête `DEPTH_HEADER` que @StepContext::run_child_dag pose, et fournit
     @RunInput que `run_child_dag` poste (amendement 2026-10-30, lot B)
   ./definition.sdd — @DagSteps (sous-DAG remis à @StepContext::run_child_dag)
@@ -88,6 +93,21 @@ Must:
       3. @Err(TerminalError) du fils (DAG invalide `400`, step en échec, annulation) → @StepError
           { retryable: false, message: e.to_string() } — **un échec de l'enfant fait échouer le parent**
           (valeur par défaut, `Tasks` ci-dessous) ; @Ok(Json(map)) → @Ok(map).
+  **Amendement du 2026-11-14 (issue #26, awakeable)** — deux méthodes de plus de @StepContext, relues en source `restate-sdk` `0.12.1` (`ContextAwakeables::awakeable<T: restate_sdk::serde::Deserialize + 'static>(&self) ->
+    (String, impl DurableFuture<Output = Result<T, TerminalError>> + Send + 'ctx)`, `restate_sdk::select!`) :
+    `fn awakeable<T>(&self) -> (String, impl Future<Output = Result<T, StepError>> + Send + 'a)` avec `T: serde::de::DeserializeOwned + Send + 'static` (même convention que `run_effect` : le SDK borne sur ses propres traits,
+      l'enveloppe `Json` est posée en interne, l'appelant manipule `T` nu) — crée un awakeable par `ctx.awakeable::<Json<T>>()` et rend son **identifiant** (chaîne opaque) et le futur d'attente. La création est une entrée du
+      journal : après reprise, **le même identifiant** est rendu (jamais recalculé, jamais régénéré). Le futur résolu avec la valeur `v` rend `Ok(v)` ; rejeté (`reject`) ou invocation annulée → @StepError { retryable: false,
+      message: e.to_string() } (le message de rejet de l'appelant externe transite verbatim, comme celui d'un enfant) ;
+    `fn awakeable_timeout<T>(&self, timeout: std::time::Duration) -> (String, impl Future<Output = Result<T, StepError>> + Send + 'a)` — même contrat, plus un délai **durable** : le minuteur (`ctx.sleep(timeout)`) est créé
+      **à l'appel** (pas à la première interrogation : l'ordre des entrées de journal reste celui du code, même après reprise) et mis en concurrence avec l'awakeable par `restate_sdk::select!` ; si le minuteur gagne, le futur
+      rend @StepError { retryable: false, message: "awakeable timed out" } (constante nommée, texte exact verrouillé par un test) ; si l'awakeable gagne, sa valeur ou son rejet, comme ci-dessus. `timeout` nul est accepté
+      (le minuteur échoit aussitôt). Une résolution tardive, après l'échéance, n'est observée par personne (aucune annulation d'awakeable n'existe dans le SDK `0.12.1`) : le comportement de Restate (accepte-t-il la résolution ?
+      quel code HTTP ?) est mesuré par l'intégration et consigné dans `Tasks`.
+    **Usage prescrit** (rustdoc des deux méthodes) : le kind transmet l'identifiant au travail externe **par un effet journalisé** (`ctx.run_effect(|| …)`), jamais directement dans `run` : sans cela, une reprise du parent
+      rejouerait la remise de l'identifiant (doublon du travail externe). Ordre : `awakeable` → `run_effect` (remise) → attente. L'identifiant est un **secret porteur** : quiconque le détient peut résoudre l'awakeable
+      (`POST {ingress}/restate/awakeables/{id}/resolve`) ; il n'est ni tracé, ni placé dans un @StepError, ni dans la valeur de sortie du step par ce fichier — sa confidentialité est affaire du kind qui le remet. La valeur résolue est une **donnée externe non fiable** :
+      le step la rend comme sortie ordinaire (donc `inputs` des dépendants, jamais rendue comme template, ./template.sdd), la validation de sa forme est celle du kind.
   `child_run_key(run_key: &str, step_id: &str) -> @String` — `pub(crate)`, fonction pure :
     `format!("{run_key}:{step_id}")`. Lisible dans l'UI Restate : l'arbre des runs se reconstruit par
     préfixe de clé (observabilité parent/enfant de #26, sans canal supplémentaire).
@@ -96,7 +116,7 @@ Must:
 Must not:
   Exposer `restate_sdk::Context` (ni `&Context`, ni un clone, ni `ctx()`) par @StepContext : la
     surface est le sous-ensemble ci-dessus, toute capacité nouvelle passe par une méthode dédiée et un
-    `Scenario`/`Tasks`. Aucune méthode `awakeable` dans cette itération (`Tasks`).
+    `Scenario`/`Tasks`. Aucune méthode `signal` ni autre primitive du `Context` non listée (amendement du 2026-11-14 : `awakeable` y est désormais).
   Appeler `ctx.run()` autour de `ctx.sleep`/`ctx.request` : c'est précisément la limite que ce
     fichier existe pour lever.
   Déléguer la politique de retry à ce fichier : comme ./dispatcher.rs, aucune `.retry_policy()` posée
@@ -107,6 +127,8 @@ Must not:
   Calculer une profondeur ailleurs qu'ici et dans ./interpreter.rs : `run.depth + 1` pour l'enfant, par
     `saturating_add` (`arithmetic_side_effects` en `deny`) ; le plafond lui-même est de
     ./subworkflow.rs.
+  Calculer, régénérer ou mémoriser l'identifiant d'un awakeable ailleurs que par `ctx.awakeable` (déterminisme du rejeu), le tracer, ou l'inclure dans un @StepError ; exposer `resolve_awakeable`/`reject_awakeable` du SDK par @StepContext
+    (la résolution vient de l'extérieur, par l'ingress ; un step qui résout un awakeable d'un autre run n'est pas un besoin constaté).
   Rester bavard : aucun @println!, @eprintln!, @dbg! ; @tracing seulement si utile, jamais d'inputs/config
     dans une trace (peuvent porter des secrets).
 
@@ -115,14 +137,14 @@ Forbids:
 
 Depends on:
   `restate-sdk` 0.12 (lock `0.12.1`) — `Context`, `RequestTarget`, `Json`, `TerminalError`,
-    `ContextSideEffects`
+    `ContextSideEffects`, `ContextAwakeables`, `select!`
   ./step.rs — @RunInfo, @StepError
   ./definition.rs — @DagSteps
   @async-trait, @serde_json, @std::collections::HashMap, @std::time::Duration
 
 Exposes:
-  `MiryadDurableStep` — trait `pub`, deux méthodes (`kind`, `run`)
-  `StepContext` — struct `pub` opaque : `run_info`, `sleep`, `run_effect`, `run_child_dag` (`pub`) ;
+  `MiryadDurableStep` — trait `pub`, méthodes `kind`, `run`, `raw_fields`
+  `StepContext` — struct `pub` opaque : `run_info`, `sleep`, `run_effect`, `run_child_dag`, `awakeable`, `awakeable_timeout` (`pub`) ;
     `new` `pub(crate)`
   `DEPTH_HEADER`, `child_run_key` — `pub(crate)`
 
@@ -134,6 +156,7 @@ Accepts:
 Returns:
   `run_child_dag` : la table `{ id du step enfant -> sortie }` du run enfant, telle que rendue par
     `DagInterpreter::run`.
+  `awakeable`, `awakeable_timeout` : l'identifiant (`String`) et un futur de `Result<T, StepError>` ; `T` est la valeur JSON résolue par l'appelant externe.
   Toute méthode fallible : @StepError, jamais une `HandlerError`/`TerminalError` brute (traduction par
     ./dispatcher.rs au retour de `run`).
 
@@ -150,6 +173,10 @@ Handles:
   Annulation de l'invocation parente pendant `sleep` ou `run_child_dag` : @StepError non retryable ;
     l'enfant n'est pas annulé par ce fichier (aucun mécanisme d'annulation propagée dans cette
     itération, cohérent avec ./interpreter.sdd, « pas d'annulation des frères »).
+  Rejeu après crash du parent pendant l'attente d'un awakeable : même identifiant (entrée de journal), remise **non rejouée** (`run_effect`), l'attente reprend ; une résolution arrivée pendant l'arrêt est livrée à la reprise.
+  Awakeable rejeté par l'appelant externe : @StepError non retryable portant son message ; un retry rejouerait la même issue (le journal la contient).
+  Délai échu (`awakeable_timeout`) : @StepError non retryable « awakeable timed out » ; le kind peut s'en saisir (compensation, nouvelle tentative par un nouveau step) — ce fichier ne relance rien.
+  Annulation de l'invocation pendant l'attente : @StepError non retryable (`TerminalError` propagée par `select!`, `on_cancel` non spécifié).
 
 Tasks:
   [x] Implémenter ./durable.rs : le trait, @StepContext (`run_info`, `sleep`, `run_effect`,
@@ -167,11 +194,7 @@ Tasks:
   [x] Ordre de lot : après ./step.sdd lot A (`RunInfo`), avant ./step.sdd lot B (le registre
     référence le trait). Tenu à l'exécution 2026-10-04 : lot A clos (c491a08) avant ./durable.rs
     (e521581), registre du lot B dans le même commit.
-  [ ] Reporté sur demande : **awakeable** (#26 — réveil par l'application via l'ingress Restate,
-    sans connexion longue ni sondage). Le consommateur s'en passe pour sa première version (sondage
-    dans un kind ordinaire) ; à rouvrir sur besoin réel avec une méthode dédiée de @StepContext
-    (`awakeable<T>() -> (String, impl Future<Output = Result<T, StepError>>)`) et son `Scenario`
-    d'intégration. Recommandation Claude 2026-10-04, à confirmer par Sébastien.
+  [x] Reporté sur demande : **awakeable** (#26) — remplacée le 2026-11-14 par les tâches « Issue #26 — awakeable » ci-dessous (arbitrage : tout #26 entre dans la livraison). Historique : recommandation du 2026-10-04, le consommateur sondait dans un kind ordinaire.
   [x] Test d'intégration `#[ignore]` d'un kind durable de fixture qui `sleep` puis renvoie
     `run_info()` (`../../tests/workflow_restate.rs`) : prouve la branche durable de ./dispatcher.rs
     (aucun `ctx.run()` englobant, sinon `sleep` échoue) et la transmission de `RunInfo`.
@@ -194,6 +217,19 @@ Tasks:
     l'intégration `#[ignore]` de T6b rejouée verte contre `restate-server` (5,52 s, aucune régression sur le nominal préexistant) ;
     doc `run_info` corrigée à cinq champs (constat validator T1) ; batterie ciblée workflow (et croisements) verte, complète à la
     clôture du lot 0.
+  [ ] Issue #26 — awakeable, tâche 1/2 : **tests d'abord** (intégration `#[ignore]`, fixtures et `Scenario` ci-dessous) dans `../../tests/workflow_restate.rs` (fichier détenu par ./interpreter.sdd, seul `Can modify` : les tests de ce contrat y vivent, sans autorité d'édition propre, comme pour ./subworkflow.sdd ; stub minimal des deux méthodes de ./durable.rs
+    pour que les tests compilent et échouent pour la bonne raison). Fixtures de kinds durables : `attend_awakeable` (crée l'awakeable, remet l'identifiant par `run_effect` — écriture de l'identifiant et incrément d'un compteur dans le journal-fichier existant `journal_fichier`, comme
+    `mode_service_restate` —, attend, rend la valeur) et `attend_awakeable_delai` (idem avec `awakeable_timeout`). Le test résout l'awakeable par l'ingress (`reqwest`, hors du code de production : la crate n'a pas de client de résolution, voir `[?]`
+    ci-dessous) : `POST {ingress}/restate/awakeables/{id}/resolve` corps JSON `Content-Type: application/json` ; rejet : `POST …/reject`. **Les formes exactes (chemin, corps, codes de réponse, y compris la résolution tardive et la double
+    résolution) sont mesurées contre le `restate-server` de la DevStation et consignées ici avec sa version** (relevé à reporter dans `Handles`). Après ./step.sdd, ./dispatcher.sdd (inchangés) ; avant la tâche 2/2.
+  [ ] Issue #26 — awakeable, tâche 2/2 : implémenter dans ./durable.rs `StepContext::awakeable` et `StepContext::awakeable_timeout` (assistant privé commun), constante `AWAKEABLE_TIMEOUT_MESSAGE`, rustdoc (usage prescrit : `awakeable` → `run_effect` →
+    attente ; secret porteur ; `# Errors` de chaque méthode, règle `missing_errors_doc`). Relire en source avant d'écrire les signatures : `restate-sdk` `0.12.1` `ContextAwakeables::awakeable` (`src/context/mod.rs`), `select!` (`src/context/select.rs`), bornes de `Json<T>` (`src/serde.rs`) ; vérifier que le futur composé
+    reste `Send + 'a` et que le minuteur créé à l'appel est déplacé dans le futur (sinon : `StepAwakeable` nommé, à re-soumettre à la spec). Rendre les `Scenario` d'intégration verts. Aucune modification de ./dispatcher.rs, ./error.rs, ./mod.rs. Après la tâche 1/2.
+  [ ] Issue #26 — clôture DSD (par le développeur principal ou en séance `spec-dd`, jamais par un agent d'exécution) : solder `workflow#OI-3` (après les fonctions de résolution, `[?]`) et valider `FR-8`/`FR-19`/`DEC-11`/`AC-15` de `/dsd/miryad-core/workflow.md` (posés le 2026-11-14, à approuver : `FR-8` amendé, `FR-19`, `DEC-11`, `AC-15`, `OI-3` en TBD) ; cocher les tâches ci-dessus après synthèse `validator`.
+    Arbitré le 2026-11-14 : la crate fournit `workflow::client::resolve_awakeable(config, id, &Value)` et `reject_awakeable(config, id, message)` (HTTP ingress, grammaire d'identifiant stricte, aucun texte libre dans le chemin) ; **hors du périmètre de ce fichier**, spécifiés dans ./client.sdd (ré-exports de ./mod.sdd), après la tâche « client d'administration » (#80). Le test d'intégration ci-dessus peut utiliser `reqwest` directement tant que ces fonctions ne sont pas livrées, puis les emploie.
+    Arbitré le 2026-11-14 : `awakeable_timeout` est **inclus** (sans délai un awakeable jamais résolu bloque le run, le SDK `0.12.1` n'ayant pas d'annulation d'awakeable ; @StepContext est opaque, l'appelant ne peut pas composer `select!`).
+    Arbitré le 2026-11-14 : @StepError **inchangé** : un kind qui doit distinguer rejet, délai et annulation compare la constante `AWAKEABLE_TIMEOUT_MESSAGE` (`pub(crate)`) ; aucun genre d'erreur, aucun code `MRD-WORKFLOW-*` nouveau.
+    Arbitré le 2026-11-14 : alternative écartée : `ctx.signal` (`ContextSignals` du SDK, promesse nommée scoped à une invocation, complétée par l'id d'invocation) : adaptée à une autre invocation Restate, pas à un appel HTTP externe porteur d'un identifiant ; `ctx.signal` écarté.
 
 Done when:
   Les `Scenario` ci-dessous ont chacun un test nommé distinct et vert, sur la feature `workflow` ; les
@@ -203,6 +239,8 @@ Done when:
     les intégrations de ./subworkflow.sdd, `run_effect` couverte-par-lecture jusqu'à l'existence d'un
     consommateur réel (aucun `Scenario` sur cette méthode ; la borne est consignée dans `Tasks`).
   ./step.sdd (lot A et B) est approuvée avant ou avec cette spec.
+  Amendement du 2026-11-14 : les `Scenario` d'awakeable ci-dessous ont chacun un test d'intégration `#[ignore]` nommé, **rejoué vert contre un vrai `restate-server`** (par l'implementer, puis par le `validator`) ; seules les valeurs de texte constant
+    (`AWAKEABLE_TIMEOUT_MESSAGE`) sont testables en unitaire. Les formes d'ingress mesurées et la version de Restate sont consignées dans `Tasks`.
 
 Scenario: child_run_key est déterministe et lisible
   Given `run_key = "run-1"` et `step_id = "sous"`
@@ -226,3 +264,38 @@ Scenario: raw_fields d'un kind durable vaut vide par défaut (2026-10-06)
   Given un kind durable de fixture sans redéfinition
   When `StepRegistry::raw_fields(kind)` est appelé
   Then le résultat est `Some(&[])`
+
+Scenario: un awakeable résolu reprend le step avec la valeur (intégration, 2026-11-14)
+  Given le kind de fixture `attend_awakeable` : `awakeable::<Value>()`, remise de l'identifiant par `run_effect` (écriture dans le journal-fichier), attente, sortie = valeur reçue ; un run d'un seul step lancé
+  When le test lit l'identifiant dans le journal-fichier puis le résout par `POST …/awakeables/{id}/resolve` avec `{"ok": 42}`
+  Then le run se termine, la sortie du step vaut `{"ok": 42}`, et la remise de l'identifiant n'a eu lieu qu'une fois
+
+Scenario: un awakeable rejeté fait échouer le step sans retry (intégration)
+  Given le même kind et le même run
+  When le test rejette l'awakeable par `POST …/awakeables/{id}/reject` avec le texte `refus externe`
+  Then le run échoue, le message d'échec du step contient `refus externe`, le step n'est pas rejoué (une seule remise d'identifiant)
+
+Scenario: l'identifiant d'awakeable survit au rejeu du parent (intégration, reprise)
+  Given `attend_awakeable` en attente, le service relancé comme `mode_service_restate` (processus tué puis relancé pendant l'attente)
+  When le service redémarre, puis le test résout l'awakeable avec l'identifiant lu **avant** le crash
+  Then la résolution est acceptée, le step reprend avec la valeur, le journal-fichier ne contient toujours qu'**une** remise d'identifiant (la remise n'est pas rejouée) et l'identifiant relu après reprise est identique
+
+Scenario: un awakeable à délai échoit sans résolution (intégration)
+  Given le kind `attend_awakeable_delai` avec un délai de 2 secondes, jamais résolu
+  When le délai s'écoule
+  Then le step échoue en @StepError non retryable dont le message vaut exactement `AWAKEABLE_TIMEOUT_MESSAGE` (`"awakeable timed out"`) ; le run n'est pas rejoué
+
+Scenario: un awakeable à délai résolu à temps rend sa valeur (intégration)
+  Given `attend_awakeable_delai` avec un délai de 30 secondes
+  When le test résout l'awakeable aussitôt
+  Then le step rend la valeur résolue sans attendre l'échéance (durée du test très inférieure au délai)
+
+Scenario: une résolution tardive ou double est mesurée et consignée (intégration)
+  Given un awakeable déjà échu (délai) puis un awakeable déjà résolu
+  When le test les résout une seconde fois
+  Then les codes de réponse et l'effet observable (aucun effet sur le run terminé) sont consignés dans `Tasks` avec la version de Restate ; le test fixe ces valeurs comme contrat de regression
+
+Scenario: le texte du délai est verrouillé (unitaire)
+  Given la constante `AWAKEABLE_TIMEOUT_MESSAGE`
+  When elle est lue
+  Then elle vaut exactement `awakeable timed out`, sans identifiant ni durée (aucun secret dans un message d'erreur)
