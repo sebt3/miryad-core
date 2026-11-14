@@ -1,5 +1,5 @@
-//! Taxonomie d'erreur de la surface REST — le seul type public `RestError` à huit
-//! variantes, chacune portant soit un code unique `MRD-REST-001` à `MRD-REST-007` dans
+//! Taxonomie d'erreur de la surface REST — le seul type public `RestError` à neuf
+//! variantes, chacune portant soit un code unique `MRD-REST-001` à `MRD-REST-008` dans
 //! sa `Display`, soit le `HookError` applicatif du consommateur, jamais codé `MRD-*`.
 //! L'`IntoResponse` décidé ici fixe par variante le statut et la forme du corps : texte
 //! porteur du code, ou JSON `{code, message}` pour le rejet métier. Les corps `500` sont
@@ -17,8 +17,8 @@ use serde::Serialize;
 
 use crate::resource::HookError;
 
-/// Erreur des handlers REST — huit variantes, chacune portant soit un code unique
-/// `MRD-REST-NNN` (`001` à `007`) dans sa `Display`, soit le `HookError` applicatif
+/// Erreur des handlers REST — neuf variantes, chacune portant soit un code unique
+/// `MRD-REST-NNN` (`001` à `008`) dans sa `Display`, soit le `HookError` applicatif
 /// (`Application`, jamais `MRD-*`). Son `IntoResponse` rend statut et corps par variante.
 #[derive(Debug, thiserror::Error)]
 pub enum RestError {
@@ -59,6 +59,15 @@ pub enum RestError {
     /// d'empreinte de jeton).
     #[error("MRD-REST-007: unique constraint violated")]
     UniqueViolation,
+    /// `MRD-REST-008` — critères ou tri de liste refusés, rendu `400` (neuvième variante,
+    /// arbitrée par Sébastien le 2026-11-13, issue #78 : une décision de l'appelant, pas une
+    /// panne). Tuple d'un `String` de la crate — le message nomme la colonne ou le paramètre
+    /// refusé tel que reçu, jamais une valeur de ligne. Émetteur : `rest::core::list` (critère
+    /// sur une colonne non déclarée filtrable, valeur non convertible, tri non déclaré, `order`
+    /// invalide, plafond de critères). Distincte de `InvalidInput` (`005`, `422`, entrée de
+    /// corps).
+    #[error("MRD-REST-008: invalid query: {0}")]
+    InvalidQuery(String),
 }
 
 #[derive(Serialize)]
@@ -100,6 +109,7 @@ impl IntoResponse for RestError {
             RestError::Conflict | RestError::UniqueViolation => {
                 (StatusCode::CONFLICT, self.to_string()).into_response()
             }
+            RestError::InvalidQuery(_) => (StatusCode::BAD_REQUEST, self.to_string()).into_response(),
         }
     }
 }
@@ -212,8 +222,10 @@ mod tests {
             RestError::Internal("upstream exploded".to_string()),
             RestError::InvalidInput("bad input".to_string()),
             RestError::Conflict,
+            RestError::UniqueViolation,
+            RestError::InvalidQuery("column not filterable: kind".to_string()),
         ];
-        assert_eq!(errors.len(), 7, "une valeur par variante, sept depuis 2026-10-03");
+        assert_eq!(errors.len(), 9, "une valeur par variante, neuf depuis 2026-11-13");
         let mut database_checked = false;
         for err in &errors {
             match err {
@@ -406,6 +418,29 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(content_type, TEXT_PLAIN);
         assert_eq!(&body[..], b"MRD-REST-007: unique constraint violated");
+    }
+
+    /// `Scenario` : « rendu HTTP 400 pour 008 » — neuvième variante arbitrée par Sébastien
+    /// le 2026-11-13 (issue #78) : critères ou tri de liste refusés par `rest::core::list`,
+    /// décision de l'appelant et non une panne ; le message nomme la colonne ou le paramètre
+    /// refusé tel que reçu, jamais une valeur de ligne. Distincte de `InvalidInput` (`005`,
+    /// `422`, entrée de corps). La variante est muette — la spec n'autorise que les deux
+    /// traces `error!` des variantes `500` — donc aucun abonné `tracing` n'est capturé ici.
+    #[tokio::test]
+    async fn http_render_008_invalid_query_is_400() {
+        let err = RestError::InvalidQuery("column not filterable: kind".to_string());
+        assert_eq!(
+            err.to_string(),
+            "MRD-REST-008: invalid query: column not filterable: kind"
+        );
+        assert!(err.source().is_none(), "variante tuple sans source");
+        let (status, content_type, body) = render(err).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(content_type, TEXT_PLAIN);
+        assert_eq!(
+            &body[..],
+            b"MRD-REST-008: invalid query: column not filterable: kind"
+        );
     }
 
     /// `Scenario` : « `Internal` portant un `AuthError` garde le code AUTH hors du corps

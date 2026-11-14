@@ -116,9 +116,13 @@ impl From<RestError> for McpError {
             RestError::Database(e) => McpError::Database(e),
             RestError::Application(e) => McpError::Application(e),
             RestError::Internal(msg) => McpError::Internal(msg),
-            // Arbitré 2026-09-29 (`mcp/error.sdd`) : l'entrée invalide de la crate est une
-            // entrée invalide du client en JSON-RPC — charge utile `String` déplacée intacte.
-            RestError::InvalidInput(msg) => McpError::InvalidParams(msg),
+            // Bras fusionné (`match_same_arms`, harnais `tooling.sdd` ; précédent : `rpc_code`) :
+            // chaque variante est nommée, aucun joker. Arbitré 2026-09-29 (`mcp/error.sdd`) :
+            // l'entrée invalide de la crate est une entrée invalide du client en JSON-RPC.
+            // Arbitré 2026-11-13, issue #78 (`mcp/error.sdd` `Must`, l.107) : un critère ou un
+            // tri de liste refusé relève du même contrat — message conservé, charge utile
+            // `String` déplacée intacte sous `MRD-MCP-005: invalid params: `.
+            RestError::InvalidInput(msg) | RestError::InvalidQuery(msg) => McpError::InvalidParams(msg),
             // Arbitré 2026-10-03 (`mcp/error.sdd`) : miroir défensif sans chemin MCP vivant — fil générique.
             RestError::Conflict => McpError::Internal(RestError::Conflict.to_string()),
             // Arbitré 2026-11-13, issue #77 (`mcp/error.sdd`) : un `create` ou un `update` MCP

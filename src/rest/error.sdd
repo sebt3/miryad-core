@@ -52,7 +52,7 @@ References:
 
 Must:
   Table de rendu invariante et exhaustive, sans bras joker de premier niveau — le `match` de
-    @into_response nomme les sept variantes, l'ajout d'une huitième interrompt la compilation avant
+    @into_response nomme les neuf variantes, l'ajout d'une dixième interrompt la compilation avant
     rendu par défaut, à l'image de /src/auth/error.rs :
     @RestError::NotFound → `MRD-REST-001` → `404` (@StatusCode::NOT_FOUND) → corps texte exactement
       `MRD-REST-001: resource not found` → @CONTENT_TYPE `text/plain; charset=utf-8`
@@ -146,7 +146,7 @@ Must:
   Le contrat d'erreur des routes REST entre dans le document OpenAPI public (arbitré par Sébastien le 2026-09-29) (statuts et
     corps ci-dessous, ./openapi.sdd) ; l'@ir reste code-only.
   **Amendement 2026-10-19 (feature `db`)** — prévaut sur « compilation inconditionnelle » : ce fichier n'est compilé que sous
-    `db` (le `cfg` est posé par `pub mod error;` de ./mod.sdd ; ce fichier ne porte aucun `cfg` propre). @RestError, ses sept
+    `db` (le `cfg` est posé par `pub mod error;` de ./mod.sdd ; ce fichier ne porte aucun `cfg` propre). @RestError, ses neuf
     variantes dont @Database (`#[from] sea_orm::DbErr`) et @Application (@HookError), et ses rendus sont donc inchangés sous
     `db` et absents sans.
 
@@ -217,8 +217,8 @@ Returns:
     chemin d'échec ni repli
   @From<@sea_orm::DbErr> : @RestError::Database conservant l'erreur d'origine accessible par
     @Error::source
-  @Display : @String exactement celui de la table `Must` pour les sept variantes codées, message
-    nu du hook pour @RestError::Application
+  @Display : @String exactement celui de la table `Must` pour les variantes codées (toutes sauf
+    @RestError::Application), message nu du hook pour @RestError::Application
 
 Raises:
   `MRD-REST-001` via @RestError::NotFound : rendu `404` sur `GET/PUT/DELETE /api/v1/{resource}/{id}`
@@ -253,11 +253,13 @@ Handles:
     en @RestError::Database (`MRD-REST-003`) et convertit le reste en @RestError::Internal
     (`MRD-REST-004`) — le message embarqué (`MRD-AUTH-NNN: …`) ne vit que dans la trace, le corps
     client ne porte que le code `MRD-REST-004` (arbitré 2026-09-29).
-  Consommation MCP des mêmes erreurs : conversion des sept variants (@RestError::Conflict →
+  Consommation MCP des mêmes erreurs : conversion des neuf variants (@RestError::Conflict →
     @McpError::Internal, miroir défensif sans chemin MCP vivant, arbitré 2026-10-03) par /src/mcp/error.rs —
     @RestError::NotFound→@McpError::NotFound (`-32002`), @RestError::Forbidden→@McpError::Forbidden
     (`-32001`), @RestError::Database/@RestError::Application/@RestError::Internal charges utiles
-    préservées ; le `422` et l'en-tête @Json n'existent pas en MCP, le @code du hook y passe dans le
+    préservées, @RestError::UniqueViolation→@McpError::Conflict (`-32003`, arbitré 2026-11-13, issue #77),
+    @RestError::InvalidQuery→@McpError::InvalidParams (`-32602`, message conservé, arbitré 2026-11-13, issue #78) ;
+    le `422` et l'en-tête @Json n'existent pas en MCP, le @code du hook y passe dans le
     champ `data` JSON-RPC
   Frontière d'authentification : les `401` (cookie absent, session expirée, token inconnu/expiré)
     sur toutes les routes `/api/v1` sortent d'@AuthError via les rejets @AuthUser/@AuthPrincipal,
@@ -309,6 +311,13 @@ Tasks:
     [?] (validator) : cette spec n'a pas de ligne `Tasks [ ]` pour #78 alors que son contenu contractuel (`InvalidQuery`/`MRD-REST-008`, 18ᵉ `Scenario`, `Done when` à 18) est engagé depuis l'amendement du 2026-11-13 —
     le recompte des Scenarios citant « sept variantes » (Must du match, Scenario source) reste à amender avec la tâche #78. Choix provisoire : traité par le cycle #78, sans ligne de tâche ajoutée ici (hors cycle).
     [?] (implementer) : l'`Example: matrice` (l.437-448) ne nomme ni `UniqueViolation` ni `InvalidInput` — matrice illustrative déjà obsolète avant l'amendement, non normative. La compléter à la prochaine relecture.
+  [x] Livraison #78 de ce fichier — `RestError::InvalidQuery` (neuvième variante, tuple d'un @String, `MRD-REST-008` → `400`, corps `MRD-REST-008: invalid query: <message>` nommant la colonne ou le paramètre refusé tel
+    que reçu, jamais une valeur de ligne), posée sans case dédiée faute de ligne `Tasks` à l'amendement 2026-11-13. Le `From` MCP (`./../mcp/error.rs`) porte le contrat final `InvalidQuery → InvalidParams` (`-32602`,
+    message conservé) : bras posé, son test inline vient avec le cycle surfaces #78 de `./../mcp/error.sdd`.
+    Validé 2026-11-14 (batterie complète verte par le primary : 16 combinaisons tests et clippy, fmt ; les sections normatives faisaient foi) : test `http_render_008_invalid_query_is_400` (18ᵉ `Scenario` — `Done when`
+    à 18 atteint) ; compteur `error_source_is_some_only_for_database` porté à 9 valeurs (le trou `UniqueViolation` de #77 est soldé au passage) ; compteurs de prose et matrice `Example` complétés par spec-dd
+    (récapitulatif des arbitrages 2026-11-13, rien de re-décidé).
+    [?] (implementer) : un run `--features mcp` a montré un échec isolé non reproductible (8 runs verts avant/après, nom non capturé) ; la batterie complète depuis est 16/16 verte, l'incident reste sans mécanisme plausible.
 
 Done when:
   Les 18 `Scenario` (le dix-septième et le dix-huitième ajoutés le 2026-11-13, issues #77 et #78) ont chacun au moins un test nommé distinct et vert dans ./error.rs, sur features
@@ -408,14 +417,14 @@ Scenario: rendu HTTP 422 JSON sans code de hook
     clé `message` valant `boom`
 
 Scenario: source de l'erreur sur Database seulement
-  Given une valeur de chacune des sept variantes de @RestError (sixième ajoutée 2026-09-30,
-    septième 2026-10-03),
+  Given une valeur de chacune des neuf variantes de @RestError (sixième ajoutée 2026-09-30,
+    septième 2026-10-03, huitième et neuvième 2026-11-13),
     @RestError::Database encapsulant
     @sea_orm::DbErr::Custom de texte `boom`, @RestError::InvalidInput du message `bad input` et
     @RestError::Application encapsulant un @HookError quel
   When @Error::source est appelée sur chacune
   Then la réponse est @Some, égale au @sea_orm::DbErr embarqué, pour @RestError::Database seulement
-  But la réponse est @None pour les cinq autres variantes, @RestError::Application et
+  But la réponse est @None pour les huit autres variantes, @RestError::Application et
     @RestError::InvalidInput compris
 
 Scenario: DbErr propagé par l'opérateur d'interrogation devient Database
@@ -443,6 +452,10 @@ Scenario: rendu HTTP 409 pour 006
 
 Example: matrice variante → code → statut → content-type → corps exact
   @RestError::Conflict → `MRD-REST-006` → `409` → `text/plain; charset=utf-8` → `MRD-REST-006: conflict`
+  @RestError::UniqueViolation → `MRD-REST-007` → `409` → `text/plain; charset=utf-8` → `MRD-REST-007: unique constraint violated`
+    (issue #77)
+  @RestError::InvalidQuery du message `column not filterable: kind` → `MRD-REST-008` → `400` →
+    `text/plain; charset=utf-8` → `MRD-REST-008: invalid query: column not filterable: kind` (issue #78)
   @RestError::NotFound → `MRD-REST-001` → `404` → `text/plain; charset=utf-8` → `MRD-REST-001: resource not found`
   @RestError::Forbidden → `MRD-REST-002` → `403` → `text/plain; charset=utf-8` → `MRD-REST-002: access denied`
   @RestError::Database encapsulant @sea_orm::DbErr::Custom `boom` → `MRD-REST-003` → `500` →
