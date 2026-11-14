@@ -298,10 +298,17 @@ Tasks:
     ./admin.rs : `403` ×1 ; ./tokens.rs : `403` ×1, `404` ×1 — mais aucun n'affirme les corps texte
     exacts `403`/`404`/`500` de ce fichier, et /tests/resource.rs n'exerce rien de ce contrat.
   [x] Amendement 2026-10-19 (`db`) : aucun changement de `./error.rs` ; le `cfg` est posé par `./mod.rs`.
-  [ ] Issue #77 — nouvelle erreur pour la violation de contrainte unique. Spec d'abord : huitième variante `RestError::UniqueViolation` (unitaire) → `MRD-REST-007` → `409` → corps texte exactement
+  [x] Issue #77 — nouvelle erreur pour la violation de contrainte unique. Spec d'abord : huitième variante `RestError::UniqueViolation` (unitaire) → `MRD-REST-007` → `409` → corps texte exactement
     `MRD-REST-007: unique constraint violated` ; amender l'énumération (« exhaustif 7/7 » de ./../mcp/error.sdd devient 8/8), `Scenario` de rendu et la table des codes. Puis tests d'abord, puis ./error.rs.
     Arbitré le 2026-11-13 (variante dédiée `007` retenue, `Conflict` écarté) : réutiliser `Conflict` (`MRD-REST-006`, même `409`) plutôt qu'une nouvelle variante : l'issue demande un code dédié et `006` est documenté comme conflit d'empreinte de jeton, avec miroir `AuthError`.
     Recommandation : variante dédiée `007`.
+    Validé 2026-11-14 (validator PASS) : batterie 16 combinaisons tests + clippy verte, fmt et specdd lint verts ; test `http_render_007_unique_violation_is_409` ; rendu `Conflict | UniqueViolation` fusionné sans `#[allow]`
+    (précédent `rpc_code` de ./../mcp/error.sdd), corps 006 et 007 verrouillés par des tests distincts.
+    [?] (implementer et validator) : parité MCP transitoire — `./../mcp/error.rs` porte le strict branchement de compilation `UniqueViolation` → `McpError::Internal` ; un `create` MCP violant une unicité rend donc
+    `-32603` là où REST rend `409`. Choix provisoire : état intermédiaire assumé jusqu'à la tâche « Issue #77 » de ./../mcp/error.sdd (même lot), qui solde l'écart.
+    [?] (validator) : cette spec n'a pas de ligne `Tasks [ ]` pour #78 alors que son contenu contractuel (`InvalidQuery`/`MRD-REST-008`, 18ᵉ `Scenario`, `Done when` à 18) est engagé depuis l'amendement du 2026-11-13 —
+    le recompte des Scenarios citant « sept variantes » (Must du match, Scenario source) reste à amender avec la tâche #78. Choix provisoire : traité par le cycle #78, sans ligne de tâche ajoutée ici (hors cycle).
+    [?] (implementer) : l'`Example: matrice` (l.437-448) ne nomme ni `UniqueViolation` ni `InvalidInput` — matrice illustrative déjà obsolète avant l'amendement, non normative. La compléter à la prochaine relecture.
 
 Done when:
   Les 18 `Scenario` (le dix-septième et le dix-huitième ajoutés le 2026-11-13, issues #77 et #78) ont chacun au moins un test nommé distinct et vert dans ./error.rs, sur features

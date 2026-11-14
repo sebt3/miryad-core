@@ -1,5 +1,5 @@
-//! Taxonomie d'erreur de la surface REST — le seul type public `RestError` à sept
-//! variantes, chacune portant soit un code unique `MRD-REST-001` à `MRD-REST-006` dans
+//! Taxonomie d'erreur de la surface REST — le seul type public `RestError` à huit
+//! variantes, chacune portant soit un code unique `MRD-REST-001` à `MRD-REST-007` dans
 //! sa `Display`, soit le `HookError` applicatif du consommateur, jamais codé `MRD-*`.
 //! L'`IntoResponse` décidé ici fixe par variante le statut et la forme du corps : texte
 //! porteur du code, ou JSON `{code, message}` pour le rejet métier. Les corps `500` sont
@@ -17,8 +17,8 @@ use serde::Serialize;
 
 use crate::resource::HookError;
 
-/// Erreur des handlers REST — sept variantes, chacune portant soit un code unique
-/// `MRD-REST-NNN` (`001` à `006`) dans sa `Display`, soit le `HookError` applicatif
+/// Erreur des handlers REST — huit variantes, chacune portant soit un code unique
+/// `MRD-REST-NNN` (`001` à `007`) dans sa `Display`, soit le `HookError` applicatif
 /// (`Application`, jamais `MRD-*`). Son `IntoResponse` rend statut et corps par variante.
 #[derive(Debug, thiserror::Error)]
 pub enum RestError {
@@ -52,6 +52,13 @@ pub enum RestError {
     /// `AuthError::TokenHashConflict`, parité avec le `409` de `auth::error`.
     #[error("MRD-REST-006: conflict")]
     Conflict,
+    /// `MRD-REST-007` — violation d'une contrainte d'unicité, rendu `409` (huitième
+    /// variante, arbitrée par Sébastien le 2026-11-13, issue #77 : une décision de
+    /// l'appelant, pas une panne). Émetteur : `rest::core::create` et `rest::core::update`
+    /// sur `SqlErr::UniqueConstraintViolation`. Distincte de `Conflict` (`006`, conflit
+    /// d'empreinte de jeton).
+    #[error("MRD-REST-007: unique constraint violated")]
+    UniqueViolation,
 }
 
 #[derive(Serialize)]
@@ -87,7 +94,12 @@ impl IntoResponse for RestError {
             RestError::InvalidInput(_) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, self.to_string()).into_response()
             }
-            RestError::Conflict => (StatusCode::CONFLICT, self.to_string()).into_response(),
+            // Bras fusionné (précédent : `rpc_code` de `mcp/error.rs`) : même rendu `409` +
+            // `Display`, codes distincts portés par la variante — `match_same_arms`, harnais
+            // `tooling.sdd`. Chaque variante est nommée, aucun bras joker (`rest/error.sdd`).
+            RestError::Conflict | RestError::UniqueViolation => {
+                (StatusCode::CONFLICT, self.to_string()).into_response()
+            }
         }
     }
 }
@@ -378,6 +390,22 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(content_type, TEXT_PLAIN);
         assert_eq!(&body[..], b"MRD-REST-006: conflict");
+    }
+
+    /// `Scenario` : « rendu HTTP 409 pour 007 » — huitième variante arbitrée par Sébastien
+    /// le 2026-11-13 (issue #77) : violation de contrainte d'unicité, décision de l'appelant
+    /// et non une panne ; distincte de `Conflict` (`006`, conflit d'empreinte de jeton). La
+    /// variante est muette — la spec n'autorise que les deux traces `error!` des variantes
+    /// `500` — donc aucun abonné `tracing` n'est capturé ici.
+    #[tokio::test]
+    async fn http_render_007_unique_violation_is_409() {
+        let err = RestError::UniqueViolation;
+        assert_eq!(err.to_string(), "MRD-REST-007: unique constraint violated");
+        assert!(err.source().is_none(), "variante unitaire sans source");
+        let (status, content_type, body) = render(err).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(content_type, TEXT_PLAIN);
+        assert_eq!(&body[..], b"MRD-REST-007: unique constraint violated");
     }
 
     /// `Scenario` : « `Internal` portant un `AuthError` garde le code AUTH hors du corps

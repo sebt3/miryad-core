@@ -115,6 +115,8 @@ impl From<RestError> for McpError {
             RestError::InvalidInput(msg) => McpError::InvalidParams(msg),
             // Arbitré 2026-10-03 (`mcp/error.sdd`) : miroir défensif sans chemin MCP vivant — fil générique.
             RestError::Conflict => McpError::Internal(RestError::Conflict.to_string()),
+            // Parité MCP traitée par la tâche #77 de ./mcp/error.sdd — branchement minimal de compilation, miroir défensif.
+            RestError::UniqueViolation => McpError::Internal(RestError::UniqueViolation.to_string()),
         }
     }
 }
