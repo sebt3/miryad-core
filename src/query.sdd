@@ -252,9 +252,13 @@ Tasks:
     (`./rest/admin.rs`) restent la matière des specs `rest`, pas des tests produits ici.
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./query.rs`, l'en-tête `//!` (lignes 2-3) cesse de nommer GraphQL et
     seaography : « partagée entre REST et MCP (MCP via `rest::core::list`) » suffit. Aucun changement de comportement.
-  [ ] Issue #78 — tri et critères dans le contrat de requête. Spec d'abord : `Sort { column: String, descending: bool }` et le filtre multi-colonnes (`Vec<(String, String)>`) sont des types d'entrée de ./query.rs, avec le
+  [x] Issue #78 — tri et critères dans le contrat de requête. Spec d'abord : `Sort { column: String, descending: bool }` et le filtre multi-colonnes (`Vec<(String, String)>`) sont des types d'entrée de ./query.rs, avec le
     plafond du nombre de critères ; `Pagination::from_raw` inchangée. `Scenario` : tri `desc`, ordre par défaut (identifiant croissant, comme aujourd'hui), `order` sans `sort` (refusé), plafond dépassé. Puis tests
     d'abord, puis ./query.rs. Avant ./rest/core.sdd (qui applique) et ./rest/mod.sdd, ./mcp/registry.sdd (qui parsent).
+    Validé 2026-11-14 (validator PASS en lecture ; batterie complète verte rejouée par le primary : 16 combinaisons tests et clippy, fmt) : @MAX_FILTERS et @ListQuery posés exactement selon l'`Exposes` amendée 2026-11-13 ;
+    test `list_query_is_inert_dto` ; module inconditionnel, `Pagination::from_raw` intact. Les `Scenario` de validation évoqués par la ligne (`order` sans `sort`, plafond) vivent dans ./rest/core.sdd, pas ici — conforme.
+    [?] (implementer et validator) : la ligne citait un type `Sort { column, descending }`, formulation antérieure à l'amendement — le contrat réel est l'`Exposes` (`sort`/`order` en `Option<String>` bruts dans
+    @ListQuery). Wording de la ligne non réécrit (hors cycle) ; l'`Exposes` fait foi.
 
 Done when:
   Chaque `Scenario` dispose d'au moins un test nommé distinct et vérifie son `Then` dans le

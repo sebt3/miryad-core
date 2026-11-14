@@ -9,6 +9,21 @@ pub const MAX_PER_PAGE: u64 = 1000;
 /// Plafond de sûreté de `page` (arbitré 2026-09-27) : pour tout `per_page` valide
 /// (`1..=MAX_PER_PAGE`), `per_page * page` ne déborde jamais un `u64` chez l'appelant.
 pub const MAX_PAGE: u64 = u64::MAX / MAX_PER_PAGE;
+/// Plafond du nombre de critères d'égalité d'une liste (issue #78).
+pub const MAX_FILTERS: usize = 8;
+
+/// DTO d'entrée de critères et de tri d'une liste, rempli par REST et par MCP :
+/// simple conteneur de valeurs brutes, sans validation ni normalisation — la
+/// validation vit avec la connaissance des colonnes, côté `rest::core`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ListQuery {
+    /// Paires (nom de colonne, valeur brute), au plus `MAX_FILTERS`.
+    pub filters: Vec<(String, String)>,
+    /// Colonne de tri demandée, absente par défaut.
+    pub sort: Option<String>,
+    /// Sens du tri (`asc`/`desc`), sans signification sans `sort`.
+    pub order: Option<String>,
+}
 
 /// Paramètres de pagination normalisés — l'objectif n'est pas une pagination fine, juste
 /// d'empêcher qu'une liste ne remonte des milliers de lignes d'un coup.
@@ -173,5 +188,25 @@ mod tests {
         assert_eq!(value["per_page"], json!(10));
         assert_eq!(value["total_items"], json!(30));
         assert_eq!(value["total_pages"], json!(3));
+    }
+
+    /// Scenario « `ListQuery` est un DTO inerte » : `Default` rend `filters` vide et
+    /// `sort`/`order` `None`, `MAX_FILTERS` vaut `8`, la structure traverse
+    /// `Clone`/`PartialEq` sans aucun comportement de validation ni de normalisation.
+    #[test]
+    fn list_query_is_inert_dto() {
+        assert_eq!(MAX_FILTERS, 8);
+        let q = ListQuery::default();
+        assert_eq!(q.filters, Vec::new());
+        assert_eq!(q.sort, None);
+        assert_eq!(q.order, None);
+        let cloned = q.clone();
+        assert_eq!(q, cloned);
+        let filled = ListQuery {
+            filters: vec![("status".to_owned(), "active".to_owned())],
+            sort: Some("name".to_owned()),
+            order: Some("desc".to_owned()),
+        };
+        assert_ne!(filled, cloned);
     }
 }
