@@ -15,6 +15,22 @@ use crate::rest::RestEntity;
 use crate::rest::error::RestError;
 use crate::users::resolve_user;
 
+/// `rest/core.sdd` (amendement du 2026-11-13, issue #77, arbitré 2026-11-14) — une `DbErr` dont
+/// `sql_err()` est une violation de contrainte unique (détection SQLite codes 1555/2067 et
+/// PostgreSQL 23505, portée par `sea_orm::DbErr::sql_err`, précédent `lymaille/resource_module.rs`)
+/// est une décision de l'appelant : `RestError::UniqueViolation` (`MRD-REST-007`), dont le corps ne
+/// cite ni la contrainte, ni la colonne, ni la valeur. Toute autre `DbErr` (NOT NULL, clé étrangère,
+/// panne) reste `RestError::Database` (`MRD-REST-003`). La traduction n'existe qu'ici, appelée par
+/// `create` et `update` seulement : `From<DbErr> for RestError` demeure le passage nu, pour que les
+/// chemins de lecture et internes ne traduisent jamais une violation.
+fn unique_violation_or_database(err: sea_orm::DbErr) -> RestError {
+    if matches!(err.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) {
+        RestError::UniqueViolation
+    } else {
+        RestError::Database(err)
+    }
+}
+
 // rest/core.sdd `Must` : `E::PrimaryKey::iter()` ne peut être vide sous la bound PK `i32` — `expect` inatteignable compilable.
 #[allow(clippy::expect_used)]
 pub(crate) fn primary_key_column<E: RestEntity>() -> E::Column {
@@ -135,7 +151,9 @@ pub(crate) async fn create<E: RestEntity>(
         active.set(owner_col, sea_orm::Value::from(user.id));
     }
 
-    Ok(active.insert(db).await?)
+    // Violation d'unicité traduite en UniqueViolation (MRD-REST-007), toute autre DbErr en
+    // Database (MRD-REST-003) — `rest/core.sdd`, amendement issue #77.
+    active.insert(db).await.map_err(unique_violation_or_database)
 }
 
 pub(crate) async fn update<E: RestEntity>(
@@ -197,7 +215,9 @@ pub(crate) async fn update<E: RestEntity>(
         // Postgres rend `RecordNotUpdated` — même disparition, même 404 (tâche « Revue 2026-09-29 »
         // de `rest/core.sdd`, aligné sur `auth/token.rs`).
         sea_orm::DbErr::RecordNotUpdated | sea_orm::DbErr::RecordNotFound(_) => RestError::NotFound,
-        other => RestError::Database(other),
+        // Violation d'unicité traduite en UniqueViolation (MRD-REST-007), toute autre DbErr en
+        // Database (MRD-REST-003) — `rest/core.sdd`, amendement issue #77.
+        other => unique_violation_or_database(other),
     })
 }
 
@@ -1619,9 +1639,14 @@ mod tests {
         );
     }
 
-    /// Scenario « create en contrainte de colonne : `DbErr` devient `MRD-REST-003` ».
+    /// Scenario « create en violation d'unicité : 409 » (amendement issue #77 (2), remplace le
+    /// test `create_insertion_en_contrainte_est_database` dont la scenario « create en
+    /// contrainte de colonne » est amendée) — la seconde
+    /// création butant sur l'index `UNIQUE` rend `RestError::UniqueViolation`
+    /// (`MRD-REST-007`) ; le corps rendu ne cite ni la contrainte, ni la colonne, ni la valeur.
+    /// Les autres contraintes restent `Database` : `autre_contrainte_create_et_update_reste_database`.
     #[tokio::test]
-    async fn create_insertion_en_contrainte_est_database() {
+    async fn create_violation_unicite_est_unique_violation_sans_detail() {
         let db = migrated_db().await;
         create_entity_table(&db, unique_thing::Entity).await;
         db.execute_unprepared("CREATE UNIQUE INDEX unique_things_name_key ON unique_things (name)")
@@ -1646,10 +1671,17 @@ mod tests {
                 name: "sel".to_string(),
             },
         )
-        .await;
+        .await
+        .expect_err("la seconde création sous unicité est une erreur");
         assert!(
-            matches!(conflicting, Err(RestError::Database(_))),
-            "la contrainte brute devient Database (MRD-REST-003), jamais un 400 fabriqué ici : {conflicting:?}"
+            matches!(conflicting, RestError::UniqueViolation),
+            "une violation d'unicité à l'insertion est UniqueViolation (MRD-REST-007), jamais Database : {conflicting:?}"
+        );
+        let rendered = conflicting.to_string();
+        assert_eq!(rendered, "MRD-REST-007: unique constraint violated");
+        assert!(
+            !rendered.contains("sel") && !rendered.contains("unique_things"),
+            "le corps ne cite ni la valeur, ni la table, ni la contrainte : {rendered}"
         );
     }
 
@@ -2133,6 +2165,180 @@ mod tests {
                 .any(|stmt| stmt.to_string().starts_with("UPDATE")),
             "l'`UPDATE` a bien été émis — le chemin passe par la relecture, pas par un refus amont"
         );
+    }
+
+    // ── Amendement 2026-11-14 (issue #77 (2)) — `409` sur violation de contrainte unique ──
+
+    /// Colonne `label` sous `UNIQUE`, colonne `note` sous `NOT NULL` (table posée à la main, la
+    /// fixture de test n'a pas de migration) — fixture des scenarios « update en violation
+    /// d'unicité : 409 ; autre contrainte : 500 » : la violation d'unicité devient
+    /// `UniqueViolation`, le `NULL` en colonne `NOT NULL` reste une `DbErr` ordinaire.
+    mod strict {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "stricts")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub label: String,
+            pub note: Option<String>,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "stricts"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+        }
+    }
+
+    /// Table `stricts` construite à la main : `create_table_from_entity` rendrait la colonne
+    /// `Option<String>` nullable — le `CREATE TABLE` écrit à la main pose `NOT NULL` sur `note`
+    /// et l'index `UNIQUE` sur `label`.
+    async fn create_strict_table(db: &DatabaseConnection) {
+        db.execute_unprepared(
+            "CREATE TABLE stricts (id INTEGER PRIMARY KEY, label TEXT NOT NULL UNIQUE, note TEXT NOT NULL)",
+        )
+        .await
+        .expect("strict table creates");
+    }
+
+    /// Scenario « update en violation d'unicité : 409 ; autre contrainte : 500 » (première
+    /// partie) — faire porter à `b` la valeur unique de `a` rend `RestError::UniqueViolation`
+    /// (`MRD-REST-007`) et aucune écriture n'atterrit.
+    #[tokio::test]
+    async fn update_violation_unicite_est_unique_violation() {
+        let db = migrated_db().await;
+        create_strict_table(&db).await;
+        let alice = principal("alice");
+        create::<strict::Entity>(
+            &db,
+            &alice,
+            strict::Model {
+                id: 0,
+                label: "a".to_string(),
+                note: Some("x".to_string()),
+            },
+        )
+        .await
+        .expect("create a");
+        let b = create::<strict::Entity>(
+            &db,
+            &alice,
+            strict::Model {
+                id: 0,
+                label: "b".to_string(),
+                note: Some("y".to_string()),
+            },
+        )
+        .await
+        .expect("create b");
+
+        let conflicting = update::<strict::Entity>(
+            &db,
+            &alice,
+            b.id,
+            strict::Model {
+                id: b.id,
+                label: "a".to_string(),
+                note: Some("y".to_string()),
+            },
+        )
+        .await
+        .expect_err("l'update sous contrainte unique est une erreur");
+        assert!(
+            matches!(conflicting, RestError::UniqueViolation),
+            "une violation d'unicité à l'UPDATE est UniqueViolation (MRD-REST-007), jamais Database : {conflicting:?}"
+        );
+        assert_eq!(
+            conflicting.to_string(),
+            "MRD-REST-007: unique constraint violated"
+        );
+        let row = strict::Entity::find_by_id(b.id)
+            .one(&db)
+            .await
+            .expect("readable")
+            .expect("la ligne b existe");
+        assert_eq!(row.label, "b", "l'update refusé n'a rien écrit");
+    }
+
+    /// Scenario « update en violation d'unicité : 409 ; autre contrainte : 500 » (seconde
+    /// partie) et volet « autre contrainte » de « create en contrainte de colonne » amendé —
+    /// un `NULL` posé dans la colonne `NOT NULL` est une `DbErr` ordinaire : `Database`
+    /// (`MRD-REST-003`), à la création comme à la mise à jour. La traduction ne porte que la
+    /// violation d'unicité.
+    #[tokio::test]
+    async fn autre_contrainte_create_et_update_reste_database() {
+        let db = migrated_db().await;
+        create_strict_table(&db).await;
+        let alice = principal("alice");
+        let created = create::<strict::Entity>(
+            &db,
+            &alice,
+            strict::Model {
+                id: 0,
+                label: "vecue".to_string(),
+                note: Some("x".to_string()),
+            },
+        )
+        .await
+        .expect("create succeeds");
+
+        let null_at_create = create::<strict::Entity>(
+            &db,
+            &alice,
+            strict::Model {
+                id: 0,
+                label: "vide".to_string(),
+                note: None,
+            },
+        )
+        .await
+        .expect_err("NULL en colonne NOT NULL à la création est une erreur");
+        assert!(
+            matches!(null_at_create, RestError::Database(_)),
+            "une contrainte non-unique à l'INSERT reste Database (MRD-REST-003), jamais UniqueViolation : {null_at_create:?}"
+        );
+        assert!(null_at_create.to_string().starts_with("MRD-REST-003"));
+
+        let null_at_update = update::<strict::Entity>(
+            &db,
+            &alice,
+            created.id,
+            strict::Model {
+                id: created.id,
+                label: "vecue".to_string(),
+                note: None,
+            },
+        )
+        .await
+        .expect_err("NULL en colonne NOT NULL à la mise à jour est une erreur");
+        assert!(
+            matches!(null_at_update, RestError::Database(_)),
+            "une contrainte non-unique à l'UPDATE reste Database (MRD-REST-003), jamais UniqueViolation : {null_at_update:?}"
+        );
+        let row = strict::Entity::find_by_id(created.id)
+            .one(&db)
+            .await
+            .expect("readable")
+            .expect("la ligne existe");
+        assert_eq!(row.note.as_deref(), Some("x"), "l'update refusé n'a rien écrit");
     }
 
     // ----------------------------------------------------------------- delete

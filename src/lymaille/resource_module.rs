@@ -136,6 +136,8 @@ impl From<RestError> for Failure {
             RestError::Application(hook) => {
                 Self::logged(hook.message.clone(), Self::HookRefused(hook.message))
             }
+            // Fenêtre de crash du `create` : marqueur de contrôle et non `internal error` (`./resource_module.sdd` #77).
+            RestError::UniqueViolation => Self::UniqueViolation,
             other => Self::log(other),
         }
     }

@@ -633,15 +633,18 @@ mod tests {
         );
     }
 
-    /// Consignation de la tâche #28 — ce que rend le CRUD générique pour un doublon **dans le
-    /// périmètre d'un même propriétaire**, vérifié à l'implémentation sur base migrée (les deux
-    /// index #28 sont donc ceux qui jouent) : premier `create` `Ok` ; doublon même (`owner_id`,
-    /// `name`) → `RestError::Database` → rendu `500` à corps texte générique
-    /// `MRD-REST-003: database error`, sans fuite de la contrainte brute (règle « corps `500`
-    /// génériques et détail en trace », arbitré 2026-09-29, `../rest/error.sdd`) ; et le même
-    /// `name` chez un autre propriétaire passe par le même chemin générique (#28).
+    /// Consignation de la tâche #28 amendée par #77 — ce que rend le CRUD générique pour un
+    /// doublon **dans le périmètre d'un même propriétaire**, vérifié à l'implémentation sur base
+    /// migrée (les deux index #28 sont donc ceux qui jouent) : premier `create` `Ok` ; doublon
+    /// même (`owner_id`, `name`) → `SqlErr::UniqueConstraintViolation` traduit en
+    /// `RestError::UniqueViolation` → rendu `409` à corps texte exactement
+    /// `MRD-REST-007: unique constraint violated`, sans nom de contrainte, de colonne ni valeur
+    /// sur le fil (`../rest/error.sdd`, #77) ; et le même `name` chez un autre propriétaire passe
+    /// par le même chemin générique (#28).
+    // Rendu amendé par ./definition.sdd (Tasks, cohérence #77 (2) du 2026-11-14) : la violation
+    // de l'index composite rend `UniqueViolation` (`409`), plus `Database` (`500`).
     #[tokio::test]
-    async fn crud_doublon_meme_proprietaire_rend_database_sans_fuite_de_contrainte() {
+    async fn crud_doublon_meme_proprietaire_rend_conflict_sans_fuite_de_contrainte() {
         use crate::rest::core::create;
         use crate::rest::error::RestError;
         use axum::response::IntoResponse as _;
@@ -664,28 +667,31 @@ mod tests {
             .await
             .expect_err("le doublon (`owner_id`, `name`) doit être refusé par l'index composite #28");
         assert!(
-            matches!(doublon, RestError::Database(_)),
-            "la contrainte violée devient `RestError::Database` (`MRD-REST-003`), jamais une \
-             variante fabriquée ici : {doublon:?}"
+            matches!(doublon, RestError::UniqueViolation),
+            "la contrainte violée devient `RestError::UniqueViolation` (`MRD-REST-007`, variante \
+             de `../rest/error.sdd` #77), jamais une variante fabriquée ici : {doublon:?}"
         );
 
-        // Rendu fil (`../rest/error.sdd`) : `500` générique, aucune fuite de contrainte brute.
+        // Rendu fil (`../rest/error.sdd`, #77) : `409` à corps générique, aucune fuite de
+        // contrainte brute.
         let reponse = doublon.into_response();
         assert_eq!(
             reponse.status(),
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "le doublon même-propriétaire rend `500`"
+            axum::http::StatusCode::CONFLICT,
+            "le doublon même-propriétaire rend `409`"
         );
         let octets = axum::body::to_bytes(reponse.into_body(), usize::MAX)
             .await
             .expect("le corps se relit");
         let texte = String::from_utf8(octets.to_vec()).expect("le corps est en utf-8");
-        assert_eq!(texte, "MRD-REST-003: database error");
+        assert_eq!(texte, "MRD-REST-007: unique constraint violated");
+        // Le corps `409` porte le texte générique imposé par `../rest/error.sdd` ; les jetons
+        // traqués sont les signatures de la contrainte brute (formulation SQLite, nom
+        // d'index, table), que ce corps ne cite pas.
         for trace_interdite in [
             "UNIQUE",
-            "unique",
+            "constraint failed",
             "uq_miryad",
-            "constraint",
             "miryad_workflow_definitions",
         ] {
             assert!(

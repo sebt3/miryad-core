@@ -79,6 +79,11 @@ Exposes:
   `ResourceReaders::{new, register}`, `resources_module`, `LLM_MAX_PER_PAGE`, `LLM_DEFAULT_PER_PAGE`
 
 Tasks:
+  [!] (cohérence #77 (2), appliquée 2026-11-14 par spec-dd, à reconfirmer) : depuis que ./../rest/core.rs rend la violation d'unicité en `RestError::UniqueViolation` (et non plus `Database` porteur du `DbErr`), le
+    `From<RestError> for Failure` tombait dans le bras `other` → `Failure::Internal` : la fenêtre de crash du `create` n'était plus reconnue comme unicité (test `a_crash_window_is_caught_by_rereading` rouge). Un bras
+    `RestError::UniqueViolation => Self::UniqueViolation` est ajouté — même marqueur `Failure` qu'avant, sémantique du `Must` sur la fenêtre de crash inchangée, aucun contrat nouveau.
+    [?] (validator) : dans `WriterImpl::create` (~l.327), le bras `Err(RestError::Database(err))` garde sa garde `sql_err()` unicité devenue inatteignable (core::create ne rend plus la violation sous `Database`). Le retirer
+    maintenant (nettoyage dans le périmètre du `[!]`) ou le laisser jusqu'au prochain passage sur le fichier ? Choix provisoire : laissé, sans effet sur le comportement.
   [x] Amendement lot 2 (`DEC-21`) : registre lecture/écriture, `WriteScope`, scenarios ci-dessus d'abord, puis ./resource_module.rs ; dépend de ./store/write_journal.rs.
     Validé 2026-11-06 (validator PASS : les sept Scenario du lot 2 ont chacun leur test au Then réel, scripts Rhai réels ; parité structurelle prouvée — le delegate est @rest::core lui-même ; journal en ordre replay→écrire→record, interactif jamais journalisé ; alias @ResourceReaders conservé #[deprecated] ; le test lot 1 no_write_exists retiré car son contrat a disparu de la spec ; lymaille vert en tests et clippy `-D warnings` sur build frais, `fmt`, `specdd lint`).
     [x] Ripple mécanique hors `Owns` ratifié le 2026-11-06 (développeur principal, diff relu : renommage `ResourceReaders` → `ResourceRegistry` et argument `scope = None` en interactif, sans changement de comportement) : `Can modify` de cette tâche étendu à ./interactive/assemble.rs, ./interactive/manager.rs, ./../chat/bridge.rs, ./http/routes.rs et ./http/sse.rs (sites de production et `cfg(test)`).

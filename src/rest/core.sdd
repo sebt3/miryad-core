@@ -611,12 +611,19 @@ Tasks:
     `update`/`delete` (forme du rendu, pas décision). Amender cette ligne à la relecture. Choix provisoire : suivre le `Handles` amendé, qui nomme `read_policy`.
     [?] (implementer) : le test inline `ligne_autrui_lecture_owner_only_repond_comme_identifiant_inexistant` dépassait `clippy::too_many_lines` ; comprimé par helper de paire sans `#[allow]`, assertions au bit près
     (précédent `openapi.rs` : extraction, pas exemption). Si un autre traitement du lint est préféré, c'est de la forme, pas du contrat.
-  [ ] Issue #77 (2) — `409` sur violation de contrainte unique. Spec d'abord : dans `create` et `update`, une `DbErr` dont `sql_err()` est `SqlErr::UniqueConstraintViolation` (déjà employé par
+  [x] Issue #77 (2) — `409` sur violation de contrainte unique. Spec d'abord : dans `create` et `update`, une `DbErr` dont `sql_err()` est `SqlErr::UniqueConstraintViolation` (déjà employé par
     ./../lymaille/resource_module.rs : la détection existe pour SQLite et PostgreSQL) devient la nouvelle erreur de ./error.sdd ; toute autre `DbErr` reste `Database` (`MRD-REST-003`, `500`) ; le corps ne cite
     ni la contrainte, ni la colonne, ni la valeur. `Scenario` : seconde création qui viole une unicité → `409` ; `update` qui viole → `409` ; autre `DbErr` → `500` inchangé. Puis tests d'abord (SQLite mémoire),
     puis ./core.rs. Après ./error.sdd.
     Arbitré le 2026-11-14 : traduction explicite dans `create`/`update` (le `DbErr` traverse nu partout ailleurs, `/.specdd/bootstrap.project.md`), **pas** dans `From<DbErr> for RestError`, qui avalerait aussi
     une violation sur une lecture ou un chemin interne.
+    [?] (validator) : la ligne du mapping `[x]` des trente-cinq `Scenario` (~l.569) nomme encore le test remplacé `create_insertion_en_contrainte_est_database` ; le `Scenario` amendé est couvert par les trois nouveaux
+    tests nommés. Correction formelle du mapping à la prochaine relecture.
+    Validé 2026-11-14 (validator PASS en lecture ; batterie complète verte rejouée par le primary : 16 combinaisons tests et clippy, fmt, dont `workflow` et `--all-features` rejoués après la cohérence
+    ./../workflow/definition.sdd) : helper branché sur `create`/`update` seulement, `From<DbErr>` et `delete` intacts ; cohérences cross-spec posées en `[!]` dans ./../lymaille/resource_module.sdd et
+    ./../workflow/definition.sdd (à reconfirmer par le développeur principal).
+    [?] (implementer) : dans le test `crud_doublon_..._rend_conflict_...` de ./../workflow/definition.rs, les jetons anti-fuite `"unique"`/`"constraint"` minuscules sont devenus des faux positifs (le corps `409`
+    mandate les contient) ; resserrés en signatures de trace brute (`UNIQUE`, `constraint failed`, noms d'index/table). L'objet anti-fuite est intégral ; ajustement jeton par jeton remonté si préféré.
   [ ] Issue #78 — la liste applique critères et tri. Spec d'abord : `list` reçoit les critères (colonnes déclarées filtrables : égalité exacte, conjonction) et le tri de ./../query.sdd ; l'ordre par défaut reste
     l'identifiant croissant (pagination stable : le tri ajoute toujours l'identifiant en clé de départage) ; le filtre de propriétaire d'`OwnerOnly` et la visibilité `Group` s'appliquent **avant** et sans
     dépendre des critères (un filtre ne contourne jamais la politique de lecture) ; `?filter=` conservé. `Scenario` : filtre sur deux colonnes ; tri décroissant stable ; critère sur la colonne propriétaire d'une
