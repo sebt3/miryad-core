@@ -336,10 +336,13 @@ Tasks:
     existants des hooks à `.await`. Réécrire les doc-comments des trois hooks (asynchrone, connexion, principal non rafraîchi, pas d'effet externe). Dépend de
     ./rest/core.sdd et ./mcp/handler.sdd (appels `.await` et séquence inchangée) et de chaque entité qui implémente un hook (`workflow::definition`, entités `lymaille`,
     fixtures de tests) : réécriture totale, une entité par tâche.
-  [ ] Issue #78 — colonnes filtrables et triables déclarées par la ressource. Spec d'abord : méthodes à défaut `fn filterable_columns() -> Vec<<Self as EntityTrait>::Column>` (défaut vide) et
+  [x] Issue #78 — colonnes filtrables et triables déclarées par la ressource. Spec d'abord : méthodes à défaut `fn filterable_columns() -> Vec<<Self as EntityTrait>::Column>` (défaut vide) et
     `fn sortable_columns() -> Vec<…>` (défaut vide) ; `filter_column()` **conservé** (rétrocompatibilité de `?filter=`) et considéré comme une colonne filtrable de plus quand il est `Some` ; doc de la trait
     (REST et MCP lisent les mêmes déclarations). `Scenario` : défauts vides ; entité de test à trois colonnes filtrables. Tests d'abord dans ../tests/resource.rs (propriétaire unique de ce fichier), puis ./resource.rs.
     Arbitré le 2026-11-13 : deux listes (recommandé : on peut vouloir filtrer sans trier et inversement) plutôt qu'une seule `listable_columns`.
+    Validé 2026-11-14 (batterie complète verte par le primary : 16 combinaisons tests et clippy, fmt ; validation statique inline) : deux méthodes à défaut selon l'amendement, doc de la trait tenant,
+    `filter_column()` intact ; deux tests nommés dans ../tests/resource.rs (fixture `document` à quatre colonnes), assertions `matches!` (Column ne dérive pas @PartialEq sous @DeriveColumn — patron déjà en usage dans
+    le fichier). La fusion `filter_column` + `filterable_columns` est déportée aux surfaces aval, comme cadré.
 
 Done when:
   [Amendement 2026-11-11 : quatre `Scenario` s'ajoutent, soit vingt-huit au total, chacun vérifié par au moins un test nommé distinct.]

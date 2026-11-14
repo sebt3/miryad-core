@@ -330,6 +330,106 @@ async fn before_update_override_can_compare_existing_and_reject() {
     );
 }
 
+// ── Amendement 2026-11-13 (issue #78, `resource.sdd`) : colonnes filtrables et triables ──
+
+/// `Scenario` « `filterable_columns` et `sortable_columns` par défaut vides » — `recipe` ne
+/// surdéclare ni l'une ni l'autre : deux `Vec` vides, et `filter_column` garde son défaut `None`.
+#[test]
+fn filterable_and_sortable_columns_default_to_empty_vecs() {
+    assert!(
+        recipe::Entity::filterable_columns().is_empty(),
+        "défaut de filterable_columns : liste vide"
+    );
+    assert!(
+        recipe::Entity::sortable_columns().is_empty(),
+        "défaut de sortable_columns : liste vide"
+    );
+    assert!(
+        recipe::Entity::filter_column().is_none(),
+        "filter_column conserve son défaut `None`, indépendant des deux nouvelles listes"
+    );
+}
+
+/// Entité d'exemple de l'amendement #78 — surdéclare `filterable_columns` avec `project_id`,
+/// `kind`, `scope` et `sortable_columns` avec `created_at`, `kind` : deux listes distinctes
+/// (filtrer sans trier et inversement), `filter_column` non surdéclaré.
+mod document {
+    use super::{AccessPolicy, MiryadResource};
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "documents")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i32,
+        pub project_id: i32,
+        pub kind: String,
+        pub scope: String,
+        pub created_at: i64,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+
+    impl MiryadResource for Entity {
+        fn resource_name() -> &'static str {
+            "documents"
+        }
+
+        fn read_policy() -> AccessPolicy {
+            AccessPolicy::Public
+        }
+
+        fn write_policy() -> AccessPolicy {
+            AccessPolicy::AdminOnly
+        }
+
+        fn owner_column() -> Option<<Self as EntityTrait>::Column> {
+            None
+        }
+
+        fn filterable_columns() -> Vec<Column> {
+            vec![Column::ProjectId, Column::Kind, Column::Scope]
+        }
+
+        fn sortable_columns() -> Vec<Column> {
+            vec![Column::CreatedAt, Column::Kind]
+        }
+    }
+}
+
+/// `Scenario` « une entité déclare trois colonnes filtrables et deux triables » — les colonnes
+/// déclarées, typées et dans l'ordre déclaré ; les deux listes sont distinctes (`kind` figure
+/// dans les deux, `scope` et `created_at` dans une seule). La liste REST et la liste MCP
+/// (`rest/core.sdd`) lisent ces mêmes déclarations.
+#[test]
+fn filterable_and_sortable_columns_overrides_return_declared_columns_in_order() {
+    assert!(
+        matches!(
+            document::Entity::filterable_columns().as_slice(),
+            [
+                document::Column::ProjectId,
+                document::Column::Kind,
+                document::Column::Scope,
+            ]
+        ),
+        "les trois colonnes filtrables, dans l'ordre déclaré"
+    );
+    assert!(
+        matches!(
+            document::Entity::sortable_columns().as_slice(),
+            [document::Column::CreatedAt, document::Column::Kind]
+        ),
+        "les deux colonnes triables, dans l'ordre déclaré"
+    );
+    assert!(
+        document::Entity::filter_column().is_none(),
+        "les deux listes coexistent avec filter_column sans se remplacer"
+    );
+}
+
 #[tokio::test]
 async fn default_before_delete_is_ok_and_ignores_existing() {
     let existing = ingredient::Model {

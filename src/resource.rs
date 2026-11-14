@@ -113,6 +113,25 @@ pub trait MiryadResource: EntityTrait {
         None
     }
 
+    /// Colonnes que la liste accepte en filtre d'égalité exacte, par nom — consommées par REST et
+    /// MCP, qui lisent les mêmes déclarations (amendement 2026-11-13, issue #78). Liste vide par
+    /// défaut : aucune colonne filtrable. [`filter_column`](Self::filter_column) est conservé tel
+    /// quel (rétrocompatibilité de `?filter=valeur`) et, quand il est `Some`, compte comme une
+    /// colonne filtrable de plus — la fusion se lit dans les surfaces aval, pas ici.
+    #[must_use]
+    fn filterable_columns() -> Vec<<Self as EntityTrait>::Column> {
+        Vec::new()
+    }
+
+    /// Colonnes que la liste accepte en tri — consommées par REST et MCP, qui lisent les mêmes
+    /// déclarations (amendement 2026-11-13, issue #78). Liste vide par défaut : aucune colonne
+    /// triable. Liste distincte de [`filterable_columns`](Self::filterable_columns) (arbitré
+    /// 2026-11-13) : on peut vouloir filtrer sans trier et inversement.
+    #[must_use]
+    fn sortable_columns() -> Vec<<Self as EntityTrait>::Column> {
+        Vec::new()
+    }
+
     /// Hook métier asynchrone exécuté après RBAC (`can_create`), avant l'insertion — peut muter
     /// l'`ActiveModel` (champ dérivé, valeur calculée) ou rejeter l'opération avec une erreur
     /// métier. Amendement 2026-11-11 (`DEC-2`) : le hook reçoit en premier paramètre la connexion
