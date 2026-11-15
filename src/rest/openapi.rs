@@ -31,6 +31,11 @@ use utoipa::openapi::{
 use utoipa::{PartialSchema, ToSchema};
 
 #[cfg(feature = "db")]
+use sea_orm::{ColumnTrait, IdenStatic};
+
+#[cfg(feature = "db")]
+use crate::resource::AccessPolicy;
+#[cfg(feature = "db")]
 use crate::rest::RestEntity;
 
 /// Nom du `SecurityScheme` déclaré par `resource_openapi` — le dual-auth de miryad-core accepte
@@ -127,6 +132,19 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
         )
         .build();
 
+    // `openapi.sdd` `Must` (amendement du 2026-11-13, issues #77 et #78) : un query parameter par
+    // colonne filtrable déclarée, `sort`/`order` énumérés quand des colonnes triables sont
+    // déclarées, et le `404` annoté « ligne d'autrui » quand la lecture est `OwnerOnly`.
+    let filterable_columns = E::filterable_columns();
+    let filterable: Vec<(&str, Type)> = filterable_columns
+        .iter()
+        .filter_map(|column| {
+            filterable_parameter_type(column.def().get_column_type()).map(|ty| (column.as_str(), ty))
+        })
+        .collect();
+    let sortable_columns = E::sortable_columns();
+    let sortable: Vec<&str> = sortable_columns.iter().map(IdenStatic::as_str).collect();
+
     let paths = crud_paths(
         resource,
         &model_ref,
@@ -135,6 +153,9 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
         // sans `filter_column`, `rest::core::list` ignore le paramètre et le document ne promet
         // rien que la surface n'honore.
         E::filter_column().is_some(),
+        &filterable,
+        &sortable,
+        matches!(E::read_policy(), AccessPolicy::OwnerOnly),
     );
 
     OpenApiBuilder::new()
@@ -150,17 +171,19 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
 /// Les cinq opérations CRUD du fragment, ajoutées à `paths` — extraction privée de
 /// `resource_openapi` (harnais `too_many_lines`, `tooling.sdd`) : seule la surface publique
 /// compte à `Exposes` et elle n'a pas bougé. `has_filter` vient de `E::filter_column()` ;
-/// chaque opération porte les statuts et corps d'erreur de `openapi.sdd` `Must` (arbitré
-/// 2026-09-29).
+/// `filterable`/`sortable` des déclarations de colonnes de la ressource (amendement du
+/// 2026-11-13, issue #78) ; `owner_only_read` fonde l'annotation du `404` (#77) ; chaque
+/// opération porte les statuts et corps d'erreur de `openapi.sdd` `Must` (arbitré 2026-09-29).
 #[cfg(feature = "db")]
-fn crud_paths(resource: &str, model_ref: &RefOr<Schema>, paged_schema_name: &str, has_filter: bool) -> Paths {
-    let query_param = |name: &str, schema_type: Type| {
-        ParameterBuilder::new()
-            .name(name)
-            .parameter_in(ParameterIn::Query)
-            .required(Required::False)
-            .schema(Some(RefOr::T(Schema::Object(Object::with_type(schema_type)))))
-    };
+fn crud_paths(
+    resource: &str,
+    model_ref: &RefOr<Schema>,
+    paged_schema_name: &str,
+    has_filter: bool,
+    filterable: &[(&str, Type)],
+    sortable: &[&str],
+    owner_only_read: bool,
+) -> Paths {
     let id_param = ParameterBuilder::new()
         .name("id")
         .parameter_in(ParameterIn::Path)
@@ -177,13 +200,18 @@ fn crud_paths(resource: &str, model_ref: &RefOr<Schema>, paged_schema_name: &str
     let mut paths = Paths::new();
 
     let list_op = OperationBuilder::new()
-        .parameter(query_param("page", Type::Integer))
-        .parameter(query_param("per_page", Type::Integer));
+        .parameter(query_parameter("page", Type::Integer))
+        .parameter(query_parameter("per_page", Type::Integer));
     let list_op = if has_filter {
-        list_op.parameter(query_param("filter", Type::String))
+        list_op.parameter(query_parameter("filter", Type::String))
     } else {
         list_op
     };
+    // un query parameter par colonne filtrable déclarée, plus `sort`/`order` énumérés quand des
+    // colonnes triables sont déclarées (amendement du 2026-11-13, issue #78) — les noms réservés
+    // (`page`/`per_page`/`filter`/`sort`/`order`) sont refusés au montage par `resource_router`,
+    // aucun doublon n'est possible ici.
+    let list_op = with_list_filter_parameters(list_op, filterable, sortable);
     let list_op = with_common_errors(list_op)
         .response(
             "200",
@@ -198,9 +226,9 @@ fn crud_paths(resource: &str, model_ref: &RefOr<Schema>, paged_schema_name: &str
         .build();
     paths.add_path_operation(format!("/api/v1/{resource}"), vec![HttpMethod::Get], list_op);
 
-    let create_op = with_unprocessable(with_unsupported_media(with_common_errors(
+    let create_op = with_unprocessable(with_unsupported_media(with_unique_conflict(with_common_errors(
         OperationBuilder::new().request_body(Some(json_body(model_ref.clone()))),
-    )))
+    ))))
     .response(
         "201",
         ResponseBuilder::new()
@@ -211,9 +239,10 @@ fn crud_paths(resource: &str, model_ref: &RefOr<Schema>, paged_schema_name: &str
     .build();
     paths.add_path_operation(format!("/api/v1/{resource}"), vec![HttpMethod::Post], create_op);
 
-    let get_op = with_not_found(with_common_errors(
-        OperationBuilder::new().parameter(id_param.clone()),
-    ))
+    let get_op = with_not_found(
+        with_common_errors(OperationBuilder::new().parameter(id_param.clone())),
+        owner_only_read,
+    )
     .response(
         "200",
         ResponseBuilder::new()
@@ -228,11 +257,14 @@ fn crud_paths(resource: &str, model_ref: &RefOr<Schema>, paged_schema_name: &str
         get_op,
     );
 
-    let update_op = with_unprocessable(with_unsupported_media(with_not_found(with_common_errors(
-        OperationBuilder::new()
-            .parameter(id_param.clone())
-            .request_body(Some(json_body(model_ref.clone()))),
-    ))))
+    let update_op = with_unprocessable(with_unsupported_media(with_not_found(
+        with_unique_conflict(with_common_errors(
+            OperationBuilder::new()
+                .parameter(id_param.clone())
+                .request_body(Some(json_body(model_ref.clone()))),
+        )),
+        owner_only_read,
+    )))
     .response(
         "200",
         ResponseBuilder::new()
@@ -247,9 +279,10 @@ fn crud_paths(resource: &str, model_ref: &RefOr<Schema>, paged_schema_name: &str
         update_op,
     );
 
-    let delete_op = with_unprocessable(with_not_found(with_common_errors(
-        OperationBuilder::new().parameter(id_param),
-    )))
+    let delete_op = with_unprocessable(with_not_found(
+        with_common_errors(OperationBuilder::new().parameter(id_param)),
+        owner_only_read,
+    ))
     .response("204", ResponseBuilder::new().description("Supprimé").build())
     .build();
     paths.add_path_operation(
@@ -259,6 +292,60 @@ fn crud_paths(resource: &str, model_ref: &RefOr<Schema>, paged_schema_name: &str
     );
 
     paths
+}
+
+/// Query parameter non requis de type nu (`page`, `per_page`, `filter`) — extraction privée de
+/// `crud_paths` (harnais `too_many_lines`, `tooling.sdd`).
+#[cfg(feature = "db")]
+fn query_parameter(name: &str, schema_type: Type) -> ParameterBuilder {
+    ParameterBuilder::new()
+        .name(name)
+        .parameter_in(ParameterIn::Query)
+        .required(Required::False)
+        .schema(Some(RefOr::T(Schema::Object(Object::with_type(schema_type)))))
+}
+
+/// Paramètres de liste de l'amendement du 2026-11-13 (issue #78) : un query parameter typé par
+/// colonne filtrable déclarée, description courte, plus `sort` (`string`, `enum` des colonnes
+/// triables déclarées) et `order` (`enum` `asc`/`desc`) seulement quand la ressource déclare des
+/// colonnes triables — sans déclaration, `rest::core::list` refuse tout `sort` et le document ne
+/// promet rien que la surface n'honore.
+#[cfg(feature = "db")]
+fn with_list_filter_parameters(
+    list_op: OperationBuilder,
+    filterable: &[(&str, Type)],
+    sortable: &[&str],
+) -> OperationBuilder {
+    let list_op = filterable.iter().fold(list_op, |op, (name, schema_type)| {
+        op.parameter(
+            query_parameter(name, schema_type.clone())
+                .description(Some(format!("Filtre d'égalité exacte sur la colonne {name}"))),
+        )
+    });
+    if sortable.is_empty() {
+        return list_op;
+    }
+    let enum_parameter = |name: &str, description: &str, values: Vec<serde_json::Value>| {
+        query_parameter(name, Type::String)
+            .description(Some(description))
+            .schema(Some(RefOr::T(Schema::Object(
+                Object::builder()
+                    .schema_type(Type::String)
+                    .enum_values(Some(values))
+                    .build(),
+            ))))
+    };
+    list_op
+        .parameter(enum_parameter(
+            "sort",
+            "Colonne de tri parmi les colonnes triables déclarées",
+            sortable.iter().copied().map(serde_json::Value::from).collect(),
+        ))
+        .parameter(enum_parameter(
+            "order",
+            "Sens du tri : asc (défaut) ou desc",
+            vec![serde_json::Value::from("asc"), serde_json::Value::from("desc")],
+        ))
 }
 
 /// Contenu `application/json` portant ou référençant le schéma donné.
@@ -310,10 +397,44 @@ fn with_common_errors(op: OperationBuilder) -> OperationBuilder {
         .response("500", text_error("Erreur interne"))
 }
 
-/// + `404` « Non trouvé » (`MRD-REST-001`) — propre aux trois opérations d'item.
+/// + `404` « Non trouvé » (`MRD-REST-001`) — propre aux trois opérations d'item. Lecture
+///   `OwnerOnly` : la description note que le `404` couvre aussi la ligne d'autrui (amendement du
+///   2026-11-13, issue #77) — `rbac::can_read` rend la ligne d'autrui absente, jamais un `403`
+///   propre à ce cas.
 #[cfg(feature = "db")]
-fn with_not_found(op: OperationBuilder) -> OperationBuilder {
-    op.response("404", text_error("Non trouvé"))
+fn with_not_found(op: OperationBuilder, owner_only_read: bool) -> OperationBuilder {
+    let description = if owner_only_read {
+        "Non trouvé — inclut la ligne d'autrui"
+    } else {
+        "Non trouvé"
+    };
+    op.response("404", text_error(description))
+}
+
+/// + `409` « Conflit d'unicité » (`MRD-REST-007`, corps texte réellement rendu par ./error.rs)
+///   — propre aux deux opérations d'écriture `POST`/`PUT` (amendement du 2026-11-13, issue #77 :
+///   `rest::core::create`/`update` traduisent `SqlErr::UniqueConstraintViolation` en `409`).
+#[cfg(feature = "db")]
+fn with_unique_conflict(op: OperationBuilder) -> OperationBuilder {
+    op.response("409", text_error("Conflit d'unicité"))
+}
+
+/// Type de query paramètre `OpenAPI` d'une colonne filtrable déclarée — l'ensemble `{entiers,
+/// booléen, texte}` que `typed_filter_value` de ./core.rs lie en égalité typée (amendement du
+/// 2026-11-13, issue #78). Hors de cet ensemble la ressource n'est jamais montée (`assert!` de
+/// `resource_router`, ./mod.rs) : aucun paramètre n'est déclaré pour une colonne que la surface
+/// ne servirait pas.
+#[cfg(feature = "db")]
+fn filterable_parameter_type(column_type: &sea_orm::sea_query::ColumnType) -> Option<Type> {
+    use sea_orm::sea_query::ColumnType;
+    match column_type {
+        ColumnType::TinyInteger | ColumnType::SmallInteger | ColumnType::Integer | ColumnType::BigInteger => {
+            Some(Type::Integer)
+        }
+        ColumnType::Boolean => Some(Type::Boolean),
+        ColumnType::Char(_) | ColumnType::String(_) | ColumnType::Text => Some(Type::String),
+        _ => None,
+    }
 }
 
 /// + `415` « Content-Type non supporté » — propre aux opérations à corps (`POST`/`PUT`).
@@ -447,6 +568,56 @@ mod tests {
         }
     }
 
+    /// Entité de la fixture du `Scenario` « le document décrit critères, tri et conflit »
+    /// (amendement 2026-11-13, issues #77 et #78) : lecture `OwnerOnly`, deux colonnes
+    /// filtrables (`project_id`, `kind`) et une triable (`created_at`). Miroir des fixtures
+    /// homonymes de `rest::core` et `mcp::registry` (module de test privé, non partageable).
+    #[cfg(feature = "db")]
+    mod task {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+        use utoipa::ToSchema;
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema, DeriveEntityModel)]
+        #[schema(as = Task)]
+        #[sea_orm(table_name = "openapi_tasks")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub owner_id: i32,
+            pub project_id: i32,
+            pub kind: String,
+            pub created_at: i64,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "tasks"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn owner_column() -> Option<Column> {
+                Some(Column::OwnerId)
+            }
+            fn filterable_columns() -> Vec<Column> {
+                vec![Column::ProjectId, Column::Kind]
+            }
+            fn sortable_columns() -> Vec<Column> {
+                vec![Column::CreatedAt]
+            }
+        }
+    }
+
     // ——— Selecteurs JSON : toutes les affirmations structurelles du contrat ———
     // Le document est comparé sur des sélecteurs précis (chemins, clés, descriptions),
     // jamais par `contains` lâche sur la chaîne brute.
@@ -497,6 +668,28 @@ mod tests {
             .collect();
         params.sort();
         params
+    }
+
+    /// Sélectionne un paramètre d'opération par nom (tous emplacements).
+    #[cfg(feature = "db")]
+    fn parameter<'a>(op: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+        op["parameters"]
+            .as_array()
+            .expect("parameters array")
+            .iter()
+            .find(|param| param["name"] == name)
+            .unwrap_or_else(|| panic!("paramètre {name:?} absent"))
+    }
+
+    /// Les valeurs `enum` du schéma d'un paramètre, dans l'ordre déclaré.
+    #[cfg(feature = "db")]
+    fn enum_values_of(op: &serde_json::Value, name: &str) -> Vec<String> {
+        parameter(op, name)["schema"]["enum"]
+            .as_array()
+            .expect("parameter enum")
+            .iter()
+            .map(|value| value.as_str().expect("enum entry").to_owned())
+            .collect()
     }
 
     /// Clés triées du contenu d'une réponse sérialisée.
@@ -766,10 +959,11 @@ mod tests {
         );
 
         // jeu de statuts exact par opération : succès + les erreurs du `Must`, rien d'autre
+        // (`409` `MRD-REST-007` sur `POST`/`PUT` — amendement #77 du 2026-11-13)
         assert_eq!(response_codes(list), ["200", "400", "401", "403", "500"]);
         assert_eq!(
             response_codes(create),
-            ["201", "400", "401", "403", "415", "422", "500"]
+            ["201", "400", "401", "403", "409", "415", "422", "500"]
         );
         assert_eq!(
             response_codes(get_item),
@@ -777,7 +971,7 @@ mod tests {
         );
         assert_eq!(
             response_codes(update),
-            ["200", "400", "401", "403", "404", "415", "422", "500"]
+            ["200", "400", "401", "403", "404", "409", "415", "422", "500"]
         );
         assert_eq!(
             response_codes(delete),
@@ -796,6 +990,11 @@ mod tests {
         }
         for op in [create, update] {
             text_error(op, "415", "Content-Type non supporté");
+        }
+        // `409` « Conflit d'unicité » (`MRD-REST-007`, corps texte réellement rendu par
+        // ./error.rs) sur les deux opérations d'écriture — amendement #77 du 2026-11-13
+        for op in [create, update] {
+            text_error(op, "409", "Conflit d'unicité");
         }
         for op in [create, update, delete] {
             unprocessable(op);
@@ -1028,6 +1227,100 @@ mod tests {
             .merge(openapi_router(spec.clone()))
             .merge(swagger_ui_router(spec));
         let _unused = merged;
+    }
+
+    /// `Scenario` : « le document décrit critères, tri et conflit » (amendement du 2026-11-13,
+    /// issues #77 et #78) — `task::Entity` (deux colonnes filtrables, une triable, lecture
+    /// `OwnerOnly`) porte un query parameter typé par colonne filtrable, `sort` énuméré des
+    /// colonnes triables, `order` énuméré `asc`/`desc`, le `400` de la liste, le `409` de `POST`
+    /// et `PUT` (`MRD-REST-007`, corps texte réellement rendu) et le `404` annoté « ligne
+    /// d'autrui » sur les opérations d'item ; `ingredient::Entity` (aucune déclaration) ne
+    /// reçoit aucun paramètre de liste nouveau et garde son `404` simple.
+    #[cfg(feature = "db")]
+    #[test]
+    fn resource_openapi_declares_filters_sort_and_conflict() {
+        let json = spec_json(&resource_openapi::<task::Entity>());
+        let list = operation(&json, "/api/v1/tasks", "get");
+        let create = operation(&json, "/api/v1/tasks", "post");
+        let update = operation(&json, "/api/v1/tasks/{id}", "put");
+        let get_item = operation(&json, "/api/v1/tasks/{id}", "get");
+        let delete = operation(&json, "/api/v1/tasks/{id}", "delete");
+
+        // un query parameter optionnel par colonne filtrable déclarée, type dérivé de la colonne
+        // (`project_id` entier, `kind` texte), plus `sort`/`order` — et rien d'autre
+        assert_eq!(
+            parameters(list, "query"),
+            vec![
+                ("kind".to_owned(), "string".to_owned(), false),
+                ("order".to_owned(), "string".to_owned(), false),
+                ("page".to_owned(), "integer".to_owned(), false),
+                ("per_page".to_owned(), "integer".to_owned(), false),
+                ("project_id".to_owned(), "integer".to_owned(), false),
+                ("sort".to_owned(), "string".to_owned(), false),
+            ]
+        );
+        assert_eq!(enum_values_of(list, "sort"), ["created_at"]);
+        assert_eq!(enum_values_of(list, "order"), ["asc", "desc"]);
+        for name in ["project_id", "kind", "sort", "order"] {
+            let description = parameter(list, name)["description"]
+                .as_str()
+                .unwrap_or_else(|| panic!("description courte attendue sur le paramètre {name:?}"));
+            assert!(!description.is_empty(), "description non vide sur {name:?}");
+        }
+        // pas de doublon avec les noms réservés : `project_id`/`kind` ne collisionnent avec rien,
+        // et `filter` n'est pas déclaré (aucune `filter_column` sur `task`)
+        assert!(
+            parameters(list, "query")
+                .into_iter()
+                .all(|(name, _, _)| name != "filter"),
+            "`filter` n'est déclaré que sous `filter_column`"
+        );
+
+        // le `400` de la liste couvre les rejets `MRD-REST-008` de la query string
+        text_error(list, "400", "Requête invalide");
+
+        // `409` (`MRD-REST-007`) sur les deux opérations d'écriture
+        for op in [create, update] {
+            text_error(op, "409", "Conflit d'unicité");
+        }
+
+        // lecture `OwnerOnly` : le `404` des trois opérations d'item couvre aussi la ligne
+        // d'autrui (description, pas de réponse `403` propre à ce cas)
+        for op in [get_item, update, delete] {
+            text_error(op, "404", "Non trouvé — inclut la ligne d'autrui");
+        }
+
+        // entité sans aucune déclaration : exactement son document de liste d'avant (#78) —
+        // `page`/`per_page` seulement, ni `sort` ni `order`, et son `404` sans annotation
+        // (`AdminOnly` en lecture)
+        let plain = spec_json(&resource_openapi::<ingredient::Entity>());
+        let plain_list = operation(&plain, "/api/v1/ingredients", "get");
+        assert_eq!(
+            parameters(plain_list, "query"),
+            vec![
+                ("page".to_owned(), "integer".to_owned(), false),
+                ("per_page".to_owned(), "integer".to_owned(), false),
+            ]
+        );
+        assert_eq!(plain_list["parameters"].as_array().expect("params").len(), 2);
+        for method in ["get", "put", "delete"] {
+            text_error(
+                operation(&plain, "/api/v1/ingredients/{id}", method),
+                "404",
+                "Non trouvé",
+            );
+        }
+        // le `409` de #77 vaut pour toute ressource, déclaration de colonnes ou non
+        text_error(
+            operation(&plain, "/api/v1/ingredients", "post"),
+            "409",
+            "Conflit d'unicité",
+        );
+        text_error(
+            operation(&plain, "/api/v1/ingredients/{id}", "put"),
+            "409",
+            "Conflit d'unicité",
+        );
     }
 
     /// `Scenario` : « le document publié ne porte aucune extension x-miryad » — fragment
