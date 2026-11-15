@@ -71,7 +71,8 @@ Tasks:
     [?] (implementer) : nommage des déclarations TS — les dix `Model` portant le même nom Rust, chaque déclaration est renommée `<PascalCase(entité)>Model` (`AgentModel` … `UserContextModel`), fichiers d'après la tige citée dans le Scenario. Choix provisoire conservateur ; options : préfixe ressource (`CatalogAgent`), suffixe `Model` (retenu).
     version amont qui dérive `TS` sur ses définitions. Alors : spec (`Must`, `Scenario` « le `.ts` exporté type la colonne par `ToolsetContext` »), test de contrat (valeur construite par la crate → JSON identique
     à la forme déclarée, JSON de la déclaration accepté par la crate), puis ./catalog_context.rs.
-  [ ] Issue #73 — colonnes de provenance (`managed_*`) sur `Model` et hooks (valeurs reçues ignorées, valeurs de la ligne préservées), arbitré le 2026-11-13, voir ./../store/mod.sdd. Spec d'abord, tests d'abord, puis ./catalog_context.rs. Après ./../migration.sdd et la tâche #74 ci-dessus.
+  [x] Issue #73 — colonnes de provenance (`managed_*`) sur `Model` et hooks (valeurs reçues ignorées, valeurs de la ligne préservées), arbitré le 2026-11-13, voir ./../store/mod.sdd. Spec d'abord, tests d'abord, puis ./catalog_context.rs. Après ./../migration.sdd et la tâche #74 ci-dessus.
+    Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, feature non déclarée, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Colonnes `managed_*` sur le `Model`, hooks : `None` à la création (valeurs reçues ignorées), valeurs de `existing` à la mise à jour ; Scenario « la provenance n'est pas écrite par le CRUD » verrouillé par test.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./catalog_context.rs.

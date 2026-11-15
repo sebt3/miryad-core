@@ -1962,6 +1962,9 @@ mod tests {
                 context: brute,
                 context_type: Some("G_home".to_owned()),
                 created_at: chrono::Utc::now(),
+                managed_by: None,
+                managed_version: None,
+                managed_digest: None,
             },
         )
         .await

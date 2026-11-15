@@ -101,6 +101,19 @@ impl McpGrant {
     }
 }
 
+/// Les droits de script accordés à un contexte, même forme que la colonne `script_grants` d'un
+/// type de contexte (objet à exactement les deux clés `toolsets` et `modules`) : les noms de
+/// toolsets (version active) et de modules d'hôte (`Must` de ./host.sdd, amendement du 2026-11-13
+/// — posé par la tâche provenance de ./store/publish.sdd, issue #73 ; la méthode
+/// `LymailleHost::script_grants` qui le rend est la tâche #70 de ./host.sdd).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScriptGrants {
+    /// Toolsets du catalogue (`G_…`, version active) accordés.
+    pub toolsets: Vec<String>,
+    /// Noms de modules d'hôte accordés.
+    pub modules: Vec<String>,
+}
+
 /// Erreur de l'hôte, **sans contenu** (`Must` de ./host.sdd) : l'hôte journalise lui-même sa
 /// panne ; miryad-core n'en propage ni n'en trace aucun texte.
 #[derive(Clone, Copy, Debug, thiserror::Error)]

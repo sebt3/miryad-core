@@ -87,6 +87,17 @@ pub struct Model {
     #[schema(value_type = String, format = DateTime)]
     #[ts(type = "string")]
     pub created_at: DateTimeUtc,
+    /// Marque de la source hôte qui publie cette ligne (`../migration.rs`, issue #73 ; lue par
+    /// `../store/publish.rs`) : `None` = ligne non gérée. Jamais écrite par le CRUD — les hooks
+    /// ignorent la valeur reçue à la création et préservent celle de la ligne à la mise à jour
+    /// (`./context_type.sdd`, amendement du 2026-11-13).
+    pub managed_by: Option<String>,
+    /// Version du catalogue hôte qui a publié ou mis à jour cette ligne (`None` = non gérée).
+    pub managed_version: Option<String>,
+    /// Empreinte SHA-256 (hex) du contenu publié (`active`, `allowed_agents` et `script_grants`
+    /// tels que stockés) : recalculée à chaque comparaison par `../store/publish.rs`, jamais faire
+    /// par le CRUD.
+    pub managed_digest: Option<String>,
 }
 
 /// Aucune relation : les versions vivent dans la même ligne, l'inclusion d'un autre type est un
@@ -244,7 +255,11 @@ impl Entity {
     /// l'agent dans le catalogue et la cohérence de la nature (`session_kind` ↔ nature de l'agent)
     /// sont contrôlées à l'ouverture par `lymaille::resolve_start` (`../interactive/manager.sdd`),
     /// pas ici.
-    async fn valider_et_deriver<C: sea_orm::ConnectionTrait>(
+    /// `pub(crate)` (issue #73, ./store/publish.sdd — la spec le nomme `valider`, le source le
+    /// nomme `valider_et_deriver`) : le chemin de publication du catalogue applique **la même**
+    /// validation avant toute écriture, sans dupliquer une règle des hooks ; logique strictement
+    /// inchangée.
+    pub(crate) async fn valider_et_deriver<C: sea_orm::ConnectionTrait>(
         db: &C,
         mut active: ActiveModel,
         existing: Option<&Model>,
@@ -308,6 +323,22 @@ impl Entity {
         active.version = ActiveValue::Set(version);
         if existing.is_none() && matches!(active.created_at, ActiveValue::NotSet) {
             active.created_at = ActiveValue::Set(chrono::Utc::now());
+        }
+        match existing {
+            // Issue #73 : à la création la provenance reçue est ignorée (la ligne naît « non
+            // gérée », seul `../store/publish.rs` la pose) ; à la mise à jour celle de la ligne
+            // relue est préservée — le CRUD ne peut ni la forger ni l'effacer (amendement du
+            // 2026-11-13 de ./context_type.sdd).
+            None => {
+                active.managed_by = ActiveValue::Set(None);
+                active.managed_version = ActiveValue::Set(None);
+                active.managed_digest = ActiveValue::Set(None);
+            }
+            Some(ligne) => {
+                active.managed_by = ActiveValue::Set(ligne.managed_by.clone());
+                active.managed_version = ActiveValue::Set(ligne.managed_version.clone());
+                active.managed_digest = ActiveValue::Set(ligne.managed_digest.clone());
+            }
         }
         Ok(active)
     }
@@ -460,6 +491,9 @@ mod tests {
             active: Set(active),
             draft: Set(draft),
             created_at: NotSet,
+            managed_by: NotSet,
+            managed_version: NotSet,
+            managed_digest: NotSet,
         }
     }
 
@@ -685,21 +719,95 @@ mod tests {
         .expect("un agent par défaut membre de l'ensemble est accepté");
     }
 
+    /// Ligne gérée par l'hôte pour les hooks `before_update` (issue #73) : provenance posée,
+    /// sinon la forme standard de `G_cluster`.
+    fn modele_gere(name: &str) -> Model {
+        Model {
+            id: 1,
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            allowed_agents: json!(["G_triage"]),
+            script_grants: grants_vide(),
+            active: Some(type_json(name, "1.0.0", json!({"type": "object"}))),
+            draft: None,
+            created_at: chrono::Utc::now(),
+            managed_by: Some("vanyline".to_string()),
+            managed_version: Some("1.0.0".to_string()),
+            managed_digest: Some("abc123".to_string()),
+        }
+    }
+
+    /// Scenario « la provenance n'est pas écrite par le CRUD » (amendement du 2026-11-13, issue
+    /// #73) : à la création, les trois colonnes posées par le corps de la requête sont ignorées —
+    /// le hook les rend `None` quelle que soit la valeur reçue ; à la mise à jour, elles sont
+    /// remplacées par celles de la ligne relue, y compris quand le corps en porte d'autres, et le
+    /// contenu modifié passe.
+    #[tokio::test]
+    async fn la_provenance_n_est_pas_ecrite_par_le_crud() {
+        let forgee = ActiveModel {
+            managed_by: Set(Some("vanyline".to_string())),
+            managed_version: Set(Some("9.9.9".to_string())),
+            managed_digest: Set(Some("a3b5c7".to_string())),
+            ..active_avec(
+                Some(type_json("G_cluster", "1.0.0", json!({"type": "object"}))),
+                None,
+            )
+        };
+        let cree = Entity::before_create(&hook_db(), forgee, &principal())
+            .await
+            .expect("un type valide du catalogue reste accepté, provenance posée ou non");
+        for (colonne, valeur) in [
+            ("managed_by", &cree.managed_by),
+            ("managed_version", &cree.managed_version),
+            ("managed_digest", &cree.managed_digest),
+        ] {
+            assert!(
+                matches!(valeur, Set(None) | sea_orm::ActiveValue::Unchanged(None) | NotSet),
+                "`{colonne}` posée par le corps est ignorée à la création : {valeur:?}"
+            );
+        }
+
+        let existing = modele_gere("G_cluster");
+        let corps_altere = ActiveModel {
+            managed_by: Set(Some("autre-source".to_string())),
+            managed_version: Set(Some("2.0.0".to_string())),
+            managed_digest: Set(Some("000000".to_string())),
+            ..active_avec(
+                Some(type_json("G_cluster", "1.1.0", json!({"type": "object"}))),
+                None,
+            )
+        };
+        let mis_a_jour = Entity::before_update(&hook_db(), corps_altere, &existing, &principal())
+            .await
+            .expect("une mise à jour qui garde le nom est acceptée, provenance posée ou non");
+        assert_eq!(
+            mis_a_jour.managed_by,
+            Set(Some("vanyline".to_string())),
+            "`managed_by` reste celui de la ligne relue"
+        );
+        assert_eq!(
+            mis_a_jour.managed_version,
+            Set(Some("1.0.0".to_string())),
+            "`managed_version` reste celle de la ligne relue"
+        );
+        assert_eq!(
+            mis_a_jour.managed_digest,
+            Set(Some("abc123".to_string())),
+            "`managed_digest` reste celle de la ligne relue"
+        );
+        assert_eq!(
+            mis_a_jour.version,
+            Set("1.1.0".to_string()),
+            "le contenu modifié passe : `version` suit la nouvelle définition"
+        );
+    }
+
     /// Scenario « le nom ne change pas à la mise à jour » : une ligne `G_cluster`, un
     /// `ActiveModel` dont le JSON porte `G_cluster2` — `before_update` refuse, le message cite la
     /// règle ; aucun code `MRD-*` sur un `HookError`.
     #[tokio::test]
     async fn before_update_refuse_un_changement_de_nom() {
-        let existing = Model {
-            id: 1,
-            name: "G_cluster".to_string(),
-            version: "1.0.0".to_string(),
-            allowed_agents: json!(["G_triage"]),
-            script_grants: grants_vide(),
-            active: Some(type_json("G_cluster", "1.0.0", json!({"type": "object"}))),
-            draft: None,
-            created_at: chrono::Utc::now(),
-        };
+        let existing = modele_gere("G_cluster");
         let rendu = Entity::before_update(
             &hook_db(),
             active_avec(
@@ -889,6 +997,9 @@ mod tests {
             "active",
             "draft",
             "created_at",
+            "managed_by",
+            "managed_version",
+            "managed_digest",
         ] {
             assert!(
                 proprietes.contains_key(colonne),
@@ -943,6 +1054,9 @@ mod tests {
             created_at: chrono::DateTime::parse_from_rfc3339("2026-11-15T12:00:00+00:00")
                 .expect("la date de fixture est de l'RFC 3339")
                 .with_timezone(&chrono::Utc),
+            managed_by: None,
+            managed_version: None,
+            managed_digest: None,
         };
         let json = serde_json::to_value(&modele).expect("le Model sérialise");
         let champs = crate::lymaille::interactive::event::tests::decl_fields(&texte);
@@ -988,6 +1102,11 @@ mod tests {
             type_de("draft"),
             "ContextType | null",
             "colonne draft typée ContextType | null dans la déclaration"
+        );
+        assert_eq!(
+            type_de("managed_by"),
+            "string | null",
+            "colonne managed_by typée string | null dans la déclaration (issue #73)"
         );
         std::fs::remove_dir_all(&dir).expect("le répertoire de test se nettoie");
     }

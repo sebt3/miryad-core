@@ -53,6 +53,16 @@ pub struct Model {
     #[schema(value_type = String, format = DateTime)]
     #[ts(type = "string")]
     pub created_at: DateTimeUtc,
+    /// Marque de la source hôte qui publie cette ligne (`../migration.rs`, issue #73 ; lue par
+    /// `../store/publish.rs`) : `None` = ligne non gérée. Jamais écrite par le CRUD — les hooks
+    /// ignorent la valeur reçue à la création et préservent celle de la ligne à la mise à jour
+    /// (`./catalog_context.sdd`, amendement du 2026-11-13).
+    pub managed_by: Option<String>,
+    /// Version du catalogue hôte qui a publié ou mis à jour cette ligne (`None` = non gérée).
+    pub managed_version: Option<String>,
+    /// Empreinte SHA-256 (hex) du contenu publié (`context` et `context_type` tels que stockés) :
+    /// recalculée à chaque comparaison par `../store/publish.rs`, jamais faire par le CRUD.
+    pub managed_digest: Option<String>,
 }
 
 /// Aucune relation : les liaisons rôle → serveur sont des noms portés par le JSON, sans clé
@@ -112,7 +122,10 @@ impl Entity {
     /// compris une erreur de `classify`, est le même refus), et sur une mise à jour `name` ne
     /// change pas. `name` est toujours réécrit depuis le contexte ; `created_at` est posé à la
     /// création s'il manque, et reste celui de la ligne existante à la mise à jour.
-    fn valider_et_deriver(
+    /// `pub(crate)` (issue #73, ./store/publish.sdd) : le chemin de publication du catalogue
+    /// applique **la même** validation avant toute écriture, sans dupliquer une règle des hooks ;
+    /// logique strictement inchangée.
+    pub(crate) fn valider_et_deriver(
         mut active: ActiveModel,
         existing: Option<&Model>,
     ) -> Result<ActiveModel, HookError> {
@@ -159,8 +172,21 @@ impl Entity {
                 if matches!(active.created_at, ActiveValue::NotSet) {
                     active.created_at = ActiveValue::Set(chrono::Utc::now());
                 }
+                // Issue #73 : à la création, la provenance reçue est ignorée — la ligne naît
+                // « non gérée » ; seul `../store/publish.rs` la pose (amendement du 2026-11-13
+                // de ./catalog_context.sdd).
+                active.managed_by = ActiveValue::Set(None);
+                active.managed_version = ActiveValue::Set(None);
+                active.managed_digest = ActiveValue::Set(None);
             }
-            Some(ligne) => active.created_at = ActiveValue::Set(ligne.created_at),
+            Some(ligne) => {
+                active.created_at = ActiveValue::Set(ligne.created_at);
+                // Issue #73 : la provenance de la ligne relue est préservée — le CRUD ne peut
+                // ni la forger ni l'effacer.
+                active.managed_by = ActiveValue::Set(ligne.managed_by.clone());
+                active.managed_version = ActiveValue::Set(ligne.managed_version.clone());
+                active.managed_digest = ActiveValue::Set(ligne.managed_digest.clone());
+            }
         }
         Ok(active)
     }
@@ -279,7 +305,7 @@ mod tests {
     }
 
     /// `ActiveModel` dans la forme qui atteint le hook : colonne dérivée fausse (le hook doit la
-    /// réécrire), `context` posé, clé et horodatage non posés.
+    /// réécrire), `context` posé, clé, horodatage et provenance non posés.
     fn active_avec(context: serde_json::Value) -> ActiveModel {
         ActiveModel {
             id: NotSet,
@@ -287,17 +313,34 @@ mod tests {
             context: Set(context),
             context_type: NotSet,
             created_at: NotSet,
+            managed_by: NotSet,
+            managed_version: NotSet,
+            managed_digest: NotSet,
         }
     }
 
-    /// Ligne existante des hooks `before_update`.
+    /// Ligne existante des hooks `before_update`, non gérée par défaut.
     fn modele(name: &str) -> Model {
+        modele_geree(name, None, None, None)
+    }
+
+    /// Ligne existante avec provenance : les hooks de la tâche « Issue #73 » doivent la préserver
+    /// à la mise à jour.
+    fn modele_geree(
+        name: &str,
+        managed_by: Option<&str>,
+        managed_version: Option<&str>,
+        managed_digest: Option<&str>,
+    ) -> Model {
         Model {
             id: 1,
             name: name.to_string(),
             context: contexte(name, ContextLevel::Shared, json!({"namespace": "prod"})),
             context_type: None,
             created_at: Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap(),
+            managed_by: managed_by.map(str::to_owned),
+            managed_version: managed_version.map(str::to_owned),
+            managed_digest: managed_digest.map(str::to_owned),
         }
     }
 
@@ -572,6 +615,76 @@ mod tests {
         );
     }
 
+    /// Scenario « la provenance n'est pas écrite par le CRUD » (amendement du 2026-11-13, issue
+    /// #73) : à la création, les trois colonnes posées par le corps de la requête sont ignorées —
+    /// le hook les rend `None` quelle que soit la valeur reçue ; à la mise à jour, elles sont
+    /// remplacées par celles de la ligne relue, y compris quand le corps en porte d'autres, et le
+    /// contenu modifié passe.
+    #[tokio::test]
+    async fn la_provenance_n_est_pas_ecrite_par_le_crud() {
+        let forgee = ActiveModel {
+            managed_by: Set(Some("vanyline".to_string())),
+            managed_version: Set(Some("9.9.9".to_string())),
+            managed_digest: Set(Some("a3b5c7".to_string())),
+            ..active_avec(contexte(
+                "G_prod",
+                ContextLevel::Shared,
+                json!({"namespace": "prod"}),
+            ))
+        };
+        let cree = Entity::before_create(&hook_db(), forgee, &principal())
+            .await
+            .expect("un contexte shared valide reste acceptée, provenance posée ou non");
+        for (colonne, valeur) in [
+            ("managed_by", &cree.managed_by),
+            ("managed_version", &cree.managed_version),
+            ("managed_digest", &cree.managed_digest),
+        ] {
+            assert!(
+                matches!(valeur, Set(None) | sea_orm::ActiveValue::Unchanged(None) | NotSet),
+                "`{colonne}` posée par le corps est ignorée à la création : {valeur:?}"
+            );
+        }
+
+        let existing = modele_geree("G_prod", Some("vanyline"), Some("1.0.0"), Some("abc123"));
+        let corps_altere = ActiveModel {
+            managed_by: Set(Some("autre-source".to_string())),
+            managed_version: Set(Some("2.0.0".to_string())),
+            managed_digest: Set(Some("000000".to_string())),
+            ..active_avec(contexte(
+                "G_prod",
+                ContextLevel::Shared,
+                json!({"namespace": "dev"}),
+            ))
+        };
+        let mis_a_jour = Entity::before_update(&hook_db(), corps_altere, &existing, &principal())
+            .await
+            .expect("une mise à jour qui garde le nom est acceptée, provenance posée ou non");
+        assert_eq!(
+            mis_a_jour.managed_by,
+            Set(Some("vanyline".to_string())),
+            "`managed_by` reste celui de la ligne relue"
+        );
+        assert_eq!(
+            mis_a_jour.managed_version,
+            Set(Some("1.0.0".to_string())),
+            "`managed_version` reste celle de la ligne relue"
+        );
+        assert_eq!(
+            mis_a_jour.managed_digest,
+            Set(Some("abc123".to_string())),
+            "`managed_digest` reste celle de la ligne relue"
+        );
+        let passe = match &mis_a_jour.context {
+            Set(valeur) => valeur.clone(),
+            _ => panic!("le contenu modifié doit traverser le hook"),
+        };
+        assert!(
+            passe.to_string().contains("dev"),
+            "le contenu modifié passe : le hook ne réécrit pas le contexte"
+        );
+    }
+
     /// Scenario « `resource_openapi` compile et décrit la ressource » (issue #79, amendement du
     /// 2026-11-13 de `./catalog_context.sdd`) : l'appel compile (le `Model` dérive
     /// `utoipa::ToSchema`), le schéma porte toutes les colonnes, `created_at` est un
@@ -588,7 +701,16 @@ mod tests {
         let proprietes = schema["properties"]
             .as_object()
             .expect("le schéma du `Model` porte ses propriétés");
-        for colonne in ["id", "name", "context", "context_type", "created_at"] {
+        for colonne in [
+            "id",
+            "name",
+            "context",
+            "context_type",
+            "created_at",
+            "managed_by",
+            "managed_version",
+            "managed_digest",
+        ] {
             assert!(
                 proprietes.contains_key(colonne),
                 "colonne {colonne} absente du schéma : {schema}"
@@ -664,6 +786,11 @@ mod tests {
             type_de("context_type"),
             "string | null",
             "colonne context_type typée string | null dans la déclaration"
+        );
+        assert_eq!(
+            type_de("managed_by"),
+            "string | null",
+            "colonne managed_by typée string | null dans la déclaration (issue #73)"
         );
         std::fs::remove_dir_all(&dir).expect("le répertoire de test se nettoie");
     }

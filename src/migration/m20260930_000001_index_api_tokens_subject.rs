@@ -194,13 +194,15 @@ mod tests {
         expected.extend([
             "m20261103_000001_create_lymaille_tables",
             "m20261104_000001_lymaille_lot2",
+            "m20261113_000001_lymaille_provenance",
         ]);
 
         assert_eq!(
             names, expected,
             "l'index s'inscrit après les internes et la 004 gatée ; en fin de liste, hors \
-             `lymaille`, la migration matrix est dernière, et sous `lymaille` c'est le lot 2 qui \
-             ferme la liste (amendements 2026-10-06, 2026-11-02 et 2026-11-03)"
+             `lymaille`, la migration matrix est dernière, et sous `lymaille` c'est la \
+             provenance du catalogue qui ferme la liste (amendements 2026-10-06, 2026-11-02, \
+             2026-11-03 et du 2026-11-13)"
         );
     }
 }

@@ -280,6 +280,8 @@ Tasks:
     **Après** ../matrix/store/migration.rs.
     Validé 2026-10-15 (Claude) : liste étendue en fin sous `matrix`, test inline vert ; spec 0930 amendée en conséquence.
 
+  [?] (cycle #73, 2026-11-15) : le wording « deux entrées » lymaille de cette spec est obsolète depuis la migration de provenance (`m20261113_000001_lymaille_provenance`, troisième entrée) ; tests alignés, prose à resserrer par le développeur principal.
+
 Done when:
   Les dix `Scenario` (neuf originaux, un pour l'amendement 2026-09-23) sont chacun vérifiés par au
     moins un test nommé distinct identifié dans `Tasks`, la batterie de /tooling.sdd passe verte sur

@@ -56,6 +56,7 @@ Exposes:
 
 Tasks:
   [x] Tests d'abord (hôte factice : défauts, `is_expired`, `Debug` opaque), puis ./host.rs. Spec approuvée le 2026-11-04 ; validé 2026-11-04 (validator PASS checkpoint 2 — les 4 `Scenario` verrouillés, objet-trait prouvé).
+  [?] (cycle #73, 2026-11-15) : le type `ScriptGrants` est déjà posé dans ./host.rs (prescrit mot pour mot par cette spec, importé par ./store/publish.rs pour l'empreinte des types de contexte) ; la méthode `LymailleHost::script_grants` reste la tâche #70 ci-dessous.
   [ ] Issue #70 (DSD `scripts-hote#OI-6`) — `script_grants` fourni par l'hôte pour ses contextes `H_…`. Spec d'abord (amendement à faire approuver) : ajouter au `Must` une troisième méthode à
     implémentation par défaut `async fn script_grants(&self, context: &str, caller: &CallerPrincipal) -> Result<Option<…>, HostError>`, défaut `Ok(None)` = aucun droit (donc l'échec fermé
     actuel de ./script_runner.sdd) ; adapter `Purpose` (le trait porte trois points d'extension) et `Exposes` ; `Scenario` : défaut → `None` ; hôte factice qui accorde. Puis tests d'abord, puis

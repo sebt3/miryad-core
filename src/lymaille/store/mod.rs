@@ -39,6 +39,7 @@ pub mod audit;
 pub mod catalog;
 pub mod draft;
 pub mod memory;
+pub mod publish;
 pub mod purge;
 pub mod session;
 pub mod session_index;

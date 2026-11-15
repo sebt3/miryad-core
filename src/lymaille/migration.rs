@@ -12,13 +12,14 @@ const NAME: &str = "m20261103_000001_create_lymaille_tables";
 const TABLE_PREFIX: &str = "miryad_lymaille_";
 
 /// Migrations du module à assembler par l'hôte (`src/migration/mod.sdd`, amendement `lymaille`) :
-/// le lot 1 puis le lot 2, en ordre chronologique (amendement lot 2 du
-/// `src/lymaille/migration.sdd`).
+/// le lot 1, puis le lot 2, puis la provenance du catalogue (amendements lot 2 du 2026-11-03 et
+/// du 2026-11-13 de `src/lymaille/migration.sdd`, issue #73), en ordre chronologique.
 #[must_use]
 pub fn migrations() -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
     vec![
         Box::new(Migration),
         Box::new(m20261104_000001_lymaille_lot2::Migration),
+        Box::new(m20261113_000001_lymaille_provenance::Migration),
     ]
 }
 
@@ -630,6 +631,90 @@ mod m20261104_000001_lymaille_lot2 {
     }
 }
 
+/// Troisième migration du module — « Amendement du 2026-11-13 (issue #73) » du
+/// `src/lymaille/migration.sdd` : la **provenance du catalogue**. Trois colonnes `TEXT NULL` —
+/// `managed_by`, `managed_version`, `managed_digest` — sur chacune des trois tables publiées par
+/// l'hôte (`catalog_context_types`, `catalog_contexts`, `catalog_agents`), lues par
+/// `../store/publish.sdd` pour le chemin système create-only. Nouvelle migration (règle par
+/// défaut de `/AGENTS.md`, aucune exception) : les deux migrations committées restent immuables.
+/// Une instruction `ALTER TABLE … ADD COLUMN` par colonne, portable SQLite et PostgreSQL, gardée
+/// par `has_column` avant chaque ajout (idempotent — SQLite n'a pas `ADD COLUMN IF NOT EXISTS`) ;
+/// les lignes existantes valent `NULL` (« non gérée »). Aucun index ; aucune autre table ni
+/// colonne ne change (la colonne `profile` des agents est hors de ce lot, issue #75).
+mod m20261113_000001_lymaille_provenance {
+    use sea_orm_migration::prelude::*;
+
+    use super::{opt_text, table_name};
+
+    /// Nom de migration (`src/lymaille/migration.sdd`, amendement du 2026-11-13), explicite : le
+    /// `DeriveMigrationName` donnerait le stem du fichier parent (`migration`).
+    const NAME: &str = "m20261113_000001_lymaille_provenance";
+
+    /// Les trois tables du catalogue publiables par l'hôte (contrat d'emploi :
+    /// `../store/publish.sdd`).
+    const TABLES: [&str; 3] = ["catalog_context_types", "catalog_contexts", "catalog_agents"];
+
+    /// Les trois colonnes de provenance, dans l'ordre de pose (`managed_by` = marque de la
+    /// source, `managed_version` = version publiée, `managed_digest` = empreinte SHA-256 du
+    /// contenu stocké).
+    const COLUMNS: [&str; 3] = ["managed_by", "managed_version", "managed_digest"];
+
+    /// Troisième migration du module, rendue par `super::migrations()` en troisième.
+    pub(super) struct Migration;
+
+    impl MigrationName for Migration {
+        fn name(&self) -> &str {
+            NAME
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MigrationTrait for Migration {
+        /// Neuf `ALTER TABLE … ADD COLUMN` `TEXT NULL`, chacun gardé par `has_column` : le rejeu
+        /// est idempotent (règle du `Must` parent) et les lignes existantes restent à `NULL`.
+        async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+            for suffix in TABLES {
+                let name = table_name(suffix);
+                for column in COLUMNS {
+                    if !manager.has_column(name.as_str(), column).await? {
+                        manager
+                            .alter_table(
+                                Table::alter()
+                                    .table(Alias::new(name.as_str()))
+                                    .add_column(opt_text(column))
+                                    .to_owned(),
+                            )
+                            .await?;
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        /// Remontée : les neuf colonnes sont retirées **si elles existent** (la migration peut
+        /// n'avoir jamais été appliquée sur une base descendue plus haut dans la chaîne) ;
+        /// strict ailleurs, comme les autres `down` (règle de `src/migration/mod.sdd`).
+        async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+            for suffix in TABLES {
+                let name = table_name(suffix);
+                for column in COLUMNS {
+                    if manager.has_column(name.as_str(), column).await? {
+                        manager
+                            .alter_table(
+                                Table::alter()
+                                    .table(Alias::new(name.as_str()))
+                                    .drop_column(Alias::new(column))
+                                    .to_owned(),
+                            )
+                            .await?;
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Migration, TABLE_PREFIX, migrations};
@@ -773,11 +858,18 @@ mod tests {
         ("idx_miryad_lymaille_matrix_events_seen_at", "matrix_events"),
     ];
 
-    /// Noms de suivi des deux entrées du module, dans l'ordre chronologique (`Amendement lot 2`).
-    const MIGRATION_NAMES: [&str; 2] = [
+    /// Noms de suivi des trois entrées du module, dans l'ordre chronologique (`Amendement lot 2`,
+    /// puis amendement du 2026-11-13 de la provenance — issue #73).
+    const MIGRATION_NAMES: [&str; 3] = [
         "m20261103_000001_create_lymaille_tables",
         "m20261104_000001_lymaille_lot2",
+        "m20261113_000001_lymaille_provenance",
     ];
+
+    /// Les neuf colonnes de provenance (issue #73) : trois tables du catalogue, trois colonnes
+    /// `TEXT NULL` chacune (« la migration de provenance ajoute neuf colonnes nullables »).
+    const PROVENANCE_TABLES: [&str; 3] = ["catalog_context_types", "catalog_contexts", "catalog_agents"];
+    const PROVENANCE_COLUMNS: [&str; 3] = ["managed_by", "managed_version", "managed_digest"];
 
     struct LymailleMigrator;
 
@@ -805,9 +897,21 @@ mod tests {
         assert_eq!(
             entries.len(),
             MIGRATION_NAMES.len(),
-            "migrations() rend les deux entrées du module (amendement lot 2)"
+            "migrations() rend les trois entrées du module (amendement lot 2, puis provenance #73)"
         );
         entries.remove(1)
+    }
+
+    /// La troisième entrée rendue par `migrations()` (la provenance, issue #73) — même dispatch
+    /// effectif que `lot2()`, pour que les rejeux `up`/`down` émettent réellement leur DDL.
+    fn provenance() -> Box<dyn MigrationTrait> {
+        let mut entries = migrations();
+        assert_eq!(
+            entries.len(),
+            MIGRATION_NAMES.len(),
+            "migrations() rend la troisième entrée du module (amendement du 2026-11-13, issue #73)"
+        );
+        entries.remove(2)
     }
 
     /// Ligne d'`agents` (privé) : `owner_id` + `agent_id` et les colonnes NOT NULL.
@@ -944,15 +1048,16 @@ mod tests {
         }
     }
 
-    /// Scenario (amendement lot 2) : `migrations()` rend `[lot 1, lot 2]` dans l'ordre
-    /// chronologique — l'ordre d'assemblage de `crate::migration::Migrator` en dépend.
+    /// Scenario (amendement lot 2, étendu le 2026-11-13, issue #73) : `migrations()` rend
+    /// `[lot 1, lot 2, provenance]` dans l'ordre chronologique — l'ordre d'assemblage de
+    /// `crate::migration::Migrator` en dépend.
     #[test]
-    fn migrations_returns_the_two_module_entries_in_chronological_order() {
+    fn migrations_returns_the_three_module_entries_in_chronological_order() {
         let entries = migrations();
         let names: Vec<&str> = entries.iter().map(|entry| entry.name()).collect();
         assert_eq!(
             names, MIGRATION_NAMES,
-            "les deux entrées du module, en ordre chronologique"
+            "les trois entrées du module, en ordre chronologique"
         );
     }
 
@@ -1158,9 +1263,11 @@ mod tests {
         LymailleMigrator::up(&db, None)
             .await
             .expect("premier up complet réussit");
-        LymailleMigrator::down(&db, Some(1))
+        // Depuis l'amendement du 2026-11-13 (issue #73) la dernière appliquée est la provenance :
+        // deux pas de down défont la provenance puis le lot 2.
+        LymailleMigrator::down(&db, Some(2))
             .await
-            .expect("un pas de down défait le lot 2, dernière appliquée");
+            .expect("deux pas de down défont la provenance puis le lot 2");
         for suffix in ["catalog_contexts", "user_contexts"] {
             assert!(
                 !manager
@@ -1303,9 +1410,10 @@ mod tests {
         LymailleMigrator::up(&db, None)
             .await
             .expect("premier up complet réussit");
-        LymailleMigrator::down(&db, Some(1))
+        // Deux pas : la provenance (amendement du 2026-11-13, issue #73) puis le lot 2.
+        LymailleMigrator::down(&db, Some(2))
             .await
-            .expect("un pas de down défait le lot 2, dernière appliquée");
+            .expect("deux pas de down défont la provenance puis le lot 2, dernières appliquées");
         LymailleMigrator::up(&db, None)
             .await
             .expect("le rejeu du up complet réussit");
@@ -1357,5 +1465,181 @@ mod tests {
             second.is_err(),
             "le second G_x du catalogue échoue — UNIQUE(agent_id) au catalogue"
         );
+    }
+
+    /// Ligne de `catalog_contexts` : `name` (`G_…`), `context` JSON et `created_at` — les colonnes
+    /// NOT NULL du lot 2, sans provenance (les colonnes `managed_*` ne sont pas encore posées).
+    async fn insert_catalog_context(db: &DatabaseConnection, name: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_unprepared(&format!(
+            "INSERT INTO {TABLE_PREFIX}catalog_contexts (name, context, created_at) \
+             VALUES ('{name}', '{{}}', '2026-11-13T00:00:00Z')"
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    /// Ligne de `catalog_context_types` : les colonnes NOT NULL du lot 2 (`script_grants` à son
+    /// défaut).
+    async fn insert_catalog_context_type(db: &DatabaseConnection, name: &str) -> Result<(), sea_orm::DbErr> {
+        db.execute_unprepared(&format!(
+            "INSERT INTO {TABLE_PREFIX}catalog_context_types (name, version, allowed_agents, created_at) \
+             VALUES ('{name}', '1.0.0', '[]', '2026-11-13T00:00:00Z')"
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    /// Les migrations du module jusqu'au lot 2 inclus, appliquées **directement** sur une base
+    /// vide (le chemin complet via le `Migrator` inclurait la provenance — la base du Scenario
+    /// « la migration de provenance ajoute neuf colonnes nullables » est le niveau lot 2, avec
+    /// des lignes déjà écrites).
+    async fn up_through_lot2(manager: &SchemaManager<'_>) {
+        let entries = migrations();
+        for entry in entries.into_iter().take(2) {
+            entry
+                .up(manager)
+                .await
+                .expect("les migrations précédentes (lot 1 puis lot 2) s'appliquent");
+        }
+    }
+
+    /// Sonde les neuf colonnes de provenance (`has_column`), présentes ou absentes selon `voulues`.
+    async fn assert_provenance_columns(manager: &SchemaManager<'_>, voulues: bool) {
+        for suffix in PROVENANCE_TABLES {
+            let name = table(suffix);
+            for column in PROVENANCE_COLUMNS {
+                let present = manager
+                    .has_column(name.as_str(), column)
+                    .await
+                    .expect("has_column probe succeeds");
+                assert_eq!(
+                    present, voulues,
+                    "colonne {column} sur {name} : présence {present}, attendue {voulues}"
+                );
+            }
+        }
+    }
+
+    /// Lecture brute de `managed_by` sur une table du catalogue — `None` = la ligne existante est
+    /// bien « non gérée » après l'`ADD COLUMN` nullable.
+    async fn managed_by_de(db: &DatabaseConnection, suffix: &str) -> Option<Option<String>> {
+        let mut select = sea_orm::sea_query::Query::select();
+        select
+            .column(sea_orm::sea_query::Alias::new("managed_by"))
+            .from(sea_orm::sea_query::Alias::new(table(suffix).as_str()));
+        db.query_one(&select)
+            .await
+            .expect("managed_by se relit")
+            .map(|row| {
+                row.try_get::<Option<String>>("", "managed_by")
+                    .expect("managed_by est une colonne TEXT nullable")
+            })
+    }
+
+    /// Scenario (amendement du 2026-11-13, issue #73) : « la migration de provenance ajoute neuf
+    /// colonnes nullables ». Base au niveau lot 2 avec des lignes dans les trois tables du
+    /// catalogue : `up` pose `managed_by`, `managed_version`, `managed_digest` (`TEXT NULL`) sur
+    /// chacune, les lignes existantes valent `NULL`, et le second `up` ne fait rien
+    /// (`has_column` avant chaque `ALTER TABLE`, SQLite n'ayant pas `ADD COLUMN IF NOT EXISTS`).
+    #[tokio::test]
+    async fn provenance_up_ajoute_neuf_colonnes_nullables() {
+        let db = fresh_db().await;
+        let manager = SchemaManager::new(&db);
+        up_through_lot2(&manager).await;
+        insert_catalog_agent(&db, "G_a1")
+            .await
+            .expect("une ligne de catalog_agents préexistante");
+        insert_catalog_context(&db, "G_c1")
+            .await
+            .expect("une ligne de catalog_contexts préexistante");
+        insert_catalog_context_type(&db, "G_t1")
+            .await
+            .expect("une ligne de catalog_context_types préexistante");
+
+        provenance()
+            .up(&manager)
+            .await
+            .expect("le up de la provenance retourne Ok(()) sur une base lot 2");
+        assert_provenance_columns(&manager, true).await;
+        for suffix in PROVENANCE_TABLES {
+            assert_eq!(
+                managed_by_de(&db, suffix).await,
+                Some(None),
+                "la ligne préexistante de {suffix} vaut NULL après l'ADD COLUMN nullable"
+            );
+        }
+
+        provenance()
+            .up(&manager)
+            .await
+            .expect("le up rejoué ne fait rien — has_column garde chaque ALTER TABLE");
+        assert_provenance_columns(&manager, true).await;
+        for suffix in PROVENANCE_TABLES {
+            assert_eq!(
+                managed_by_de(&db, suffix).await,
+                Some(None),
+                "le rejeu du up ne touche pas les lignes de {suffix}"
+            );
+        }
+    }
+
+    /// Scenario (amendement du 2026-11-13, issue #73) : « le down retire les colonnes de
+    /// provenance ». Après application complète, le `down` de la migration retire les neuf
+    /// colonnes (`has_column` d'abord, strict ailleurs) et laisse les autres colonnes et les
+    /// lignes intactes.
+    #[tokio::test]
+    async fn provenance_down_retire_les_colonnes_de_provenance() {
+        let db = fresh_db().await;
+        let manager = SchemaManager::new(&db);
+        LymailleMigrator::up(&db, None)
+            .await
+            .expect("le up complet pose les trois migrations");
+        insert_catalog_agent(&db, "G_a1")
+            .await
+            .expect("une ligne de catalog_agents");
+        insert_catalog_context(&db, "G_c1")
+            .await
+            .expect("une ligne de catalog_contexts");
+        insert_catalog_context_type(&db, "G_t1")
+            .await
+            .expect("une ligne de catalog_context_types");
+        assert_provenance_columns(&manager, true).await;
+
+        provenance()
+            .down(&manager)
+            .await
+            .expect("le down de la provenance retourne Ok(())");
+        assert_provenance_columns(&manager, false).await;
+
+        // Les autres colonnes et les lignes sont intactes : les colonnes NOT NULL d'origine
+        // existent et chaque table rend toujours sa ligne.
+        for (suffix, column) in [
+            ("catalog_agents", "agent_id"),
+            ("catalog_contexts", "name"),
+            ("catalog_context_types", "version"),
+        ] {
+            let name = table(suffix);
+            assert!(
+                manager
+                    .has_column(name.as_str(), column)
+                    .await
+                    .expect("has_column probe succeeds"),
+                "le down de la provenance laisse la colonne {column} de {name} en place"
+            );
+            let mut select = sea_orm::sea_query::Query::select();
+            select
+                .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+                .from(sea_orm::sea_query::Alias::new(name.as_str()));
+            let row = db
+                .query_one(&select)
+                .await
+                .expect("le comptage des lignes réussit")
+                .expect("COUNT(*) rend une ligne");
+            let count: i64 = row
+                .try_get("", "COUNT(*)")
+                .or_else(|_| row.try_get::<i32>("", "COUNT(*)").map(i64::from))
+                .expect("le comptage est un entier");
+            assert_eq!(count, 1, "la ligne préexistante de {name} est intacte");
+        }
     }
 }
