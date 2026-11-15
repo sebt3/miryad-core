@@ -327,7 +327,8 @@ Handles:
     ./../rest/core.rs.
 
 Tasks:
-  [x] Convertir les dix-neuf `Scenario` en au moins dix-neuf tests Rust nommés et distincts —
+  [x] Convertir les vingt `Scenario` (vingtième ajouté le 2026-11-15, issue #78 ; le décompte
+    « dix-neuf » datait d'avant l'amendement) en au moins vingt tests Rust nommés et distincts —
     deux tests inline existent, dix-sept à créer dans le `mod tests` `#[cfg(test)]` de
     ./registry.rs (fixtures `recipe`/`alice`/`test_db` existantes à réutiliser, fixtures
     additionnelles à porter ici ; les tests ne compilent que sous `--features mcp` et
@@ -407,12 +408,29 @@ Tasks:
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./registry.rs`, doc (ligne ~20) : retirer « comme en GraphQL — cf. `graphql::PolicyRegistry` » (dispatch par nom d'entité à l'exécution). Aucun changement de comportement.
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : la fixture de test (@MiryadResource::before_create, ~ligne 431 de ./registry.rs) est portée au nouveau trait ; aucun changement de comportement ni de dispatch (le registre délègue à @rest::core). Dépend de /src/resource.sdd (même amendement).
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
-  [ ] Issue #78 — parité MCP de la liste. Spec d'abord : `ListParams` MCP accepte les mêmes critères et le tri (arguments JSON : colonnes filtrables par nom, `sort`, `order`) ; clé inconnue → `InvalidParams`
+  [x] Issue #78 — parité MCP de la liste. Spec d'abord : `ListParams` MCP accepte les mêmes critères et le tri (arguments JSON : colonnes filtrables par nom, `sort`, `order`) ; clé inconnue → `InvalidParams`
     (`MRD-MCP-005`), comme REST `400` ; transmis à `rest::core::list` sans logique propre. Les deux surfaces lisent la **même** déclaration de colonnes (`FR-1`). `Scenario` miroir de ./../rest/mod.sdd.
     Puis tests d'abord, puis ./registry.rs. Après ./../rest/mod.sdd.
+    Implémente le 2026-11-15 : batterie 16/16 tests + 16/16 clippy -D warnings + fmt + trees verte,
+    validator PASS statique.
+    - `[?]` `split_sort_direction` dupliquée dans ./registry.rs (commentaire de citation inclus) : la fonction est privée de ./../rest/mod.rs, hors du `Owns` de cette boîte. Choix provisoire : duplication à sémantique identique, gravée par le test `list_sort_and_order_delegated_to_core` (suffixe `col:desc` == forme explicite). Options : la rendre `pub(crate)` dans ./../rest/mod.rs, ou la factoriser dans `query.rs` (DTO neutre déjà partagé par les deux surfaces). Recommandation : factorisation dans `query.rs` à un prochain cycle.
+    - `[?]` L'`inputSchema` de `_list` est construit dans ./../handler.rs (hors `Owns`) : sans `additionalProperties: false`, il est permissif — les critères libres et `sort`/`order` sont acceptés à l'exécution sans être déclarés ; le test de ./../handler.rs fige le trio `filter`/`page`/`per_page` dans `properties`. Choix provisoire : schéma non touché (son contrat est ./../handler.sdd). Options : rien (le schéma est déjà permissif), ou ajouter `sort`/`order` en `properties` côté handler. Recommandation : boîte dédiée côté handler, avec mention de la tolérance aux clés libres dans la description de l'outil.
+    - `[?]` La prose de cette boîte dit « clé inconnue → `InvalidParams` » ; le contrat REST réel validé (./../rest/mod.sdd, `wire_list_key_unknown_to_entity_is_ignored`) est une trichotomie : colonne de l'entité non déclarée filtrable → `InvalidParams`, clé hors entité → ignorée. La trichotomie identique a été appliquée côté MCP (parité stricte, `FR-1`) et verrouillée par les tests `list_undeclared_entity_column_is_invalid_params` et `list_key_unknown_to_entity_is_ignored_like_rest` — ce dernier vert d'emblée, verrou de parité et non test rouge. À confirmer : reformuler cette ligne de `Tasks` au profit de la trichotomie.
+    - `[?]` Parité d'assertion incomplète (validator 2026-11-15) : le conflit `sort=col:asc` +
+      `order=desc` (l'explicite l'emporte) et le cas mixte clé inconnue + clé filtrable ne sont
+      verrouillés que côté REST, pas côté MCP. Choix provisoire : le code est conforme
+      (`params.order.or_else(suffix)`), verrous d'assertion manquants seulement. A confirmer :
+      ajouter les deux assertions miroir dans ./registry.rs.
+    - `[?]` Le test de parite compare le chemin MCP a un @rest::core::list appele directement avec un
+      @ListQuery ecrit a la main, pas au @list_handler REST : une derive de construction de la requete
+      entre les deux surfaces ne serait attrapee que par la coincidence des suites miroirs. Choix
+      provisoire : acceptable (la validation vit dans le core) ; la factorisation de
+      @split_sort_direction (note ci-dessus) fermerait l'essentiel de ce trou.
 
 Done when:
-  La spec porte exactement dix-neuf `Scenario` et chacun est vérifié par au moins un test nommé
+  La spec porte exactement vingt `Scenario` (amendement du 2026-11-15 : le vingtième, « liste MCP
+    filtrée et triée comme la liste REST », a été ajouté pour #78 sans reprendre ce décompte) et
+    chacun est vérifié par au moins un test nommé
     distinct : les deux tests inline existants consignés nommément ci-dessus, plus dix-sept tests
     créés dans ./registry.rs` ; le nombre de tests distincts est supérieur ou égal au nombre de
     `Scenario` (`/miryad-core.sdd`).

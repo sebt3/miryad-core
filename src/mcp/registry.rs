@@ -41,6 +41,57 @@ struct ListParams {
     per_page: Option<u64>,
     #[serde(default)]
     filter: Option<String>,
+    #[serde(default)]
+    sort: Option<String>,
+    #[serde(default)]
+    order: Option<String>,
+    /// Issue #78 (parité MCP/REST, `registry.sdd` `Handles` du 2026-11-13) : toute autre clé de
+    /// l'enveloppe est un critère d'égalité par colonne, transmis brut à `rest::core::list`.
+    /// Les cinq noms réservés (`page`, `per_page`, `filter`, `sort`, `order`) sont captés par les
+    /// champs nommés, jamais par cette map — parité des réservés de `rest::mod.rs` sans en
+    /// répéter la liste.
+    #[serde(flatten)]
+    criteria: serde_json::Map<String, Value>,
+}
+
+/// (Amendement du 2026-11-13, issue #78, `registry.sdd` `Handles`) — convertit la valeur JSON
+/// d'un critère en texte brut pour `query::ListQuery::filters` : chaîne reprise telle quelle
+/// (sans Guillemets), nombre et booléen par `Display` ; une valeur non scalaire est
+/// `McpError::InvalidParams` avant toute délégation. La conversion ne valide aucune colonne —
+/// la trichotomie (colonne filtrable / colonne non déclarée / nom hors entité) est décidée par
+/// `rest::core::list`, seule connaissance des colonnes.
+fn scalar_filter_text(name: &str, value: Value) -> Result<String, McpError> {
+    match value {
+        Value::String(text) => Ok(text),
+        Value::Number(number) => Ok(number.to_string()),
+        Value::Bool(flag) => Ok(flag.to_string()),
+        _ => Err(McpError::InvalidParams(format!(
+            "filter value for key `{name}` must be a scalar: string, number or boolean expected"
+        ))),
+    }
+}
+
+/// Scinde `sort` de son suffixe de direction `:` — MÊME sémantique que
+/// `split_sort_direction` de `./../rest/mod.rs` (fonction privée là-bas, hors du `Owns` de
+/// cette spec — dupliquée faute de factorisable, `[?]` consigné dans `Tasks`) : la partie
+/// avant le dernier `:` est le nom de colonne, le suffixe rend ascendant s'il porte `asc` où
+/// qu'il soit, descendant sinon. Sans `:`, la direction reste l'affaire du seul `order`.
+#[must_use]
+fn split_sort_direction(sort: Option<&str>) -> (Option<String>, Option<&'static str>) {
+    let Some(sort) = sort else {
+        return (None, None);
+    };
+    match sort.rsplit_once(':') {
+        Some((name, direction)) => (
+            Some(name.to_string()),
+            Some(if direction.to_ascii_lowercase().contains("asc") {
+                "asc"
+            } else {
+                "desc"
+            }),
+        ),
+        None => (Some(sort.to_string()), None),
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -65,14 +116,29 @@ impl<E: RestEntity> McpEntity for McpEntityImpl<E> {
             McpOp::List => {
                 let params: ListParams =
                     serde_json::from_value(params).map_err(|e| McpError::InvalidParams(e.to_string()))?;
+                // Issue #78 (parité MCP/REST) : les clés libres sont des critères d'égalité par
+                // colonne, scalaires convertis en texte brut ; tri et `order` explicite l'emportent
+                // sur le suffixe de `sort`. Aucune validation de colonne ici — la trichotomie et le
+                // plafond `MAX_FILTERS` sont décidés par `rest::core::list` sur la MÊME déclaration
+                // de colonnes que la surface REST, d'où `RestError::InvalidQuery` rendu
+                // `McpError::InvalidParams` par le `From` de ./error.rs.
+                let mut filters: Vec<(String, String)> = Vec::with_capacity(params.criteria.len());
+                for (name, value) in params.criteria {
+                    filters.push((name.clone(), scalar_filter_text(&name, value)?));
+                }
+                // Ordre stable par nom pour une transmission déterministe, comme le
+                // `list_handler` de ./../rest/mod.rs.
+                filters.sort_by_key(|entry| entry.0.clone());
+                let (sort, suffix_order) = split_sort_direction(params.sort.as_deref());
+                let order = params.order.or_else(|| suffix_order.map(str::to_string));
+                let query = crate::query::ListQuery { filters, sort, order };
                 let page = crate::rest::core::list::<E>(
                     db,
                     principal,
                     params.page,
                     params.per_page,
                     params.filter.as_deref(),
-                    // parsing traité par la tâche #78 de ./../mcp/registry.sdd
-                    crate::query::ListQuery::default(),
+                    query,
                 )
                 .await?;
                 serde_json::to_value(page).map_err(|e| McpError::Render(e.to_string()))
@@ -450,6 +516,53 @@ mod tests {
                     }
                     Ok(active)
                 }
+            }
+        }
+    }
+
+    /// Entité déclarant trois colonnes filtrables (`owner_id`, `kind`, `project_id`) et une
+    /// triable (`created_at`) — fixture du `Scenario` « liste MCP filtrée et triée comme la liste
+    /// REST » (issue #78), miroir de la fixture homonyme de `rest::core` (module de test privé,
+    /// non partageable entre fichiers). `secret_note` est une colonne de l'entité non déclarée
+    /// filtrable : la trichotomie de `rest::core::list` la refuse, un nom hors entité reste ignoré.
+    mod filterable {
+        use super::*;
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "mcp_filterables")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub owner_id: i32,
+            pub kind: String,
+            pub project_id: i32,
+            pub created_at: i64,
+            pub secret_note: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "filterables"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::OwnerOnly
+            }
+            fn owner_column() -> Option<Column> {
+                Some(Column::OwnerId)
+            }
+            fn filterable_columns() -> Vec<Column> {
+                vec![Column::OwnerId, Column::Kind, Column::ProjectId]
+            }
+            fn sortable_columns() -> Vec<Column> {
+                vec![Column::CreatedAt]
             }
         }
     }
@@ -1212,5 +1325,223 @@ mod tests {
                 "call ne peut retourner ni UnknownTool ni Internal depuis registry.rs : {err}"
             );
         }
+    }
+
+    // ── Amendement du 2026-11-13 (issue #78, `registry.sdd`) — parité MCP de la liste ──
+
+    /// Base migrée avec la table `mcp_filterables` pleine de trois lignes d'`alice` : deux
+    /// `complementary` (dont une au `project_id` 3), une `primary`, `created_at` distincts
+    /// (30, 10, 20). Les lignes sont posées par le dispatch `McpOp::Create` lui-même, l'owner
+    /// est donc celui d'`alice` (injection `owner_column` de `rest::core::create`).
+    async fn filterable_db() -> DatabaseConnection {
+        let db = migrated_db().await;
+        create_entity_table(&db, filterable::Entity).await;
+        let alice = principal("alice");
+        let entity = McpEntityImpl::<filterable::Entity>(std::marker::PhantomData);
+        for (kind, project_id, created_at) in [
+            ("complementary", 3, 30),
+            ("complementary", 2, 10),
+            ("primary", 3, 20),
+        ] {
+            entity
+                .call(
+                    McpOp::Create,
+                    &db,
+                    &alice,
+                    json!({
+                        "id": 0,
+                        "owner_id": 0,
+                        "kind": kind,
+                        "project_id": project_id,
+                        "created_at": created_at,
+                        "secret_note": "",
+                    }),
+                )
+                .await
+                .expect("seed create via dispatch succeeds");
+        }
+        db
+    }
+
+    /// `Scenario` : « liste MCP filtrée et triée comme la liste REST » (miroir des Scenario wire
+    /// de `../rest/mod.sdd`) — premier appel : deux critères sur des colonnes déclarées
+    /// filtrables, valeur numérique convertie en texte brut (`3` → `"3"`), valeur chaîne telle
+    /// quelle ; la parité est prouvée par comparaison avec `rest::core::list` direct portant le
+    /// `ListQuery` équivalent, mêmes colonnes lues sur la même déclaration (`FR-1`).
+    #[tokio::test]
+    async fn list_named_filters_forwarded_to_core_like_rest() {
+        let db = filterable_db().await;
+        let alice = principal("alice");
+        let entity = McpEntityImpl::<filterable::Entity>(std::marker::PhantomData);
+
+        let dispatched = entity
+            .call(
+                McpOp::List,
+                &db,
+                &alice,
+                json!({"project_id": 3, "kind": "complementary"}),
+            )
+            .await
+            .expect("deux critères sur colonnes déclarées réussissent");
+        let direct = crate::rest::core::list::<filterable::Entity>(
+            &db,
+            &alice,
+            None,
+            None,
+            None,
+            crate::query::ListQuery {
+                filters: vec![
+                    ("kind".to_owned(), "complementary".to_owned()),
+                    ("project_id".to_owned(), "3".to_owned()),
+                ],
+                sort: None,
+                order: None,
+            },
+        )
+        .await
+        .expect("rest::core::list direct réussit");
+        assert_eq!(
+            dispatched,
+            serde_json::to_value(direct).expect("PagedResult serializes"),
+            "les deux surfaces lisent la même déclaration de colonnes : la valeur rendue égale \
+             le core::list direct au ListQuery équivalent"
+        );
+        assert_eq!(
+            dispatched["total_items"], 1,
+            "une seule ligne cumule les deux critères"
+        );
+        assert_eq!(dispatched["items"][0]["project_id"], 3);
+    }
+
+    /// `Scenario` : « liste MCP filtrée et triée comme la liste REST » — troisième appel,
+    /// miroir de `wire_list_undeclared_column` de `../rest/mod.sdd` : colonne de l'entité non
+    /// déclarée filtrable → `McpError::InvalidParams` (`MRD-MCP-005`), la trichotomie de
+    /// `rest::core::list` traversée par le `From<RestError>` de `error.rs`, jamais redécidée ici.
+    #[tokio::test]
+    async fn list_undeclared_entity_column_is_invalid_params() {
+        let db = filterable_db().await;
+        let alice = principal("alice");
+        let entity = McpEntityImpl::<filterable::Entity>(std::marker::PhantomData);
+
+        let err = entity
+            .call(McpOp::List, &db, &alice, json!({"secret_note": "x"}))
+            .await
+            .expect_err("une colonne de l'entité non déclarée filtrable n'est jamais ignorée");
+        assert!(matches!(err, McpError::InvalidParams(_)), "{err}");
+        let display = err.to_string();
+        assert!(
+            display.starts_with("MRD-MCP-005: invalid params: "),
+            "InvalidQuery devient InvalidParams par le From d'error.rs : {display}"
+        );
+        assert!(
+            display.contains("column not filterable: secret_note"),
+            "le message de rest::core traverse intact : {display}"
+        );
+        assert!(
+            !display.contains("MRD-REST"),
+            "le code REST n'est pas double-porté sous le MCP : {display}"
+        );
+    }
+
+    /// `Scenario` : « liste MCP filtrée et triée comme la liste REST » — deuxième appel,
+    /// miroir des Scenario de tri de `../rest/mod.sdd` : `sort` nommant une colonne déclarée
+    /// triable et `order` explicite sont transmis au core, qui décide (défaut `asc`, `order`
+    /// hors `{asc, desc}` et `order` sans `sort` sont son contrat, non celui d'ici). Le suffixe
+    /// `sort=col:desc` rend la MÊME valeur que la forme explicite, parité avec le
+    /// `split_sort_direction` de `../rest/mod.rs`.
+    #[tokio::test]
+    async fn list_sort_and_order_delegated_to_core() {
+        let db = filterable_db().await;
+        let alice = principal("alice");
+        let entity = McpEntityImpl::<filterable::Entity>(std::marker::PhantomData);
+
+        let dispatched = entity
+            .call(
+                McpOp::List,
+                &db,
+                &alice,
+                json!({"sort": "created_at", "order": "desc"}),
+            )
+            .await
+            .expect("sort sur colonne triable et order explicite réussissent");
+        let direct = crate::rest::core::list::<filterable::Entity>(
+            &db,
+            &alice,
+            None,
+            None,
+            None,
+            crate::query::ListQuery {
+                filters: Vec::new(),
+                sort: Some("created_at".to_owned()),
+                order: Some("desc".to_owned()),
+            },
+        )
+        .await
+        .expect("rest::core::list direct trié réussit");
+        assert_eq!(
+            dispatched,
+            serde_json::to_value(direct).expect("PagedResult serializes"),
+            "tri délégué sans re-décision : la valeur rendue égale le core::list direct"
+        );
+        assert_eq!(
+            dispatched["items"][0]["created_at"], 30,
+            "ordre descendant rendu par le core"
+        );
+
+        let suffixed = entity
+            .call(McpOp::List, &db, &alice, json!({"sort": "created_at:desc"}))
+            .await
+            .expect("le suffixe de direction est la même sémantique que côté REST");
+        assert_eq!(
+            suffixed, dispatched,
+            "`sort=col:desc` équivaut à `sort=col` + `order=desc` (order explicite l'emporte, \
+             logique partagée avec rest/mod.rs)"
+        );
+    }
+
+    /// `Scenario` : « liste MCP filtrée et triée comme la liste REST » — quatrième appel, miroir
+    /// de `wire_list_key_unknown_to_entity_is_ignored` de `../rest/mod.sdd` : une clé hors de
+    /// l'entité est ignorée (tolérance conservée de part et d'autre), la liste rendue égale
+    /// celle sans aucun argument.
+    #[tokio::test]
+    async fn list_key_unknown_to_entity_is_ignored_like_rest() {
+        let db = filterable_db().await;
+        let alice = principal("alice");
+        let entity = McpEntityImpl::<filterable::Entity>(std::marker::PhantomData);
+
+        let with_unknown = entity
+            .call(McpOp::List, &db, &alice, json!({"inconnu": 1}))
+            .await
+            .expect("une clé hors entité est ignorée, pas refusée");
+        let plain = entity
+            .call(McpOp::List, &db, &alice, json!({}))
+            .await
+            .expect("`_list` sans arguments réussit");
+        assert_eq!(
+            with_unknown, plain,
+            "la trichotomie est identique aux deux surfaces : nom inconnu de l'entité ignoré"
+        );
+    }
+
+    /// `Handles` (amendement du 2026-11-13, issue #78) : une valeur de critère non scalaire est
+    /// `McpError::InvalidParams` (`MRD-MCP-005`) AVANT toute délégation — observable par une
+    /// table d'entité absente qui ne produit alors aucune `Database` ; le plafond
+    /// `MAX_FILTERS` au contraire est porté par `rest::core::list` et transite en
+    /// `InvalidParams`, sans logique propre ici.
+    #[tokio::test]
+    async fn list_non_scalar_filter_value_rejected_before_dispatch() {
+        let db = migrated_db().await;
+        let alice = principal("alice");
+        let entity = McpEntityImpl::<filterable::Entity>(std::marker::PhantomData);
+
+        let err = entity
+            .call(McpOp::List, &db, &alice, json!({"kind": {"nested": true}}))
+            .await
+            .expect_err("une valeur non scalaire est refusée avant la délégation");
+        assert!(matches!(err, McpError::InvalidParams(_)), "{err}");
+        assert!(
+            err.to_string().starts_with("MRD-MCP-005"),
+            "refus avant délégation : la table absente n'a produit aucune Database : {err}"
+        );
     }
 }
