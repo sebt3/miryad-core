@@ -61,6 +61,7 @@ use crate::lymaille::store::LymailleStores;
 use super::assemble::AssembleDeps;
 use super::assemble::assemble_session;
 use super::hub::EventHub;
+use super::hub::RelayCommand;
 use super::hub::Subscription;
 
 /// Table des sessions, nom complet (`../migration.rs`) — le gestionnaire y pose et relit la
@@ -255,17 +256,28 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    /// Attache un gestionnaire aux dépendances fournies.
+    /// Attache un gestionnaire aux dépendances fournies. Le hub géré reçoit ici le branchement
+    /// des commandes du relais (`EventHub::on_command`, amendement #81 lot 2 de ./manager.sdd) :
+    /// `Cancel`/`Close` reçus d'une autre réplique s'exécutent localement sans cloisonnement
+    /// supplémentaire — le cloisonnement a été fait par la réplique qui a reçu la requête.
     #[must_use]
     pub fn new(deps: ManagerDeps) -> Self {
         let identity = Identity::new(deps.assemble.db.clone());
-        Self {
-            inner: Arc::new(Inner {
-                deps,
-                identity,
-                turns: Mutex::new(Table::default()),
-            }),
-        }
+        let hub = Arc::clone(&deps.assemble.hub);
+        let inner = Arc::new(Inner {
+            deps,
+            identity,
+            turns: Mutex::new(Table::default()),
+        });
+        // `Weak` : le hub tient le gestionnaire par sa couture de commandes, le gestionnaire
+        // tient le hub par ses deps — un `Arc` ici serait un cycle.
+        let weak = Arc::downgrade(&inner);
+        hub.on_command(Arc::new(move |command: RelayCommand| {
+            if let Some(inner) = weak.upgrade() {
+                apply_relay_command(&inner, command);
+            }
+        }));
+        Self { inner }
     }
 
     /// Ouvre une session sur le contexte `context` (arbitrage `DEC-28` : l'utilisateur choisit un
@@ -449,7 +461,10 @@ impl SessionManager {
         Ok(self.inner.deps.assemble.hub.subscribe(subject, id))
     }
 
-    /// Annule (coopérativement) le tour actif ; `true` si un tour était actif.
+    /// Annule (coopérativement) le tour actif ; `true` si un tour était actif **ici**.
+    /// Amendement #81 lot 2 : l'annulation est aussi relayée aux autres répliques — un tour
+    /// ailleurs n'est pas visible d'ici ; dans ce cas la valeur rendue reste `false` et vaut
+    /// « annulation demandée » (./manager.sdd).
     ///
     /// # Errors
     ///
@@ -461,6 +476,7 @@ impl SessionManager {
         if active {
             self.signal(id);
         }
+        self.inner.deps.assemble.hub.request_cancel(id);
         Ok(active)
     }
 
@@ -510,7 +526,8 @@ impl SessionManager {
     /// Ferme la session : annule un tour actif, ferme le hub, décharge la mémoire et la marque
     /// fermée — `send` rend dès lors le même `NotFound` qu'une session absente, jusqu'à une
     /// `resume`. L'état persisté demeure (la purge est `../store/purge.sdd`). Silencieuse sur
-    /// session inconnue.
+    /// session inconnue. Amendement #81 lot 2 : la fermeture est aussi relayée aux autres
+    /// répliques (sans relais : sans effet).
     pub async fn close(&self, subject: &str, id: &SessionId) {
         if self.principal(subject).await.is_err() || self.readable(subject, id).await.is_err() {
             tracing::debug!("lymaille manager: close on an unknown or invisible session");
@@ -521,6 +538,7 @@ impl SessionManager {
         }
         self.inner.deps.assemble.hub.close(id);
         lock(&self.inner.turns).close(id);
+        self.inner.deps.assemble.hub.request_close(id);
     }
 
     /// Résumés expurgés (titre masqué) des sessions de `subject` selon le filtre.
@@ -857,15 +875,47 @@ impl SessionManager {
     /// Signale l'annulation au tour actif : l'anse publiée est annulée (coopératif), sinon le
     /// drapeau attend que la tâche du tour la publie.
     fn signal(&self, id: &SessionId) {
-        let entry = lock(&self.inner.turns)
-            .by_id
-            .get(id)
-            .map(|(_, entry)| Arc::clone(entry));
-        let Some(entry) = entry else { return };
-        match lock(&entry.cancel).as_ref().cloned() {
-            Some(handle) => handle.cancel(),
-            None => entry.cancel_requested.store(true, Ordering::SeqCst),
-        }
+        signal_inner(&self.inner, id);
+    }
+}
+
+/// Signale l'annulation au tour actif de `inner` (corps partagé par la méthode
+/// [`SessionManager::signal`] et par les commandes du relais, qui n'ont pas de
+/// [`SessionManager`] sous la main).
+fn signal_inner(inner: &Inner, id: &SessionId) {
+    let entry = lock(&inner.turns)
+        .by_id
+        .get(id)
+        .map(|(_, entry)| Arc::clone(entry));
+    let Some(entry) = entry else { return };
+    match lock(&entry.cancel).as_ref().cloned() {
+        Some(handle) => handle.cancel(),
+        None => entry.cancel_requested.store(true, Ordering::SeqCst),
+    }
+}
+
+/// Exécute localement une commande reçue du relais (amendement #81 lot 2 de ./manager.sdd) :
+/// sans cloisonnement supplémentaire — le cloisonnement a été fait par la réplique qui a reçu
+/// la requête. `Cancel` annule le tour si la session est **active ici** ; `Close` ferme la
+/// session si elle est active **ou chargée ici**. Une commande pour une session inconnue d'ici
+/// est ignorée sans erreur.
+fn apply_relay_command(inner: &Inner, command: RelayCommand) {
+    let (id, is_close) = match command {
+        RelayCommand::Cancel(id) => (id, false),
+        RelayCommand::Close(id) => (id, true),
+    };
+    let active = inner.deps.gate.is_active(&id);
+    let loaded = lock(&inner.turns).by_id.contains_key(&id);
+    if !active && !loaded {
+        tracing::debug!("lymaille manager: relay command for a session unknown here ignored");
+        return;
+    }
+    if active {
+        signal_inner(inner, &id);
+    }
+    if is_close {
+        inner.deps.assemble.hub.close(&id);
+        lock(&inner.turns).close(&id);
     }
 }
 
@@ -964,6 +1014,9 @@ mod tests {
     use crate::lymaille::interactive::assemble::InferenceFactory;
     use crate::lymaille::interactive::event::SessionEventKind;
     use crate::lymaille::interactive::hub::EventHub;
+    use crate::lymaille::interactive::hub::EventRelay;
+    use crate::lymaille::interactive::hub::RelayBody;
+    use crate::lymaille::interactive::hub::RelayMessage;
     use crate::lymaille::interactive::hub::Subscription;
     use crate::lymaille::interactive::hub::SubscriptionError;
     use crate::lymaille::mcp_mount::McpConnectorFactory;
@@ -974,6 +1027,7 @@ mod tests {
     use crate::users::group;
     use crate::users::membership::sync_group_memberships;
     use crate::users::resolve_user;
+    use tokio::sync::mpsc;
 
     // ── Fixtures ────────────────────────────────────────────────────────────
     //
@@ -2825,5 +2879,124 @@ mod tests {
             !etat.to_json().expect("l'etat se serialise").contains("interdis"),
             "le tour perdu n'a pas sauvegarde l'etat"
         );
+    }
+
+    // ── Commandes entre répliques (issue #81, lot 2) ─────────────────────────
+
+    /// Canal de test : le hub prend le récepteur par `incoming()` (une fois) ; le test injecte
+    /// les messages « venus d'ailleurs » par l'émetteur qu'il garde. `publish` est sans usage —
+    /// la réplique de test n'émet rien sur le bus.
+    struct CanalDeTest {
+        entree: std::sync::Mutex<Option<mpsc::Receiver<RelayMessage>>>,
+    }
+
+    impl EventRelay for CanalDeTest {
+        fn publish(&self, _message: RelayMessage) {}
+
+        fn incoming(&self) -> mpsc::Receiver<RelayMessage> {
+            let mut garde = self
+                .entree
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(receiver) = garde.take() {
+                return receiver;
+            }
+            let (sender, receiver) = mpsc::channel(1);
+            drop(sender);
+            receiver
+        }
+    }
+
+    /// Deps avec un hub fourni (le reste comme `deps_with`) : le test branche le relais du hub
+    /// avant de monter le gestionnaire.
+    fn deps_hub(
+        db: DatabaseConnection,
+        inference: Arc<dyn InferenceFactory>,
+        hub: Arc<EventHub>,
+    ) -> ManagerDeps {
+        ManagerDeps {
+            assemble: AssembleDeps {
+                db,
+                host_modules: Arc::new(crate::lymaille::host_module::HostModules::new()),
+                readers: Arc::new(ResourceRegistry::new()),
+                secrets: Arc::new(FixedSecret("cle-fixe")),
+                hub,
+                clock: Arc::new(SystemClock::new()),
+                host: None,
+                inference,
+                mcp: Arc::new(NoMcp),
+            },
+            gate: TurnGate::new(),
+            turn_lock: None,
+            limits: Limits::default(),
+        }
+    }
+
+    /// Scenario « une annulation reçue du relais annule le tour local » : un tour actif sur ce
+    /// gestionnaire, une `Cancel` de la session injectée par le relais — le tour est annulé
+    /// comme par `cancel` ; la même commande (`Cancel` puis `Close`) pour une session inactive
+    /// et inconnue d'ici est ignorée sans erreur.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn une_annulation_recue_du_relais_annule_le_tour_local() {
+        let db = test_db().await;
+        setup_work(&db).await;
+        let hang = Hang::new();
+        let (entree, recu) = mpsc::channel::<RelayMessage>(64);
+        let canal = Arc::new(CanalDeTest {
+            entree: std::sync::Mutex::new(Some(recu)),
+        });
+        let hub = Arc::new(EventHub::new(None, 256).with_relay(canal));
+        let manager = SessionManager::new(deps_hub(
+            db.clone(),
+            Arc::new(HangFactory(Arc::clone(&hang))),
+            hub,
+        ));
+        let handle = manager.open("alice", "c1", None).await.expect("ouverture");
+        let mut sub = manager.subscribe("alice", &handle.id).await.expect("abonnement");
+        manager
+            .send("alice", &handle.id, "long".to_owned(), None)
+            .await
+            .expect("le tour long est lance");
+        wait_entered(&hang).await;
+
+        entree
+            .send(RelayMessage {
+                origin: "autre-replique".to_owned(),
+                session: handle.id.as_str().to_owned(),
+                body: RelayBody::Cancel,
+            })
+            .await
+            .expect("la commande est injectee par le relais");
+        let kinds = drain(&mut sub).await;
+        match kinds.last() {
+            Some(SessionEventKind::TurnEnded { outcome, .. }) => assert_eq!(
+                *outcome,
+                crate::lymaille::interactive::event::SessionOutcome::Cancelled,
+                "la commande recue annule le tour local : {kinds:?}"
+            ),
+            autre => panic!("TurnEnded attendu en dernier : {autre:?}"),
+        }
+
+        // La même commande pour une session inactive et inconnue d'ici : ignorée sans erreur.
+        for corps in [RelayBody::Cancel, RelayBody::Close] {
+            entree
+                .send(RelayMessage {
+                    origin: "autre-replique".to_owned(),
+                    session: "session-inconnue-ici".to_owned(),
+                    body: corps,
+                })
+                .await
+                .expect("la commande est injectee");
+        }
+        // Rien n'a bougé : la session ouverte demeure utilisable et sans tour actif.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !manager.cancel("alice", &handle.id).await.expect("cancel"),
+            "aucun tour actif local après l'annulation"
+        );
+        manager
+            .subscribe("alice", &handle.id)
+            .await
+            .expect("la commande fantôme n'a rien fermé ici");
     }
 }

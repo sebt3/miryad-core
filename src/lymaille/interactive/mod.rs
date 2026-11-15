@@ -25,6 +25,12 @@ pub mod manager;
 /// Activation self-service des définitions du propriétaire (`src/lymaille/interactive/activation.sdd`).
 pub mod activation;
 
+/// Relais d'événements entre répliques par LISTEN/NOTIFY PostgreSQL
+/// (`src/lymaille/interactive/pg_relay.sdd`) — sous la feature de compilation `lymaille-pg`
+/// (amendement #81 du 2026-11-14, `lymaille/mod.sdd`).
+#[cfg(all(feature = "lymaille", feature = "lymaille-pg"))]
+pub mod pg_relay;
+
 /// Assemblage du moteur d'une session interactive (`src/lymaille/interactive/assemble.sdd`).
 pub mod assemble;
 
@@ -35,6 +41,8 @@ pub use activation::{ActivationReport, activate_toolset, discard_draft};
 pub use event::{SessionEvent, SessionEventKind, SessionOutcome};
 pub use hub::EventHub;
 pub use manager::{ManagerDeps, SessionHandle, SessionManager};
+#[cfg(all(feature = "lymaille", feature = "lymaille-pg"))]
+pub use pg_relay::PgEventRelay;
 
 #[cfg(test)]
 mod tests {
@@ -51,6 +59,19 @@ mod tests {
     /// déclaration `pub mod event;`.
     #[test]
     fn chemins_plats_resolvent() {
+        /// Témoin du relais sous `lymaille-pg` (`Can modify` de `pg_relay.sdd`, amendement #81
+        /// de `../../mod.sdd` du 2026-11-14) : le chemin de module
+        /// `interactive::pg_relay::{PgEventRelay, PgRelayConfig}` et son ré-export à plat
+        /// `interactive::PgEventRelay` résolvent. Compilation seule, témoins `Option<>` (forme
+        /// ci-dessous).
+        #[cfg(feature = "lymaille-pg")]
+        fn witness_pg_relay(
+            _: Option<crate::lymaille::interactive::pg_relay::PgEventRelay>,
+            _: Option<crate::lymaille::interactive::pg_relay::PgRelayConfig>,
+            _: Option<crate::lymaille::interactive::PgEventRelay>,
+        ) {
+        }
+
         use crate::lymaille::interactive::{
             ActivationReport, EventHub, ManagerDeps, activate_toolset, discard_draft,
         };
@@ -75,5 +96,7 @@ mod tests {
         std::hint::black_box(activate_toolset);
         std::hint::black_box(discard_draft);
         std::hint::black_box(crate::lymaille::interactive::event::export_typescript);
+        #[cfg(feature = "lymaille-pg")]
+        witness_pg_relay(None, None, None);
     }
 }

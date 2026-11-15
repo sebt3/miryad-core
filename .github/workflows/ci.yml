@@ -47,6 +47,8 @@ jobs:
             args: "--no-default-features --features workflow,lymaille"
           - name: lymaille-matrix
             args: "--no-default-features --features lymaille,matrix"
+          - name: lymaille-pg
+            args: "--no-default-features --features lymaille-pg"
           - name: all-features
             args: "--all-features"
     steps:
@@ -115,6 +117,8 @@ jobs:
             args: "--no-default-features --features workflow,lymaille"
           - name: lymaille-matrix
             args: "--no-default-features --features lymaille,matrix"
+          - name: lymaille-pg
+            args: "--no-default-features --features lymaille-pg"
           - name: all-features
             args: "--all-features"
     steps:
@@ -168,4 +172,17 @@ jobs:
         run: |
           out=$(cargo tree --no-default-features --features lymaille -e normal -i sea-orm) || exit 1
           if [ -z "$out" ]; then echo "la feature lymaille ne tire pas sea-orm : sortie vide" ; exit 1 ; fi
+          echo "$out"
+
+      - name: cargo tree -i sqlx-postgres doit être vide sans lymaille-pg
+        shell: bash
+        run: |
+          out=$(cargo tree --no-default-features --features lymaille -e normal -i sqlx-postgres 2>/dev/null) || true
+          if [ -n "$out" ]; then echo "sqlx-postgres est dans le graphe sans la feature lymaille-pg :" ; echo "$out" ; exit 1 ; fi
+
+      - name: la feature lymaille-pg implique sqlx-postgres
+        shell: bash
+        run: |
+          out=$(cargo tree --no-default-features --features lymaille-pg -e normal -i sqlx-postgres) || exit 1
+          if [ -z "$out" ]; then echo "la feature lymaille-pg ne tire pas sqlx-postgres : sortie vide" ; exit 1 ; fi
           echo "$out"
