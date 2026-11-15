@@ -277,7 +277,12 @@ Tasks:
     Validé 2026-11-02 (validator GO) : test nouveau verrouillant les deux Then (corps avec clé et sans en-tête portant le sujet ;
     `None` sans clé), patron B5 ; trace de T4 retirée, rustdoc fidèle sans validation inventée ; huit appels adaptés dont le helper
     `send_run` des intégrations ; batterie ciblée workflow et `--all-features` verte, complète due à la fin du lot 0.
-  [ ] Issue #80 (2) — client d'administration Restate : statut, liste, annulation. Spec d'abord (nouvelles fonctions publiques de `workflow::client`, `WorkflowConfig` inchangé) :
+  [x] Issue #80 (2) — client d'administration Restate : statut, liste, annulation. Spec d'abord (nouvelles fonctions publiques de `workflow::client`, `WorkflowConfig` inchangé) :
+    Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary).
+    Mesures `restate-server` **1.8.1** (podman, tests `#[ignore]` verts 2026-11-15, `../../tests/workflow_restate.rs`) : `cancel` sur en cours → 2xx puis statut `completed`/`failure [409] cancelled` ; re-`cancel` terminée → 409 `already completed` ; id inconnu décodable → 404 `does not exist` — les deux absorbés en `Ok(())` (idempotence) ; quirk DataFusion : `WHERE id = '<literal>'` sans `LIMIT` → HTTP 500, la forme `IN (…)` du client rend `Ok` ; `sys_journal` : entrées anonymes `name: ""` normalisées `None`.
+    [?] (implementer) : 404 `does not exist` et 409 `already completed` du `cancel` absorbés en `Ok(())` (idempotence, mesurée) — le contrat écrit ne nommait pas ces codes ; verrouillé par test stub `cancel_invocation_idempotence_404_et_409_mesurés`.
+    [?] (implementer) : variantes réutilisées : `RestateUnreachable`/`RestateRejected`/`Serialization`/`InvalidConfig` (le `Must` de ./error.sdd nommait `Transport` — le nom réel des variantes existantes prévaut).
+    DSD `workflow#OI-4` : la lecture de statut est livrée — solde à faire par le développeur principal.
     `invocation_statuses(config, ids: &[String]) -> Result<Vec<InvocationStatus>, WorkflowError>` (**une** requête `POST /query` sur `sys_invocation` pour N identifiants, découpée au-delà de 50 identifiants, arbitré) ;
     `list_invocations(config, filtre) -> Result<Vec<InvocationStatus>, WorkflowError>` ; `cancel_invocation(config, id) -> Result<(), WorkflowError>` (`PATCH /invocations/{id}/cancel` de l'API d'administration) ;
     `invocation_journal(config, id)` (`sys_journal`, noms des étapes de la tâche ./dispatcher.sdd). `Scenario` : statut de 50 invocations en une requête ; invocation inconnue → absente du résultat ; annulation d'un run

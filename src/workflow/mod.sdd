@@ -219,7 +219,8 @@ Tasks:
     Validé 2026-10-18 (Claude) : déclarations et ré-exports posés (`matrix_step` avec le lot de ./matrix_step.sdd) ; deux
     tests gated par `cfg` dans `mod tests` et dans `tests/workflow_flat_paths.rs` (verts sous `workflow`, `workflow,systemone`,
     `workflow,matrix`) ; rustdoc du module sur l'enregistrement par l'application ; clippy des trois combinaisons sans écart.
-  [ ] Issue #80 — ré-exports des nouvelles fonctions de `workflow::client` et de leurs types (`InvocationStatus`…). Spec d'abord : la liste plate fermée de ce fichier et le test `workflow_flat_paths` sont étendus
+  [x] Issue #80 — ré-exports des nouvelles fonctions de `workflow::client` et de leurs types (`InvocationStatus`…). Spec d'abord : la liste plate fermée de ce fichier et le test `workflow_flat_paths` sont étendus
+    Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Liste plate étendue (fonctions admin + types) et test `workflow_flat_paths` mis à jour (rouge d'abord). Les ré-exports `resolve_awakeable`/`reject_awakeable` (#26) s'ajouteront en dernier, après les tâches de ./client.sdd.
     (même arbitrage que le `[?]` « liste plate » de ./dispatcher.sdd : étendre la liste ou assumer l'accès par chemin de module). Puis test d'abord, puis ./mod.rs. Après ./client.sdd. Même cycle : `resolve_awakeable` et `reject_awakeable` (issue #26, arbitré le 2026-11-14) sont ajoutés en dernier à la liste plate et au test, après les tâches correspondantes de ./client.sdd.
 
 Done when:

@@ -10,6 +10,7 @@ use crate::workflow::error::classify_transport_error;
 use crate::workflow::interpreter::RunInput;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value;
 use uuid::Uuid;
 
 /// Corps exact de `POST /deployments` : `uri` puis `force`, compact — l'ordre des champs porte
@@ -206,15 +207,404 @@ pub async fn trigger_run(
     })
 }
 
+// ───────────────── Client d'administration Restate (issue #80 (2), amendement du 2026-11-13) ──
+//
+// Formes **mesurées contre `restate-server` 1.8.1** (image
+// `docker.restate.dev/restatedev/restate:latest`, podman, 2026-11-15) :
+// - `POST {admin_url}/query`, corps `{"query": "<SQL>"}`, en-tête `Accept: application/json`
+//   (sinon le serveur rend du Arrow IPC binaire) ; réponse `2xx` `{"rows":[…]}` ; erreur de
+//   requête (table ou colonne inconnue, identifiant non décodable, tables pas encore servies)
+//   → `500` `{"message": "Datafusion error: …"}` — notamment « expecting a partition store »
+//   pendant le démarrage (sur 1.8.1 le `/query` répond dès `/health`, le message reste observé
+//   sur 1.7.x : c'est une attente retryable, jamais un résultat vide).
+// - `sys_invocation` : colonnes `id`, `status`, `target_service_name`, `target_handler_name`,
+//   `target_service_key`, `created_at`, `completed_at`, `retry_count`, `completion_failure`
+//   (liste complète des colonnes valides obtenue par sonde `SELECT <col>` — les tables système
+//   1.8.1 ne portent PAS `instance`/`code`/`message`/`attempt`, noms à écarter).
+// - `sys_journal` : colonnes `id`, `index`, `entry_type`, `name` (pas `type`/`command`/`time`).
+// - `PATCH {admin_url}/invocations/{id}/cancel` : identifiable par la grammaire stricte mais
+//   inconnu/terminé → la forme exacte des codes est mesurée par le test d'intégration
+//   `#[ignore]` de ../../tests/workflow_restate.rs (restate 1.8.1, DevStation).
+// Les erreurs restent dans la taxonomie existante (arbitré « réutilisation ») : `Transport` au
+// sens de l'amendement = `RestateUnreachable`/`Serialization` via `classify_transport_error`,
+// et une réponse d'administration inattendue est rendue `RestateRejected` (variante `Transport`
+// proprement dite inexistante dans ./error.rs — aucune variante nouvelle, décidé à l'amendement).
+
+/// Colonnes de `sys_invocation` sélectionnées par toute requête de statut (mesurées 1.8.1, voir
+/// le bloc ci-dessus) — lecture par colonnes nommées, jamais `SELECT *` (la forme de `rows` reste
+/// bornée à ce que ce fichier consomme).
+const COLONNES_STATUT: &str = "id, status, target_service_name, target_handler_name, \
+                               target_service_key, created_at, completed_at, retry_count, \
+                               completion_failure";
+
+/// Nombre maximal d'identifiants dans la clause `IN (…)` d'une seule requête (arbitré : une
+/// requête jusqu'à 50 ids, découpage au-delà).
+const IDS_PAR_REQUETE: usize = 50;
+
+/// `LIMIT` par défaut de `list_invocations` quand le filtre n'en pose pas.
+const LIMITE_DEFAUT: u32 = 100;
+
+/// Plafond absolu du `LIMIT` de `list_invocations` (garde de taille de réponse).
+const LIMITE_MAXIMALE: u32 = 1_000;
+
+/// Statut d'une invocation lu dans `sys_invocation` — forme **minimale** (arbitré 2026-11-13 :
+/// état, dates, service/handler, erreur terminale, tentatives ; le reste des colonnes mesurées
+/// reste côté Restate). `failure` porte le texte de Restate `completion_failure` **tel que lu**,
+/// non expurgé par la crate : c'est à l'hôte de décider de l'afficher.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InvocationStatus {
+    /// Identifiant Restate de l'invocation (`inv_…`).
+    pub id: String,
+    /// État Restate tel que lu (`pending`, `scheduled`, `ready`, `running`, `suspended`,
+    /// `backoff`, `paused`, `completed` — orthographe du serveur, non normalisée ici).
+    pub status: String,
+    /// Nom du service cible (`target_service_name`).
+    pub service: String,
+    /// Nom du handler cible (`target_handler_name`).
+    pub handler: String,
+    /// Clé d'instance de l'invocation (`target_service_key`), `None` pour une invocation non
+    /// keyée.
+    pub key: Option<String>,
+    /// Horodatage de création (`created_at`), texte de Restate tel que lu.
+    pub created_at: String,
+    /// Horodatage de complétion (`completed_at`), `None` tant que l'invocation court.
+    pub completed_at: Option<String>,
+    /// Nombre de tentatives déjà consommées (`retry_count`).
+    pub retry_count: u64,
+    /// Erreur terminale (`completion_failure`), texte de Restate tel que lu, non expurgé.
+    pub failure: Option<String>,
+}
+
+/// Filtre de `list_invocations` : seuls les champs posés deviennent des conditions ; valeurs
+/// validées par la grammaire stricte `[A-Za-z0-9._:-]` avant toute requête (`/query` n'a pas de
+/// paramètres liés).
+#[derive(Debug, Clone, Default)]
+pub struct InvocationFilter {
+    /// Filtrer sur `target_service_name`.
+    pub service: Option<String>,
+    /// Filtrer sur `target_handler_name`.
+    pub handler: Option<String>,
+    /// Filtrer sur `status`.
+    pub status: Option<String>,
+    /// Plafond du nombre de lignes (`LIMIT`), défaut 100, plafonné à 1000.
+    pub limit: Option<u32>,
+}
+
+/// Entrée de journal d'une invocation (`sys_journal`), ordonnée par `index` — le canal de lecture
+/// des noms d'étapes posés par ./dispatcher.rs (`step:<id>`, `render:<id>`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct JournalEntry {
+    /// Position dans le journal (`index`).
+    pub index: u32,
+    /// Nature de l'entrée (`entry_type` : `InvocationStart`, `Run`, …).
+    pub kind: String,
+    /// Nom porté par l'entrée (`name`), `None` quand l'entrée n'en porte pas — la chaîne vide
+    /// mesurée sur `restate-server` 1.8.1 pour les entrées anonymes est normalisée en `None`.
+    pub name: Option<String>,
+}
+
+/// Grammaire stricte d'un identifiant d'invocation : `inv_` suivi d'au moins un caractère
+/// alphanumérique ASCII (`[A-Za-z0-9]`). `/query` n'a pas de paramètres liés — aucun texte libre
+/// n'y est interpolé ; tout ce qui passe par un chemin (`cancel`) ou une clause (`IN (…)`) est
+/// d'abord passé au crible ici (injection : `[!]` de la tâche, verrouillé par un test à zéro
+/// requête).
+fn identifiant_invocation_valide(id: &str) -> bool {
+    id.strip_prefix("inv_")
+        .is_some_and(|corps| !corps.is_empty() && corps.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// Grammaire stricte d'une valeur de filtre : alphanumérique ASCII étendue à `.` `_` `:` `-`
+/// (`[A-Za-z0-9._:-]`), non vide — mêmes motifs que [`identifiant_invocation_valide`].
+fn valeur_filtre_valide(valeur: &str) -> bool {
+    !valeur.is_empty()
+        && valeur
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+}
+
+/// Vérifie `config` puis un lot d'identifiants — tous avant la moindre requête : un seul fautif
+/// dans le lot refuse tout l'appel (`InvalidConfig`, zéro octet envoyé).
+fn kontroler_ids_avant_requête(config: &WorkflowConfig, ids: &[String]) -> Result<(), WorkflowError> {
+    config.validate()?;
+    for id in ids {
+        if !identifiant_invocation_valide(id) {
+            return Err(WorkflowError::InvalidConfig(format!(
+                "invalid invocation id (expected inv_ followed by alphanumeric characters): {id}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Une requête `POST {admin_url}/query` (`{"query": …}`, `Accept: application/json`) et son lot
+/// de lignes : erreurs classifiées par `classify_transport_error` sur `.send()`/`.json()`, hors
+/// `2xx` → `RestateRejected` verbatim (dont le « expecting a partition store » du démarrage —
+/// erreur retryable typée, jamais un lot vide), `2xx` sans tableau `rows` → forme
+/// d'administration inattendue (`RestateRejected`, statut observé et corps verbatim, see le bloc
+/// de commentaire en tête de section).
+async fn requete_admin(
+    config: &WorkflowConfig,
+    http: &reqwest::Client,
+    sql: &str,
+) -> Result<Vec<Value>, WorkflowError> {
+    let response = http
+        .post(format!("{}/query", config.admin_url))
+        .header("accept", "application/json")
+        .json(&serde_json::json!({ "query": sql }))
+        .send()
+        .await
+        .map_err(classify_transport_error)?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.map_err(classify_transport_error)?;
+        return Err(WorkflowError::RestateRejected {
+            status: status.as_u16(),
+            body,
+        });
+    }
+    let corps: Value = response.json().await.map_err(classify_transport_error)?;
+    match corps.get("rows").and_then(Value::as_array) {
+        Some(lignes) => Ok(lignes.clone()),
+        None => Err(WorkflowError::RestateRejected {
+            status: status.as_u16(),
+            body: corps.to_string(),
+        }),
+    }
+}
+
+/// Texte d'une colonne : chaîne telle quelle, valeur non nulle rendue par son `Display` JSON
+/// (jamais `null` → `None`). Absente ou `null` → `None`.
+fn texte_de_ligne(ligne: &Value, colonne: &str) -> Option<String> {
+    ligne.get(colonne).and_then(|valeur| match valeur {
+        Value::Null => None,
+        Value::String(texte) => Some(texte.clone()),
+        autre => Some(autre.to_string()),
+    })
+}
+
+/// Colonne obligatoire d'une ligne de statut : absente ou `null` = forme d'administration
+/// inattendue (erreur typée avec la ligne verbatim, jamais un champ inventé).
+fn colonne_obligatoire(ligne: &Value, colonne: &str, status: u16) -> Result<String, WorkflowError> {
+    texte_de_ligne(ligne, colonne).ok_or_else(|| WorkflowError::RestateRejected {
+        status,
+        body: format!("colonne obligatoire absente: {colonne}: {ligne}"),
+    })
+}
+
+/// Ligne `sys_invocation` → `InvocationStatus` (mapping mesuré 1.8.1, voir le bloc en tête de
+/// section). `status` est le code HTTP observé, reporté dans l'erreur de colonne absente.
+fn statut_de_ligne(ligne: &Value, status: u16) -> Result<InvocationStatus, WorkflowError> {
+    Ok(InvocationStatus {
+        id: colonne_obligatoire(ligne, "id", status)?,
+        status: colonne_obligatoire(ligne, "status", status)?,
+        service: colonne_obligatoire(ligne, "target_service_name", status)?,
+        handler: colonne_obligatoire(ligne, "target_handler_name", status)?,
+        key: texte_de_ligne(ligne, "target_service_key"),
+        created_at: colonne_obligatoire(ligne, "created_at", status)?,
+        completed_at: texte_de_ligne(ligne, "completed_at"),
+        retry_count: ligne.get("retry_count").and_then(Value::as_u64).unwrap_or(0),
+        failure: texte_de_ligne(ligne, "completion_failure"),
+    })
+}
+
+/// Lit le statut de N invocations en **une** requête `POST /query` sur `sys_invocation` par lot
+/// de 50 identifiants au plus (`WHERE id IN (…)` — une requête par lot au-delà). Un identifiant
+/// inconnu est **absent** du résultat (Restate ne rend pas de ligne) ; liste vide → `Ok(vec![])`
+/// sans requête.
+///
+/// Le nom de colonnes est celui mesuré sur `restate-server` 1.8.1 (bloc en tête de module de
+/// section ; preuve live au test `#[ignore]` de [`../../tests/workflow_restate.rs`]).
+///
+/// # Errors
+///
+/// - `MRD-WORKFLOW-001` (`WorkflowError::RestateUnreachable`) : admin API injoignable.
+/// - `MRD-WORKFLOW-002` (`WorkflowError::RestateRejected`) : réponse hors `2xx` — y compris le
+///   « expecting a partition store » du démarrage (attente **retryable**, jamais un `Vec` vide) —
+///   ou `2xx` de forme inattendue (tableau `rows` absent, colonne obligatoire absente).
+/// - `MRD-WORKFLOW-007` (`WorkflowError::InvalidConfig`) : `admin_url`/`ingress_url` invalide, ou
+///   un identifiant hors de la grammaire `inv_` + alphanumérique — refusé **sans requête**
+///   (`/query` n'a pas de paramètres liés).
+pub async fn invocation_statuses(
+    config: &WorkflowConfig,
+    http: &reqwest::Client,
+    ids: &[String],
+) -> Result<Vec<InvocationStatus>, WorkflowError> {
+    kontroler_ids_avant_requête(config, ids)?;
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut statuts = Vec::new();
+    for lot in ids.chunks(IDS_PAR_REQUETE) {
+        let liste = lot
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("SELECT {COLONNES_STATUT} FROM sys_invocation WHERE id IN ({liste})");
+        let lignes = requete_admin(config, http, &sql).await?;
+        for ligne in lignes {
+            // Les lignes proviennent d'une réponse `2xx` (le statut non 2xx a déjà rendu une
+            // erreur) : une colonne obligatoire absente y est une forme inattendue, reportée en
+            // `RestateRejected` avec le statut 2xx observé.
+            statuts.push(statut_de_ligne(&ligne, 200)?);
+        }
+    }
+    Ok(statuts)
+}
+
+/// Liste les invocations de `sys_invocation` selon un filtre : seules les conditions posées sont
+/// ajoutées (valeurs passées par la grammaire `[A-Za-z0-9._:-]` avant toute requête), tri par
+/// `created_at` décroissant, `LIMIT` à 100 par défaut, plafonné à 1000.
+///
+/// # Errors
+///
+/// Comme [`invocation_statuses`] : transport/rejet/forme (`001`/`002`) et `InvalidConfig`
+/// (`007`) pour une URL invalide ou une valeur de filtre hors grammaire, refusée sans requête.
+pub async fn list_invocations(
+    config: &WorkflowConfig,
+    http: &reqwest::Client,
+    filter: &InvocationFilter,
+) -> Result<Vec<InvocationStatus>, WorkflowError> {
+    config.validate()?;
+    let mut conditions = Vec::new();
+    for (colonne, valeur) in [
+        ("target_service_name", filter.service.as_deref()),
+        ("target_handler_name", filter.handler.as_deref()),
+        ("status", filter.status.as_deref()),
+    ] {
+        let Some(valeur) = valeur else {
+            continue;
+        };
+        if !valeur_filtre_valide(valeur) {
+            return Err(WorkflowError::InvalidConfig(format!(
+                "invalid invocation filter value for {colonne} (expected [A-Za-z0-9._:-]+): {valeur}"
+            )));
+        }
+        conditions.push(format!("{colonne} = '{valeur}'"));
+    }
+    let where_ = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", conditions.join(" AND "))
+    };
+    let limit = filter.limit.unwrap_or(LIMITE_DEFAUT).min(LIMITE_MAXIMALE);
+    let sql = format!(
+        "SELECT {COLONNES_STATUT} FROM sys_invocation{where_} ORDER BY created_at DESC LIMIT {limit}"
+    );
+    let lignes = requete_admin(config, http, &sql).await?;
+    let mut statuts = Vec::with_capacity(lignes.len());
+    for ligne in lignes {
+        statuts.push(statut_de_ligne(&ligne, 200)?);
+    }
+    Ok(statuts)
+}
+
+/// Annule proprement une invocation (`PATCH {admin_url}/invocations/{id}/cancel` — `cancel`, pas
+/// `kill` : la compensation s'exécute ; `kill` hors de cette livraison, arbitré 2026-11-13).
+/// Idempotent par contrat : invocation inconnue (`404` « does not exist » mesuré) ou déjà
+/// terminée (`409` « already completed » mesuré) → `Ok(())` — formes observées le 2026-11-15
+/// contre `restate-server` 1.8.1 au test `#[ignore]` de
+/// [`../../tests/workflow_restate.rs`] et au test unitaire `cancel_invocation_idempotence_*`.
+///
+/// # Errors
+///
+/// - `MRD-WORKFLOW-001` (`WorkflowError::RestateUnreachable`) : admin API injoignable.
+/// - `MRD-WORKFLOW-002` (`WorkflowError::RestateRejected`) : tout autre statut que `2xx` et que
+///   les codes d'idempotence mesurés (`404`/`409`) — corps verbatim.
+/// - `MRD-WORKFLOW-007` (`WorkflowError::InvalidConfig`) : URL invalide ou identifiant hors de la
+///   grammaire `inv_` + alphanumérique — refusé **sans requête** (l'identifiant entre nu dans un
+///   chemin d'URL).
+pub async fn cancel_invocation(
+    config: &WorkflowConfig,
+    http: &reqwest::Client,
+    id: &str,
+) -> Result<(), WorkflowError> {
+    config.validate()?;
+    if !identifiant_invocation_valide(id) {
+        return Err(WorkflowError::InvalidConfig(format!(
+            "invalid invocation id (expected inv_ followed by alphanumeric characters): {id}"
+        )));
+    }
+    let response = http
+        .patch(format!("{}/invocations/{id}/cancel", config.admin_url))
+        .send()
+        .await
+        .map_err(classify_transport_error)?;
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    // Branches idempotentes du contrat (./client.sdd, amendement du 2026-11-13), formes mesurées
+    // contre `restate-server` 1.8.1 le 2026-11-15 : invocation inconnue → `404` « does not
+    // exist », invocation déjà terminée → `409` « already completed ». Les deux → `Ok(())`.
+    if matches!(status.as_u16(), 404 | 409) {
+        return Ok(());
+    }
+    let body = response.text().await.map_err(classify_transport_error)?;
+    Err(WorkflowError::RestateRejected {
+        status: status.as_u16(),
+        body,
+    })
+}
+
+/// Lit le journal d'une invocation (`sys_journal`), ordonné par `index` — canal de lecture des
+/// noms d'étapes posés par ./dispatcher.rs (`step:<id>`, `render:<id>` ; preuve live au test
+/// `#[ignore]` de [`../../tests/workflow_restate.rs`]).
+///
+/// # Errors
+///
+/// Comme [`invocation_statuses`] : transport/rejet/forme (`001`/`002`) et `InvalidConfig`
+/// (`007`) pour une URL invalide ou un identifiant hors grammaire, refusé sans requête.
+pub async fn invocation_journal(
+    config: &WorkflowConfig,
+    http: &reqwest::Client,
+    id: &str,
+) -> Result<Vec<JournalEntry>, WorkflowError> {
+    config.validate()?;
+    if !identifiant_invocation_valide(id) {
+        return Err(WorkflowError::InvalidConfig(format!(
+            "invalid invocation id (expected inv_ followed by alphanumeric characters): {id}"
+        )));
+    }
+    let sql = format!("SELECT index, entry_type, name FROM sys_journal WHERE id = '{id}' ORDER BY index");
+    let lignes = requete_admin(config, http, &sql).await?;
+    let mut entrees = Vec::with_capacity(lignes.len());
+    for ligne in lignes {
+        let index = ligne
+            .get("index")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| WorkflowError::RestateRejected {
+                status: 200,
+                body: format!("colonne obligatoire absente: index: {ligne}"),
+            })?;
+        entrees.push(JournalEntry {
+            index,
+            kind: colonne_obligatoire(&ligne, "entry_type", 200)?,
+            // Forme mesurée (restate 1.8.1) : les entrées sans nom portent la chaîne vide —
+            // normalisée en `None`, l'absence de nom du contrat ./client.sdd.
+            name: texte_de_ligne(&ligne, "name").filter(|nom| !nom.is_empty()),
+        });
+    }
+    Ok(entrees)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::InvocationFilter;
+    use super::JournalEntry;
     use super::RunHandle;
     use super::WorkflowConfig;
+    use super::cancel_invocation;
+    use super::invocation_journal;
+    use super::invocation_statuses;
+    use super::list_invocations;
     use super::register_deployment;
     use super::trigger_run;
     use crate::workflow::definition::DagSteps;
     use crate::workflow::definition::StepDefinition;
     use crate::workflow::error::WorkflowError;
+    use serde_json::Value;
     use std::io::Read as _;
     use std::io::Write as _;
     use std::net::TcpListener;
@@ -1023,5 +1413,424 @@ mod tests {
             "{\"uri\":\"n'importe quoi\",\"force\":true}",
             "le stub reçoit l'uri absurde verbatim — ./client.rs ne la restreint pas"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Client d'administration Restate (issue #80 (2), amendement du 2026-11-13)
+    //
+    // Les formes de la requête et des colonnes (`POST /query` corps `{"query": …}`,
+    // `Accept: application/json`, réponse `{"rows": […]}`, colonnes `sys_invocation`
+    // `id / status / target_service_name / target_handler_name / target_service_key /
+    // created_at / completed_at / retry_count / completion_failure`, colonnes `sys_journal`
+    // `index / entry_type / name`) sont mesurées contre un `restate-server` **1.8.1** (podman,
+    // 2026-11-15) ; la preuve en live est le test `#[ignore]` de
+    // `../../tests/workflow_restate.rs`.
+    // ---------------------------------------------------------------------------
+
+    /// Ligne `sys_invocation` de fixture, dans la forme JSON mesurée sur `restate-server` 1.8.1
+    /// (une clé par colonne sélectionnée, valeurs nulles littérales `null`).
+    fn ligne_invocation(id: &str, statut: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "status": statut,
+            "target_service_name": "DagInterpreter",
+            "target_handler_name": "run",
+            "target_service_key": null,
+            "created_at": "2026-11-15T07:00:00.000Z",
+            "completed_at": null,
+            "retry_count": 0,
+            "completion_failure": null,
+        })
+    }
+
+    /// Réponse `{"rows": […]}` de l'admin API, sérialisée pour le stub.
+    fn corps_rows(lignes: &[serde_json::Value]) -> String {
+        serde_json::json!({ "rows": lignes }).to_string()
+    }
+
+    /// Scenario « le statut de cinquante invocations se lit en une requête » : cinquante
+    /// identifiants → **une seule** `POST /query` dont le corps les porte tous ; un cinquante-
+    /// unième déclenche une seconde requête (lot de 50 au plus). Vérification de la requête :
+    /// méthode `POST`, URI `/query`, en-tête `accept: application/json`, corps `{"query": …}`
+    /// avec les identifiants cités entre quotes simples.
+    #[tokio::test]
+    async fn invocation_statuses_cinquante_ids_une_seule_requête() {
+        let stub = StubServer::spawn(200, corps_rows(&[]));
+        let config = stub.config();
+        let http = test_http();
+        let ids: Vec<String> = (0..50).map(|i| format!("inv_a{i:02}")).collect();
+        invocation_statuses(&config, &http, &ids)
+            .await
+            .expect("le 200 `rows` vide devait rendre un Vec vide");
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 1, "cinquante ids = une seule requête");
+        let request = requests.first().expect("une requête capturée");
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.uri, "/query");
+        assert_eq!(request.header("accept"), Some("application/json"));
+        let corps: serde_json::Value = serde_json::from_slice(&request.body).expect("le corps est un JSON");
+        let requete = corps.get("query").and_then(Value::as_str).expect("`query`");
+        assert!(requete.contains("sys_invocation"), "{requete}");
+        assert!(requete.contains("WHERE id IN ("), "{requete}");
+        for id in &ids {
+            assert!(
+                requete.contains(&format!("'{id}'")),
+                "l'identifiant {id} doit figurer dans l'IN de la requête unique"
+            );
+        }
+
+        // Soixante-et-onze appels plus tard… ici l'unique branche de découpage : 51 ids → deux
+        // requêtes (50 puis 1).
+        let ids51: Vec<String> = (0..51).map(|i| format!("inv_b{i:02}")).collect();
+        invocation_statuses(&config, &http, &ids51)
+            .await
+            .expect("le 200 `rows` vide devait rendre un Vec vide");
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 3, "51 ids = deux requêtes de plus (50 puis 1)");
+        let secondes: Vec<String> = requests[1..]
+            .iter()
+            .map(|r| {
+                let corps: serde_json::Value = serde_json::from_slice(&r.body).expect("le corps est un JSON");
+                corps
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .expect("`query`")
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            secondes.iter().filter(|q| q.contains("inv_b00")).count()
+                + secondes.iter().filter(|q| q.contains("inv_b50")).count(),
+            2,
+            "les deux lots ensemble couvrent les deux extrémités, une fois chacun : {secondes:?}"
+        );
+        assert!(
+            secondes[0].contains("inv_b49") && !secondes[0].contains("inv_b50"),
+            "le premier lot s'arrête à 50 ids : {secondes:?}"
+        );
+    }
+
+    /// Scenario « le statut de cinquante invocations se lit en une requête », second volet : un
+    /// identifiant absent de la réponse est **absent** du résultat (aucun `InvocationStatus`
+    /// inventé pour les ids non cités par Restate).
+    #[tokio::test]
+    async fn invocation_statut_inconnu_absent_du_resultat() {
+        let stub = StubServer::spawn(200, corps_rows(&[ligne_invocation("inv_presente", "Running")]));
+        let rendu = invocation_statuses(
+            &stub.config(),
+            &test_http(),
+            &["inv_presente".to_string(), "inv_absente".to_string()],
+        )
+        .await
+        .expect("le 200 avec une ligne devait rendre un Vec");
+        assert_eq!(rendu.len(), 1, "une seule ligne rendue");
+        let premier = rendu.first().expect("la ligne rendue");
+        assert_eq!(premier.id, "inv_presente");
+        assert_eq!(premier.status, "Running");
+        assert_eq!(premier.service, "DagInterpreter");
+        assert_eq!(premier.handler, "run");
+        assert_eq!(premier.key, None);
+        assert_eq!(premier.created_at, "2026-11-15T07:00:00.000Z");
+        assert_eq!(premier.completed_at, None);
+        assert_eq!(premier.retry_count, 0);
+        assert_eq!(premier.failure, None);
+    }
+
+    /// `Must` : liste vide → `Ok(vec![])` **sans requête**.
+    #[tokio::test]
+    async fn invocation_statuses_liste_vide_sans_requête() {
+        let stub = StubServer::spawn(200, corps_rows(&[]));
+        let rendu = invocation_statuses(&stub.config(), &test_http(), &[])
+            .await
+            .expect("la liste vide doit rendre Ok sans appel");
+        assert_eq!(rendu.len(), 0, "la liste vide doit rendre un Vec vide");
+        assert!(stub.requests().is_empty(), "aucune requête pour une liste vide");
+    }
+
+    /// Scenario « un identifiant mal formé n'atteint jamais le réseau » : la grammaire stricte
+    /// (`inv_` + alphanumérique) filtre `inv_a'; DROP TABLE x; --` et `a b` **avant** toute
+    /// requête — `InvalidConfig` (`MRD-WORKFLOW-007`) et zéro requête capturée, y compris quand
+    /// un identifiant valide précède le fautif (validation de TOUS les ids avant le premier
+    /// octet envoyé). Même verdict pour un `service` mal formé passé à `list_invocations` et
+    /// pour un identifiant passé à `cancel_invocation`.
+    #[tokio::test]
+    async fn identifiant_mal_formé_n_atteint_jamais_le_réseau() {
+        let injectés = ["inv_a'; DROP TABLE x; --", "a b"];
+        let http = test_http();
+
+        for id in injectés {
+            let stub = StubServer::spawn(200, corps_rows(&[]));
+            let Err(err) = invocation_statuses(
+                &stub.config(),
+                &http,
+                &["inv_valide1".to_string(), id.to_string()],
+            )
+            .await
+            else {
+                panic!("l'identifiant {id:?} devait être refusé avant requête");
+            };
+            assert!(
+                matches!(err, WorkflowError::InvalidConfig(_)),
+                "variante attendue InvalidConfig : {err:?}"
+            );
+            assert!(
+                err.to_string()
+                    .starts_with("MRD-WORKFLOW-007: invalid workflow configuration: "),
+                "rendu inattendu : {err}"
+            );
+            assert!(stub.requests().is_empty(), "aucune requête pour {id:?}");
+        }
+
+        let stub = StubServer::spawn(200, corps_rows(&[]));
+        let filtre = InvocationFilter {
+            service: Some("svc' OR 1=1 --".to_string()),
+            ..InvocationFilter::default()
+        };
+        let Err(err) = list_invocations(&stub.config(), &http, &filtre).await else {
+            panic!("un service mal formé devait être refusé avant requête");
+        };
+        assert!(
+            matches!(err, WorkflowError::InvalidConfig(_)),
+            "variante attendue InvalidConfig : {err:?}"
+        );
+        assert!(
+            stub.requests().is_empty(),
+            "aucune requête pour un service fautif"
+        );
+
+        let stub = StubServer::spawn(202, String::new());
+        let Err(err) = cancel_invocation(&stub.config(), &http, "inv_x'; DELETE FROM y;--").await else {
+            panic!("un identifiant d'annulation mal formé devait être refusé avant requête");
+        };
+        assert!(
+            matches!(err, WorkflowError::InvalidConfig(_)),
+            "variante attendue InvalidConfig : {err:?}"
+        );
+        assert!(stub.requests().is_empty(), "aucune requête d'annulation");
+    }
+
+    /// `Must` `cancel_invocation` (volet stub) : `PATCH {admin_url}/invocations/{id}/cancel`,
+    /// `2xx` → `Ok(())`. La branche idempotente (`404`/`409` mesurés) est verrouillée par
+    /// [`cancel_invocation_idempotence_404_et_409_mesurés`] et prouvée live au test `#[ignore]`
+    /// de [`../../tests/workflow_restate.rs`].
+    #[tokio::test]
+    async fn cancel_invocation_poste_patch_cancel() {
+        let stub = StubServer::spawn(202, String::new());
+        cancel_invocation(&stub.config(), &test_http(), "inv_a1")
+            .await
+            .expect("le 202 devait rendre Ok(())");
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 1);
+        let request = requests.first().expect("une requête capturée");
+        assert_eq!(request.method, "PATCH");
+        assert_eq!(request.uri, "/invocations/inv_a1/cancel");
+    }
+
+    /// Branche idempotente du `Must` `cancel_invocation` (./client.sdd, amendement du 2026-11-13 :
+    /// « invocation inconnue ou terminée → `Ok(())`, la forme exacte des codes est vérifiée contre
+    /// Restate ») — codes mesurés contre `restate-server` **1.8.1** le 2026-11-15 (rapport de
+    /// tâche #80) : invocation inconnue (id décodable, jamais vue) → `404` « does not exist » ;
+    /// invocation déjà terminée → `409` « already completed ». Les deux rendent `Ok(())`. Tout
+    /// autre statut (ici `503`) reste `RestateRejected` avec corps verbatim.
+    #[tokio::test]
+    async fn cancel_invocation_idempotence_404_et_409_mesurés() {
+        for statut in [404_u16, 409] {
+            let stub = StubServer::spawn(statut, "{\"message\":\"forme mesurée 1.8.1\"}".to_string());
+            cancel_invocation(&stub.config(), &test_http(), "inv_a1")
+                .await
+                .unwrap_or_else(|erreur| {
+                    panic!("le {statut} mesuré (idempotence) devait rendre Ok(()) : {erreur:?}")
+                });
+        }
+        let stub = StubServer::spawn(503, "{\"message\":\"boom\"}".to_string());
+        let Err(err) = cancel_invocation(&stub.config(), &test_http(), "inv_a1").await else {
+            panic!("le 503 devait rendre RestateRejected, jamais Ok");
+        };
+        let WorkflowError::RestateRejected { status, body } = err else {
+            panic!("variante attendue RestateRejected : {err:?}");
+        };
+        assert_eq!(status, 503);
+        assert!(body.contains("boom"), "corps verbatim : {body}");
+    }
+
+    /// Scenario « les tables système pas encore prêtes sont une attente retryable » : le stub
+    /// répond comme Restate au démarrage (`500`, message « expecting a partition store ») — le
+    /// résultat est une erreur typée de la taxonomie existante (statut + corps verbatim, que
+    /// l'appelant peut re-tenter), **jamais** un `Vec` vide qui masquerait l'attente.
+    #[tokio::test]
+    async fn tables_pas_prêtes_erreur_retryable_jamais_vec_vide() {
+        let corps = "{\"message\":\"Datafusion error: expecting a partition store\"}";
+        let stub = StubServer::spawn(500, corps.to_string());
+        let Err(err) = invocation_statuses(&stub.config(), &test_http(), &["inv_a1".to_string()]).await
+        else {
+            panic!("le 500 « partition store » devait rendre une erreur, jamais un Vec");
+        };
+        let WorkflowError::RestateRejected { status, body } = err else {
+            panic!("variante attendue RestateRejected : {err:?}");
+        };
+        assert_eq!(status, 500);
+        assert!(
+            body.contains("expecting a partition store"),
+            "le corps doit rester verbatim : {body}"
+        );
+    }
+
+    /// `Must` `list_invocations` : requête unique sur `sys_invocation`, filtres traduits en
+    /// conditions sur `target_service_name` / `target_handler_name` / `status` (valeurs déjà
+    /// passées par la grammaire stricte), tri `created_at` décroissant, `LIMIT` à 100 par
+    /// défaut et plafonné à 1000.
+    #[tokio::test]
+    async fn list_invocations_filtres_tri_et_plafond() {
+        let stub = StubServer::spawn(200, corps_rows(&[]));
+        let config = stub.config();
+        let http = test_http();
+        list_invocations(&config, &http, &InvocationFilter::default())
+            .await
+            .expect("le 200 `rows` vide devait rendre un Vec vide");
+        list_invocations(
+            &config,
+            &http,
+            &InvocationFilter {
+                service: Some("DagInterpreter".to_string()),
+                handler: Some("run".to_string()),
+                status: Some("Completed".to_string()),
+                limit: Some(5000),
+            },
+        )
+        .await
+        .expect("le second 200 devait rendre un Vec vide");
+
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 2, "une requête par appel");
+        let requetes: Vec<String> = requests
+            .iter()
+            .map(|r| {
+                let corps: serde_json::Value = serde_json::from_slice(&r.body).expect("le corps est un JSON");
+                corps
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .expect("`query`")
+                    .to_string()
+            })
+            .collect();
+        assert!(
+            requetes[0].contains("LIMIT 100"),
+            "défaut de limit = 100 : {}",
+            requetes[0]
+        );
+        assert!(
+            !requetes[0].contains("WHERE"),
+            "aucun filtre posé = aucune condition WHERE : {}",
+            requetes[0]
+        );
+        assert!(
+            requetes[0].contains("ORDER BY created_at DESC"),
+            "tri created_at décroissant : {}",
+            requetes[0]
+        );
+        assert!(
+            requetes[1].contains("LIMIT 1000"),
+            "plafond 1000 : {}",
+            requetes[1]
+        );
+        assert!(
+            requetes[1].contains("target_service_name = 'DagInterpreter'")
+                && requetes[1].contains("target_handler_name = 'run'")
+                && requetes[1].contains("status = 'Completed'"),
+            "les trois filtres posés en conditions AND : {}",
+            requetes[1]
+        );
+    }
+
+    /// Scenario « le journal nomme les étapes » (volet stub) : lecture de `sys_journal`
+    /// ordonnée par `index`, entrées `{ index, kind: entry_type, name }` — les noms posés par
+    /// ./dispatcher.rs (`render:<id>`, `step:<id>`) remontent ; un nom absent (`null`) rend
+    /// `None`. La preuve live est le test `#[ignore]` de [`../../tests/workflow_restate.rs`].
+    #[tokio::test]
+    async fn invocation_journal_ordonne_par_index() {
+        let lignes = serde_json::json!([
+            {"index": 0, "entry_type": "InvocationStart", "name": null},
+            {"index": 1, "entry_type": "Run", "name": "render:A"},
+            {"index": 2, "entry_type": "Run", "name": "step:A"}
+        ]);
+        let stub = StubServer::spawn(200, corps_rows(lignes.as_array().expect("table")));
+        let rendu = invocation_journal(&stub.config(), &test_http(), "inv_a1")
+            .await
+            .expect("le 200 avec lignes devait rendre le journal");
+        assert_eq!(rendu.len(), 3);
+        assert_eq!(
+            rendu,
+            vec![
+                JournalEntry {
+                    index: 0,
+                    kind: "InvocationStart".to_string(),
+                    name: None,
+                },
+                JournalEntry {
+                    index: 1,
+                    kind: "Run".to_string(),
+                    name: Some("render:A".to_string()),
+                },
+                JournalEntry {
+                    index: 2,
+                    kind: "Run".to_string(),
+                    name: Some("step:A".to_string()),
+                },
+            ]
+        );
+        let requete_corps: serde_json::Value =
+            serde_json::from_slice(&stub.requests().first().expect("une requête capturée").body)
+                .expect("le corps est un JSON");
+        let requete = requete_corps
+            .get("query")
+            .and_then(Value::as_str)
+            .expect("`query`");
+        assert!(
+            requete.contains("FROM sys_journal WHERE id = 'inv_a1' ORDER BY index"),
+            "requête sys_journal filtrée par id et triée par index : {requete}"
+        );
+    }
+
+    /// Forme mesurée le 2026-11-15 contre `restate-server` **1.8.1** : les entrées **sans nom**
+    /// remontent de `sys_journal` avec `name` à la chaîne **vide** (Jamais `null`, Jamais absent) —
+    /// le champ `name` de [`JournalEntry`] doit rendre `None` pour ces entrées, seule forme sous
+    /// laquelle le
+    /// contrat « le journal nomme les runs » est lisible (sinon toute entrée anonyme porterait un
+    /// nom fictif `""`).
+    #[tokio::test]
+    async fn invocation_journal_nom_vide_est_absence() {
+        let lignes = serde_json::json!([
+            {"index": 0, "entry_type": "InvocationStart", "name": ""},
+            {"index": 1, "entry_type": "Run", "name": "step:A"},
+            {"index": 2, "entry_type": "Sleep", "name": ""}
+        ]);
+        let stub = StubServer::spawn(200, corps_rows(lignes.as_array().expect("table")));
+        let rendu = invocation_journal(&stub.config(), &test_http(), "inv_a1")
+            .await
+            .expect("le 200 avec lignes devait rendre le journal");
+        assert_eq!(
+            rendu.iter().map(|entree| entree.name.clone()).collect::<Vec<_>>(),
+            vec![None, Some("step:A".to_string()), None],
+            "le nom vide mesuré (restate 1.8.1) est l'absence de nom"
+        );
+    }
+
+    /// `Must` : un `2xx` sans le tableau `rows` attendu est une forme d'administration
+    /// inattendue — une erreur typée, jamais un résultat vide qui la confondrait avec « aucune
+    /// invocation » (variante existante la plus proche : `RestateRejected`, statut observé et
+    /// corps verbatim — la variante `Transport` citée par l'amendement n'existe pas dans
+    /// ./error.rs, arbitré « réutilisation »).
+    #[tokio::test]
+    async fn réponse_admin_sans_rows_est_une_erreur() {
+        let stub = StubServer::spawn(200, "{\"trousers\":\"on fire\"}".to_string());
+        let Err(err) = invocation_statuses(&stub.config(), &test_http(), &["inv_a1".to_string()]).await
+        else {
+            panic!("un 200 sans `rows` devait rendre une erreur, jamais un Vec");
+        };
+        let WorkflowError::RestateRejected { status, body } = err else {
+            panic!("variante attendue RestateRejected : {err:?}");
+        };
+        assert_eq!(status, 200);
+        assert!(body.contains("trousers"), "corps verbatim : {body}");
     }
 }

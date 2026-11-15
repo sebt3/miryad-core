@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use restate_sdk::context::RunFuture;
 use restate_sdk::endpoint::{HandlerOptions, ServiceOptions};
 use restate_sdk::prelude::{Context, ContextSideEffects, HandlerError, Json, TerminalError, service};
 use serde::{Deserialize, Serialize};
@@ -104,8 +105,13 @@ impl StepDispatcher {
             // `uuid_new_v4` ne doit pas donner une autre valeur à chaque rejeu). Les clones
             // sont requis : la fermeture doit posséder ses données, `run_info` et `inputs`
             // servent encore au `run` du kind.
+            // Issue #80 (1), amendement du 2026-11-13 : le run est nommé `render:<id>`, `<id>`
+            // étant le `step_id` reçu — nom dérivé de la requête seule, stable d'un rejeu à
+            // l'autre, sans `config`/`inputs`/`vars`. Un kind durable n'a que ce run dans le
+            // journal du dispatcher (ses effets sont nommés par lui-même).
             let run_pour_rendu = run_info.clone();
             let inputs_pour_rendu = inputs.clone();
+            let nom_rendu = render_run_name(&run_info.step_id);
             let Json(rendered) = ctx
                 .run(move || async move {
                     render_for_kind(
@@ -118,6 +124,7 @@ impl StepDispatcher {
                     .map(Json)
                     .map_err(step_error_to_handler_error)
                 })
+                .name(nom_rendu)
                 .await?;
             return durable
                 .run(&StepContext::new(&ctx, run_info), rendered, inputs)
@@ -129,8 +136,12 @@ impl StepDispatcher {
         // jamais rejouée après reprise sur crash. La fermeture se borne à déléguer à
         // `run_invocation` (rien d'autre ne s'y ajoute). Jamais de `.retry_policy()` ici — la
         // politique est celle posée au `bind()` du service par l'app (`recommended_options`).
+        // Issue #80 (1) : nommé `step:<id>` (même grammaire que `render:<id>` ci-dessus) ; le
+        // NOMBRE de `ctx.run` est inchangé (`Must not` de ./dispatcher.sdd).
+        let nom_execution = step_run_name(&run_info.step_id);
         let output = ctx
             .run(move || run_invocation(&self.registry, kind, run_info, config, inputs))
+            .name(nom_execution)
             .await?;
         Ok(output)
     }
@@ -186,6 +197,23 @@ fn render_for_kind(
         retryable: false,
     })?;
     render_config(config, run, inputs, raw)
+}
+
+/// Nom du `ctx.run` d'exécution d'un kind ordinaire (issue #80 (1), amendement du 2026-11-13,
+/// ./dispatcher.sdd) : `step:<id>`, `<id>` = le `step_id` du DAG reçu dans la `req`. Fonction pure
+/// du seul identifiant — jamais d'horloge, jamais d'identifiant généré, jamais une valeur de
+/// `config`, d'`inputs` ou de `vars` : le nom est stable d'un rejeu à l'autre et lisible dans
+/// `sys_journal`.
+fn step_run_name(step_id: &str) -> String {
+    format!("step:{step_id}")
+}
+
+/// Nom du `ctx.run` de rendu — branches ordinaire et durable (issue #80 (1), amendement du
+/// 2026-11-13, ./dispatcher.sdd) : `render:<id>`, même grammaire que [`step_run_name`]. Un kind
+/// durable n'a que ce nom dans le journal du dispatcher ; un kind ordinaire y fait suivre
+/// `step:<id>`.
+fn render_run_name(step_id: &str) -> String {
+    format!("render:{step_id}")
 }
 
 /// Seul corps de la fermeture de `ctx.run` du handler : dispatch du kind, puis attente de son
@@ -298,7 +326,7 @@ pub fn recommended_options() -> ServiceOptions {
 mod tests {
     use super::{
         LONG_CEILING_MAX_SECS, StepDispatcher, StepInvocation, handler_name, recommended_options,
-        recommended_options_for, run_invocation, step_error_to_handler_error,
+        recommended_options_for, render_run_name, run_invocation, step_error_to_handler_error, step_run_name,
     };
     use crate::workflow::step::{MiryadWorkflowStep, RunInfo, StepError, StepRegistry};
     use restate_sdk::prelude::Json;
@@ -1136,5 +1164,58 @@ mod tests {
             .into_service_definition()
             .options(recommended_options());
         let _endpoint = Endpoint::builder().bind(definition).build();
+    }
+
+    /// Scenario « les noms de run sont dérivés de la requête seule » (issue #80 (1), amendement
+    /// du 2026-11-13, ./dispatcher.sdd) : `step:<id>` et `render:<id>` sont des fonctions pures du
+    /// seul `step_id` reçu — identiques d'un rejeu à l'autre pour la même `req`, différents pour un
+    /// autre `step_id`. Qu'aucune valeur de `config`, d'`inputs` ou de `vars` n'entre dans un nom
+    /// est garanti par la signature même des deux fonctions (elles ne prennent que `step_id`) ; le
+    /// test verrouille les formes `step:<id>` / `render:<id>` et la stabilité. La preuve du journal
+    /// réel (`sys_journal`) est le test d'intégration `#[ignore]` de
+    /// `../../tests/workflow_restate.rs` (aucune preuve possible en mémoire, `Context` non
+    /// virtualisable, borne actée en `Tasks`).
+    #[test]
+    fn les_noms_de_run_sont_dérivés_de_la_requête_seule() {
+        // Formes contractées (arbitré 2026-11-13 : deux noms distincts, un run d'exécution et un
+        // run de rendu indiscernables sinon).
+        assert_eq!(step_run_name("A"), "step:A");
+        assert_eq!(render_run_name("A"), "render:A");
+        // Stabilité d'un rejeu à l'autre : mêmes entrées, mêmes sorties (pureté triviale, posée
+        // comme verrou de non-régression — aucune horloge, aucun identifiant généré n'y entre).
+        assert_eq!(step_run_name("A"), step_run_name("A"));
+        assert_eq!(render_run_name("A"), render_run_name("A"));
+        // Un autre `step_id` donne un autre nom, dans les deux familles.
+        assert_ne!(step_run_name("A"), step_run_name("S"));
+        assert_ne!(render_run_name("A"), render_run_name("S"));
+        assert_eq!(step_run_name("S"), "step:S");
+        assert_eq!(render_run_name("S"), "render:S");
+        // Rien de `config`/`inputs`/`vars` dans un nom : un `step_id` est rendu verbatim, et la
+        // seule source possible d'un nom reste la clé `step_id` de la `req` reçue.
+        assert_eq!(step_run_name("step:1/nom#exotique"), "step:step:1/nom#exotique");
+    }
+
+    /// Le `step_id` porté par `StepInvocation` est bien la source des noms (issue #80 (1)) : le
+    /// nom dérive du champ `step_id` du corps reçu — un rejeu de la même `req` (mêmes champs)
+    /// produit le même couple de noms, une `req` avec un autre `step_id` en produit d'autres.
+    #[test]
+    fn les_noms_dérivent_du_step_id_du_corps_reçu() {
+        let req = StepInvocation {
+            kind: "record".to_string(),
+            config: serde_json::json!({"m": "{{inputs.a}}"}),
+            inputs: HashMap::from([("a".to_string(), serde_json::json!("v"))]),
+            run_key: "r1".to_string(),
+            step_id: "A".to_string(),
+            depth: 0,
+            vars: serde_json::json!({"secret": "ne-pas-nommer"}),
+            trigger: None,
+        };
+        let noms = (step_run_name(&req.step_id), render_run_name(&req.step_id));
+        assert_eq!(noms, ("step:A".to_string(), "render:A".to_string()));
+        // Ni `config`, ni `inputs`, ni `vars` ne fuient dans les noms (le `vars` de la fixture est
+        // porteur d'une marque : elle n'apparaît dans aucun des deux noms).
+        let rendu = format!("{} {}", noms.0, noms.1);
+        assert!(!rendu.contains("ne-pas-nommer"), "{rendu}");
+        assert!(!rendu.contains("{{inputs.a}}"), "{rendu}");
     }
 }

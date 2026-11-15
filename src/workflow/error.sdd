@@ -203,7 +203,8 @@ Tasks:
   [x] A3 (2026-10-30, `dsd/miryad-core/workflow.md` `FR-18`) : variante @WorkflowError::ScriptTimeout { seconds: u64 }
     (`MRD-WORKFLOW-009`), @Display à égalité exacte (`Must`) ; à faire avant la tâche A5 de ./rhai_step.sdd qui la construit.
     Un fichier : ./error.rs.
-  [ ] Issue #80 (arbitré le 2026-11-13 : variantes existantes) — erreurs du client d'administration : réutiliser `WorkflowError::Transport`/`InvalidConfig` existants (recommandé) ou ajouter des variantes (`MRD-WORKFLOW-0NN` : invocation inconnue, réponse
+  [x] Issue #80 (arbitré le 2026-11-13 : variantes existantes) — erreurs du client d'administration : réutiliser `WorkflowError::Transport`/`InvalidConfig` existants (recommandé) ou ajouter des variantes (`MRD-WORKFLOW-0NN` : invocation inconnue, réponse
+    Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Arbitré « variantes existantes » : aucun code dans ./error.rs ; réutilisation `RestateUnreachable`/`RestateRejected`/`Serialization`/`InvalidConfig` (les noms réels ; « `Transport` » de l'arbitrage désignait la famille transport).
     d'administration inattendue). À décider à l'écriture de la spec de ./client.sdd ; une variante ajoutée amende ./error.sdd (`Must`, `Scenario` des codes) avant le code.
 
 Done when:

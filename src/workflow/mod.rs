@@ -34,7 +34,10 @@ mod template;
 // pure cosmetique sur la liste du `Must` de ./mod.sdd. `validate_dag` (et tout autre item
 // `pub(crate)` d'un enfant) reste volontairement hors de cette liste (`Must not` de ./mod.sdd) :
 // jamais atteint depuis l'extérieur de la crate.
-pub use client::{RunHandle, WorkflowConfig, register_deployment, trigger_run};
+pub use client::{
+    InvocationFilter, InvocationStatus, JournalEntry, RunHandle, WorkflowConfig, cancel_invocation,
+    invocation_journal, invocation_statuses, list_invocations, register_deployment, trigger_run,
+};
 pub use definition::{
     ActiveModel as WorkflowDefinitionActiveModel, Column as WorkflowDefinitionColumn, DagSteps,
     Entity as WorkflowDefinition, Model as WorkflowDefinitionModel, StepDefinition, WorkflowPolicy,
@@ -94,12 +97,26 @@ mod tests {
             _: Option<crate::workflow::RunInfo>,
         ) {
         }
+        // Issue #80 (amendement du 2026-11-13 de ./mod.sdd) : les trois types du client
+        // d'administration en position de type, les quatre fonctions en position de valeur —
+        // sans jamais nommer `client`.
+        fn witness_admin(
+            _: Option<crate::workflow::InvocationStatus>,
+            _: Option<crate::workflow::InvocationFilter>,
+            _: Option<crate::workflow::JournalEntry>,
+        ) {
+        }
         witness_execution(None, None, None, None);
         witness_definition(None, None, None, None);
         witness_lot_26(None, None, None, None);
+        witness_admin(None, None, None);
         // Neuvième chemin : `configure_policy`, référencé en valeur sans être appelé — sa sémantique
         // `OnceLock` est prouvée par `tests/workflow_policy.rs`, hors de ce scénario.
         std::hint::black_box(crate::workflow::configure_policy);
+        std::hint::black_box(crate::workflow::invocation_statuses);
+        std::hint::black_box(crate::workflow::list_invocations);
+        std::hint::black_box(crate::workflow::cancel_invocation);
+        std::hint::black_box(crate::workflow::invocation_journal);
     }
 
     /// Scenario « les steps croisés n'existent que sous leur croisement de features » : ces deux tests
