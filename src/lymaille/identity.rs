@@ -96,20 +96,24 @@ pub enum IdKind {
     Host,
 }
 
-/// Classe un identifiant (DSD `DEC-9`, `DEC-27`) : un identifiant est un identifiant Rhai valide.
+/// Classe un identifiant (DSD `DEC-9`, `DEC-27`) : un identifiant est un identifiant Rhai
+/// valide — **sauf** un `H_…` exact, jamais stocké ni employé comme identifiant Rhai ou de module,
+/// qui accepte en plus `-` (amendement du 2026-11-13, issue #76). Le contrôle de jeu de caractères
+/// précède la casse du préfixe : `h_a-b`, `G_a-b` et `a-b` restent invalides.
 ///
 /// # Errors
 ///
 /// - [`LymailleError::InvalidDefinition`] : identifiant vide ou portant un caractère hors
-///   `[A-Za-z0-9_]`.
+///   `[A-Za-z0-9_]` — `[A-Za-z0-9_-]` après un préfixe `H_` exact.
 /// - [`LymailleError::ReservedPrefix`] : préfixe `g_` ou `h_` sous une casse autre que `G_` ou
 ///   `H_` exacte — la casse est significative, `G_` seul désigne le catalogue, `H_` seul le
 ///   résolu par l'hôte.
 pub fn classify(id: &str) -> Result<IdKind, LymailleError> {
+    let host_prefixed = id.starts_with("H_");
     if id.is_empty()
         || !id
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || (host_prefixed && byte == b'-'))
     {
         return Err(LymailleError::InvalidDefinition("invalid identifier".to_string()));
     }
@@ -507,6 +511,51 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    /// `Scenario` : « un identifiant hôte accepte le tiret » (issue #76, amendement du
+    /// 2026-11-13) — au-delà de `H_` exact, `-` rejoint le jeu `[A-Za-z0-9_]` ; la classification
+    /// rend `Host` et `check_write` refuse toujours un `Host`, admin compris.
+    #[test]
+    fn classify_accepts_dash_in_host_identifiers() {
+        for id in ["H_mon-projet", "H_sandbox_jean-marc_web", "H_a"] {
+            let kind = classify(id);
+            assert!(
+                matches!(kind, Ok(IdKind::Host)),
+                "`{id}` commence par `H_` exact et ne porte que `[A-Za-z0-9_-]` : {kind:?}"
+            );
+        }
+
+        let admin = CallerPrincipal {
+            user_id: 1,
+            subject: "admin".to_string(),
+            is_admin: true,
+        };
+        for id in ["H_mon-projet", "H_sandbox_jean-marc_web", "H_a"] {
+            let denied = check_write(&admin, id);
+            assert!(
+                matches!(&denied, Err(LymailleError::Forbidden(message))
+                    if message == "host identifiers are not writable"),
+                "`{id}` classé `Host` n'est écrit par personne, admin compris : {denied:?}"
+            );
+        }
+    }
+
+    /// `Scenario` : « le tiret reste refusé hors des identifiants hôte » (issue #76) — le contrôle
+    /// de jeu de caractères précède la casse du préfixe : `G_a-b` (`G_`, identifiant Rhai),
+    /// `a-b` (privé), `h_a-b` (casse réservée) et `H-a` (préfixe `H-`, pas `H_`) restent
+    /// `InvalidDefinition("invalid identifier")`.
+    #[test]
+    fn classify_refuses_dash_outside_host_identifiers() {
+        for id in ["G_a-b", "a-b", "h_a-b", "H-a"] {
+            let outcome = classify(id);
+            assert!(
+                matches!(&outcome, Err(LymailleError::InvalidDefinition(message))
+                    if message == "invalid identifier"),
+                "`{id}` porte un `-` hors du préfixe `H_` exact et reste un identifiant \
+                 invalide : {outcome:?}"
+            );
+        }
     }
 
     /// `Scenario` : « la liste des modules réservés à l'admin n'a qu'une déclaration »

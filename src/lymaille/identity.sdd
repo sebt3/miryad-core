@@ -74,7 +74,7 @@ Tasks:
     Validé 2026-11-11 : déclaration unique verrouillée par le test `admin_only_modules_has_a_single_declaration` ; batterie ciblée `lymaille` et `workflow,lymaille` verte (tests, clippy `-D warnings`, fmt).
     Ratifié 2026-11-11 : mode dégradé accepté pour ce lot (synthèse tenue par le primary, preuve portée par la batterie complète de fin de lot, 33/33). Pas un précédent : un passage `validator` (ou relecture croisée) est exigé à la clôture de `lymaille`, et l'indisponibilité du `validator` est à diagnostiquer. — Ravalidé 2026-11-11 par le `validator` (rattrapage lot scripts-hote : GO ; mode dégradé clos par cette relecture).
     Ratifié 2026-11-12 (arbitrage du développeur principal) — test étendu aux deux hooks. (validator, rattrapage du 2026-11-11) : le Then du Scenario cite « les hooks de sauvegarde l'importent » (01dd6a3) mais le test ne vérifie la clause d'import que pour les trois fichiers nommés — les hooks (`private_agent.rs`, `private_toolset.rs`) importent bien la constante (grep) sans que ce soit asserté. Options : étendre le test aux deux hooks (recommandé) ou réduire le Then. Choix provisoire : laisser le test tel quel, l'unicité étant verrouillée pour tout `src/`.
-  [ ] Issue #76 — noms d'hôte avec `-`. Spec d'abord (amendement à faire approuver ; le DSD `lymaille#DEC-9` dit « un identifiant est un identifiant Rhai valide », à amender côté développeur principal pour
+  [x] Issue #76 — noms d'hôte avec `-`. Spec d'abord (amendement à faire approuver ; le DSD `lymaille#DEC-9` dit « un identifiant est un identifiant Rhai valide », à amender côté développeur principal pour
     les seuls `H_…`) : dans `classify`, un identifiant qui commence par `H_` exact accepte en plus le caractère `-` (jeu `[A-Za-z0-9_-]`) ; tout autre identifiant garde `[A-Za-z0-9_]` (`G_…` et privés sont des
     identifiants Rhai, `H_…` n'est jamais stocké ni employé comme identifiant de module) ; `h_a-b` et `g_a-b` restent `InvalidDefinition("invalid identifier")` (le contrôle de jeu de caractères précède
     la casse du préfixe, comportement actuel inchangé). `Scenario` : `H_mon-projet` → `Host` ; `H_sandbox_jean-marc_web` → `Host` ; `G_a-b` et `a-b` → `InvalidDefinition` ; la classification existante
@@ -82,6 +82,11 @@ Tasks:
     qu'un `Host` est un identifiant Rhai ou un segment d'URL sans `-`.
     Arbitré le 2026-11-13 (`-` après `H_` retenu) : alternative de l'issue (séparateur réservé, par exemple `__`) : non recommandée — `-` suffit à lever l'ambiguïté tant que les noms de l'hôte n'ont pas de `_` (c'est le cas des noms Kubernetes) et ne
     demande aucun encodage côté hôte. À confirmer : la décomposition de `H_sandbox_<owner>_<nom>` reste l'affaire de l'hôte (la crate classe, elle ne décompose pas).
+    Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, feature non déclarée, tâche #81 lot 2 ; relecture `spec-dd` du diff ; grep des appelants de @classify conclu : aucun ne suppose un `Host`
+    sans `-`, le contexte HTTP passe par un champ de corps JSON). Tests : `classify_accepts_dash_in_host_identifiers` (rouge d'abord), `classify_refuses_dash_outside_host_identifiers` (non-régression, verte
+    d'emblée — verrouille la moitié conservée du Scenario).
+    [?] (implementer/validator) : aucun — la décomposition `H_sandbox_<owner>_<nom>` est confirmée hors de la crate (aucun `split`/`strip_prefix` sur un identifiant lymaille dans `src/`).
+    [?] (spec-dd) : l'amendement du DSD `lymaille#DEC-9` (« identifiant Rhai valide », exception `H_…` avec `-`) reste à écrire côté développeur principal — domaine hors du cycle.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./identity.rs.
