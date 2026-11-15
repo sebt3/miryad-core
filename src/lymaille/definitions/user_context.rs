@@ -213,12 +213,13 @@ impl Entity {
             ActiveValue::NotSet => None,
         };
         if reference
-            .is_some_and(|reference| !matches!(identity::classify(reference), Ok(identity::IdKind::Private)))
+            .is_some_and(|reference| !matches!(identity::classify(reference), Ok(identity::IdKind::Catalog)))
         {
-            // Symétrisée 2026-11-05 avec `./catalog_context.rs` (`DEC-28`) : la référence désigne
-            // un nom de type du catalogue — la grammaire `lymaille`, jamais un identifiant
-            // `G_`/`H_` (les noms de type n'ont pas de préfixe, arbitrage (a) du 2026-11-04).
-            // L'existence n'est vérifiée qu'à l'ouverture : le hook ne juge que la forme.
+            // Issue #74, périmètre étendu (amendement du 2026-11-13, même porte que
+            // `./catalog_context.rs`) : les types de contexte n'existent que dans le catalogue
+            // (`G_…`, `./context_type.sdd`, `DEC-28` révisé) — un contexte privé référence donc
+            // un type `G_…` ; un nom privé ou `H_…` est refusé. L'existence n'est vérifiée qu'à
+            // l'ouverture : le hook ne juge que la forme.
             return Err(HookError::new("user context type reference is not a valid name"));
         }
         active.name = ActiveValue::Set(name);
@@ -783,38 +784,14 @@ mod tests {
         }
     }
 
-    /// `Must` (symétrisée 2026-11-05, même porte que `./catalog_context.rs`) : `context_type`
-    /// posé doit être de forme identifiant valide — un nom de type du catalogue (grammaire
-    /// `lymaille`, `classify` = `Private`), jamais un préfixe réservé (`G_`/`H_` et leurs casses
-    /// réservées), non vide. L'existence du type n'est pas vérifiée ici (hook sans connexion).
-    /// Le `HookError` ne porte aucun code `MRD-*`.
+    /// Scenario « un contexte privé référence un type du catalogue » (issue #74, périmètre
+    /// étendu, amendement du 2026-11-13) : `context_type` posé doit être de forme catalogue —
+    /// `classify` = `Catalog` (les types de contexte n'existent que dans le catalogue,
+    /// `./context_type.sdd`). `None` (ou absent) traverse le hook, et une référence `G_…` traverse
+    /// inchangée : l'existence du type est vérifiée à l'ouverture de session, pas ici.
+    /// `before_update` sur la même référence, sans changement de nom, est accepté.
     #[tokio::test]
-    async fn before_create_refuse_un_context_type_de_forme_invalide() {
-        for reference in ["", "G_cluster", "g_cluster", "h_cluster", "cluster-x"] {
-            let active = ActiveModel {
-                context_type: Set(Some(reference.to_string())),
-                ..active_avec(contexte("dev", ContextLevel::User, json!({})))
-            };
-            match Entity::before_create(&hook_db(), active, &principal()).await {
-                Err(erreur) => {
-                    assert!(
-                        erreur.code.is_none(),
-                        "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
-                    );
-                    assert!(
-                        erreur.message.contains("context type"),
-                        "le refus nomme la référence en cause : {erreur:?}"
-                    );
-                }
-                Ok(_) => panic!("`{reference}` n'est pas une forme d'identifiant de type valide"),
-            }
-        }
-    }
-
-    /// `Must` : `context_type` absent (`None`) passe, et une référence de forme valide traverse
-    /// le hook inchangée — l'existence est vérifiée à l'ouverture de session, pas ici.
-    #[tokio::test]
-    async fn before_create_accepte_un_context_type_de_forme_valide() {
+    async fn un_contexte_prive_reference_un_type_du_catalogue() {
         let db = db_avec_compte("sujet-de-test").await;
         let sans = Entity::before_create(
             &db,
@@ -831,18 +808,66 @@ mod tests {
         let avec = Entity::before_create(
             &db,
             ActiveModel {
-                context_type: Set(Some("cluster".to_string())),
+                context_type: Set(Some("G_home".to_string())),
                 ..active_avec(contexte("dev", ContextLevel::User, json!({})))
             },
             &principal(),
         )
         .await
-        .expect("une référence de forme valide est acceptée sans contrôle d'existence");
+        .expect("une référence `G_home` est acceptée sans contrôle d'existence");
         assert_eq!(
             avec.context_type,
-            Set(Some("cluster".to_string())),
+            Set(Some("G_home".to_string())),
             "le hook ne réécrit pas la référence"
         );
+        assert_eq!(avec.name, Set("dev".to_string()));
+        let mis_a_jour = Entity::before_update(
+            &db,
+            ActiveModel {
+                context_type: Set(Some("G_home".to_string())),
+                ..active_avec(contexte("dev", ContextLevel::User, json!({})))
+            },
+            &modele(1, "dev"),
+            &principal(),
+        )
+        .await
+        .expect("une mise à jour sur une référence catalogue, nom inchangé, est acceptée");
+        assert_eq!(
+            mis_a_jour.name,
+            Set("dev".to_string()),
+            "`before_update` sur une référence catalogue garde le nom"
+        );
+    }
+
+    /// Scenario « une référence privée ou hôte à un type est refusée » (issue #74) : un nom privé
+    /// (`home`), un identifiant `H_…` ou de casse réservée (`g_home`), une forme invalide (`a-b`,
+    /// vide) ne sont pas des références de type du catalogue. Le `HookError` ne porte aucun code
+    /// `MRD-*` et n'échoe pas la valeur.
+    #[tokio::test]
+    async fn une_reference_privee_ou_hote_a_un_type_est_refusee() {
+        for reference in ["", "home", "H_home", "g_home", "a-b", "h_cluster"] {
+            let active = ActiveModel {
+                context_type: Set(Some(reference.to_string())),
+                ..active_avec(contexte("dev", ContextLevel::User, json!({})))
+            };
+            match Entity::before_create(&hook_db(), active, &principal()).await {
+                Err(erreur) => {
+                    assert!(
+                        erreur.code.is_none(),
+                        "aucun code `MRD-*` sur un `HookError` : {erreur:?}"
+                    );
+                    assert!(
+                        erreur.message.contains("context type"),
+                        "le refus nomme la règle en cause : {erreur:?}"
+                    );
+                    assert!(
+                        reference.is_empty() || !erreur.message.contains(reference),
+                        "le refus n'échoe pas la valeur : {erreur:?}"
+                    );
+                }
+                Ok(_) => panic!("`{reference}` n'est pas une référence de type du catalogue"),
+            }
+        }
     }
 
     /// Scenario (`before_update`) : `name` ne change pas.
