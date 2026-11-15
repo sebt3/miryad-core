@@ -68,7 +68,9 @@ use ::lymaille::Toolset;
 use ::lymaille::ToolsetContext;
 use ::lymaille::ToolsetStore as _;
 use ::lymaille::TurnConfig;
+use ::lymaille::TurnLock;
 use ::lymaille::TurnOutput;
+use ::lymaille::TurnPermit;
 use ::lymaille::TurnRunner;
 use ::lymaille::assemble;
 use ::lymaille::config_registration;
@@ -267,6 +269,37 @@ impl AssembledSession {
     }
 }
 
+/// Verrou de passage d'un assemblage (`./assemble.sdd`, amendement #81 lot 1, DSD `DEC-31`) :
+/// le gestionnaire tient déjà le vrai permis auprès de la porte partagée ; le `TurnRunner` de
+/// `lymaille` ne doit donc **pas** reprendre un second verrou, mais voir la perte du bail.
+/// Premier `try_begin` → un `TurnPermit` porteur du jeton `lost` du permis du gestionnaire ;
+/// second appel (même assemblage) → `TurnActive`, comme une porte qui refuserait.
+/// Privé à ce fichier (`pub(crate)`), jamais une surface publique.
+struct LeaseTurnLock {
+    /// Jeton de perte de bail du permis tenu par le gestionnaire (partagé par clones).
+    lost: CancelHandle,
+    /// Le jeton n'est attaché qu'au premier permis : un assemblage = un tour sous ce bail.
+    taken: std::sync::atomic::AtomicBool,
+}
+
+impl TurnLock for LeaseTurnLock {
+    fn try_begin(
+        &self,
+        session: SessionId,
+    ) -> Pin<Box<dyn Future<Output = Result<TurnPermit, SessionError>> + Send>> {
+        let premier = !self.taken.swap(true, std::sync::atomic::Ordering::SeqCst);
+        let lost = self.lost.clone();
+        Box::pin(async move {
+            if premier {
+                // `release` vide : c'est le gestionnaire qui libère le vrai verrou, pas nous.
+                Ok(TurnPermit::new(session, || {}, lost))
+            } else {
+                Err(SessionError::TurnActive(session))
+            }
+        })
+    }
+}
+
 /// Assemble le moteur et le `TurnRunner` de la session `session` de l'agent `agent_id` pour ce
 /// principal (`Must` de la spec, étapes 1 à 6).
 ///
@@ -279,6 +312,9 @@ impl AssembledSession {
 ///   invalide.
 /// - `LymailleError::Store` / `LymailleError::Config` / `LymailleError::Run` : pannes des stores,
 ///   du moteur ou d'un tour.
+// Spec `assemble.sdd` (tâche bail de #81, 2026-11-15) : signature-contract à 8 paramètres,
+// le jeton de bail s'ajoutant en septième position (avant `now`).
+#[allow(clippy::too_many_arguments)]
 pub async fn assemble_session(
     deps: &AssembleDeps,
     caller: &CallerPrincipal,
@@ -286,13 +322,27 @@ pub async fn assemble_session(
     agent_id: &str,
     session: &SessionId,
     token: Option<Zeroizing<String>>,
+    lease: Option<CancelHandle>,
 ) -> Result<AssembledSession, LymailleError> {
-    assemble_with(deps, caller, kind, agent_id, session, token, ADMIN_ONLY_MODULES).await
+    assemble_with(
+        deps,
+        caller,
+        kind,
+        agent_id,
+        session,
+        token,
+        lease,
+        ADMIN_ONLY_MODULES,
+    )
+    .await
 }
 
 /// Cœur de `assemble_session` avec la liste de modules réservés injectée — séparateur du
 /// `Scenario` « un module réservé à l'admin est refusé à l'assemblage » ; la fonction publique
 /// passe la liste vide.
+// Spec `assemble.sdd` (tâche bail de #81, 2026-11-15) : 8 paramètres — le jeton de bail
+// s'ajoute à une signature-contract ; `assemble_session` reste l'entrée publique à 7.
+#[allow(clippy::too_many_arguments)]
 async fn assemble_with(
     deps: &AssembleDeps,
     caller: &CallerPrincipal,
@@ -300,6 +350,7 @@ async fn assemble_with(
     agent_id: &str,
     session: &SessionId,
     token: Option<Zeroizing<String>>,
+    lease: Option<CancelHandle>,
     reserved: &[&str],
 ) -> Result<AssembledSession, LymailleError> {
     install_crypto_provider();
@@ -387,6 +438,16 @@ async fn assemble_with(
         budget,
     )
     .with_agent(resolved.definition.id());
+    // Bail partagé (`./assemble.sdd`, amendement #81 lot 1) : sous `Some(lost)`, le coureur
+    // voit la perte du bail porté par le permis du gestionnaire sans reprendre de verrou ;
+    // sous `None`, la porte par défaut de `lymaille` est conservée, rien ne change.
+    let turn_config = match lease {
+        Some(lost) => turn_config.with_turn_lock(Arc::new(LeaseTurnLock {
+            lost,
+            taken: std::sync::atomic::AtomicBool::new(false),
+        })),
+        None => turn_config,
+    };
     let segment = SegmentContext::new(
         resolved.definition.prompt().to_owned(),
         vec![rhai_pad_definition()],
@@ -857,6 +918,7 @@ mod tests {
     use crate::lymaille::definitions::mcp_server;
     use crate::lymaille::host_module::{HostAccess, HostFunction, HostModule};
     use crate::lymaille::identity::Identity;
+    use crate::lymaille::interactive::event::SessionEventKind;
     use crate::lymaille::mcp_mount::{DynMcpAuth, DynMcpConnector, McpConnectorFactory};
     use crate::lymaille::store::test_support::test_db;
     use crate::users::group;
@@ -1331,6 +1393,7 @@ mod tests {
             "dev",
             &session,
             None,
+            None,
             &["admin_only"],
         )
         .await
@@ -1375,7 +1438,7 @@ mod tests {
         let session = SessionId::new("s-requis").expect("identifiant de session de test");
         inserer_session(&deps, &alice, &session, "moncontexte", SessionKind::Work).await;
 
-        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
             .expect_err("le role requis vers un serveur interdit echoue");
         match &refus {
@@ -1417,7 +1480,7 @@ mod tests {
         let session = SessionId::new("s-optional").expect("identifiant de session de test");
         inserer_session(&deps, &alice, &session, "moncontexte", SessionKind::Work).await;
 
-        let assembled = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+        let assembled = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
             .expect("lassemblage reussit sans le role optionnel");
         assert!(
@@ -1454,7 +1517,7 @@ mod tests {
         let session = SessionId::new("s-actif").expect("identifiant de session de test");
         inserer_session(&deps, &alice, &session, "", SessionKind::Work).await;
 
-        let assembled = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+        let assembled = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
             .expect("lassemblage monte la version active");
         assert_eq!(
@@ -1490,7 +1553,7 @@ mod tests {
         let session = SessionId::new("s-config").expect("identifiant de session de test");
         inserer_session(&deps, &alice, &session, "", SessionKind::Config).await;
 
-        let mut assembled = assemble_session(&deps, &alice, SessionKind::Config, "cfg", &session, None)
+        let mut assembled = assemble_session(&deps, &alice, SessionKind::Config, "cfg", &session, None, None)
             .await
             .expect("lassemblage Config reussit");
         assert_eq!(spy.calls(), 0, "aucun client MCP n'est monte pour Config");
@@ -1562,6 +1625,7 @@ mod tests {
             "dev",
             &session,
             Some(Zeroizing::new("jeton-tour".to_owned())),
+            None,
         )
         .await
         .expect("lassemblage monte les deux serveurs autorises");
@@ -1619,7 +1683,7 @@ mod tests {
         let session = SessionId::new("s-autre").expect("identifiant de session de test");
         inserer_session(&deps, &alice, &session, "commun", SessionKind::Work).await;
 
-        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
             .expect_err("le contexte d'autrui ne lie rien pour alice");
         assert!(
@@ -1664,7 +1728,7 @@ mod tests {
         let session = SessionId::new("s-nu").expect("identifiant de session de test");
         inserer_session(&deps, &alice, &session, "moncontexte", SessionKind::Work).await;
 
-        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
             .expect_err("un forward sans jeton de tour est refuse");
         assert!(
@@ -1734,7 +1798,7 @@ mod tests {
         let session = SessionId::new("s-hote").expect("identifiant de session de test");
         inserer_session(&deps, &alice, &session, "", SessionKind::Work).await;
 
-        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
             .expect_err("un module d'hôte AdminOnly accordé à un non-admin est refusé");
         assert!(
@@ -1744,7 +1808,7 @@ mod tests {
 
         let admin_session = SessionId::new("s-hote-admin").expect("identifiant de session de test");
         inserer_session(&deps, &bob, &admin_session, "", SessionKind::Work).await;
-        let assembled = assemble_session(&deps, &bob, SessionKind::Work, "dev", &admin_session, None)
+        let assembled = assemble_session(&deps, &bob, SessionKind::Work, "dev", &admin_session, None, None)
             .await
             .expect("l'admin assemble avec le module d'hôte accordé");
         let pad = Scratchpad::new(assembled.engine());
@@ -1798,7 +1862,7 @@ mod tests {
         let session = SessionId::new("s-collision").expect("identifiant de session de test");
         inserer_session(&deps, &alice, &session, "moncontexte", SessionKind::Work).await;
 
-        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
             .expect_err("un rôle optionnel nommé `resources` entre en collision avec le module accordé");
         assert!(
@@ -1862,7 +1926,7 @@ mod tests {
         let session = SessionId::new("s-collision-hote").expect("identifiant de session de test");
         inserer_session(&deps, &alice, &session, "moncontexte", SessionKind::Work).await;
 
-        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
             .expect_err("un rôle nommé `dashboard` entre en collision avec le module d'hôte monté");
         assert!(
@@ -1897,7 +1961,7 @@ mod tests {
         let session = SessionId::new("s-absent").expect("identifiant de session de test");
         inserer_session(&deps, &alice, &session, "", SessionKind::Work).await;
 
-        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
             .expect_err("un toolset absent arrete lassemblage");
         assert!(
@@ -1956,7 +2020,7 @@ mod tests {
 
         // Première ouverture : l'hôte désigne `qwen`, la session s'ouvre sur son provider.
         let session_un = SessionId::new("s-defaut-1").expect("identifiant de session de test");
-        assemble_session(&deps, &alice, SessionKind::Work, "dev", &session_un, None)
+        assemble_session(&deps, &alice, SessionKind::Work, "dev", &session_un, None, None)
             .await
             .expect("lassemblage suit le profil par defaut de l hote");
         assert_eq!(
@@ -1970,7 +2034,7 @@ mod tests {
         // preuve : le défaut est relu à chaque ouverture.
         hote.set(Some("autre"));
         let session_deux = SessionId::new("s-defaut-2").expect("identifiant de session de test");
-        assemble_session(&deps, &alice, SessionKind::Work, "dev", &session_deux, None)
+        assemble_session(&deps, &alice, SessionKind::Work, "dev", &session_deux, None, None)
             .await
             .expect("la session suivante suit le nouveau defaut");
         assert_eq!(
@@ -1987,9 +2051,17 @@ mod tests {
         put_agent(&db, &alice, &agent("dev2", AgentKind::Work, Vec::new())).await;
         let avant = hote.appels();
         let session_trois = SessionId::new("s-defaut-3").expect("identifiant de session de test");
-        assemble_session(&deps, &alice, SessionKind::Work, "dev2", &session_trois, None)
-            .await
-            .expect("un agent a profil explicite s assemble sans consulter l hote");
+        assemble_session(
+            &deps,
+            &alice,
+            SessionKind::Work,
+            "dev2",
+            &session_trois,
+            None,
+            None,
+        )
+        .await
+        .expect("un agent a profil explicite s assemble sans consulter l hote");
         assert_eq!(
             hote.appels(),
             avant,
@@ -2017,7 +2089,7 @@ mod tests {
             SpyFactory::new(),
         );
         let session = SessionId::new("s-sans-defaut").expect("identifiant de session de test");
-        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
             .expect_err("un agent sans profil sans hôte est refusé");
         assert!(
@@ -2033,7 +2105,7 @@ mod tests {
             SpyFactory::new(),
         );
         deps.host = Some(HoteProfil::new(None) as SharedHost);
-        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
             .expect_err("Ok(None) est le même refus");
         assert!(
@@ -2049,7 +2121,7 @@ mod tests {
             SpyFactory::new(),
         );
         deps.host = Some(Arc::new(HoteEnPanne) as SharedHost);
-        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
             .expect_err("une panne d'hôte est le même refus fermé");
         assert!(
@@ -2060,6 +2132,188 @@ mod tests {
         assert!(
             !refus.to_string().contains("host"),
             "aucun texte d'hôte ne traverse : {refus}"
+        );
+    }
+
+    // ── Issue #81 lot 1 — `lease` (amendement du 2026-11-14, DSD `DEC-31`) ───
+
+    /// Fabrique qui annule un jeton de bail pendant l'inférence : le tour est coupé en cours
+    /// de route, comme quand le verrou PostgreSQL d'un autre processus est perdu.
+    struct FabriqueAnnulation {
+        provider: Arc<ScriptedProvider>,
+        lost: CancelHandle,
+    }
+
+    impl InferenceFactory for FabriqueAnnulation {
+        fn make(&self, _address: String, _api_key: Option<String>) -> Arc<dyn DynInference> {
+            Arc::new(AnnulationPendantInference {
+                provider: Arc::clone(&self.provider),
+                lost: self.lost.clone(),
+            })
+        }
+    }
+
+    struct AnnulationPendantInference {
+        provider: Arc<ScriptedProvider>,
+        lost: CancelHandle,
+    }
+
+    impl DynInference for AnnulationPendantInference {
+        fn complete_dyn(
+            &self,
+            request: InferenceRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<InferenceResponse, InferenceError>> + Send + '_>> {
+            let provider = Arc::clone(&self.provider);
+            let lost = self.lost.clone();
+            Box::pin(async move {
+                lost.cancel();
+                provider.complete_dyn(request).await
+            })
+        }
+    }
+
+    /// Session de fixture posée et agent `dev` prêts : rendition du `AssembleDeps` configuré.
+    async fn setup_bail(db: &DatabaseConnection, alice: &CallerPrincipal) -> SessionId {
+        put_agent(db, alice, &agent("dev", AgentKind::Work, Vec::new())).await;
+        SessionId::new("s-bail").expect("identifiant de session de test")
+    }
+
+    /// Scenario « le jeton de bail traverse l'assemblage » : le jeton `lost` du permis partagé
+    /// est celui du `TurnConfig` ; annulé pendant l'inférence, le tour se termine `Cancelled`
+    /// et `TurnLeaseLost` est émis avant `TurnEnded`, sans sauvegarde du tour.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn le_jeton_de_bail_traverse_lassemblage() {
+        let db = db_test().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
+        let session = setup_bail(&db, &alice).await;
+        let lost = CancelHandle::new();
+        let deps = AssembleDeps {
+            inference: Arc::new(FabriqueAnnulation {
+                provider: Arc::new(ScriptedProvider::new(vec![Ok(final_text("jamais rendu"))])),
+                lost: lost.clone(),
+            }),
+            ..deps_with(
+                db.clone(),
+                Arc::new(ScriptedProvider::new(Vec::new())),
+                SpyFactory::new(),
+            )
+        };
+        inserer_session(&deps, &alice, &session, "", SessionKind::Work).await;
+        let mut abonnement = deps.hub.subscribe("alice", &session);
+
+        let mut assembled = assemble_session(
+            &deps,
+            &alice,
+            SessionKind::Work,
+            "dev",
+            &session,
+            None,
+            Some(lost.clone()),
+        )
+        .await
+        .expect("lassemblage avec bail reussit");
+        let sortie = assembled
+            .run_turn("bonjour")
+            .await
+            .expect("la perte du bail est un resultat, pas une erreur");
+        assert!(
+            matches!(sortie.outcome(), ::lymaille::Outcome::Cancelled),
+            "le tour perdu est annule : {:?}",
+            sortie.outcome()
+        );
+        let mut kinds = Vec::new();
+        loop {
+            let Ok(rendu) = tokio::time::timeout(Duration::from_secs(5), abonnement.recv()).await else {
+                panic!("aucun evenement n'arrive apres le tour : {kinds:?}");
+            };
+            let rendu = rendu.expect("le canal est ouvert");
+            let termine = matches!(rendu.kind, SessionEventKind::TurnEnded { .. });
+            kinds.push(rendu.kind);
+            if termine {
+                break;
+            }
+        }
+        let position_perte = kinds
+            .iter()
+            .position(|kind| matches!(kind, SessionEventKind::Other { name } if name == "TurnLeaseLost"))
+            .expect("TurnLeaseLost est emis pendant le tour perdu");
+        let position_fin = kinds
+            .iter()
+            .position(|kind| matches!(kind, SessionEventKind::TurnEnded { .. }))
+            .expect("TurnEnded clot le tour");
+        assert!(
+            position_perte < position_fin,
+            "TurnLeaseLost precede TurnEnded : {kinds:?}"
+        );
+        assert!(
+            !matches!(
+                kinds.last(),
+                Some(SessionEventKind::TurnEnded { response, .. }) if !response.is_empty()
+            ),
+            "TurnEnded ne porte aucune réponse : {kinds:?}"
+        );
+    }
+
+    /// Scenario « sans `lease`, rien ne change » (volet assemblage) : deux tours successifs
+    /// sous `lease = None` restent `Valid` — la porte par défaut de `lymaille` est conservee.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn le_verrou_de_passage_attache_le_jeton_une_fois() {
+        let lost = CancelHandle::new();
+        let porte = LeaseTurnLock {
+            lost: lost.clone(),
+            taken: std::sync::atomic::AtomicBool::new(false),
+        };
+        let session = SessionId::new("s-passage").expect("identifiant de session de test");
+        let permis = porte
+            .try_begin(session.clone())
+            .await
+            .expect("le premier appel rend un permis");
+        assert!(!permis.lost().is_cancelled(), "le permis nait sans perte de bail");
+        lost.cancel();
+        assert!(
+            permis.lost().is_cancelled(),
+            "le permis partage le jeton du gestionnaire"
+        );
+        let refus = porte
+            .try_begin(session.clone())
+            .await
+            .expect_err("un second appel ne reprend pas le bail");
+        assert!(
+            matches!(refus, SessionError::TurnActive(ref id) if *id == session),
+            "le second appel est un conflit : {refus:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sans_lease_les_tours_successifs_restant_normaux() {
+        let db = db_test().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
+        let session = setup_bail(&db, &alice).await;
+        let deps = deps_with(
+            db.clone(),
+            Arc::new(ScriptedProvider::new(vec![
+                Ok(final_text("premier")),
+                Ok(final_text("second")),
+            ])),
+            SpyFactory::new(),
+        );
+        inserer_session(&deps, &alice, &session, "", SessionKind::Work).await;
+        let mut assembled = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
+            .await
+            .expect("lassemblage sans bail reussit");
+        let premier = assembled.run_turn("un").await.expect("le premier tour aboutit");
+        let second = assembled
+            .run_turn("deux")
+            .await
+            .expect("le second tour aboutit comme avant");
+        assert!(
+            matches!(premier.outcome(), ::lymaille::Outcome::Valid)
+                && matches!(second.outcome(), ::lymaille::Outcome::Valid),
+            "sans bail, les tours sont valides : {:?} puis {:?}",
+            premier.outcome(),
+            second.outcome()
         );
     }
 }

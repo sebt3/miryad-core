@@ -111,12 +111,18 @@ pub struct ManagerDeps {
     pub assemble: AssembleDeps,
     /// Verrou des tours actifs, partagé par toutes les sessions (`lymaille`).
     pub gate: TurnGate,
+    /// Porte de tour **partagée** (`../turn_lock.sdd`, amendement #81 lot 1, DSD `DEC-31`) :
+    /// `None` par défaut — porte locale seule, comportement inchangé. L'application y met
+    /// `pg_turn_lock(..)` quand la base est PostgreSQL ; `send` prend alors un second permis,
+    /// et le jeton de perte de bail de ce permis traverse l'assemblage (`./assemble.rs`).
+    pub turn_lock: Option<Arc<dyn ::lymaille::TurnLock>>,
     /// Plafond et déchargement mémoire.
     pub limits: Limits,
 }
 
 impl ManagerDeps {
-    /// Deps de production : assemblage `AssembleDeps::new`, verrou neuf, limites par défaut.
+    /// Deps de production : assemblage `AssembleDeps::new`, verrou neuf, porte partagée **absente**
+    /// (comportement mono-réplique inchangé), limites par défaut.
     #[must_use]
     pub fn new(
         db: sea_orm::DatabaseConnection,
@@ -127,8 +133,17 @@ impl ManagerDeps {
         Self {
             assemble: AssembleDeps::new(db, readers, secrets, hub),
             gate: TurnGate::new(),
+            turn_lock: None,
             limits: Limits::default(),
         }
+    }
+
+    /// Attache la porte de tour partagée (`./manager.sdd`, amendement #81 lot 1) : l'application
+    /// y met `pg_turn_lock(..)` de `../turn_lock.sdd` quand la base est PostgreSQL.
+    #[must_use]
+    pub fn with_turn_lock(mut self, lock: Arc<dyn ::lymaille::TurnLock>) -> Self {
+        self.turn_lock = Some(lock);
+        self
     }
 }
 
@@ -354,6 +369,27 @@ impl SessionManager {
             }
             Err(other) => return Err(from_session(other)),
         };
+        // Porte partagée (`Must` amendé de `./manager.sdd`, issue #81 lot 1) : second permis,
+        // pris **après** le permis local et tenu comme lui jusqu'à la fin du tour. Un conflit
+        // de l'autre réplique relâche aussitôt le permis local et répond comme en local ;
+        // toute autre panne de la porte remonte par `from_session` (retryable).
+        let shared = match self.inner.deps.turn_lock.as_ref() {
+            None => None,
+            Some(lock) => match lock.try_begin(id.clone()).await {
+                Ok(shared) => Some(shared),
+                Err(SessionError::TurnActive(_)) => {
+                    drop(permit);
+                    return Err(LymailleError::Conflict("turn active".to_string()));
+                }
+                Err(other) => {
+                    drop(permit);
+                    return Err(from_session(other));
+                }
+            },
+        };
+        // Le jeton de perte de bail du permis partagé traverse l'assemblage : le `TurnRunner`
+        // partage ce bail au lieu de reprendre un second verrou (`./assemble.rs`).
+        let lease = shared.as_ref().map(::lymaille::TurnPermit::lost);
         let entry = self.touch(subject, id);
         // L'entrée repart vierge d'annulation : l'anse du tour précédent n'a plus de prise,
         // le drapeau attend une annulation arrivée avant la publication de l'anse du tour.
@@ -364,19 +400,28 @@ impl SessionManager {
         let inner = Arc::clone(&self.inner);
         let session = id.clone();
         // Le tour est une tâche **détachée** : ni la requête ni l'abonné SSE ne l'annulent ;
-        // le permis du verrou meurt avec elle (`Must` de `./manager.sdd`). Le jeton `forward`
-        // ne vit que dans cette tâche, jamais dans la mémoire du gestionnaire.
+        // les deux permis du verrou meurent avec elle (`Must` de `./manager.sdd`). Le jeton
+        // `forward` ne vit que dans cette tâche, jamais dans la mémoire du gestionnaire.
         tokio::spawn(async move {
             let _permit = permit;
-            let mut assembled =
-                match assemble_session(&inner.deps.assemble, &caller, kind, &agent_id, &session, token).await
-                {
-                    Ok(assembled) => assembled,
-                    Err(error) => {
-                        tracing::warn!(error = %error, "lymaille manager: assembly failed, turn abandoned");
-                        return;
-                    }
-                };
+            let _shared = shared;
+            let mut assembled = match assemble_session(
+                &inner.deps.assemble,
+                &caller,
+                kind,
+                &agent_id,
+                &session,
+                token,
+                lease,
+            )
+            .await
+            {
+                Ok(assembled) => assembled,
+                Err(error) => {
+                    tracing::warn!(error = %error, "lymaille manager: assembly failed, turn abandoned");
+                    return;
+                }
+            };
             *lock(&entry.cancel) = Some(assembled.cancel().clone());
             if entry.cancel_requested.load(Ordering::SeqCst) {
                 assembled.cancel().cancel();
@@ -438,8 +483,16 @@ impl SessionManager {
         let agent_id = state.agent().name().to_owned();
         // La restauration proprement dite est celle de `lymaille` (`restore_session` sous
         // l'assemblage) : les avis de provenance remontent à l'appelant, la reprise continue.
-        let assembled =
-            assemble_session(&self.inner.deps.assemble, &caller, kind, &agent_id, id, None).await?;
+        let assembled = assemble_session(
+            &self.inner.deps.assemble,
+            &caller,
+            kind,
+            &agent_id,
+            id,
+            None,
+            None,
+        )
+        .await?;
         self.inner.deps.assemble.hub.register(id, subject);
         // Une session fermée que l'on reprend est rouverte : la marque de fermeture est levée,
         // les tours sont de nouveau acceptés (l'état relisu est seul juge de sa disponibilité).
@@ -838,6 +891,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 fn from_session(error: SessionError) -> LymailleError {
     match error {
         SessionError::Store(text) => LymailleError::Store(text),
+        // Panne d'infrastructure de la porte de tour remplaçable (`../error.sdd`, amendement
+        // `lymaille` 0.3.0) : une erreur que l'appelant peut relancer ; le conflit `TurnActive`
+        // ne passe jamais ici (traité en `Conflict("turn active")` par l'appelant).
+        SessionError::TurnLock(text) => LymailleError::Run {
+            message: format!("turn lock failed: {text}"),
+            retryable: true,
+        },
         other => LymailleError::Run {
             message: other.to_string(),
             retryable: false,
@@ -864,6 +924,7 @@ mod tests {
     use ::lymaille::AgentDefinition;
     use ::lymaille::AgentKind;
     use ::lymaille::AgentStore as _;
+    use ::lymaille::CancelHandle;
     use ::lymaille::ContextLevel;
     use ::lymaille::ContextType;
     use ::lymaille::InferenceRequest;
@@ -876,6 +937,7 @@ mod tests {
     use ::lymaille::ProviderStore as _;
     use ::lymaille::Redactor;
     use ::lymaille::ScriptedProvider;
+    use ::lymaille::SessionError;
     use ::lymaille::SessionFilter;
     use ::lymaille::SessionId;
     use ::lymaille::SessionKind;
@@ -883,6 +945,7 @@ mod tests {
     use ::lymaille::SystemClock;
     use ::lymaille::ToolsetContext;
     use ::lymaille::TurnGate;
+    use ::lymaille::TurnPermit;
     use async_trait::async_trait;
     use vynil_core::Semver;
 
@@ -1120,7 +1183,110 @@ mod tests {
                 mcp: Arc::new(NoMcp),
             },
             gate: TurnGate::new(),
+            turn_lock: None,
             limits,
+        }
+    }
+
+    /// Deps avec verrou local et porte partagée explicites (`Scenario` issue #81 lot 1) : le
+    /// test garde une prise sur le `TurnGate` (clone — état partagé) pour interroger
+    /// `is_active`, et sur la porte partagée pour piloter son mode.
+    fn deps_porte(
+        db: DatabaseConnection,
+        inference: Arc<dyn InferenceFactory>,
+        gate: TurnGate,
+        turn_lock: Option<Arc<dyn ::lymaille::TurnLock>>,
+    ) -> ManagerDeps {
+        ManagerDeps {
+            assemble: AssembleDeps {
+                db,
+                host_modules: Arc::new(crate::lymaille::host_module::HostModules::new()),
+                readers: Arc::new(ResourceRegistry::new()),
+                secrets: Arc::new(FixedSecret("cle-fixe")),
+                hub: Arc::new(EventHub::new(None, 256)),
+                clock: Arc::new(SystemClock::new()),
+                host: None,
+                inference,
+                mcp: Arc::new(NoMcp),
+            },
+            gate,
+            turn_lock,
+            limits: Limits::default(),
+        }
+    }
+
+    // ── Porte de test (issue #81 lot 1, DSD `DEC-31`) ────────────────────────
+
+    /// Mode de la porte de test : partagée (ensemble actif commun), refus systématique de
+    /// `TurnActive`, ou panne nommée `TurnLock`.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ModePorte {
+        Partagee,
+        Refuse,
+        Panne,
+    }
+
+    /// `TurnLock` de test : l'ensemble `active` partagé entre gestionnaires simule les deux
+    /// répliques sur un même verrou ; `lost` est le signal que le test peut déclencher pour
+    /// tous les permis délivrés depuis lors.
+    struct PorteDeTest {
+        active: Arc<std::sync::Mutex<std::collections::HashSet<SessionId>>>,
+        mode: std::sync::Mutex<ModePorte>,
+        lost: CancelHandle,
+    }
+
+    impl PorteDeTest {
+        fn partagee() -> Arc<Self> {
+            Arc::new(Self {
+                active: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+                mode: std::sync::Mutex::new(ModePorte::Partagee),
+                lost: CancelHandle::new(),
+            })
+        }
+
+        fn set_mode(&self, mode: ModePorte) {
+            *self.mode.lock().expect("verrou de porte") = mode;
+        }
+
+        /// Perte de bail : annule le signal parent, donc celui de tous les permis délivrés.
+        fn signal_perte(&self) {
+            self.lost.cancel();
+        }
+    }
+
+    impl ::lymaille::TurnLock for PorteDeTest {
+        fn try_begin(
+            &self,
+            session: SessionId,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<TurnPermit, SessionError>> + Send>> {
+            let mode = *self.mode.lock().expect("verrou de mode");
+            let active = Arc::clone(&self.active);
+            let lost = self.lost.clone();
+            Box::pin(async move {
+                match mode {
+                    ModePorte::Refuse => Err(SessionError::TurnActive(session)),
+                    ModePorte::Panne => Err(SessionError::TurnLock("down".to_owned())),
+                    ModePorte::Partagee => {
+                        let insere = active
+                            .lock()
+                            .expect("verrou de la table active")
+                            .insert(session.clone());
+                        if !insere {
+                            return Err(SessionError::TurnActive(session));
+                        }
+                        let table = Arc::clone(&active);
+                        let relache = session.clone();
+                        Ok(TurnPermit::new(
+                            session,
+                            move || {
+                                let _retire =
+                                    table.lock().expect("verrou de la table active").remove(&relache);
+                            },
+                            lost,
+                        ))
+                    }
+                }
+            })
         }
     }
 
@@ -2402,6 +2568,262 @@ mod tests {
         assert!(
             !rendu.contains("SECRET-DE-BOB") && !rendu.contains(s3.id.as_str()),
             "aucune trace de la session de bob : {rendu}"
+        );
+    }
+
+    // ── Issue #81 lot 1 — porte de tour partagée (DSD `DEC-31`) ──────────────
+
+    /// Scenario « deux répliques, un seul tour » : deux `SessionManager` sur la même base
+    /// partagent un `TurnLock` de test ; le second `send` rend `Conflict("turn active")` sans
+    /// lancer de tâche, et réussit une fois le premier tour fini.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deux_repliches_un_seul_tour() {
+        let db = test_db().await;
+        setup_work(&db).await;
+        let porte = PorteDeTest::partagee();
+        let hang_a = Hang::new();
+        let hang_b = Hang::new();
+        let manager_a = SessionManager::new(deps_porte(
+            db.clone(),
+            Arc::new(HangFactory(Arc::clone(&hang_a))),
+            TurnGate::new(),
+            Some(Arc::clone(&porte) as Arc<dyn ::lymaille::TurnLock>),
+        ));
+        let manager_b = SessionManager::new(deps_porte(
+            db.clone(),
+            Arc::new(HangFactory(Arc::clone(&hang_b))),
+            TurnGate::new(),
+            Some(Arc::clone(&porte) as Arc<dyn ::lymaille::TurnLock>),
+        ));
+        let handle = manager_a
+            .open("alice", "c1", None)
+            .await
+            .expect("ouverture depuis la premiere replique");
+        let mut sub_a = manager_a
+            .subscribe("alice", &handle.id)
+            .await
+            .expect("abonnement a");
+        manager_a
+            .send("alice", &handle.id, "premier".to_owned(), None)
+            .await
+            .expect("le premier tour est lance");
+        wait_entered(&hang_a).await;
+
+        let refus = manager_b
+            .send("alice", &handle.id, "second".to_owned(), None)
+            .await
+            .expect_err("la porte partagee refuse la seconde replique");
+        match refus {
+            crate::lymaille::error::LymailleError::Conflict(message) => {
+                assert_eq!(message, "turn active", "le conflit nomme l'etat : {message}");
+            }
+            autre => panic!("une `Conflict` est attendue, obtenu : {autre:?}"),
+        }
+        assert!(
+            !hang_b.entered.load(AtomicOrdering::SeqCst),
+            "aucune tache de tour n'est lancee sur la seconde replique"
+        );
+
+        // Le premier tour se termine ; la porte partagée est alors libre — la marque du
+        // relâchement étant asynchrone (fin de tâche détachée), le second y parvient au plus
+        // tard après cette attente.
+        hang_a.release.add_permits(1);
+        let kinds_a = drain(&mut sub_a).await;
+        assert!(
+            matches!(kinds_a.last(), Some(SessionEventKind::TurnEnded { .. })),
+            "le premier tour se termine : {kinds_a:?}"
+        );
+        let mut sub_b = manager_b
+            .subscribe("alice", &handle.id)
+            .await
+            .expect("abonnement b");
+        let delai = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match manager_b
+                    .send("alice", &handle.id, "second bis".to_owned(), None)
+                    .await
+                {
+                    Ok(()) => return,
+                    Err(crate::lymaille::error::LymailleError::Conflict(_)) => {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    Err(autre) => panic!("un autre refus que le conflit : {autre:?}"),
+                }
+            }
+        })
+        .await;
+        assert!(
+            delai.is_ok(),
+            "la porte partagée s'est libérée après le premier tour"
+        );
+        wait_entered(&hang_b).await;
+        hang_b.release.add_permits(1);
+        let kinds_b = drain(&mut sub_b).await;
+        assert!(
+            matches!(kinds_b.last(), Some(SessionEventKind::TurnEnded { .. })),
+            "le tour de la seconde replique aboutit : {kinds_b:?}"
+        );
+    }
+
+    /// Scenario « la porte partagée refuse sans retenir la porte locale » : le refus de la
+    /// porte partagée relâche le permis local aussitôt ; libérée, le `send` suivant réussit.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn la_porte_partagee_refuse_sans_retenir_la_porte_locale() {
+        let db = test_db().await;
+        setup_work(&db).await;
+        let gate = TurnGate::new();
+        let porte = PorteDeTest::partagee();
+        porte.set_mode(ModePorte::Refuse);
+        let provider = Arc::new(ScriptedProvider::new(vec![Ok(final_text("enfin"))]));
+        let manager = SessionManager::new(deps_porte(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider))),
+            gate.clone(),
+            Some(Arc::clone(&porte) as Arc<dyn ::lymaille::TurnLock>),
+        ));
+        let handle = manager.open("alice", "c1", None).await.expect("ouverture");
+        let refus = manager
+            .send("alice", &handle.id, "refuse".to_owned(), None)
+            .await
+            .expect_err("la porte partagee refuse");
+        match refus {
+            crate::lymaille::error::LymailleError::Conflict(message) => {
+                assert_eq!(message, "turn active", "le conflit nomme l'etat : {message}");
+            }
+            autre => panic!("une `Conflict` est attendue, obtenu : {autre:?}"),
+        }
+        assert!(
+            !gate.is_active(&handle.id),
+            "le refus de la porte partagee ne retient pas la porte locale"
+        );
+
+        porte.set_mode(ModePorte::Partagee);
+        let mut sub = manager.subscribe("alice", &handle.id).await.expect("abonnement");
+        manager
+            .send("alice", &handle.id, "enfin".to_owned(), None)
+            .await
+            .expect("le second send reussit une fois la porte partagee liberee");
+        let kinds = drain(&mut sub).await;
+        assert!(
+            matches!(kinds.last(), Some(SessionEventKind::TurnEnded { .. })),
+            "le tour part quand la porte partagee accepte : {kinds:?}"
+        );
+    }
+
+    /// Scenario « une panne de la porte partagée est une erreur retryable » : `TurnLock` de
+    /// test en panne → `Run { retryable: true }`, aucun tour lancé, porte locale libre.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn une_panne_de_la_porte_partagee_est_une_erreur_retryable() {
+        let db = test_db().await;
+        setup_work(&db).await;
+        let gate = TurnGate::new();
+        let porte = PorteDeTest::partagee();
+        porte.set_mode(ModePorte::Panne);
+        let hang = Hang::new();
+        let manager = SessionManager::new(deps_porte(
+            db.clone(),
+            Arc::new(HangFactory(Arc::clone(&hang))),
+            gate.clone(),
+            Some(Arc::clone(&porte) as Arc<dyn ::lymaille::TurnLock>),
+        ));
+        let handle = manager.open("alice", "c1", None).await.expect("ouverture");
+        let erreur = manager
+            .send("alice", &handle.id, "x".to_owned(), None)
+            .await
+            .expect_err("la porte est en panne");
+        match erreur {
+            crate::lymaille::error::LymailleError::Run { message, retryable } => {
+                assert!(retryable, "une panne de porte est retryable : {message}");
+                assert!(
+                    !message.contains(handle.id.as_str()),
+                    "le message ne porte pas l'identifiant de session"
+                );
+            }
+            autre => panic!("un `Run` retryable est attendu, obtenu : {autre:?}"),
+        }
+        assert!(
+            !hang.entered.load(AtomicOrdering::SeqCst),
+            "aucun tour n'est lance quand la porte partagee est en panne"
+        );
+        assert!(!gate.is_active(&handle.id), "la porte locale est liberee");
+    }
+
+    /// Scenario « la perte du bail abandonne le tour sans sauvegarde » : le jeton `lost` du
+    /// permis partagé est annulé pendant l'inférence — l'abonné reçoit `TurnLeaseLost` avant
+    /// un `TurnEnded` sans réponse, l'état n'est pas sauvegardé par ce tour, porte libre.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn la_perte_du_bail_abandonne_le_tour_sans_sauvegarde() {
+        let db = test_db().await;
+        setup_work(&db).await;
+        let gate = TurnGate::new();
+        let porte = PorteDeTest::partagee();
+        let hang = Hang::new();
+        let manager = SessionManager::new(deps_porte(
+            db.clone(),
+            Arc::new(HangFactory(Arc::clone(&hang))),
+            gate.clone(),
+            Some(Arc::clone(&porte) as Arc<dyn ::lymaille::TurnLock>),
+        ));
+        let handle = manager.open("alice", "c1", None).await.expect("ouverture");
+        let mut sub = manager.subscribe("alice", &handle.id).await.expect("abonnement");
+        manager
+            .send("alice", &handle.id, "interdis".to_owned(), None)
+            .await
+            .expect("le tour est lance");
+        wait_entered(&hang).await;
+        porte.signal_perte();
+
+        let delai = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !gate.is_active(&handle.id) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(delai.is_ok(), "le tour abandonne libere la porte locale");
+        let mut kinds = Vec::new();
+        loop {
+            let rendu = sub.recv().await.expect("le canal est ouvert");
+            let termine = matches!(rendu.kind, SessionEventKind::TurnEnded { .. });
+            kinds.push(rendu.kind);
+            if termine {
+                break;
+            }
+        }
+        let position_perte = kinds
+            .iter()
+            .position(|kind| matches!(kind, SessionEventKind::Other { name } if name == "TurnLeaseLost"))
+            .expect("TurnLeaseLost est emis");
+        let position_fin = kinds
+            .iter()
+            .position(|kind| matches!(kind, SessionEventKind::TurnEnded { .. }))
+            .expect("TurnEnded clot le tour");
+        assert!(
+            position_perte < position_fin,
+            "TurnLeaseLost precede TurnEnded : {kinds:?}"
+        );
+        assert!(
+            matches!(
+                kinds.last(),
+                Some(SessionEventKind::TurnEnded {
+                    outcome: crate::lymaille::interactive::event::SessionOutcome::Cancelled,
+                    response,
+                    ..
+                }) if response.is_empty()
+            ),
+            "TurnEnded est annule et sans réponse : {kinds:?}"
+        );
+        let etat = LymailleStores::new(db.clone(), "alice".to_owned())
+            .sessions()
+            .load(&handle.id)
+            .await
+            .expect("lecture de l'etat")
+            .expect("la session est persistee depuis l'ouverture");
+        assert!(
+            !etat.to_json().expect("l'etat se serialise").contains("interdis"),
+            "le tour perdu n'a pas sauvegarde l'etat"
         );
     }
 }

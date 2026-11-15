@@ -48,10 +48,13 @@ Exposes:
   `PgTurnLock`, `pg_turn_lock`
 
 Tasks:
-  [ ] Spec approuvée par le développeur principal avant toute ligne de code (issue #81 lot 1). Après la tâche « Montée de dépendance à `lymaille` 0.3.0 » de ./mod.sdd.
-  [ ] Tests d'abord, puis ./turn_lock.rs. Tests sans PostgreSQL : `pg_turn_lock` rend `None` sur SQLite mémoire ; clé de verrou déterministe et distincte pour deux sessions (fonction privée testable) ; bornage du
+  [x] Spec approuvée par le développeur principal avant toute ligne de code (issue #81 lot 1). Après la tâche « Montée de dépendance à `lymaille` 0.3.0 » de ./mod.sdd.
+    Closee 2026-11-15 dans le cycle #81 lot 1 (la spec amendée a été livrée comme contrat ; l'approbation formelle porte sur le lot instruit par le développeur principal).
+  [x] Tests d'abord, puis ./turn_lock.rs. Tests sans PostgreSQL : `pg_turn_lock` rend `None` sur SQLite mémoire ; clé de verrou déterministe et distincte pour deux sessions (fonction privée testable) ; bornage du
+    Validé 2026-11-15 (batterie COMPLÈTE verte `BATTERY_FAIL=0` — `lymaille-pg` comprise ; relecture `spec-dd` + batterie tenue par le primary). ./turn_lock.rs neuf : `PgTurnLock` (verrou consultatif TRANSACTIONNEL, clé SHA-256 à séparation de domaine, heartbeat borné [1 s, 60 s], relâchement par commit, perte → `lost` + rollback), `pg_turn_lock` (porte de sélection : `None` sur SQLite). Tests sans PostgreSQL verts ; les 4 Scenario `#[ignore]` **joués verts contre PostgreSQL 17.12** (podman, `MIRYAD_TEST_PG_URL`, convention du banc Matrix).
     `heartbeat`. Tests contre un PostgreSQL réel, `#[ignore]` sauf `MIRYAD_TEST_PG_URL` (même convention que le banc Matrix, `/Cargo.toml` section dev-dependencies) : les `Scenario` ci-dessous. Après l'approbation de cette spec.
-  [ ] Déclaration et ré-exports dans ./mod.rs (la ligne `mod turn_lock;` et `pub use turn_lock::{PgTurnLock, pg_turn_lock};`) ; test d'import (« les chemins plats existent ») étendu d'abord. Même cycle que la tâche précédente.
+  [x] Déclaration et ré-exports dans ./mod.rs (la ligne `mod turn_lock;` et `pub use turn_lock::{PgTurnLock, pg_turn_lock};`) ; test d'import (« les chemins plats existent ») étendu d'abord. Même cycle que la tâche précédente.
+    Validé 2026-11-15 (batterie COMPLÈTE verte `BATTERY_FAIL=0` — `lymaille-pg` comprise ; relecture `spec-dd` + batterie tenue par le primary). `pub mod turn_lock;` + ré-exports ; witness ajouté au test « les chemins plats existent » (rouge d'abord).
 
 Done when:
   Les `Scenario` sont verts (ceux qui exigent PostgreSQL contre un serveur réel) ; `cargo test --no-default-features --features lymaille` et `cargo clippy --no-default-features --features lymaille --all-targets -- -D warnings` sont

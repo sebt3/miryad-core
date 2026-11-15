@@ -1924,6 +1924,7 @@ pub(crate) mod fix {
                 mcp: Arc::new(NoMcp),
             },
             gate: TurnGate::new(),
+            turn_lock: None,
             limits: Limits::default(),
         }
     }

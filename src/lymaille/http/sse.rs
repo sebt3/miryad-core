@@ -356,6 +356,7 @@ mod tests {
                 mcp: Arc::new(NoMcp),
             },
             gate: TurnGate::new(),
+            turn_lock: None,
             limits: Limits::default(),
         }
     }

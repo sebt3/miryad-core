@@ -100,6 +100,11 @@ pub mod store;
 /// le ré-export `install_crypto_provider` ci-dessous.
 mod tls;
 
+/// Porte de tour partagée entre répliques (`src/lymaille/turn_lock.sdd`, DSD `DEC-31`,
+/// issue #81 lot 1) : verrou consultatif transactionnel PostgreSQL derrière `lymaille::TurnLock`.
+/// Ré-exports à plat : `PgTurnLock`, `pg_turn_lock` (amendement #81 lot 1 de ./mod.sdd).
+pub mod turn_lock;
+
 // Ré-exports à plat (ordre alphabétique des sous-modules, comme les déclarations ci-dessus) —
 // exactement la liste fermée du `Must` de ./mod.sdd et de ses amendements : lot 1
 // (`error`, `identity`, `migration`, `secret`, `store`, `tls`), amendement lot 2 (`host`, `http`,
@@ -122,6 +127,7 @@ pub use script_runner::{ScriptLimits, ScriptRunner};
 pub use secret::{EnvSecretResolver, SecretResolver};
 pub use store::{AuditWriter, LymailleStores, PurgeReport, purge_sessions};
 pub use tls::install_crypto_provider;
+pub use turn_lock::{PgTurnLock, pg_turn_lock};
 
 #[cfg(test)]
 mod tests {
@@ -200,12 +206,19 @@ mod tests {
             _: Option<crate::lymaille::ScriptLimits>,
         ) {
         }
+        // Amendement #81 lot 1 (DSD `DEC-31`) : porte de tour partagée PostgreSQL.
+        fn witness_turn_lock(
+            _: Option<crate::lymaille::PgTurnLock>,
+            _: Option<std::sync::Arc<dyn ::lymaille::TurnLock>>,
+        ) {
+        }
         witness(None, None, None, None, None, None);
         witness_lotte2(None, None, None, None, None, None);
         witness_hote(None, None, None, None, None, None);
         witness_evenements(None, None, None, None, None);
         witness_host_modules(None, None, None, None, None, None);
         witness_script_runner(None, None);
+        witness_turn_lock(None, None);
         std::hint::black_box(crate::lymaille::migrations);
         std::hint::black_box(crate::lymaille::install_crypto_provider);
         std::hint::black_box(crate::lymaille::server_for::<sea_orm::DatabaseConnection>);
@@ -215,6 +228,7 @@ mod tests {
         std::hint::black_box(crate::lymaille::purge_sessions);
         std::hint::black_box(crate::lymaille::resolve_role);
         std::hint::black_box(crate::lymaille::interactive::event::export_typescript);
+        std::hint::black_box(crate::lymaille::pg_turn_lock);
     }
 
     /// Scenario « la feature implique db » : sous `--no-default-features --features lymaille`,
