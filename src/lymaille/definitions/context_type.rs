@@ -41,7 +41,7 @@ const GRANTS_FORME: &str =
 /// Type de contexte du catalogue persisté — la table `miryad_lymaille_catalog_context_types`
 /// posée par `../migration.rs` (`m20261104_000001_lymaille_lot2`), colonnes du contrat `Must` de
 /// `./context_type.sdd`.
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, utoipa::ToSchema)]
 #[sea_orm(table_name = "miryad_lymaille_catalog_context_types")]
 pub struct Model {
     /// Clé primaire entière auto-incrémentée (convention `miryad_*` de la crate).
@@ -60,6 +60,7 @@ pub struct Model {
     /// dans `active`/`draft`. L'agent par défaut doit être membre de cet ensemble ; un agent
     /// explicite hors de l'ensemble est refusé à l'ouverture (`mcp_access`/`assemble`, hors de
     /// cette entité).
+    #[schema(value_type = Object)]
     pub allowed_agents: serde_json::Value,
     /// Droits accordés aux scripts de ce type, objet `{"toolsets":[…],"modules":[…]}` (DSD
     /// `scripts-hote` `DEC-2`, amendement du 2026-11-11) : toolsets du catalogue (`G_…`) et noms
@@ -67,14 +68,18 @@ pub struct Model {
     /// toolsets sont relus en base par la connexion du hook, les noms de module ne sont PAS
     /// vérifiés ici (le registre `HostModules` est hors de portée d'un hook, la vérification a
     /// lieu à l'exécution, `../script_runner.sdd`).
+    #[schema(value_type = Object)]
     pub script_grants: serde_json::Value,
     /// Le `lymaille::ContextType` actif, colonne JSON nullable — `None` tant qu'aucune version
     /// n'est activée (DSD `DEC-18`).
+    #[schema(value_type = Object)]
     pub active: Option<serde_json::Value>,
     /// Le `lymaille::ContextType` en brouillon, colonne JSON nullable — jamais lu comme version
     /// active (DSD `DEC-18`).
+    #[schema(value_type = Object)]
     pub draft: Option<serde_json::Value>,
     /// Horodatage de création, posé par le hook de création.
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: DateTimeUtc,
 }
 
@@ -850,5 +855,52 @@ mod tests {
                 .is_some_and(|stmt| stmt.contains("miryad_lymaille_catalog_toolsets")),
             "la requête porte sur la table des toolsets du catalogue : {requetes:?}"
         );
+    }
+
+    /// Scenario « `resource_openapi` compile et décrit la ressource » (issue #79, amendement du
+    /// 2026-11-13 de `./context_type.sdd`) : l'appel compile (le `Model` dérive `utoipa::ToSchema`),
+    /// le schéma porte toutes les colonnes, `created_at` est un `string`/`date-time` et toutes
+    /// les colonnes JSON (`allowed_agents`, `script_grants`, `active`, `draft`) sont des objets
+    /// libres sans propriétés.
+    #[test]
+    fn resource_openapi_compile_et_decrit_ressource() {
+        let fragment = crate::rest::openapi::resource_openapi::<Entity>();
+        let json = serde_json::to_value(&fragment).expect("le fragment OpenAPI se sérialise");
+        let schema = json
+            .get("components")
+            .and_then(|c| c.get("schemas"))
+            .and_then(|s| s.get("Model"))
+            .unwrap_or_else(|| panic!("le schéma du `Model` figure dans les composants : {json}"));
+        let proprietes = schema["properties"]
+            .as_object()
+            .expect("le schéma du `Model` porte ses propriétés");
+        for colonne in [
+            "id",
+            "name",
+            "version",
+            "allowed_agents",
+            "script_grants",
+            "active",
+            "draft",
+            "created_at",
+        ] {
+            assert!(
+                proprietes.contains_key(colonne),
+                "colonne {colonne} absente du schéma : {schema}"
+            );
+        }
+        assert_eq!(proprietes["created_at"]["type"], "string");
+        assert_eq!(proprietes["created_at"]["format"], "date-time");
+        for colonne in ["allowed_agents", "script_grants", "active", "draft"] {
+            assert_eq!(
+                proprietes[colonne]["type"], "object",
+                "`{colonne}` est décrite en objet libre"
+            );
+            assert!(
+                proprietes[colonne].get("properties").is_none(),
+                "l'objet libre de `{colonne}` ne détaille aucune propriété : {}",
+                proprietes[colonne]
+            );
+        }
     }
 }

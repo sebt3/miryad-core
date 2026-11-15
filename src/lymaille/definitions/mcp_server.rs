@@ -19,7 +19,7 @@ use crate::resource::MiryadResource;
 
 /// Serveur MCP persisté — la table `miryad_lymaille_mcp_servers` posée par `../migration.rs`
 /// (`m20261104_000001_lymaille_lot2`), colonnes du contrat `Must` de `./mcp_server.sdd`.
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, utoipa::ToSchema)]
 #[sea_orm(table_name = "miryad_lymaille_mcp_servers")]
 pub struct Model {
     /// Clé primaire entière auto-incrémentée (convention `miryad_*` de la crate).
@@ -44,9 +44,11 @@ pub struct Model {
     pub auth_ref: Option<String>,
     /// Groupes autorisés à appeler ce serveur (DSD `DEC-20`, contrôle à l'usage :
     /// `../mcp_access.sdd`) : tableau JSON non vide de noms, `all` et `admin` exclusifs.
+    #[schema(value_type = Vec<String>)]
     pub allowed_groups: serde_json::Value,
     /// Horodatage de création, posé par le hook de création ; `before_update` le laisse à celui
     /// de la ligne existante (aucune entité de la crate ne porte d'`updated_at`).
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: DateTimeUtc,
 }
 
@@ -711,6 +713,51 @@ mod tests {
         assert!(
             !format!("{rendu:?}").contains("mcp.example"),
             "`McpClientConfig` n'affiche jamais l'URL : {rendu:?}"
+        );
+    }
+
+    /// Scenario « `resource_openapi` compile et décrit la ressource » (issue #79, amendement du
+    /// 2026-11-13 de `./mcp_server.sdd`) : l'appel compile (le `Model` dérive `utoipa::ToSchema`),
+    /// le schéma porte toutes les colonnes, `created_at` est un `string`/`date-time` et
+    /// `allowed_groups` est un tableau de chaînes.
+    #[test]
+    fn resource_openapi_compile_et_decrit_ressource() {
+        let fragment = crate::rest::openapi::resource_openapi::<Entity>();
+        let json = serde_json::to_value(&fragment).expect("le fragment OpenAPI se sérialise");
+        let schema = json
+            .get("components")
+            .and_then(|c| c.get("schemas"))
+            .and_then(|s| s.get("Model"))
+            .unwrap_or_else(|| panic!("le schéma du `Model` figure dans les composants : {json}"));
+        let proprietes = schema["properties"]
+            .as_object()
+            .expect("le schéma du `Model` porte ses propriétés");
+        for colonne in [
+            "id",
+            "name",
+            "url",
+            "request_timeout_secs",
+            "connect_timeout_secs",
+            "auth_mode",
+            "auth_ref",
+            "allowed_groups",
+            "created_at",
+        ] {
+            assert!(
+                proprietes.contains_key(colonne),
+                "colonne {colonne} absente du schéma : {schema}"
+            );
+        }
+        assert_eq!(proprietes["created_at"]["type"], "string");
+        assert_eq!(proprietes["created_at"]["format"], "date-time");
+        assert_eq!(
+            proprietes["allowed_groups"]["type"], "array",
+            "`allowed_groups` est décrit en tableau"
+        );
+        assert_eq!(
+            proprietes["allowed_groups"]["items"]["type"], "string",
+            "`allowed_groups` est un tableau de chaînes : {}",
+            proprietes["allowed_groups"]
         );
     }
 }

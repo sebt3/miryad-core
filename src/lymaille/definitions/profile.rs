@@ -16,7 +16,7 @@ use crate::resource::MiryadResource;
 
 /// Profil de modèle persisté — la table `miryad_lymaille_profiles` posée par `../migration.rs`,
 /// colonnes du contrat `Must` de ./profile.sdd.
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, utoipa::ToSchema)]
 #[sea_orm(table_name = "miryad_lymaille_profiles")]
 pub struct Model {
     /// Clé primaire entière auto-incrémentée (convention `miryad_*` de la crate).
@@ -27,8 +27,10 @@ pub struct Model {
     pub name: String,
     /// L'`lymaille::ModelProfile` complète, colonne JSON : la source de vérité, désérialisée et
     /// validée par les hooks.
+    #[schema(value_type = Object)]
     pub profile: serde_json::Value,
     /// Horodatage de création, posé par le hook de création.
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: DateTimeUtc,
 }
 
@@ -287,5 +289,40 @@ mod tests {
         assert!(Entity::owner_column().is_none(), "aucun propriétaire");
         assert!(Entity::filter_column().is_none());
         assert!(matches!(Entity::label_column(), Some(Column::Name)));
+    }
+
+    /// Scenario « `resource_openapi` compile et décrit la ressource » (issue #79, amendement du
+    /// 2026-11-13 de ./profile.sdd) : l'appel compile (le `Model` dérive `utoipa::ToSchema`), le
+    /// schéma porte toutes les colonnes, `created_at` est un `string`/`date-time` et `profile`
+    /// est un objet libre sans propriétés.
+    #[test]
+    fn resource_openapi_compile_et_decrit_ressource() {
+        let fragment = crate::rest::openapi::resource_openapi::<Entity>();
+        let json = serde_json::to_value(&fragment).expect("le fragment OpenAPI se sérialise");
+        let schema = json
+            .get("components")
+            .and_then(|c| c.get("schemas"))
+            .and_then(|s| s.get("Model"))
+            .unwrap_or_else(|| panic!("le schéma du `Model` figure dans les composants : {json}"));
+        let proprietes = schema["properties"]
+            .as_object()
+            .expect("le schéma du `Model` porte ses propriétés");
+        for colonne in ["id", "name", "profile", "created_at"] {
+            assert!(
+                proprietes.contains_key(colonne),
+                "colonne {colonne} absente du schéma : {schema}"
+            );
+        }
+        assert_eq!(proprietes["created_at"]["type"], "string");
+        assert_eq!(proprietes["created_at"]["format"], "date-time");
+        assert_eq!(
+            proprietes["profile"]["type"], "object",
+            "`profile` est décrit en objet libre"
+        );
+        assert!(
+            proprietes["profile"].get("properties").is_none(),
+            "l'objet libre de `profile` ne détaille aucune propriété : {}",
+            proprietes["profile"]
+        );
     }
 }

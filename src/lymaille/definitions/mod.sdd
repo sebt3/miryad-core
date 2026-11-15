@@ -61,6 +61,10 @@ Tasks:
     blocage amont, objet libre pour les colonnes JSON), #72 ensuite (dépend d'une version amont de `lymaille`). Les dix specs enfants portent chacune leur tâche.
     Arbitré le 2026-11-13 : `DateTimeUtc` : `#[schema(value_type = String, format = DateTime)]` et `#[ts(type = "string")]` par colonne (recommandé : conserve la règle de ./../mod.sdd « aucune feature d'implémentation de type tiers
     de `ts-rs` », `at` y est déjà un `String`) plutôt que d'activer la feature `chrono` d'`utoipa` et `chrono-impl` de `ts-rs`.
+    [?] (implementer, #79 livré 2026-11-15) : les dix `Model` s'appellent `Model` et aucun `#[schema(as = …)]` n'est porté par les specs —
+      chaque fragment `resource_openapi::<Entity>()` est correct isolément, mais la **fusion** dans une application consommatatrice fait collision sur le schéma `Model`/`PagedModel`
+      (toutes les routes référenceraient le même schéma). Le même écart touche les entités de l'application (mêmes structs). Choix provisoire : implémenté strictement sans `as`.
+      À arbitrer : alias `#[schema(as = …)]` par entité (amendement des dix specs) ou renommage porté par le moteur (`/src/rest/openapi.sdd`). Partie #72 de cette case : à boucler au cycle #72.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.

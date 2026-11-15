@@ -39,6 +39,15 @@
 //! `rest::resource_router::<definitions::agent::Entity>()` (même motif que
 //! `workflow::definition::Entity`). Les secrets n'y figurent jamais : un `provider` ni un
 //! `mcp_server` ne portent que des références, validées comme telles à l'écriture.
+//!
+//! Dérives de schéma (amendement du 2026-11-13, issues #79 et #72) : chacun des dix `Model`
+//! dérive `utoipa::ToSchema` sous la feature `lymaille` — qui implique `db` — pour que
+//! `rest::openapi::resource_openapi::<Entity>()` compile sur chaque ressource ; la dérive
+//! `ts_rs::TS` (issue #72, exportée par ../interactive/event.sdd, typage des colonnes JSON par
+//! les types amont de `lymaille`) s'y ajoute sans rien changer d'autre. Ces dérives n'ajoutent aucun
+//! attribut `serde` et ne changent aucune sérialisation ; le contrat de chaque colonne
+//! (`DateTimeUtc` en `string`/`date-time`, colonnes JSON en objets libres ou tableaux de
+//! chaînes selon la spec de l'entité) est dans la spec de l'entité.
 
 /// Définitions d'agent du catalogue (`src/lymaille/definitions/agent.sdd`).
 pub mod agent;

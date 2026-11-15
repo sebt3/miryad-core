@@ -29,7 +29,7 @@ use super::toolset::check_toolset;
 
 /// Toolset privé persisté — la table `miryad_lymaille_toolsets` posée par `../migration.rs`,
 /// colonnes du contrat `Must` de `./private_toolset.sdd`.
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, utoipa::ToSchema)]
 #[sea_orm(table_name = "miryad_lymaille_toolsets")]
 pub struct Model {
     /// Clé primaire entière auto-incrémentée (convention `miryad_*` de la crate).
@@ -47,11 +47,14 @@ pub struct Model {
     pub version: String,
     /// La `lymaille::Toolset` active, colonne JSON nullable — son écriture par le propriétaire
     /// est l'activation self-service (DSD `FR-9`, `DEC-8`).
+    #[schema(value_type = Object)]
     pub active: Option<serde_json::Value>,
     /// La `lymaille::Toolset` en brouillon, colonne JSON nullable — jamais lue comme version
     /// active (DSD `DEC-18`).
+    #[schema(value_type = Object)]
     pub draft: Option<serde_json::Value>,
     /// Horodatage de création, posé par le hook de création.
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: DateTimeUtc,
 }
 
@@ -809,6 +812,51 @@ mod tests {
             assert!(
                 vue.items.iter().all(|ligne| ligne.owner_id == proprietaire),
                 "`{appelee}` ne voit que ses lignes"
+            );
+        }
+    }
+
+    /// Scenario « `resource_openapi` compile et décrit la ressource » (issue #79, amendement du
+    /// 2026-11-13 de `./private_toolset.sdd`) : l'appel compile (le `Model` dérive
+    /// `utoipa::ToSchema`), le schéma porte toutes les colonnes, `created_at` est un
+    /// `string`/`date-time` et `active` comme `draft` sont des objets libres sans propriétés.
+    #[test]
+    fn resource_openapi_compile_et_decrit_ressource() {
+        let fragment = crate::rest::openapi::resource_openapi::<Entity>();
+        let json = serde_json::to_value(&fragment).expect("le fragment OpenAPI se sérialise");
+        let schema = json
+            .get("components")
+            .and_then(|c| c.get("schemas"))
+            .and_then(|s| s.get("Model"))
+            .unwrap_or_else(|| panic!("le schéma du `Model` figure dans les composants : {json}"));
+        let proprietes = schema["properties"]
+            .as_object()
+            .expect("le schéma du `Model` porte ses propriétés");
+        for colonne in [
+            "id",
+            "owner_id",
+            "toolset_id",
+            "version",
+            "active",
+            "draft",
+            "created_at",
+        ] {
+            assert!(
+                proprietes.contains_key(colonne),
+                "colonne {colonne} absente du schéma : {schema}"
+            );
+        }
+        assert_eq!(proprietes["created_at"]["type"], "string");
+        assert_eq!(proprietes["created_at"]["format"], "date-time");
+        for colonne in ["active", "draft"] {
+            assert_eq!(
+                proprietes[colonne]["type"], "object",
+                "`{colonne}` est décrite en objet libre"
+            );
+            assert!(
+                proprietes[colonne].get("properties").is_none(),
+                "l'objet libre de `{colonne}` ne détaille aucune propriété : {}",
+                proprietes[colonne]
             );
         }
     }
