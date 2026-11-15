@@ -299,9 +299,27 @@ Tasks:
   [-] Issue #72, option 3 — écartée le 2026-11-13 (développeur principal) : l'IR présenterait le nom du type d'une colonne JSON typée (aujourd'hui `type: object` opaque) pour les générateurs (`scaffold` du template `miryad`). Changer la forme de l'`EntityIr`
     est un changement de contrat observable (`Done when` sur le nombre de `Scenario`, JSON de l'IR consommé hors de la crate). Recommandation : **ne pas l'inclure** dans cette livraison — l'export TypeScript
     (./lymaille/interactive/event.sdd) suffit à retirer les miroirs de vanyline ; rouvrir sur demande du template. À arbitrer par le développeur principal.
-  [ ] Issue #78 — l'`EntityIr` expose les colonnes filtrables et triables d'une ressource (voir ./resource.sdd). Spec d'abord : ajouter `filterable_columns: Vec<String>` et `sortable_columns: Vec<String>` (vides par
+  [x] Issue #78 — l'`EntityIr` expose les colonnes filtrables et triables d'une ressource (voir ./resource.sdd). Spec d'abord : ajouter `filterable_columns: Vec<String>` et `sortable_columns: Vec<String>` (vides par
     défaut, rendus en `[]` explicite) à côté de `filter_column`, **conservé** ; amender `Must`, le `Scenario` de forme complète et le `Done when` (comptage des `Scenario`). Puis tests d'abord, puis ./ir.rs. Après
     ./resource.sdd.
+    [?] Ordre des deux nouvelles clés dans l'`EntityIr` sérialisé : la consigne de tâche dit « à côté
+      de `filter_column` », l'amendement d'`Exposes` les liste après `label_column`. Choix provisoire :
+      ordre de l'`Exposes` amended (`filter_column`, `label_column`, `filterable_columns`,
+      `sortable_columns`) — l'`Exposes` est le contrat ; options — `(filter_column, filterable_columns,
+      sortable_columns, label_column)` si Sébastien veut la proximité littérale.
+    [?] Le Scenario « Les clés et les valeurs `null` du fichier sont épinglées » énumère sept clés
+      d'entité ; l'amendement d'`Exposes` en porte neuf et le Scenario #78 dit « les autres clés sont
+      inchangées ». Choix provisoire : le test de forme épingle les neuf clés (deux nouvelles rendues
+      `[]` explicite sur une entité sans déclaration) ; le comptage du `Done when` (« exactement
+      dix-neuf `Scenario` ») est confirmé exact — dix-neuf mesurés.
+    [?] Alimentation : `IrRegistration` n'existe nulle part dans la crate — `resource_ir::<E>()` lit
+      `MiryadResource::filterable_columns`/`sortable_columns` en direct (le câblage de `filter_column`
+      est du même niveau trait, pas d'un registre). Aucun ajout à faire dans `./resource.rs` ni de
+      `[?]` vers `./resource.sdd` : les deux méthodes existent déjà (tâche #78 close dans
+      `resource.sdd`).
+    Implémente le 2026-11-15 : batterie 16/16 tests + 16/16 clippy -D warnings + fmt + trees verte,
+    validator PASS statique ; Scenario de forme et second Example amendes a neuf cles par le
+    primary (la tache le demandait, seul le test avait suivi).
 
 Done when:
   La spec porte exactement dix-neuf `Scenario` (le dix-neuvième ajouté le 2026-11-13, issue #78), chacun vérifié par son test nommé distinct listé
@@ -428,10 +446,14 @@ Scenario: Les clés et les valeurs `null` du fichier sont épinglées
   Then le fichier est octet pour octet la sortie de @serde_json::to_string_pretty sur le tableau
     résolu, sans newline final
   And l'objet entité porte exactement les clés `resource_name`, `fields`, `read_policy`,
-    `write_policy`, `owner_column`, `filter_column`, `label_column`, et chaque champ exactement
+    `write_policy`, `owner_column`, `filter_column`, `label_column`, `filterable_columns`,
+    `sortable_columns` (amendement du 2026-11-15, issue #78 — ordre de l'`Exposes`, voir `[?]` de
+    `Tasks`), et chaque champ exactement
     `name`, `type`, `format`, `nullable`, `is_primary_key`, `references`
   And chaque @None apparaît comme `null` explicite — `filter_column`, `label_column` sur une
-    entité sans libellé, `format`, `references` — et aucune clé n'est ni sautée ni renommée
+    entité sans libellé, `format`, `references` — et aucune clé n'est ni sautée ni renommée ;
+    `filterable_columns` et `sortable_columns` ne sont jamais `null`, mais `[]` explicite quand
+    rien n'est déclaré
 
 Scenario: La politique @AccessPolicy::Group s'écrite taguée externement
   Given une fixture d'entité en @AccessPolicy::Group avec le groupe `admins` en lecture et en
@@ -497,7 +519,8 @@ Example:
 
 Example:
   Clés @ir::EntityIr sérialisé : `resource_name`, `fields`, `read_policy`, `write_policy`,
-    `owner_column`, `filter_column`, `label_column`
+    `owner_column`, `filter_column`, `label_column`, `filterable_columns`, `sortable_columns`
+    (deux dernières ajoutées le 2026-11-15, issue #78 ; vides rendus `[]`, jamais `null`)
   Clés @ir::FieldIr sérialisé : `name`, `type`, `format`, `nullable`, `is_primary_key`, `references`
   @ir::IrRegistry::write_to_file sur un registre vide → `[]`
 

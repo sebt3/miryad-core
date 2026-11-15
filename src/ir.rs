@@ -71,6 +71,13 @@ pub struct EntityIr {
     /// Nom SQL de la colonne de libellé déclarée, `None` par défaut : le générateur retombe
     /// alors sur la clé primaire.
     pub label_column: Option<String>,
+    /// Noms SQL des colonnes filtrables déclarées par `MiryadResource::filterable_columns`,
+    /// dans l'ordre déclaré ; `[]` explicite quand rien n'est déclaré (amendement du 2026-11-13,
+    /// issue #78) — `filter_column` est conservé à côté, non fusionné ici.
+    pub filterable_columns: Vec<String>,
+    /// Noms SQL des colonnes triables déclarées par `MiryadResource::sortable_columns`, dans
+    /// l'ordre déclaré ; `[]` explicite quand rien n'est déclaré (même amendement).
+    pub sortable_columns: Vec<String>,
 }
 
 /// Traduit un `ColumnType` `SeaORM` en couple `(type, format)` `OpenAPI`. Volontairement pas
@@ -171,6 +178,10 @@ pub fn resource_ir<E: MiryadResource>() -> EntityIr {
         owner_column: E::owner_column().map(|c| c.to_string()),
         filter_column: E::filter_column().map(|c| c.to_string()),
         label_column: E::label_column().map(|c| c.to_string()),
+        // noms stringifiés par `Iden`, dans l'ordre déclaré ; `[]` explicite par défaut
+        // (amendement du 2026-11-13, issue #78)
+        filterable_columns: E::filterable_columns().iter().map(Iden::to_string).collect(),
+        sortable_columns: E::sortable_columns().iter().map(Iden::to_string).collect(),
     }
 }
 
@@ -676,6 +687,51 @@ mod tests {
         }
     }
 
+    /// Entité de la fixture du `Scenario` « l'IR expose les colonnes filtrables et triables »
+    /// (amendement du 2026-11-13, issue #78) : `project_id` et `kind` déclarées filtrables,
+    /// `created_at` triable. Miroir des fixtures homonymes de `rest::core` et `mcp::registry`
+    /// (module de test privé, non partageable entre fichiers).
+    mod managed {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+
+        #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+        #[sea_orm(table_name = "managed_records")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub project_id: i32,
+            pub kind: String,
+            pub created_at: i64,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "managed-records"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::AdminOnly
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+            fn filterable_columns() -> Vec<Column> {
+                vec![Column::ProjectId, Column::Kind]
+            }
+            fn sortable_columns() -> Vec<Column> {
+                vec![Column::CreatedAt]
+            }
+        }
+    }
+
     /// Fichier temporaire à chemin unique par test (les tests tournent en parallèle), nettoyé à
     /// la sortie de scope — panic compris. `write_to_file` ne créant jamais de dossier, le
     /// dossier parent est créé ici pour les tests qui l'exigent.
@@ -835,10 +891,12 @@ mod tests {
                 "owner_column",
                 "filter_column",
                 "label_column",
+                "filterable_columns",
+                "sortable_columns",
             ]
             .into_iter()
             .collect(),
-            "les sept clés de l'objet entité, aucune sautée ni renommée"
+            "les neuf clés de l'objet entité (amendement #78 du 2026-11-13), aucune sautée ni renommée"
         );
         assert!(
             parsed[0]["filter_column"].is_null(),
@@ -847,6 +905,18 @@ mod tests {
         assert!(
             parsed[1]["label_column"].is_null(),
             "label_column `None` rendu `null`"
+        );
+        // sans déclaration, `filterable_columns`/`sortable_columns` rendus `[]` explicite — pas
+        // `null`, pas clé absente (amendement du 2026-11-13, issue #78)
+        assert_eq!(
+            parsed[0]["filterable_columns"],
+            serde_json::json!([]),
+            "`[]` explicite sur une entité sans colonnes filtrables"
+        );
+        assert_eq!(
+            parsed[0]["sortable_columns"],
+            serde_json::json!([]),
+            "`[]` explicite sur une entité sans colonnes triables"
         );
 
         let notes = parsed[0]["fields"]
@@ -880,6 +950,42 @@ mod tests {
             "`format` nul explicite, pas clé absente"
         );
         assert!(notes["references"].is_null(), "`references` nul explicite");
+    }
+
+    /// `Scenario` : « l'IR expose les colonnes filtrables et triables » (amendement du
+    /// 2026-11-13, issue #78) — `managed::Entity` (deux colonnes filtrables, une triable) rend
+    /// les noms déclarés ; `recipe::Entity` (aucune déclaration) rend `[]` et `[]` explicites,
+    /// les autres clés inchangées (`filter_column` conservé).
+    #[test]
+    fn entity_ir_exposes_filterable_and_sortable_columns() {
+        let managed = serde_json::to_value(resource_ir::<managed::Entity>())
+            .expect("l'EntityIr de managed se sérialise");
+        assert_eq!(
+            managed["filterable_columns"],
+            serde_json::json!(["project_id", "kind"]),
+            "les colonnes filtrables dans l'ordre déclaré"
+        );
+        assert_eq!(
+            managed["sortable_columns"],
+            serde_json::json!(["created_at"]),
+            "les colonnes triables dans l'ordre déclaré"
+        );
+
+        let recipe =
+            serde_json::to_value(resource_ir::<recipe::Entity>()).expect("l'EntityIr de recipe se sérialise");
+        assert_eq!(
+            recipe["filterable_columns"],
+            serde_json::json!([]),
+            "`[]` explicite sans déclaration, pas `null` ni clé absente"
+        );
+        assert_eq!(
+            recipe["sortable_columns"],
+            serde_json::json!([]),
+            "`[]` explicite sans déclaration, pas `null` ni clé absente"
+        );
+        // les autres clés sont inchangées : `filter_column` et `label_column` conservés
+        assert!(recipe.get("filter_column").is_some(), "filter_column conservé");
+        assert!(recipe.get("label_column").is_some(), "label_column inchangé");
     }
 
     /// `Scenario` « la politique `AccessPolicy::Group` s'écrite taguée externement » — fixture
