@@ -14,8 +14,9 @@ use ::lymaille::ToolsetContext;
 
 use super::identity::CallerPrincipal;
 
-/// Extension de l'hôte pour les serveurs MCP, les contextes de niveau projet et le profil par
-/// défaut des agents. Objet-trait : l'application le fournit en [`SharedHost`]
+/// Extension de l'hôte pour les serveurs MCP, les contextes de niveau projet, les droits de
+/// script de ces contextes, le profil par défaut des agents et le jeton `forward` hors session
+/// interactive. Objet-trait : l'application le fournit en [`SharedHost`]
 /// (`Arc<dyn LymailleHost>`). Toutes les méthodes ont un défaut — l'hôte n'implémente que ce qu'il
 /// fournit (`Must` de ./host.sdd).
 #[async_trait]
@@ -52,6 +53,25 @@ pub trait LymailleHost: Send + Sync {
         Ok(None)
     }
 
+    /// Rend les droits de script que l'hôte accorde au contexte `id` (identifiant `H_…`,
+    /// ./identity.sdd) pour `caller` (issue #70) : équivalent, pour un `H_…`, de la colonne
+    /// `script_grants` d'un type de contexte (`./definitions/context_type.sdd`). Défaut :
+    /// `Ok(None)` — aucun droit, donc l'échec fermé actuel de `./script_runner.sdd`. L'hôte ne peut
+    /// accorder que ce que `check_grants` laisse passer (./identity.sdd, `FR-9`) : c'est le
+    /// consommateur (`./script_runner.sdd`) qui applique cette porte.
+    ///
+    /// # Errors
+    ///
+    /// `HostError` si la résolution d'hôte échoue — erreur sans contenu, cf.
+    /// [`LymailleHost::resolve_mcp`] ; la crate la rend en échec fermé, sans texte de l'hôte.
+    async fn script_grants(
+        &self,
+        _context: &str,
+        _caller: &CallerPrincipal,
+    ) -> Result<Option<ScriptGrants>, HostError> {
+        Ok(None)
+    }
+
     /// Rend le nom du profil de modèle par défaut : celui que reçoivent les agents qui n'en
     /// désignent pas dans leur définition (issue #75, ./host.sdd — la colonne `profile` vide des
     /// tables d'agents, ./definitions/agent.sdd). Relu à **chaque** ouverture de session et à
@@ -65,6 +85,27 @@ pub trait LymailleHost: Send + Sync {
     /// [`LymailleHost::resolve_mcp`] ; la crate ne la propage ni ne la trace, elle rend sa phrase
     /// fixe.
     async fn default_profile(&self) -> Result<Option<String>, HostError> {
+        Ok(None)
+    }
+
+    /// Rend le jeton qu'un serveur MCP en mode `forward` doit recevoir quand aucun jeton
+    /// interactif n'existe (step batch, script de widget, pont — issue #82). L'audience, la durée
+    /// et la portée du jeton (échange RFC 8693 ou autre) sont l'affaire exclusive de l'hôte ;
+    /// `McpGrant::expires_at` ne s'y applique pas. Jamais persisté, journalisé ni mis en cache
+    /// par la crate (`Must not` de ./host.sdd) ; il n'atteint que le serveur `forward` demandé.
+    /// Défaut : `Ok(None)` — aucun fournisseur : comportement actuel, échec typé non retryable
+    /// (`./mcp_access.sdd`).
+    ///
+    /// # Errors
+    ///
+    /// `HostError` si la résolution d'hôte échoue — erreur sans contenu, cf.
+    /// [`LymailleHost::resolve_mcp`] ; la crate ne la propage ni ne la trace, elle rend sa phrase
+    /// fixe.
+    async fn forward_token(
+        &self,
+        _request: &McpRequest<'_>,
+        _caller: &CallerPrincipal,
+    ) -> Result<Option<Zeroizing<String>>, HostError> {
         Ok(None)
     }
 }
@@ -122,7 +163,7 @@ impl McpGrant {
 /// type de contexte (objet à exactement les deux clés `toolsets` et `modules`) : les noms de
 /// toolsets (version active) et de modules d'hôte (`Must` de ./host.sdd, amendement du 2026-11-13
 /// — posé par la tâche provenance de ./store/publish.sdd, issue #73 ; la méthode
-/// `LymailleHost::script_grants` qui le rend est la tâche #70 de ./host.sdd).
+/// `LymailleHost::script_grants` qui le rend est la tâche #70 de ./host.sdd, posée avec elle).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScriptGrants {
     /// Toolsets du catalogue (`G_…`, version active) accordés.
@@ -145,6 +186,7 @@ mod tests {
     use super::*;
     use crate::lymaille::identity::CallerPrincipal;
     use chrono::{TimeZone as _, Utc};
+    use std::sync::Arc;
 
     fn caller() -> CallerPrincipal {
         CallerPrincipal {
@@ -183,9 +225,133 @@ mod tests {
         assert!(context.is_none(), "attendu None, obtenu : {context:?}");
     }
 
+    /// Scenario « les trois méthodes ajoutées ont un défaut neutre » (./host.sdd, issues #70,
+    /// #75, #82) : un hôte qui n'implémente que les méthodes d'origine rend `Ok(None)` pour
+    /// `script_grants`, `default_profile` et `forward_token` — aucun droit, aucun profil, aucun
+    /// jeton ; les trois sont bien les méthode à défaut du trait.
+    #[tokio::test]
+    async fn les_trois_methodes_ajoutees_ont_un_defaut_neutre() {
+        struct EmptyHost;
+        #[async_trait]
+        impl LymailleHost for EmptyHost {}
+
+        let host: SharedHost = std::sync::Arc::new(EmptyHost);
+        let droits = host
+            .script_grants("H_sandbox_alice_web", &caller())
+            .await
+            .expect("le défaut de script_grants ne peut pas échouer");
+        assert!(droits.is_none(), "aucun droit par défaut, obtenu : {droits:?}");
+        let rendu = host
+            .default_profile()
+            .await
+            .expect("le défaut de default_profile ne peut pas échouer");
+        assert!(rendu.is_none(), "attendu None, obtenu : {rendu:?}");
+        let request = McpRequest {
+            context: "G_prod",
+            role: "fetch",
+        };
+        let jeton = host
+            .forward_token(&request, &caller())
+            .await
+            .expect("le défaut de forward_token ne peut pas échouer");
+        assert!(jeton.is_none(), "aucun jeton par défaut, obtenu : {jeton:?}");
+    }
+
+    /// `Scenario` de la tâche « Issue #70 » de ./host.sdd : un hôte factice accorde des droits de
+    /// script à un contexte `H_…` pour `alice`, et `None` pour tout autre contexte.
+    #[tokio::test]
+    async fn un_hote_accorde_des_droits_de_script() {
+        struct HoteDroits;
+        #[async_trait]
+        impl LymailleHost for HoteDroits {
+            async fn script_grants(
+                &self,
+                context: &str,
+                _caller: &CallerPrincipal,
+            ) -> Result<Option<ScriptGrants>, HostError> {
+                if context == "H_sandbox_alice_web" {
+                    Ok(Some(ScriptGrants {
+                        toolsets: vec!["G_ops".to_owned()],
+                        modules: vec!["view".to_owned()],
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+
+        let host: SharedHost = std::sync::Arc::new(HoteDroits);
+        let rendus = host
+            .script_grants("H_sandbox_alice_web", &caller())
+            .await
+            .expect("l'hôte accorde sans panne");
+        let attendu = ScriptGrants {
+            toolsets: vec!["G_ops".to_owned()],
+            modules: vec!["view".to_owned()],
+        };
+        assert_eq!(rendus, Some(attendu), "les droits accordés traversent");
+        let autre = host
+            .script_grants("H_autre", &caller())
+            .await
+            .expect("l'hôte répond sans panne");
+        assert!(autre.is_none(), "un autre contexte n'a aucun droit : {autre:?}");
+    }
+
+    /// `Scenario` « `forward_token` ne divulgue pas le jeton » (./host.sdd, issue #82) : le `Debug`
+    /// de l'impl de l'hôte ne porte aucun jeton (aucun champ), et le `Display` de `HostError`
+    /// reste la phrase fixe — rien venu de l'hôte.
+    #[tokio::test]
+    async fn forward_token_ne_divulgue_pas_le_jeton() {
+        #[derive(Debug)]
+        struct HoteJeton {
+            panne: bool,
+        }
+        #[async_trait]
+        impl LymailleHost for HoteJeton {
+            async fn forward_token(
+                &self,
+                _request: &McpRequest<'_>,
+                _caller: &CallerPrincipal,
+            ) -> Result<Option<Zeroizing<String>>, HostError> {
+                if self.panne {
+                    return Err(HostError);
+                }
+                Ok(Some(Zeroizing::new("secret-token".to_owned())))
+            }
+        }
+
+        let request = McpRequest {
+            context: "G_prod",
+            role: "fetch",
+        };
+        let concret = HoteJeton { panne: false };
+        // Le `Debug` de l'impl de l'hôte : elle ne garde aucun jeton en champ, rien à divulguer.
+        let rendu_impl = format!("{concret:?}");
+        assert!(
+            !rendu_impl.contains("secret-token"),
+            "le Debug de l'impl de l'hôte ne contient pas le jeton : {rendu_impl}"
+        );
+        let hote: SharedHost = Arc::new(concret);
+        let rendu = hote
+            .forward_token(&request, &caller())
+            .await
+            .expect("l'hôte fournit le jeton");
+        // La crate n'affiche jamais le résultat brut : il n'entre que dans le `SeaMcpAuth` au
+        // `Debug` opaque (`./mcp_access.rs`). Le `Debug` nu du `Zeroizing` rendu dépend du graphe
+        // `zeroize` — voir le `[?]` du rapport (#82) : en `zeroize` 1.9.0 (version courante du
+        // graphe) son `Debug` dérivé affiche la valeur, en 1.9.1 il est redevenu opaque.
+        assert!(rendu.is_some(), "le jeton est bien rendu à qui le porte");
+
+        let hote_en_panne: SharedHost = Arc::new(HoteJeton { panne: true });
+        let erreur = hote_en_panne
+            .forward_token(&request, &caller())
+            .await
+            .expect_err("l'hôte panne rend HostError");
+        assert_eq!(format!("{erreur}"), "host resolution failed");
+    }
+
     /// `Scenario` de la tâche « Issue #75 » de ./host.sdd (moitié « défaut → `None` » du
-    /// Scenario « les méthodes ajoutées ont un défaut neutre » — `script_grants` (#70) et
-    /// `forward_token` (#82) complèteront ce test) : un hôte qui n'implémente que les méthodes
+    /// Scenario « les méthodes ajoutées ont un défaut neutre ») : un hôte qui n'implémente que les méthodes
     /// d'origine rend `Ok(None)` — aucun profil par défaut, et `default_profile` est bien la
     /// quatrième méthode à défaut du trait.
     #[tokio::test]

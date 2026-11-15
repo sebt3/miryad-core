@@ -87,7 +87,8 @@ Tasks:
     (critère d'acceptation de l'issue). `Scenario` : agent sans profil + hôte qui désigne `qwen` → ouvre sur `qwen` ; hôte qui change de réponse → la session suivante suit ; sans défaut → erreur nommant la
     cause ; agent à profil explicite : l'hôte n'est pas consulté. Puis tests d'abord, puis ./assemble.rs. Après ./../host.sdd et ./../definitions/agent.sdd.
     Arbitré le 2026-11-13 : variante d'erreur : `Config` existante (recommandé, aucun nouveau code) plutôt qu'une variante dédiée `NoDefaultProfile`.
-  [ ] Issue #82 — l'assemblage passe l'hôte au montage des rôles `forward` (le jeton interactif de la requête reste prioritaire). Aucun comportement nouveau ici si ./mcp_mount.sdd absorbe le changement ;
+  [x] Issue #82 — l'assemblage passe l'hôte au montage des rôles `forward` (le jeton interactif de la requête reste prioritaire). Aucun comportement nouveau ici si ./mcp_mount.sdd absorbe le changement ;
+    Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Vérifié sans modification de code : l'assemblage passe déjà l'hôte au montage (`MountDeps { host }`) ; le jeton interactif reste prioritaire (`mcp_access::forward_token`).
     sinon `Scenario` « le jeton forward n'atteint que son serveur » étendu. Après ./../mcp_mount.sdd.
   [ ] Issue #81 lot 1 — tâche « `lease` » (DSD `DEC-31`, voir ./manager.sdd, amendement du 2026-11-14) : `assemble_session` et `assemble_with` reçoivent `lease: Option<::lymaille::CancelHandle>` (le jeton de perte de bail du permis
     que le gestionnaire a pris auprès de la porte partagée). `Some(lost)` → `TurnConfig::with_turn_lock(Arc<dyn TurnLock>)` avec un `TurnLock` **de passage** (`pub(crate)`, privé à ce fichier) dont `try_begin(session)` rend **une fois**

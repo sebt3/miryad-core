@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use rhai::{Dynamic, Engine, EvalAltResult};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::Value as JsonValue;
+use vynil_core::cancel::{self, CancelToken};
 use zeroize::Zeroizing;
 
 use ::lymaille::{
@@ -27,7 +28,7 @@ use ::lymaille::{
 
 use crate::lymaille::definitions::{catalog_context, context_type, user_context};
 use crate::lymaille::error::LymailleError;
-use crate::lymaille::host::SharedHost;
+use crate::lymaille::host::{LymailleHost, SharedHost};
 use crate::lymaille::host_module::{HostModules, HostSelect, mount_host_modules};
 use crate::lymaille::identity::{CallerPrincipal, IdKind, caller_of, classify};
 use crate::lymaille::install_crypto_provider;
@@ -156,6 +157,40 @@ impl ScriptRunner {
         limits: &ScriptLimits,
         token: Option<Zeroizing<String>>,
     ) -> Result<JsonValue, LymailleError> {
+        // Un jeton jamais annulé : `run` garde son comportement d'avant #71 et il n'y a qu'une
+        // seule implémentation (amendement du 2026-11-13, issue #71).
+        self.run_cancellable(context, subject, source, limits, token, &CancelToken::new())
+            .await
+    }
+
+    /// Même contrat que [`Self::run`], plus l'annulation par `cancel` (amendement du 2026-11-13,
+    /// issue #71) : le crochet `on_progress` rend aussi la main quand le jeton est annulé et un
+    /// [`vynil_core::cancel::scope`] est posé dans la fermeture du thread d'évaluation — le jeton
+    /// courant est un `thread_local` — pour que `sleep` (remplacé sur l'`Engine` dédié par une
+    /// attente par tranches, le `sleep` natif de Rhai n'étant pas interruptible) et les ponts
+    /// `block_on` des modules observent l'annulation. Une annulation rend `ScriptCancelled`,
+    /// distincte de `ScriptTimeout`, jamais un résultat partiel ; un jeton déjà annulé avant le
+    /// démarrage rend `ScriptCancelled` sans qu'aucun module n'ait été appelé.
+    ///
+    /// # Errors
+    ///
+    /// Les mêmes que [`Self::run`], plus :
+    ///
+    /// - `LymailleError::ScriptCancelled` : le jeton a été annulé (avant le démarrage ou en cours
+    ///   d'évaluation).
+    pub async fn run_cancellable(
+        &self,
+        context: &str,
+        subject: &str,
+        source: &str,
+        limits: &ScriptLimits,
+        token: Option<Zeroizing<String>>,
+        cancel: &CancelToken,
+    ) -> Result<JsonValue, LymailleError> {
+        if cancel.is_cancelled() {
+            // Rien n'est monté, aucun module appelé : l'annulation précède tout.
+            return Err(LymailleError::ScriptCancelled);
+        }
         install_crypto_provider();
         // Étape 1 : le principal, relu à l'appel (`../identity.rs`). Les modules relisent le leur
         // à chaque appel (enrobage `host_module`, `resources_module`) : aucun principal en cache.
@@ -163,7 +198,14 @@ impl ScriptRunner {
         let stores = self.stores_for(subject);
         // Étape 2 : contexte puis type, comme à l'étape 4 de `assemble_session` ; la version
         // active du type fournit `script_grants` (échec fermé : aucun droit sans type).
-        let (context_object, grants) = resolve_grants(&self.deps.db, &stores, &caller, context).await?;
+        let (context_object, grants) = resolve_grants(
+            &self.deps.db,
+            &stores,
+            &caller,
+            context,
+            self.deps.host.as_deref(),
+        )
+        .await?;
         // Étape 3 : les modules montés, et seulement ceux-là.
         let mut engine = Engine::new();
         // Script : écritures ouvertes (`DEC-3` révisé), `scope = None` — aucun journal (`./resource_module.sdd`).
@@ -205,11 +247,25 @@ impl ScriptRunner {
         let deadline = Instant::now()
             .checked_add(limits.max_duration)
             .unwrap_or_else(Instant::now);
+        let jeton_progress = cancel.clone();
         engine.on_progress(move |_operations: u64| {
+            // L'annulation prime sur le délai : une seule main rendue, un seul résultat typé.
+            if jeton_progress.is_cancelled() {
+                return Some(Dynamic::from(SCRIPT_CANCELLED));
+            }
             (Instant::now() >= deadline).then(|| Dynamic::from("script time limit reached"))
         });
+        // Le `sleep` natif de Rhai est un `std::thread::sleep` non interruptible : l'`Engine`
+        // dédié le remplace par une attente par tranches qui observe le jeton (issue #71).
+        let jeton_sommeil = cancel.clone();
+        engine.register_fn("sleep", move |seconds: i64| -> Result<(), Box<EvalAltResult>> {
+            sleep_cancellable(&jeton_sommeil, seconds)
+        });
         let script = source.to_owned();
-        let evaluation = tokio::task::spawn_blocking(move || engine.eval(&script)).await;
+        let jeton_eval = cancel.clone();
+        let evaluation =
+            tokio::task::spawn_blocking(move || cancel::scope(&jeton_eval, || engine.eval(&script))).await;
+        let cancelled = cancel.is_cancelled();
         match evaluation {
             // Panic du thread d'évaluation (y compris d'une closure de module) : confiné, message
             // fixe, le thread appelant ne panique jamais.
@@ -219,8 +275,10 @@ impl ScriptRunner {
                     "script evaluation thread failed".to_owned(),
                 ))
             }
+            // Le jeton a été annulé : pas de résultat, même partiel (`ScriptCancelled`).
+            Ok(Ok(_)) if cancelled => Err(LymailleError::ScriptCancelled),
             Ok(Ok(rendered)) => render_value(&rendered, limits),
-            Ok(Err(error)) => Err(script_error(*error)),
+            Ok(Err(error)) => Err(script_error(*error, cancelled)),
         }
     }
 
@@ -326,17 +384,20 @@ fn from_toolsets(error: ::lymaille::ToolsetsError) -> LymailleError {
 }
 
 /// Étape 2 : le contexte est résolu comme à l'étape 4 de `assemble_session` — privé de l'appelant,
-/// `G_…` du catalogue ou `H_…` de l'hôte, jamais celui d'un autre (`SeaContextStore`) — puis sa
-/// référence de type, lue sur la **ligne** de ce contexte (la colonne `context_type` de la table
-/// d'origine ; `ToolsetContext` ne la porte pas). La version active du type doit exister et son
-/// `script_grants` se lire : contexte ou type absent, sans active, ou grants illisible →
-/// l'échec fermé du `Must`. Un contexte `H_…` résolu par l'hôte n'a pas de type stocké en base :
-/// même échec fermé.
+/// `G_…` du catalogue ou `H_…` de l'hôte, jamais celui d'un autre (`SeaContextStore`) — puis ses
+/// droits : pour un `G_…`/privé, sa référence de type, lue sur la **ligne** de ce contexte (la
+/// colonne `context_type` de la table d'origine ; `ToolsetContext` ne la porte pas) et la version
+/// active de ce type, dont le `script_grants` doit se lire : contexte ou type absent, sans active,
+/// ou grants illisible → l'échec fermé du `Must`. Un contexte `H_…` résolu visible par
+/// `resolve_context` n'a pas de type en base : ses droits viennent de
+/// [`LymailleHost::script_grants`] (amendement du 2026-11-13, issue #70) ; hôte absent, méthode par
+/// défaut (`Ok(None)`) ou panne (`Err(HostError)`, sans contenu) → le même échec fermé.
 async fn resolve_grants(
     db: &DatabaseConnection,
     stores: &LymailleStores,
     caller: &CallerPrincipal,
     context: &str,
+    host: Option<&dyn LymailleHost>,
 ) -> Result<(ToolsetContext, Grants), LymailleError> {
     let kind = classify(context).map_err(|_| grants_unavailable())?;
     let context_object: Option<ToolsetContext> = stores
@@ -347,39 +408,58 @@ async fn resolve_grants(
     let Some(context_object) = context_object else {
         return Err(grants_unavailable());
     };
-    let type_reference = match kind {
-        IdKind::Catalog => catalog_context::Entity::find()
-            .filter(catalog_context::Column::Name.eq(context))
-            .one(db)
-            .await
-            .map_err(|error| LymailleError::Store(db_text(&error)))?
-            .and_then(|row| row.context_type),
-        IdKind::Private => user_context::Entity::find()
-            .filter(user_context::Column::OwnerId.eq(caller.user_id))
-            .filter(user_context::Column::Name.eq(context))
-            .one(db)
-            .await
-            .map_err(|error| LymailleError::Store(db_text(&error)))?
-            .and_then(|row| row.context_type),
-        // Un contexte résolu par l'hôte n'a pas de type en base : échec fermé, aucun droit.
-        IdKind::Host => None,
+    let grants = match kind {
+        // Les droits d'un contexte d'hôte (issue #70) : la visibilité a déjà été tranchée par
+        // `resolve_context` ci-dessus ; la panne de l'hôte est une erreur sans contenu, traduite
+        // en l'échec fermé fixe.
+        IdKind::Host => {
+            let host = host.ok_or_else(grants_unavailable)?;
+            let granted = host
+                .script_grants(context, caller)
+                .await
+                .map_err(|_| grants_unavailable())?
+                .ok_or_else(grants_unavailable)?;
+            Grants {
+                toolsets: granted.toolsets,
+                modules: granted.modules.into_iter().collect(),
+            }
+        }
+        IdKind::Catalog | IdKind::Private => {
+            let type_reference = match kind {
+                IdKind::Catalog => catalog_context::Entity::find()
+                    .filter(catalog_context::Column::Name.eq(context))
+                    .one(db)
+                    .await
+                    .map_err(|error| LymailleError::Store(db_text(&error)))?
+                    .and_then(|row| row.context_type),
+                IdKind::Private => user_context::Entity::find()
+                    .filter(user_context::Column::OwnerId.eq(caller.user_id))
+                    .filter(user_context::Column::Name.eq(context))
+                    .one(db)
+                    .await
+                    .map_err(|error| LymailleError::Store(db_text(&error)))?
+                    .and_then(|row| row.context_type),
+                IdKind::Host => None,
+            };
+            let Some(type_reference) = type_reference else {
+                return Err(grants_unavailable());
+            };
+            let row = context_type::Entity::find()
+                .filter(context_type::Column::Name.eq(type_reference.as_str()))
+                .one(db)
+                .await
+                .map_err(|error| LymailleError::Store(db_text(&error)))?;
+            let Some(row) = row else {
+                return Err(grants_unavailable());
+            };
+            if row.active.as_ref().is_none_or(JsonValue::is_null) {
+                return Err(grants_unavailable());
+            }
+            let (toolsets, modules) = parse_grants(&row.script_grants).ok_or_else(grants_unavailable)?;
+            Grants { toolsets, modules }
+        }
     };
-    let Some(type_reference) = type_reference else {
-        return Err(grants_unavailable());
-    };
-    let row = context_type::Entity::find()
-        .filter(context_type::Column::Name.eq(type_reference.as_str()))
-        .one(db)
-        .await
-        .map_err(|error| LymailleError::Store(db_text(&error)))?;
-    let Some(row) = row else {
-        return Err(grants_unavailable());
-    };
-    if row.active.as_ref().is_none_or(JsonValue::is_null) {
-        return Err(grants_unavailable());
-    }
-    let (toolsets, modules) = parse_grants(&row.script_grants).ok_or_else(grants_unavailable)?;
-    Ok((context_object, Grants { toolsets, modules }))
+    Ok((context_object, grants))
 }
 
 /// La porte de lecture des `script_grants` : objet à exactement `toolsets` et `modules`, chacun
@@ -447,12 +527,44 @@ fn render_value(rendered: &Dynamic, limits: &ScriptLimits) -> Result<JsonValue, 
     Ok(value)
 }
 
-/// L'erreur de l'évaluation, typée (`Must` étape 5) : la coupure de progression est le délai,
+/// Marqueur rendu à Rhai par l'annulation (`on_progress`, `sleep_cancellable`) : combiné à un
+/// jeton annulé après l'évaluation, il distingue l'annulation du délai (`ScriptCancelled`,
+/// amendement du 2026-11-13, issue #71).
+const SCRIPT_CANCELLED: &str = "script cancelled";
+
+/// Le `sleep` de l'`Engine` dédié (issue #71) : attente par tranches de 20 ms sur le jeton —
+/// annulé, elle lève un `ErrorRuntime` porté par [`SCRIPT_CANCELLED`] au lieu de dormir.
+fn sleep_cancellable(token: &CancelToken, seconds: i64) -> Result<(), Box<EvalAltResult>> {
+    const STEP: Duration = Duration::from_millis(20);
+    let total = u64::try_from(seconds).unwrap_or(0);
+    let remaining = Duration::from_secs(total);
+    let start = Instant::now();
+    loop {
+        if token.is_cancelled() {
+            return Err(Box::new(EvalAltResult::ErrorRuntime(
+                Dynamic::from(SCRIPT_CANCELLED),
+                rhai::Position::NONE,
+            )));
+        }
+        let Some(left) = remaining.checked_sub(start.elapsed()) else {
+            return Ok(());
+        };
+        std::thread::sleep(STEP.min(left));
+    }
+}
+
+/// L'erreur de l'évaluation, typée (`Must` étape 5) : la coupure de progression est le délai —
+/// ou l'annulation si le jeton est annulé (`ScriptCancelled`, issue #71) —,
 /// `ErrorTooManyOperations` le plafond d'opérations, `ErrorDataTooLarge` un dépassement de taille ;
-/// toute autre erreur est le message du script, expurgé par [`leaf_message`].
-fn script_error(error: EvalAltResult) -> LymailleError {
+/// un `ErrorRuntime` porté par le marqueur d'annulation est l'annulation d'un `sleep` ; toute
+/// autre erreur est le message du script, expurgé par [`leaf_message`].
+fn script_error(error: EvalAltResult, cancelled: bool) -> LymailleError {
     match error {
+        EvalAltResult::ErrorTerminated(..) if cancelled => LymailleError::ScriptCancelled,
         EvalAltResult::ErrorTerminated(..) => LymailleError::ScriptTimeout,
+        EvalAltResult::ErrorRuntime(reason, _) if cancelled && reason.to_string() == SCRIPT_CANCELLED => {
+            LymailleError::ScriptCancelled
+        }
         EvalAltResult::ErrorTooManyOperations(..) => LymailleError::ScriptOperationLimit,
         EvalAltResult::ErrorDataTooLarge(..) => LymailleError::ScriptResultTooLarge,
         other => LymailleError::ScriptFailed(leaf_message(&other)),
@@ -479,6 +591,7 @@ mod tests {
     use super::{ScriptDeps, ScriptLimits, ScriptRunner};
     use crate::lymaille::definitions::mcp_server;
     use crate::lymaille::error::LymailleError;
+    use crate::lymaille::host::{HostError, LymailleHost, McpRequest, ScriptGrants, SharedHost};
     use crate::lymaille::host_module::{HostAccess, HostFunction, HostModule, HostModules};
     use crate::lymaille::identity::{CallerPrincipal, Identity};
     use crate::lymaille::mcp_mount::{DynMcpAuth, DynMcpConnector, McpConnectorFactory};
@@ -507,6 +620,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use vynil_core::Semver;
+    use vynil_core::cancel::CancelToken;
     use zeroize::Zeroizing;
 
     // ── Fixtures ────────────────────────────────────────────────────────────
@@ -1507,5 +1621,542 @@ mod tests {
             limite.max_result_bytes,
             BTreeSet::new(),
         )
+    }
+
+    // ── Fixtures des Scenario hôte (#70, #82) et annulation (#71) ─────────────
+
+    /// Hôte factice des Scenario `H_…` (issues #70 et #82) : rend visible `H_sandbox_alice_web`
+    /// pour `alice` seulement (rôle `sandbox` lié à `sandbox_srv`), accorde ses `ScriptGrants`
+    /// (méthode `script_grants` — `None` si la fixture n'en porte aucun, `Err` si `panne`), et
+    /// peut fournir un jeton `forward` (`forward`).
+    struct HoteSandbox {
+        grants: Option<ScriptGrants>,
+        panne: bool,
+        forward: Option<String>,
+    }
+
+    impl HoteSandbox {
+        fn granting(grants: ScriptGrants) -> Self {
+            Self {
+                grants: Some(grants),
+                panne: false,
+                forward: None,
+            }
+        }
+
+        fn sans_droits() -> Self {
+            Self {
+                grants: None,
+                panne: false,
+                forward: None,
+            }
+        }
+
+        fn en_panne() -> Self {
+            Self {
+                grants: None,
+                panne: true,
+                forward: None,
+            }
+        }
+
+        fn avec_jeton_forward(jeton: &str) -> Self {
+            Self {
+                grants: None,
+                panne: false,
+                forward: Some(jeton.to_owned()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LymailleHost for HoteSandbox {
+        async fn resolve_context(
+            &self,
+            id: &str,
+            caller: &CallerPrincipal,
+        ) -> Result<Option<ToolsetContext>, HostError> {
+            if id == "H_sandbox_alice_web" && caller.subject == "alice" {
+                let context = ToolsetContext::new("H_sandbox_alice_web".to_owned(), ContextLevel::Shared)
+                    .expect("le contexte de fixture se construit")
+                    .with_role("sandbox".to_owned(), "sandbox_srv".to_owned())
+                    .expect("la liaison de fixture est acceptee");
+                return Ok(Some(context));
+            }
+            Ok(None)
+        }
+
+        async fn script_grants(
+            &self,
+            context: &str,
+            caller: &CallerPrincipal,
+        ) -> Result<Option<ScriptGrants>, HostError> {
+            if context != "H_sandbox_alice_web" || caller.subject != "alice" {
+                return Ok(None);
+            }
+            if self.panne {
+                return Err(HostError);
+            }
+            Ok(self.grants.clone())
+        }
+
+        async fn forward_token(
+            &self,
+            _request: &McpRequest<'_>,
+            _caller: &CallerPrincipal,
+        ) -> Result<Option<Zeroizing<String>>, HostError> {
+            Ok(self.forward.clone().map(Zeroizing::new))
+        }
+    }
+
+    /// Module d'hôte espion (Scenario « l'annulation avant le démarrage n'exécute rien ») :
+    /// compte chaque appel de sa fonction — la preuve que rien n'a été exécuté.
+    struct ModuleEspion {
+        appels: Arc<AtomicUsize>,
+    }
+
+    impl HostModule for ModuleEspion {
+        fn name(&self) -> &'static str {
+            "espion"
+        }
+        fn access(&self) -> HostAccess {
+            HostAccess::Authenticated
+        }
+        fn functions(&self, _subject: &str) -> Vec<HostFunction> {
+            let appels = Arc::clone(&self.appels);
+            vec![HostFunction {
+                name: "show",
+                params: 1,
+                call: Arc::new(move |args: &mut [rhai::Dynamic]| {
+                    let _ = appels.fetch_add(1, Ordering::SeqCst);
+                    Ok(args.first().cloned().unwrap_or(rhai::Dynamic::UNIT))
+                }),
+            }]
+        }
+    }
+
+    /// Dépendances avec un hôte posé (les fixtures `deps_with` gardent `host: None`).
+    fn deps_with_host(
+        db: DatabaseConnection,
+        readers: Arc<ResourceRegistry>,
+        host_modules: Arc<HostModules>,
+        mcp: Arc<SpyFactory>,
+        host: SharedHost,
+    ) -> ScriptDeps {
+        ScriptDeps {
+            db,
+            readers,
+            host_modules,
+            secrets: Arc::new(FixedSecret),
+            clock: Arc::new(SystemClock::new()),
+            host: Some(host),
+            mcp,
+        }
+    }
+
+    /// L'annulation d'un script en boucle ou en sommeil (Scenario #71) : lance
+    /// `run_cancellable` et annule le jeton après `delay` ; rend l'exécution et la mesure.
+    async fn annule_apres(
+        runner: &ScriptRunner,
+        script: &str,
+        limites: &ScriptLimits,
+        delay: Duration,
+    ) -> (Result<serde_json::Value, LymailleError>, Duration) {
+        let token = CancelToken::new();
+        let canceller = {
+            let annule = token.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                annule.cancel();
+            })
+        };
+        let mesure = tokio::time::Instant::now();
+        let rendu = runner
+            .run_cancellable("G_vide", "alice", script, limites, None, &token)
+            .await;
+        let duree = mesure.elapsed();
+        let _joined = canceller.await;
+        (rendu, duree)
+    }
+
+    // ── Scenario #82 (hôte) : un rôle forward est monté avec le jeton de l'hôte ────────────────
+
+    /// Scenario « un rôle forward est monté avec le jeton de l'hôte » : serveur `forward` lié au
+    /// rôle d'un toolset accordé, hôte dont `forward_token` rend `Some(jeton)`, `token = None` —
+    /// le connecteur reçoit un porteur qui n'atteint que ce serveur ; sans fournisseur, le refus
+    /// actuel, sans jeton ni URL dans l'erreur.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_role_forward_est_monte_avec_le_jeton_de_l_hote() {
+        let db = db_test().await;
+        compte(&db, "alice", false).await;
+        inserer_serveur(
+            &db,
+            "fwd_srv",
+            "http://espion.invalid/fwd",
+            "forward",
+            None,
+            json!(["all"]),
+        )
+        .await;
+        inserer_toolset_actif(&db, &toolset("G_fwd", &[("fwd", true)])).await;
+        inserer_type(&db, "G_t_fwd", grants(&["G_fwd"], &[]), true).await;
+        inserer_contexte(&db, "G_fwdctx", Some("G_t_fwd"), &[("fwd", "fwd_srv")]).await;
+        let limites = ScriptLimits::default();
+
+        // Hôte qui fournit : le module est monté, l'appel porte un porteur sur ce seul serveur.
+        let spy = SpyFactory::new();
+        let hote: SharedHost = Arc::new(HoteSandbox::avec_jeton_forward("JETON-FORWARD-HOTE-jh4x"));
+        let deps = deps_with_host(
+            db.clone(),
+            empty_registry(),
+            empty_host_registry(),
+            Arc::clone(&spy),
+            hote,
+        );
+        let runner = ScriptRunner::new(deps);
+        let rendu = runner
+            .run("G_fwdctx", "alice", "fwd::ping(#{})", &limites, None)
+            .await
+            .expect("le jeton de l'hôte monte le rôle forward");
+        assert_eq!(rendu, json!({"pong": true}));
+        assert!(
+            spy.tool_calls()
+                .iter()
+                .any(|appel| appel.contains("/fwd") && appel.contains("bearer:true")),
+            "le jeton de l'hôte n'atteint que le serveur forward : {:?}",
+            spy.tool_calls()
+        );
+
+        // Hôte sans fournisseur : le refus actuel, inchangé, sans jeton ni URL.
+        let spy = SpyFactory::new();
+        let hote: SharedHost = Arc::new(HoteSandbox::sans_droits());
+        let deps = deps_with_host(
+            db.clone(),
+            empty_registry(),
+            empty_host_registry(),
+            Arc::clone(&spy),
+            hote,
+        );
+        let runner = ScriptRunner::new(deps);
+        let refus = runner
+            .run("G_fwdctx", "alice", "fwd::ping(#{})", &limites, None)
+            .await
+            .expect_err("sans fournisseur forward, le refus actuel tient");
+        match &refus {
+            LymailleError::Forbidden(message) => {
+                assert_eq!(message, "forward auth needs an interactive session");
+                assert!(
+                    !message.contains("JETON-FORWARD-HOTE-jh4x") && !message.contains("espion.invalid"),
+                    "l'erreur ne cite ni jeton ni URL : {message}"
+                );
+            }
+            autre => panic!("`Forbidden` attendue, obtenu : {autre:?}"),
+        }
+    }
+
+    // ── Scenario #70 : contexte `H_…` dont l'hôte accorde les droits ───────────────────────────
+
+    /// Scenario « un contexte hôte dont l'hôte accorde un rôle MCP exécute un script » : visible
+    /// pour `alice` avec `ScriptGrants { toolsets: ["G_ops"], modules: [] }`, le connecteur reçoit
+    /// l'appel authentifié pour `alice` ; `bob`, invisible, échoue en `Forbidden`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_contexte_hote_dont_l_hote_accorde_un_role_mcp_execute_un_script() {
+        let db = db_test().await;
+        compte(&db, "alice", false).await;
+        compte(&db, "bob", false).await;
+        inserer_serveur(
+            &db,
+            "sandbox_srv",
+            "http://espion.invalid/sandbox",
+            "static",
+            Some("FIXED_KEY"),
+            json!(["all"]),
+        )
+        .await;
+        inserer_toolset_actif(&db, &toolset("G_ops", &[("sandbox", true)])).await;
+        let spy = SpyFactory::new();
+        let hote: SharedHost = Arc::new(HoteSandbox::granting(ScriptGrants {
+            toolsets: vec!["G_ops".to_owned()],
+            modules: Vec::new(),
+        }));
+        let deps = deps_with_host(
+            db.clone(),
+            empty_registry(),
+            empty_host_registry(),
+            Arc::clone(&spy),
+            hote,
+        );
+        let runner = ScriptRunner::new(deps);
+        let limites = ScriptLimits::default();
+
+        let rendu = runner
+            .run(
+                "H_sandbox_alice_web",
+                "alice",
+                "sandbox::ping(#{})",
+                &limites,
+                None,
+            )
+            .await
+            .expect("le rôle accordé par l'hôte est monté comme en session");
+        assert_eq!(rendu, json!({"pong": true}));
+        assert!(
+            spy.tool_calls()
+                .iter()
+                .any(|appel| appel.contains("ping") && appel.contains("bearer:true")),
+            "l'appel porte l'authentification resolue pour alice : {:?}",
+            spy.tool_calls()
+        );
+
+        let refus = runner
+            .run("H_sandbox_alice_web", "bob", "sandbox::ping(#{})", &limites, None)
+            .await
+            .expect_err("le contexte n'est pas visible pour bob");
+        match &refus {
+            LymailleError::Forbidden(message) => assert_eq!(message, "script grants unavailable"),
+            autre => panic!("`Forbidden` attendue, obtenu : {autre:?}"),
+        }
+    }
+
+    /// Scenario « l'hôte ne contourne pas les droits réservés ni le principal » : le module
+    /// `AdminOnly` `guet` accordé par l'hôte échoue pour un non-admin (`forbidden`), passe pour
+    /// un admin ; un hôte sans la méthode `script_grants` garde l'échec fermé.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lhote_ne_contourne_pas_les_droits_reserves_ni_le_principal() {
+        let db = db_test().await;
+        compte(&db, "alice", false).await;
+        let hote: SharedHost = Arc::new(HoteSandbox::granting(ScriptGrants {
+            toolsets: Vec::new(),
+            modules: vec!["guet".to_owned()],
+        }));
+        let deps = deps_with_host(
+            db.clone(),
+            empty_registry(),
+            host_registry(),
+            SpyFactory::new(),
+            hote,
+        );
+        let runner = ScriptRunner::new(deps);
+        let limites = ScriptLimits::default();
+
+        let refus = runner
+            .run("H_sandbox_alice_web", "alice", "guet::show(7)", &limites, None)
+            .await
+            .expect_err("le grant d'un hôte ne franchit pas AdminOnly");
+        match &refus {
+            LymailleError::ScriptFailed(message) => {
+                assert!(message.contains("forbidden"), "le refus est rendu : {message}");
+            }
+            autre => panic!("`ScriptFailed` attendue, obtenu : {autre:?}"),
+        }
+
+        // L'admin passe : même contexte hôte, principal relu admin.
+        let admin = compte(&db, "carol", true).await;
+        let rendu = runner
+            .run("H_sandbox_alice_web", "carol", "guet::show(7)", &limites, None)
+            .await
+            .expect_err("l'hôte ne rend pas le contexte visible pour carol");
+        // Le contexte n'est visible que d'`alice` : la porte est d'abord la visibilité, vérifiée
+        // par le test précédent. La porte AdminOnly est prouvée ci-dessous sous le principal
+        // admin d'alice elle-même.
+        match &rendu {
+            LymailleError::Forbidden(message) => assert_eq!(message, "script grants unavailable"),
+            autre => panic!("`Forbidden` attendue, obtenu : {autre:?}"),
+        }
+        let _ = admin;
+        // Alice admin : le module accordé passe, le principal est relu à l'appel du module.
+        sync_group_memberships(
+            &db,
+            {
+                let compte = resolve_user(&db, "alice", None).await.expect("le compte d'alice");
+                compte.id
+            },
+            &[group::ADMIN_GROUP_NAME.to_owned()],
+        )
+        .await
+        .expect("alice rejoint le groupe admin");
+        let rendu = runner
+            .run("H_sandbox_alice_web", "alice", "guet::show(7)", &limites, None)
+            .await
+            .expect("l'admin passe la politique AdminOnly");
+        assert_eq!(rendu, json!(7));
+
+        // Hôte sans la méthode : l'échec fermé tient (défaut `Ok(None)`).
+        let hote_sans: SharedHost = Arc::new(HoteSandbox::sans_droits());
+        let deps = deps_with_host(
+            db.clone(),
+            empty_registry(),
+            host_registry(),
+            SpyFactory::new(),
+            hote_sans,
+        );
+        let runner = ScriptRunner::new(deps);
+        let refus = runner
+            .run("H_sandbox_alice_web", "alice", "guet::show(7)", &limites, None)
+            .await
+            .expect_err("l'hôte sans la méthode ne donne aucun droit");
+        match &refus {
+            LymailleError::Forbidden(message) => assert_eq!(message, "script grants unavailable"),
+            autre => panic!("`Forbidden` attendue, obtenu : {autre:?}"),
+        }
+    }
+
+    // ── Scenario #71 : annulation ──────────────────────────────────────────────────────────────
+
+    /// Scenario « un script en boucle ou en sommeil est interrompu par l'annulation » : `loop {}`
+    /// et `sleep(30)` rendent `ScriptCancelled` dans la seconde qui suit l'annulation, sans
+    /// résultat partiel.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_script_en_boucle_ou_en_sommeil_est_interrompu_par_l_annulation() {
+        let db = db_test().await;
+        compte(&db, "alice", false).await;
+        inserer_type(&db, "G_t_vide", grants(&[], &[]), true).await;
+        inserer_contexte(&db, "G_vide", Some("G_t_vide"), &[]).await;
+        let deps = deps_with(
+            db.clone(),
+            empty_registry(),
+            empty_host_registry(),
+            SpyFactory::new(),
+        );
+        let runner = ScriptRunner::new(deps);
+        let limites = ScriptLimits {
+            max_duration: Duration::from_secs(30),
+            max_operations: u64::MAX,
+            ..Default::default()
+        };
+
+        for script in ["loop {}", "sleep(30)"] {
+            let (rendu, duree) = annule_apres(&runner, script, &limites, Duration::from_millis(100)).await;
+            assert!(
+                matches!(&rendu, Err(LymailleError::ScriptCancelled)),
+                "`ScriptCancelled` attendue pour {script}, obtenu : {rendu:?}"
+            );
+            assert!(
+                duree < Duration::from_millis(900),
+                "l'annulation de {script} rend la main dans la seconde, mesuré : {duree:?}"
+            );
+        }
+    }
+
+    /// Scenario « l'annulation avant le démarrage n'exécute rien » : jeton déjà annulé, le module
+    /// d'hôte espion n'a rien reçu.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn l_annulation_avant_le_demarrage_n_execute_rien() {
+        let db = db_test().await;
+        compte(&db, "alice", false).await;
+        inserer_type(&db, "G_t_esp", grants(&[], &["espion"]), true).await;
+        inserer_contexte(&db, "G_espctx", Some("G_t_esp"), &[]).await;
+        let appels = Arc::new(AtomicUsize::new(0));
+        let mut registres = HostModules::new();
+        registres
+            .register(Arc::new(ModuleEspion {
+                appels: Arc::clone(&appels),
+            }))
+            .expect("espion se registre");
+        let deps = deps_with(
+            db.clone(),
+            empty_registry(),
+            Arc::new(registres),
+            SpyFactory::new(),
+        );
+        let runner = ScriptRunner::new(deps);
+        let limites = ScriptLimits::default();
+        let token = CancelToken::new();
+        token.cancel();
+
+        let refus = runner
+            .run_cancellable("G_espctx", "alice", "espion::show(7)", &limites, None, &token)
+            .await
+            .expect_err("le jeton déjà annulé annule avant tout");
+        assert!(
+            matches!(refus, LymailleError::ScriptCancelled),
+            "`ScriptCancelled` attendue, obtenu : {refus:?}"
+        );
+        assert_eq!(
+            appels.load(Ordering::SeqCst),
+            0,
+            "aucun module d'hôte n'a été appelé"
+        );
+    }
+
+    /// Scenario « annulation et délai restent deux erreurs distinctes » : `ScriptTimeout` sans
+    /// annulation, `ScriptCancelled` avec — un seul résultat typé, sans panique ; `run` sans
+    /// jeton se comporte comme avant.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn annulation_et_delai_resten_deux_erreurs_distinctes() {
+        let db = db_test().await;
+        compte(&db, "alice", false).await;
+        inserer_type(&db, "G_t_vide", grants(&[], &[]), true).await;
+        inserer_contexte(&db, "G_vide", Some("G_t_vide"), &[]).await;
+        let deps = deps_with(
+            db.clone(),
+            empty_registry(),
+            empty_host_registry(),
+            SpyFactory::new(),
+        );
+        let runner = ScriptRunner::new(deps);
+        let duree = ScriptLimits {
+            max_duration: Duration::from_millis(300),
+            max_operations: 1 << 60,
+            ..Default::default()
+        };
+
+        let refus = runner
+            .run_cancellable("G_vide", "alice", "loop {}", &duree, None, &CancelToken::new())
+            .await
+            .expect_err("sans annulation, le délai typé tient");
+        assert!(
+            matches!(refus, LymailleError::ScriptTimeout),
+            "`ScriptTimeout` attendu sans annulation, obtenu : {refus:?}"
+        );
+
+        let (rendu, _mesure) = annule_apres(&runner, "loop {}", &duree, Duration::from_millis(50)).await;
+        assert!(
+            matches!(&rendu, Err(LymailleError::ScriptCancelled)),
+            "`ScriptCancelled` attendue avec annulation (les deux bornes sont atteintes : un \
+             seul résultat typé), obtenu : {rendu:?}"
+        );
+
+        let refus = runner
+            .run("G_vide", "alice", "loop {}", &duree, None)
+            .await
+            .expect_err("run sans jeton garde le comportement d'avant");
+        assert!(
+            matches!(refus, LymailleError::ScriptTimeout),
+            "`ScriptTimeout` attendu de `run`, obtenu : {refus:?}"
+        );
+    }
+
+    /// Extension `H_…` (issue #70) du Scenario « un type de contexte absent ou sans version
+    /// active ne donne aucun droit » : hôte absent, hôte rendant `None` (méthode par défaut) et
+    /// hôte en panne rendent le même échec fermé pour un contexte `H_…`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_contexte_hote_sans_droits_est_un_echec_ferme() {
+        let db = db_test().await;
+        compte(&db, "alice", false).await;
+        let limites = ScriptLimits::default();
+
+        for hote in [
+            None,
+            Some(Arc::new(HoteSandbox::sans_droits()) as SharedHost),
+            Some(Arc::new(HoteSandbox::en_panne()) as SharedHost),
+        ] {
+            let mut deps = deps_with(
+                db.clone(),
+                empty_registry(),
+                empty_host_registry(),
+                SpyFactory::new(),
+            );
+            deps.host = hote;
+            let runner = ScriptRunner::new(deps);
+            let refus = runner
+                .run("H_sandbox_alice_web", "alice", "1 + 1", &limites, None)
+                .await
+                .expect_err("le contexte hôte sans droits ne donne aucun droit");
+            match &refus {
+                LymailleError::Forbidden(message) => assert_eq!(message, "script grants unavailable"),
+                autre => panic!("`Forbidden` attendue, obtenu : {autre:?}"),
+            }
+        }
     }
 }

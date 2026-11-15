@@ -153,11 +153,48 @@ pub fn build_auth(
 /// Classification de la colonne `auth_mode` : les hooks de `../definitions/mcp_server.sdd`
 /// n'écrivent que `none`, `static` ou `forward` ; toute autre valeur est traitée comme `none`
 /// (aucune authentification inventée à partir d'une ligne invalide).
-fn auth_mode(mode: &str) -> McpAuthMode {
+pub(crate) fn auth_mode(mode: &str) -> McpAuthMode {
     match mode {
         "static" => McpAuthMode::Static,
         "forward" => McpAuthMode::Forward,
         _ => McpAuthMode::None,
+    }
+}
+
+/// Le jeton `forward` d'un serveur lié, hors session interactive (amendement du 2026-11-13,
+/// issue #82, `./mcp_access.sdd`) : un jeton interactif présent est rendu tel quel, prioritaire,
+/// l'hôte n'est pas consulté ; sinon, avec un hôte, [`LymailleHost::forward_token`] tranche —
+/// `Ok(Some(jeton))` rend ce jeton, `Ok(None)` et `Err(HostError)` rendent `None` (la panne est
+/// tracée par une phrase fixe, jamais un texte de l'hôte) ; sans hôte, `None`.
+///
+/// Le résultat n'est consulté que pour un serveur en mode `Forward` : un `None` donne le refus
+/// actuel de [`build_auth`] (`Forbidden("forward auth needs an interactive session")`, non
+/// retryable), donc un hôte sans fournisseur garde exactement le comportement d'avant. Le jeton
+/// n'est ni persisté, ni mis en cache, ni tracé, et n'atteint que le serveur `forward` demandé ;
+/// `McpGrant::expires_at` ne s'applique pas à ce chemin (audience, durée et portée sont
+/// l'affaire exclusive de l'hôte).
+#[must_use = "le jeton rendu configure l'authentification d'un serveur `forward`"]
+pub async fn forward_token(
+    host: Option<&dyn LymailleHost>,
+    caller: &CallerPrincipal,
+    context: &str,
+    role: &str,
+    interactive: Option<&Zeroizing<String>>,
+) -> Option<Zeroizing<String>> {
+    if let Some(token) = interactive {
+        // Le jeton de la session interactive est prioritaire : l'hôte n'est pas consulté.
+        return Some(token.clone());
+    }
+    let host = host?;
+    let request = McpRequest { context, role };
+    match host.forward_token(&request, caller).await {
+        Ok(token) => token,
+        Err(_erreur_hote) => {
+            // Panne de l'hôte : `None`, tracé par une phrase fixe — `HostError` est sans contenu
+            // (`./host.sdd`), aucun texte d'hôte ne peut y figurer.
+            tracing::warn!("mcp host forward token failed");
+            None
+        }
     }
 }
 
@@ -922,5 +959,187 @@ mod tests {
             !rendu.contains("s3cret") && !rendu.contains("sbx.example"),
             "le Debug de SeaHostMcpAuth ne contient ni jeton ni URL : {rendu}"
         );
+    }
+
+    // ── Scenarios #82 (jeton `forward` hors session interactive) ──────────────
+
+    /// Hôte factice de la tâche #82 : `forward_token` rend sa valeur scriptée et compte ses
+    /// appels — preuve que le jeton interactif rend l'hôte jamais consulté.
+    struct HoteForward {
+        appels: AtomicUsize,
+        rendu: Result<Option<Zeroizing<String>>, HostError>,
+    }
+
+    impl HoteForward {
+        fn new(rendu: Result<Option<Zeroizing<String>>, HostError>) -> Arc<Self> {
+            Arc::new(Self {
+                appels: AtomicUsize::new(0),
+                rendu,
+            })
+        }
+
+        fn appels(&self) -> usize {
+            self.appels.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LymailleHost for HoteForward {
+        async fn forward_token(
+            &self,
+            _request: &McpRequest<'_>,
+            _caller: &CallerPrincipal,
+        ) -> Result<Option<Zeroizing<String>>, HostError> {
+            let _ = self.appels.fetch_add(1, Ordering::SeqCst);
+            match &self.rendu {
+                Ok(Some(jeton)) => Ok(Some(Zeroizing::new(jeton.to_string()))),
+                Ok(None) => Ok(None),
+                Err(erreur) => Err(*erreur),
+            }
+        }
+    }
+
+    /// Capture des traces (patron des tests de `../auth/mod.rs`) : preuve négative sur le texte
+    /// consigné, le jeton d'un serveur `forward` n'y paraît jamais.
+    #[derive(Default)]
+    struct CapturedTraces(std::sync::Mutex<Vec<String>>);
+
+    struct CaptureLayer(std::sync::Arc<CapturedTraces>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+            if !event.metadata().target().starts_with("miryad_core") {
+                return;
+            }
+            let mut rendered = String::new();
+            event.record(&mut RenderVisitor(&mut rendered));
+            self.0
+                .0
+                .lock()
+                .expect("verrou de la capture non empoisonne")
+                .push(rendered);
+        }
+    }
+
+    struct RenderVisitor<'a>(&'a mut String);
+
+    impl tracing::field::Visit for RenderVisitor<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write as _;
+            let _ = write!(self.0, " {}={value:?}", field.name());
+        }
+    }
+
+    /// Scenario « un hôte fournit le jeton forward hors session interactive » : `forward_token`
+    /// rend `Some(jeton)` ; `build_auth` sur ce résultat produit un `SeaMcpAuth` dont l'en-tête
+    /// porte ce jeton, et lui seul. Le jeton n'apparaît dans aucune trace capturée et dans aucun
+    /// `Debug` de `mcp_access` ; `McpGrant::expires_at` ne s'applique pas à ce chemin (aucune
+    /// date n'existe sur ce flux — le test le prouve par l'absence de toute expiration).
+    #[tokio::test]
+    async fn un_hote_fournit_le_jeton_forward_hors_session_interactive() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let db = db_migre().await;
+        let alice = compte(&db, "alice").await;
+        let hote = HoteForward::new(Ok(Some(Zeroizing::new("JETON-HOTE-FORWARD-UNIQUE".to_owned()))));
+        let captured = std::sync::Arc::new(CapturedTraces::default());
+        let subscriber = tracing_subscriber::registry::Registry::default()
+            .with(CaptureLayer(std::sync::Arc::clone(&captured)));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let jeton = forward_token(Some(&*hote), &alice, "G_prod", "fwd", None)
+            .await
+            .expect("l'hôte fournit le jeton");
+
+        let srv = modele("fwd_srv", "forward", None, json!(["all"]));
+        let auth = build_auth(&srv, ScriptedResolver::with(vec![]), Some(jeton))
+            .expect("le forward avec jeton se monte");
+        let entetes = auth
+            .as_ref()
+            .expect("un SeaMcpAuth forward")
+            .headers()
+            .await
+            .expect("l'en-tête forward est rendu");
+        assert!(
+            format!("{entetes:?}").contains("bearer: true"),
+            "l'en-tête porte le jeton de l'hôte : {entetes:?}"
+        );
+        let rendu_debug = format!("{auth:?}");
+        assert!(
+            !rendu_debug.contains("JETON-HOTE-FORWARD-UNIQUE"),
+            "le Debug de l'auth ne porte pas le jeton : {rendu_debug}"
+        );
+        let lignes = captured
+            .0
+            .lock()
+            .expect("verrou de la capture non empoisonne")
+            .clone();
+        assert!(
+            !lignes.iter().any(|l| l.contains("JETON-HOTE-FORWARD-UNIQUE")),
+            "le jeton n'apparaît dans aucune trace capturée : {lignes:?}"
+        );
+    }
+
+    /// Scenario « le jeton interactif reste prioritaire » : avec un jeton interactif fourni,
+    /// `forward_token` le rend tel quel et l'hôte n'est jamais appelé.
+    #[tokio::test]
+    async fn le_jeton_interactif_reste_prioritaire() {
+        let hote = HoteForward::new(Ok(Some(Zeroizing::new("JETON-HOTE".to_owned()))));
+        let alice = CallerPrincipal {
+            user_id: 1,
+            subject: "sub-test".to_owned(),
+            is_admin: false,
+        };
+        let interactif = Zeroizing::new("JETON-INTERACTIF".to_owned());
+
+        let rendu = forward_token(Some(&*hote), &alice, "G_prod", "fwd", Some(&interactif))
+            .await
+            .expect("le jeton interactif est rendu");
+        assert_eq!(&*rendu, "JETON-INTERACTIF", "le priorité est l'interactif");
+        assert_eq!(hote.appels(), 0, "l'hôte n'est jamais consulté");
+    }
+
+    /// Scenario « sans fournisseur, une panne ou un refus gardent le refus actuel » : hôte absent,
+    /// `Ok(None)` et `Err(HostError)` rendent `None` depuis `forward_token`, puis `build_auth`
+    /// refuse du même texte — et la panne ne cite jamais le texte de l'hôte.
+    #[tokio::test]
+    async fn sans_fournisseur_une_panne_ou_un_refus_gardent_le_refus_actuel() {
+        let alice = CallerPrincipal {
+            user_id: 1,
+            subject: "sub-test".to_owned(),
+            is_admin: false,
+        };
+        let srv = modele("fwd_srv", "forward", None, json!(["all"]));
+
+        // hôte absent
+        let sans_hote = forward_token(None, &alice, "G_prod", "fwd", None).await;
+        assert!(sans_hote.is_none(), "sans hôte, aucun jeton");
+
+        // hôte qui rend Ok(None)
+        let hote_none = HoteForward::new(Ok(None));
+        let rendu_none = forward_token(Some(&*hote_none), &alice, "G_prod", "fwd", None).await;
+        assert!(rendu_none.is_none(), "Ok(None) rend None");
+
+        // hôte en panne
+        let hote_panne = HoteForward::new(Err(HostError));
+        let rendu_panne = forward_token(Some(&*hote_panne), &alice, "G_prod", "fwd", None).await;
+        assert!(rendu_panne.is_none(), "la panne de l'hôte rend None");
+
+        // build_auth refuse du texte actuel, jamais d'un texte d'hôte
+        for jeton in [sans_hote, rendu_none, rendu_panne] {
+            let refus = build_auth(&srv, ScriptedResolver::with(vec![]), jeton)
+                .expect_err("un forward sans jeton est refusé");
+            match &refus {
+                LymailleError::Forbidden(message) => {
+                    assert_eq!(message, FORWARD_NEEDS_SESSION, "texte actuel : {message}");
+                    assert!(
+                        !message.contains("host resolution"),
+                        "aucun texte d'hôte dans le refus : {message}"
+                    );
+                }
+                autre => panic!("`Forbidden` attendue, obtenu : {autre:?}"),
+            }
+            assert!(!refus.retryable(), "le refus reste non retryable");
+        }
     }
 }

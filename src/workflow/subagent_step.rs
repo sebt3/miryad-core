@@ -1833,6 +1833,107 @@ mod tests {
         assert!(provider.requests().is_empty(), "toujours aucune inférence");
     }
 
+    // ── Scenario lot 2, amendement du 2026-11-13 (issue #82) : forward avec jeton de l'hôte -----
+
+    /// Ce que rend `forward_token` dans la fixture : fourni, absent, ou panne de l'hôte.
+    #[derive(Clone, Copy)]
+    enum RenduJeton {
+        Fourni,
+        Absent,
+        Panne,
+    }
+
+    /// Hôte fixture de l'amendement #82 : `forward_token` rend `rendu` ; le compteur prouve qu'il
+    /// n'est consulté qu'au montage du connecteur, jamais gardé ni redemandé par appel.
+    struct HoteJeton {
+        rendu: RenduJeton,
+        appels: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl LymailleHost for HoteJeton {
+        async fn forward_token(
+            &self,
+            _request: &McpRequest<'_>,
+            _caller: &CallerPrincipal,
+        ) -> Result<Option<Zeroizing<String>>, HostError> {
+            let _ = self.appels.fetch_add(1, Ordering::SeqCst);
+            match self.rendu {
+                RenduJeton::Fourni => Ok(Some(Zeroizing::new("JETON-HOTE-FORWARD".to_owned()))),
+                RenduJeton::Absent => Ok(None),
+                RenduJeton::Panne => Err(HostError),
+            }
+        }
+    }
+
+    /// Le `Scenario` « un serveur MCP en forward » amendé : avec un hôte dont `forward_token` rend
+    /// `Some(jeton)` et `interactive_token = None`, le step aboutit et le jeton n'atteint que ce
+    /// serveur ; `Ok(None)` et la panne de l'hôte conservent le refus non retryable actuel, sans
+    /// connecteur ni inférence.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_serveur_forward_monte_avec_le_jeton_de_l_hote() {
+        for (rendu, aboutit) in [
+            (RenduJeton::Fourni, true),
+            (RenduJeton::Absent, false),
+            (RenduJeton::Panne, false),
+        ] {
+            let db = test_db().await;
+            user(&db, "alice", false).await;
+            user(&db, "root", true).await;
+            wire_catalog(&db).await;
+            put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+            inserer_serveur(&db, "srv_fwd", "forward", json!(["all"])).await;
+            lier_contexte(&db, "alice", &[("sandbox", "srv_fwd")]).await;
+            let hote = Arc::new(HoteJeton {
+                rendu,
+                appels: AtomicUsize::new(0),
+            });
+            let shared: SharedHost = Arc::clone(&hote) as SharedHost;
+            let spy = Arc::new(SpyMcp::default());
+            let mcp: Arc<dyn McpConnectorFactory> = spy.clone();
+            let provider = Arc::new(ScriptedProvider::new(vec![Ok(pad_call(SCRIPT_DEUX_APPELS))]));
+            let step = step_with_seams(
+                db.clone(),
+                Arc::new(ScriptFactory(Arc::clone(&provider))),
+                Some(shared),
+                mcp,
+            );
+            let run = run_info("t-forward-hote", "s1", Some("alice"));
+
+            if aboutit {
+                let output = step
+                    .run(&run, config("G_sub", "inspecter"), HashMap::new())
+                    .await
+                    .expect("le jeton de l'hôte monte le serveur forward en batch");
+                assert_eq!(output, json!({ "verdict": "ok" }));
+                assert_eq!(spy.montes(), vec!["https://mcp.example/".to_owned()]);
+                // Listage au montage puis deux appels d'outil : trois relevés porteurs — le jeton
+                // de l'hôte est bien celui que le connecteur relève, et lui seul est concerné.
+                assert_eq!(spy.releves(), vec![("https://mcp.example/".to_owned(), true); 3]);
+                // Une seule consultation : au montage, jamais par appel d'outil.
+                assert_eq!(hote.appels.load(Ordering::SeqCst), 1);
+                assert_eq!(provider.requests().len(), 1, "un seul tour d'inférence");
+            } else {
+                let error = step
+                    .run(&run, config("G_sub", "inspecter"), HashMap::new())
+                    .await
+                    .expect_err("sans fournisseur de jeton, le refus d'avant tient");
+                assert!(
+                    !error.retryable,
+                    "le refus du forward sans jeton n'est pas retryable : {error}"
+                );
+                assert!(
+                    error
+                        .message
+                        .contains("forward auth needs an interactive session"),
+                    "la phrase fixe de `build_auth` : {error}"
+                );
+                assert!(spy.montes().is_empty(), "aucun connecteur sans jeton");
+                assert!(provider.requests().is_empty(), "aucune inférence n'est partie");
+            }
+        }
+    }
+
     // ── Scenario: le plafond d'application borne max_secs (DEC-29) -----------------------------
 
     /// Hôte fixture du `Scenario` DEC-27 : accorde le rôle `sandbox` au seul subject `alice`,

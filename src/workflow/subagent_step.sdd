@@ -156,7 +156,9 @@ Tasks:
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Point 6 : agent sans profil → `default_profile()` ; absence/`None`/panne → `StepError` non retryable « no default profile configured ». Tests : `un_agent_sans_profil_suit_le_profil_par_defaut_de_lhote`, `sans_defaut_de_profil_le_step_echoue_sans_retry`.
     profil → `LymailleHost::default_profile()` ; absence → `StepError` **non retryable** (« no default profile configured »). `Scenario` : agent sans profil, hôte qui désigne un profil ; sans défaut → step en
     échec non retryable. Puis tests d'abord, puis ./subagent_step.rs. Après ./../lymaille/interactive/assemble.sdd.
-  [ ] Issue #82 — `forward` dans un step batch. Spec d'abord : le `Must` « un `forward` est un `StepError` non retryable, sans repli » (point `interactive_token = None`) devient : le step passe l'hôte à
+  [x] Issue #82 — `forward` dans un step batch. Spec d'abord : le `Must` « un `forward` est un `StepError` non retryable, sans repli » (point `interactive_token = None`) devient : le step passe l'hôte à
+    Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Step batch : `forward` avec hôte qui fournit → step aboutit (jeton consulté une fois au montage) ; absent/`None`/panne → `StepError` non retryable, zéro inférence.
+    [?] (implementer) : le bloc `Scenario` « un serveur MCP en forward… » n'a pas reçu de clause amendée (seul le `Must` porte le cas) ; le test suit le `Must`. Amendement formel à prévoir si le développeur principal veut la trace.
     `build_auth` (./../lymaille/mcp_access.sdd) ; jeton fourni → serveur monté ; sinon le `StepError` non retryable actuel. Amender le `Scenario` « un serveur MCP en forward fait échouer le step sans retry »
     (cas sans fournisseur conservé) et ajouter le cas « hôte qui fournit un jeton ». Puis tests d'abord, puis ./subagent_step.rs. Après ./../lymaille/mcp_access.sdd.
 

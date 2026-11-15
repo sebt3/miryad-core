@@ -69,6 +69,11 @@ pub enum LymailleError {
     /// `scripts-hote#FR-7`) ; `{0}` est le message d'erreur Rhai, sans source. Non retryable.
     #[error("MRD-LYMAILLE-016: script failed: {0}")]
     ScriptFailed(String),
+    /// Exécuteur de script : annulation par l'appelant de `ScriptRunner::run_cancellable`
+    /// (amendement du 2026-11-13, issue #71) ; distincte de `ScriptTimeout`, sans charge utile.
+    /// Non retryable.
+    #[error("MRD-LYMAILLE-017: script was cancelled")]
+    ScriptCancelled,
 }
 
 impl LymailleError {
@@ -86,7 +91,7 @@ impl LymailleError {
     /// Code `MRD-LYMAILLE-NNN` de la variante (amendement du 2026-11-11) : le préfixe de
     /// `Display` avant le premier `:`. Le `#[error(...)]` reste l'unique source de vérité du
     /// code, aucun littéral n'est dupliqué ici ; le test `code_equals_display_prefix` verrouille
-    /// l'égalité pour les variantes `-001` à `-016`.
+    /// l'égalité pour les variantes `-001` à `-017` (amendement du 2026-11-13, issue #71).
     #[must_use]
     pub fn code(&self) -> String {
         let message = self.to_string();
@@ -128,6 +133,8 @@ mod tests {
             (LymailleError::ScriptOperationLimit, "MRD-LYMAILLE-014"),
             (LymailleError::ScriptResultTooLarge, "MRD-LYMAILLE-015"),
             (LymailleError::ScriptFailed("x".into()), "MRD-LYMAILLE-016"),
+            // Amendement du 2026-11-13 (issue #71) : annulation d'un `run_cancellable`.
+            (LymailleError::ScriptCancelled, "MRD-LYMAILLE-017"),
         ];
         for (err, code) in cases {
             let msg = err.to_string();
@@ -223,8 +230,25 @@ mod tests {
         assert!(!failed.retryable(), "un échec du script ne se rejoue pas");
     }
 
+    // Amendement du 2026-11-13 (issue #71) : message exact et `Debug` même forme que les autres
+    // variantes (code, texte contractuel, sans charge utile — rien de plus), et annulation non
+    // rejouable, distincte du délai.
+    #[test]
+    fn amendement_issue_71_script_annule_message_debug_et_retryabilite() {
+        let annule = LymailleError::ScriptCancelled;
+        assert_eq!(annule.to_string(), "MRD-LYMAILLE-017: script was cancelled");
+        assert_eq!(format!("{annule:?}"), "ScriptCancelled");
+        assert!(!annule.retryable(), "une annulation ne se rejoue pas");
+        assert_ne!(
+            LymailleError::ScriptCancelled.code(),
+            LymailleError::ScriptTimeout.code(),
+            "l'annulation est distincte du délai"
+        );
+    }
+
     // Scenario: `code()` égale le préfixe de `Display` pour chaque variante (amendement du
-    // 2026-11-11) : pour les seize variantes `-001` à `-016`, `code()` est exactement la partie
+    // 2026-11-11) : pour les dix-sept variantes `-001` à `-017` (issue #71), `code()` est
+    // exactement la partie
     // de `to_string()` avant le premier `:`, sans contenu de cause.
     #[test]
     fn code_equals_display_prefix() {
@@ -260,6 +284,8 @@ mod tests {
             (LymailleError::ScriptOperationLimit, "MRD-LYMAILLE-014"),
             (LymailleError::ScriptResultTooLarge, "MRD-LYMAILLE-015"),
             (LymailleError::ScriptFailed("cause x".into()), "MRD-LYMAILLE-016"),
+            // Amendement du 2026-11-13 (issue #71) : l'annulation rejoint la table des codes.
+            (LymailleError::ScriptCancelled, "MRD-LYMAILLE-017"),
         ];
         for (err, expected) in cases {
             let msg = err.to_string();
@@ -316,6 +342,8 @@ mod tests {
             (LymailleError::ScriptOperationLimit, false),
             (LymailleError::ScriptResultTooLarge, false),
             (LymailleError::ScriptFailed("x".into()), false),
+            // Amendement du 2026-11-13 (issue #71) : une annulation ne se rejoue pas.
+            (LymailleError::ScriptCancelled, false),
         ];
         for (err, expected) in cases {
             assert_eq!(err.retryable(), expected, "variante : {err}");

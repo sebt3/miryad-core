@@ -27,7 +27,9 @@ use ::lymaille::mcp_module;
 use super::error::LymailleError;
 use super::host::SharedHost;
 use super::identity::{CallerPrincipal, Identity};
-use super::mcp_access::{RoleBinding, SeaHostMcpAuth, build_auth, resolve_role};
+use super::mcp_access::{
+    McpAuthMode, RoleBinding, SeaHostMcpAuth, auth_mode, build_auth, forward_token, resolve_role,
+};
 use super::secret::SecretResolver;
 
 /// Auth MCP sous forme objet : [`McpAuth`] de `lymaille` n'est pas object-safe (méthode
@@ -194,8 +196,10 @@ pub(crate) struct MountDeps<'a> {
 }
 
 /// Connecteur du rôle selon sa liaison (étapes 2 et 3 de `mount_role`). Une liaison `Host` sans
-/// hôte dans les dépendances est un échec fermé (`Config`) : aucun connecteur n'est créé.
-fn connector_for(
+/// hôte dans les dépendances est un échec fermé (`Config`) : aucun connecteur n'est créé. Pour un
+/// serveur `forward` de la table, le jeton est celui de la session interactive, sinon celui que
+/// fournit l'hôte (`forward_token`, amendement du 2026-11-13, issue #82) — d'où l'`async`.
+async fn connector_for(
     deps: &MountDeps<'_>,
     caller: &CallerPrincipal,
     context: &str,
@@ -224,7 +228,21 @@ fn connector_for(
             ))
         }
         RoleBinding::Table(model) => {
-            let auth = build_auth(&model, Arc::clone(deps.secrets), interactive_token.cloned())?
+            // `forward` : jeton interactif prioritaire, sinon celui de l'hôte (issue #82). Les
+            // autres modes ne consultent ni l'un ni l'autre fournisseur.
+            let token = if auth_mode(&model.auth_mode) == McpAuthMode::Forward {
+                forward_token(
+                    deps.host.map(|host| &**host),
+                    caller,
+                    context,
+                    role,
+                    interactive_token,
+                )
+                .await
+            } else {
+                interactive_token.cloned()
+            };
+            let auth = build_auth(&model, Arc::clone(deps.secrets), token)?
                 .map(|sea_auth| Arc::new(sea_auth) as Arc<dyn DynMcpAuth>);
             Ok(deps.mcp.make(
                 &model.url,
@@ -267,7 +285,7 @@ pub(crate) async fn mount_role(
         bound_server,
     )
     .await?;
-    let connector = connector_for(deps, caller, context, role, binding, interactive_token)?;
+    let connector = connector_for(deps, caller, context, role, binding, interactive_token).await?;
     let module = mcp_module(role, Arc::new(DynConnector(connector)), env)
         .await
         .map_err(|error| LymailleError::Store(error.to_string()))?;
@@ -364,6 +382,23 @@ mod tests {
         ) -> Result<McpDecision, HostError> {
             let rang = self.appels.fetch_add(1, Ordering::SeqCst).saturating_add(1);
             (self.rendre)(rang)
+        }
+    }
+
+    /// Hôte factice de l'amendement #82 : `forward_token` rend ce qu'on lui a posé ; les autres
+    /// méthodes gardent leurs défauts (`resolve_mcp` refusé, aucune liaison `Host`).
+    struct HoteForward {
+        rendu: Result<Option<String>, HostError>,
+    }
+
+    #[async_trait::async_trait]
+    impl LymailleHost for HoteForward {
+        async fn forward_token(
+            &self,
+            _request: &McpRequest<'_>,
+            _caller: &CallerPrincipal,
+        ) -> Result<Option<Zeroizing<String>>, HostError> {
+            Ok(self.rendu.clone()?.map(Zeroizing::new))
         }
     }
 
@@ -473,6 +508,17 @@ mod tests {
             Ok(_) => panic!("le montage devait echouer"),
             Err(erreur) => erreur,
         }
+    }
+
+    /// `mount_role` des Scenario : contexte `G_prod`, serveur lié donné, `env()`, aucun nom pris.
+    async fn monter(
+        deps: &MountDeps<'_>,
+        alice: &CallerPrincipal,
+        role: &str,
+        server: &str,
+        jeton: Option<&Zeroizing<String>>,
+    ) -> Result<GrantedModule, LymailleError> {
+        mount_role(deps, alice, "G_prod", role, Some(server), jeton, &[], env()).await
     }
 
     // ── Scenarios ───────────────────────────────────────────────────────────
@@ -619,7 +665,7 @@ mod tests {
             mcp: &spy,
         };
 
-        let refus = echec_de(mount_role(&deps, &alice, "G_prod", "fwd", Some("fwd"), None, &[], env()).await);
+        let refus = echec_de(monter(&deps, &alice, "fwd", "fwd", None).await);
         assert!(
             matches!(&refus, LymailleError::Forbidden(message) if message == "forward auth needs an interactive session"),
             "refus attendu : {refus:?}"
@@ -627,30 +673,12 @@ mod tests {
         assert!(spy.montes().is_empty(), "aucun connecteur sans jeton interactif");
 
         let jeton = Zeroizing::new("jeton-session".to_owned());
-        let _fwd = mount_role(
-            &deps,
-            &alice,
-            "G_prod",
-            "fwd",
-            Some("fwd"),
-            Some(&jeton),
-            &[],
-            env(),
-        )
-        .await
-        .expect("le serveur forward est monté avec le jeton du tour");
-        let _plain = mount_role(
-            &deps,
-            &alice,
-            "G_prod",
-            "plain",
-            Some("plain"),
-            Some(&jeton),
-            &[],
-            env(),
-        )
-        .await
-        .expect("le serveur sans auth est monté");
+        let _fwd = monter(&deps, &alice, "fwd", "fwd", Some(&jeton))
+            .await
+            .expect("le serveur forward est monté avec le jeton du tour");
+        let _plain = monter(&deps, &alice, "plain", "plain", Some(&jeton))
+            .await
+            .expect("le serveur sans auth est monté");
 
         assert_eq!(
             spy.releves(),
@@ -658,6 +686,59 @@ mod tests {
                 ("https://fwd.example/mcp".to_string(), true),
                 ("https://plain.example/mcp".to_string(), false),
             ]
+        );
+
+        // Amendement du 2026-11-13 (issue #82) : un hôte dont `forward_token` rend
+        // `Some(jeton)`, sans jeton interactif — le module est accordé et le jeton de l'hôte
+        // n'atteint que ce serveur (`plain`, monté dans le même tour, reste sans porteur).
+        let avec_jeton: SharedHost = Arc::new(HoteForward {
+            rendu: Ok(Some("jeton-hote-forward".to_owned())),
+        });
+        let deps_hote = MountDeps {
+            db: &db,
+            secrets: &secrets,
+            host: Some(&avec_jeton),
+            mcp: &spy,
+        };
+        let _fwd = monter(&deps_hote, &alice, "fwd", "fwd", None)
+            .await
+            .expect("le jeton de l'hôte monte le serveur forward");
+        let _plain = monter(&deps_hote, &alice, "plain", "plain", None)
+            .await
+            .expect("le serveur sans auth reste monté sans porteur");
+        assert_eq!(
+            &spy.releves()[2..],
+            &[
+                ("https://fwd.example/mcp".to_string(), true),
+                ("https://plain.example/mcp".to_string(), false),
+            ],
+            "le jeton de l'hôte n'atteint que le serveur forward"
+        );
+
+        // `Ok(None)` puis une panne de l'hôte rendent le refus ci-dessus, sans nouveau connecteur.
+        let montes_avant = spy.montes().len();
+        for hote in [
+            Arc::new(HoteForward { rendu: Ok(None) }) as SharedHost,
+            Arc::new(HoteForward {
+                rendu: Err(HostError),
+            }) as SharedHost,
+        ] {
+            let deps_sans = MountDeps {
+                db: &db,
+                secrets: &secrets,
+                host: Some(&hote),
+                mcp: &spy,
+            };
+            let refus = echec_de(monter(&deps_sans, &alice, "fwd", "fwd", None).await);
+            assert!(
+                matches!(&refus, LymailleError::Forbidden(message) if message == "forward auth needs an interactive session"),
+                "le refus d'avant tient sans fournisseur de jeton : {refus:?}"
+            );
+        }
+        assert_eq!(
+            spy.montes().len(),
+            montes_avant,
+            "aucun connecteur pour un jeton absent ou en panne"
         );
     }
 
@@ -709,7 +790,7 @@ mod tests {
         };
         let liaison = RoleBinding::Host(grant("https://sbx/mcp", "jeton", None));
 
-        let erreur = echec_de(connector_for(&deps, &alice, "G_prod", "sandbox", liaison, None));
+        let erreur = echec_de(connector_for(&deps, &alice, "G_prod", "sandbox", liaison, None).await);
 
         assert!(
             matches!(&erreur, LymailleError::Config(message) if message == "host binding without a host"),
