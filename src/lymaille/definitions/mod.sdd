@@ -57,7 +57,8 @@ Tasks:
   [?] (implementer, lot 3) : les deux liens [`check_toolset`] de la doc de `./toolset.rs` et `./private_toolset.rs` sont passés en texte
     inline car la cible est `pub(crate)` — un lien vers son chemin aurait créé un warning `private_intra_doc_links` de plus. Si un lien
     est souhaité, il faut rendre `check_toolset` pub (changement de surface). Choix provisoire : texte inline.
-  [ ] Issues #79 et #72 — coordination des dix `Model` (aucun code propre à ce fichier hors doc `//!` : mentionner la dérivation d'OpenAPI et de TypeScript). Ordre recommandé : #79 d'abord (aucun
+  [x] Issues #79 et #72 — coordination des dix `Model` (aucun code propre à ce fichier hors doc `//!` : mentionner la dérivation d'OpenAPI et de TypeScript). Ordre recommandé : #79 d'abord (aucun
+    Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, feature non déclarée, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Doc `//!` portant les deux dérives ; les deux volets livrés (10 enfants `[x]` au cycle #79 pour `ToSchema`, au cycle #72 pour `TS`).
     blocage amont, objet libre pour les colonnes JSON), #72 ensuite (dépend d'une version amont de `lymaille`). Les dix specs enfants portent chacune leur tâche.
     Arbitré le 2026-11-13 : `DateTimeUtc` : `#[schema(value_type = String, format = DateTime)]` et `#[ts(type = "string")]` par colonne (recommandé : conserve la règle de ./../mod.sdd « aucune feature d'implémentation de type tiers
     de `ts-rs` », `at` y est déjà un `String`) plutôt que d'activer la feature `chrono` d'`utoipa` et `chrono-impl` de `ts-rs`.

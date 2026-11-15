@@ -29,7 +29,8 @@ use crate::resource::MiryadResource;
 
 /// Définition d'agent privée persistée — la table `miryad_lymaille_agents` posée par
 /// `../migration.rs`, colonnes du contrat `Must` de `./private_agent.sdd`.
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, utoipa::ToSchema, ts_rs::TS)]
+#[ts(rename = "PrivateAgentModel")]
 #[sea_orm(table_name = "miryad_lymaille_agents")]
 pub struct Model {
     /// Clé primaire entière auto-incrémentée (convention `miryad_*` de la crate).
@@ -49,10 +50,12 @@ pub struct Model {
     /// L'`lymaille::AgentDefinition` complète, colonne JSON : la source de vérité (DSD
     /// `DEC-17`), validée par `before_create` et `before_update`.
     #[schema(value_type = Object)]
+    #[ts(as = "::lymaille::AgentDefinition")]
     pub definition: serde_json::Value,
     /// Horodatage de création, posé par le hook de création (aucune entité de la crate ne porte
     /// d'`updated_at`).
     #[schema(value_type = String, format = DateTime)]
+    #[ts(type = "string")]
     pub created_at: DateTimeUtc,
 }
 
@@ -883,5 +886,66 @@ mod tests {
             "l'objet libre de `definition` ne détaille aucune propriété : {}",
             proprietes["definition"]
         );
+    }
+
+    /// Scenario « l'export TypeScript du Model correspond à la sérialisation » (issue #72,
+    /// `./private_agent.sdd`) : la déclaration `private_agent.ts` écrite par `export_typescript` de
+    /// `../interactive/event.sdd` porte exactement les colonnes du `Model` — chaque clé du JSON
+    /// du `Model` sérialisé est une propriété, et aucune propriété n'est en trop — avec `number`
+    /// pour les entiers, `string` pour la date et la colonne JSON typée par le type de
+    /// `lymaille` correspondant. La sérialisation du `Model` n'a pas changé (mêmes clés, mêmes
+    /// valeurs : le JSON est celui des colonnes, vérifié par l'égalité des ensembles).
+    #[test]
+    fn lexport_typescript_du_modele_correspond_a_la_serialisation() {
+        let dir = crate::lymaille::interactive::event::tests::scratch_dir("export-private_agent");
+        let rendu = crate::lymaille::interactive::event::export_typescript(&dir)
+            .expect("l'export TypeScript réussit");
+        let chemin = dir.join("private_agent.ts");
+        assert!(
+            rendu.contains(&chemin),
+            "`private_agent.ts` est dans les chemins rendus"
+        );
+        let texte = std::fs::read_to_string(&chemin).expect("`private_agent.ts` s'écrit et se relit");
+        assert!(
+            texte.contains("export type PrivateAgentModel = {"),
+            "la déclaration porte le nom distinct `PrivateAgentModel`, pas le simple `Model` : {texte}"
+        );
+        let modele = modele(1, "prive");
+        let json = serde_json::to_value(&modele).expect("le Model sérialise");
+        let champs = crate::lymaille::interactive::event::tests::decl_fields(&texte);
+        let noms: std::collections::BTreeSet<&str> = champs.iter().map(|(nom, ..)| nom.as_str()).collect();
+        let cles: std::collections::BTreeSet<&str> = json
+            .as_object()
+            .expect("le Model sérialise en objet")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            noms, cles,
+            "les propriétés de la déclaration sont exactement les clés du JSON sérialisé"
+        );
+        let type_de = |nom: &str| -> &str {
+            champs
+                .iter()
+                .find(|(champ, ..)| champ == nom)
+                .map_or_else(|| panic!("la colonne {nom} est déclarée"), |(.., ty)| ty.as_str())
+        };
+        assert_eq!(type_de("id"), "number", "l'entier `id` est un number");
+        assert_eq!(
+            type_de("created_at"),
+            "string",
+            "la date `created_at` (`DateTimeUtc`) est une string RFC 3339"
+        );
+        assert_eq!(
+            type_de("definition"),
+            "AgentDefinition",
+            "colonne definition typée AgentDefinition dans la déclaration"
+        );
+        assert_eq!(
+            type_de("owner_id"),
+            "number",
+            "colonne owner_id typée number dans la déclaration"
+        );
+        std::fs::remove_dir_all(&dir).expect("le répertoire de test se nettoie");
     }
 }

@@ -16,7 +16,8 @@ use crate::resource::MiryadResource;
 
 /// Profil de modèle persisté — la table `miryad_lymaille_profiles` posée par `../migration.rs`,
 /// colonnes du contrat `Must` de ./profile.sdd.
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, utoipa::ToSchema, ts_rs::TS)]
+#[ts(rename = "ProfileModel")]
 #[sea_orm(table_name = "miryad_lymaille_profiles")]
 pub struct Model {
     /// Clé primaire entière auto-incrémentée (convention `miryad_*` de la crate).
@@ -28,9 +29,11 @@ pub struct Model {
     /// L'`lymaille::ModelProfile` complète, colonne JSON : la source de vérité, désérialisée et
     /// validée par les hooks.
     #[schema(value_type = Object)]
+    #[ts(as = "::lymaille::ModelProfile")]
     pub profile: serde_json::Value,
     /// Horodatage de création, posé par le hook de création.
     #[schema(value_type = String, format = DateTime)]
+    #[ts(type = "string")]
     pub created_at: DateTimeUtc,
 }
 
@@ -324,5 +327,61 @@ mod tests {
             "l'objet libre de `profile` ne détaille aucune propriété : {}",
             proprietes["profile"]
         );
+    }
+
+    /// Scenario « l'export TypeScript du Model correspond à la sérialisation » (issue #72,
+    /// `./profile.sdd`) : la déclaration `profile.ts` écrite par `export_typescript` de
+    /// `../interactive/event.sdd` porte exactement les colonnes du `Model` — chaque clé du JSON
+    /// du `Model` sérialisé est une propriété, et aucune propriété n'est en trop — avec `number`
+    /// pour les entiers, `string` pour la date et la colonne JSON typée par le type de
+    /// `lymaille` correspondant. La sérialisation du `Model` n'a pas changé (mêmes clés, mêmes
+    /// valeurs : le JSON est celui des colonnes, vérifié par l'égalité des ensembles).
+    #[test]
+    fn lexport_typescript_du_modele_correspond_a_la_serialisation() {
+        let dir = crate::lymaille::interactive::event::tests::scratch_dir("export-profile");
+        let rendu = crate::lymaille::interactive::event::export_typescript(&dir)
+            .expect("l'export TypeScript réussit");
+        let chemin = dir.join("profile.ts");
+        assert!(
+            rendu.contains(&chemin),
+            "`profile.ts` est dans les chemins rendus"
+        );
+        let texte = std::fs::read_to_string(&chemin).expect("`profile.ts` s'écrit et se relit");
+        assert!(
+            texte.contains("export type ProfileModel = {"),
+            "la déclaration porte le nom distinct `ProfileModel`, pas le simple `Model` : {texte}"
+        );
+        let modele = modele("rapide");
+        let json = serde_json::to_value(&modele).expect("le Model sérialise");
+        let champs = crate::lymaille::interactive::event::tests::decl_fields(&texte);
+        let noms: std::collections::BTreeSet<&str> = champs.iter().map(|(nom, ..)| nom.as_str()).collect();
+        let cles: std::collections::BTreeSet<&str> = json
+            .as_object()
+            .expect("le Model sérialise en objet")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            noms, cles,
+            "les propriétés de la déclaration sont exactement les clés du JSON sérialisé"
+        );
+        let type_de = |nom: &str| -> &str {
+            champs
+                .iter()
+                .find(|(champ, ..)| champ == nom)
+                .map_or_else(|| panic!("la colonne {nom} est déclarée"), |(.., ty)| ty.as_str())
+        };
+        assert_eq!(type_de("id"), "number", "l'entier `id` est un number");
+        assert_eq!(
+            type_de("created_at"),
+            "string",
+            "la date `created_at` (`DateTimeUtc`) est une string RFC 3339"
+        );
+        assert_eq!(
+            type_de("profile"),
+            "ModelProfile",
+            "colonne profile typée ModelProfile dans la déclaration"
+        );
+        std::fs::remove_dir_all(&dir).expect("le répertoire de test se nettoie");
     }
 }

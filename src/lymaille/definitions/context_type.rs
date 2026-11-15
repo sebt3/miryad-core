@@ -41,7 +41,8 @@ const GRANTS_FORME: &str =
 /// Type de contexte du catalogue persisté — la table `miryad_lymaille_catalog_context_types`
 /// posée par `../migration.rs` (`m20261104_000001_lymaille_lot2`), colonnes du contrat `Must` de
 /// `./context_type.sdd`.
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, utoipa::ToSchema, ts_rs::TS)]
+#[ts(rename = "ContextTypeModel")]
 #[sea_orm(table_name = "miryad_lymaille_catalog_context_types")]
 pub struct Model {
     /// Clé primaire entière auto-incrémentée (convention `miryad_*` de la crate).
@@ -61,6 +62,7 @@ pub struct Model {
     /// explicite hors de l'ensemble est refusé à l'ouverture (`mcp_access`/`assemble`, hors de
     /// cette entité).
     #[schema(value_type = Object)]
+    #[ts(type = "string[]")]
     pub allowed_agents: serde_json::Value,
     /// Droits accordés aux scripts de ce type, objet `{"toolsets":[…],"modules":[…]}` (DSD
     /// `scripts-hote` `DEC-2`, amendement du 2026-11-11) : toolsets du catalogue (`G_…`) et noms
@@ -69,17 +71,21 @@ pub struct Model {
     /// vérifiés ici (le registre `HostModules` est hors de portée d'un hook, la vérification a
     /// lieu à l'exécution, `../script_runner.sdd`).
     #[schema(value_type = Object)]
+    #[ts(type = "{ toolsets: string[]; modules: string[] }")]
     pub script_grants: serde_json::Value,
     /// Le `lymaille::ContextType` actif, colonne JSON nullable — `None` tant qu'aucune version
     /// n'est activée (DSD `DEC-18`).
     #[schema(value_type = Object)]
+    #[ts(as = "Option<::lymaille::ContextType>")]
     pub active: Option<serde_json::Value>,
     /// Le `lymaille::ContextType` en brouillon, colonne JSON nullable — jamais lu comme version
     /// active (DSD `DEC-18`).
     #[schema(value_type = Object)]
+    #[ts(as = "Option<::lymaille::ContextType>")]
     pub draft: Option<serde_json::Value>,
     /// Horodatage de création, posé par le hook de création.
     #[schema(value_type = String, format = DateTime)]
+    #[ts(type = "string")]
     pub created_at: DateTimeUtc,
 }
 
@@ -902,5 +908,87 @@ mod tests {
                 proprietes[colonne]
             );
         }
+    }
+
+    /// Scenario « l'export TypeScript du Model correspond à la sérialisation » (issue #72,
+    /// `./context_type.sdd`) : la déclaration `context_type.ts` écrite par `export_typescript` de
+    /// `../interactive/event.sdd` porte exactement les colonnes du `Model` — chaque clé du JSON
+    /// du `Model` sérialisé est une propriété, et aucune propriété n'est en trop — avec `number`
+    /// pour les entiers, `string` pour la date et la colonne JSON typée par le type de
+    /// `lymaille` correspondant. La sérialisation du `Model` n'a pas changé (mêmes clés, mêmes
+    /// valeurs : le JSON est celui des colonnes, vérifié par l'égalité des ensembles).
+    #[test]
+    fn lexport_typescript_du_modele_correspond_a_la_serialisation() {
+        let dir = crate::lymaille::interactive::event::tests::scratch_dir("export-context_type");
+        let rendu = crate::lymaille::interactive::event::export_typescript(&dir)
+            .expect("l'export TypeScript réussit");
+        let chemin = dir.join("context_type.ts");
+        assert!(
+            rendu.contains(&chemin),
+            "`context_type.ts` est dans les chemins rendus"
+        );
+        let texte = std::fs::read_to_string(&chemin).expect("`context_type.ts` s'écrit et se relit");
+        assert!(
+            texte.contains("export type ContextTypeModel = {"),
+            "la déclaration porte le nom distinct `ContextTypeModel`, pas le simple `Model` : {texte}"
+        );
+        let modele = Model {
+            id: 1,
+            name: "G_type".to_string(),
+            version: "1.0.0".to_string(),
+            allowed_agents: json!(["G_un", "G_deux"]),
+            script_grants: grants_vide(),
+            active: Some(type_json("G_type", "1.0.0", json!({ "type": "object" }))),
+            draft: None,
+            created_at: chrono::DateTime::parse_from_rfc3339("2026-11-15T12:00:00+00:00")
+                .expect("la date de fixture est de l'RFC 3339")
+                .with_timezone(&chrono::Utc),
+        };
+        let json = serde_json::to_value(&modele).expect("le Model sérialise");
+        let champs = crate::lymaille::interactive::event::tests::decl_fields(&texte);
+        let noms: std::collections::BTreeSet<&str> = champs.iter().map(|(nom, ..)| nom.as_str()).collect();
+        let cles: std::collections::BTreeSet<&str> = json
+            .as_object()
+            .expect("le Model sérialise en objet")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            noms, cles,
+            "les propriétés de la déclaration sont exactement les clés du JSON sérialisé"
+        );
+        let type_de = |nom: &str| -> &str {
+            champs
+                .iter()
+                .find(|(champ, ..)| champ == nom)
+                .map_or_else(|| panic!("la colonne {nom} est déclarée"), |(.., ty)| ty.as_str())
+        };
+        assert_eq!(type_de("id"), "number", "l'entier `id` est un number");
+        assert_eq!(
+            type_de("created_at"),
+            "string",
+            "la date `created_at` (`DateTimeUtc`) est une string RFC 3339"
+        );
+        assert_eq!(
+            type_de("allowed_agents"),
+            "string[]",
+            "colonne allowed_agents typée string[] dans la déclaration"
+        );
+        assert_eq!(
+            type_de("script_grants"),
+            "{ toolsets: string[]; modules: string[] }",
+            "colonne script_grants typée par l'objet des droits dans la déclaration"
+        );
+        assert_eq!(
+            type_de("active"),
+            "ContextType | null",
+            "colonne active typée ContextType | null dans la déclaration"
+        );
+        assert_eq!(
+            type_de("draft"),
+            "ContextType | null",
+            "colonne draft typée ContextType | null dans la déclaration"
+        );
+        std::fs::remove_dir_all(&dir).expect("le répertoire de test se nettoie");
     }
 }

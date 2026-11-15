@@ -27,7 +27,8 @@ pub const DEFAULT_RENDER_CAP_CHARS: u64 = 8_000;
 
 /// Toolset du catalogue persisté — la table `miryad_lymaille_catalog_toolsets` posée par
 /// `../migration.rs`, colonnes du contrat `Must` de ./toolset.sdd.
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, utoipa::ToSchema, ts_rs::TS)]
+#[ts(rename = "ToolsetModel")]
 #[sea_orm(table_name = "miryad_lymaille_catalog_toolsets")]
 pub struct Model {
     /// Clé primaire entière auto-incrémentée (convention `miryad_*` de la crate).
@@ -42,13 +43,16 @@ pub struct Model {
     /// La `lymaille::Toolset` active, colonne JSON nullable — `None` tant qu'aucune version
     /// n'est activée (DSD `DEC-18`).
     #[schema(value_type = Object)]
+    #[ts(as = "Option<::lymaille::Toolset>")]
     pub active: Option<serde_json::Value>,
     /// La `lymaille::Toolset` en brouillon, colonne JSON nullable — jamais lue par le store
     /// comme version active (DSD `DEC-18`).
     #[schema(value_type = Object)]
+    #[ts(as = "Option<::lymaille::Toolset>")]
     pub draft: Option<serde_json::Value>,
     /// Horodatage de création, posé par le hook de création.
     #[schema(value_type = String, format = DateTime)]
+    #[ts(type = "string")]
     pub created_at: DateTimeUtc,
 }
 
@@ -516,5 +520,66 @@ mod tests {
                 proprietes[colonne]
             );
         }
+    }
+
+    /// Scenario « l'export TypeScript du Model correspond à la sérialisation » (issue #72,
+    /// `./toolset.sdd`) : la déclaration `toolset.ts` écrite par `export_typescript` de
+    /// `../interactive/event.sdd` porte exactement les colonnes du `Model` — chaque clé du JSON
+    /// du `Model` sérialisé est une propriété, et aucune propriété n'est en trop — avec `number`
+    /// pour les entiers, `string` pour la date et la colonne JSON typée par le type de
+    /// `lymaille` correspondant. La sérialisation du `Model` n'a pas changé (mêmes clés, mêmes
+    /// valeurs : le JSON est celui des colonnes, vérifié par l'égalité des ensembles).
+    #[test]
+    fn lexport_typescript_du_modele_correspond_a_la_serialisation() {
+        let dir = crate::lymaille::interactive::event::tests::scratch_dir("export-toolset");
+        let rendu = crate::lymaille::interactive::event::export_typescript(&dir)
+            .expect("l'export TypeScript réussit");
+        let chemin = dir.join("toolset.ts");
+        assert!(
+            rendu.contains(&chemin),
+            "`toolset.ts` est dans les chemins rendus"
+        );
+        let texte = std::fs::read_to_string(&chemin).expect("`toolset.ts` s'écrit et se relit");
+        assert!(
+            texte.contains("export type ToolsetModel = {"),
+            "la déclaration porte le nom distinct `ToolsetModel`, pas le simple `Model` : {texte}"
+        );
+        let modele = modele("G_ts");
+        let json = serde_json::to_value(&modele).expect("le Model sérialise");
+        let champs = crate::lymaille::interactive::event::tests::decl_fields(&texte);
+        let noms: std::collections::BTreeSet<&str> = champs.iter().map(|(nom, ..)| nom.as_str()).collect();
+        let cles: std::collections::BTreeSet<&str> = json
+            .as_object()
+            .expect("le Model sérialise en objet")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            noms, cles,
+            "les propriétés de la déclaration sont exactement les clés du JSON sérialisé"
+        );
+        let type_de = |nom: &str| -> &str {
+            champs
+                .iter()
+                .find(|(champ, ..)| champ == nom)
+                .map_or_else(|| panic!("la colonne {nom} est déclarée"), |(.., ty)| ty.as_str())
+        };
+        assert_eq!(type_de("id"), "number", "l'entier `id` est un number");
+        assert_eq!(
+            type_de("created_at"),
+            "string",
+            "la date `created_at` (`DateTimeUtc`) est une string RFC 3339"
+        );
+        assert_eq!(
+            type_de("active"),
+            "Toolset | null",
+            "colonne active typée Toolset | null dans la déclaration"
+        );
+        assert_eq!(
+            type_de("draft"),
+            "Toolset | null",
+            "colonne draft typée Toolset | null dans la déclaration"
+        );
+        std::fs::remove_dir_all(&dir).expect("le répertoire de test se nettoie");
     }
 }

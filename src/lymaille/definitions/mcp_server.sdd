@@ -56,7 +56,9 @@ Tasks:
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; `validator` remplacé par relecture `spec-dd` + batterie tenue par le primary). Test : `resource_openapi_compile_et_decrit_ressource`.
     ajouter le `Scenario` « `resource_openapi::<Entity>()` compile et décrit la ressource » ; colonnes JSON `allowed_groups` (tableau de noms) décrites en objet libre (`#[schema(value_type = Object)]`) tant que l'issue #72 n'a pas
     typé les définitions ; `DateTimeUtc` selon la décision `[?]` de ./mod.sdd. Puis test d'abord (appel de `resource_openapi::<Entity>()`, présence du schéma du `Model` et des champs), puis ./mcp_server.rs. Après ./mod.sdd.
-  [ ] Issue #72 — `Model` dérive `ts-rs::TS` (`allowed_groups` (tableau de noms) : `string[]`, aucune dépendance à un type de `lymaille`, donc non bloqué par l'amont). Spec d'abord : `Must` et `Scenario` « le `.ts` exporté déclare les colonnes de
+  [x] Issue #72 — `Model` dérive `ts-rs::TS` (`allowed_groups` (tableau de noms) : `string[]`, aucune dépendance à un type de `lymaille`, donc non bloqué par l'amont). Spec d'abord : `Must` et `Scenario` « le `.ts` exporté déclare les colonnes de
+    Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, feature non déclarée, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Test : `lexport_typescript_du_modele_correspond_a_la_serialisation` (propriétés == clés JSON, dates `string`, entiers `number`, colonnes typées par le type `lymaille`).
+    [?] (implementer) : nommage des déclarations TS — les dix `Model` portant le même nom Rust, chaque déclaration est renommée `<PascalCase(entité)>Model` (`AgentModel` … `UserContextModel`), fichiers d'après la tige citée dans le Scenario. Choix provisoire conservateur ; options : préfixe ressource (`CatalogAgent`), suffixe `Model` (retenu).
     la ligne » ; `DateTimeUtc` exporté `string` (RFC 3339, comme sérialisé) et `i32` `number`. Puis test de contrat (valeur du `Model` sérialisée ↔ déclaration exportée), puis ./mcp_server.rs. Après ./mod.sdd et
     ./../mod.sdd (fonction d'export).
 

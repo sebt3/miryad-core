@@ -28,7 +28,8 @@ use crate::resource::MiryadResource;
 /// Contexte de toolset personnel persisté — la table `miryad_lymaille_user_contexts` posée par
 /// `../migration.rs` (`m20261104_000001_lymaille_lot2`), colonnes du contrat `Must` de
 /// `./user_context.sdd`.
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, utoipa::ToSchema, ts_rs::TS)]
+#[ts(rename = "UserContextModel")]
 #[sea_orm(table_name = "miryad_lymaille_user_contexts")]
 pub struct Model {
     /// Clé primaire entière auto-incrémentée (convention `miryad_*` de la crate).
@@ -45,6 +46,7 @@ pub struct Model {
     /// `before_create` et `before_update`. Ne contient aucun secret (le constructeur de
     /// `lymaille` refuse une valeur qui en a l'air).
     #[schema(value_type = Object)]
+    #[ts(as = "::lymaille::ToolsetContext")]
     pub context: serde_json::Value,
     /// Référence par `name` à un type de contexte du catalogue (`../definitions/context_type.rs`
     /// — arbitrage `DEC-28` du 2026-11-05) : la nature, l'agent par défaut et les agents autorisés
@@ -55,6 +57,7 @@ pub struct Model {
     pub context_type: Option<String>,
     /// Horodatage de création, posé par le hook de création.
     #[schema(value_type = String, format = DateTime)]
+    #[ts(type = "string")]
     pub created_at: DateTimeUtc,
 }
 
@@ -950,5 +953,66 @@ mod tests {
             "l'objet libre de `context` ne détaille aucune propriété : {}",
             proprietes["context"]
         );
+    }
+
+    /// Scenario « l'export TypeScript du Model correspond à la sérialisation » (issue #72,
+    /// `./user_context.sdd`) : la déclaration `user_context.ts` écrite par `export_typescript` de
+    /// `../interactive/event.sdd` porte exactement les colonnes du `Model` — chaque clé du JSON
+    /// du `Model` sérialisé est une propriété, et aucune propriété n'est en trop — avec `number`
+    /// pour les entiers, `string` pour la date et la colonne JSON typée par le type de
+    /// `lymaille` correspondant. La sérialisation du `Model` n'a pas changé (mêmes clés, mêmes
+    /// valeurs : le JSON est celui des colonnes, vérifié par l'égalité des ensembles).
+    #[test]
+    fn lexport_typescript_du_modele_correspond_a_la_serialisation() {
+        let dir = crate::lymaille::interactive::event::tests::scratch_dir("export-user_context");
+        let rendu = crate::lymaille::interactive::event::export_typescript(&dir)
+            .expect("l'export TypeScript réussit");
+        let chemin = dir.join("user_context.ts");
+        assert!(
+            rendu.contains(&chemin),
+            "`user_context.ts` est dans les chemins rendus"
+        );
+        let texte = std::fs::read_to_string(&chemin).expect("`user_context.ts` s'écrit et se relit");
+        assert!(
+            texte.contains("export type UserContextModel = {"),
+            "la déclaration porte le nom distinct `UserContextModel`, pas le simple `Model` : {texte}"
+        );
+        let modele = modele(1, "c1");
+        let json = serde_json::to_value(&modele).expect("le Model sérialise");
+        let champs = crate::lymaille::interactive::event::tests::decl_fields(&texte);
+        let noms: std::collections::BTreeSet<&str> = champs.iter().map(|(nom, ..)| nom.as_str()).collect();
+        let cles: std::collections::BTreeSet<&str> = json
+            .as_object()
+            .expect("le Model sérialise en objet")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            noms, cles,
+            "les propriétés de la déclaration sont exactement les clés du JSON sérialisé"
+        );
+        let type_de = |nom: &str| -> &str {
+            champs
+                .iter()
+                .find(|(champ, ..)| champ == nom)
+                .map_or_else(|| panic!("la colonne {nom} est déclarée"), |(.., ty)| ty.as_str())
+        };
+        assert_eq!(type_de("id"), "number", "l'entier `id` est un number");
+        assert_eq!(
+            type_de("created_at"),
+            "string",
+            "la date `created_at` (`DateTimeUtc`) est une string RFC 3339"
+        );
+        assert_eq!(
+            type_de("context"),
+            "ToolsetContext",
+            "colonne context typée ToolsetContext dans la déclaration"
+        );
+        assert_eq!(
+            type_de("context_type"),
+            "string | null",
+            "colonne context_type typée string | null dans la déclaration"
+        );
+        std::fs::remove_dir_all(&dir).expect("le répertoire de test se nettoie");
     }
 }

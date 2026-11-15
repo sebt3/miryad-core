@@ -86,8 +86,8 @@ fn forward_token(source: &PrincipalSource) -> Option<Zeroizing<String>> {
 
 /// Anse JSON d'une session ouverte ou reprise (`Must` de `./routes.sdd`) : la nature rendue est
 /// celle que le type du contexte a résolue (`DEC-28`), jamais une nature demandée à l'appelant.
-#[derive(Serialize)]
-pub(super) struct SessionBody {
+#[derive(Serialize, ts_rs::TS)]
+pub(crate) struct SessionBody {
     /// Identifiant opaque de la session.
     id: String,
     /// Nature résolue (`work`/`config`, lowercase comme l'amont).
@@ -99,8 +99,8 @@ pub(super) struct SessionBody {
 }
 
 /// Anse de `resume` : la même session, plus les avis de provenance de la reprise (`OI-8`).
-#[derive(Serialize)]
-pub(super) struct ResumeBody {
+#[derive(Serialize, ts_rs::TS)]
+pub(crate) struct ResumeBody {
     /// Identifiant opaque de la session.
     id: String,
     /// Nature rechargée.
@@ -115,9 +115,9 @@ pub(super) struct ResumeBody {
 
 /// Le corps `{ "context": "…", "agent": "…" }` de l'ouverture (`DEC-28`) : `deny_unknown_fields`
 /// est ce qui refuse le contrat d'avant R12 (`kind`, `agent_id`) comme tout champ inconnu.
-#[derive(Deserialize)]
+#[derive(Deserialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
-pub(super) struct CreateBody {
+pub(crate) struct CreateBody {
     /// Nom du contexte (`G_…`, privé, ou `H_…`) sur lequel ouvrir.
     context: String,
     /// Agent explicite, sinon le défaut du type du contexte.
@@ -125,9 +125,9 @@ pub(super) struct CreateBody {
 }
 
 /// Le corps `{ "text": "…" }` d'un message.
-#[derive(Deserialize)]
+#[derive(Deserialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TextBody {
+pub(crate) struct TextBody {
     /// Texte du message (non vide, ≤ 32 Ko — vérifié par le handler).
     text: String,
 }
@@ -166,8 +166,8 @@ pub(super) struct CancelledBody {
 
 /// L'historique rendu sous les types du flux (`Must` de `./routes.sdd`, DSD `DEC-30`) : mêmes
 /// `SessionEvent` que le SSE, le client lit puis s'abonne sans trou de type.
-#[derive(Serialize)]
-pub(super) struct HistoryBody {
+#[derive(Serialize, ts_rs::TS)]
+pub(crate) struct HistoryBody {
     /// L'état persisté rendu en événements (chronologique).
     events: Vec<SessionEvent>,
 }
@@ -1461,6 +1461,80 @@ mod tests {
             let status = to_rest(error).into_response().status();
             assert_eq!(status, expected, "table de traduction");
         }
+    }
+    /// Scenario « les corps de la surface de session sont typés pour TypeScript » (issue #72,
+    /// ./routes.sdd) : les corps d'ouverture (`{ context, agent? }`), de message (`{ text }`) et
+    /// les réponses de session, sérialisés en JSON, voient chaque clé apparaître comme propriété
+    /// de leur déclaration exportée par `export_typescript` de `../interactive/event.sdd`, sans
+    /// propriété obligatoire en trop et sans `bigint` (aucun champ `u64` ne doit passer là ; la
+    /// sérialisation serde n'a pas changé — mêmes clés que les champs).
+    #[test]
+    fn les_corps_de_la_surface_de_session_sont_types_pour_typescript() {
+        let dir = crate::lymaille::interactive::event::tests::scratch_dir("export-routes");
+        let rendu = crate::lymaille::interactive::event::export_typescript(&dir)
+            .expect("l'export TypeScript réussit");
+        let corps: Vec<(&str, serde_json::Value)> = vec![
+            ("CreateBody", json!({ "context": "c1", "agent": null })),
+            ("TextBody", json!({ "text": "bonjour" })),
+            (
+                "SessionBody",
+                serde_json::to_value(super::SessionBody {
+                    id: "s1".to_owned(),
+                    kind: ::lymaille::SessionKind::Work,
+                    agent_id: "dev".to_owned(),
+                    context: "c1".to_owned(),
+                })
+                .expect("le corps d'ouverture serialise"),
+            ),
+            (
+                "ResumeBody",
+                serde_json::to_value(super::ResumeBody {
+                    id: "s1".to_owned(),
+                    kind: ::lymaille::SessionKind::Config,
+                    agent_id: "dev".to_owned(),
+                    context: "c1".to_owned(),
+                    notices: vec!["empreinte changee".to_owned()],
+                })
+                .expect("le corps de reprise serialise"),
+            ),
+            (
+                "HistoryBody",
+                serde_json::to_value(super::HistoryBody { events: vec![] }).expect("l'historique serialise"),
+            ),
+        ];
+        for (nom, valeur) in corps {
+            let chemin = dir.join(format!("{nom}.ts"));
+            assert!(rendu.contains(&chemin), "`{nom}.ts` est dans les chemins rendus");
+            let texte = std::fs::read_to_string(&chemin).expect("le corps exporté se relit");
+            let champs = crate::lymaille::interactive::event::tests::decl_fields(&texte);
+            let noms: std::collections::BTreeSet<&str> =
+                champs.iter().map(|(champ, ..)| champ.as_str()).collect();
+            let cles: std::collections::BTreeSet<&str> = valeur
+                .as_object()
+                .unwrap_or_else(|| panic!("le corps {nom} sérialise en objet"))
+                .keys()
+                .map(String::as_str)
+                .collect();
+            for cle in &cles {
+                assert!(
+                    noms.contains(cle),
+                    "chaque clé du JSON est propriété de la déclaration : {cle} dans {nom}"
+                );
+            }
+            for (champ, optionnel, _) in &champs {
+                assert!(
+                    *optionnel || cles.contains(champ.as_str()),
+                    "aucune propriété obligatoire de {nom} n'est en trop : {champ}"
+                );
+            }
+            assert!(!texte.contains("bigint"), "jamais de bigint dans {nom} : {texte}");
+        }
+        let session = std::fs::read_to_string(dir.join("SessionBody.ts")).expect("SessionBody.ts est écrit");
+        assert!(
+            session.contains("kind: SessionKind"),
+            "la nature rendue vient du type exporté SessionKind : {session}"
+        );
+        std::fs::remove_dir_all(&dir).expect("le répertoire de test se nettoie");
     }
 }
 

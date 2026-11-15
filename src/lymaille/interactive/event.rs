@@ -228,11 +228,24 @@ impl From<&Event> for SessionEvent {
     }
 }
 
-/// Écrit dans `dir` un fichier `.ts` par type exporté (`SessionEvent`, `SessionEventKind`,
-/// `SessionOutcome`) et rend les chemins écrits ; `dir` est créé au besoin. L'export TypeScript
-/// se fait **côté application** (arbitré le 2026-11-03) : la crate ne commite ni ne publie
-/// aucun fichier `.ts`, les types ne portent pas `#[ts(export)]` et `cargo test` n'en écrit
-/// jamais.
+/// Écrit dans `dir` un fichier `.ts` par type exporté et rend les chemins écrits ; `dir` est
+/// créé au besoin. L'ensemble (amendement du 2026-11-13, issue #72) : les événements de session
+/// (`SessionEvent`, `SessionEventKind`, `SessionOutcome`), les types de définition de `lymaille`
+/// (`AgentDefinition`, `ModelProfile`, `Provider`, `Toolset` avec `Skill`/`TypeRequirement`/
+/// `ParamDecl`/`RoleDecl`, `ContextType` avec `RoleSpec`, `ToolsetContext` avec `ContextLevel`)
+/// et les types dont leurs déclarations importent les déclarations (`AgentKind`, `SandboxLimits`,
+/// `SamplingParams`, `ReplayMode`, `ProviderLevel`, `SessionKind`, et `JsonValue` pour les champs
+/// `serde_json::Value` de la bibliothèque amont), les `Model` des dix ressources de
+/// `../definitions/` (un fichier nommé d'après l'entité : `agent.ts`, `private_agent.ts`, …), et
+/// les corps de requête et de réponse de la surface de session de `../http/routes.sdd`
+/// (`CreateBody`, `TextBody`, `SessionBody`, `ResumeBody`, `HistoryBody`).
+///
+/// Un seul appel, un seul répertoire, la liste rendue contient tous les chemins écrits ; les
+/// fichiers importables entre eux (mêmes noms que les imports `ts-rs`, répertoire plat à
+/// l'exception de `serde_json/JsonValue.ts`). L'ensemble est déterministe : mêmes chemins et
+/// mêmes octets à chaque appel, sans horodatage. L'export TypeScript se fait **côté application**
+/// (arbitré le 2026-11-03) : la crate ne commite ni ne publie aucun fichier `.ts`, les types ne
+/// portent pas `#[ts(export)]` et `cargo test` n'en écrit jamais.
 ///
 /// # Errors
 ///
@@ -242,13 +255,60 @@ impl From<&Event> for SessionEvent {
 pub fn export_typescript(dir: &Path) -> Result<Vec<PathBuf>, LymailleError> {
     std::fs::create_dir_all(dir)
         .map_err(|error| LymailleError::Store(format!("export directory unavailable: {error}")))?;
-    let session_event = export_one::<SessionEvent>(dir, "SessionEvent")?;
-    let session_event_kind = export_one::<SessionEventKind>(dir, "SessionEventKind")?;
-    let session_outcome = export_one::<SessionOutcome>(dir, "SessionOutcome")?;
-    Ok(vec![session_event, session_event_kind, session_outcome])
+    let files = [
+        export_one::<SessionEvent>(dir, "SessionEvent"),
+        export_one::<SessionEventKind>(dir, "SessionEventKind"),
+        export_one::<SessionOutcome>(dir, "SessionOutcome"),
+        // Le type des champs JSON de la bibliothèque amont, cité par ses imports.
+        export_one::<serde_json::Value>(dir, "serde_json/JsonValue"),
+        // Les types que les définitions ci-dessous importent, rendus avant elles (ordre stable).
+        export_one::<::lymaille::AgentKind>(dir, "AgentKind"),
+        export_one::<::lymaille::SandboxLimits>(dir, "SandboxLimits"),
+        export_one::<::lymaille::SamplingParams>(dir, "SamplingParams"),
+        export_one::<::lymaille::ReplayMode>(dir, "ReplayMode"),
+        export_one::<::lymaille::ProviderLevel>(dir, "ProviderLevel"),
+        export_one::<::lymaille::ParamDecl>(dir, "ParamDecl"),
+        export_one::<::lymaille::RoleDecl>(dir, "RoleDecl"),
+        export_one::<::lymaille::Skill>(dir, "Skill"),
+        export_one::<::lymaille::TypeRequirement>(dir, "TypeRequirement"),
+        export_one::<::lymaille::RoleSpec>(dir, "RoleSpec"),
+        export_one::<::lymaille::SessionKind>(dir, "SessionKind"),
+        export_one::<::lymaille::ContextLevel>(dir, "ContextLevel"),
+        // Les types de définition de `lymaille`.
+        export_one::<::lymaille::AgentDefinition>(dir, "AgentDefinition"),
+        export_one::<::lymaille::ModelProfile>(dir, "ModelProfile"),
+        export_one::<::lymaille::Provider>(dir, "Provider"),
+        export_one::<::lymaille::Toolset>(dir, "Toolset"),
+        export_one::<::lymaille::ContextType>(dir, "ContextType"),
+        export_one::<::lymaille::ToolsetContext>(dir, "ToolsetContext"),
+        // Les `Model` des dix ressources, un fichier par entité (nom du `Scenario` de chaque
+        // spec de `../definitions/`).
+        export_one::<crate::lymaille::definitions::agent::Model>(dir, "agent"),
+        export_one::<crate::lymaille::definitions::private_agent::Model>(dir, "private_agent"),
+        export_one::<crate::lymaille::definitions::profile::Model>(dir, "profile"),
+        export_one::<crate::lymaille::definitions::provider::Model>(dir, "provider"),
+        export_one::<crate::lymaille::definitions::toolset::Model>(dir, "toolset"),
+        export_one::<crate::lymaille::definitions::private_toolset::Model>(dir, "private_toolset"),
+        export_one::<crate::lymaille::definitions::context_type::Model>(dir, "context_type"),
+        export_one::<crate::lymaille::definitions::mcp_server::Model>(dir, "mcp_server"),
+        export_one::<crate::lymaille::definitions::catalog_context::Model>(dir, "catalog_context"),
+        export_one::<crate::lymaille::definitions::user_context::Model>(dir, "user_context"),
+        // Les corps de la surface de session (../http/routes.sdd).
+        export_one::<crate::lymaille::http::routes::CreateBody>(dir, "CreateBody"),
+        export_one::<crate::lymaille::http::routes::TextBody>(dir, "TextBody"),
+        export_one::<crate::lymaille::http::routes::SessionBody>(dir, "SessionBody"),
+        export_one::<crate::lymaille::http::routes::ResumeBody>(dir, "ResumeBody"),
+        export_one::<crate::lymaille::http::routes::HistoryBody>(dir, "HistoryBody"),
+    ];
+    let mut written = Vec::with_capacity(files.len());
+    for file in files {
+        written.push(file?);
+    }
+    Ok(written)
 }
 
-/// Génère le texte TypeScript d'un type et l'écrit dans `dir/{name}.ts` ; rend le chemin écrit.
+/// Génère le texte TypeScript d'un type et l'écrit dans `dir/{name}.ts` (les sous-répertoires
+/// de `name` sont créés au besoin, pour `serde_json/JsonValue`) ; rend le chemin écrit.
 fn export_one<T>(dir: &Path, name: &str) -> Result<PathBuf, LymailleError>
 where
     T: TS + 'static,
@@ -256,6 +316,13 @@ where
     let text = T::export_to_string(&ts_rs::Config::new())
         .map_err(|error| LymailleError::Store(format!("typescript generation failed: {error}")))?;
     let path = dir.join(format!("{name}.ts"));
+    if let Some(parent) = path.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        return Err(LymailleError::Store(format!(
+            "export directory unavailable: {error}"
+        )));
+    }
     std::fs::write(&path, text)
         .map_err(|error| LymailleError::Store(format!("typescript export write failed: {error}")))?;
     Ok(path)
@@ -379,7 +446,7 @@ fn other_name(kind: &EventKind) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::Duration;
 
     use serde_json::json;
@@ -718,8 +785,10 @@ mod tests {
     }
 
     /// Chemin d'un répertoire temporaire unique, sans dépendance `tempfile` (absente des
-    /// dev-dependencies de la crate).
-    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+    /// dev-dependencies de la crate). Partagé par les tests d'export des `Scenario` de
+    /// `../definitions/*.sdd` et de `../http/routes.sdd` (issue #72).
+    #[must_use]
+    pub(crate) fn scratch_dir(tag: &str) -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.subsec_nanos());
@@ -734,14 +803,12 @@ mod tests {
         let dir = scratch_dir("export");
         assert!(!dir.exists(), "le répertoire de test est inexistant");
         let written = export_typescript(&dir).expect("l'export réussit dans un répertoire créé");
-        assert_eq!(
-            written,
-            vec![
-                dir.join("SessionEvent.ts"),
-                dir.join("SessionEventKind.ts"),
-                dir.join("SessionOutcome.ts"),
-            ]
-        );
+        for name in ["SessionEvent.ts", "SessionEventKind.ts", "SessionOutcome.ts"] {
+            assert!(
+                written.contains(&dir.join(name)),
+                "les trois fichiers des événements sont écrits : {name} : {written:?}"
+            );
+        }
         let contents: std::collections::HashMap<_, _> = written
             .iter()
             .map(|path| {
@@ -809,6 +876,302 @@ mod tests {
             "le texte de l'erreur ne cite pas le chemin : {error}"
         );
         std::fs::remove_file(&path).expect("le fichier-témoin se nettoie");
+    }
+
+    /// Les chemins attendus de `export_typescript` — le contrat de l'amendement du 2026-11-13
+    /// (issue #72) : trois fichiers d'événements, le helper `JsonValue` des déclarations amont,
+    /// les types que les définitions de `lymaille` importent, les six types de définition, les
+    /// dix `Model` (fichiers nommés d'après l'entité, comme les `Scenario` de
+    /// `../definitions/*.sdd`) et les cinq corps de la surface de session
+    /// (`../http/routes.sdd`).
+    const EXPECTED_EXPORTS: [&str; 37] = [
+        "SessionEvent.ts",
+        "SessionEventKind.ts",
+        "SessionOutcome.ts",
+        "serde_json/JsonValue.ts",
+        "AgentKind.ts",
+        "SandboxLimits.ts",
+        "SamplingParams.ts",
+        "ReplayMode.ts",
+        "ProviderLevel.ts",
+        "ParamDecl.ts",
+        "RoleDecl.ts",
+        "Skill.ts",
+        "TypeRequirement.ts",
+        "RoleSpec.ts",
+        "SessionKind.ts",
+        "ContextLevel.ts",
+        "AgentDefinition.ts",
+        "ModelProfile.ts",
+        "Provider.ts",
+        "Toolset.ts",
+        "ContextType.ts",
+        "ToolsetContext.ts",
+        "agent.ts",
+        "private_agent.ts",
+        "profile.ts",
+        "provider.ts",
+        "toolset.ts",
+        "private_toolset.ts",
+        "context_type.ts",
+        "mcp_server.ts",
+        "catalog_context.ts",
+        "user_context.ts",
+        "CreateBody.ts",
+        "TextBody.ts",
+        "SessionBody.ts",
+        "ResumeBody.ts",
+        "HistoryBody.ts",
+    ];
+
+    /// Scenario « l'export couvre les définitions, les lignes et les corps de session »
+    /// (amendement du 2026-11-13, issue #72) : un fichier pour chacun des types attendus, la
+    /// liste rendue les contient tous et rien d'autre ; chaque import `./…` d'un fichier rendu
+    /// désigne un chemin rendu (un seul répertoire) ; le second appel rend les mêmes chemins et
+    /// les mêmes octets.
+    #[test]
+    fn lexport_couvre_les_definitions_les_lignes_et_les_corps() {
+        let dir = scratch_dir("export-couvre");
+        let written = export_typescript(&dir).expect("l'export réussit dans un répertoire créé");
+        let expected: Vec<std::path::PathBuf> = EXPECTED_EXPORTS.iter().map(|name| dir.join(name)).collect();
+        assert_eq!(
+            written, expected,
+            "la liste rendue est exactement celle des fichiers attendus"
+        );
+        for path in &written {
+            assert!(
+                path.is_file(),
+                "chaque chemin rendu est un fichier écrit : {path:?}"
+            );
+        }
+        for path in &written {
+            let text = std::fs::read_to_string(path).expect("le fichier exporté se relit");
+            for line in text.lines().filter(|line| line.starts_with("import type")) {
+                let cible = line
+                    .split('"')
+                    .nth(1)
+                    .unwrap_or_else(|| panic!("un import cite sa cible entre guillemets : {line}"));
+                let relative = cible.trim_start_matches("./");
+                let imported = dir.join(format!("{relative}.ts"));
+                assert!(
+                    written.contains(&imported),
+                    "{} importe {} : hors des chemins rendus",
+                    path.display(),
+                    cible
+                );
+            }
+        }
+        let contents: std::collections::HashMap<_, _> = written
+            .iter()
+            .map(|path| {
+                let text = std::fs::read_to_string(path).expect("le fichier exporté se relit");
+                (path.clone(), text)
+            })
+            .collect();
+        let second = export_typescript(&dir).expect("le second appel réussit");
+        assert_eq!(second, written, "le second appel rend les mêmes chemins");
+        for path in &written {
+            let again = std::fs::read_to_string(path).expect("le fichier exporté se relit");
+            assert_eq!(
+                again,
+                *contents.get(path).expect("chemin connu"),
+                "le second appel rend les mêmes octets (déterminisme sans horodatage)"
+            );
+        }
+        std::fs::remove_dir_all(&dir).expect("le répertoire de test se nettoie");
+    }
+
+    /// Scenario « chaque déclaration exportée correspond à la sérialisation serde »
+    /// (amendement du 2026-11-13, issue #72) : pour chaque type de définition de `lymaille`, une
+    /// valeur construite par la bibliothèque est sérialisée en JSON ; toutes les clés du JSON
+    /// sont des propriétés de la déclaration exportée et toute propriété non optionnelle de la
+    /// déclaration est une clé du JSON ; le JSON de la valeur d'exemple est accepté par la
+    /// désérialisation de `lymaille`.
+    #[test]
+    fn chaque_declaration_exportee_correspond_a_la_serialisation_serde() {
+        let dir = scratch_dir("export-serde");
+        export_typescript(&dir).expect("l'export réussit");
+        let agent = ::lymaille::AgentDefinition::new(
+            "G_contrat".to_owned(),
+            ::lymaille::AgentKind::Sub,
+            "prompt de contrat".to_owned(),
+        )
+        .with_profile("qwen".to_owned());
+        let profil =
+            ::lymaille::ModelProfile::new("rapide".to_owned(), "fournisseur".to_owned(), "modele".to_owned());
+        let fournisseur = ::lymaille::Provider::new(
+            "interne".to_owned(),
+            "openai".to_owned(),
+            "https://api.example/v1".to_owned(),
+            None,
+            ::lymaille::ProviderLevel::User,
+        )
+        .expect("le provider de fixture se construit");
+        let toolset = ::lymaille::Toolset::new(
+            "ts_contrat".to_owned(),
+            "toolset de contrat".to_owned(),
+            vynil_core::Semver::parse("1.0.0").expect("la version de fixture se parse"),
+            "catalogue".to_owned(),
+        )
+        .expect("le toolset de fixture se construit");
+        let type_contexte = ::lymaille::ContextType::new(
+            "G_type".to_owned(),
+            vynil_core::Semver::parse("1.0.0").expect("la version de fixture se parse"),
+            json!({ "type": "object" }),
+        )
+        .expect("le type de contexte de fixture se construit");
+        let contexte =
+            ::lymaille::ToolsetContext::new("c_contrat".to_owned(), ::lymaille::ContextLevel::User)
+                .expect("le contexte de fixture se construit");
+        let cas: Vec<(&str, serde_json::Value)> = vec![
+            (
+                "AgentDefinition",
+                serde_json::to_value(&agent).expect("la fixture sérialise"),
+            ),
+            (
+                "ModelProfile",
+                serde_json::to_value(&profil).expect("la fixture sérialise"),
+            ),
+            (
+                "Provider",
+                serde_json::to_value(&fournisseur).expect("la fixture sérialise"),
+            ),
+            (
+                "Toolset",
+                serde_json::to_value(&toolset).expect("la fixture sérialise"),
+            ),
+            (
+                "ContextType",
+                serde_json::to_value(&type_contexte).expect("la fixture sérialise"),
+            ),
+            (
+                "ToolsetContext",
+                serde_json::to_value(&contexte).expect("la fixture sérialise"),
+            ),
+        ];
+        for (name, value) in cas {
+            let texte = std::fs::read_to_string(dir.join(format!("{name}.ts")))
+                .unwrap_or_else(|error| panic!("{name}.ts est écrit : {error}"));
+            let champs = decl_fields(&texte);
+            let noms: std::collections::BTreeSet<&str> =
+                champs.iter().map(|(nom, ..)| nom.as_str()).collect();
+            let cles: std::collections::BTreeSet<&String> = value
+                .as_object()
+                .unwrap_or_else(|| panic!("la fixture {name} sérialise en objet"))
+                .keys()
+                .collect();
+            for cle in &cles {
+                assert!(
+                    noms.contains(cle.as_str()),
+                    "toute clé du JSON de {name} est propriété de la déclaration : {cle} dans {cles:?} vs {noms:?}"
+                );
+            }
+            for (champ, optionnel, _) in &champs {
+                assert!(
+                    *optionnel || cles.contains(champ),
+                    "aucune propriété obligatoire de {name} n'est en trop : {champ} absent de {cles:?}"
+                );
+            }
+        }
+        // Le JSON de la valeur d'exemple est accepté par la désérialisation de `lymaille`.
+        let aller_retour: ::lymaille::AgentDefinition =
+            serde_json::from_value(serde_json::to_value(&agent).expect("la fixture sérialise"))
+                .expect("le JSON exportable se redésérialise en AgentDefinition");
+        assert_eq!(aller_retour, agent);
+        let aller_retour: ::lymaille::ModelProfile =
+            serde_json::from_value(serde_json::to_value(&profil).expect("la fixture sérialise"))
+                .expect("le JSON exportable se redésérialise en ModelProfile");
+        assert_eq!(aller_retour, profil);
+        let aller_retour: ::lymaille::ToolsetContext =
+            serde_json::from_value(serde_json::to_value(&contexte).expect("la fixture sérialise"))
+                .expect("le JSON exportable se redésérialise en ToolsetContext");
+        assert_eq!(aller_retour, contexte);
+        std::fs::remove_dir_all(&dir).expect("le répertoire de test se nettoie");
+    }
+
+    /// Propriétés de premier niveau de la première déclaration objet `export type … = { … };`
+    /// d'un fichier exporté : `(nom, optionnel, type)`. Les commentaires de bloc sont retirés
+    /// avant découpage (la documentation porte des virgules), accolades et chevrons protègent la
+    /// profondeur. Partagé par les tests d'export des `Scenario` de `../definitions/*.sdd` et de
+    /// `../http/routes.sdd` (issue #72).
+    #[must_use]
+    pub(crate) fn decl_fields(texte: &str) -> Vec<(String, bool, String)> {
+        let sans_commentaires = retirer_commentaires(texte);
+        let apres_type = sans_commentaires
+            .find("export type")
+            .expect("une déclaration export type");
+        let debut = apres_type
+            + sans_commentaires[apres_type..]
+                .find('{')
+                .expect("un objet déclaré");
+        let mut profondeur = 1_i32;
+        let mut chevron = 0_i32;
+        let mut courant = String::new();
+        let mut champs = Vec::new();
+        for caractere in sans_commentaires[debut + 1..].chars() {
+            match caractere {
+                '{' => profondeur += 1,
+                '}' => {
+                    profondeur -= 1;
+                    if profondeur == 0 {
+                        if let Some(champ) = champ_de_propriete(&courant) {
+                            champs.push(champ);
+                        }
+                        break;
+                    }
+                }
+                '<' => chevron += 1,
+                '>' => chevron -= 1,
+                ',' if profondeur == 1 && chevron == 0 => {
+                    if let Some(champ) = champ_de_propriete(&courant) {
+                        champs.push(champ);
+                    }
+                    courant = String::new();
+                    continue;
+                }
+                _ => {}
+            }
+            courant.push(caractere);
+        }
+        champs
+    }
+
+    /// Une propriété `nom?: type` découpée ; `None` pour un segment vide.
+    fn champ_de_propriete(segment: &str) -> Option<(String, bool, String)> {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            return None;
+        }
+        let (nom, type_) = segment.split_once(':')?;
+        let nom = nom.trim();
+        let optionnel = nom.ends_with('?');
+        Some((
+            nom.trim_end_matches('?').to_owned(),
+            optionnel,
+            type_.trim().to_owned(),
+        ))
+    }
+
+    /// Retire les commentaires `/* … */` et `// …` d'un texte TypeScript.
+    fn retirer_commentaires(texte: &str) -> String {
+        let mut sans = String::with_capacity(texte.len());
+        let mut reste = texte;
+        while let Some(index) = reste.find("/*") {
+            let Some(fin) = reste[index..].find("*/") else {
+                break;
+            };
+            sans.push_str(&reste[..index]);
+            reste = &reste[index + fin + 2..];
+        }
+        for ligne in reste.lines() {
+            if let Some(debut_commentaire) = ligne.find("//") {
+                sans.push_str(&ligne[..debut_commentaire]);
+            } else {
+                sans.push_str(ligne);
+            }
+            sans.push('\n');
+        }
+        sans
     }
 
     /// Contrôle de cohérence des miroirs : `TurnEnded` et `RunEnded` portent le résultat amont

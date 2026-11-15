@@ -27,7 +27,7 @@ use axum::routing::post;
 use crate::auth::MiryadAuthState;
 use crate::lymaille::interactive::manager::SessionManager;
 
-mod routes;
+pub(crate) mod routes;
 mod sse;
 
 /// Taille maximale d'un corps JSON sur cette surface (`Must` de la spec) : 64 Ko, posée ici —
