@@ -36,7 +36,8 @@ mod template;
 // jamais atteint depuis l'extérieur de la crate.
 pub use client::{
     InvocationFilter, InvocationStatus, JournalEntry, RunHandle, WorkflowConfig, cancel_invocation,
-    invocation_journal, invocation_statuses, list_invocations, register_deployment, trigger_run,
+    invocation_journal, invocation_statuses, list_invocations, register_deployment, reject_awakeable,
+    resolve_awakeable, trigger_run,
 };
 pub use definition::{
     ActiveModel as WorkflowDefinitionActiveModel, Column as WorkflowDefinitionColumn, DagSteps,
@@ -117,6 +118,9 @@ mod tests {
         std::hint::black_box(crate::workflow::list_invocations);
         std::hint::black_box(crate::workflow::cancel_invocation);
         std::hint::black_box(crate::workflow::invocation_journal);
+        // Issue #26 (awakeable) : les deux fonctions de résolution, en dernier dans la liste plate.
+        std::hint::black_box(crate::workflow::resolve_awakeable);
+        std::hint::black_box(crate::workflow::reject_awakeable);
     }
 
     /// Scenario « les steps croisés n'existent que sous leur croisement de features » : ces deux tests

@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
 
-use restate_sdk::context::RequestTarget;
+use restate_sdk::context::{ContextAwakeables, RequestTarget};
 use restate_sdk::prelude::{
     Context, ContextClient, ContextSideEffects, ContextTimers, HandlerError, Json, TerminalError,
 };
@@ -33,6 +33,12 @@ use super::step::{RunInfo, StepError};
 /// [`StepContext::run_child_dag`], lu par ./interpreter.rs (`parse_depth`). Une constante, jamais
 /// deux littéraux (#26 — déplacée depuis ./interpreter.rs au lot B, valeur inchangée).
 pub(crate) const DEPTH_HEADER: &str = "x-miryad-depth";
+
+/// Message exact rendu par [`StepContext::awakeable_timeout`] quand le minuteur durable échoit
+/// avant toute résolution (amendement #26 du 2026-11-14). Un kind qui doit distinguer délai,
+/// rejet et annulation compare ce texte (arbitré : `@StepError` inchangé, aucun genre d'erreur
+/// nouveau) ; sa forme exacte — sans identifiant ni durée — est verrouillée par un test unitaire.
+pub(crate) const AWAKEABLE_TIMEOUT_MESSAGE: &str = "awakeable timed out";
 
 /// Clé de workflow Restate du run enfant porté par un step : `{run_key}:{step_id}`. Fonction pure
 /// et déterministe — la même invocation parente rejouée recalcule la même clé, condition de
@@ -222,6 +228,109 @@ impl<'a> StepContext<'a> {
             })?;
         Ok(sorties)
     }
+
+    /// Crée un **awakeable** (issue #26) : rend son identifiant et le futur de l'attente.
+    ///
+    /// L'identifiant est une entrée du journal : après reprise, le **même** identifiant est rendu
+    /// (jamais recalculé ni régénéré). L'appelant le transmet au travail externe **par un effet
+    /// journalisé** ([`StepContext::run_effect`]) — jamais directement dans `run`, sinon une
+    /// reprise rejouerait la remise (doublon du travail externe). Ordre prescrit : `awakeable` →
+    /// `run_effect` (remise) → attente du futur.
+    ///
+    /// L'identifiant est un **secret porteur** : quiconque le détient peut résoudre l'awakeable
+    /// (`POST {ingress}/restate/awakeables/{id}/resolve`). Il n'est ni tracé ni placé dans une
+    /// [`StepError`] par ce fichier ; sa confidentialité est l'affaire du kind qui le remet. La
+    /// valeur résolue est une **donnée externe non fiable** : le step la rend comme sortie
+    /// ordinaire, sa validation de forme est celle du kind.
+    ///
+    /// `T` porte la valeur JSON résolue par l'appelant externe ; l'enveloppe `Json` est posée en
+    /// interne (même convention que [`StepContext::run_effect`]), l'appelant manipule `T` nu.
+    ///
+    /// # Errors
+    ///
+    /// Le futur rend [`StepError`] `retryable: false` quand l'awakeable est **rejeté** (le message
+    /// de rejet de l'appelant externe transite verbatim, comme celui d'un enfant) ou quand
+    /// l'invocation est annulée pendant l'attente ; `Ok(v)` sur résolution avec `v`.
+    #[must_use = "l'identifiant et le futur d'un awakeable : jeter l'un des deux perd la résolution ou l'attente"]
+    pub fn awakeable<T>(&self) -> (String, impl Future<Output = Result<T, StepError>> + Send + 'a)
+    where
+        T: serde::de::DeserializeOwned + Send + 'static,
+    {
+        // L'entrée de journal est posée à l'appel (déterminisme du rejeu : même identifiant).
+        let (id, attente) = self.ctx.awakeable::<Json<T>>();
+        (id, async move { valeur_ou_rejet::<T>(attente.await) })
+    }
+
+    /// Awakeable **à délai durable** (issue #26) : même contrat que [`StepContext::awakeable`],
+    /// avec un minuteur (`ctx.sleep(timeout)`) créé **à l'appel** — l'ordre des entrées du journal
+    /// reste celui du code, même après reprise — et mis en concurrence avec l'attente par
+    /// `restate_sdk::select!`. Le minuteur est déplacé dans le futur retourné.
+    ///
+    /// `timeout` nul est accepté (le minuteur échoit aussitôt). Une résolution arrivée **après
+    /// l'échéance** n'est observée par personne : le SDK `0.12.1` n'a pas d'annulation d'awakeable
+    /// (le comportement de l'ingress face à cette résolution tardive est mesuré par
+    /// ./client.sdd, hors contrat de ce fichier). Un kind qui doit distinguer délai et rejet
+    /// compare le message de l'erreur à [`AWAKEABLE_TIMEOUT_MESSAGE`].
+    ///
+    /// # Errors
+    ///
+    /// Le futur rend [`StepError`] `retryable: false` dont le message est exactement
+    /// [`AWAKEABLE_TIMEOUT_MESSAGE`] quand le minuteur gagne ; sur rejet de l'awakeable (message
+    /// verbatim) ou annulation de l'invocation, comme [`StepContext::awakeable`] ; `Ok(v)` si
+    /// l'awakeable gagne avec `v`.
+    #[must_use = "l'identifiant et le futur d'un awakeable : jeter l'un des deux perd la résolution ou l'attente"]
+    pub fn awakeable_timeout<T>(
+        &self,
+        timeout: std::time::Duration,
+    ) -> (String, impl Future<Output = Result<T, StepError>> + Send + 'a)
+    where
+        T: serde::de::DeserializeOwned + Send + 'static,
+    {
+        // awakeable puis sleep : les deux entrées de journal sont posées à l'appel, dans cet ordre,
+        // y compris après reprise (déterminisme du rejeu).
+        let (id, attente) = self.ctx.awakeable::<Json<T>>();
+        let minuteur = self.ctx.sleep(timeout);
+        (id, async move {
+            restate_sdk::select! {
+                réveil = attente => valeur_ou_rejet::<T>(réveil),
+                réveil = minuteur => match réveil {
+                    Ok(()) => Err(StepError {
+                        message: AWAKEABLE_TIMEOUT_MESSAGE.to_string(),
+                        retryable: false,
+                    }),
+                    Err(erreur) => Err(StepError {
+                        message: erreur.to_string(),
+                        retryable: false,
+                    }),
+                },
+                // Le repli implicite du macro (`Err(TerminalError::new_with_code(409,
+                // "cancelled"))?`) ne compile pas sous une sortie `Result<_, StepError>` :
+                // le reproduire explicitement garde le même message observable (Handles de
+                // ./durable.sdd : annulation pendant l'attente → StepError non retryable).
+                on_cancel => Err(StepError {
+                    message: TerminalError::new_with_code(409, "cancelled").to_string(),
+                    retryable: false,
+                }),
+            }
+        })
+    }
+}
+
+/// Traduction du réveil d'un awakeable (valeur JSON ou `TerminalError`) en résultat de step :
+/// `Ok(v)` nu, ou [`StepError`] `retryable: false` portant le message du rejet verbatim — un retry
+/// rejouerait la même issue (le journal la contient, Handles de ./durable.sdd). Assistant privé
+/// commun de [`StepContext::awakeable`] et [`StepContext::awakeable_timeout`].
+fn valeur_ou_rejet<T>(réveil: Result<Json<T>, TerminalError>) -> Result<T, StepError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    match réveil {
+        Ok(Json(valeur)) => Ok(valeur),
+        Err(erreur) => Err(StepError {
+            message: erreur.to_string(),
+            retryable: false,
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -303,5 +412,14 @@ mod tests {
             .expect("un kind durable neuf doit s'enregistrer");
         let vide: &[&str] = &[];
         assert_eq!(registry.raw_fields("d"), Some(vide));
+    }
+
+    /// Scenario « le texte du délai est verrouillé » (issue #26, 2026-11-14) :
+    /// `AWAKEABLE_TIMEOUT_MESSAGE` vaut exactement `awakeable timed out` — sans identifiant ni
+    /// durée (aucun secret dans un message d'erreur). Un kind qui distingue délai et rejet compare
+    /// ce texte (arbitré : `@StepError` inchangé, aucun genre d'erreur nouveau).
+    #[test]
+    fn le_texte_du_délai_est_verrouillé() {
+        assert_eq!(super::AWAKEABLE_TIMEOUT_MESSAGE, "awakeable timed out");
     }
 }

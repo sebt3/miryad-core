@@ -589,6 +589,104 @@ pub async fn invocation_journal(
     Ok(entrees)
 }
 
+/// Grammaire stricte d'un identifiant d'awakeable : préfixe `prom_1` (forme historique documentée
+/// par `restate-sdk` 0.12.1) **ou** `sign_1` (forme mesurée sur `restate-server` **1.8.1** le
+/// 2026-11-15 — `[!]` du rapport de tâche #26 : le serveur émet `sign_1…`, pas `prom_1…`), suivi
+/// d'au moins un caractère base64url (`[A-Za-z0-9_-]`, alphabet URL-safe sans padding).
+/// L'identifiant entre nu dans un chemin d'URL : aucun texte libre ne doit y passer (mêmes motifs
+/// que [`identifiant_invocation_valide`]).
+fn identifiant_awakeable_valide(id: &str) -> bool {
+    let corps = id.strip_prefix("prom_1").or_else(|| id.strip_prefix("sign_1"));
+    corps.is_some_and(|corps| !corps.is_empty() && corps.chars().all(base64url))
+}
+
+/// Caractère base64url : alphanumérique ASCII, `-` ou `_` (aucun padding `=` dans un identifiant
+/// Restate).
+fn base64url(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_')
+}
+
+/// Poste `value` nue en JSON sur `POST {ingress_url}/restate/awakeables/{id}/resolve`
+/// (`content-type: application/json` — forme issue de la doc `restate-sdk` 0.12.1, confirmée par
+/// les tests `#[ignore]` de [`../../tests/workflow_restate.rs`] contre le `restate-server` de la
+/// `DevStation`, statuts consignés au rapport de tâche #26 avec la version de Restate). Toute
+/// réponse `2xx` rend `Ok(())`.
+///
+/// L'identifiant est un **secret porteur** : quiconque le détient peut résoudre l'awakeable. Ce
+/// fichier ne le trace pas (aucune trace ici, contrat du module) et ne le cite dans une erreur
+/// que pour un refus de grammaire, avant requête.
+///
+/// # Errors
+///
+/// - `MRD-WORKFLOW-001` (`WorkflowError::RestateUnreachable`) : ingress injoignable.
+/// - `MRD-WORKFLOW-002` (`WorkflowError::RestateRejected`) : l'ingress répond hors `2xx` — corps
+///   verbatim. La résolution d'un awakeable **déjà complet** (résolution tardive ou double) n'est
+///   pas un cas d'erreur documenté ici : son comportement est MESURÉ par l'intégration et consigné
+///   (./durable.sdd `Tasks`).
+/// - `MRD-WORKFLOW-007` (`WorkflowError::InvalidConfig`) : URL invalide, ou identifiant hors de la
+///   grammaire `prom_1` + base64url — refusé **sans requête**.
+pub async fn resolve_awakeable(
+    config: &WorkflowConfig,
+    http: &reqwest::Client,
+    id: &str,
+    value: &serde_json::Value,
+) -> Result<(), WorkflowError> {
+    awakeable_par_ingress(config, http, id, "resolve", value.to_string(), "application/json").await
+}
+
+/// Rejette un awakeable en attente par l'ingress — `POST {ingress_url}/restate/awakeables/{id}/reject`,
+/// `content-type: text/plain`, message nu (forme issue de la doc `restate-sdk` 0.12.1, confirmée
+/// par les tests `#[ignore]` de [`../../tests/workflow_restate.rs`] ; le message transite verbatim
+/// jusqu'au step en attente, ./durable.sdd).
+///
+/// # Errors
+///
+/// Comme [`resolve_awakeable`] (`001`/`002`/`007`) : le message n'entre dans aucune erreur de ce
+/// fichier.
+pub async fn reject_awakeable(
+    config: &WorkflowConfig,
+    http: &reqwest::Client,
+    id: &str,
+    message: &str,
+) -> Result<(), WorkflowError> {
+    awakeable_par_ingress(config, http, id, "reject", message.to_string(), "text/plain").await
+}
+
+/// Corps commun des deux opérations d'awakeable sur l'ingress : validation config + grammaire de
+/// l'identifiant avant toute requête, `POST {ingress}/restate/awakeables/{id}/{action}`, corps nu
+/// au `content-type` donné, tout `2xx` → `Ok(())`, hors `2xx` → `RestateRejected` verbatim.
+async fn awakeable_par_ingress(
+    config: &WorkflowConfig,
+    http: &reqwest::Client,
+    id: &str,
+    action: &str,
+    corps: String,
+    content_type: &str,
+) -> Result<(), WorkflowError> {
+    config.validate()?;
+    if !identifiant_awakeable_valide(id) {
+        return Err(WorkflowError::InvalidConfig(format!(
+            "invalid awakeable id (expected prom_1 followed by base64url characters): {id}"
+        )));
+    }
+    let response = http
+        .post(format!("{}/restate/awakeables/{id}/{action}", config.ingress_url))
+        .header(reqwest::header::CONTENT_TYPE, content_type)
+        .body(corps)
+        .send()
+        .await
+        .map_err(classify_transport_error)?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.map_err(classify_transport_error)?;
+        return Err(WorkflowError::RestateRejected {
+            status: status.as_u16(),
+            body,
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::InvocationFilter;
@@ -600,6 +698,8 @@ mod tests {
     use super::invocation_statuses;
     use super::list_invocations;
     use super::register_deployment;
+    use super::reject_awakeable;
+    use super::resolve_awakeable;
     use super::trigger_run;
     use crate::workflow::definition::DagSteps;
     use crate::workflow::definition::StepDefinition;
@@ -1813,6 +1913,169 @@ mod tests {
             vec![None, Some("step:A".to_string()), None],
             "le nom vide mesuré (restate 1.8.1) est l'absence de nom"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Résolution et rejet d'awakeables par l'ingress (issue #26, amendement du 2026-11-14)
+    //
+    // Formes : `POST {ingress_url}/restate/awakeables/{id}/resolve` (`content-type:
+    // application/json`, corps = valeur JSON nue) et `POST …/reject` (`content-type:
+    // text/plain`, message nu en corps) — formes documentées par `restate-sdk` 0.12.1 et
+    // confirmées mesurées contre `restate-server` **1.8.1** par les tests `#[ignore]` de
+    // [`../../tests/workflow_restate.rs`] (rapport de tâche #26).
+    // ---------------------------------------------------------------------------
+
+    /// Scenario « un identifiant d'awakeable mal formé n'atteint jamais le réseau » : la grammaire
+    /// stricte (`prom_1` + base64url `[A-Za-z0-9_-]` non vide) refuse préfixe absent, queue vide,
+    /// espaces, injection et accents — `InvalidConfig` (`MRD-WORKFLOW-007`) et **zéro requête**,
+    /// sur `resolve_awakeable` comme sur `reject_awakeable` (l'identifiant entre nu dans un
+    /// chemin d'URL, aucun texte libre n'y passe).
+    #[tokio::test]
+    async fn identifiant_awakeable_mal_formé_sans_requête() {
+        let injectés = [
+            "awake_1abc",                // préfixe `prom_1` absent
+            "prom_1",                    // préfixe seul, base64url vide
+            "prom_1 a",                  // espace dans le chemin
+            "prom_1'; DELETE FROM x;--", // injection
+            "prom_1é",                   // hors base64url
+            "",                          // vide
+        ];
+        let http = test_http();
+        for id in injectés {
+            let stub = StubServer::spawn(204, String::new());
+            let Err(err) = resolve_awakeable(&stub.config(), &http, id, &serde_json::json!({"ok": 1})).await
+            else {
+                panic!("l'identifiant {id:?} devait être refusé avant requête (resolve)");
+            };
+            assert!(
+                matches!(err, WorkflowError::InvalidConfig(_)),
+                "variante attendue InvalidConfig : {err:?}"
+            );
+            assert!(
+                err.to_string()
+                    .starts_with("MRD-WORKFLOW-007: invalid workflow configuration: "),
+                "rendu inattendu : {err}"
+            );
+            assert!(stub.requests().is_empty(), "aucune requête resolve pour {id:?}");
+
+            let stub = StubServer::spawn(204, String::new());
+            let Err(err) = reject_awakeable(&stub.config(), &http, id, "refus").await else {
+                panic!("l'identifiant {id:?} devait être refusé avant requête (reject)");
+            };
+            assert!(
+                matches!(err, WorkflowError::InvalidConfig(_)),
+                "variante attendue InvalidConfig : {err:?}"
+            );
+            assert!(stub.requests().is_empty(), "aucune requête reject pour {id:?}");
+        }
+    }
+
+    /// Scenario « `resolve_awakeable` poste la valeur en JSON » : `POST
+    /// /restate/awakeables/{id}/resolve`, `content-type: application/json`, corps = la valeur nue
+    /// compacte ; tout `2xx` (le stub pose `204`, statut nominal confirmé en live) rend `Ok(())`.
+    #[tokio::test]
+    async fn resolve_awakeable_poste_valeur_json() {
+        let stub = StubServer::spawn(204, String::new());
+        resolve_awakeable(
+            &stub.config(),
+            &test_http(),
+            "prom_1PePOqp",
+            &serde_json::json!({"ok": 42}),
+        )
+        .await
+        .expect("le 204 mesuré devait rendre Ok(())");
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 1);
+        let request = requests.first().expect("une requête capturée");
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.uri, "/restate/awakeables/prom_1PePOqp/resolve");
+        assert_eq!(request.header("content-type"), Some("application/json"));
+        assert_eq!(
+            String::from_utf8_lossy(&request.body),
+            "{\"ok\":42}",
+            "le corps est la valeur JSON nue, compacte"
+        );
+    }
+
+    /// Scenario « `reject_awakeable` poste le message en texte brut » : `POST
+    /// /restate/awakeables/{id}/reject`, `content-type: text/plain`, corps = le message verbatim
+    /// (forme mesurée : le texte du rejet transite nu jusqu'au step en attente).
+    #[tokio::test]
+    async fn reject_awakeable_poste_message_texte_brut() {
+        let stub = StubServer::spawn(204, String::new());
+        reject_awakeable(&stub.config(), &test_http(), "prom_1PePOqp", "refus externe")
+            .await
+            .expect("le 204 mesuré devait rendre Ok(())");
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 1);
+        let request = requests.first().expect("une requête capturée");
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.uri, "/restate/awakeables/prom_1PePOqp/reject");
+        assert_eq!(request.header("content-type"), Some("text/plain"));
+        assert_eq!(
+            String::from_utf8_lossy(&request.body),
+            "refus externe",
+            "le message voyage nu dans le corps"
+        );
+    }
+
+    /// Erreurs : statut hors `2xx` de l'ingress → `RestateRejected` (`MRD-WORKFLOW-002`) corps
+    /// verbatim, variante existante (aucune nouveauté, ./error.sdd) ; un port refusant →
+    /// `RestateUnreachable` (`MRD-WORKFLOW-001`) par `classify_transport_error`.
+    #[tokio::test]
+    async fn resolve_awakeable_erreurs_taxonomie_existante() {
+        let stub = StubServer::spawn(404, "{\"message\":\"awakeable not found\"}".to_string());
+        let Err(err) = resolve_awakeable(
+            &stub.config(),
+            &test_http(),
+            "prom_1inconnu",
+            &serde_json::json!(null),
+        )
+        .await
+        else {
+            panic!("le 404 devait rendre RestateRejected");
+        };
+        let WorkflowError::RestateRejected { status, body } = err else {
+            panic!("variante attendue RestateRejected : {err:?}");
+        };
+        assert_eq!(status, 404);
+        assert_eq!(body, "{\"message\":\"awakeable not found\"}");
+
+        let config = WorkflowConfig {
+            admin_url: "http://127.0.0.1:80".to_string(),
+            ingress_url: format!("http://127.0.0.1:{}", closed_port()),
+            deployment_url: DEPLOYMENT_URL.to_string(),
+        };
+        let Err(err) = reject_awakeable(&config, &test_http(), "prom_1abc", "x").await else {
+            panic!("un port refusant devait rendre RestateUnreachable");
+        };
+        assert!(
+            matches!(err, WorkflowError::RestateUnreachable(_)),
+            "variante attendue RestateUnreachable : {err:?}"
+        );
+    }
+
+    /// `Must` : la config est validée avant la moindre requête — `ingress_url` vide →
+    /// `InvalidConfig` nommant le champ, zéro octet envoyé (mêmes motifs que
+    /// `register_deployment_url_admin_vide_refusee_sans_appel_reseau`).
+    #[tokio::test]
+    async fn resolve_awakeable_config_invalide_sans_requête() {
+        let stub = StubServer::spawn(204, String::new());
+        let config = WorkflowConfig {
+            admin_url: stub.url(),
+            ingress_url: String::new(),
+            deployment_url: DEPLOYMENT_URL.to_string(),
+        };
+        let Err(err) = resolve_awakeable(&config, &test_http(), "prom_1abc", &serde_json::json!({})).await
+        else {
+            panic!("un ingress_url vide devait rendre Err(InvalidConfig)");
+        };
+        assert!(
+            matches!(err, WorkflowError::InvalidConfig(_)),
+            "variante attendue InvalidConfig : {err:?}"
+        );
+        assert!(err.to_string().contains("ingress_url"), "{err}");
+        assert!(stub.requests().is_empty(), "aucune requête");
     }
 
     /// `Must` : un `2xx` sans le tableau `rows` attendu est une forme d'administration
