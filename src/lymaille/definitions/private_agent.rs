@@ -163,8 +163,10 @@ impl Entity {
         };
         active.agent_id = ActiveValue::Set(definition.id().to_owned());
         active.kind = ActiveValue::Set(nature);
-        // Profil sans valeur : chaîne vide, conversion provisoire (`src/lymaille/mod.sdd`,
-        // tâche montée 0.3.0 du 2026-11-14) ; la sémantique « sans profil » est #75.
+        // Issue #75 (./private_agent.sdd, amendement du 2026-11-13) : même règle que
+        // `../agent.rs` — une définition sans profil explicite pose la chaîne vide dans cette
+        // colonne (« suit le profil par défaut de l'hôte », `../interactive/assemble.rs`) ; un
+        // profil désigné est copié inchangé. Aucune migration : la colonne reste `String` NOT NULL.
         active.profile = ActiveValue::Set(definition.profile().unwrap_or_default().to_owned());
         match existing {
             Some(ligne) => active.created_at = ActiveValue::Set(ligne.created_at),
@@ -371,6 +373,14 @@ mod tests {
         .expect("la fixture se sérialise")
     }
 
+    /// `AgentDefinition` **sans profil explicite** (`lymaille` 0.3.0 : `new` sans `with_profile`),
+    /// sérialisée par la bibliothèque elle-même — fixture du Scenario « une définition privée sans
+    /// profil donne une colonne profile vide » (issue #75).
+    fn definition_sans_profil(id: &str, kind: AgentKind, prompt: &str) -> serde_json::Value {
+        serde_json::to_value(AgentDefinition::new(id.to_string(), kind, prompt.to_string()))
+            .expect("la fixture se sérialise")
+    }
+
     /// Verrou d'un refus de module réservé : `HookError` sans code, nommant le module, ne citant
     /// jamais le prompt.
     fn assert_refus_module_reserve(erreur: &crate::resource::HookError, prompt: &str) {
@@ -460,6 +470,35 @@ mod tests {
         assert!(
             matches!(rendu.created_at, Set(_)),
             "`created_at` est posé par le hook de création quand il est absent"
+        );
+    }
+
+    /// Scenario « une définition privée sans profil donne une colonne profile vide » (issue #75,
+    /// amendement du 2026-11-13 de `./private_agent.sdd`) : une définition `triage` sans profil
+    /// explicite rend `profile = ""` (« suit le profil par défaut de l'hôte ») ; la moitié
+    /// « avec un profil `qwen`, `profile = "qwen"` » est verrouillée par
+    /// [`before_create_accepte_un_agent_prive_valide_et_derive_les_colonnes`].
+    #[tokio::test]
+    async fn une_definition_privee_sans_profil_donne_une_colonne_profile_vide() {
+        let db = db_avec_compte("sujet-de-test").await;
+        let brute = definition_sans_profil("triage", AgentKind::Sub, "trie");
+        let rendu = Entity::before_create(&db, active_avec(brute.clone()), &principal())
+            .await
+            .expect("une définition privée sans profil est acceptée");
+        assert_eq!(
+            rendu.agent_id,
+            Set("triage".to_string()),
+            "`agent_id` reste la copie dérivée de `definition.id`"
+        );
+        assert_eq!(
+            rendu.profile,
+            Set(String::new()),
+            "sans profil explicite, la colonne dérivée est la chaîne vide (suit le défaut de l'hôte)"
+        );
+        assert_eq!(
+            rendu.definition,
+            Set(brute),
+            "la colonne JSON `definition`, source de vérité, n'est pas modifiée"
         );
     }
 

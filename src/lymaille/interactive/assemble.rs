@@ -412,6 +412,12 @@ async fn assemble_with(
     })
 }
 
+/// Message fixe de l'absence de profil par défaut (amendement du 2026-11-13, issue #75,
+/// ./assemble.sdd) : un agent sans profil explicite et sans profil fourni par l'hôte (hôte
+/// absent, `Ok(None)` ou `Err(HostError)` — erreur sans contenu, jamais citée) — porté par
+/// [`LymailleError::Config`] (`MRD-LYMAILLE-008`, non retryable).
+const SANS_PROFIL_PAR_DEFAUT: &str = "no default profile configured";
+
 /// Étapes 1 à 3 : stores du sujet de l'appelant, définition de l'agent relu, profil et client
 /// d'inférence de la session.
 struct Resolved {
@@ -451,12 +457,28 @@ async fn resolve_inference(
     let mut reserved: Vec<&str> = reserved.to_vec();
     reserved.extend(deps.host_modules.admin_only_names());
     check_grants(caller, definition.modules(), &reserved)?;
+    // Été 2 (amendement du 2026-11-13, issue #75, ./assemble.sdd) : un agent dont la définition
+    // ne désigne pas de profil (`profile()` = `None`, définition sans `with_profile` — la colonne
+    // dérivée `profile` est alors la chaîne vide, ./../definitions/agent.rs) suit le profil par
+    // défaut de l'hôte : `LymailleHost::default_profile()`, relu à **chaque** ouverture, jamais
+    // mis en cache. Hôte absent, `Ok(None)` ou `Err(HostError)` (erreur sans contenu, dont rien
+    // ne traverse) rendent la même `Config` nommant la cause (`MRD-LYMAILLE-008`, non
+    // retryable). Un agent à profil explicite ne consulte pas l'hôte ; un nom désigné qui
+    // n'existe pas reste l'erreur de profil inconnu inchangée (via `resolve_profile`).
+    let profil: String = match definition.profile() {
+        Some(nom) => nom.to_owned(),
+        None => match deps.host.as_ref() {
+            Some(hote) => hote
+                .default_profile()
+                .await
+                .map_err(|_| LymailleError::Config(SANS_PROFIL_PAR_DEFAUT.to_owned()))?
+                .ok_or_else(|| LymailleError::Config(SANS_PROFIL_PAR_DEFAUT.to_owned()))?,
+            None => return Err(LymailleError::Config(SANS_PROFIL_PAR_DEFAUT.to_owned())),
+        },
+    };
     let profile = stores
         .profiles()
-        // Profil sans valeur : nom vide résolu tel quel, conversion provisoire
-        // (`src/lymaille/mod.sdd`, tâche montée 0.3.0 du 2026-11-14) ; la sémantique
-        // « sans profil » est portée par la tâche #75.
-        .resolve_profile(definition.profile().unwrap_or_default(), None)
+        .resolve_profile(&profil, None)
         .await
         .map_err(from_agents)?;
     let provider: Provider = stores
@@ -1097,6 +1119,79 @@ mod tests {
     impl InferenceFactory for ScriptFactory {
         fn make(&self, _address: String, _api_key: Option<String>) -> Arc<dyn DynInference> {
             let provider: Arc<dyn DynInference> = self.0.clone();
+            provider
+        }
+    }
+
+    /// Hôte fixture des `Scenario` du profil par défaut (issue #75) : le profil qu'il désigne est
+    /// commutable en cours de test (preuve que le défaut est relu à **chaque** ouverture) et
+    /// chaque appel est compté (preuve qu'un agent à profil explicite ne le consulte pas).
+    struct HoteProfil {
+        profil: Mutex<Option<String>>,
+        appels: std::sync::atomic::AtomicUsize,
+    }
+
+    impl HoteProfil {
+        fn new(profil: Option<&str>) -> Arc<Self> {
+            Arc::new(Self {
+                profil: Mutex::new(profil.map(str::to_owned)),
+                appels: std::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+
+        fn set(&self, profil: Option<&str>) {
+            *self.profil.lock().expect("verrou de l'hôte") = profil.map(str::to_owned);
+        }
+
+        fn appels(&self) -> usize {
+            self.appels.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[::async_trait::async_trait]
+    impl crate::lymaille::host::LymailleHost for HoteProfil {
+        async fn default_profile(&self) -> Result<Option<String>, crate::lymaille::host::HostError> {
+            let _ = self.appels.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.profil.lock().expect("verrou de l'hôte").clone())
+        }
+    }
+
+    /// Hôte fixture du `Scenario` « sans profil par défaut, l'erreur nomme la cause » : sa
+    /// résolution échoue d'un `HostError` — erreur sans contenu, dont rien ne doit traverser.
+    struct HoteEnPanne;
+
+    #[::async_trait::async_trait]
+    impl crate::lymaille::host::LymailleHost for HoteEnPanne {
+        async fn default_profile(&self) -> Result<Option<String>, crate::lymaille::host::HostError> {
+            Err(crate::lymaille::host::HostError)
+        }
+    }
+
+    /// Fabrique d'inférence des `Scenario` du profil par défaut : relaie le provider scripté et
+    /// note l'adresse de chaque provider résolu — c'est par elle que le test distingue les
+    /// profils (`qwen` → `local`, `autre` → le provider d'`http://autre.invalid/v1`).
+    struct FabriqueAdresse {
+        provider: Arc<ScriptedProvider>,
+        adresses: Mutex<Vec<String>>,
+    }
+
+    impl FabriqueAdresse {
+        fn new(provider: Arc<ScriptedProvider>) -> Arc<Self> {
+            Arc::new(Self {
+                provider,
+                adresses: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn adresses(&self) -> Vec<String> {
+            self.adresses.lock().expect("verrou de la fabrique").clone()
+        }
+    }
+
+    impl InferenceFactory for FabriqueAdresse {
+        fn make(&self, address: String, _api_key: Option<String>) -> Arc<dyn DynInference> {
+            self.adresses.lock().expect("verrou de la fabrique").push(address);
+            let provider: Arc<dyn DynInference> = self.provider.clone();
             provider
         }
     }
@@ -1808,6 +1903,163 @@ mod tests {
         assert!(
             matches!(&refus, LymailleError::NotFound(message) if message.contains("G_absent")),
             "le toolset est nomme : {refus:?}"
+        );
+    }
+
+    /// Scenario « un agent sans profil suit le profil par défaut de l'hôte » (issue #75,
+    /// amendement du 2026-11-13 de ./assemble.sdd) : un agent sans profil explicite ouvre sur le
+    /// profil que `LymailleHost::default_profile()` désigne — relu à **chaque** ouverture, sans
+    /// réécrire l'agent ; un agent à profil explicite ne consulte pas l'hôte.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_agent_sans_profil_suit_le_profil_par_defaut_de_lhote() {
+        let db = db_test().await;
+        wire_catalog(&db).await;
+        // Second profil `autre` et second provider d'adresse distincte : l'adresse vue par la
+        // fabrique d'inférence distingue le profil effectivement résolu.
+        let stores = LymailleStores::new(db.clone(), "root".to_owned());
+        stores
+            .profiles()
+            .put_profile(
+                &ModelProfile::new("autre".to_owned(), "autre".to_owned(), "autre-test".to_owned())
+                    .with_context_size(262_144),
+            )
+            .await
+            .expect("l'admin ecrit le second profil");
+        stores
+            .providers()
+            .put_provider(
+                &Provider::new(
+                    "autre".to_owned(),
+                    "openai".to_owned(),
+                    "http://autre.invalid/v1".to_owned(),
+                    Some("FIXED_KEY".to_owned()),
+                    ProviderLevel::User,
+                )
+                .expect("des references simples font un provider"),
+            )
+            .await
+            .expect("l'admin ecrit le second provider");
+        let alice = compte(&db, "alice", false).await;
+        // Agent sans profil explicite (`new` sans `with_profile`, `lymaille` 0.3.0).
+        let sans_profil = AgentDefinition::new("dev".to_owned(), AgentKind::Work, "le prompt".to_owned())
+            .with_modules(vec!["resources".to_owned()]);
+        put_agent(&db, &alice, &sans_profil).await;
+        let hote = HoteProfil::new(Some("qwen"));
+        let fabrique = FabriqueAdresse::new(Arc::new(ScriptedProvider::new(Vec::new())));
+        let mut deps = deps_with(
+            db.clone(),
+            Arc::new(ScriptedProvider::new(Vec::new())),
+            SpyFactory::new(),
+        );
+        deps.inference = Arc::clone(&fabrique) as Arc<dyn InferenceFactory>;
+        deps.host = Some(Arc::clone(&hote) as SharedHost);
+
+        // Première ouverture : l'hôte désigne `qwen`, la session s'ouvre sur son provider.
+        let session_un = SessionId::new("s-defaut-1").expect("identifiant de session de test");
+        assemble_session(&deps, &alice, SessionKind::Work, "dev", &session_un, None)
+            .await
+            .expect("lassemblage suit le profil par defaut de l hote");
+        assert_eq!(
+            fabrique.adresses(),
+            vec!["http://inference.invalid/v1".to_owned()],
+            "la premiere session souvre sur qwen (le provider de qwen)"
+        );
+        assert_eq!(hote.appels(), 1, "l hote est consulte pour l agent sans profil");
+
+        // L'hôte change de réponse : la session suivante suit, sans que l'agent ait été réécrit —
+        // preuve : le défaut est relu à chaque ouverture.
+        hote.set(Some("autre"));
+        let session_deux = SessionId::new("s-defaut-2").expect("identifiant de session de test");
+        assemble_session(&deps, &alice, SessionKind::Work, "dev", &session_deux, None)
+            .await
+            .expect("la session suivante suit le nouveau defaut");
+        assert_eq!(
+            fabrique.adresses(),
+            vec![
+                "http://inference.invalid/v1".to_owned(),
+                "http://autre.invalid/v1".to_owned(),
+            ],
+            "la seconde session souvre sur autre : le defaut est relu a chaque ouverture"
+        );
+        assert_eq!(hote.appels(), 2, "le defaut est relu a chaque ouverture");
+
+        // Agent à profil explicite : l'hôte n'est pas consulté.
+        put_agent(&db, &alice, &agent("dev2", AgentKind::Work, Vec::new())).await;
+        let avant = hote.appels();
+        let session_trois = SessionId::new("s-defaut-3").expect("identifiant de session de test");
+        assemble_session(&deps, &alice, SessionKind::Work, "dev2", &session_trois, None)
+            .await
+            .expect("un agent a profil explicite s assemble sans consulter l hote");
+        assert_eq!(
+            hote.appels(),
+            avant,
+            "un agent a profil explicite ne consulte pas l hote"
+        );
+    }
+
+    /// Scenario « sans profil par défaut, l'erreur nomme la cause » (issue #75, amendement du
+    /// 2026-11-13 de ./assemble.sdd) : agent sans profil et hôte absent, puis hôte qui rend
+    /// `Ok(None)`, puis `Err(HostError)` — les trois rendent `Config("no default profile
+    /// configured")` (`MRD-LYMAILLE-008`, non retryable), sans aucun texte de l'hôte.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sans_profil_par_defaut_l_erreur_nomme_la_cause() {
+        let db = db_test().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
+        let sans_profil = AgentDefinition::new("dev".to_owned(), AgentKind::Work, "le prompt".to_owned())
+            .with_modules(vec!["resources".to_owned()]);
+        put_agent(&db, &alice, &sans_profil).await;
+
+        // Cas 1 : hôte absent (`AssembleDeps::host = None`).
+        let deps = deps_with(
+            db.clone(),
+            Arc::new(ScriptedProvider::new(Vec::new())),
+            SpyFactory::new(),
+        );
+        let session = SessionId::new("s-sans-defaut").expect("identifiant de session de test");
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+            .await
+            .expect_err("un agent sans profil sans hôte est refusé");
+        assert!(
+            matches!(&refus, LymailleError::Config(message)
+                if message == "no default profile configured"),
+            "l'hôte absent rend la Config nommant la cause : {refus:?}"
+        );
+
+        // Cas 2 : hôte qui rend `Ok(None)`.
+        let mut deps = deps_with(
+            db.clone(),
+            Arc::new(ScriptedProvider::new(Vec::new())),
+            SpyFactory::new(),
+        );
+        deps.host = Some(HoteProfil::new(None) as SharedHost);
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+            .await
+            .expect_err("Ok(None) est le même refus");
+        assert!(
+            matches!(&refus, LymailleError::Config(message)
+                if message == "no default profile configured"),
+            "l'hôte sans défaut rend la même Config : {refus:?}"
+        );
+
+        // Cas 3 : hôte en panne — `HostError` est sans contenu, rien de l'hôte ne traverse.
+        let mut deps = deps_with(
+            db.clone(),
+            Arc::new(ScriptedProvider::new(Vec::new())),
+            SpyFactory::new(),
+        );
+        deps.host = Some(Arc::new(HoteEnPanne) as SharedHost);
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None)
+            .await
+            .expect_err("une panne d'hôte est le même refus fermé");
+        assert!(
+            matches!(&refus, LymailleError::Config(message)
+                if message == "no default profile configured"),
+            "la panne d'hôte rend la même Config, sans texte de l'hôte : {refus:?}"
+        );
+        assert!(
+            !refus.to_string().contains("host"),
+            "aucun texte d'hôte ne traverse : {refus}"
         );
     }
 }

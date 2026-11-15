@@ -64,7 +64,8 @@ Tasks:
     Arbitré le 2026-11-13 : type rendu : celui que lit `resolve_grants` pour la colonne `script_grants` de ./definitions/context_type.sdd (une seule forme, donc `check_grants` s'applique tel quel) ; le nommer à l'écriture du `Must`.
     Arbitré le 2026-11-13 (recommandation retenue) : signature : `Result<Option<…>, HostError>` (recommandé : même forme que `resolve_mcp` et `resolve_context`, une panne de l'hôte devient un échec fermé et non un « aucun droit » muet) plutôt que
     l'`Option` nu de l'issue.
-  [ ] Issue #75 — `default_profile` : profil par défaut fourni par l'hôte. Spec d'abord : quatrième méthode à défaut `async fn default_profile(&self) -> Result<Option<String>, HostError>`, défaut
+  [x] Issue #75 — `default_profile` : profil par défaut fourni par l'hôte. Spec d'abord : quatrième méthode à défaut `async fn default_profile(&self) -> Result<Option<String>, HostError>`, défaut
+    Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Quatrième méthode à défaut @LymailleHost::default_profile, `Ok(None)`, jamais persistée ni journalisée. Tests : `default_profile_a_un_defaut_neutre`, `un_hote_designe_le_profil_par_defaut`.
     `Ok(None)` (aucun profil par défaut : l'ouverture d'une session d'un agent sans profil échoue avec la cause nommée, voir ./interactive/assemble.sdd) ; `Scenario` : défaut → `None`, hôte qui désigne un
     profil. Puis tests d'abord, puis ./host.rs. Dépend de ./definitions/agent.sdd (profil facultatif, arbitré le 2026-11-13) : sans lui, la méthode n'a pas de consommateur.
   [ ] Issue #82 — `forward_token` : jeton `forward` fourni par l'hôte hors session interactive. Spec d'abord : cinquième méthode à défaut

@@ -14,9 +14,10 @@ use ::lymaille::ToolsetContext;
 
 use super::identity::CallerPrincipal;
 
-/// Extension de l'hôte pour les serveurs MCP et les contextes de niveau projet. Objet-trait :
-/// l'application le fournit en [`SharedHost`] (`Arc<dyn LymailleHost>`). Les deux méthodes ont un
-/// défaut — l'hôte n'implémente que ce qu'il fournit (`Must` de ./host.sdd).
+/// Extension de l'hôte pour les serveurs MCP, les contextes de niveau projet et le profil par
+/// défaut des agents. Objet-trait : l'application le fournit en [`SharedHost`]
+/// (`Arc<dyn LymailleHost>`). Toutes les méthodes ont un défaut — l'hôte n'implémente que ce qu'il
+/// fournit (`Must` de ./host.sdd).
 #[async_trait]
 pub trait LymailleHost: Send + Sync {
     /// Rend la décision de l'hôte sur le rôle MCP `request.role` du contexte `request.context`.
@@ -48,6 +49,22 @@ pub trait LymailleHost: Send + Sync {
         _id: &str,
         _caller: &CallerPrincipal,
     ) -> Result<Option<ToolsetContext>, HostError> {
+        Ok(None)
+    }
+
+    /// Rend le nom du profil de modèle par défaut : celui que reçoivent les agents qui n'en
+    /// désignent pas dans leur définition (issue #75, ./host.sdd — la colonne `profile` vide des
+    /// tables d'agents, ./definitions/agent.sdd). Relu à **chaque** ouverture de session et à
+    /// chaque exécution de step, jamais mis en cache, persisté ni journalisé par la crate.
+    /// Défaut : `Ok(None)` — aucun profil par défaut ; l'appelant rend alors l'erreur nommant la
+    /// cause (./interactive/assemble.sdd, ../../`workflow/subagent_step.sdd`).
+    ///
+    /// # Errors
+    ///
+    /// `HostError` si la résolution d'hôte échoue — erreur sans contenu, cf.
+    /// [`LymailleHost::resolve_mcp`] ; la crate ne la propage ni ne la trace, elle rend sa phrase
+    /// fixe.
+    async fn default_profile(&self) -> Result<Option<String>, HostError> {
         Ok(None)
     }
 }
@@ -164,6 +181,49 @@ mod tests {
             .await
             .expect("le défaut de resolve_context ne peut pas échouer");
         assert!(context.is_none(), "attendu None, obtenu : {context:?}");
+    }
+
+    /// `Scenario` de la tâche « Issue #75 » de ./host.sdd (moitié « défaut → `None` » du
+    /// Scenario « les méthodes ajoutées ont un défaut neutre » — `script_grants` (#70) et
+    /// `forward_token` (#82) complèteront ce test) : un hôte qui n'implémente que les méthodes
+    /// d'origine rend `Ok(None)` — aucun profil par défaut, et `default_profile` est bien la
+    /// quatrième méthode à défaut du trait.
+    #[tokio::test]
+    async fn default_profile_a_un_defaut_neutre() {
+        struct EmptyHost;
+        #[async_trait]
+        impl LymailleHost for EmptyHost {}
+
+        let host: SharedHost = std::sync::Arc::new(EmptyHost);
+        let rendu = host
+            .default_profile()
+            .await
+            .expect("le défaut de default_profile ne peut pas échouer");
+        assert!(rendu.is_none(), "attendu None, obtenu : {rendu:?}");
+    }
+
+    /// `Scenario` de la tâche « Issue #75 » de ./host.sdd (moitié « hôte qui désigne un profil ») :
+    /// l'hôte qui implémente `default_profile` pourvoit le nom que la crate relit à chaque
+    /// ouverture de session et à chaque exécution de step.
+    #[tokio::test]
+    async fn un_hote_designe_le_profil_par_defaut() {
+        struct HoteProfil;
+        #[async_trait]
+        impl LymailleHost for HoteProfil {
+            async fn default_profile(&self) -> Result<Option<String>, HostError> {
+                Ok(Some("qwen".to_owned()))
+            }
+        }
+
+        let host: SharedHost = std::sync::Arc::new(HoteProfil);
+        let rendu = host
+            .default_profile()
+            .await
+            .expect("l'hôte désigne un profil sans panne");
+        assert!(
+            matches!(&rendu, Some(nom) if nom == "qwen"),
+            "le nom désigné traverse : {rendu:?}"
+        );
     }
 
     /// Scenario « l'expiration est exclusive » : faux avant `t`, vrai à `t` et après ; sans

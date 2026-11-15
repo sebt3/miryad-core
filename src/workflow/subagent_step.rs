@@ -444,6 +444,13 @@ struct Resolved {
     api_key: Option<Zeroizing<String>>,
 }
 
+/// Message fixe de l'absence de profil par défaut (amendement du 2026-11-13, issue #75,
+/// `./subagent_step.sdd` point 6) : une définition sans profil explicite et sans profil fourni
+/// par l'hôte (hôte absent, `Ok(None)` ou `Err(HostError)` — erreur sans contenu, jamais citée).
+/// Porté par un `StepError` **non retryable**, même règle que
+/// `../lymaille/interactive/assemble.rs`.
+const SANS_PROFIL_PAR_DEFAUT: &str = "no default profile configured";
+
 impl SubagentStep {
     /// Étapes 3 à 6 : crypto, principal, définition (nature `Sub`, schéma de sortie présent),
     /// défense en profondeur sur les modules (DSD `FR-9`), profil, provider, secret, client.
@@ -468,12 +475,26 @@ impl SubagentStep {
             .ok_or_else(|| permanent("sub-agent has no output schema"))?;
         check_grants(&caller, definition.modules(), ADMIN_ONLY_MODULES)
             .map_err(|error| from_lymaille(&error))?;
+        // Issue #75 (./subagent_step.sdd point 6, amendement du 2026-11-13, même règle que
+        // `../lymaille/interactive/assemble.rs`) : une définition sans profil explicite suit le
+        // profil par défaut de l'hôte (`LymailleHost::default_profile()`, relu à chaque
+        // exécution du step) ; absence, `Ok(None)` ou panne d'hôte rendent le `StepError` **non
+        // retryable** de message fixe, sans texte de l'hôte. Un profil désigné se résout
+        // inchangé.
+        let profil: String = match definition.profile() {
+            Some(nom) => nom.to_owned(),
+            None => match self.deps.host.as_ref() {
+                Some(hote) => hote
+                    .default_profile()
+                    .await
+                    .map_err(|_| permanent(SANS_PROFIL_PAR_DEFAUT))?
+                    .ok_or_else(|| permanent(SANS_PROFIL_PAR_DEFAUT))?,
+                None => return Err(permanent(SANS_PROFIL_PAR_DEFAUT)),
+            },
+        };
         let profile = stores
             .profiles()
-            // Profil sans valeur : nom vide résolu tel quel, conversion provisoire
-            // (`src/lymaille/mod.sdd`, tâche montée 0.3.0 du 2026-11-14) ; la sémantique
-            // « sans profil » est portée par la tâche #75.
-            .resolve_profile(definition.profile().unwrap_or_default(), None)
+            .resolve_profile(&profil, None)
             .await
             .map_err(from_agents)?;
         let provider: Provider = stores
@@ -2607,6 +2628,207 @@ mod tests {
         assert!(
             provider.requests().is_empty(),
             "aucune requête d'inférence, aucun tour"
+        );
+    }
+
+    // ── Profil par défaut de l'hôte (issue #75, ./subagent_step.sdd) ────────────────────────
+
+    /// Hôte fixture des `Scenario` du profil par défaut (issue #75) : désigne (ou non) le profil
+    /// de modèle des agents sans profil explicite, et compte ses appels — le test verrouille que
+    /// `default_profile` est consulté pour le pas, et pour lui seul.
+    struct HoteDefaut {
+        profil: Mutex<Option<String>>,
+        appels: AtomicUsize,
+    }
+
+    impl HoteDefaut {
+        fn new(profil: Option<&str>) -> Arc<Self> {
+            Arc::new(Self {
+                profil: Mutex::new(profil.map(str::to_owned)),
+                appels: AtomicUsize::new(0),
+            })
+        }
+
+        fn appels(&self) -> usize {
+            self.appels.load(Ordering::SeqCst)
+        }
+    }
+
+    #[::async_trait::async_trait]
+    impl LymailleHost for HoteDefaut {
+        async fn default_profile(&self) -> Result<Option<String>, HostError> {
+            let _ = self.appels.fetch_add(1, Ordering::SeqCst);
+            Ok(self.profil.lock().expect("verrou de l'hôte").clone())
+        }
+    }
+
+    /// Hôte fixture en panne : `default_profile` échoue d'un `HostError` — erreur sans contenu,
+    /// dont rien ne doit traverser le `StepError`.
+    struct HoteDefautEnPanne;
+
+    #[::async_trait::async_trait]
+    impl LymailleHost for HoteDefautEnPanne {
+        async fn default_profile(&self) -> Result<Option<String>, HostError> {
+            Err(HostError)
+        }
+    }
+
+    /// Sous-agent du catalogue **sans profil explicite** (`lymaille` 0.3.0 : `new` sans
+    /// `with_profile`), avec son schéma de sortie — fixture du `Scenario` du profil par défaut.
+    fn sub_agent_sans_profil(id: &str, prompt: &str) -> AgentDefinition {
+        AgentDefinition::new(id.to_owned(), AgentKind::Sub, prompt.to_owned())
+            .with_output_schema(verdict_schema())
+    }
+
+    /// Fabrique d'inférence qui note l'adresse de chaque provider résolu : c'est par elle que le
+    /// test distingue le profil effectivement suivi (`qwen` → le provider `local` de
+    /// `http://inference.invalid/v1`).
+    struct FabriqueAdresse {
+        provider: Arc<ScriptedProvider>,
+        adresses: Mutex<Vec<String>>,
+    }
+
+    impl FabriqueAdresse {
+        fn new(provider: Arc<ScriptedProvider>) -> Arc<Self> {
+            Arc::new(Self {
+                provider,
+                adresses: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn adresses(&self) -> Vec<String> {
+            self.adresses.lock().expect("verrou de la fabrique").clone()
+        }
+    }
+
+    impl InferenceFactory for FabriqueAdresse {
+        fn make(&self, address: String, _api_key: Option<String>) -> Arc<dyn DynInference> {
+            self.adresses.lock().expect("verrou de la fabrique").push(address);
+            let provider: Arc<dyn DynInference> = self.provider.clone();
+            provider
+        }
+    }
+
+    /// Scenario « un agent sans profil suit le profil par défaut de l'hôte » (issue #75,
+    /// amendement du 2026-11-13 de `./subagent_step.sdd`, même règle que
+    /// `../lymaille/interactive/assemble.rs`) : une définition `Sub` sans profil explicite
+    /// s'exécute sur le profil que `LymailleHost::default_profile()` désigne — ici `qwen`, dont
+    /// le provider est celui visé par le client d'inférence.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_agent_sans_profil_suit_le_profil_par_defaut_de_lhote() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "root", true).await;
+        wire_catalog(&db).await;
+        put_catalog_agent(
+            &db,
+            &sub_agent_sans_profil("G_sans_profil", "tu rends un verdict"),
+        )
+        .await;
+        let hote = HoteDefaut::new(Some("qwen"));
+        let fabrique = FabriqueAdresse::new(Arc::new(ScriptedProvider::new(vec![Ok(pad_call(SUBMIT_OK))])));
+        let mcp: Arc<dyn McpConnectorFactory> = Arc::new(SpyMcp::default());
+        let step = step_with_seams(
+            db,
+            fabrique.clone() as Arc<dyn InferenceFactory>,
+            Some(Arc::clone(&hote) as SharedHost),
+            mcp,
+        );
+
+        let output = step
+            .run(
+                &run_info("t-defaut-qwen", "s1", Some("alice")),
+                config("G_sans_profil", "rends ton verdict"),
+                HashMap::new(),
+            )
+            .await
+            .expect("le step suit le profil par défaut de l'hôte");
+
+        assert_eq!(output, json!({ "verdict": "ok" }));
+        assert_eq!(
+            fabrique.adresses(),
+            vec!["http://inference.invalid/v1".to_owned()],
+            "le client d'inférence est celui du provider que le profil qwen désigne"
+        );
+        assert_eq!(hote.appels(), 1, "l'hôte est consulté pour le profil par défaut");
+    }
+
+    /// Scenario « un agent sans profil suit le profil par défaut de l'hôte » (moitié « sans
+    /// défaut »), point 6 du `Must` (issue #75) : hôte absent, hôte qui rend `Ok(None)` ou hôte
+    /// en panne → `StepError` **non retryable** « no default profile configured », sans aucune
+    /// requête d'inférence ni texte de l'hôte.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sans_defaut_de_profil_le_step_echoue_sans_retry() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "root", true).await;
+        wire_catalog(&db).await;
+        put_catalog_agent(
+            &db,
+            &sub_agent_sans_profil("G_sans_profil", "tu rends un verdict"),
+        )
+        .await;
+
+        // Cas 1 : pas d'hôte — la règle ne consulte personne et refuse.
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let step = step_with(db.clone(), Arc::new(ScriptFactory(Arc::clone(&provider))));
+        let refus = step
+            .run(
+                &run_info("t-defaut-absent", "s1", Some("alice")),
+                config("G_sans_profil", "rends ton verdict"),
+                HashMap::new(),
+            )
+            .await
+            .expect_err("un agent sans profil sans hôte est refusé");
+        assert!(
+            !refus.retryable,
+            "l'absence de défaut n'est pas retryable : {refus}"
+        );
+        assert_eq!(refus.message, "no default profile configured");
+        assert!(provider.requests().is_empty(), "le refus précède toute inférence");
+
+        // Cas 2 : hôte qui rend `Ok(None)`.
+        let mcp: Arc<dyn McpConnectorFactory> = Arc::new(SpyMcp::default());
+        let hote_sans_defaut = HoteDefaut::new(None);
+        let step = step_with_seams(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::new(ScriptedProvider::new(Vec::new())))),
+            Some(Arc::clone(&hote_sans_defaut) as SharedHost),
+            mcp,
+        );
+        let refus = step
+            .run(
+                &run_info("t-defaut-none", "s1", Some("alice")),
+                config("G_sans_profil", "rends ton verdict"),
+                HashMap::new(),
+            )
+            .await
+            .expect_err("Ok(None) est le même refus");
+        assert!(!refus.retryable, "non retryable : {refus}");
+        assert_eq!(refus.message, "no default profile configured");
+        assert_eq!(hote_sans_defaut.appels(), 1, "l'hôte a été consulté une fois");
+
+        // Cas 3 : hôte en panne — `HostError` est sans contenu, rien de l'hôte ne traverse.
+        let mcp: Arc<dyn McpConnectorFactory> = Arc::new(SpyMcp::default());
+        let step = step_with_seams(
+            db,
+            Arc::new(ScriptFactory(Arc::new(ScriptedProvider::new(Vec::new())))),
+            Some(Arc::new(HoteDefautEnPanne) as SharedHost),
+            mcp,
+        );
+        let refus = step
+            .run(
+                &run_info("t-defaut-panne", "s1", Some("alice")),
+                config("G_sans_profil", "rends ton verdict"),
+                HashMap::new(),
+            )
+            .await
+            .expect_err("une panne d'hôte est le même refus fermé");
+        assert!(!refus.retryable, "non retryable : {refus}");
+        assert_eq!(refus.message, "no default profile configured");
+        assert!(
+            !refus.message.contains("host"),
+            "aucun texte d'hôte ne traverse : {refus}"
         );
     }
 }

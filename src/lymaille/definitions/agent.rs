@@ -107,8 +107,10 @@ impl Entity {
         };
         active.agent_id = ActiveValue::Set(definition.id().to_owned());
         active.kind = ActiveValue::Set(nature);
-        // Profil sans valeur : chaîne vide, conversion provisoire (`src/lymaille/mod.sdd`,
-        // tâche montée 0.3.0 du 2026-11-14) ; la sémantique « sans profil » est #75.
+        // Issue #75 (./agent.sdd, amendements des 2026-11-13 et 2026-11-14) : une définition sans
+        // profil explicite pose la chaîne vide dans cette colonne — « suit le profil par défaut de
+        // l'hôte » (`../interactive/assemble.rs`) ; un profil désigné est copié inchangé. La
+        // colonne reste `String` NOT NULL : aucune évolution de schéma (option A arbitrée).
         active.profile = ActiveValue::Set(definition.profile().unwrap_or_default().to_owned());
         if let Some(ligne) = existing {
             active.created_at = ActiveValue::Set(ligne.created_at);
@@ -239,6 +241,14 @@ mod tests {
         .expect("la fixture se sérialise")
     }
 
+    /// `AgentDefinition` **sans profil explicite** (`lymaille` 0.3.0 : `new` sans `with_profile`),
+    /// sérialisée par la bibliothèque elle-même — fixture du Scenario « une définition sans profil
+    /// donne une colonne profile vide » (issue #75).
+    fn definition_sans_profil(id: &str, kind: AgentKind, prompt: &str) -> serde_json::Value {
+        serde_json::to_value(AgentDefinition::new(id.to_string(), kind, prompt.to_string()))
+            .expect("la fixture se sérialise")
+    }
+
     /// `ActiveModel` dans la forme qui atteint le hook : colonnes dérivées fausses (le hook doit
     /// les réécrire), `definition` posée, clé et horodatage non posés, provenance non posée.
     fn active_avec(definition: serde_json::Value) -> ActiveModel {
@@ -311,6 +321,36 @@ mod tests {
         assert!(
             matches!(rendu.created_at, Set(_)),
             "`created_at` est posé par le hook de création quand il est absent"
+        );
+    }
+
+    /// Scenario « une définition sans profil donne une colonne profile vide » (issue #75,
+    /// amendement du 2026-11-13 de ./agent.sdd) : une définition sans profil explicite, avec une
+    /// colonne `profile` fausse dans l'`ActiveModel`, rend `profile = ""` (« suit le profil par
+    /// défaut de l'hôte ») et la définition JSON traverse inchangée. La moitié « avec profil » du
+    /// Scenario est verrouillée par
+    /// [`before_create_accepte_une_definition_valide_et_derive_les_colonnes`] (`profile = "qwen"`,
+    /// copie inchangée).
+    #[tokio::test]
+    async fn une_definition_sans_profil_donne_une_colonne_profile_vide() {
+        let brute = definition_sans_profil("G_triage", AgentKind::Sub, "trie");
+        let rendu = Entity::before_create(&hook_db(), active_avec(brute.clone()), &principal())
+            .await
+            .expect("une définition du catalogue sans profil est acceptée");
+        assert_eq!(
+            rendu.agent_id,
+            Set("G_triage".to_string()),
+            "`agent_id` reste la copie dérivée de `definition.id`"
+        );
+        assert_eq!(
+            rendu.profile,
+            Set(String::new()),
+            "sans profil explicite, la colonne dérivée est la chaîne vide (suit le défaut de l'hôte)"
+        );
+        assert_eq!(
+            rendu.definition,
+            Set(brute),
+            "la colonne JSON `definition`, source de vérité, n'est pas modifiée"
         );
     }
 

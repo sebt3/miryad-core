@@ -152,7 +152,8 @@ Tasks:
     Validé 2026-11-07 (validator PASS : redactor configuré, garde de collision `resources`/`result` ; batterie complète 39/39 conforme, `specdd lint` vert, rustdoc sans nouveau warning).
   [x] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : retirer la déclaration locale de `ADMIN_ONLY_MODULES` de ./subagent_step.rs et importer celle de `../lymaille/identity.rs` ; aucun changement de comportement, tests existants verts.
     Validé 2026-11-11 (batterie ciblée `lymaille` et `workflow,lymaille` verte ; synthèse tenue par le primary, `validator` indisponible — voir le `[?]` de `../lymaille/identity.sdd`).
-  [ ] Issue #75 — profil par défaut dans le step. Spec d'abord : au point 6 (`profiles().resolve_profile(definition.profile, None)`), même règle que ./../lymaille/interactive/assemble.sdd : agent sans
+  [x] Issue #75 — profil par défaut dans le step. Spec d'abord : au point 6 (`profiles().resolve_profile(definition.profile, None)`), même règle que ./../lymaille/interactive/assemble.sdd : agent sans
+    Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Point 6 : agent sans profil → `default_profile()` ; absence/`None`/panne → `StepError` non retryable « no default profile configured ». Tests : `un_agent_sans_profil_suit_le_profil_par_defaut_de_lhote`, `sans_defaut_de_profil_le_step_echoue_sans_retry`.
     profil → `LymailleHost::default_profile()` ; absence → `StepError` **non retryable** (« no default profile configured »). `Scenario` : agent sans profil, hôte qui désigne un profil ; sans défaut → step en
     échec non retryable. Puis tests d'abord, puis ./subagent_step.rs. Après ./../lymaille/interactive/assemble.sdd.
   [ ] Issue #82 — `forward` dans un step batch. Spec d'abord : le `Must` « un `forward` est un `StepError` non retryable, sans repli » (point `interactive_token = None`) devient : le step passe l'hôte à
