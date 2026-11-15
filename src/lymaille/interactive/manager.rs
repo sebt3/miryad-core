@@ -1915,6 +1915,111 @@ mod tests {
         assert_eq!(session_count(&db).await, 0, "aucune session creee");
     }
 
+    /// Scenario « un contexte créé par le CRUD s'ouvre » (issue #74) : cohérence hooks ↔
+    /// ouverture. Un contexte du catalogue `G_home` de type `G_home` est créé par le CRUD d'un
+    /// administrateur (hooks réels de `../definitions/catalog_context.rs`, politique `AdminOnly`
+    /// du moteur), un contexte privé `dev` de type `G_home` par le CRUD d'alice (hooks réels de
+    /// `../definitions/user_context.rs`) ; les deux sessions s'ouvrent ensuite sur `alice` : ce
+    /// que les hooks acceptent comme `context_type` (`G_…`) est exactement ce que
+    /// `resolve_start` résout à l'ouverture.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_contexte_cree_par_le_crud_souvre() {
+        use crate::auth::AuthPrincipal;
+        use crate::auth::PrincipalSource;
+        use crate::lymaille::definitions::catalog_context;
+        use crate::lymaille::definitions::user_context;
+
+        fn principal_avec(subject: &str) -> AuthPrincipal {
+            AuthPrincipal {
+                subject: subject.to_owned(),
+                email: None,
+                preferred_username: None,
+                source: PrincipalSource::ApiToken { token_id: 1 },
+            }
+        }
+
+        let db = test_db().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
+        compte(&db, "admin", true).await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
+        put_type(&db, "G_home", Some(SessionKind::Work), Some("dev"), &["dev"]).await;
+
+        // Given — catalogue : un contexte `G_home` de type `G_home` créé par le CRUD d'un admin
+        // (le hook `before_create` de `catalog_context.rs` valide et dérive `name`, la politique
+        // `AdminOnly` est celle du moteur).
+        let brute = serde_json::to_value(
+            ToolsetContext::new("G_home".to_owned(), ContextLevel::Shared)
+                .expect("le contexte de fixture se construit"),
+        )
+        .expect("le contexte se serialise");
+        crate::rest::core::create::<catalog_context::Entity>(
+            &db,
+            &principal_avec("admin"),
+            catalog_context::Model {
+                id: 0,
+                name: "que-le-hook-reecrit".to_owned(),
+                context: brute,
+                context_type: Some("G_home".to_owned()),
+                created_at: chrono::Utc::now(),
+            },
+        )
+        .await
+        .expect("l'admin cree le contexte du catalogue par le CRUD (hook reel)");
+
+        // Given — privé : un contexte `dev` de type `G_home` créé par le CRUD d'alice (hook réel
+        // de `user_context.rs`, `owner_id` posé par l'injection du propriétaire).
+        let brute_prive = serde_json::to_value(
+            ToolsetContext::new("dev".to_owned(), ContextLevel::User)
+                .expect("le contexte de fixture se construit"),
+        )
+        .expect("le contexte se serialise");
+        crate::rest::core::create::<user_context::Entity>(
+            &db,
+            &principal_avec("alice"),
+            user_context::Model {
+                id: 0,
+                owner_id: 0,
+                name: "que-le-hook-reecrit".to_owned(),
+                context: brute_prive,
+                context_type: Some("G_home".to_owned()),
+                created_at: chrono::Utc::now(),
+            },
+        )
+        .await
+        .expect("alice cree son contexte prive par le CRUD (hook reel)");
+
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let manager = SessionManager::new(deps_with(
+            db.clone(),
+            Arc::new(ScriptFactory(provider)),
+            None,
+            Limits::default(),
+        ));
+
+        // Then — les deux contextes acceptés par les hooks s'ouvrent à l'identique.
+        for contexte in ["G_home", "dev"] {
+            let handle = manager
+                .open("alice", contexte, None)
+                .await
+                .unwrap_or_else(|erreur| {
+                    panic!(
+                        "le contexte {contexte} accepte par les hooks doit ouvrir une session : {erreur:?}"
+                    )
+                });
+            assert_eq!(
+                handle.kind,
+                SessionKind::Work,
+                "la nature vient du type `G_home` pour {contexte}"
+            );
+            assert_eq!(
+                handle.agent_id, "dev",
+                "l'agent par défaut du type pour {contexte}"
+            );
+            assert_eq!(handle.context, contexte, "le contexte est celui ouvert");
+        }
+    }
+
     /// Scenario « un contexte hôte exige un agent de travail explicite » : les trois volets de
     /// l'arbitrage hôte (`H_…` sans type, agent obligatoire, nature `Work` seulement).
     #[tokio::test(flavor = "multi_thread")]
