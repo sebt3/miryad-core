@@ -1062,6 +1062,12 @@ Scenario: plafond de critères et noms répétés
     défaut `created_at`/desc, ascendant si le suffixe porte `asc` où qu'il soit — `:` dans un nom
     de champ n'est pas échappable) retenus faute de contrat #78 posé sur @ListQuery, à confirmer
     avec le cycle de parsing de query string (`src/rest/mod.sdd`).
+    Aligné par ./mod.rs le 2026-11-14 (cycle query string #78) : le scindage `champ:dir` est
+    confirmé comme convention de parsing REST (dernier `:` ; ascendant si le suffixe porte `asc`
+    où qu'il soit, descendant sinon ; un `order` explicite l'emporte sur le suffixe). Le
+    @ListQuery posé depuis est `{filters, sort, order}` — ni `sort_field`/`sort_dir`, ni défaut
+    `created_at`/desc : sans `sort` la liste reste ordonnée par la clé primaire croissante
+    (règle ci-dessus) et `order` sans `sort` est un `InvalidQuery`.
   - [?] 2026-11-14 : sans déclaration tri par le resource, le schéma liste nomme `id` ET
     `created_at`, mais tout tri explicite est 400 (l'inférence de colonnes triables est un choix
     provisoire, pas un contrat) — #78, trancher avec les déclarations de colonnes par ressource.

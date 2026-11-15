@@ -31,12 +31,15 @@ use axum::{Json, Router};
 use sea_orm::sea_query::ColumnType;
 #[cfg(feature = "db")]
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, PrimaryKeyToColumn, PrimaryKeyTrait,
+    ActiveModelTrait, ColumnTrait, EntityTrait, IdenStatic, IntoActiveModel, PrimaryKeyToColumn,
+    PrimaryKeyTrait,
 };
 #[cfg(feature = "db")]
 use serde::Serialize;
 #[cfg(feature = "db")]
 use serde::de::DeserializeOwned;
+#[cfg(feature = "db")]
+use std::collections::HashMap;
 
 #[cfg(feature = "db")]
 use crate::auth::{AuthPrincipal, MiryadAuthState};
@@ -119,13 +122,12 @@ impl<E> RestEntity for E where
 {
 }
 
+/// Noms réservés par la query string de la liste (`./mod.sdd` `Accepts` « Surface collection »,
+/// amendement du 2026-11-13, issue #78) : jamais des critères d'égalité par colonne, et aucune
+/// colonne filtrable ou triable ne peut en porter un — garde de montage dans
+/// `resource_router`.
 #[cfg(feature = "db")]
-#[derive(serde::Deserialize)]
-struct ListParams {
-    page: Option<u64>,
-    per_page: Option<u64>,
-    filter: Option<String>,
-}
+const RESERVED_QUERY_NAMES: [&str; 5] = ["page", "per_page", "filter", "sort", "order"];
 
 /// Monte `GET/POST /api/v1/{resource_name}` et `GET/PUT/DELETE /api/v1/{resource_name}/{id}`.
 /// Réutilise `MiryadAuthState` (feature 2b) — même état que l'auth, rien de nouveau à composer
@@ -134,12 +136,15 @@ struct ListParams {
 ///
 /// # Panics
 ///
-/// Refuse au montage trois déclarations invalides détectables sans requête (arbitré
-/// 2026-09-27 pour les deux premières, 2026-09-29 pour la troisième) : `AccessPolicy::OwnerOnly`
-/// (lecture ou écriture) avec `owner_column` à `None`, `filter_column` désignant une colonne non
-/// textuelle, ou `owner_column` désignant une colonne de type autre que `ColumnType::Integer`.
-/// Le message cite l'entité et la règle violée ; une entité mal déclarée ne monte jamais et ne
-/// répond jamais à une requête.
+/// Refuse au montage cinq déclarations invalides détectables sans requête (arbitré 2026-09-27
+/// pour les deux premières, 2026-09-29 pour la troisième, amendement du 2026-11-13 — issue #78 —
+/// pour les deux dernières) : `AccessPolicy::OwnerOnly` (lecture ou écriture) avec
+/// `owner_column` à `None`, `filter_column` désignant une colonne non textuelle, `owner_column`
+/// désignant une colonne de type autre que `ColumnType::Integer`, une colonne de
+/// `filterable_columns` d'un type non pris en charge (entiers, booléen, texte seulement), ou une
+/// colonne filtrable ou triable portant un nom réservé de la query string (`page`, `per_page`,
+/// `filter`, `sort`, `order`). Le message cite l'entité et la règle violée ; une entité mal
+/// déclarée ne monte jamais et ne répond jamais à une requête.
 #[cfg(feature = "db")]
 pub fn resource_router<E, S>() -> Router<S>
 where
@@ -185,6 +190,42 @@ where
         );
     }
 
+    // ./mod.sdd « Montage de la liste » (amendement du 2026-11-13, issue #78) : une colonne
+    // déclarée filtrable d'un type non pris en charge — hors `{entiers, booléen, texte}`,
+    // l'ensemble où `rest::core` lie une valeur d'égalité typée (`typed_filter_value`) — refuse
+    // le montage, comme `filter_column` non textuelle. Aucune contrainte de type sur
+    // `sortable_columns`.
+    for column in E::filterable_columns() {
+        assert!(
+            matches!(
+                column.def().get_column_type(),
+                ColumnType::TinyInteger
+                    | ColumnType::SmallInteger
+                    | ColumnType::Integer
+                    | ColumnType::BigInteger
+                    | ColumnType::Boolean
+                    | ColumnType::Char(_)
+                    | ColumnType::String(_)
+                    | ColumnType::Text
+            ),
+            "`{}` declares filterable column `{}` of an unsupported type — filters support integer, boolean and text columns only, refusing to mount its router",
+            E::resource_name(),
+            column.as_str()
+        );
+    }
+
+    // Même place, même mécanisme : une colonne filtrable ou triable portant un nom réservé de la
+    // query string ne pourrait jamais être nommée comme critère ou comme tri (le nom réservé est
+    // lu comme paramètre, jamais comme clé libre) — refusée au montage (issue #78).
+    for column in E::filterable_columns().into_iter().chain(E::sortable_columns()) {
+        assert!(
+            !RESERVED_QUERY_NAMES.contains(&column.as_str()),
+            "`{}` declares a filterable or sortable column named `{}` — `page`, `per_page`, `filter`, `sort` and `order` are reserved by the list query string, refusing to mount its router",
+            E::resource_name(),
+            column.as_str()
+        );
+    }
+
     let collection_path = format!("/{}", E::resource_name());
     let item_path = format!("/{}/{{id}}", E::resource_name());
 
@@ -201,23 +242,78 @@ where
     )
 }
 
+/// Rend la query string de la liste (amendement du 2026-11-13, issue #78) : les cinq noms
+/// réservés sont lus comme tels, toute autre paire `nom=valeur` est un critère d'égalité par
+/// colonne transmis brut à ./core.rs via `query::ListQuery` — une colonne de l'entité non
+/// déclarée filtrable y tombe sous `InvalidQuery` (`400`, jamais ignorée), un nom inconnu de
+/// l'entité y reste ignoré (tolérance d'entrée conservée, parité avec MCP). Les noms ne sont
+/// jamais interpolés : seules les colonnes déclarées atteignent la requête. ./mod.rs ne valide
+/// aucune colonne — la validation vit là où est leur connaissance, côté ./core.rs.
 #[cfg(feature = "db")]
 async fn list_handler<E: RestEntity>(
     State(auth): State<MiryadAuthState>,
     principal: AuthPrincipal,
-    Query(params): Query<ListParams>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<PagedResult<E::Model>>, RestError> {
-    let page = core::list::<E>(
-        &auth.db,
-        &principal,
-        params.page,
-        params.per_page,
-        params.filter.as_deref(),
-        // parsing traité par la tâche #78 de ./mod.sdd
-        crate::query::ListQuery::default(),
-    )
-    .await?;
+    let page = parse_page_param(&params, "page")?;
+    let per_page = parse_page_param(&params, "per_page")?;
+    let filter = params.get("filter").cloned();
+    let order_param = params.get("order").cloned();
+    let (sort, suffix_order) = split_sort_direction(params.get("sort").map(String::as_str));
+    // L'`order` explicite l'emporte sur la direction portée par le suffixe de `sort` (choix
+    // documenté en `Tasks` de ./mod.sdd, boîte #78).
+    let order = order_param.or_else(|| suffix_order.map(str::to_string));
+    let mut filters: Vec<(String, String)> = params
+        .into_iter()
+        .filter(|(name, _)| !RESERVED_QUERY_NAMES.contains(&name.as_str()))
+        .collect();
+    // Ordre stable par nom pour une transmission déterministe (le plafond et les doublons se
+    // vérifient côté ./core.rs).
+    filters.sort_by_key(|entry| entry.0.clone());
+    let query = crate::query::ListQuery { filters, sort, order };
+    let page = core::list::<E>(&auth.db, &principal, page, per_page, filter.as_deref(), query).await?;
     Ok(Json(page))
+}
+
+/// Validation fonctionnelle de `page`/`per_page` (arbitrage du 2026-11-14, issue #78) : le
+/// `deny` de type serde est retiré, la valeur brute non numérique est refusée `400` par
+/// `RestError::InvalidQuery` (`./error.rs` la rend `400` ; `InvalidInput` rendrait `422`, hors
+/// contrat ici). La normalisation en `[1, MAX]` reste l'objet de `Pagination::from_raw`, côté
+/// ./core.rs — ./mod.rs ne passe que l'`Option` brute.
+#[cfg(feature = "db")]
+fn parse_page_param(params: &HashMap<String, String>, name: &str) -> Result<Option<u64>, RestError> {
+    params
+        .get(name)
+        .map(|value| {
+            value.parse::<u64>().map_err(|_| {
+                RestError::InvalidQuery(format!(
+                    "invalid `{name}` parameter: non-negative integer expected"
+                ))
+            })
+        })
+        .transpose()
+}
+
+/// Scinde `sort` de son suffixe de direction `:` — convention alignée le 2026-11-14 sur la note
+/// `[?]` de `./core.sdd` : la partie avant le dernier `:` est le nom de colonne, le suffixe rend
+/// ascendant s'il porte `asc` où qu'il soit, descendant sinon (`:` dans un nom de colonne n'est
+/// pas échappable). Sans `:`, la direction reste l'affaire du seul paramètre `order`.
+#[cfg(feature = "db")]
+fn split_sort_direction(sort: Option<&str>) -> (Option<String>, Option<&'static str>) {
+    let Some(sort) = sort else {
+        return (None, None);
+    };
+    match sort.rsplit_once(':') {
+        Some((name, direction)) => (
+            Some(name.to_string()),
+            Some(if direction.to_ascii_lowercase().contains("asc") {
+                "asc"
+            } else {
+                "desc"
+            }),
+        ),
+        None => (Some(sort.to_string()), None),
+    }
 }
 
 #[cfg(feature = "db")]
@@ -654,6 +750,137 @@ mod tests {
         }
     }
 
+    // Fixture de la boîte « Issue #78 — query string de la liste REST » (`Tasks`) : entité
+    // `Public` aux deux politiques, sans colonne propriétaire ni `filter_column`, qui déclare
+    // trois colonnes filtrables (`kind` texte, `count` entier, `active` booléen) et une triable
+    // (`created_at`), plus une colonne `secret_note` ni filtrable ni triable — l'entrée wire du
+    // parsing de query string (Scenario « liste filtrée par colonnes déclarées, tri et colonne
+    // refusée »).
+    mod listing {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "listings")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub kind: String,
+            pub count: i32,
+            pub active: bool,
+            pub created_at: i64,
+            pub secret_note: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "listings"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+            fn filterable_columns() -> Vec<Column> {
+                vec![Column::Kind, Column::Count, Column::Active]
+            }
+            fn sortable_columns() -> Vec<Column> {
+                vec![Column::CreatedAt]
+            }
+        }
+    }
+
+    // Fixture du Scenario « montage refusé d'une colonne filtrable non prise en charge ou au nom
+    // réservé » (première branche) : colonne déclarée filtrable d'un type hors du contrat
+    // `{entiers, booléen, texte}` — un `f32` (`ColumnType::Float`). Le Scenario cite une colonne
+    // `JSON` ; `Json` exige la feature `with-json` de sea-orm, absente du graphe (note `[?]` de la
+    // boîte) : le float est le même cas de type non pris en charge. Jamais montée ni requêtée.
+    mod ratiofilter {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "ratiofilters")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub ratio: f32,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "ratiofilters"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+            fn filterable_columns() -> Vec<Column> {
+                vec![Column::Ratio]
+            }
+        }
+    }
+
+    // Fixture du même Scenario (seconde branche) : colonne triable portant le nom réservé `sort`
+    // de la query string — refus du montage avant toute route construite.
+    mod namedsort {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "namedsorts")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub sort: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "namedsorts"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+            fn sortable_columns() -> Vec<Column> {
+                vec![Column::Sort]
+            }
+        }
+    }
+
     // Fixture du troisième garde (arbitrage 2026-09-29, `Must` « Refuser au montage, par panic ») :
     // entité `OwnerOnly` en écriture dont `owner_column` désigne une colonne `i64` —
     // `rbac::evaluate` compare des `sea_orm::Value` strictement et ne matcherait jamais un `i32`
@@ -756,6 +983,9 @@ mod tests {
         db.execute(&schema.create_table_from_entity(hostile::Entity))
             .await
             .expect("hostiles table creates");
+        db.execute(&schema.create_table_from_entity(listing::Entity))
+            .await
+            .expect("listings table creates");
         db
     }
 
@@ -778,6 +1008,7 @@ mod tests {
             .merge(resource_router::<widget::Entity, MiryadAuthState>())
             .merge(resource_router::<doodad::Entity, MiryadAuthState>())
             .merge(resource_router::<hostile::Entity, MiryadAuthState>())
+            .merge(resource_router::<listing::Entity, MiryadAuthState>())
             .with_state(state)
     }
 
@@ -1844,11 +2075,33 @@ mod tests {
             .oneshot(json_request("GET", "/api/v1/recipes?page=abc", &token, None))
             .await
             .expect("router does not fail");
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "QueryRejection d'axum");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "rejet du parsing de la query"
+        );
+        let body = text_body(resp).await;
+        // Amendement 2026-11-13 (issue #78) : le `deny` de type serde sur `page` est retiré, la
+        // validation fonctionnelle de ./mod.rs rend le même `400` via `RestError::InvalidQuery`
+        // (`MRD-REST-008`, rendu `400` par ./error.rs) — le statut est conservé, le corps porte
+        // désormais un code de la crate. `./core.rs::list` n'est pas appelé : le parsing échoue
+        // avant la délégation.
+        assert!(
+            body.starts_with("MRD-REST-008: invalid query: invalid `page`"),
+            "rejet fonctionnel porté par la crate : {body}"
+        );
+
+        // `per_page` est validé de la même façon (amendement #78, même sort que `page`).
+        let resp = app_ref
+            .clone()
+            .oneshot(json_request("GET", "/api/v1/recipes?per_page=abc", &token, None))
+            .await
+            .expect("router does not fail");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let body = text_body(resp).await;
         assert!(
-            !body.contains("MRD-REST-"),
-            "rejet d'axum, pas de la crate : {body}"
+            body.starts_with("MRD-REST-008: invalid query: invalid `per_page`"),
+            "rejet fonctionnel porté par la crate : {body}"
         );
 
         // Paramètre inconnu ignoré (ListParams sans deny_unknown_fields) : 200, page rendue
@@ -2167,5 +2420,293 @@ mod tests {
     #[test]
     fn owner_column_as_nullable_i32_mounts() {
         let _router = resource_router::<optowner::Entity, MiryadAuthState>();
+    }
+
+    // ——— Boîte « Issue #78 — query string de la liste REST » (`Tasks`) : parsing de la query
+    // string de la collection dans ./mod.rs — `page`/`per_page` validés fonctionnellement,
+    // `filter`, `sort`, `order` et les clés libres = colonnes filtrables déclarées, transmis
+    // bruts à ./core.rs via `query::ListQuery`. Le comportement de `?filter=` seul sur une entité
+    // à `filter_column` (contrat conservé) est prouvé par
+    // `list_filter_combines_with_owner_restriction`, cartographié dans `./mod.sdd` sans
+    // duplication. ———
+
+    /// Crée une ligne de la fixture `listing` par `POST` et rend son `id`.
+    async fn create_listing(
+        app_ref: &Router,
+        token: &str,
+        kind: &str,
+        count: i32,
+        active: bool,
+        created_at: i64,
+    ) -> i64 {
+        let body = serde_json::json!({
+            "id": 0, "kind": kind, "count": count, "active": active,
+            "created_at": created_at, "secret_note": "note",
+        });
+        let created = app_ref
+            .clone()
+            .oneshot(json_request("POST", "/api/v1/listings", token, Some(body)))
+            .await
+            .expect("create succeeds");
+        assert_eq!(created.status(), StatusCode::CREATED);
+        json_body(created).await["id"].as_i64().expect("id present")
+    }
+
+    /// Les `created_at` des items d'une page rendue, dans l'ordre de la réponse.
+    fn created_ats(page: &serde_json::Value) -> Vec<i64> {
+        page["items"]
+            .as_array()
+            .expect("items array")
+            .iter()
+            .map(|item| item["created_at"].as_i64().expect("created_at integer"))
+            .collect()
+    }
+
+    /// Les trois lignes de la fixture `listing` : dessert/2/actif/10, dessert/3/actif/20,
+    /// plat/2/inactif/30.
+    async fn seed_listings(app_ref: &Router, token: &str) -> i64 {
+        let first = create_listing(app_ref, token, "dessert", 2, true, 10).await;
+        create_listing(app_ref, token, "dessert", 3, true, 20).await;
+        create_listing(app_ref, token, "plat", 2, false, 30).await;
+        first
+    }
+
+    /// Liste authenticée sur la collection `listings`, page `PagedResult` rendue.
+    async fn list_body(app_ref: &Router, token: &str, uri: &str) -> (StatusCode, serde_json::Value) {
+        let resp = app_ref
+            .clone()
+            .oneshot(json_request("GET", uri, token, None))
+            .await
+            .expect("router does not fail");
+        let status = resp.status();
+        let body = if status == StatusCode::OK {
+            json_body(resp).await
+        } else {
+            serde_json::Value::Null
+        };
+        (status, body)
+    }
+
+    /// Corps texte d'une réponse d'erreur (`400` de la crate — corps `text/plain` porté par
+    /// le code `MRD-*`).
+    async fn error_body(app_ref: &Router, token: &str, uri: &str) -> (StatusCode, String) {
+        let resp = app_ref
+            .clone()
+            .oneshot(json_request("GET", uri, token, None))
+            .await
+            .expect("router does not fail");
+        let status = resp.status();
+        (status, text_body(resp).await)
+    }
+
+    /// `Scenario` (extrait 1/4) : « liste filtrée par colonnes déclarées, tri et colonne
+    /// refusée » — liste filtrée sur deux des trois colonnes filtrables ; porte aussi le typage
+    /// des valeurs (portée par ./core.rs : égalité à valeur liée typée, `400` sinon) et le
+    /// `?filter=` seul sur entité sans `filter_column` (ignoré, `200`, comportement conservé).
+    #[tokio::test]
+    async fn wire_list_filters_on_two_of_three_declared_columns() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+        let first = seed_listings(&app_ref, &token).await;
+
+        // Deux clés libres nommant deux colonnes déclarées filtrables : AND des deux égalités.
+        let (status, page) = list_body(&app_ref, &token, "/api/v1/listings?kind=dessert&count=2").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["total_items"], 1, "dessert ET count 2 : la seule ligne 1");
+        assert_eq!(page["items"][0]["id"], first);
+
+        // Booléen typé (valeur convertie selon le type de la colonne, ./core.rs).
+        let (status, page) = list_body(&app_ref, &token, "/api/v1/listings?active=true").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["total_items"], 2, "les deux lignes actives");
+
+        // `?filter=` seul sur une entité sans `filter_column` : ignoré, page complète (`Handles`
+        // de ./mod.sdd, comportement conservé — l'absence d'erreur est un contrat de ./core.rs).
+        let (status, page) = list_body(&app_ref, &token, "/api/v1/listings?filter=importe_peu").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            page["total_items"], 3,
+            "aucune colonne de filtre déclarée : tout passe"
+        );
+
+        // Valeur non convertible sur colonne entière : `400`, le typage est porté par ./core.rs.
+        let (status, body) = error_body(&app_ref, &token, "/api/v1/listings?count=abc").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.starts_with("MRD-REST-008: invalid query:"),
+            "corps attendu de la famille InvalidQuery, reçu : {body}"
+        );
+    }
+
+    /// `Scenario` (extrait 2/4) : tri déclaré `sort`+`order` combinés — `sort=created_at` trié
+    /// décroissant, `order` hors `asc`/`desc` et `order` sans `sort` refusés `400` (validation
+    /// portée par ./core.rs, choix documenté dans la boîte).
+    #[tokio::test]
+    async fn wire_list_sorts_declared_column_with_order() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+        seed_listings(&app_ref, &token).await;
+
+        let (status, page) = list_body(&app_ref, &token, "/api/v1/listings?sort=created_at&order=desc").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            created_ats(&page),
+            vec![30, 20, 10],
+            "tri décroissant déclaré, départagé par la clé primaire croissante"
+        );
+
+        // Valeur d'`order` hors contrat : `400` InvalidQuery — ./mod.rs ne re-valide pas, la
+        // validation tombe côté ./core.rs (parité MCP).
+        let (status, body) = error_body(&app_ref, &token, "/api/v1/listings?sort=created_at&order=up").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.starts_with("MRD-REST-008: invalid query:"),
+            "order=up refusé, reçu : {body}"
+        );
+
+        // `order` sans `sort` : pareillement refusé par ./core.rs.
+        let (status, body) = error_body(&app_ref, &token, "/api/v1/listings?order=desc").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.starts_with("MRD-REST-008: invalid query:"),
+            "order sans sort refusé, reçu : {body}"
+        );
+
+        // Colonne existante mais non triable : la validation du nom tombe aussi côté ./core.rs.
+        let (status, body) =
+            error_body(&app_ref, &token, "/api/v1/listings?sort=secret_note&order=asc").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("column not sortable"),
+            "secret_note n'est pas dans sortable_columns, reçu : {body}"
+        );
+    }
+
+    /// Convention de `sort` alignée sur la note `[?]` de `./core.sdd` (cycle #78) : `colonne`
+    /// seule ou `colonne:dir` — ascendant si le suffixe porte `asc` où qu'il soit, descendant
+    /// sinon ; un `order` explicite l'emporte sur le suffixe (choix provisoire de la boîte).
+    #[tokio::test]
+    async fn wire_list_sort_suffix_and_explicit_order_combined() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+        seed_listings(&app_ref, &token).await;
+
+        let (status, page) = list_body(&app_ref, &token, "/api/v1/listings?sort=created_at:desc").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(created_ats(&page), vec![30, 20, 10], "suffixe `:desc` sans order");
+
+        let (status, page) = list_body(&app_ref, &token, "/api/v1/listings?sort=created_at:asc").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(created_ats(&page), vec![10, 20, 30], "suffixe `:asc` sans order");
+
+        // Le suffixe porte `asc` où qu'il soit : `ascending` est ascendant.
+        let (status, page) = list_body(&app_ref, &token, "/api/v1/listings?sort=created_at:ascending").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            created_ats(&page),
+            vec![10, 20, 30],
+            "ascendant si le suffixe porte asc, où qu'il soit"
+        );
+
+        // `sort` à suffixe + `order` explicite : l'explicite l'emporte (documenté en [?] de la
+        // boîte, ./mod.sdd).
+        let (status, page) = list_body(
+            &app_ref,
+            &token,
+            "/api/v1/listings?sort=created_at:asc&order=desc",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            created_ats(&page),
+            vec![30, 20, 10],
+            "order explicite l'emporte sur le suffixe de sort"
+        );
+    }
+
+    /// `Scenario` (extrait 3/4) : colonne de l'entité non déclarée filtrable → `400`
+    /// `MRD-REST-008`, jamais ignorée (la validation du nom est portée par ./core.rs).
+    #[tokio::test]
+    async fn wire_list_undeclared_column_key_returns_400() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+        seed_listings(&app_ref, &token).await;
+
+        let (status, body) = error_body(&app_ref, &token, "/api/v1/listings?secret_note=x").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body, "MRD-REST-008: invalid query: column not filterable: secret_note",
+            "colonne de l'entité non déclarée filtrable : refusée, jamais ignorée"
+        );
+    }
+
+    /// `Scenario` (extrait 4/4) : un nom inconnu de l'entité reste ignoré (`200`, tolérance
+    /// d'entrée conservée, parité avec ./core.rs sous MCP) — seule la clé nommant une colonne
+    /// est refusée.
+    #[tokio::test]
+    async fn wire_list_key_unknown_to_entity_is_ignored() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+        seed_listings(&app_ref, &token).await;
+
+        let (status, page) = list_body(&app_ref, &token, "/api/v1/listings?inconnu=1&kind=dessert").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            page["total_items"], 2,
+            "inconnu ignoré, seule la clé kind nommant une colonne filtre"
+        );
+    }
+
+    /// Valeur de clé libre : égalité littérale entière — ./core.rs ne tranche aucun opérateur
+    /// (`kind=dessert:lt` compare cette chaîne exacte, `count=2:1` n'est pas convertible).
+    #[tokio::test]
+    async fn wire_list_free_key_value_is_literal_equality_not_operator() {
+        let db = test_db().await;
+        let token = bearer_for(&db, "alice").await;
+        let state = test_state(db);
+        let app_ref = app(state);
+        let colon = create_listing(&app_ref, &token, "dessert:lt", 5, true, 40).await;
+
+        // La valeur est comparée littéralement, aucun `:op` tranché.
+        let (status, page) = list_body(&app_ref, &token, "/api/v1/listings?kind=dessert:lt").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["total_items"], 1, "la valeur littérale matche la ligne");
+        assert_eq!(page["items"][0]["id"], colon);
+
+        // Valeur non convertible sur colonne entière : `400`, pas un opérateur.
+        let (status, body) = error_body(&app_ref, &token, "/api/v1/listings?count=2:1").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.starts_with("MRD-REST-008: invalid query:"),
+            "la valeur d'une clé libre n'est pas scindée, reçu : {body}"
+        );
+    }
+
+    /// `Scenario` : « montage refusé d'une colonne filtrable non prise en charge » — colonne
+    /// déclarée filtrable de type float, hors du contrat `{entiers, booléen, texte}` (la colonne
+    /// `JSON` citée par le Scenario est remplacée par `f32`, `Json` exigeant la feature
+    /// `with-json` de sea-orm) : refus du montage avant toute route construite.
+    #[test]
+    #[should_panic(expected = "`ratiofilters` declares filterable column `ratio` of an unsupported type")]
+    fn filterable_column_of_unsupported_type_panics_at_mount() {
+        let _router = resource_router::<ratiofilter::Entity, MiryadAuthState>();
+    }
+
+    /// `Scenario` : « montage refusé … ou au nom réservé » (seconde branche) — colonne triable
+    /// nommée `sort`, réservé par la query string : refus du montage.
+    #[test]
+    #[should_panic(expected = "`namedsorts` declares a filterable or sortable column named `sort`")]
+    fn sortable_column_named_reserved_word_panics_at_mount() {
+        let _router = resource_router::<namedsort::Entity, MiryadAuthState>();
     }
 }

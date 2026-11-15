@@ -421,13 +421,39 @@ Tasks:
     rend `404` (`MRD-REST-001`) depuis l'arbitrage `./core.sdd` du 2026-11-13 (404 uniforme, pas d'oracle d'existence), plus `403`. L'assertion est mise à jour vers `404` dans ./mod.rs, sans changement du contrat de ce
     fichier : la correspondance `Forbidden` → `403` reste exacte pour les autres chemins de refus (`static_verdict`). Le nom du test et sa référence ci-dessus sont inchangés (il vérifie toujours refus non-possesseur /
     acceptation possesseur).
-  [ ] Issue #78 — query string de la liste REST. Spec d'abord : `ListParams` (privée, aujourd'hui `page`, `per_page`, `filter`) accepte en plus `sort`, `order` et des clés libres = colonnes filtrables ; une clé
+  [x] Issue #78 — query string de la liste REST. Implemente le 2026-11-15 ; batterie 16/16 tests + 16/16 clippy -D warnings + fmt + trees verte, validator PASS statique. Spec d'abord : `ListParams` (privée, aujourd'hui `page`, `per_page`, `filter`) accepte en plus `sort`, `order` et des clés libres = colonnes filtrables ; une clé
     inconnue ou non déclarée filtrable → `400` (`RestError::InvalidInput`, `MRD-REST-005`), **jamais ignorée** (critère d'acceptation) ; les noms `page`, `per_page`, `filter`, `sort`, `order` sont réservés, et une
     colonne portant l'un d'eux est refusée **au montage** (comme `filter_column` sans colonne, déjà vérifié par ce fichier) ; valeur typée selon le type de la colonne (entier, booléen, texte, date), sinon `400`.
     `Scenario` : trois colonnes filtrables, liste filtrée sur deux ; colonne non déclarée → `400` ; collision de nom réservé → refus au montage ; `?filter=` seul → comportement actuel. Puis tests d'abord, puis ./mod.rs.
     Après ./../query.sdd et ./../resource.sdd.
     Arbitré le 2026-11-14 : désérialisation : `Query<HashMap<String, String>>` (recommandé, clés dynamiques) en perdant le `deny` de type serde sur `page`/`per_page` : ces deux-là restent validés par `Pagination::from_raw` et
     le rejet non numérique reste un `400` (`Scenario` existant à conserver).
+    [?] (implementer) 2026-11-14 : `page`/`per_page` non numériques — la boîte cite `InvalidInput`
+      (`MRD-REST-005`) rendu `400`, mais `./error.rs` rend cette variante en `422` ; choix
+      provisoire : `RestError::InvalidQuery` (`MRD-REST-008`), seule variante de la famille requête
+      rendue `400`. Le `Scenario` « Paramètre query mal typé répond 400 » conserve son `400` et son
+      test, mais le corps porte désormais un code de la crate — le wording « rejet QueryRejection
+      d'axum » est à aligner par le développeur principal.
+    [?] (implementer) 2026-11-14 : `sort` accepte `colonne` ou `colonne:dir` — scindage sur le
+      dernier `:`, ascendant si le suffixe porte `asc` où qu'il soit, descendant sinon (convention
+      de la note `[?]` de `./core.sdd`, alignée par ./mod.rs le 2026-11-14) ; un `order` explicite
+      l'emporte sur le suffixe. Une valeur d'`order` hors `asc`/`desc` n'est pas re-validée ici :
+      `InvalidQuery` côté ./core.rs, choix documenté, parité MCP conservée.
+    [?] (implementer) 2026-11-14 : typage des valeurs porté par ./core.rs (`typed_filter_value` :
+      entiers, booléen `true`/`false`, texte — `Value` liés typés, pas de cast SQL en chaîne, ni
+      `TryCastU64`/`TryCastBool` dans la crate) ; aucune valeur d'opérateur tranchée : la valeur
+      d'une clé libre est une égalité littérale entière (`kind=dessert:lt` compare cette chaîne ;
+      `count=2:1` → `400`). Le `date` cité par la boîte n'est pas typé côté core : une colonne date
+      déclarée filtrable tombe sous le garde de montage « type non pris en charge » (`Accepts` :
+      entiers, booléen, texte seulement).
+    [?] (implementer) 2026-11-14 : « une clé inconnue … jamais ignorée » lu avec le `Scenario`
+      (qui rend `inconnu=1` → `200` ignoré) : ne sont jamais ignorées que les clés nommant une
+      colonne de l'entité (`400` `MRD-REST-008`, porté par ./core.rs) ; un nom hors de l'entité
+      reste ignoré, comme sous MCP — parité. La colonne `JSON` du Scenario de montage est posée en
+      fixture par un `f32` (`ColumnType::Float`) : `Json` exige la feature `with-json` de sea-orm,
+      hors graphe. `ListParams` retirée (arbitrage de la boîte : `Query<HashMap<String, String>>`)
+      — wordings `Depends on` (« @derive serde::Deserialize de @ListParams ») et `Exposes`
+      (« @struct @privée à cinq champs », « RawQuery ») à aligner par le développeur principal.
 
 Done when:
   Chaque `Scenario` de la présente spec dispose d'au moins un test nommé distinct vérifiant son
