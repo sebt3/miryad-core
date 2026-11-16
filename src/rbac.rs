@@ -83,28 +83,23 @@ where
     }
 }
 
-/// Verdict décidable **sans enregistrement** (arbitré 2026-09-27, factorisation extraite de
-/// [`evaluate`]) : `Public` → `Some(true)` avant toute requête ; admin → `Some(true)` ;
-/// `AdminOnly` hors admin → `Some(false)` ; `Group` → `Some` du résultat de [`is_member`] ;
-/// `OwnerOnly` → `None` — la décision requiert un enregistrement, y compris quand
-/// [`MiryadResource::owner_column`] est `None` (la branche fail-closed reste dans [`evaluate`],
-/// qui a l'enregistrement). Consommée par [`evaluate`] et, avant toute lecture de ligne, par
-/// `rest::core` (fermeture de l'oracle d'existence, `./rest/core.sdd`).
+/// Verdict décidable **sans enregistrement et sans entité** (amendement 2026-11-16, issue #86,
+/// factorisation extraite de [`static_verdict`]) : même contrat, `E` en moins — `Public` →
+/// `Some(true)` avant toute requête ; admin → `Some(true)` ; `AdminOnly` hors admin →
+/// `Some(false)` ; `Group` → `Some` du résultat de [`is_member`] ; `OwnerOnly` → `None` — la
+/// décision requiert un enregistrement, que l'appelant doit refuser avant d'arriver là.
+/// Consommée par [`static_verdict`] (enveloppe, sites d'appel inchangés) et par `mcp::app_tool`
+/// (un outil applicatif n'a pas de `MiryadResource`).
 ///
 /// # Errors
 ///
 /// Propage toute [`DbErr`] de [`is_admin`] ou [`is_member`] : une panne d'infrastructure n'est
 /// jamais dégradée en refus silencieux.
-// `E` n'est utilisé qu'à l'appel (turbofish) pour épingler l'entité évaluée : signature imposée par `rbac.sdd` `Exposes` (arbitré 2026-09-27).
-#[allow(clippy::extra_unused_type_parameters)]
-pub(crate) async fn static_verdict<E>(
+pub(crate) async fn policy_verdict(
     db: &DatabaseConnection,
     policy: AccessPolicy,
     user: &user::Model,
-) -> Result<Option<bool>, DbErr>
-where
-    E: MiryadResource,
-{
+) -> Result<Option<bool>, DbErr> {
     if policy == AccessPolicy::Public {
         return Ok(Some(true));
     }
@@ -124,6 +119,33 @@ where
         // dans `evaluate`.
         AccessPolicy::OwnerOnly => Ok(None),
     }
+}
+
+/// Verdict décidable **sans enregistrement** (arbitré 2026-09-27, factorisation extraite de
+/// [`evaluate`]) : enveloppe de [`policy_verdict`] (amendement 2026-11-16, issue #86) — le
+/// paramètre `E` n'est utilisé qu'à l'appel (turbofish) pour épingler l'entité évaluée ; contrat
+/// et sites d'appel inchangés. `Public` → `Some(true)` avant toute requête ; admin →
+/// `Some(true)` ; `AdminOnly` hors admin → `Some(false)` ; `Group` → `Some` du résultat de
+/// [`is_member`] ; `OwnerOnly` → `None` — la décision requiert un enregistrement, y compris quand
+/// [`MiryadResource::owner_column`] est `None` (la branche fail-closed reste dans [`evaluate`],
+/// qui a l'enregistrement). Consommée par [`evaluate`] et, avant toute lecture de ligne, par
+/// `rest::core` (fermeture de l'oracle d'existence, `./rest/core.sdd`).
+///
+/// # Errors
+///
+/// Propage toute [`DbErr`] portée par [`policy_verdict`] : une panne d'infrastructure n'est
+/// jamais dégradée en refus silencieux.
+// `E` n'est utilisé qu'à l'appel (turbofish) pour épingler l'entité évaluée : signature imposée par `rbac.sdd` `Exposes` (arbitré 2026-09-27).
+#[allow(clippy::extra_unused_type_parameters)]
+pub(crate) async fn static_verdict<E>(
+    db: &DatabaseConnection,
+    policy: AccessPolicy,
+    user: &user::Model,
+) -> Result<Option<bool>, DbErr>
+where
+    E: MiryadResource,
+{
+    policy_verdict(db, policy, user).await
 }
 
 async fn evaluate<E>(
@@ -739,6 +761,48 @@ mod tests {
             None,
             "OwnerOnly sans colonne doit aussi différer (None) — le fail-closed est dans evaluate"
         );
+    }
+
+    /// Scenario « `policy_verdict` décide sans aucune entité (issue #86) » — même contrat que
+    /// `static_verdict` sans paramètre d'entité, sur une base migrée dépourvue de toute table
+    /// d'entité : les quatre politiques se décident pour `stranger` (`Some(true)`, `Some(false)`,
+    /// `Some(false)`, `None`) comme pour `admin-user` (`Some(true)` partout, le raccourci admin
+    /// passant avant le `None` de `OwnerOnly`).
+    #[tokio::test]
+    async fn policy_verdict_decides_without_entity() {
+        let db = test_db().await;
+        let stranger = resolve_user(&db, "stranger", None)
+            .await
+            .expect("resolve stranger");
+        let admin = resolve_user(&db, "admin-user", None)
+            .await
+            .expect("resolve admin-user");
+        sync_group_memberships(&db, admin.id, &["admin".to_string()])
+            .await
+            .expect("sync");
+
+        let cases: [(AccessPolicy, Option<bool>, Option<bool>); 4] = [
+            (AccessPolicy::Public, Some(true), Some(true)),
+            (AccessPolicy::AdminOnly, Some(false), Some(true)),
+            (AccessPolicy::Group("editors"), Some(false), Some(true)),
+            (AccessPolicy::OwnerOnly, None, Some(true)),
+        ];
+        for (policy, stranger_expected, admin_expected) in cases {
+            assert_eq!(
+                policy_verdict(&db, policy, &stranger)
+                    .await
+                    .expect("verdict sans entité : le DbErr traverse nu"),
+                stranger_expected,
+                "stranger sous {policy:?}"
+            );
+            assert_eq!(
+                policy_verdict(&db, policy, &admin)
+                    .await
+                    .expect("verdict sans entité : le DbErr traverse nu"),
+                admin_expected,
+                "admin-user sous {policy:?}"
+            );
+        }
     }
 
     /// Scenario « Écriture `AdminOnly` : admin passe de définition » — le raccourci admin précède

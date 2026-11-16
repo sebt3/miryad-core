@@ -261,8 +261,11 @@ Example:
   list × non-admin × `OwnerOnly` avec col None → @rbac::ListAccess::Forbidden
 
 Tasks:
-  [ ] Amendement 2026-11-16 (issue #86) : extraire @rbac::policy_verdict de @rbac::static_verdict (tâche R de ./mcp/app_tool.sdd) — test d'abord
+  [x] Amendement 2026-11-16 (issue #86) : extraire @rbac::policy_verdict de @rbac::static_verdict (tâche R de ./mcp/app_tool.sdd) — test d'abord
     (Scenario ci-dessous), puis ./rbac.rs ; les huit scenarios existants de `static_verdict` restent verts à l'identique.
+    Validé 2026-11-16 (validator GO, batterie 17+17 verte) : `policy_verdict` `pub(crate)` non générique à la signature exigée,
+    `static_verdict::<E>` réduit à l'enveloppe, sites d'appel de ./rest/core.rs intouchés, test nommé
+    `policy_verdict_decides_without_entity` (matrice 4 politiques × 2 utilisateurs, base sans table d'entité), 28 tests rbac verts.
   [x] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé, un test par
     scénario minimum, dans le `#[cfg(test)] mod tests` de ./rbac.rs, avec les fixtures manquantes
     ajoutées. Douze tests inline existent déjà (les huit initiaux plus les quatre des arbitrages
