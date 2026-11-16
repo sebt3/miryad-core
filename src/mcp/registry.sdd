@@ -345,7 +345,7 @@ Handles:
     ./../rest/core.rs.
 
 Tasks:
-  [ ] Tâche A2 (2026-11-16, issue #86) : @McpToolRegistry::register_tool et collisions — tests d'abord (Scenarios ci-dessous), puis
+  [x] Tâche A2 (2026-11-16, issue #86) : @McpToolRegistry::register_tool et collisions — tests d'abord (Scenarios ci-dessous), puis
     ./registry.rs. Après ./app_tool.sdd (tâche A1). Règles d'enregistrement, toutes par `assert!` avec message citant le nom (même
     logique et même `# Panics` que `register`, arbitré 2026-09-29) : (1) **nom valide** : non vide, 128 caractères au plus, restreint
     à `[A-Za-z0-9_-]` (ensemble sûr pour tout client MCP) ; (2) **aucune collision** entre outils applicatifs ; (3) **aucune collision
@@ -356,6 +356,14 @@ Tasks:
     de @AppTool::new (schéma invalide, `OwnerOnly`) se propagent telles quelles.
     - [?] **choix provisoire :** nom en `impl Into<String>` (les entités ont `&'static str`, mais un hôte peut composer un nom).
       Option : `&'static str`. Recommandation : `impl Into<String>`, aucune contrainte inutile.
+    - [?] (validator, 2026-11-16) : `ENTITY_TOOL_SUFFIXES` duplique `OPERATIONS` de ./handler.rs (const privée hors `Owns`, duplication
+      commentée, précédent `split_sort_direction` qui porte lui une tâche de factorisation) — ajouter une tâche de factorisation ou
+      acter la duplication permanente ?
+    - [?] (validator, 2026-11-16) : l'assertion « registre non modifié » après panic ne couvre que le cas A et les noms invalides ; les
+      cas B/C ne verrouillent que la panic (non-insertion garantie structurellement, vérifiée à la lecture). Ajout d'assertions d'état
+      aux cas B/C, ou s'en tenir à la garantie structurelle ?
+    Validé 2026-11-16 (validator GO, cycle 4/6, batterie 17+17 verte) : 3 Scenarios → 6 tests nommés ; symétrie des collisions exercée
+    dans les deux ordres ; refus avant toute insertion ; troncature à 32 caractères conforme au Scenario.
   [x] Convertir les vingt `Scenario` (vingtième ajouté le 2026-11-15, issue #78 ; le décompte
     « dix-neuf » datait d'avant l'amendement) en au moins vingt tests Rust nommés et distincts —
     deux tests inline existent, dix-sept à créer dans le `mod tests` `#[cfg(test)]` de

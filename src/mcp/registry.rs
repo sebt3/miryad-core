@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
+use std::future::Future;
 
 use sea_orm::{ColumnTrait, DatabaseConnection, IdenStatic};
 use serde_json::Value;
 
 use crate::auth::AuthPrincipal;
+use crate::mcp::app_tool::AppTool;
 use crate::mcp::error::McpError;
 use crate::mcp::format::OutputFormat;
+use crate::resource::AccessPolicy;
 use crate::rest::RestEntity;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +137,24 @@ fn filter_type(column_type: &sea_orm::sea_query::ColumnType) -> Option<FilterTyp
     }
 }
 
+/// Suffixes des cinq outils générés par entité (`_list`, `_get`, `_create`, `_update`,
+/// `_delete`) : miroir de la table `OPERATIONS` de ./handler.rs, `const` privée de ce module et
+/// hors du `Owns` de cette spec — duplication à sémantique identique, précédent
+/// `split_sort_direction`. Sert aux deux assertions symétriques de collision nom d'outil ↔
+/// outil d'entité (issue #86, tâche A2) : `tools/call` découpe le nom par suffixe, l'ordre des
+/// deux enregistrements ne doit jamais décider du gagnant.
+const ENTITY_TOOL_SUFFIXES: &[&str] = &["_list", "_get", "_create", "_update", "_delete"];
+
+/// Nom tel que cité dans les messages de refus d'enregistrement : tronqué à 32 caractères au
+///-delà (issue #86, tâche A2 — le nom invalide peut être arbitrairement long).
+fn name_label(name: &str) -> String {
+    if name.chars().count() > 32 {
+        name.chars().take(32).collect()
+    } else {
+        name.to_string()
+    }
+}
+
 /// Relit en direct les déclarations de `E` (amendement 2026-11-16, issue #78) : rien n'est copié
 /// au registre.
 fn declared_columns_of<E: RestEntity>() -> DeclaredColumns {
@@ -250,6 +271,9 @@ impl<E: RestEntity> McpEntity for McpEntityImpl<E> {
 pub struct McpToolRegistry {
     pub(crate) format: OutputFormat,
     pub(crate) entities: BTreeMap<&'static str, Box<dyn McpEntity>>,
+    /// Outils applicatifs de l'hôte (issue #86) : `BTreeMap` trié par nom, comme `entities` —
+    /// `tools/list` n'a pas à retrier.
+    pub(crate) tools: BTreeMap<String, AppTool>,
 }
 
 impl McpToolRegistry {
@@ -261,6 +285,7 @@ impl McpToolRegistry {
         Self {
             format,
             entities: BTreeMap::new(),
+            tools: BTreeMap::new(),
         }
     }
 
@@ -275,6 +300,11 @@ impl McpToolRegistry {
     /// programmation détectée au démarrage, même logique que la collision refusée au montage du
     /// routeur REST (`rest/mod.rs`) et dans l'`IrRegistry`. Plus aucun remplacement silencieux,
     /// aucune re-registration idempotente ; le message cite le nom en collision.
+    ///
+    /// Refuse aussi symétriquement (issue #86, tâche A2) une entité dont l'un des cinq noms
+    /// générés `{resource_name}{suffixe}` existe déjà parmi les outils applicatifs : le message
+    /// cite ce nom d'outil ; `register_tool` refuse la collision inverse, l'ordre des deux
+    /// appels ne décide jamais du gagnant.
     pub fn register<E: RestEntity>(&mut self) -> &mut Self {
         let name = E::resource_name();
         assert!(
@@ -292,8 +322,82 @@ impl McpToolRegistry {
                  register it"
             );
         }
+        for suffix in ENTITY_TOOL_SUFFIXES {
+            let tool_name = format!("{name}{suffix}");
+            assert!(
+                !self.tools.contains_key(&tool_name),
+                "`{tool_name}` is already registered as an app tool — entity `{name}` generates a \
+                 tool of that name (suffix `{suffix}`) and `tools/call` dispatches by suffix: the \
+                 registration order must never decide the winner, refusing to register the entity"
+            );
+        }
         self.entities
             .insert(name, Box::new(McpEntityImpl::<E>(std::marker::PhantomData)));
+        self
+    }
+
+    /// Enregistre un outil applicatif (non CRUD, hors parité REST/MCP — `mcp.md` `DEC-1`) sous
+    /// son `name` dans `tools` : construit l'`AppTool` (`app_tool.rs`) de la `description`,
+    /// l'`input_schema`, la `policy` et le `handler` donnés, et rend `&mut Self` pour
+    /// l'enchaînement. L'enregistrement n'évalue aucune politique et ne valide aucun argument :
+    /// il n'enregistre que, et refuse par `assert!` les noms invalides ou en collision, message
+    /// citant le nom (même logique que `register`, arbitré 2026-09-29).
+    ///
+    /// # Panics
+    ///
+    /// Trois refus d'enregistrement, erreurs de programmation détectées au démarrage :
+    ///
+    /// - nom invalide : vide, plus de 128 caractères, ou portant un caractère hors
+    ///   `[A-Za-z0-9_-]` (ensemble sûr pour tout client MCP) — le message cite le nom, tronqué à
+    ///   32 caractères au-delà ;
+    /// - outil applicatif de ce nom déjà enregistré (aucune collision entre outils applicatifs) ;
+    /// - nom égal à `{resource_name}{suffixe}` pour une entité déjà enregistrée et un suffixe
+    ///   des cinq outils générés (`ENTITY_TOOL_SUFFIXES`, miroir d'`OPERATIONS` de ./handler.rs)
+    ///   — `register::<E>` refuse la collision symétrique, `tools/call` découpant le nom par
+    ///   suffixe.
+    ///
+    /// Les paniques d'`AppTool::new` (schéma JSON invalide, `AccessPolicy::OwnerOnly`) se
+    /// propagent telles quelles. Aucun des trois refus ne modifie le registre.
+    pub fn register_tool<F, Fut>(
+        &mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        input_schema: Value,
+        policy: AccessPolicy,
+        handler: F,
+    ) -> &mut Self
+    where
+        F: Fn(DatabaseConnection, AuthPrincipal, Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Value, McpError>> + Send + 'static,
+    {
+        let name = name.into();
+        let label = name_label(&name);
+        assert!(
+            !name.is_empty()
+                && name.chars().count() <= 128
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "`{label}`: app tool names must be non-empty, at most 128 characters restricted to \
+             `[A-Za-z0-9_-]` (a safe set for every MCP client), refusing to register it"
+        );
+        assert!(
+            !self.tools.contains_key(&name),
+            "`{name}` is already registered in the MCP tool registry — a duplicate app tool name \
+             is a programming error, refusing to register it a second time"
+        );
+        for entity_name in self.entities.keys() {
+            for suffix in ENTITY_TOOL_SUFFIXES {
+                assert!(
+                    name != format!("{entity_name}{suffix}"),
+                    "`{name}` collides with the generated tool `{name}` of entity `{entity_name}` \
+                     (suffix `{suffix}`) — `tools/call` dispatches by suffix, the registration \
+                     order must never decide the winner, refusing to register it"
+                );
+            }
+        }
+        let tool = AppTool::new(name.clone(), description.into(), input_schema, policy, handler);
+        self.tools.insert(name, tool);
         self
     }
 }
@@ -1778,5 +1882,175 @@ mod tests {
             err.to_string().starts_with("MRD-MCP-005"),
             "refus avant délégation : la table absente n'a produit aucune Database : {err}"
         );
+    }
+
+    // ── Amendement du 2026-11-16 (issue #86, tâche A2, `registry.sdd`) — register_tool ──
+
+    /// Gestionnaire blanc des tests d'enregistrement (A2) : ce qui est exercé ici est la table
+    /// et les assertions d'enregistrement, jamais l'appel — le contrat exécuté est celui de
+    /// ./`app_tool.rs`.
+    fn noop_app_handler()
+    -> impl Fn(DatabaseConnection, AuthPrincipal, Value) -> std::future::Ready<Result<Value, McpError>>
+    + Send
+    + Sync
+    + 'static {
+        |_db, _principal, _arguments| std::future::ready(Ok(Value::Null))
+    }
+
+    /// Texte d'un payload de `catch_unwind` (`String` pour un `panic!`/`assert!` formaté, `&str`
+    /// sinon) — même aide que dans ./`app_tool.rs`.
+    fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+        if let Some(text) = payload.downcast_ref::<String>() {
+            text.clone()
+        } else if let Some(text) = payload.downcast_ref::<&str>() {
+            (*text).to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// `Scenario` : « `register_tool` enregistre un outil sous son nom » — un registre vide reçoit
+    /// `analyse` (`Public`) : `tools` contient exactement cette clé, et le chaînage rend
+    /// `&mut Self`.
+    #[test]
+    fn register_tool_stores_app_tool_under_its_name() {
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        let chained = registry.register_tool(
+            "analyse",
+            "analyse les recettes",
+            json!({"type": "object"}),
+            AccessPolicy::Public,
+            noop_app_handler(),
+        );
+        let keys: Vec<&String> = chained.tools.keys().collect();
+        assert_eq!(
+            keys,
+            ["analyse"],
+            "`tools` contient exactement `analyse`, et `register_tool` rend le registre chaînable"
+        );
+    }
+
+    /// `Scenario` : « un nom d'outil en collision est refusé dans les deux ordres » — cas A :
+    /// `recipes` étant enregistrée, `recipes_list` (une de ses cinq clés MCP + un suffixe
+    /// d'`OPERATIONS`) est refusé par `assert!`, message citant le nom (précédent `register`,
+    /// arbitré 2026-09-29).
+    #[test]
+    #[should_panic(expected = "recipes_list")]
+    fn register_tool_refuse_un_nom_doutil_dentite_deja_enregistree() {
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register::<recipe::Entity>();
+        registry.register_tool(
+            "recipes_list",
+            "collision avec l'outil généré",
+            json!({"type": "object"}),
+            AccessPolicy::Public,
+            noop_app_handler(),
+        );
+    }
+
+    /// `Scenario` : « un nom d'outil en collision est refusé dans les deux ordres » — cas B,
+    /// ordre symétrique : `recipes_get` étant déjà un outil applicatif, `register::<recipe>` doit
+    /// refuser l'entité — sans cette symétrie, l'ordre des deux appels déciderait du gagnant
+    /// puisque `tools/call` découpe le nom par suffixe.
+    #[test]
+    #[should_panic(expected = "recipes_get")]
+    fn register_entite_refuse_un_nom_deja_pris_par_un_outil_applicatif() {
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register_tool(
+            "recipes_get",
+            "outil applicatif",
+            json!({"type": "object"}),
+            AccessPolicy::Public,
+            noop_app_handler(),
+        );
+        registry.register::<recipe::Entity>();
+    }
+
+    /// `Scenario` : « un nom d'outil en collision est refusé dans les deux ordres » — cas C :
+    /// deux outils applicatifs de même nom, le second est refusé, message citant le nom.
+    #[test]
+    #[should_panic(expected = "analyse")]
+    fn register_tool_refuse_collision_entre_outils_applicatifs() {
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register_tool(
+            "analyse",
+            "premier",
+            json!({"type": "object"}),
+            AccessPolicy::Public,
+            noop_app_handler(),
+        );
+        registry.register_tool(
+            "analyse",
+            "second doublon",
+            json!({"type": "object"}),
+            AccessPolicy::Public,
+            noop_app_handler(),
+        );
+    }
+
+    /// `Scenario` : « un nom d'outil en collision est refusé dans les deux ordres » — le refus
+    /// laisse le registre inchangé (assertion d'état, impossible sous `should_panic`) : un
+    /// `register_tool` qui panique n'a rien inséré, ni outil ni entité.
+    #[test]
+    fn collision_ne_modifie_pas_le_registre() {
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register::<recipe::Entity>();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            registry.register_tool(
+                "recipes_list",
+                "collision refusée",
+                json!({"type": "object"}),
+                AccessPolicy::Public,
+                noop_app_handler(),
+            );
+        }));
+        assert!(
+            outcome.is_err(),
+            "`recipes_list` heurte l'outil généré par `recipes`"
+        );
+        assert!(
+            registry.tools.is_empty(),
+            "registre non modifié : aucun outil applicatif inséré"
+        );
+        assert_eq!(
+            registry.entities.len(),
+            1,
+            "registre non modifié : la table des entités est intacte"
+        );
+    }
+
+    /// `Scenario` : « un nom d'outil invalide est refusé » — `""`, `"a b"`, `"é"` et une chaîne
+    /// de 129 caractères : chaque appel panique par `assert!` et le message cite le nom, tronqué
+    /// à 32 caractères pour le trop long.
+    #[test]
+    fn register_tool_refuse_un_nom_invalide() {
+        let long = "a".repeat(129);
+        for name in ["", "a b", "é", long.as_str()] {
+            let mut registry = McpToolRegistry::new(OutputFormat::Json);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                registry.register_tool(
+                    name,
+                    "nom invalide",
+                    json!({"type": "object"}),
+                    AccessPolicy::Public,
+                    noop_app_handler(),
+                );
+            }));
+            let message = panic_message(
+                &outcome
+                    .err()
+                    .unwrap_or_else(|| panic!("`{name:?}` invalide devait paniquer")),
+            );
+            let label: String = name.chars().take(32).collect();
+            assert!(
+                message.contains(&label) && message.contains("refusing to register"),
+                "le message cite le nom (tronqué à 32 caractères) et la règle : nom `{name:?}`, \
+                 message `{message}`"
+            );
+            assert!(
+                registry.tools.is_empty(),
+                "registre inchangé après le refus de `{name:?}`"
+            );
+        }
     }
 }
