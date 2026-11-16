@@ -83,7 +83,7 @@ matrix-sdk = { version = "0.18", default-features = false, features = ["e2e-encr
 matrix-sdk-crypto = { version = "0.18", optional = true }
 matrix-sdk-store-encryption = { version = "0.18", optional = true }
 # `Zeroizing<String>` apparaît dans la signature du trait CryptoStore (secrets de la boîte) ; déjà dans le graphe.
-zeroize = { version = "1", optional = true }
+zeroize = { version = "1.9.1", optional = true }
 # Hôte de la bibliothèque `lymaille` (src/lymaille/mod.sdd) : features par défaut conservées
 # (`mcp-http`, `rig`) ; `fs` et `shell` ne sont jamais activés (relais de `vynil-core`, DSD `OI-1`).
 # La feature amont `ts-rs` (montée 0.3.0, mod.sdd amendement 2026-11-13) dérive `TS` sur les types de
