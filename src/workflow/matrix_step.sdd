@@ -1,4 +1,4 @@
-Spec: matrix_step — kind natif `"matrix_send"`, envoi d'un message Matrix depuis un workflow
+Spec: matrix_step — kinds natifs `"matrix_send"` et `"matrix_edit"`, envoi et édition d'un message Matrix depuis un workflow
 
 Purpose:
   Porter le `impl MiryadWorkflowStep` (./step.sdd) qui envoie un message dans une salle Matrix via
@@ -10,6 +10,12 @@ Purpose:
     deux fois est un doublon visible. Le step dérive donc un identifiant de transaction **déterministe**
     de l'identité du run (`run_key`, `step_id`, ./step.sdd @RunInfo) : un rejeu envoie le même `txn_id`
     et le serveur le dédoublonne. Fichier neuf, conception.
+  Amendement 2026-11-16 (issue #87, `matrix#FR-11`) : `matrix_send` accepte une **relation** (fil ou réponse, mêmes champs que
+    `MessageRelation` de ../matrix/client.sdd) ; un second kind, `matrix_edit`, édite un message déjà publié (par exemple l'état
+    d'un message de tête). Deux kinds distincts plutôt qu'un champ optionnel qui changerait le sens des autres (`[?]` en
+    `Tasks`). Chacun a son struct et son enregistrement (`StepRegistry::register(MatrixEditStep::new(client))`) ; ils partagent la
+    couture `Sender`, la fonction `txn_id` et la traduction d'erreur — un seul contrat, d'où une seule spec (règle de
+    regroupement de `.specdd/bootstrap.project.md`).
   La `config` est rendue par ./template.sdd avant `run` : `body`, `html` et `room_id` peuvent référencer
     `inputs` (`{{inputs.decide.answers.urgent.noul}}`).
 
@@ -24,12 +30,23 @@ References:
 Must:
   `MatrixSendStep` — struct `pub`, un champ privé `sender: Arc<dyn Sender>`. `Sender` est un trait **privé**
     (`#[async_trait]`, `Send + Sync`) à une méthode `async fn send(&self, room_id: &str, body: &str, html:
-    Option<&str>, kind: MessageKind, txn_id: &str) -> Result<String, MatrixError>`, implémenté pour
-    @MatrixClient (délègue à `MatrixClient::send` avec `Some(txn_id)`) : c'est la couture qui rend le step
+    Option<&str>, kind: MessageKind, relation: Option<&MessageRelation>, txn_id: &str) -> Result<String, MatrixError>` et
+    `async fn edit(&self, room_id: &str, event_id: &str, body: &str, html: Option<&str>, kind: MessageKind, txn_id: &str) ->
+    Result<String, MatrixError>` (amendement 2026-11-16), implémenté pour
+    @MatrixClient (délègue à `MatrixClient::send` et `MatrixClient::edit` avec `Some(txn_id)`) : c'est la couture qui rend le step
     testable sans homeserver (un faux `Sender` en `mod tests`). `pub fn new(client: MatrixClient) -> Self`
     (enveloppe le client) ; `#[cfg(test)] fn with_sender(sender: Arc<dyn Sender>) -> Self`. `impl MiryadWorkflowStep` : `kind()` rend `"matrix_send"` ; `raw_fields()` garde son défaut (`&[]`).
   `MatrixSendConfig` — struct privée, `#[derive(Deserialize)]`, `#[serde(deny_unknown_fields)]` :
-    `room_id: String`, `body: String`, `html: Option<String>`, `kind: SendKind` (`#[serde(default)]`).
+    `room_id: String`, `body: String`, `html: Option<String>`, `kind: SendKind` (`#[serde(default)]`), et (amendement 2026-11-16,
+    tous `Option<String>`, `#[serde(default)]`) `thread_root`, `thread_latest`, `reply_to`.
+    Relation (validation pure, avant tout appel réseau, même message d'erreur préfixé, non retryable) : `thread_root` et `reply_to`
+    sont **exclusifs** ; `thread_latest` exige `thread_root` ; chaque valeur présente commence par `$` et n'est pas vide. Dérivation
+    de la relation : `thread_root` → `MessageRelation::Thread { root, latest: thread_latest }` ; `reply_to` →
+    `MessageRelation::Reply { to }` ; aucun des deux → `None`. Les trois champs sont rendus par le gabarit comme les autres chaînes
+    (`{{inputs.root.event_id}}`).
+  `MatrixEditConfig` — struct privée, `#[derive(Deserialize)]`, `#[serde(deny_unknown_fields)]` : `room_id: String`,
+    `event_id: String`, `body: String`, `html: Option<String>`, `kind: SendKind` (`#[serde(default)]`) ; mêmes règles de validation
+    que `MatrixSendConfig` pour `room_id`, `body` et `html`, et `event_id` commence par `$` et n'est pas vide.
     `SendKind` — enum privé `#[serde(rename_all = "lowercase")]` : `Text` (défaut), `Notice`.
   `pub(crate) fn txn_id(run: &RunInfo) -> String` — pure : `"miryad-"` suivi des 32 premiers caractères
     hexadécimaux de `sha256(run_key + "\0" + step_id)` (`sha2` et `hex`, déjà directs) ; stable pour un
@@ -43,6 +60,12 @@ Must:
     3. `sender.send(&room_id, &body, html.as_deref(), kind, &txn_id(run))` — @Err(e) → @StepError {
       retryable: e.retryable(), message: e.to_string() }.
     4. @Ok(event_id) → `{"event_id": "<id>", "room_id": "<room_id>"}`.
+  `MatrixEditStep` (amendement 2026-11-16) — struct `pub`, même forme que `MatrixSendStep` (champ privé `sender: Arc<dyn Sender>`,
+    `new(client)`, `#[cfg(test)] with_sender`). `kind()` rend `"matrix_edit"`. `run` : (1) désérialise `MatrixEditConfig` ; (2) valide ;
+    (3) `sender.edit(&room_id, &event_id, &body, html.as_deref(), kind, &txn_id(run))` — même traduction d'erreur que `matrix_send`
+    (`retryable: e.retryable()`, donc `false` pour `EventNotFound`, `NotAuthor` et `RoomUnavailable`) ; (4) @Ok(replacement_id) →
+    `{"event_id": "<id du remplacement>", "edited_event_id": "<event_id visé>", "room_id": "<room_id>"}`. Le `txn_id` est dérivé
+    exactement comme pour `matrix_send` (même `(run_key, step_id)` : un step ne fait qu'une édition, un rejeu est dédupliqué).
   Compiler uniquement sous `#[cfg(all(feature = "workflow", feature = "matrix"))]`.
 
 Must not:
@@ -57,20 +80,32 @@ Depends on:
   ./step.rs, ../matrix/client.rs, ../matrix/error.rs, @sha2, @hex, @serde, @serde_json
 
 Exposes:
-  `MatrixSendStep` — struct `pub`, `new` ; ré-exporté `miryad_core::workflow::MatrixSendStep` sous
-    `all(workflow, matrix)` (./mod.sdd).
+  `MatrixSendStep` et `MatrixEditStep` — structs `pub`, `new` ; ré-exportés `miryad_core::workflow::{MatrixSendStep,
+    MatrixEditStep}` sous `all(workflow, matrix)` (./mod.sdd).
 
 Accepts:
-  `config` : `{"room_id", "body", "html"?, "kind"?}` après rendu.
+  `matrix_send` : `{"room_id", "body", "html"?, "kind"?, "thread_root"?, "thread_latest"?, "reply_to"?}` après rendu.
+  `matrix_edit` : `{"room_id", "event_id", "body", "html"?, "kind"?}` après rendu.
 
 Returns:
-  `{"event_id", "room_id"}` ou @StepError.
+  `matrix_send` : `{"event_id", "room_id"}` ; `matrix_edit` : `{"event_id", "edited_event_id", "room_id"}` ; ou @StepError.
 
 Handles:
   Rejeu du même step : même `txn_id`, donc un seul message dans la salle (déduplication serveur ; la
     fenêtre de déduplication est celle du homeserver).
 
 Tasks:
+  [ ] Tâche M1 (2026-11-16, issue #87, `matrix#FR-11`) : champs de relation de `matrix_send` et leur validation, `Sender::send` à
+    quatre paramètres plus `relation` — tests d'abord (Scenarios relation), puis ./matrix_step.rs. Après ./../matrix/client.sdd
+    (tâche F : l'adaptation ponctuelle du site d'appel y est déjà faite, cette tâche la remplace par la vraie dérivation).
+    - [?] **choix provisoire (`matrix#OI-7`, point (d)) :** un kind distinct `matrix_edit`. Option : un champ `edit_of` optionnel
+      de `matrix_send`. Recommandation : le kind distinct (le `config` de `matrix_send` refuse les champs inconnus et exige
+      `body` ; un champ qui change les champs requis brouille le contrat).
+    - [?] **choix provisoire :** les trois champs de relation sont des chaînes à plat (rendues comme les autres), pas un objet
+      imbriqué. Option : `relation: {kind, ...}`. Recommandation : à plat, cohérent avec `room_id`/`html`.
+  [ ] Tâche M2 (2026-11-16, `matrix#FR-11`) : `MatrixEditStep`, `MatrixEditConfig`, `Sender::edit` — tests d'abord (Scenarios
+    édition), puis ./matrix_step.rs ; ré-export dans ./mod.rs et amendement de ./mod.sdd (même lot). Après la tâche M1 et
+    ./../matrix/client.sdd (tâche G).
   [x] Tests unitaires d'abord pour `txn_id`, la désérialisation et la validation (fonctions pures) ; le
     chemin d'envoi réel est couvert par `../../tests/matrix_live.rs` (../matrix/client.sdd). Puis
     ./matrix_step.rs ; ré-export dans ./mod.rs et amendement de ./mod.sdd (même lot).
@@ -109,6 +144,26 @@ Scenario: les erreurs du client suivent leur retryabilité
   Given un faux `Sender` qui échoue avec `Network { retryable: true }`, puis avec `RoomUnavailable`
   When `run` est appelé pour chacun
   Then le premier résultat est @Err(StepError { retryable: true, .. }), le second @Err(StepError { retryable: false, .. })
+
+Scenario: la relation d'un matrix_send est dérivée et validée (issue #87)
+  Given `config = {"room_id": "!r:x", "body": "ok", "thread_root": "$root", "thread_latest": "$last"}`, puis `{"reply_to": "$e"}`, puis `thread_root` et `reply_to` ensemble, puis `thread_latest` seul, puis `thread_root = "root"`
+  When `run` est appelé avec un faux `Sender` qui enregistre ses appels
+  Then les deux premiers appels portent `Thread { root: "$root", latest: Some("$last") }` puis `Reply { to: "$e" }` ; les trois derniers rendent @Err(StepError { retryable: false, .. }) préfixé `config matrix_send invalide:` sans appel du `Sender`
+
+Scenario: matrix_edit transmet l'identifiant visé et rend le remplacement (issue #87)
+  Given `config = {"room_id": "!r:x", "event_id": "$old", "body": "mis à jour"}` et un faux `Sender` dont `edit` rend `$new`
+  When `MatrixEditStep::run` est appelé
+  Then l'appel du `Sender` porte `event_id = "$old"` et un `txn_id` égal à `txn_id(run)`, et le résultat est `{"event_id": "$new", "edited_event_id": "$old", "room_id": "!r:x"}`
+
+Scenario: une config matrix_edit invalide ne fait aucun appel réseau (issue #87)
+  Given `event_id` absent, puis `event_id = "pas-un-id"`, puis `body = "  "`, puis une clé inconnue `thread_root`
+  When `MatrixEditStep::run` est appelé pour chacune
+  Then chaque résultat est @Err(StepError { retryable: false, .. }) préfixé `config matrix_edit invalide:` et aucune édition n'est émise
+
+Scenario: les refus d'édition ne sont pas retryables (issue #87)
+  Given un faux `Sender` dont `edit` échoue avec `EventNotFound`, puis `NotAuthor`, puis `Network { retryable: true }`
+  When `MatrixEditStep::run` est appelé pour chacun
+  Then les résultats sont @Err(StepError { retryable: false, .. }), @Err(StepError { retryable: false, .. }), @Err(StepError { retryable: true, .. })
 
 Scenario: la sortie porte l'event_id
   Given un faux `Sender` qui rend l'`event_id` `$abc`

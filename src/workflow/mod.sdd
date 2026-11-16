@@ -157,6 +157,10 @@ Handles:
     autre module gated de la crate (`/src/lib.sdd`, `Handles`) — aucun squelette d'API résiduel.
 
 Tasks:
+  [ ] Amendement 2026-11-16 (issue #87, `matrix#FR-11`) : ré-exporter `matrix_step::MatrixEditStep` à côté de `MatrixSendStep`, sous le
+    même `cfg(all(workflow, matrix))` (chemin supplémentaire ; l'amendement 2026-10-06 compte « vingt-sixième chemin au plus », celui-ci
+    prévaut en cas de contradiction de comptage) ; étendre le Scenario « les steps croisés » à `MatrixEditStep`. Même lot que
+    ./matrix_step.sdd (tâche M2).
   [x] #26 (2026-10-04) : déclarer `durable` et `subworkflow`, ajouter les quatre ré-exports
     (`MiryadDurableStep`, `StepContext`, `SubWorkflowStep`, `RunInfo`) et étendre le test de chemins
     plats (`../../tests/workflow_flat_paths.rs` et `mod tests`) à ces quatre chemins — dernier

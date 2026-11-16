@@ -1,0 +1,177 @@
+Spec: app_tool — @AppTool : outil MCP applicatif enregistré par l'hôte (non CRUD)
+
+Purpose:
+  Porter le contrat d'un **outil applicatif** (issue #86, `dsd/miryad-core/mcp.md` `FR-6` à `FR-9`) : une action que l'application
+    hôte offre à un agent par MCP et qui n'est pas du CRUD d'entité (lancer une analyse sur le contexte d'une occurrence de
+    problème, attacher un fait dont la preuve est produite par le serveur). Le résultat est produit par le gestionnaire de l'hôte,
+    jamais par l'appelant. Un @AppTool réunit un nom, une description, un schéma JSON des arguments, une politique d'accès et un
+    gestionnaire asynchrone ; son exécution `call` enchaîne **dans cet ordre** la résolution de l'utilisateur, la décision de
+    politique, la validation des arguments, puis l'appel du gestionnaire. Rien de ce qui touche une entité n'y vit : pas
+    de hook de ressource, pas de colonne, pas de pagination.
+  Le fichier ne décide ni du nom (assertions de ./registry.rs), ni du fil JSON-RPC (./handler.rs), ni du rendu (./format.rs). Il ne
+    compile que sous la feature `mcp` (déclaration `mod app_tool;` de ./mod.rs, gating porté par ./../lib.rs). Il n'ajoute aucun
+    code `MRD-*` : il réutilise `MRD-MCP-001` (refus), `MRD-MCP-003` (base) et `MRD-MCP-005` (arguments invalides) de ./error.sdd.
+    Spec rédigée le 2026-11-16 pour l'issue #86 ; **en attente d'approbation** (aucun code avant).
+
+Owns:
+  ./app_tool.rs
+
+References:
+  /miryad-core.sdd — contrat hérité : un code `MRD-*` par erreur interne, @HookError hors taxonomie, au moins un test distinct par `Scenario`
+  /.specdd/bootstrap.project.md — contrats transverses : @tracing seul, gating de features, une spec par fichier ; la parité REST/MCP ne
+    vise que les @MiryadResource (un outil applicatif en est exempté, `dsd/miryad-core/mcp.md` `DEC-1`)
+  /dsd/miryad-core/mcp.md — `FR-6` à `FR-10`, `DEC-1` à `DEC-4`, `OI-2`, `OI-3`
+  ./registry.sdd — @McpToolRegistry::register_tool (assertions d'enregistrement, table des outils) ; ./handler.sdd — liste et dispatch ;
+    ./error.sdd — @McpError (`#[non_exhaustive]` depuis cette même tâche, `DEC-4`)
+  /src/rbac.sdd — nouvelle fonction `policy_verdict` (voir `Tasks`) ; /src/users.rs — @resolve_user
+  jsonschema `0.60.2` — `Validator`, `validator_for`/`options().build`, `iter_errors` — présent dans le graphe sous `lymaille` ;
+    à relire en source à l'implémentation (features, API de construction, message d'erreur)
+
+Must:
+  @AppTool — struct `pub(crate)` : `name: String`, `description: String`, `input_schema: serde_json::Value` (conservé tel qu'enregistré,
+    sans réécriture, publié tel quel par `tools/list`), `policy: AccessPolicy`, `validator: jsonschema::Validator` (compilé **une fois**
+    à l'enregistrement), `handler: Box<dyn AppToolHandler>`.
+  @AppToolHandler — trait `pub(crate)`, `#[async_trait::async_trait]`, `Send + Sync` :
+    `async fn call(&self, db: DatabaseConnection, principal: AuthPrincipal, arguments: Value) -> Result<Value, McpError>`, avec une
+    implémentation blanche pour tout `F: Fn(DatabaseConnection, AuthPrincipal, Value) -> Fut + Send + Sync + 'static`,
+    `Fut: Future<Output = Result<Value, McpError>> + Send + 'static` : c'est la forme sous laquelle ./registry.rs reçoit le
+    gestionnaire de l'hôte. `DatabaseConnection` et `AuthPrincipal` sont passés **par valeur** (clones peu coûteux, `Arc` interne pour la
+    connexion) : un gestionnaire qui rend un futur ne peut pas emprunter à l'appelant.
+    - Arbitré par Sébastien le 2026-11-16 : passage par valeur (l'option `&DatabaseConnection`/`&AuthPrincipal` avec futur emprunteur
+      est écartée, plus lourde à écrire pour l'hôte).
+  `AppTool::new(name, description, input_schema, policy, handler) -> AppTool` : compile `input_schema` ; un schéma qui n'est pas un
+    schéma JSON valide, ou dont la construction échoue, est une **erreur de programmation** (même logique que la collision de
+    `register`) — le constructeur panique avec un message citant le nom, ce que ./registry.rs documente en `# Panics`. La
+    compilation **n'autorise aucune résolution de `$ref` distante ou de fichier** : `jsonschema` est une dépendance de la feature `mcp`
+    avec `default-features = false` (aucun `resolve-http`, aucun `resolve-file`, `dsd/miryad-core/mcp.md` `DEC-3`) **et** le
+    validateur est construit avec un récupérateur de `$ref` (`ValidationOptions::with_retriever`, trait `jsonschema::Retrieve`) qui
+    **refuse toute résolution** : Cargo unifie les features, et `lymaille` tire `jsonschema` avec `resolve-http` et `resolve-file` ;
+    sous `--all-features` ou `lymaille` + `mcp` seul ce récupérateur garantit l'interdit (arbitré par Sébastien le 2026-11-16). Un
+    `$ref` **local** (`#/$defs/…`) reste résolu, sans récupération.
+  `AppTool::call(&self, db: &DatabaseConnection, principal: &AuthPrincipal, arguments: Value) -> Result<Value, McpError>`, dans cet
+    ordre, sans passe supplémentaire :
+    1. `resolve_user(db, &principal.subject, principal.email.as_deref())` — erreur de base → @McpError::Database (`MRD-MCP-003`), comme les
+      fonctions de @rest::core.
+    2. **Politique** : `rbac::policy_verdict(db, self.policy, &user)` (voir `Tasks`) ; `Some(false)` → @McpError::Forbidden (`MRD-MCP-001`,
+      `-32001`) **sans** valider les arguments ni appeler le gestionnaire ; `Some(true)` → suite. La politique est évaluée avant la
+      validation : un appelant refusé n'apprend rien du schéma par ses messages d'erreur.
+    3. **Arguments** : `self.validator` sur `arguments` ; un échec → @McpError::InvalidParams (`MRD-MCP-005`, `-32602`) dont le message
+      reprend la première violation (chemin de l'instance et motif, jamais la valeur fautive : un argument peut être un secret) ;
+      le gestionnaire n'est pas appelé.
+    4. `handler.call(db.clone(), principal.clone(), arguments)` — le résultat, `Ok` comme `Err`, est rendu **tel quel** : aucune
+      traduction, aucune réécriture de l'erreur de l'hôte (`McpError::Application(HookError)` traverse sans code `MRD-*`).
+  `AppTool::name(&self) -> &str`, `description(&self) -> &str`, `input_schema(&self) -> &Value` — accesseurs `pub(crate)` pour
+    ./handler.rs (`tools/list`).
+  `AccessPolicy::OwnerOnly` est **refusée** à `AppTool::new` (même panique qu'un schéma invalide) : `OwnerOnly` compare la colonne
+    propriétaire d'un enregistrement, un outil applicatif n'en a aucun à l'évaluation (`dsd/miryad-core/mcp.md` `DEC-2`).
+    - Arbitré par Sébastien le 2026-11-16 (`mcp.md` `OI-3`) : refus à l'enregistrement (l'option « traiter `OwnerOnly` comme `AdminOnly` »
+      est écartée : une déclaration invalide se voit au démarrage).
+  Compiler sous les seules combinaisons portant `mcp` (module déclaré par ./mod.rs).
+
+Must not:
+  Évaluer une politique ailleurs que dans `AppTool::call`, ni la réévaluer dans ./handler.rs ou ./registry.rs.
+  Appeler le gestionnaire avant la décision de politique **et** la validation des arguments.
+  Résoudre une référence `$ref` distante ou de fichier, **quelles que soient les features unifiées par Cargo** ; lire un schéma depuis le
+    réseau ou le disque.
+  Journaliser les `arguments`, le résultat du gestionnaire, une valeur de schéma fautive, ou un secret (`tracing` seul) ; aucune
+    trace n'est émise ici (les traces `-32603` et `-32001` sont celles de ./handler.rs).
+  Traduire ou masquer l'erreur du gestionnaire de l'hôte.
+
+Forbids:
+  `println!`, `eprintln!`, `dbg!`, `unwrap`, `expect`, `panic!` hors des deux panics d'enregistrement de `AppTool::new` (documentées `# Panics`).
+
+Depends on:
+  ./error.rs, ../auth/mod.rs (@AuthPrincipal), ../resource.rs (@AccessPolicy), ../rbac.rs (@policy_verdict), ../users.rs (@resolve_user),
+    @sea_orm (@DatabaseConnection), @serde_json, @async_trait, @jsonschema
+
+Exposes:
+  `AppTool`, `AppToolHandler` (`pub(crate)` ; l'hôte ne les voit pas : il passe un `Fn` à `McpToolRegistry::register_tool`,
+    ./registry.sdd).
+
+Accepts:
+  `arguments` : n'importe quelle valeur JSON déjà normalisée par ./handler.rs (`null` ou absent → `{}`, arbitré 2026-09-29).
+
+Returns:
+  La valeur JSON du gestionnaire de l'hôte.
+
+Raises:
+  @McpError::Database (`MRD-MCP-003`, `-32603`) ; @McpError::Forbidden (`MRD-MCP-001`, `-32001`) ; @McpError::InvalidParams (`MRD-MCP-005`,
+    `-32602`) ; toute @McpError rendue par le gestionnaire (dont @McpError::Application, `-32000`).
+
+Handles:
+  Gestionnaire qui panique : non géré ici (un `Fn` d'hôte qui panique est un bug d'hôte ; le serveur HTTP de l'application l'isole
+    comme pour tout handler `axum`).
+  Arguments non objet alors que le schéma l'exige : `InvalidParams` par la validation, jamais un panic.
+
+Tasks:
+  [ ] Tâche R (préalable, ./../rbac.sdd) : ajouter `pub(crate) async fn policy_verdict(db: &DatabaseConnection, policy: AccessPolicy,
+    user: &user::Model) -> Result<Option<bool>, DbErr>`, non générique, qui porte la logique de `static_verdict` ; `static_verdict::<E>` en
+    devient une enveloppe (aucun changement de ses sites d'appel dans ./../rest/core.rs). Spec de ./../rbac.sdd amendée dans le même
+    cycle (Exposes, un Scenario `policy_verdict` sans entité, un `Must` d'une ligne).
+    - [?] **choix provisoire :** nouvelle fonction, `static_verdict` conservée. Option : retirer le paramètre `E` inutilisé de
+      `static_verdict` (touche les sites de ./../rest/core.rs). Recommandation : la nouvelle fonction, diff plus petit.
+  [ ] Tâche A1 : @AppTool, @AppToolHandler, `new` (schéma, `OwnerOnly`) et `call` — tests d'abord (Scenarios ci-dessous), puis ./app_tool.rs.
+    Après la tâche R et après ./error.sdd (`#[non_exhaustive]`) ; avant ./registry.sdd (tâche A2) et ./handler.sdd (tâche A3).
+  [ ] Tâche A0 (Cargo, hors périmètre de cette spec — diff imposé par ./mod.sdd, fichier possédé par /miryad-core.sdd) :
+    `jsonschema = { version = "0.60", default-features = false, optional = true }` et `mcp = ["db", "dep:vynil-core", "dep:jsonschema"]` ;
+    mesurer `cargo tree --no-default-features --features mcp -e normal -i jsonschema` (une ligne attendue) et
+    `cargo tree --no-default-features -e normal -i jsonschema` (stdout vide) ; **ajouter ces deux contrôles à la batterie de
+    /tooling.sdd et de AGENTS.md** — fichiers du développeur principal, la modification est à lui demander.
+    - Arbitré par Sébastien le 2026-11-16 : `lymaille` tire `jsonschema` avec `resolve-http` et `resolve-file` et Cargo unifie les
+      features ; le blocage passe donc par le récupérateur qui refuse tout (voir `Must`, `AppTool::new`). API vérifiée en source le
+      2026-11-16 : `ValidationOptions::with_retriever(impl Retrieve + 'static)` existe en 0.60.2 et `Retrieve` est ré-exporté par
+      `jsonschema` (aucune dépendance supplémentaire sur `referencing`).
+
+Done when:
+  Les `Scenario` sont verts sous `--no-default-features --features mcp` et `--all-features` ; la batterie de /tooling.sdd (y compris les deux
+    contrôles `cargo tree` de la tâche A0) est verte ; la spec est relue et approuvée avant ./app_tool.rs.
+
+Scenario: un principal autorisé et des arguments conformes atteignent le gestionnaire
+  Given un outil `analyse` de politique `Public`, schéma `{"type":"object","required":["occurrence"],"properties":{"occurrence":{"type":"integer"}}}`, et un gestionnaire qui rend `{"ok": true}` en comptant ses appels
+  When `AppTool::call` est appelé avec `{"occurrence": 7}`
+  Then le résultat est @Ok(`{"ok": true}`) et le gestionnaire a été appelé une fois, avec les arguments reçus tels quels
+
+Scenario: un principal refusé n'exécute pas le gestionnaire
+  Given un outil de politique `AdminOnly`, un utilisateur sans appartenance au groupe admin, et un gestionnaire compteur
+  When `AppTool::call` est appelé avec des arguments conformes
+  Then le résultat est @Err(McpError::Forbidden) et le compteur vaut zéro
+
+Scenario: la politique passe avant la validation
+  Given un outil `AdminOnly`, un utilisateur sans appartenance, et des arguments qui ne respectent pas le schéma
+  When `AppTool::call` est appelé
+  Then le résultat est @Err(McpError::Forbidden), pas `InvalidParams` : un appelant refusé ne reçoit aucun message de schéma
+
+Scenario: des arguments non conformes rendent -32602 sans exécuter le gestionnaire
+  Given un outil `Public` au schéma `{"type":"object","required":["occurrence"],"properties":{"occurrence":{"type":"integer"}}}` et un gestionnaire compteur
+  When `AppTool::call` est appelé avec `{}`, puis `{"occurrence": "7"}`, puis `[]`
+  Then chaque résultat est @Err(McpError::InvalidParams(_)) (`MRD-MCP-005`, `-32602`), le message ne contient pas la valeur fautive (`"7"`), et le compteur vaut zéro
+
+Scenario: un groupe est évalué comme pour une entité
+  Given un outil de politique `Group("analystes")`, un utilisateur membre, un autre qui ne l'est pas, et un admin
+  When `AppTool::call` est appelé pour chacun
+  Then le membre et l'admin atteignent le gestionnaire, l'autre reçoit @Err(McpError::Forbidden)
+
+Scenario: l'erreur applicative de l'hôte traverse sans code MRD
+  Given un gestionnaire qui rend @Err(McpError::Application(HookError::with_code("MON-001", "occurrence close")))
+  When `AppTool::call` est appelé avec des arguments conformes
+  Then le résultat est la même @McpError::Application, `Display` sans `MRD-`, `code = "MON-001"`
+
+Scenario: une erreur de base est restituée en MRD-MCP-003
+  Given une connexion dont les tables de la crate sont absentes
+  When `AppTool::call` est appelé
+  Then le résultat est @Err(McpError::Database(_)) et le gestionnaire n'est pas appelé
+
+Scenario: un schéma invalide ou OwnerOnly échoue à la construction
+  Given `input_schema = {"type": 12}`, puis `policy = OwnerOnly` avec un schéma valide
+  When `AppTool::new` est appelé pour chacun
+  Then chaque appel panique, le message cite le nom de l'outil (test `#[should_panic]`)
+
+Scenario: aucune référence distante ni de fichier n'est résolue, même sous features unifiées
+  Given un écouteur TCP local qui compte ses connexions, et un schéma `{"$ref": "http://127.0.0.1:<port>/schema.json"}`, puis un schéma `{"$ref": "file:///etc/hostname"}`
+  When `AppTool::new` est appelé pour chacun, sous `--all-features` (là où `resolve-http` et `resolve-file` sont activés par `lymaille`)
+  Then chaque appel panique (référence non résoluble), l'écouteur n'a reçu aucune connexion et aucun fichier n'a été lu
+
+Scenario: un $ref local reste résolu
+  Given un schéma `{"$defs": {"id": {"type": "integer"}}, "type": "object", "properties": {"occurrence": {"$ref": "#/$defs/id"}}}`
+  When `AppTool::new` puis `AppTool::call` sont appelés avec `{"occurrence": "x"}`
+  Then la construction réussit et l'appel rend @Err(McpError::InvalidParams(_))

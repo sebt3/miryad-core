@@ -165,6 +165,10 @@ Exposes:
   @rbac::evaluate — fonction privée sans @pub, alimentée par @MiryadResource + politique + colonne
     explicites, partagée par @rbac::can_read et @rbac::can_write et directement exercée par
     @mod tests uniquement
+  @rbac::policy_verdict (amendement 2026-11-16, issue #86) — `pub(crate) async fn policy_verdict(db, policy: AccessPolicy, user: &user::Model)
+    -> Result<Option<bool>, DbErr>` : même contrat que @rbac::static_verdict **sans paramètre d'entité** ; consommée par ./mcp/app_tool.sdd
+    (un outil applicatif n'a pas d'@MiryadResource) ; `None` pour `OwnerOnly`, que l'appelant doit refuser avant d'arriver là.
+    @rbac::static_verdict devient une enveloppe de @rbac::policy_verdict (aucun changement de ses sites d'appel).
   @rbac::static_verdict — `pub(crate) async fn static_verdict<E>(db, policy: AccessPolicy, user:
     &user::Model) -> Result<Option<bool>, DbErr>` (arbitré 2026-09-27) : verdict décidable sans
     enregistrement, `None` pour `OwnerOnly` qui doit toujours en charger un ; consommée par
@@ -257,6 +261,8 @@ Example:
   list × non-admin × `OwnerOnly` avec col None → @rbac::ListAccess::Forbidden
 
 Tasks:
+  [ ] Amendement 2026-11-16 (issue #86) : extraire @rbac::policy_verdict de @rbac::static_verdict (tâche R de ./mcp/app_tool.sdd) — test d'abord
+    (Scenario ci-dessous), puis ./rbac.rs ; les huit scenarios existants de `static_verdict` restent verts à l'identique.
   [x] Convertir chaque `Scenario` ci-dessous en au moins un test Rust distinct nommé, un test par
     scénario minimum, dans le `#[cfg(test)] mod tests` de ./rbac.rs, avec les fixtures manquantes
     ajoutées. Douze tests inline existent déjà (les huit initiaux plus les quatre des arbitrages
@@ -504,6 +510,11 @@ Scenario: `static_verdict` décide `AdminOnly`/`Group` sans charger d'enregistre
   When @rbac::static_verdict est appelé avec chaque politique et `stranger`
   Then chaque appel rend @Ok(@Some(`false`)) sans jamais interroger la table absente de l'entité —
     la preuve que le refus est disponible avant toute relecture d'enregistrement
+
+Scenario: `policy_verdict` décide sans aucune entité (issue #86)
+  Given un utilisateur `stranger` sans appartenance, un `admin-user` membre de `"admin"`, sur une base migrée sans aucune table d'entité
+  When @rbac::policy_verdict est appelé avec `Public`, `AdminOnly`, `Group("editors")` et `OwnerOnly`, pour chacun des deux utilisateurs
+  Then `stranger` : `Some(true)`, `Some(false)`, `Some(false)`, `None` ; `admin-user` : `Some(true)`, `Some(true)`, `Some(true)`, `Some(true)`
 
 Scenario: `static_verdict` diffère sur `OwnerOnly`
   Given une fixture note (@AccessPolicy::OwnerOnly, colonne déclarée) et un utilisateur `stranger`

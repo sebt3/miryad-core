@@ -30,9 +30,15 @@ References:
     `OriginalSyncRoomEncryptedEvent`, `Room::join` — à relire en source
 
 Must:
-  @MatrixMessage — struct `pub`, `#[derive(Debug, Clone, PartialEq)]`, champs `pub` : `room_id: String`,
-    `event_id: String`, `sender: String`, `body: String`, `formatted_body: Option<String>`,
-    `msgtype: String` (`"m.text"` ou `"m.emote"`), `timestamp_ms: u64`, `encrypted: bool`.
+  @MatrixMessage — struct `pub`, `#[derive(Debug, Clone, PartialEq)]`, **`#[non_exhaustive]`** (amendement 2026-11-16, issue #87,
+    `matrix#DEC-3` : aucun hôte n'utilise encore la feature, la cassure se fait maintenant ; l'ajout d'un champ ne casse plus
+    ensuite), champs `pub` : `room_id: String`, `event_id: String`, `sender: String`, `body: String`,
+    `formatted_body: Option<String>`, `msgtype: String` (`"m.text"` ou `"m.emote"`), `timestamp_ms: u64`, `encrypted: bool`,
+    **`thread_root: Option<String>`** (identifiant de l'événement racine du fil quand le message est dans un fil, `m.thread`),
+    **`in_reply_to: Option<String>`** (identifiant de l'événement auquel il répond, `m.in_reply_to`, quand il existe). Les deux
+    sont `None` pour un message à plat. Un message d'un fil qui répond à un autre message du fil porte les deux ; le **repli**
+    `m.in_reply_to` d'un message de fil (`is_falling_back: true`) est lui aussi rapporté dans `in_reply_to` (l'hôte ne voit
+    pas la différence : arbitrage `[?]` ci-dessous). Identifiants en `String` (`matrix#FR-1`).
   @MatrixEventHandler — trait `pub`, `#[async_trait::async_trait]`, `Send + Sync + 'static` :
     `async fn on_message(&self, message: MatrixMessage);`. Aucune erreur remontée (le handler gère les
     siennes) ; un panic du handler est capturé (`tokio::task::spawn` + `JoinHandle`) et journalisé
@@ -66,7 +72,8 @@ Must:
     (convention anti-boucle entre bots). Conversion par `fn to_message(parts: MessageParts<'_>) -> MatrixMessage`
     (pure, testable sans `matrix-sdk`) ; `pub(crate) struct MessageParts<'a>` (champs `pub(crate)` :
     `room_id`, `event_id`, `sender`, `msgtype`, `body: &'a str`, `formatted_body: Option<&'a str>`,
-    `timestamp_ms: u64`, `encrypted: bool`) porte les entrées en un seul argument (huit paramètres
+    `timestamp_ms: u64`, `encrypted: bool`, `thread_root: Option<&'a str>`, `in_reply_to: Option<&'a str>` — amendement
+    2026-11-16) porte les entrées en un seul argument (huit paramètres
     nus dépasseraient `clippy::too_many_arguments`, amendement 2026-10-18) ; `pub(crate)`, réutilisée par
     `recent_messages` (./client.sdd). `MatrixMessage.msgtype` vaut `m.text` ou `m.emote` en remise
     en direct ; `recent_messages` y ajoute `m.notice` (la remise l'exclut, l'historique non).
@@ -74,6 +81,11 @@ Must:
     adressée au bot est acceptée (`Room::join`, jusqu'à 3 tentatives espacées de 1 s, 2 s, 4 s : un serveur
     peut rejeter une jonction trop rapide) seulement si l'inviteur figure dans `auto_join_from` ; sinon
     ignorée, journalisée au niveau `info` avec l'inviteur et sans contenu.
+  Relation d'un message entrant (amendement 2026-11-16, `matrix#FR-12`) : lue dans `m.relates_to` du contenu **déchiffré** :
+    `Relation::Thread(t)` → `thread_root = t.event_id`, `in_reply_to = t.in_reply_to.event_id` ; `Relation::Reply { in_reply_to }` →
+    `in_reply_to` seul ; toute autre relation (remplacement, annotation) → les deux à `None`. Le test de remise ne change
+    pas : un remplacement n'est toujours pas remis (`should_deliver`). Fonction pure
+    `fn relation_ids(...) -> (Option<String>, Option<String>)` (nom provisoire) isolée pour être testée sans homeserver.
   Événements indéchiffrables : jamais remis ; `tracing::warn!` avec salle et `event_id` seulement.
   Compiler sous `#[cfg(feature = "matrix")]`.
 
@@ -95,6 +107,15 @@ Handles:
   Invitation d'un inviteur non autorisé : ignorée sans erreur.
 
 Tasks:
+  [ ] Amendement 2026-11-16 (issue #87, `matrix#FR-12`, `matrix#DEC-3`) : `thread_root` et `in_reply_to` sur @MatrixMessage
+    (`#[non_exhaustive]`), sur `MessageParts` et `to_message`, lecture de la relation à la remise en direct — tests d'abord
+    (Scenario `to_message` étendu, Scenario relation d'un fil, d'une réponse, d'un message à plat), puis ./sync.rs.
+    Dépend de ./error.sdd (aucune variante utilisée ici, mais même lot). Le site d'appel de `to_message` dans ./client.rs
+    (`text_message`, `recent_messages`) est adapté par la tâche de ./client.sdd, qui suit ; en attendant, ce fichier
+    passe `None, None` dans `MessageParts` côté ./client.rs **si** la compilation l'exige — `[?]` : l'implémenteur
+    consigne ici le choix retenu (ordre des deux tâches dans le même cycle, ou `Can modify` ponctuel de ./client.rs).
+    - [?] **choix provisoire :** `in_reply_to` rapporte aussi le repli d'un message de fil (un seul champ). Option : un
+      second champ `reply_is_fallback: bool`. Recommandation : un seul champ, tant qu'aucun hôte ne distingue.
   [x] Partie pure d'abord (amendement 2026-10-18 : `client.rs` et `run_sync` se dépendent mutuellement ; ordre
     sync pur → client → run_sync) : `MatrixMessage`, `MatrixEventHandler`, `MessageParts`, `should_deliver`,
     `to_message`, `invite_allowed`, `lease_ms`, `backoff` — tests unitaires d'abord, puis ./sync.rs.
@@ -138,9 +159,19 @@ Scenario: le backoff double et plafonne
   Then les durées sont 1 s, 2 s, 4 s, 60 s, 60 s
 
 Scenario: to_message reprend tous les champs
-  Given un événement de salle `!r:x`, `event_id = "$e"`, expéditeur `@a:x`, corps `salut`, HTML `<b>salut</b>`, horodatage 1700000000000, salle chiffrée
+  Given un événement de salle `!r:x`, `event_id = "$e"`, expéditeur `@a:x`, corps `salut`, HTML `<b>salut</b>`, horodatage 1700000000000, salle chiffrée, `thread_root = Some("$root")`, `in_reply_to = Some("$prev")`
   When `to_message` est appelé
-  Then le `MatrixMessage` porte exactement ces valeurs, `msgtype = "m.text"`, `encrypted = true`
+  Then le `MatrixMessage` porte exactement ces valeurs, `msgtype = "m.text"`, `encrypted = true`, `thread_root = Some("$root")`, `in_reply_to = Some("$prev")`
+
+Scenario: la relation d'un message entrant est extraite (issue #87)
+  Given un contenu portant `m.relates_to = {rel_type: "m.thread", event_id: "$root", "m.in_reply_to": {event_id: "$prev"}, is_falling_back: true}`, puis un contenu `m.in_reply_to` seul vers `$x`, puis un contenu sans relation, puis un remplacement `m.replace`
+  When la fonction pure d'extraction est appelée sur chacun
+  Then les paires (`thread_root`, `in_reply_to`) sont (`$root`, `$prev`), (`None`, `$x`), (`None`, `None`), (`None`, `None`)
+
+Scenario: un message d'un fil remis au handler expose sa racine (test live)
+  Given `run_sync` actif et un second compte qui répond dans un fil dont `$root` est la racine
+  When le message est remis
+  Then `thread_root = Some("$root")`
 
 Scenario: un seul synchronisateur par compte (test live)
   Given deux processus appelant `run_sync` avec le même compte et deux `holder_name`

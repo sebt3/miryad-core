@@ -182,7 +182,8 @@ Depends on:
   ./protocol.rs — @JsonRpcResponse est le débouché obligé du triple rendu (lecture seule, contrat propre)
 
 Exposes:
-  @McpError — enum `pub`, douze variantes, derives @Debug et @thiserror::Error uniquement ; surface publique
+  @McpError — enum `pub`, **`#[non_exhaustive]`** (amendement 2026-11-16, issue #86, `dsd/miryad-core/mcp.md` `DEC-4` : un hôte écrit
+    désormais des gestionnaires qui rendent des @McpError, une variante future ne doit plus casser ses `match`), douze variantes, derives @Debug et @thiserror::Error uniquement ; surface publique
     hors crate atteignable seulement par @crate::mcp::McpError (`pub use` de ./mod.rs), donc sous feature `mcp` :
     @McpError::Forbidden (unitaire, `MRD-MCP-001`, `-32001`), @McpError::NotFound (unitaire, `MRD-MCP-002`,
     `-32002`), @McpError::Database (tuple @sea_orm::DbErr sous `#[from]`, `MRD-MCP-003`, `-32603`),
@@ -307,6 +308,9 @@ Example: matrice exhaustive erreur source → code numérique → message @Displ
     `MRD-MCP-007: internal error: MRD-AUTH-003: OIDC error: discovery failed` — double code imbriqué, `Tasks [arbitré 2026-09-29]`)
 
 Tasks:
+  [ ] Amendement 2026-11-16 (issue #86) : poser `#[non_exhaustive]` sur @McpError ; vérifier qu'aucun `match` hors crate de ce dépôt (`tests/`)
+    n'est exhaustif sur cet enum (sinon l'adapter avec un bras `_`). Première tâche du lot #86 : ./app_tool.sdd en dépend. Aucun
+    nouveau code `MRD-MCP-*`.
   [x] Trois variantes @McpError::MethodNotFound (`MRD-MCP-008`), @McpError::ParseError (`MRD-MCP-009`),
     @McpError::InvalidRequest (`MRD-MCP-010`), @McpError::wire_message, message de @McpError::Render
     généralisé, @data de @McpError::Application toujours `{"code": …}`, et @From<@RestError> 6/6
@@ -357,8 +361,6 @@ Tasks:
     Validé 2026-11-14 (validator PASS en lecture ; batterie complète rejouée par le primary : 16 combinaisons tests et clippy vertes, fmt) : variante `Conflict` + `-32003` + `MRD-MCP-011: conflict` ; les sections
     récapitulatives manquantes de l'amendement 2026-11-13 (table 12/12, `Returns`, matrice `Example`, compteurs onze/douze, Scenario source) ont été complétées par spec-dd — récapitulatif de l'arbitrage déjà pris, rien de
     re-décidé ; `[x]` historiques laissés tels quels.
-    [?] (implementer) : le `From<RestError>` du source est à 8 bras quand le `Must` annonce « exhaustif 9/9 » — le neuvième (`RestError::InvalidQuery`, #78) n'existe pas encore dans le code. Choix provisoire : le 9/9
-    n'est exact qu'une fois #78 livré ; aucune action ici.
 
 Done when:
   Les vingt-trois `Scenario` (les vingt-deuxième et vingt-troisième ajoutés le 2026-11-13, issues #77 et #78) disposent chacun d'au moins un test nommé distinct et vert, sous `--features mcp` et

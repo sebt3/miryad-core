@@ -71,6 +71,10 @@ References:
   ./protocol.rs — @JsonRpcRequest/@JsonRpcResponse : jamais nommés depuis ce fichier
 
 Must:
+  Outils applicatifs (amendement 2026-11-16, issue #86) : le registre porte, en plus de @entities, une table @tools d'@AppTool
+    (./app_tool.sdd). @register_tool n'évalue aucune politique et ne valide aucun argument : il n'enregistre que, et refuse par
+    `assert!` les noms invalides ou en collision (`Tasks`, A2). Un outil applicatif est **hors parité REST/MCP** (`dsd/miryad-core/
+    mcp.md` `DEC-1`) : aucune route REST, aucun hook de ressource, aucune colonne n'est lu pour lui.
   Déléguer sans jamais re-décider : chaque bras de @McpOp appelle exactement une des cinq
     fonctions de @rest::core (@McpOp::List → @rest::core::list, @McpOp::Get → @rest::core::get,
     @McpOp::Create → @rest::core::create, @McpOp::Update → @rest::core::update, @McpOp::Delete →
@@ -140,6 +144,7 @@ Must:
     — à aligner à l'implémentation et à signaler en `[?]`), les noms des colonnes triables, (pas d'indicateur `filter_column` : `filter` est toujours déclaré par ./handler.rs, 2026-11-16). Consommée par ./handler.rs seul (`tools/list`, contrat de ./handler.sdd).
     **Collision de noms** : une colonne filtrable nommée `page`, `per_page`, `filter`, `sort` ou `order` fait échouer @register par `assert!` explicite citant l'entité et le nom (même motif que la clé dupliquée, erreur de
     programmation au démarrage ; aucun nouveau code `MRD-*`). La colonne `filter_column`, absente de `filterable_columns`, n'est jamais déclarée sous son nom de colonne (seul `filter` existe).
+    **Type de colonne filtrable** (arbitré par Sébastien le 2026-11-16, issue #105) : une colonne filtrable d'un type hors {entier, booléen, texte} fait échouer @register par `assert!` citant la colonne et le nom de l'entité, comme le refus du routeur REST (`resource_router`) ; elle n'est donc jamais annoncée.
 
 Must not:
   Réévaluer une autorisation, normaliser une pagination, retoucher une colonne ou appeler un
@@ -205,6 +210,12 @@ Exposes:
     `{resource_name}_list`, `{resource_name}_get`, `{resource_name}_create`,
     `{resource_name}_update`, `{resource_name}_delete` — composition des noms, descriptions et
     @inputSchema de `tools/list` : ./handler.rs
+  @McpToolRegistry::register_tool (amendement 2026-11-16, issue #86, `dsd/miryad-core/mcp.md` `FR-6`, `FR-10`) — `pub fn
+    register_tool<F, Fut>(&mut self, name: impl Into<String>, description: impl Into<String>, input_schema: serde_json::Value,
+    policy: AccessPolicy, handler: F) -> &mut Self` où `F: Fn(DatabaseConnection, AuthPrincipal, serde_json::Value) -> Fut + Send +
+    Sync + 'static` et `Fut: Future<Output = Result<serde_json::Value, McpError>> + Send + 'static` : construit un @AppTool
+    (./app_tool.sdd) et l'insère dans @tools sous son nom. Troisième champ `pub(crate)` du registre : @tools :
+    @BTreeMap<@String, @AppTool> (trié par nom, comme @entities — `tools/list` n'a pas à retrier).
   @McpOp — @pub(crate) @enum {@List, @Get, @Create, @Update, @Delete}, derives @Debug, @Clone,
     @Copy, @PartialEq, @Eq ; jeton de dispatch ./handler.rs ↔ ./registry.rs
   @McpEntity — @pub(crate) @trait @#[async_trait] : @Send + @Sync ;
@@ -334,6 +345,17 @@ Handles:
     ./../rest/core.rs.
 
 Tasks:
+  [ ] Tâche A2 (2026-11-16, issue #86) : @McpToolRegistry::register_tool et collisions — tests d'abord (Scenarios ci-dessous), puis
+    ./registry.rs. Après ./app_tool.sdd (tâche A1). Règles d'enregistrement, toutes par `assert!` avec message citant le nom (même
+    logique et même `# Panics` que `register`, arbitré 2026-09-29) : (1) **nom valide** : non vide, 128 caractères au plus, restreint
+    à `[A-Za-z0-9_-]` (ensemble sûr pour tout client MCP) ; (2) **aucune collision** entre outils applicatifs ; (3) **aucune collision
+    avec un outil d'entité**, dans **les deux ordres d'enregistrement** : `register_tool` refuse un nom égal à
+    `{resource_name}{suffixe}` pour une entité déjà enregistrée et un suffixe de `OPERATIONS` ; `register::<E>` refuse
+    symétriquement une entité dont l'un des cinq noms existe déjà parmi les outils applicatifs (ajout à ses assertions actuelles).
+    `tools/call` découpe un nom par suffixe : sans cette symétrie, l'ordre des deux appels déciderait du gagnant. Les paniques
+    de @AppTool::new (schéma invalide, `OwnerOnly`) se propagent telles quelles.
+    - [?] **choix provisoire :** nom en `impl Into<String>` (les entités ont `&'static str`, mais un hôte peut composer un nom).
+      Option : `&'static str`. Recommandation : `impl Into<String>`, aucune contrainte inutile.
   [x] Convertir les vingt `Scenario` (vingtième ajouté le 2026-11-15, issue #78 ; le décompte
     « dix-neuf » datait d'avant l'amendement) en au moins vingt tests Rust nommés et distincts —
     deux tests inline existent, dix-sept à créer dans le `mod tests` `#[cfg(test)]` de
@@ -415,26 +437,22 @@ Tasks:
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./registry.rs`, doc (ligne ~20) : retirer « comme en GraphQL — cf. `graphql::PolicyRegistry` » (dispatch par nom d'entité à l'exécution). Aucun changement de comportement.
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : la fixture de test (@MiryadResource::before_create, ~ligne 431 de ./registry.rs) est portée au nouveau trait ; aucun changement de comportement ni de dispatch (le registre délègue à @rest::core). Dépend de /src/resource.sdd (même amendement).
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte).
-  [x] Issue #78 — parité MCP de la liste. Spec d'abord : `ListParams` MCP accepte les mêmes critères et le tri (arguments JSON : colonnes filtrables par nom, `sort`, `order`) ; clé inconnue → `InvalidParams`
-    (`MRD-MCP-005`), comme REST `400` ; transmis à `rest::core::list` sans logique propre. Les deux surfaces lisent la **même** déclaration de colonnes (`FR-1`). `Scenario` miroir de ./../rest/mod.sdd.
+  [x] Issue #78 — parité MCP de la liste. Spec d'abord : `ListParams` MCP accepte les mêmes critères et le tri (arguments JSON : colonnes filtrables par nom, `sort`, `order`) ; colonne de l'entité non déclarée filtrable → `InvalidParams`
+    (`MRD-MCP-005`), comme REST `400` ; clé hors entité ignorée (trichotomie de REST, arbitré par Sébastien le 2026-11-16) ; transmis à `rest::core::list` sans logique propre. Les deux surfaces lisent la **même** déclaration de colonnes (`FR-1`). `Scenario` miroir de ./../rest/mod.sdd.
     Puis tests d'abord, puis ./registry.rs. Après ./../rest/mod.sdd.
     Implémente le 2026-11-15 : batterie 16/16 tests + 16/16 clippy -D warnings + fmt + trees verte,
     validator PASS statique.
-    - `[?]` `split_sort_direction` dupliquée dans ./registry.rs (commentaire de citation inclus) : la fonction est privée de ./../rest/mod.rs, hors du `Owns` de cette boîte. Choix provisoire : duplication à sémantique identique, gravée par le test `list_sort_and_order_delegated_to_core` (suffixe `col:desc` == forme explicite). Options : la rendre `pub(crate)` dans ./../rest/mod.rs, ou la factoriser dans `query.rs` (DTO neutre déjà partagé par les deux surfaces). Recommandation : factorisation dans `query.rs` à un prochain cycle.
-    - `[?]` L'`inputSchema` de `_list` est construit dans ./../handler.rs (hors `Owns`) : sans `additionalProperties: false`, il est permissif — les critères libres et `sort`/`order` sont acceptés à l'exécution sans être déclarés ; le test de ./../handler.rs fige le trio `filter`/`page`/`per_page` dans `properties`. Choix provisoire : schéma non touché (son contrat est ./../handler.sdd). Options : rien (le schéma est déjà permissif), ou ajouter `sort`/`order` en `properties` côté handler. Recommandation : boîte dédiée côté handler, avec mention de la tolérance aux clés libres dans la description de l'outil.
-    - `[?]` La prose de cette boîte dit « clé inconnue → `InvalidParams` » ; le contrat REST réel validé (./../rest/mod.sdd, `wire_list_key_unknown_to_entity_is_ignored`) est une trichotomie : colonne de l'entité non déclarée filtrable → `InvalidParams`, clé hors entité → ignorée. La trichotomie identique a été appliquée côté MCP (parité stricte, `FR-1`) et verrouillée par les tests `list_undeclared_entity_column_is_invalid_params` et `list_key_unknown_to_entity_is_ignored_like_rest` — ce dernier vert d'emblée, verrou de parité et non test rouge. À confirmer : reformuler cette ligne de `Tasks` au profit de la trichotomie.
-    - `[?]` Parité d'assertion incomplète (validator 2026-11-15) : le conflit `sort=col:asc` +
-      `order=desc` (l'explicite l'emporte) et le cas mixte clé inconnue + clé filtrable ne sont
-      verrouillés que côté REST, pas côté MCP. Choix provisoire : le code est conforme
-      (`params.order.or_else(suffix)`), verrous d'assertion manquants seulement. A confirmer :
-      ajouter les deux assertions miroir dans ./registry.rs.
-    - `[?]` Le test de parite compare le chemin MCP a un @rest::core::list appele directement avec un
-      @ListQuery ecrit a la main, pas au @list_handler REST : une derive de construction de la requete
-      entre les deux surfaces ne serait attrapee que par la coincidence des suites miroirs. Choix
-      provisoire : acceptable (la validation vit dans le core) ; la factorisation de
-      @split_sort_direction (note ci-dessus) fermerait l'essentiel de ce trou.
+    - Duplication de `split_sort_direction` dans ./registry.rs (commentaire de citation inclus) : duplication à sémantique identique, gravée par le test `list_sort_and_order_delegated_to_core` (suffixe `col:desc` == forme explicite) ; factorisation dans `query.rs` à un prochain cycle (arbitré par Sébastien le 2026-11-16, voir tâche ci-dessous).
+    - Schéma `inputSchema` de `_list` non touché ici : son contrat est ./handler.sdd, tolérance aux clés libres conservée (arbitré par Sébastien le 2026-11-16).
+    - Trichotomie des clés de `_list` (colonne de l'entité non déclarée filtrable → `InvalidParams` ; clé hors entité → ignorée) : parité stricte avec REST (`FR-1`), verrouillée par `list_undeclared_entity_column_is_invalid_params` et `list_key_unknown_to_entity_is_ignored_like_rest` (arbitré par Sébastien le 2026-11-16).
+    - Le code est conforme au conflit `sort=col:asc` + `order=desc` (l'explicite l'emporte, `params.order.or_else(suffix)`) : les deux assertions miroir manquantes sont portées en `Tasks` ci-dessous (arbitré par Sébastien le 2026-11-16).
+    - Test de parité : la comparaison MCP ↔ REST passe par `@rest::core::list` avec un `@ListQuery` écrit à la main ; le verrou de construction de la requête est porté en `Tasks` ci-dessous (acceptable tant que la validation vit dans le core, arbitré par Sébastien le 2026-11-16).
   [x] Issue #78 (suite, 2026-11-16) — `McpEntity::declared_columns` (voir `Must`) et l'`assert!` de collision de noms dans @register : tests d'abord (le Scenario ci-dessus), puis ./registry.rs. Tâche jumelle de la tâche « `inputSchema` de `{name}_list` » de ./handler.sdd (un seul cycle d'implementer, deux fichiers dépendants : ./registry.rs puis ./handler.rs).
     Validé 2026-11-16 (batterie COMPLÈTE verte : 17 combinaisons tests + 17 clippy `-D warnings`, fmt, 8 contrôles `cargo tree`, `specdd lint` ; synthèse `validator` GO conditionnel). `McpEntity::declared_columns` relit le trait en direct (aucune copie au registre, `McpEntityImpl` reste un `PhantomData`), mapping de type identique à `rest/openapi.rs`, `assert!` de collision de noms réservés sur les colonnes filtrables. Mutants M1 à M5 rouges ; M6 (mémorisation) non testable, les méthodes du trait étant statiques et pures — vérifié à la lecture.
+  [ ] Issue #105 — colonne filtrable d'un type hors {entier, booléen, texte} : `assert!` dans `McpToolRegistry::register::<E>` (message citant la colonne et le nom de l'entité, comme pour les noms réservés). Test d'abord : `colonne_filtrable_type_non_pris_en_charge_panique_au_register` (`#[should_panic]`, entité avec une colonne `f32` filtrable ; assertion : le message contient le nom de la colonne et celui de l'entité). Aucun changement du schéma de `_list` (la colonne reste non annoncée).
+  [ ] Verrou de duplication `split_sort_direction` : le test `list_sort_and_order_delegated_to_core` doit aussi asserter que `sort=created_at:desc` sans `order` produit le même `ListQuery` que `sort=created_at` + `order=desc` ; la factorisation dans `query.rs` (cycle ultérieur) supprimera la duplication sans changer ce test.
+  [ ] Parité d'assertion : test `list_sort_conflict_and_mixed_keys_mirror_rest` dans ./registry.rs — entrée (a) `sort=created_at:asc` + `order=desc`, assertion : résultat identique à `order=desc` (l'explicite l'emporte) ; entrée (b) `inconnu=1` + `kind=complementary`, assertion : seul `kind` filtre, `inconnu` est ignorée. Miroirs des assertions REST.
+  [ ] Parité de construction : test `list_parity_goes_through_rest_list_handler` — entrée `{"project_id":3,"sort":"created_at","order":"desc"}` côté MCP et `?project_id=3&sort=created_at&order=desc` via `@rest::list_handler` ; assertion : mêmes lignes et même `ListQuery` construit, en remplacement de la comparaison à un `@ListQuery` écrit à la main.
 
 Done when:
   La spec porte exactement vingt `Scenario` (amendement du 2026-11-15 : le vingtième, « liste MCP
@@ -653,6 +671,26 @@ Scenario: declared_columns relit le trait en direct et la collision de noms éch
   Given une entité qui déclare `project_id` (entier), `kind` (texte) filtrables et `created_at` triable, puis une entité dont une colonne filtrable s'appelle `sort`
   When `declared_columns` est appelée sur la première, puis `register` sur la seconde
   Then la première rend `project_id` (`integer`), `kind` (`string`) et `created_at` triable, sans propriété au nom de `filter_column` ; la seconde fait échouer `register` (panic attendu) avec un message citant l'entité et `sort`
+
+Scenario: une colonne filtrable d'un type hors {entier, booléen, texte} fait échouer register (issue #105, arbitré 2026-11-16)
+  Given une entité dont une colonne filtrable est de type `f32` (`ColumnType::Float`)
+  When `register` est appelé sur cette entité
+  Then `register` panique (`#[should_panic]`) avec un message citant la colonne et le nom de l'entité
+
+Scenario: register_tool enregistre un outil sous son nom (issue #86)
+  Given un registre vide et un outil `analyse` de politique `Public`
+  When `register_tool` est appelé puis le registre est lu
+  Then @tools contient exactement `analyse` et le chaînage rend `&mut Self`
+
+Scenario: un nom d'outil en collision est refusé dans les deux ordres (issue #86)
+  Given l'entité `recipes` enregistrée, puis un outil nommé `recipes_list`
+  When `register_tool` est appelé (cas A) ; puis, sur un registre neuf, un outil `recipes_get` enregistré **avant** `register::<recipes>` (cas B) ; puis deux outils de même nom (cas C)
+  Then les trois appels paniquent (`#[should_panic]`), le message cite le nom en collision, et le registre n'a pas été modifié
+
+Scenario: un nom d'outil invalide est refusé (issue #86)
+  Given les noms `""`, `"a b"`, `"é"` et une chaîne de 129 caractères
+  When `register_tool` est appelé pour chacun
+  Then chaque appel panique et le message cite le nom (tronqué à 32 caractères pour la chaîne longue)
 
 Scenario: liste MCP filtrée et triée comme la liste REST
   Given une entité qui déclare trois colonnes filtrables et une triable, des lignes variées

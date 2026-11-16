@@ -272,7 +272,8 @@ et appels d'MCP externes depuis les scripts.
     - **Decision:** tout identifiant du catalogue (agents, toolsets) commence par `G_` ; aucun utilisateur, admin compris
       dans son espace privé, ne crée un identifiant commençant par `G_`, sans tenir compte de la casse. Seuls les admins
       écrivent un identifiant `G_…`, dans le catalogue. La résolution d'un identifiant est sans ambiguïté : `G_…` va au
-      catalogue, le reste à l'espace du propriétaire. Les skills suivent leur toolset. **Amendé le 2026-11-03 (`DEC-27`) :** un préfixe `H_` désigne un contexte résolu par l'hôte, jamais stocké.
+      catalogue, le reste à l'espace du propriétaire. Les skills suivent leur toolset. **Amendé le 2026-11-03 (`DEC-27`) :** un préfixe `H_` désigne un contexte résolu par l'hôte, jamais stocké. **Amendé le 2026-11-13 (issue #76) :** la règle « identifiant Rhai valide » ne vaut que pour `G_…` et l'espace du propriétaire ; un identifiant `H_…` peut contenir `-` (noms Kubernetes), exception portée par `identity::classify`. Le tiret reste refusé hors `H_…`.
+      La décomposition d'un identifiant d'hôte (`H_sandbox_<owner>_<nom>`) reste l'affaire de l'hôte : la crate classe, elle ne décompose pas (vérifié le 2026-11-15, aucun `split`/`strip_prefix` sur un identifiant `lymaille` dans `src/`). Le `-` n'est ambigu que si les noms de l'hôte n'ont pas de `_`, ce qui tient pour des noms Kubernetes ; un hôte dont les noms contiennent `_` doit les encoder lui-même. Le séparateur réservé (par exemple `__`), alternative de l'issue, est écarté : il imposerait un encodage à l'hôte.
     - **Alternatives:** refus de création quand un nom public existe (écarté : ne couvre que le sens
       utilisateur-après-public) ; masquage du public par le privé (écarté : faux-ami silencieux) ; préfixe `G-` (écarté :
       le tiret n'est pas un caractère valide d'un identifiant Rhai, donc d'un nom de toolset ou de module — Observed in:
@@ -280,7 +281,7 @@ et appels d'MCP externes depuis les scripts.
     - **Consequences:** collision impossible dans les deux sens, sans test d'existence ; le contrôle est un test de préfixe à
       l'écriture (`FR-8`), au même endroit que le contrôle de droits ; les références d'une définition (sous-agents
       délégables, toolsets accordés) se lisent sans ambiguïté.
-    - **Source:** user instruction, 2026-11-02 (principe « pas de faux-amis », préfixe réservé) ; Observed in: `lymaille`, 2026-11-02
+    - **Source:** user instruction, 2026-11-02 (principe « pas de faux-amis », préfixe réservé) ; Observed in: `lymaille`, 2026-11-02 ; issue #76 et user instruction, 2026-11-13 (amendement `H_…`)
 
 - **DEC-10 - Un `ctx.run` par run de sous-agent, session de nom déterministe**
     - **Context:** un run LLM n'est pas déterministe, et `lymaille` persiste déjà la session par tour dans le

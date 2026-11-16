@@ -117,7 +117,7 @@ Must:
     (3) sinon le nom est inconnu de l'entité et reste **ignoré** (la tolérance aux clés inconnues de ./mod.sdd est conservée). Un nom répété, ou plus de @query::MAX_FILTERS critères → @RestError::InvalidQuery.
     `filter` (colonne de @MiryadResource::filter_column) garde sa sémantique actuelle et se combine en `AND` ; une colonne qui est à la fois `filter_column` et nommée dans `filters` est refusée si le nom est répété.
     Tri : `sort` doit nommer une colonne de @MiryadResource::sortable_columns, sinon @RestError::InvalidQuery ; `order` ∈ {`asc`, `desc`} (défaut `asc`), `order` sans `sort` → @RestError::InvalidQuery ; `sort` donne la
-    clé primaire d'ordre, et la clé primaire croissante est **toujours** ajoutée en clé de départage (pagination déterministe, règle ci-dessus conservée). Sans `sort`, l'ordre par clé primaire croissante est inchangé.
+    clé primaire d'ordre, et la clé primaire croissante est **toujours** ajoutée en clé de départage (pagination déterministe, règle ci-dessus conservée). Sans `sort`, l'ordre par clé primaire croissante est inchangé. @query::ListQuery porte `sort` et `order` bruts (`Option<String>`) et n'a de défaut de tri `created_at` décroissant ni champs `sort_field`/`sort_dir` (arbitré par Sébastien le 2026-11-16) ; le découpage `colonne:dir` relève de la surface REST (./mod.sdd).
     @RestError::InvalidQuery porte un message de la crate (nom de la colonne ou du paramètre refusé tel que reçu, jamais une valeur de ligne) ; parité MCP : @McpError::InvalidParams (`MRD-MCP-005`) par `From`.
   Ordonner @rest::core::create exactement ainsi : @users::resolve_user ; @rbac::can_create sur
     @MiryadResource::write_policy seule, `false` rend @RestError::Forbidden sans hook appelé ni
@@ -211,6 +211,7 @@ Must:
     même règle.
   **Amendement 2026-10-19 (feature `db`)** — ./core.rs n'est compilé que sous `db` : le `cfg` est posé par la déclaration du module dans
     ./mod.rs ; ce fichier ne porte aucun `cfg` propre. Sans `db` il n'existe pas, comme `sea-orm`, dans le graphe.
+  Injection : les noms de colonnes viennent de la requête ; ils ne s'emploient qu'après correspondance avec la liste déclarée (jamais interpolés), les valeurs passent par des paramètres liés SeaORM.
 
 Must not:
   Choisir un statut HTTP ni importer @axum : ./core.rs ne produit que @RestError ; la table
@@ -220,7 +221,7 @@ Must not:
     est la seule destination du @HookError du hook, @code/@message restitués intacts ;
     `MRD-REST-004` n’a ici aucun chemin de construction.
   Réévaluer lui-même une décision d’autorisation : ./core.rs ne lit @AccessPolicy que pour le test
-    `@write_policy == @AccessPolicy::OwnerOnly` de l’injection ; aucune lecture de groupe, aucun
+    `@write_policy == @AccessPolicy::OwnerOnly` de l’injection et, pour la seule forme du rendu de `update`/`delete` (`404` uniforme sur ligne d’autrui), `@read_policy` (arbitré par Sébastien le 2026-11-16) ; aucune lecture de groupe, aucun
     is_admin, aucune comparaison de propriétaire pour décider — réévaluer ici créerait précisément le
     fork REST/MCP/GQL que ce fichier existe pour empêcher.
   Appeler @MiryadResource::before_create dans @rest::core::update ou @rest::core::delete, ou
@@ -566,7 +567,7 @@ Tasks:
     existant `create_ignores_client_supplied_owner` (./mod.rs) ; « hors OwnerOnly avec colonne
     déclarée, injection quand même » (arbitré 2026-09-27) → nouveau
     `create_injecte_owner_meme_hors_owner_only_si_colonne_declaree` ; « contrainte » → nouveau
-    `create_insertion_en_contrainte_est_database` ; « update OwnerOnly d’un inconnu » (résidu
+    `create_violation_unicite_est_unique_violation_sans_detail`, `update_violation_unicite_est_unique_violation` et `autre_contrainte_create_et_update_reste_database` (arbitré 2026-11-14 : violation → `409`, autre `DbErr` → `500`) ; « update OwnerOnly d’un inconnu » (résidu
     d’oracle) → nouveau `update_owner_only_introuvable_est_not_found_sans_can_write` ; « update
     AdminOnly/Group d’un inconnu » (oracle fermé) → nouveau
     `update_admin_only_et_group_introuvable_refuse_avant_toute_lecture` ; « update refusé sur ligne
@@ -607,35 +608,29 @@ Tasks:
     Arbitré le 2026-11-14 : les canaux auxiliaires (durée de réponse différente entre « absent » et « d'autrui ») ne sont **pas** traités ; le `Must` le dit en une phrase pour ne pas sur-promettre.
     Validé 2026-11-14 (validator PASS sur la lecture ; batterie complète rejouée par le primary : 16 combinaisons tests et clippy vertes, 0 échec, fmt vert) : production dans ./core.rs seulement ; cohérences cross-spec posées en `[!]` dans
     ./mod.sdd, ./../mcp/handler.sdd et ./../lymaille/script_runner.sdd (à reconfirmer par le développeur principal).
-    [?] (implementer) : le `Must not` « Réévaluer lui-même une décision d'autorisation » ne cite que le test `write_policy == OwnerOnly` de l'injection ; l'arbitrage du 2026-11-14 oblige aussi à tester `read_policy` dans
-    `update`/`delete` (forme du rendu, pas décision). Amender cette ligne à la relecture. Choix provisoire : suivre le `Handles` amendé, qui nomme `read_policy`.
-    [?] (implementer) : le test inline `ligne_autrui_lecture_owner_only_repond_comme_identifiant_inexistant` dépassait `clippy::too_many_lines` ; comprimé par helper de paire sans `#[allow]`, assertions au bit près
-    (précédent `openapi.rs` : extraction, pas exemption). Si un autre traitement du lint est préféré, c'est de la forme, pas du contrat.
+    Le `Must not` « Réévaluer lui-même une décision d'autorisation » cite désormais `read_policy` pour la forme du rendu de `update`/`delete` (arbitré par Sébastien le 2026-11-16, suit le `Handles` amendé).
+    Test inline `ligne_autrui_lecture_owner_only_repond_comme_identifiant_inexistant` : comprimé par helper de paire sans `#[allow]`, assertions au bit près, précédent `openapi.rs` (extraction, pas exemption) ; forme, pas contrat (arbitré par Sébastien le 2026-11-16).
   [x] Issue #77 (2) — `409` sur violation de contrainte unique. Spec d'abord : dans `create` et `update`, une `DbErr` dont `sql_err()` est `SqlErr::UniqueConstraintViolation` (déjà employé par
     ./../lymaille/resource_module.rs : la détection existe pour SQLite et PostgreSQL) devient la nouvelle erreur de ./error.sdd ; toute autre `DbErr` reste `Database` (`MRD-REST-003`, `500`) ; le corps ne cite
     ni la contrainte, ni la colonne, ni la valeur. `Scenario` : seconde création qui viole une unicité → `409` ; `update` qui viole → `409` ; autre `DbErr` → `500` inchangé. Puis tests d'abord (SQLite mémoire),
     puis ./core.rs. Après ./error.sdd.
     Arbitré le 2026-11-14 : traduction explicite dans `create`/`update` (le `DbErr` traverse nu partout ailleurs, `/.specdd/bootstrap.project.md`), **pas** dans `From<DbErr> for RestError`, qui avalerait aussi
     une violation sur une lecture ou un chemin interne.
-    [?] (validator) : la ligne du mapping `[x]` des trente-cinq `Scenario` (~l.569) nomme encore le test remplacé `create_insertion_en_contrainte_est_database` ; le `Scenario` amendé est couvert par les trois nouveaux
-    tests nommés. Correction formelle du mapping à la prochaine relecture.
+    Mapping des trente-cinq `Scenario` corrigé : la ligne « contrainte » nomme les trois nouveaux tests (voir ci-dessus).
     Validé 2026-11-14 (validator PASS en lecture ; batterie complète verte rejouée par le primary : 16 combinaisons tests et clippy, fmt, dont `workflow` et `--all-features` rejoués après la cohérence
     ./../workflow/definition.sdd) : helper branché sur `create`/`update` seulement, `From<DbErr>` et `delete` intacts ; cohérences cross-spec posées en `[!]` dans ./../lymaille/resource_module.sdd et
     ./../workflow/definition.sdd (à reconfirmer par le développeur principal).
-    [?] (implementer) : dans le test `crud_doublon_..._rend_conflict_...` de ./../workflow/definition.rs, les jetons anti-fuite `"unique"`/`"constraint"` minuscules sont devenus des faux positifs (le corps `409`
-    mandate les contient) ; resserrés en signatures de trace brute (`UNIQUE`, `constraint failed`, noms d'index/table). L'objet anti-fuite est intégral ; ajustement jeton par jeton remonté si préféré.
+    Test `crud_doublon_..._rend_conflict_...` de ./../workflow/definition.rs : les jetons anti-fuite sont resserrés en signatures de trace brute (`UNIQUE`, `constraint failed`, noms d'index/table), l'objet anti-fuite restant intégral (arbitré par Sébastien le 2026-11-16).
   [x] Issue #78 — la liste applique critères et tri. Spec d'abord : `list` reçoit les critères (colonnes déclarées filtrables : égalité exacte, conjonction) et le tri de ./../query.sdd ; l'ordre par défaut reste
     l'identifiant croissant (pagination stable : le tri ajoute toujours l'identifiant en clé de départage) ; le filtre de propriétaire d'`OwnerOnly` et la visibilité `Group` s'appliquent **avant** et sans
     dépendre des critères (un filtre ne contourne jamais la politique de lecture) ; `?filter=` conservé. `Scenario` : filtre sur deux colonnes ; tri décroissant stable ; critère sur la colonne propriétaire d'une
     autre personne → liste vide, pas d'oracle ; parité MCP identique. Puis tests d'abord, puis ./core.rs. Après ./../query.sdd.
-    [!] Injection : les noms de colonnes viennent de la requête ; ils ne s'emploient qu'après correspondance avec la liste déclarée (jamais interpolés), les valeurs passent par des paramètres liés SeaORM.
     Validé 2026-11-14 (validator PASS en lecture ; batterie complète verte rejouée par le primary : 16 combinaisons tests et clippy, fmt) : six tests nommés pour les cinq `Scenario` de la tâche (dont preuve d'émission
     SQL du départage par MockDatabase) ; `[!]` Injection tenu — seuls les @Column déclarés atteignent `Condition`/`order_by`, le nom brut ne va que dans les messages ; trois sites d'appel passent @ListQuery::default()
     en transitoire commenté (./mod.rs, ./../mcp/registry.rs, ./../lymaille/resource_module.rs) — leurs cycles #78 respectifs porteront le parsing.
-    [?] (implementer) : plafond `MAX_FILTERS` compté avant la résolution des noms (neuf noms quelconques → refus) ; le contrat ne tranche pas l'ordre des deux vérifications. Choix provisoire : compter d'abord.
-    [?] (implementer et validator) : une valeur d'`order` fautive est vérifiée avant « `order` sans `sort` » — les deux rendent `InvalidQuery`, priorité non fléchée par la spec. Choix provisoire : cet ordre.
-    [?] (validator) : « colonne à la fois `filter_column` et nommée dans `filters` refusée si nom répété » n'a pas de test dédié — couvert indirectement par le contrôle de doublon partagé. Verrou explicite requis ?
-    [?] (validator) : le Given du Scenario « liste filtrée sur deux colonnes parmi trois déclarées » nomme `scope` ; la fixture emploie `owner_id` comme troisième colonne déclarée — divergence nominale, couverture tenue.
+    Plafond `MAX_FILTERS` compté avant la résolution des noms (neuf noms quelconques → `InvalidQuery`), arbitré par Sébastien le 2026-11-16.
+    Une valeur d'`order` fautive est vérifiée avant « `order` sans `sort` » (les deux rendent `InvalidQuery`), arbitré par Sébastien le 2026-11-16.
+  [ ] Test `filter_column_nommee_dans_filters_refusee_si_repetee` (./core.rs) : entrée — entité dont `filter_column` est `kind`, requête `filters` contenant `kind` deux fois ; assertion — `@RestError::InvalidQuery`, aucune ligne lue. Verrou explicite du `Must` (arbitré 2026-11-16).
 
 Done when:
   Les `Scenario` de l’amendement du 2026-11-13 (issue #77 : quatre nouveaux, deux amendés) disposent aussi chacun d’un test nommé distinct.
@@ -1035,7 +1030,7 @@ Scenario: update en violation d'unicité : 409 ; autre contrainte : 500
   Then le premier rend @RestError::UniqueViolation (`409`), le second @RestError::Database (`MRD-REST-003`, `500`)
 
 Scenario: liste filtrée sur deux colonnes parmi trois déclarées
-  Given une entité qui déclare `project_id` (entier), `kind` (texte) et `scope` (texte) filtrables, et des lignes variées
+  Given une entité qui déclare `project_id` (entier), `kind` (texte) et `owner_id` (entier) filtrables, et des lignes variées
   When @rest::core::list est appelée avec `project_id=3` et `kind=complementary`
   Then seules les lignes qui satisfont les deux égalités, en `AND` avec la restriction de lecture ; `total_items` reflète le filtre
 
@@ -1058,16 +1053,5 @@ Scenario: plafond de critères et noms répétés
   Given neuf critères distincts, puis deux fois `kind`
   When @rest::core::list est appelée
   Then @RestError::InvalidQuery dans les deux cas
-  - [?] 2026-11-14 : `@ListQuery::sort_field`/`@sort_dir` (champ `sort` scindé `champ:dir`,
-    défaut `created_at`/desc, ascendant si le suffixe porte `asc` où qu'il soit — `:` dans un nom
-    de champ n'est pas échappable) retenus faute de contrat #78 posé sur @ListQuery, à confirmer
-    avec le cycle de parsing de query string (`src/rest/mod.sdd`).
-    Aligné par ./mod.rs le 2026-11-14 (cycle query string #78) : le scindage `champ:dir` est
-    confirmé comme convention de parsing REST (dernier `:` ; ascendant si le suffixe porte `asc`
-    où qu'il soit, descendant sinon ; un `order` explicite l'emporte sur le suffixe). Le
-    @ListQuery posé depuis est `{filters, sort, order}` — ni `sort_field`/`sort_dir`, ni défaut
-    `created_at`/desc : sans `sort` la liste reste ordonnée par la clé primaire croissante
-    (règle ci-dessus) et `order` sans `sort` est un `InvalidQuery`.
-  - [?] 2026-11-14 : sans déclaration tri par le resource, le schéma liste nomme `id` ET
-    `created_at`, mais tout tri explicite est 400 (l'inférence de colonnes triables est un choix
-    provisoire, pas un contrat) — #78, trancher avec les déclarations de colonnes par ressource.
+  - Décision arbitrée par Sébastien le 2026-11-16 : `@ListQuery` est `{filters, sort, order}` (ni `sort_field`/`sort_dir`, ni défaut de tri `created_at` décroissant). Le scindage `champ:dir` (dernier `:` ; ascendant si le suffixe porte `asc` où qu'il soit, descendant sinon ; un `order` explicite l'emporte) est la convention de parsing REST de ./mod.sdd. Sans `sort`, la liste reste ordonnée par la clé primaire croissante et `order` sans `sort` est un `InvalidQuery` (Must ci-dessus).
+  - Décision arbitrée par Sébastien le 2026-11-16 : sans déclaration de tri, `sortable_columns` est vide et tout `sort` explicite est `InvalidQuery` (400). Le schéma liste OpenAPI nomme `id` et `created_at` (./openapi.sdd) sans que ce soit un contrat de tri.

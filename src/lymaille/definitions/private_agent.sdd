@@ -64,7 +64,7 @@ Tasks:
     typé les définitions ; `DateTimeUtc` selon la décision `[?]` de ./mod.sdd. Puis test d'abord (appel de `resource_openapi::<Entity>()`, présence du schéma du `Model` et des champs), puis ./private_agent.rs. Après ./mod.sdd.
   [x] Issue #72 — `Model` dérive `ts-rs::TS` avec la colonne JSON `definition` typée par `AgentDefinition` de `lymaille`. Dépend de la publication amont de `lymaille` 0.3.0 (hypothèse de travail du 2026-11-13) : `lymaille` 0.2.1 n'a ni feature ni dépendance `ts-rs` (voir ./../mod.sdd). Débloqué par la
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, feature non déclarée, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Test : `lexport_typescript_du_modele_correspond_a_la_serialisation` (propriétés == clés JSON, dates `string`, entiers `number`, colonnes typées par le type `lymaille`).
-    [?] (implementer) : nommage des déclarations TS — les dix `Model` portant le même nom Rust, chaque déclaration est renommée `<PascalCase(entité)>Model` (`AgentModel` … `UserContextModel`), fichiers d'après la tige citée dans le Scenario. Choix provisoire conservateur ; options : préfixe ressource (`CatalogAgent`), suffixe `Model` (retenu).
+    Nommage TS arbitré par Sébastien le 2026-11-16 : suffixe `Model` conservé ; le `Model` est exporté sous `<PascalCase(entité)>Model` (déjà livré : `#[ts(rename = "…Model")]` dans ./private_agent.rs).
     version amont qui dérive `TS` sur ses définitions. Alors : spec (`Must`, `Scenario` « le `.ts` exporté type la colonne par `AgentDefinition` »), test de contrat (valeur construite par la crate → JSON identique
     à la forme déclarée, JSON de la déclaration accepté par la crate), puis ./private_agent.rs.
 

@@ -143,8 +143,8 @@ Tasks:
     (`../../tests/workflow_restate.rs`, `Can modify` accordé le 2026-11-03 ; fichier rattaché à ./dispatcher.sdd) ; non verrouillée par la CI. Le rejeu en mémoire (test n°6) ne solde pas cette tâche : il ne prouve pas le journal Restate.
     Validé 2026-11-06 (validator PASS : `reprise_apres_kill_du_service_sur_step_subagent` — service en sous-processus, SIGKILL après `end:A` pendant le tour de `S`, reprise sans rejeu des effets commités (A jamais ré-exécuté, `end:S` une fois), `sys_invocation` à une invocation par handler sans doublon ; preuve verte 4 fois (4,7-7,4 s), suite ignorée 13/13, CI sans occurrence podman/restate ; ./../../tests/workflow_restate.rs refactor sans adoucissement, spike 40 min intact au diff).
     [x] Arbitré le 2026-11-10 (développeur principal) : l'écart est assumé et tracé (DSD `AC-10`, CHANGELOG, limites connues). Constat d'origine : la « session sauvegardée » de la preuve est le journal-fichier de la fixture (transposition assumée du nom déterministe de l'étape 8), pas une session `lymaille` via `restore_session` — le `SubagentStep` réel n'est pas exercé dans ce fichier. La lettre de la case est tenue ; cet écart de transposition convient-il ?
-    [?] (validator) : `mode_service_restate` passe trivialement (return immédiat) quand la suite ignorée tourne en entier — compteur 13 au lieu de 12. Inoffensif ; l'assumer ou le masquer ?
-    [?] (validator) : le journal-fichier de preuve fuiterait dans /tmp en cas d'échec d'assertion (nettoyé avant/après chaque exécution) — acceptable, ou nettoyage au drop ?
+    Arbitré par Sébastien le 2026-11-16 : `mode_service_restate` passe trivialement (return immédiat) quand la suite ignorée tourne en entier — compteur 13 au lieu de 12 ; inoffensif, assumé et non masqué.
+    Arbitré par Sébastien le 2026-11-16 : le journal-fichier de preuve peut subsister dans /tmp en cas d'échec d'assertion (nettoyé avant/après chaque exécution) ; acceptable, sans nettoyage au drop.
   [x] Contractualiser le type de contexte (arbitrage du 2026-11-10, `Must` et `Exposes` ci-dessus) : test d'abord depuis le Scenario « le contexte des rôles MCP est lu sous le type workflow_subagent »,
     puis ./subagent_step.rs : `CONTEXT_TYPE` privée → `pub const SUBAGENT_CONTEXT_TYPE` (valeur inchangée, `///` rustdoc du contrat), sans autre changement de comportement.
     Validé 2026-11-10 (implementer Haiku, relu et relancé par Claude : diff confiné à ./subagent_step.rs, `pub const SUBAGENT_CONTEXT_TYPE` rustdoc du contrat, test `le_contexte_des_roles_mcp_est_lu_sous_le_type_workflow_subagent` — (a) valeur figée, (b) seul le contexte `workflow_subagent` est monté malgré un second contexte `autre_type`, (c) sans contexte de ce type aucun rôle monté ; le rouge est de compilation (constante absente), (b) et (c) caractérisent le contrat sans changement de comportement ; `workflow,lymaille` 20/20, clippy `-D warnings` vert sur `workflow,lymaille` et `--all-features`, `fmt`, `specdd lint` 0/0 ; batterie ciblée, la complète reste à passer en fin de lot).
@@ -158,7 +158,7 @@ Tasks:
     échec non retryable. Puis tests d'abord, puis ./subagent_step.rs. Après ./../lymaille/interactive/assemble.sdd.
   [x] Issue #82 — `forward` dans un step batch. Spec d'abord : le `Must` « un `forward` est un `StepError` non retryable, sans repli » (point `interactive_token = None`) devient : le step passe l'hôte à
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Step batch : `forward` avec hôte qui fournit → step aboutit (jeton consulté une fois au montage) ; absent/`None`/panne → `StepError` non retryable, zéro inférence.
-    [?] (implementer) : le bloc `Scenario` « un serveur MCP en forward… » n'a pas reçu de clause amendée (seul le `Must` porte le cas) ; le test suit le `Must`. Amendement formel à prévoir si le développeur principal veut la trace.
+    Arbitré par Sébastien le 2026-11-16 : le `Scenario` « un serveur MCP en forward fait échouer le step sans retry » porte désormais son cas (hôte sans jeton, `forward_token` rend `None`) ; le cas avec jeton est au `Scenario` « un serveur MCP en forward est monté avec le jeton de l'hôte ».
     `build_auth` (./../lymaille/mcp_access.sdd) ; jeton fourni → serveur monté ; sinon le `StepError` non retryable actuel. Amender le `Scenario` « un serveur MCP en forward fait échouer le step sans retry »
     (cas sans fournisseur conservé) et ajouter le cas « hôte qui fournit un jeton ». Puis tests d'abord, puis ./subagent_step.rs. Après ./../lymaille/mcp_access.sdd.
 
@@ -167,7 +167,7 @@ Done when:
     ou avec celle-ci ; la spec est relue et approuvée avant ./subagent_step.rs.
 
 Scenario: un serveur MCP en forward fait échouer le step sans retry
-  Given un contexte qui lie un rôle à un serveur `auth_mode = forward`
+  Given un contexte qui lie un rôle à un serveur `auth_mode = forward`, et un hôte dont `forward_token` rend `None` (arbitré par Sébastien le 2026-11-16)
   When le step s'exécute
   Then `StepError` non retryable « forward auth needs an interactive session »
 

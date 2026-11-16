@@ -71,7 +71,7 @@ Must:
     `integer` nues) — mêmes clés que les cinq champs sérialisés de @PagedResult de ../query.rs : les
     deux fichiers ne sont reliés par aucun lien de compilation, seule l'identité des clés tient le
     contrat.
-  Amendement du 2026-11-13 (issues #77 et #78) : sur l'opération `GET` de collection, un query parameter non requis par colonne de @MiryadResource::filterable_columns (type OpenAPI dérivé de la colonne), plus `sort` (`string`, `enum` des
+  Amendement du 2026-11-13 (issues #77 et #78) : sur l'opération `GET` de collection, un query parameter non requis par colonne de @MiryadResource::filterable_columns (type OpenAPI dérivé de la colonne ; une colonne d'un type hors {entiers, booléen, texte} n'en a aucun, la ressource n'étant jamais montée), plus `sort` (`string`, `enum` des
     colonnes triables) et `order` (`enum` `asc`, `desc`) quand la ressource déclare des colonnes triables, et une réponse `400` (`MRD-REST-008`) ; `filter` reste déclaré selon @MiryadResource::filter_column ; sur `POST` et `PUT`, une réponse
     `409` (`MRD-REST-007`) ; sur `GET`/`PUT`/`DELETE` d'item d'une ressource dont la lecture est @AccessPolicy::OwnerOnly, le `404` couvre aussi la ligne d'autrui (description, pas de réponse `403` propre à ce cas).
   Déclarer sur l'opération `GET` de collection deux query parameters non requis — `page` et
@@ -332,38 +332,13 @@ Tasks:
     @RestEntity ou une entité `sea_orm` ; ajouter le test `openapi_router_serves_handwritten_document_without_db`.
   [x] Issues #77 et #78 — le document décrit les nouveautés de la liste et des écritures. Spec d'abord : (#77) les réponses `409` de `POST` et `PUT` (corps `MRD-REST-007`) et la note « `404` pour la ligne d'autrui
     des ressources `OwnerOnly` » ; (#78) un query parameter par colonne filtrable déclarée et les paramètres `sort` et `order` (énumérés) quand la ressource déclare des colonnes triables, `filter` conservé
-    tant que `filter_column` existe. `Scenario` par ressource de test (zéro, une, trois colonnes filtrables). Puis tests d'abord, puis ./openapi.rs. Après ./core.sdd et ./../resource.sdd.
-    [?] Le `Done when` compte « exactement treize `Scenario` (sept conservés, six créés) » ; la spec
-      en porte quinze mesurés (les treize du cycle 2026-10-01, dont un créé par l'amendement `db`
-      2026-10-19 « document écrit à la main sans db », plus « le document décrit critères, tri et
-      conflit » ajouté le 2026-11-13). Comptage réel 15 ; le `Done when` et la tâche de conversion
-      ont été amendés à « quinze » par le primary le 2026-11-15 (précédent : `registry.sdd` à vingt).
-    [?] Le `Then` « la seconde garde exactement son document d'avant » du Scenario nouveau est en
-      tension avec le `Must` amendé : le `409` de #77 est déclaré sur `POST`/`PUT` de toute ressource,
-      sans condition de déclaration de colonnes. Choix provisoire : lecture par les surfaces réelles
-      (`rest::core::create`/`update` traduisent la violation d'unicité pour toute entité montée) — la
-      seconde entité garde son document de liste d'avant (aucun paramètre #78) mais porte le `409` ;
-      à confirmer par Sébastien.
-    [?] Wording des nouvelles descriptions, non contractualisé par le `Must` amendé : `409`
-      « Conflit d'unicité », `404` annoté « Non trouvé — inclut la ligne d'autrui » (lecture
-      `OwnerOnly`), paramètres de colonne « Filtre d'égalité exacte sur la colonne X », `sort`
-      « Colonne de tri parmi les colonnes triables déclarées », `order` « Sens du tri : asc (défaut)
-      ou desc ». Choix provisoire : ce wording ; options — tout wording français littéral (convention
-      2026-09-29).
-    [?] Colonne filtrable d'un type hors `{entiers, booléen, texte}` : `resource_router` refuse le
-      montage (`mod.sdd` amendement #78), la ressource n'est donc jamais servie. Choix provisoire :
-      aucun query parameter déclaré pour une telle colonne (le document ne promet pas ce qui n'est
-      jamais monté), plutôt que de la déclarer `string`.
-    [?] La consigne de tâche dit « `Scenario` par ressource de test (zéro, une, trois colonnes
-      filtrables) » ; le Scenario de la spec ne fixe qu'une entité à deux colonnes filtrables et une
-      triable. Choix provisoire : tests sur zéro colonne (`ingredient`), une via `filter_column`
-      conservé (`recipe`) et la fixture du Scenario (deux filtrables, une triable, `OwnerOnly`) ;
-      le cas « trois colonnes » vit déjà en `rest::core`/`mcp::registry`.
-    [?] Deux modalites de surface non ecrites dans le document (validator 2026-11-15) : la colonne
-      de @filter_column est aussi acceptable comme cle libre nommee (critere en plus de @filter) et
-      @sort accepte le suffixe @sort=col:asc|desc. Choix provisoire : le document n'annonce que la
-      forme canonique ; un client guide strictement par le document sous-utilise la surface sans
-      jamais casser. A confirmer : documenter les deux modalites ou les assumer hors document.
+    tant que `filter_column` existe. `Scenario` par ressource de test (zéro, une, deux colonnes filtrables). Puis tests d'abord, puis ./openapi.rs. Après ./core.sdd et ./../resource.sdd.
+    Comptage : quinze `Scenario` mesurés (décompte « treize » du cycle 2026-10-01 corrigé le 2026-11-15), arbitré par Sébastien le 2026-11-16.
+    La seconde entité (sans déclaration) garde son document de liste d'avant (aucun paramètre #78) mais porte le `409` de #77 : le `409` est déclaré sur `POST`/`PUT` de toute ressource montée (arbitré par Sébastien le 2026-11-16, voir `Then` du Scenario « le document décrit critères, tri et conflit »).
+    Wording des nouvelles descriptions (`409` « Conflit d'unicité », `404` « Non trouvé — inclut la ligne d'autrui », paramètres « Filtre d'égalité exacte sur la colonne X », `sort` « Colonne de tri parmi les colonnes triables déclarées », `order` « Sens du tri : asc (défaut) ou desc ») : arbitré par Sébastien le 2026-11-16, non contractuel.
+    Colonne filtrable d'un type hors `{entiers, booléen, texte}` : aucun query parameter déclaré (la ressource n'est jamais montée), arbitré par Sébastien le 2026-11-16 (`Must` ci-dessus).
+    Tests par ressource : zéro colonne (`ingredient`), une via `filter_column` (`recipe`), et la fixture du Scenario (deux filtrables, une triable, `OwnerOnly`) ; le cas à trois colonnes vit déjà en `rest::core`/`mcp::registry` (arbitré par Sébastien le 2026-11-16).
+    Modalités de surface non documentées (colonne de `filter_column` acceptée comme clé libre nommée ; `sort=col:asc|desc`) : le document n'annonce que la forme canonique, arbitré par Sébastien le 2026-11-16 ; ces modalités restent acceptées par la surface sans être documentées.
     Implémente le 2026-11-15 : batterie 16/16 tests + 16/16 clippy -D warnings + fmt + trees verte,
     validator PASS statique ; `Done when` amendé a quinze par le primary.
 
@@ -507,4 +482,4 @@ Scenario: un document OpenAPI écrit à la main est servi sans db (2026-10-19)
 Scenario: le document décrit critères, tri et conflit
   Given une entité qui déclare deux colonnes filtrables et une triable, à lecture `OwnerOnly`, puis une entité sans déclaration
   When @resource_openapi est appelée pour chacune
-  Then la première porte les query parameters des deux colonnes, `sort`, `order`, la réponse `400` de la liste, la réponse `409` de `POST` et `PUT` et le `404` décrit pour l'item ; la seconde garde exactement son document d'avant
+  Then la première porte les query parameters des deux colonnes, `sort`, `order`, la réponse `400` de la liste, la réponse `409` de `POST` et `PUT` et le `404` décrit pour l'item ; la seconde garde son document de liste d'avant (aucun paramètre #78) mais porte la réponse `409` de `POST` et `PUT` (arbitré par Sébastien le 2026-11-16)

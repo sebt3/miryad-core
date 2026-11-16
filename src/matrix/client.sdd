@@ -1,11 +1,12 @@
-Spec: client — @MatrixClient, connexion, envoi, jonction, lecture d'historique
+Spec: client — @MatrixClient, connexion, envoi (salon, fil, réponse), édition, jonction, lecture d'historique
 
 Purpose:
   Porter le client Matrix de l'application : une valeur `Clone` que l'on construit une fois (par
     session existante, par device code ou par import de session), puis qu'on partage entre la boucle
     de sync (./sync.sdd), les steps de workflow (../workflow/matrix_step.sdd) et le code de l'app.
     Primitives de base : envoyer un message (texte ou notice, avec identifiant de transaction
-    idempotent), rejoindre une salle, lire l'historique récent. La lecture « en direct » est
+    idempotent) dans le salon, dans un fil ou en réponse à un événement, éditer un message déjà envoyé, rejoindre une
+    salle, lire l'historique récent (amendement 2026-11-16, issue #87). La lecture « en direct » est
     dans ./sync.sdd. Fichier neuf, conception.
   Le client gère le chiffrement de bout en bout de façon transparente (salles chiffrées : envoi et
     déchiffrement automatiques par `matrix-sdk`, état dans ./store/mod.sdd). Plusieurs réplicas
@@ -17,6 +18,9 @@ Owns:
   ./client.rs
 
 Can modify:
+  ../workflow/matrix_step.rs — **uniquement** le site d'appel de `MatrixClient::send` (nouveau paramètre `relation`, passé à
+    `None`) et l'implémentation de `Sender` pour @MatrixClient, pour que le crate compile sous `workflow,matrix` à la fin de la
+    tâche F ; la config, les kinds et leurs tests restent à ../workflow/matrix_step.sdd (amendement 2026-11-16)
   ../../tests/matrix_live.rs — test d'intégration `#[ignore]` contre un vrai homeserver (variables
     `MIRYAD_MATRIX_HOMESERVER`, `MIRYAD_MATRIX_PASSPHRASE`, `MIRYAD_MATRIX_ROOM`, `MIRYAD_MATRIX_SESSION`
     — jeton importé —, base SQLite en mémoire) : connexion, envoi, relecture, idempotence du `txn_id`
@@ -28,6 +32,12 @@ References:
     oauth, subscribe_to_session_changes, get_room, join_room_by_id, user_id}`, `Room::{send, messages}`,
     `RoomMessageEventContent::{text_plain, text_html, notice_plain, notice_html}`,
     `SendMessageLikeEvent::with_transaction_id` — signatures à relire en source à l'implémentation
+  matrix-sdk `0.18.0` (amendement 2026-11-16, issue #87) — `Room::{make_reply_event, make_edit_event}` (`room/reply.rs`,
+    `room/edit.rs` : récupèrent l'événement visé par `/rooms/{id}/event`, d'où `ReplyError::Fetch`, `EditError::{Fetch,
+    NotAuthor, StateEvent, IncompatibleEditType, Deserialize}`), `Reply`, `EnforceThread`, `EditedContent::RoomMessage`,
+    ruma `events::room::message::{Relation, Thread, RoomMessageEventContentWithoutRelation}` — lus en source le 2026-11-16,
+    à relire à l'implémentation
+  /dsd/miryad-core/matrix.md — `FR-9` à `FR-13`, `DEC-3`, `OI-7`
 
 Must:
   @MessageKind — `pub enum`, `#[derive(Debug, Clone, Copy, PartialEq, Eq)]` : `Text` (`m.text`), `Notice`
@@ -72,24 +82,63 @@ Must:
     `import_session`/`login_with_device_code` qui la remplace. La restauration passe par `Client::restore_session`
     (les deux variantes d'`AuthSession`), équivalent de `OAuth::`/`MatrixAuth::restore_session`.
   `pub fn user_id(&self) -> String` — identifiant Matrix du bot.
-  `pub async fn send(&self, room_id: &str, body: &str, html: Option<&str>, kind: MessageKind, txn_id: Option<&str>)
-    -> Result<String, MatrixError>` — rend l'`event_id`. `room_id` est un identifiant de salle `!x:y`
-    (alias refusé : @MatrixError::InvalidId) ; `body` est le texte brut (obligatoire, repli des clients sans
+  @MessageRelation (amendement 2026-11-16, issue #87, `matrix#FR-9`) — enum `pub`, `#[derive(Debug, Clone, PartialEq, Eq)]`,
+    identifiants en `String` (aucun type `ruma`, `matrix#FR-1`) : `Thread { root: String, latest: Option<String> }` — message
+    dans le fil dont `root` est l'événement racine (`m.relates_to` de type `m.thread`) ; `latest`, facultatif, est le dernier
+    événement connu du fil, cible du repli `m.in_reply_to` avec `is_falling_back: true` pour les clients sans fils (absent : la
+    racine) ; `Reply { to: String }` — réponse à l'événement `to` (`m.in_reply_to`, sans fil). Les deux formes sont
+    exclusives par construction (une seule valeur).
+  `pub async fn send(&self, room_id: &str, body: &str, html: Option<&str>, kind: MessageKind, relation:
+    Option<&MessageRelation>, txn_id: Option<&str>) -> Result<String, MatrixError>` — rend l'`event_id`
+    (signature changée le 2026-11-16, `matrix#DEC-3` : pas de second point d'entrée). `room_id` est un identifiant de salle
+    `!x:y` (alias refusé : @MatrixError::InvalidId) ; `body` est le texte brut (obligatoire, repli des clients sans
     HTML) ; `html` ajoute `formatted_body` au format `org.matrix.custom.html`. Contenu construit par la
-    fonction pure `build_content(body, html, kind) -> RoomMessageEventContent` (`pub(crate)`). Salle :
+    fonction pure `build_content(body, html, kind) -> RoomMessageEventContent` (`pub(crate)`, **inchangée**). Salle :
     `client.get_room(id)` ; absente (réplica qui ne synchronise pas, ou avant le sync initial) →
     `join_room_by_id(id)` (idempotent pour une salle déjà rejointe) ; échec → @MatrixError::RoomUnavailable, sauf une erreur
     retryable (429, 5xx, réseau) qui est conservée telle quelle pour que le retry du step fonctionne (amendement
     2026-10-18).
     `txn_id = Some(t)` → envoyé avec `with_transaction_id(t)` : un rejeu avec le même `t` est dédupliqué par le
     serveur (retry Restate sans doublon) ; `None` → identifiant généré par `matrix-sdk`.
+    Relation (2026-11-16) : **tout identifiant d'événement** de `relation` est validé (`EventId::parse`, forme `$…`) **avant**
+    toute requête réseau, comme `room_id` : mal formé → @MatrixError::InvalidId. `None` → comportement inchangé.
+    `Thread` : fonction pure `pub(crate) fn apply_thread(content: RoomMessageEventContent, root: &EventId, latest:
+    Option<&EventId>) -> RoomMessageEventContent` qui pose la relation `m.thread` (cible du repli : `latest`, sinon `root`,
+    avec `is_falling_back: true`) ; aucune requête réseau. `Reply` : l'événement visé est **récupéré** par
+    `Room::make_reply_event` (`Reply { enforce_thread: Unthreaded }`), ce qui produit `m.in_reply_to` et les mentions.
+    Une erreur de cette récupération est traduite par `fn from_fetch_error`: retryable (429, 5xx, réseau) → conservée ;
+    sinon @MatrixError::EventNotFound(identifiant de l'événement visé) ; `ReplyError::{Deserialization, StateEvent}` →
+    @MatrixError::Sdk. La relation fonctionne telle quelle dans une salle chiffrée (le chiffrement est transparent,
+    `Purpose`).
+    - [?] **choix provisoire (`matrix#OI-7`, point (b)) :** `Thread` construit la relation à la main (honore `latest`, aucune
+      requête) ; il ne détecte donc **pas** une racine inconnue du serveur. `Reply` passe par l'assistant du SDK (une requête
+      de plus, erreur typée). Option : récupérer aussi la racine du fil pour la valider ; recommandation : attendre la mesure
+      du comportement de Palpo face à une relation vers un événement inconnu (banc live), avant de promettre l'erreur de
+      `matrix#FR-13` pour le fil.
+    - Arbitré par Sébastien le 2026-11-16 : `Reply` ne forme **pas** de fil, même si l'événement visé est dans un fil
+      (`EnforceThread::Unthreaded`, conforme à l'issue : « sans fil ») ; pour rester dans un fil l'hôte utilise `Thread`.
+  `pub async fn edit(&self, room_id: &str, event_id: &str, body: &str, html: Option<&str>, kind: MessageKind, txn_id:
+    Option<&str>) -> Result<String, MatrixError>` (amendement 2026-11-16, `matrix#FR-10`) — publie un remplacement
+    (`m.replace` avec `m.new_content`) de l'événement `event_id` et rend l'`event_id` de l'événement de **remplacement** (pas
+    celui de l'original). Même salle, même `txn_id`, mêmes validations d'identifiants (`room_id`, `event_id`) et même format de
+    corps que `send`. Le remplacement est construit par `Room::make_edit_event` avec
+    `EditedContent::RoomMessage(<corps de build_content sans relation>)` : le SDK récupère l'original (une requête de plus),
+    refuse un événement d'état et un événement qui n'est pas de l'auteur. Traduction : `EditError::NotAuthor` →
+    @MatrixError::NotAuthor(`event_id`) ; `EditError::Fetch` → même règle que `Reply` (retryable conservée, sinon
+    @MatrixError::EventNotFound) ; `EditError::{StateEvent, IncompatibleEditType, Deserialize}` → @MatrixError::Sdk. Une
+    édition ne porte **que** `m.replace` : elle ne reprend pas la relation de fil de l'original.
+    - Arbitré par Sébastien le 2026-11-16 : `edit` prend un `kind: MessageKind` en plus de la signature de l'issue (`edit(room_id,
+      event_id, body, html, txn_id)`) : sans lui, l'édition d'une notice la ferait devenir `m.text`, et les autres bots qui ignorent
+      les `m.notice` (convention anti-boucle) se mettraient à y réagir. L'option « relire le `msgtype` de l'original » est écartée.
   `pub async fn join_room(&self, id_or_alias: &str) -> Result<String, MatrixError>` — rend l'identifiant de salle ;
     forme invalide → InvalidId.
   `pub async fn recent_messages(&self, room_id: &str, limit: u16) -> Result<Vec<MatrixMessage>, MatrixError>` —
     lit au plus `limit` (borné à `1..=100`, hors bornes → `Config`) derniers messages **par ordre
     chronologique croissant**, via `Room::messages` en arrière ; ne rend que les messages textes/notices/
     emotes déchiffrés (les événements indéchiffrables sont omis, journalisés par `tracing::warn!` avec
-    salle et `event_id` seulement), au même format que ./sync.sdd (`to_message`).
+    salle et `event_id` seulement), au même format que ./sync.sdd (`to_message`). Amendement 2026-11-16 (`matrix#DEC-3`) :
+    chaque `MatrixMessage` porte `thread_root` et `in_reply_to`, extraits de la même façon que la remise en direct
+    (fonction pure de ./sync.sdd) : une relation visible en direct l'est aussi dans l'historique.
   Précisions (2026-10-18) : `recent_messages` ne rejoint pas une salle absente du cache (`RoomUnavailable`) ; l'historique
     est brut — éditions (`m.replace`) et messages du bot lui-même ne sont pas filtrés ; `join_room` sur un alias
     n'indique aucun `server_names`. Le Scenario « sans requête réseau » prouve que `send` valide avant tout appel ;
@@ -115,8 +164,8 @@ Depends on:
     @matrix_sdk, @sea_orm, @tokio
 
 Exposes:
-  `MatrixClient::{connect, login_with_device_code, import_session, user_id, send, join_room, recent_messages}`,
-    `MessageKind`, `SessionImport`, `build_content` (`pub(crate)`).
+  `MatrixClient::{connect, login_with_device_code, import_session, user_id, send, edit, join_room, recent_messages}`,
+    `MessageKind`, `MessageRelation`, `SessionImport`, `build_content`, `apply_thread` (`pub(crate)`).
 
 Handles:
   Deux réplicas envoient avec le même `txn_id` : une seule entrée dans la salle (déduplication serveur).
@@ -179,6 +228,21 @@ Tasks:
     refuse avec `RoomUnavailable` plutôt que d'envoyer en clair (jamais de repli non chiffré) et on
     avise (par exemple n'enregistrer `matrix_send` que dans le processus qui synchronise).
 
+  [ ] Tâche F (2026-11-16, issue #87, `matrix#FR-9`) : @MessageRelation, nouveau paramètre `relation` de `send`, validation des
+    identifiants d'événement, `apply_thread`, branche `Reply` — tests d'abord (Scenario `apply_thread`, identifiant d'événement
+    mal formé sans réseau), puis ./client.rs ; adaptation ponctuelle de ../workflow/matrix_step.rs (voir `Can modify`) pour que
+    `workflow,matrix` compile. Après ./error.sdd (variante `EventNotFound`) et ./sync.sdd (`MessageParts`) ; les `[?]` de `Must` sont
+    à consigner ici avec le choix retenu.
+  [ ] Tâche G (2026-11-16, `matrix#FR-10`) : `edit` et sa traduction d'erreurs — tests d'abord (identifiants mal formés sans réseau),
+    puis ./client.rs. Après la tâche F. La partie qui parle au serveur (remplacement effectivement affiché, `NotAuthor`,
+    événement inconnu, salle chiffrée) n'est prouvée que par le test live.
+  [ ] Tâche H (2026-11-16, `matrix#DEC-3`) : `recent_messages` porte `thread_root` et `in_reply_to` (site d'appel de `to_message`
+    dans `text_message`) — après ./sync.sdd et la tâche F ; test unitaire sur la fonction pure de ./sync.sdd, le reste en live.
+  [ ] Tâche D bis (2026-11-16) : cinq tests `#[ignore]` ajoutés à ../../tests/matrix_live.rs — message dans un fil (relation `m.thread`
+    relue par `recent_messages`), réponse, édition (corps relu), rejeu du même `txn_id` pour chacun (aucun doublon), et **mesure du
+    comportement de Palpo** pour une relation vers un événement inconnu (consigner le résultat dans `matrix#OI-7`, point (b)).
+    Reste `[ ]` jusqu'à l'exécution réelle, comme la tâche D.
+
 Done when:
   Les `Scenario` unitaires sont verts ; `../../tests/matrix_live.rs` est écrit et a été exécuté au moins
     une fois contre le homeserver de développement (résultat consigné dans `Tasks`) ; la spec est relue
@@ -198,6 +262,21 @@ Scenario: limit hors bornes est refusée
   Given `limit = 0` puis `limit = 101`
   When `recent_messages` est appelé
   Then chaque résultat est @Err(MatrixError::Config(_))
+
+Scenario: apply_thread pose une relation de fil avec repli (issue #87)
+  Given un contenu texte, une racine `$root` et `latest = None`, puis `latest = Some("$last")`
+  When `apply_thread` est appelé et le contenu sérialisé en JSON
+  Then `m.relates_to` vaut `{"rel_type": "m.thread", "event_id": "$root", "is_falling_back": true, "m.in_reply_to": {"event_id": "$root"}}` puis le même avec `m.in_reply_to` visant `$last`
+
+Scenario: un identifiant d'événement mal formé est refusé sans réseau (issue #87)
+  Given `relation = Thread { root: "pas-un-id", latest: None }`, puis `Reply { to: "" }`, puis `Thread { root: "$ok", latest: Some("x") }`
+  When `send` est appelé, puis `edit` avec `event_id = "pas-un-id"`
+  Then chaque résultat est @Err(MatrixError::InvalidId(_)) et aucune requête n'est émise
+
+Scenario: relation, réponse, édition et rejeu idempotent (test live)
+  Given une session importée valide, une salle de test et un message racine `$root`
+  When `send` est appelé avec `Thread { root: $root, latest: None }`, puis avec `Reply { to: $root }`, puis `edit` sur le premier, chacun avec un `txn_id` fixe rejoué deux fois
+  Then chaque rejeu rend le même `event_id` sans doublon, `recent_messages` expose `thread_root = Some($root)` sur le premier, `in_reply_to = Some($root)` sur le second, le corps édité est visible, et `edit` d'un message d'un autre compte rend @Err(MatrixError::NotAuthor(_))
 
 Scenario: SessionImport masque ses jetons
   Given un `SessionImport` avec `access_token = "tok"` et `refresh_token = Some("ref")`

@@ -56,8 +56,7 @@ Must:
     La feature n'est **pas** dans `default` ; `[package.metadata.docs.rs].features` y ajoute `lymaille`.
   Rester **sans état global** autre que l'installation idempotente du provider TLS de ./tls.sdd.
 
-  **Amendement lot 2 (2026-11-03)** : déclarer en plus `pub mod interactive;`, `pub mod http;`, le module privé `mcp_access` (ré-exporté `server_for`,
-    `SeaMcpAuth`), et `#[cfg(all(feature = "lymaille", feature = "matrix"))] pub mod chat;`. Ré-exports plats ajoutés : `interactive::{SessionManager,
+  **Amendement lot 2 (2026-11-03)** : déclarer en plus `pub mod interactive;`, `pub mod http;`, le module `mcp_access`, déclaré `pub` (arbitré 2026-11-16 : ses types sont déjà ré-exportés à plat, le `pub` n'ajoute que le chemin ; ré-exporté `server_for`, `SeaMcpAuth`), et `#[cfg(all(feature = "lymaille", feature = "matrix"))] pub mod chat;`. Ré-exports plats ajoutés : `interactive::{SessionManager,
     ManagerDeps, EventHub}`, `http::conversations_router`, `store::{purge_sessions, PurgeReport, AuditWriter}`. Le bloc `//!` documente les
     surfaces du lot 2 (REST+SSE, Matrix), la rétention (`purge_sessions` planifiée par l'application), le montage des routeurs, et remplace « aucune
     session interactive » ; `Cargo.toml` : `lymaille = [..., "dep:sha2", "dep:getrandom", "dep:subtle", "dep:futures", "dep:uuid"]` (versions déjà au graphe
@@ -103,7 +102,7 @@ Tasks:
   [x] Arbitré le 2026-11-06 : @ProviderLevel n'est pas renommé ; à reconfirmer seulement si un ticket amont le reprend.
   [x] Micro-tâche de relecture (arbitrage du 2026-11-06) : wording `project` → `shared` dans `../store/toolset.sdd:36` (Given du Scenario), `../definitions/provider.sdd:17`, `../migration.sdd:37`, `../definitions/user_context.sdd:60`. Spec seule.
     Validé 2026-11-06 (validator PASS : wording conforme au contrat observable — `ContextLevel::Shared`/`ProviderLevel::Shared` écrivent `shared`, alias `project` en lecture seule, aucun CHECK dans ./migration.rs ; grep résiduel limité aux lignes d'historique et à l'annotation d'alias ; `specdd lint` ×4 et `fmt` verts, zéro code touché).
-    [?] (validator) : le doc-comment de `../definitions/provider.rs:32` porte encore « Niveau du provider (`user` ou `project`) » — purement documentaire, à corriger au prochain passage sur ce fichier (la case disait « spec seule »).
+    reporté : correction de doc-comment dans ../definitions/provider.rs (« Niveau du provider (`user` ou `project`) »), à faire avec la prochaine tâche sur ce fichier.
   [x] Réalignement R7 (DSD `DEC-27, DEC-30`, 2026-11-03) : spec amendée (déclaration et ré-exports de `host`, `SessionEvent`, `export_typescript`, `resolve_role`, `SeaHostMcpAuth` ; `Cargo.toml` : `dep:chrono`,
     `dep:ts-rs` ; contrôle de graphe de `ts-rs`). Spec approuvée le 2026-11-04.
   [x] Export TypeScript des événements (DSD `OI-12`, soldé le 2026-11-03) : `ts-rs`, dépendance optionnelle derrière la feature `lymaille` ; amendement de `Cargo.toml` : voir la tâche « Amendement DEC-27/DEC-30 » ci-dessous.
@@ -120,14 +119,8 @@ Tasks:
     batterie ciblée une passe : `lymaille` lib 883 vertes ; `lymaille,matrix` test 1 057 + clippy `-D warnings` verts ;
     `workflow,lymaille` 1 042 + clippy verts ; `--all-features` 1 383 + clippy verts ; `fmt` et `specdd lint` verts ; rouge
     préalable constaté : 21 erreurs E0425/E0405 avant les `pub use`).
-    - `[?]` (implementer, recopié par le validator) : le `Must` (amendement lot 2) dit « le module **privé** `mcp_access` » mais le
-      code déclare `pub mod mcp_access` (HEAD, préexistant à la tâche) et des consommateurs internes le nomment par son chemin
-      (`store/toolset.rs`, `interactive/assemble.rs`, `workflow/subagent_step.rs`, dont `build_auth` hors liste de ré-exports).
-      Deux issues : amender le `Must` pour acter `pub mod mcp_access` (les types étant déjà ré-exportés à plat, le `pub` n'ajoute
-      que le chemin), ou rendre le module privé avec `pub(crate)` sur les items. **Choix provisoire : garder `pub`**, non tranché.
-    - `[?]` (validator) : le commentaire d'en-tête du bloc de ré-exports rattache `host` à « l'amendement lot 2 » **et** à
-      DEC-27/DEC-30 ; le `mod.sdd` n'introduit `host` que par DEC-27/30. Purement documentaire, à corriger au prochain passage sur
-      le fichier. Choix provisoire : non retouché pour ne pas rouvrir une validation.
+    - Arbitré par Sébastien le 2026-11-16 : `pub mod mcp_access` (types déjà ré-exportés à plat, le `pub` n'ajoute que le chemin) ; le `Must` de l'amendement lot 2 est amendé en conséquence.
+    - reporté : correction de doc-comment dans ./mod.rs (bloc de ré-exports : `host` rattaché à DEC-27/DEC-30 seulement), à faire avec la prochaine tâche sur ce fichier.
   [x] Amendement lot 2 : /Cargo.toml, /tooling.sdd, /AGENTS.md, /.github/workflows/workflows.sdd et ci.yml pour la combinaison `lymaille,matrix` et les dépendances (fichiers hors périmètre : amendement soumis au développeur principal avant d'y toucher).
     Livré 2026-11-06 (lot 3, accord explicite du développeur principal en séance) : `lymaille,matrix` ajoutée aux deux matrices de
     `ci.yml` (16 entrées chacune, parse et ordre vérifiés), amendements `tooling.sdd`, `AGENTS.md` (lignes de commande + comptage
@@ -182,10 +175,8 @@ Tasks:
     5. Batterie complète verte (`/AGENTS.md`), `cargo tree` inchangés.
     Validé 2026-11-14 (validator PASS) : delta de lock minimal (`lymaille` 0.2.1→0.3.0, `ts-rs`+`serde_json` déclarés), sites corrigés exactement dans la liste, 16 combinaisons tests et clippy vertes, fmt vert,
     contrôles `cargo tree` de `/tooling.sdd` conformes ; `lymaille-pg` omis de la batterie — feature pas encore déclarée (tâche #81 lot 2).
-    [?] (validator) : `store/catalog.rs:252` — second `unwrap_or_default()` de la branche update sans commentaire adjacent (la citation de la spec est posée sur le premier site du même `impl`). Compléter le
-    commentaire ou acter qu'une citation par bloc `impl` suffit.
-    [?] (validator) : `lymaille` 0.3.0 émet 12 warnings macro « ts-rs failed to parse this attribute » (`alias = "main"`/`"project"`) à la compilation de ses derives `TS` sous la feature `ts-rs` — les alias de
-    lecture amont ne seraient pas rendus dans les `.ts` exportés. Sans effet ici (aucun export avant #72) ; à prendre en compte dans la tâche #72 de cette spec ou dans ./interactive/event.sdd.
+    reporté : correction de doc-comment dans ../store/catalog.rs (second `unwrap_or_default()` de la branche update, :252), à faire avec la prochaine tâche sur ce fichier.
+    Piège amont (lymaille 0.3.0, relevé au cycle #72) : avertissements macro `ts-rs` « failed to parse this attribute » sur les alias de lecture `main`/`project` ; trois attributs `alias` dans les sources 0.3.0 (`agents/definition.rs:23`, `agents/provider.rs:23`, `toolsets/toolset_context.rs:24`), non rendus dans les `.ts` (les clés écrites font le contrat). Hors de nos fichiers, non masqués. Le validator en a relevé 12 à la compilation : ce comptage n'est pas recalculé ici.
 
 Done when:
   Les `Scenario` sont verts ; `cargo build --no-default-features --features lymaille` et `--all-features` compilent sans

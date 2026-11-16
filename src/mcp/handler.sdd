@@ -95,6 +95,18 @@ Must:
     validator, la lecture contraire rendant faux le Scenario « tools/list déclare cinq tools par
     entité » qui affirme les littéraux inchangés. Ordre déterministe (ci-dessus) ; @McpToolRegistry.format
     n'entre dans aucune déclaration.
+  Outils applicatifs (amendement 2026-11-16, issue #86, `dsd/miryad-core/mcp.md` `FR-8`) : `tools/list` ajoute, **après** les cinq
+    déclarations de chaque entité, une déclaration par @AppTool de @McpToolRegistry.tools, dans l'ordre croissant de leur nom, avec
+    `name`, `description` et `inputSchema` **exactement** ceux enregistrés (aucune réécriture, aucun `additionalProperties`
+    ajouté) ; la liste complète reste déterministe. `tools/call` consulte d'abord @tools par nom **exact** : trouvé → `AppTool::call(
+    &db, principal, arguments)` (./app_tool.sdd), sans passer par @parse_tool_name ; sinon le chemin des entités, inchangé. Le résultat est
+    rendu en @RenderShape::Record par le même mécanisme que `get` (arbitré ci-dessous) ; toute erreur est traduite par ./error.rs seul
+    (`-32001`, `-32602`, `-32603`, `-32000` applicatif : aucun code nouveau). Les traces sont celles des entités (`error!` sur `-32603`,
+    `warn!` sur `-32001`). La collision étant impossible par construction (./registry.sdd), l'ordre de consultation n'est pas un
+    contrat observable.
+    - Arbitré par Sébastien le 2026-11-16 (`mcp.md` `OI-2`) : rendu en forme `Record` par @OutputFormat (un seul mécanisme de rendu,
+      `FR-4` ; l'option « JSON brut quel que soit le format » est écartée). Limite connue et acceptée : le gabarit Markdown par défaut
+      suppose un objet, un tableau ou un scalaire y rendrait une liste vide ou un échec de rendu (`-32603`).
   Traiter `tools/call` en trois étapes ordonnées : désérialisation de @params en @ToolCallParams
     (`name` obligatoire, @ToolCallParams.arguments default `{}`, arbitré 2026-09-29) sous
     @McpError::InvalidParams (`-32602`, `MRD-MCP-005`) ; puis @parse_tool_name qui dépouille le
@@ -277,6 +289,11 @@ Handles:
     parse ; UTF-8 ou JSON invalide : `-32700` (enveloppe) — plus aucun `400`/`422` du parseur.
 
 Tasks:
+  [ ] Tâche A3 (2026-11-16, issue #86) : liste et dispatch des outils applicatifs — tests d'abord (Scenarios ci-dessous, au niveau
+    HTTP comme les Scenarios existants), puis ./handler.rs. Après ./registry.sdd (tâche A2). Preuves attendues : l'outil apparaît dans
+    `tools/list` à la suite des entités avec son `inputSchema` verbatim ; un appel refusé rend `-32001` et le gestionnaire (compteur)
+    n'est pas appelé ; des arguments non conformes rendent `-32602` ; une erreur `Application` rend `-32000` avec `data.code` ; un
+    nom inconnu rend toujours `-32601`.
   [x] Convertir les `Scenario` (réécrits et complétés le 2026-09-29, une trentaine) en tests nommés distincts dans le `mod tests`
     `#[cfg(test)]` de ./handler.rs — le fichier comptait 0 test inline avant la tâche ; gabarits à
     dupliquer de ./registry.rs (sqlite mémoire + @Migrator::up + entité @RestEntity fixture
@@ -317,14 +334,14 @@ Tasks:
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte).
     la fixture de test (@MiryadResource::before_create à l'ancienne signature, ~ligne 348) est portée au nouveau trait ; convertir le scénario ci-dessous en test nommé
     `hook_qui_lit_la_base_refuse_en_32000`. Dépend de /src/resource.sdd et /src/rest/core.sdd (même amendement).
-  [!] (cohérence #77 (1), appliquée 2026-11-14 par spec-dd, à reconfirmer) : les deux Scenarios de refus de politique (`-32001` sous 200 ; trace `warn`) Givenaient une entité `OwnerOnly` dont le `delete` d'autrui rend
+  [x] (cohérence #77 (1), appliquée 2026-11-14 par spec-dd, confirmé par Sébastien le 2026-11-16) : les deux Scenarios de refus de politique (`-32001` sous 200 ; trace `warn`) Givenaient une entité `OwnerOnly` dont le `delete` d'autrui rend
     `-32002` (non `-32001`) et aucune trace depuis l'arbitrage `./../rest/core.sdd` du 2026-11-13 (404 uniforme en lecture `OwnerOnly`, parité MCP par `From<RestError>`). Le Given est amendé vers la fixture lecture
     `Public` / écriture `OwnerOnly` — le seul chemin de refus qui rende encore `-32001` et la trace `warn` (arbitrage « lecture Public + écriture OwnerOnly → 403 conservé » du 2026-11-14, même issue). Les tests
     `appel_refuse_par_la_politique_rend_moins_32001_sous_200` et `appel_interdit_trace_un_warn_sans_arguments` portent la nouvelle fixture ; `parite_refus_rest_rendus_moins_32001_et_moins_32002` garde ses deux codes
     vivants : `-32001` par refus d'écriture sous lecture `Public`, `-32002` par ligne d'autrui en lecture `OwnerOnly`.
   [x] Issue #78 — `inputSchema` de l'outil `{name}_list` : propriétés `string`/typées pour chaque colonne filtrable déclarée, `sort` (énuméré sur les colonnes triables), `order` (`asc`|`desc`) ; `filter` seulement quand
     Validé 2026-11-16 (batterie COMPLÈTE verte : 17 combinaisons tests + 17 clippy `-D warnings`, fmt, 8 contrôles `cargo tree`, `specdd lint` ; synthèse `validator` GO conditionnel). `list_input_schema` construit le schéma depuis `McpEntity::declared_columns` (./registry.sdd) : `filter` toujours déclaré, `order` seulement avec `sort`, pas d'`additionalProperties`. Mutants M1 à M5 rouges, restaurés au bit près ; aucun test préexistant touché.
-    [?] (validator) : une colonne filtrable d'un type hors {entier, booléen, texte} est omise du schéma MCP (comme `rest/openapi.rs`) alors que la liste REST la refuse (`typed_filter_value`) et que `resource_router` refuse de monter la ressource : la ressource MCP s'enregistre donc sans que cette colonne soit annoncée, et un `_list` qui la nomme finit en `-32602`. Risque faible (cas déjà invalide côté REST) ; variante : `assert!`/`warn` au `register` aligné sur le refus du routeur, ou test qui fige l'omission. Choix livré : omission silencieuse.
+    Colonne filtrable d'un type hors {entier, booléen, texte} : elle n'est jamais annoncée dans le schéma (comme `rest/openapi.rs`) ; `McpToolRegistry::register::<E>` la refuse par `assert!` à l'enregistrement, aligné sur le refus du routeur REST (arbitré par Sébastien le 2026-11-16, issue #105, voir `./registry.sdd`). Le code de ce refus est une tâche ultérieure dans `./registry.sdd`.
     `filter` toujours déclaré (inchangé) ; **aucun** `additionalProperties: false` (tolérance conservée, conforme au `Must` ; la ligne d'origine de cette tâche disait l'inverse, corrigée le 2026-11-16 — le refus d'une colonne non déclarée reste au runtime, 400/`-32602`). Spec d'abord (`Must` et `Scenario` sur le schéma exact par entité de test), puis tests, puis ./handler.rs. Après la tâche jumelle de ./registry.sdd (`McpEntity::declared_columns`, option A arbitrée le 2026-11-16 : handler.rs ne reçoit que des `Box<dyn McpEntity>` et ne peut lire les colonnes que par cette méthode) ; type de `order` : `{"type":"string","enum":["asc","desc"]}`.
 
 Done when:
@@ -339,6 +356,26 @@ Done when:
     fonctionnelle MCP↔REST n'est laissée silencieuse.
   Les cinq lignes [arbitré 2026-09-29] sont arbitrées par Sébastien (2026-09-29) et leurs suites reflétées dans le
     contrat ; les tâches sont exécutées depuis 2026-10-02 (fusion B4a+B4c, validator PASS).
+
+Scenario: tools/list expose un outil applicatif après les entités (issue #86)
+  Given un registre avec l'entité `recipes` et l'outil `analyse` (description `Analyse une occurrence`, schéma `{"type":"object","required":["occurrence"],"properties":{"occurrence":{"type":"integer"}}}`)
+  When `tools/list` est appelé
+  Then la réponse contient les cinq tools de `recipes` puis `analyse`, avec `description` et `inputSchema` identiques à l'enregistrement
+
+Scenario: tools/call dispatche un outil applicatif et rend son résultat (issue #86)
+  Given l'outil `analyse` de politique `Public` dont le gestionnaire rend `{"verdict": "ok"}`
+  When `tools/call` est appelé avec `{"name":"analyse","arguments":{"occurrence":7}}`
+  Then la réponse porte un bloc `content` de type `text` rendant `verdict` et le gestionnaire a été appelé une fois
+
+Scenario: un principal refusé rend -32001 sans exécuter le gestionnaire (issue #86)
+  Given l'outil `analyse` de politique `AdminOnly` et un appelant sans appartenance au groupe admin
+  When `tools/call` est appelé avec des arguments conformes
+  Then la réponse est une erreur JSON-RPC `-32001` et le gestionnaire n'a pas été appelé
+
+Scenario: des arguments non conformes rendent -32602 (issue #86)
+  Given l'outil `analyse` de politique `Public`
+  When `tools/call` est appelé avec `{"name":"analyse","arguments":{"occurrence":"sept"}}`
+  Then la réponse est une erreur JSON-RPC `-32602` et le gestionnaire n'a pas été appelé
 
 Scenario: tools/call valide avec token API
   Given @mcp_router monté sur un sqlite mémoire migré avec @McpToolRegistry::register pour l'entité

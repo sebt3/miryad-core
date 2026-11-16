@@ -115,6 +115,12 @@ Must:
   **Amendement 2026-10-19 (feature `db`)** — la feature `mcp` implique `db` dans `[features]` de /Cargo.toml (`mcp = ["db", …]`) : tout build
     qui compile ce module compile aussi `sea-orm`, @resource, @rbac, @users et @migration. Aucun `cfg(feature = "db")` n'est posé dans ce
     module (l'implication suffit).
+  **Amendement 2026-11-16 (issue #86)** — ./mod.rs déclare un **sixième** sous-module privé, `mod app_tool;` (@AppTool, `pub(crate)`,
+    ./app_tool.sdd), sans ré-export : la surface publique reste exactement les quatre items (@McpToolRegistry gagne une méthode,
+    `register_tool`, qui n'ajoute aucun type public). En cas de contradiction avec les décomptes « cinq enfants / cinq fichiers » de ce
+    fichier, cet amendement prévaut. Diff `/Cargo.toml` imposé (fichier possédé par /miryad-core.sdd) :
+    `jsonschema = { version = "0.60", default-features = false, optional = true }` et `mcp = ["db", "dep:vynil-core", "dep:jsonschema"]`
+    (`dsd/miryad-core/mcp.md` `DEC-3`).
 
 Must not:
   Ajouter un gating interne au fichier — un `#[cfg(feature = "mcp")]` redondant ou un cfg sur
@@ -252,6 +258,9 @@ Handles:
     le fait de ./error.rs ; ./mod.rs ne fait passer le type que par son `pub use`
 
 Tasks:
+  [ ] Amendement 2026-11-16 (issue #86) : déclarer `mod app_tool;` (privé, sans ré-export) et étendre le test de surface (« rien d'autre
+    que les quatre items ») ; dernier du lot MCP, après ./app_tool.sdd, ./registry.sdd et ./handler.sdd. Le diff Cargo est la tâche A0 de
+    ./app_tool.sdd.
   [x] Convertir les six `Scenario` en au moins six preuves nommées distinctes, une par scenario,
     avec la correspondance : « quatre ré-exports et la chaîne de montage résolvent sous mcp » →
     `mcp_surface_four_reexports_resolve`, test inline du `#[cfg(test)] mod tests` à créer dans

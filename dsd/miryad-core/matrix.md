@@ -2,8 +2,8 @@
 
 ## Objective
 
-Fournir les primitives pour bâtir des bots Matrix : se connecter, envoyer, lire (historique et flux), rejoindre une
-salle, avec chiffrement de bout en bout. Contexte : piloter l'application fille `vanyline` depuis un client Matrix, et
+Fournir les primitives pour bâtir des bots Matrix : se connecter, envoyer (dans le salon, dans un fil, en réponse),
+éditer un message, lire (historique et flux), rejoindre une salle, avec chiffrement de bout en bout. Contexte : piloter l'application fille `vanyline` depuis un client Matrix, et
 servir de base à un nouveau `kydah-monitoring-agents` bâti sur miryad-core (arbitré le 2026-10-06).
 
 ## Scope and Non-goals
@@ -74,6 +74,44 @@ dont la remontée de code et de spec n'est pas prête) consommera `MatrixEventHa
     - **Realized by:** SpecDD /src/workflow/matrix_step.sdd
     - **Verified by:** `AC-6`
 
+- **FR-9 - MUST:** Un envoi accepte une **relation** exprimée par un type propre à la crate (identifiants en `String`, `FR-1`) :
+  soit un **fil** (identifiant de l'événement racine, `m.relates_to` de type `m.thread`, plus facultativement le dernier
+  événement connu du fil pour le repli `m.in_reply_to` avec `is_falling_back: true` des clients sans fils), soit une
+  **réponse** (identifiant de l'événement auquel répondre, `m.in_reply_to` sans fil). Les deux sont exclusives. Elles
+  fonctionnent dans les salons chiffrés comme dans les autres ; `txn_id` garde la sémantique de `FR-8`.
+    - **Source:** issue #87 (`sebt3/miryad-core`), « Proposition » 1, 2 et 4 ; user instruction, 2026-11-16
+    - **Rationale:** un hôte (monitoring-bot, passerelle de notifications) regroupe les messages d'un sujet dans un fil ;
+      il ne peut pas ajouter lui-même une relation puisque l'API n'expose aucun type `ruma` (`FR-1`).
+    - **Realized by:** SpecDD /src/matrix/client.sdd
+    - **Verified by:** `AC-7`
+
+- **FR-10 - MUST:** `edit(room_id, event_id, body, html, txn_id)` publie un remplacement (`m.replace` avec `m.new_content`)
+  de l'événement visé et rend l'identifiant de l'événement de **remplacement**. Même format de corps que `send`, même
+  sémantique de `txn_id`.
+    - **Source:** issue #87, « Proposition » 3
+    - **Realized by:** TBD
+    - **Verified by:** `AC-8`
+
+- **FR-11 - MUST:** Le kind de workflow `matrix_send` accepte dans son `config` les mêmes champs de relation que `FR-9`, rendus par
+  le gabarit comme les autres chaînes, et l'édition de `FR-10` est atteignable depuis un step (kind ou option, voir `OI-7`).
+  La dérivation déterministe du `txn_id` de `FR-8` ne change pas.
+    - **Source:** issue #87, « Proposition » 5
+    - **Realized by:** TBD (`SpecDD /src/workflow/matrix_step.sdd`)
+    - **Verified by:** `AC-7`, `AC-8`
+
+- **FR-12 - MUST:** Le message remis au `MatrixEventHandler` porte l'identifiant de la **racine du fil** et celui de
+  l'événement auquel il **répond**, quand ils existent. Le comportement de `FR-7` (éditions et messages du bot non remis)
+  ne change pas.
+    - **Source:** issue #87, « Proposition » 6
+    - **Realized by:** TBD (`SpecDD /src/matrix/sync.sdd`)
+    - **Verified by:** `AC-9`
+
+- **FR-13 - MUST:** Un identifiant d'événement mal formé est `MatrixError::InvalidId` ; un événement visé inconnu (racine,
+  réponse, édition) est une erreur typée **non retryable**.
+    - **Source:** issue #87, « Proposition » 7
+    - **Realized by:** TBD (`SpecDD /src/matrix/error.sdd`) ; faisabilité : voir `OI-7`
+    - **Verified by:** `AC-10`
+
 ## Constraints
 
 - **CON-1 - MUST:** `matrix-sdk` est épinglé en `0.18`, sans la feature `sqlite`.
@@ -115,6 +153,13 @@ dont la remontée de code et de spec n'est pas prête) consommera `MatrixEventHa
       HTML.
     - **Source:** `arch@c62a184`, « Client Matrix de bot » (spike du 2026-10-18)
 
+- **DEC-3 - `send` change de signature, sans compatibilité (2026-11-16)**
+    - **Context:** `send(room_id, body, html, kind, txn_id)` est publique ; aucun hôte n'utilise la feature `matrix`.
+    - **Decision:** la relation (fil ou réponse) devient un paramètre de `send` ; pas de second point d'entrée
+      `send_with`. La cassure est faite maintenant, tant qu'elle ne coûte rien. `MatrixMessage` devient `#[non_exhaustive]`
+      et porte `thread_root` et `in_reply_to` (`Option<String>`), sur la remise en direct comme dans `recent_messages`.
+    - **Source:** user instruction, 2026-11-16 (arbitrage de `OI-7`, points (a) et (e))
+
 ## Operations and Resilience
 
 Constats du spike du 2026-10-18 contre Palpo 0.4.0 et MAS 1.26.0 : enregistrement dynamique accepté, portée MSC2967
@@ -147,6 +192,12 @@ non vérifiée dans la migration DSD.
       `device_code_login_then_echo` exécuté le 2026-10-18. Ne tourne ni dans la batterie ni en CI.
 - **AC-5:** Un seul réplica synchronise à la fois pour un compte.
 - **AC-6:** Un retry Restate du kind `matrix_send` ne produit pas de doublon.
+- **AC-7:** Un message envoyé avec une racine porte une relation `m.thread` visant cette racine ; une réponse porte
+  `m.in_reply_to` ; un rejeu avec le même `txn_id` ne crée pas de doublon.
+- **AC-8:** Une édition remplace le corps affiché de l'événement visé.
+- **AC-9:** Un événement entrant d'un fil expose l'identifiant de sa racine, une réponse l'identifiant de sa cible.
+- **AC-10:** Un identifiant d'événement mal formé est refusé en `InvalidId` ; un événement visé inconnu rend une erreur
+  non retryable.
 
 ## Open Issues
 
@@ -158,5 +209,30 @@ non vérifiée dans la migration DSD.
   `event_id` traité, persisté en base). Voir `SpecDD /src/matrix/mod.sdd`.
 - **OI-5:** **Identité Matrix → utilisateur miryad (RBAC)** : à trancher avec le harnais de chatbot, hors périmètre de ce
   lot et à venir.
-- **OI-6:** Relever le plafond de `matrix-sdk` (CON-1) quand `sqlx` ou `matrix-sdk-sqlite` le permet.
+- **OI-6:** Relever le plafond de `matrix-sdk` (CON-1) quand `sqlx` ou `matrix-sdk-sqlite` le permet. **Mesuré le
+  2026-11-16 :** `matrix-sdk` 0.19.1 est publiée mais le conflit `links = "sqlite3"` persiste (`cargo update` refuse la
+  résolution). Le relèvement corrigerait quatre advisories ouvertes (issues #40 `imbl-sized-chunks`, #41
+  `matrix-sdk-crypto`, #68 et #89 `vodozemac`) ; il est aussi lié à RUSTSEC-2026-0459 (`libsqlite3-sys` ≥ 0.39, issue #66).
     - **Source (OI-1 à OI-5):** `roadmap@c62a184`, item 12 ; `arch@c62a184`, « Pas encore fait »
+- **OI-7:** **Fils, réponses et éditions (issue #87)** — arbitrages attendus avant les specs de `FR-9` à `FR-13`. Les
+  points (a) et (e) sont soldés (`DEC-3`) ; (b) est partiellement soldé (réponse sans fil, `edit` avec `kind`, voir
+  `SpecDD /src/matrix/client.sdd`), reste la mesure de Palpo ; (c) et (d) restent des recommandations non arbitrées.
+    - **(a) Soldé le 2026-11-16** par `DEC-3` : la relation est un paramètre de `send`
+      (`MessageRelation` : énumération `Thread { root, latest: Option<String> }` / `Reply { to }`, champs en `String`).
+    - **(b) Construction de la relation.** Deux voies sous `matrix-sdk` 0.18 (lu dans `room/reply.rs` et `room/edit.rs`) :
+      les assistants `Room::make_reply_event` / `make_edit_event` **récupèrent l'événement visé** sur le serveur
+      (`/rooms/{id}/event`), ce qui donne gratuitement l'erreur typée de `FR-13` (`ReplyError::Fetch`, `EditError::Fetch`)
+      et, pour l'édition, le refus d'éditer l'événement d'un autre (`EditError::NotAuthor`) ; mais l'assistant de fil prend
+      pour repli l'événement visé, pas un « dernier événement » fourni par l'appelant. La construction manuelle de la
+      relation honore `latest` et n'ajoute aucune requête, mais ne détecte pas un événement inconnu. **Recommandation :**
+      assistants du SDK pour la réponse et l'édition ; construction manuelle pour le fil, avec **TBD** : le homeserver cible
+      (Palpo) refuse-t-il à l'envoi une relation vers un événement inconnu ? À mesurer sur le banc live avant de promettre
+      l'erreur de `FR-13` pour le fil.
+    - **(c) Édition.** `EditError::NotAuthor` est une cause nouvelle : `MatrixError` est `#[non_exhaustive]`, une variante
+      (`MRD-MATRIX-009`, non retryable) s'ajoute sans casser les hôtes. Une édition ne reprend pas la relation de fil de
+      l'original (le remplacement porte uniquement `m.replace`).
+    - **(d) Kind d'édition.** Le `config` de `matrix_send` refuse les champs inconnus (`deny_unknown_fields`) et exige
+      `body` ; l'édition exige en plus `event_id`. **Recommandation :** un kind distinct `matrix_edit`, plutôt qu'un champ
+      optionnel qui change le sens des autres.
+    - **(e) Soldé le 2026-11-16** par `DEC-3` : cassure assumée, `#[non_exhaustive]`, `recent_messages` porte les mêmes
+      champs que la remise en direct.

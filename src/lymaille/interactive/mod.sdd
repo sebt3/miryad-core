@@ -13,11 +13,10 @@ References:
   ./event.sdd, ./hub.sdd, ./assemble.sdd, ./manager.sdd, ./activation.sdd — enfants ; ../mod.sdd — déclare `pub mod interactive;` ; /dsd/miryad-core/lymaille.md — `FR-11`, `DEC-24`
 
 Must:
-  Déclarer `pub mod event;` (amendement DEC-30), `pub mod hub;`, `pub mod manager;`, `pub mod activation;` et le module privé `assemble`. Ré-exporter à plat : `event::{SessionEvent, SessionEventKind, SessionOutcome}`, `hub::EventHub`,
+  Déclarer `pub mod event;` (amendement DEC-30), `pub mod hub;`, `pub mod manager;`, `pub mod activation;` et le module `assemble` en `pub mod` (DEC-27 ; arbitré par Sébastien le 2026-11-16 : non ré-exporté à plat, non exposé depuis `interactive`). Ré-exporter à plat : `event::{SessionEvent, SessionEventKind, SessionOutcome}`, `hub::EventHub`,
     `manager::{SessionManager, ManagerDeps, SessionHandle}`, `activation::{activate_toolset, discard_draft, ActivationReport}`.
   Documenter dans le bloc `//!` : le modèle (un tour actif par session et par processus, tour détaché du client, principal relu à chaque appel,
-    jeton `forward` en mémoire pour un seul tour), l'assemblage attendu de l'application (`SessionManager::new(ManagerDeps…)` partagé), les limites du lot 2
-    (pas de rejeu d'événements, pas de coordination entre processus).
+    jeton `forward` en mémoire pour un seul tour), l'assemblage attendu de l'application (`SessionManager::new(ManagerDeps…)` partagé), les limites restantes après les lots 1 à 3 de #81 (DEC-31).
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -27,11 +26,9 @@ Depends on:
   ./event.rs, ./hub.rs, ./assemble.rs, ./manager.rs, ./activation.rs
 
 Exposes:
-  `SessionEvent`, `SessionEventKind`, `SessionOutcome`, `EventHub`, `SessionManager`, `ManagerDeps`, `SessionHandle`, `activate_toolset`, `discard_draft`, `ActivationReport`, modules `hub`, `manager`, `activation`
+  `SessionEvent`, `SessionEventKind`, `SessionOutcome`, `EventHub`, `SessionManager`, `ManagerDeps`, `SessionHandle`, `activate_toolset`, `discard_draft`, `ActivationReport`, modules `hub`, `manager`, `activation`, `assemble` (`pub mod`, non ré-exporté à plat)
 
 Tasks:
-  [?] (cycle #81 lot 3, 2026-11-16) : la doc de ./mod.rs porte encore « application mono-réplique » — la limite est levée depuis les lots 1–3 de #81 (DSD `DEC-31) ; le fichier est hors de l'`Owns` de la spec qui a porté l'amendement (../mod.sdd n'owne que son mod.rs). Choix provisoire : texte laissé ; à resserrer par le développeur principal ou un cycle sur cette spec.
-
   [x] `mod.rs` en dernier du dossier ; test de chemins plats. — **lot 3 (2026-11-06) :
     `tests::chemins_plats_resolvent` référence chaque entrée de la liste fermée du `Must` par le
     chemin plat promis — types et fonctions, compilés puis `black_box`és sans instanciation — et le
@@ -39,14 +36,8 @@ Tasks:
     `--features lymaille`, et `--no-default-features` compile (module gated `db` à sa déclaration).
     `pub use activation::…` passe du glob au nommage explicite, liste ouverte et commentaire
     contredisant la règle retirés.**
-    - `[!]` le `Must` (« le module `assemble` et ses types internes ne sont pas exposés
-      publiquement ») est structurellement impossible par la seule visibilité : `AssembleInput`
-      expose `Option<Arc<dyn AssembleDeps>>` dans la surface publique de `app.rs`, et serrer
-      `pub(crate) mod assemble` déclenche `private_interfaces`/`private_types` (`assemble.rs:686`,
-      `app.rs` — vérifié par l'`implementer`, cycle 18). Trois issues : réécrire le `Must` (« non
-      exposé *depuis `interactive`* »), ou retirer `Arc<dyn AssembleDeps>` de `app.sdd`, ou sortir
-      `assemble` de cette portée. Le code garde `pub mod assemble` (état DEC-27, inchangé) ; la
-      tâche est close sur les chemins plats, en suspens sur `assemble`. **Arbitrage requis.**
+    Arbitré par Sébastien le 2026-11-16 : `pub mod assemble` (DEC-27 inchangé) ; le `Must` est amendé en conséquence (« non exposé *depuis `interactive`* ») ; la tâche est close sur les chemins plats.
+    reporté : correction de doc-comment dans interactive/mod.rs (« application mono-réplique »), à faire avec la prochaine tâche sur ce fichier
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.

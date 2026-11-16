@@ -3,8 +3,7 @@ Spec: mod — agrégation des entités de définition lymaille
 Purpose:
   Contrat d'agrégation de `src/lymaille/definitions/` : les quatre entités `MiryadResource` que **l'admin administre à la main** au lot 1
     (DSD `DEC-14`, amendé 2026-11-02) — agents, toolsets, profils de modèle, providers — par le CRUD REST et MCP générique de la crate.
-    Au lot 1 toutes sont du **catalogue** (écriture `AdminOnly`, `owner_column() = None`, identifiant `G_…` pour agents et toolsets, tables
-    `catalog_*`). Les lignes privées vivent dans des tables distinctes (`agents`, `toolsets`, `owner_id` non nul), écrites par les stores ; leurs
+    Au lot 1 toutes sont du **catalogue** (écriture `AdminOnly`, `owner_column() = None`, identifiant `G_…` pour agents et toolsets, tables `miryad_lymaille_catalog_agents`, `miryad_lymaille_catalog_toolsets`, `miryad_lymaille_profiles`, `miryad_lymaille_providers`). Les lignes privées vivent dans des tables distinctes (`agents`, `toolsets`, `owner_id` non nul), écrites par les stores ; leurs
     entités `OwnerOnly` — seconde ressource de la paire, aux droits distincts — arrivent au lot 2 (DSD `DEC-19`, ../store/mod.sdd). Les tables internes (sessions,
     mémoires) n'ont pas d'entité ici ; les types de contexte et les contextes en reçoivent au lot 2 (`DEC-20`, amendement ci-dessous). Fichier neuf, conception.
 
@@ -42,30 +41,16 @@ Exposes:
 Tasks:
   [x] Amendement lot 2 : déclaration des six enfants, test de chemins étendu d'abord, puis ./mod.rs en dernier.
     Validé 2026-11-06 (validator PASS : doc alignée sur les dix entités et leurs politiques réelles vérifiées dans les enfants ; test étendu verrouillant les dix chemins, les dix noms exacts et leur distinction ; rien hors Owns ; lymaille vert en tests et clippy `-D warnings`, `fmt`).
-    [!] soldé en séance par spec-dd : le Purpose et le `Must not` portaient encore « types de contexte, contextes n'ont pas d'entité ici », en contradiction avec l'amendement lot 2 approuvé de la même spec et `DEC-20` — limités à « sessions, mémoires » avec renvoi à `DEC-20`. Correction de cohérence, pas un nouveau contrat ; à reconfirmer.
-    [?] (validator) : la parenthèse « tables `catalog_*` » du bloc //! sur-génère — `profiles`, `providers` et `mcp_servers` ne portent pas ce préfixe. Resserrer la formulation ou l'assumer comme label de famille ?
-    [?] (validator) : le rouge du « test d'abord » était structurellement impossible ici (les six modules préexistaient au code du lot) — la phase est satisfaite par l'extension de couverture seule, acté ?
+    Soldé en séance par spec-dd : le Purpose et le `Must not` portaient encore « types de contexte, contextes n'ont pas d'entité ici », en contradiction avec l'amendement lot 2 approuvé de la même spec et `DEC-20` — limités à « sessions, mémoires » avec renvoi à `DEC-20`. Correction de cohérence, pas un nouveau contrat ; confirmé par Sébastien le 2026-11-16.
+    Arbitré par Sébastien le 2026-11-16 : le rouge du « test d'abord » était structurellement impossible ici (les six modules préexistaient au code du lot) ; la phase est satisfaite par l'extension de couverture seule.
   [x] `mod.rs` en dernier du dossier (après les quatre enfants) ; test de chemins. Validé 2026-11-02 (validator PASS).
-  [!] (fin de lot 3, 2026-11-06) : `cargo doc --all-features --no-deps` rend **10 warnings `rustdoc::private_intra_doc_links`**
-    (`before_create` → `Entity::valider_et_deriver` dans `agent/toolset/private_agent/private_toolset/profile/provider/context_type/catalog_context/user_context.rs`, `Entity::valider` dans
-    `mcp_server.rs`) — introduits par le lot 1 (`3c005f8`), invisibles tant que la doc `--all-features` ne couvrait pas `lymaille`, et qui
-    font échouer le critère « doc sans warnings » de la batterie. Le code et les specs ne sont pas touchés en attente d'arbitrage : lien public, lien
-    conditionnel `#[cfg(doc)]`, ou dette tracée dans `/tooling.sdd`. **Arbitrage de Sébastien requis.**
-    Comptage 2026-11-12 : **12 warnings** — les 10 connus plus deux dans `./host_module.rs` (lien
-    `mount_host_modules` non résolu, lien `Guarded` vers un item `pub(crate)`), introduits par le lot
-    scripts-hote (`53cdb81`). Même arbitrage attendu pour les douze.
-  [?] (implementer, lot 3) : les deux liens [`check_toolset`] de la doc de `./toolset.rs` et `./private_toolset.rs` sont passés en texte
-    inline car la cible est `pub(crate)` — un lien vers son chemin aurait créé un warning `private_intra_doc_links` de plus. Si un lien
-    est souhaité, il faut rendre `check_toolset` pub (changement de surface). Choix provisoire : texte inline.
   [x] Issues #79 et #72 — coordination des dix `Model` (aucun code propre à ce fichier hors doc `//!` : mentionner la dérivation d'OpenAPI et de TypeScript). Ordre recommandé : #79 d'abord (aucun
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, feature non déclarée, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Doc `//!` portant les deux dérives ; les deux volets livrés (10 enfants `[x]` au cycle #79 pour `ToSchema`, au cycle #72 pour `TS`).
     blocage amont, objet libre pour les colonnes JSON), #72 ensuite (dépend d'une version amont de `lymaille`). Les dix specs enfants portent chacune leur tâche.
     Arbitré le 2026-11-13 : `DateTimeUtc` : `#[schema(value_type = String, format = DateTime)]` et `#[ts(type = "string")]` par colonne (recommandé : conserve la règle de ./../mod.sdd « aucune feature d'implémentation de type tiers
     de `ts-rs` », `at` y est déjà un `String`) plutôt que d'activer la feature `chrono` d'`utoipa` et `chrono-impl` de `ts-rs`.
-    [?] (implementer, #79 livré 2026-11-15) : les dix `Model` s'appellent `Model` et aucun `#[schema(as = …)]` n'est porté par les specs —
-      chaque fragment `resource_openapi::<Entity>()` est correct isolément, mais la **fusion** dans une application consommatatrice fait collision sur le schéma `Model`/`PagedModel`
-      (toutes les routes référenceraient le même schéma). Le même écart touche les entités de l'application (mêmes structs). Choix provisoire : implémenté strictement sans `as`.
-      À arbitrer : alias `#[schema(as = …)]` par entité (amendement des dix specs) ou renommage porté par le moteur (`/src/rest/openapi.sdd`). Partie #72 de cette case : à boucler au cycle #72.
+    Schéma OpenAPI arbitré par Sébastien le 2026-11-16 : le moteur (`/src/rest/openapi.sdd`) nomme le schéma d'une ressource et sa page à partir de `resource_name` ; aucun `#[schema(as = …)]` par entité ; deux ressources d'un même document ont deux schémas distincts. La collision `Model`/`PagedModel` est soldée par ce renvoi. Partie TS (#72) : nommage `<Entité>Model` arbitré le 2026-11-16, voir les dix specs enfants.
+  [ ] Arbitré par Sébastien le 2026-11-16 : remplacer les liens vers items privés par du texte inline dans les douze sites (dix `definitions/*.rs`, deux `./host_module.rs`), y compris les liens [`check_toolset`] de ./toolset.rs et ./private_toolset.rs (cible `pub(crate)`) ; les items restent privés. Vérifier `cargo doc --all-features --no-deps` sans warning.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.

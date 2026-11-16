@@ -455,14 +455,50 @@ leurs clients (TBD).
   `/src/workflow/client.sdd` livre `invocation_statuses`, `list_invocations`, `cancel_invocation` et `invocation_journal`
   (mesurés contre `restate-server` 1.8.1, `tests/workflow_restate.rs`) ; aucun état dupliqué en base. Source : `arch@c62a184`,
   « Schéma de déploiement » ; user instruction, 2026-11-16.
-- **OI-5:** **Conditions d'exécution** : le DAG est statique (`id`, `depends_on`, `kind`, `config`), sans `when`, boucle ni
-  branche. **TBD :** sémantique d'un step ignoré pour ses dépendants. Un échec de step est aujourd'hui le seul moyen
-  de décider (par exemple `on_fail: "continue"` de `systemone`, qui « laisse l'aval décider »). **TBD :** le kind
-  `gate` de `vanyline` couvre-t-il ce besoin chez lui ?
-- **OI-6:** **« Faits » établis par des steps** : non retenus pour l'instant. Sans condition, aucun consommateur ; modifiables, leur
+- **OI-5:** **Conditions d'exécution** (issue #84, priorité basse, aucun consommateur ne bloque) : le DAG est statique
+  (`id`, `depends_on`, `kind`, `config`), sans `when`, boucle ni branche. Un échec de step est aujourd'hui le seul moyen de
+  décider (`on_fail: "continue"` de `systemone`, qui « laisse l'aval décider »). **TBD :** le kind `gate` de `vanyline`
+  couvre-t-il ce besoin chez lui ? Proposition de l'issue : un champ optionnel `when` sur un step, une sémantique de step
+  ignoré déclarée par le dépendant, un rejet par `validate_dag` d'une condition sur un step non ancêtre. Constats à
+  arbitrer avant toute spec (état du code au 2026-11-16) :
+    - **(a) Portée de lecture.** `build_inputs` ne transmet à un step que la sortie de ses dépendances **directes**
+      (`depends_on`). Le critère « step non ancêtre » de l'issue suppose une visibilité sur tous les ancêtres, que le
+      contrat actuel n'offre pas. Options : restreindre `when` aux dépendances directes (la validation devient
+      « références ⊆ `depends_on` », sans changer `StepInvocation`) ou élargir `inputs` à tous les ancêtres (change le
+      contrat de `build_inputs` et le volume journalisé par Restate). La visibilité transitive est précisément ce que
+      `OI-6` apporte : **Recommandation :** direct seulement, la transitivité passe par `OI-6`.
+    - **(b) Langage de la condition.** (A) gabarit Handlebars rendu au `StepDispatcher`, qui rend déjà les `config` avec
+      les helpers restreints (`DEC-8`) : aucun nouveau moteur, mais le rejet d'une référence à un step hors `depends_on`
+      exige d'analyser l'arbre du gabarit (faisabilité non vérifiée). (B) expression Rhai évaluée dans l'interpréteur : couple
+      `DagInterpreter` à Rhai et à son fil de 256 Mio (`DEC-10`). (C) prédicat structuré JSON (step, chemin dans sa sortie,
+      opérateur, valeur) : validation statique triviale, aucun moteur, déterminisme évident, mais expressivité bornée.
+      **Recommandation :** (C), extensible vers (A) si le besoin d'expressions se confirme.
+    - **(c) Sémantique d'un step ignoré.** Un step ignoré compte comme terminé pour l'ordonnancement (`ready_steps`) et sa
+      sortie est une valeur sentinelle. **TBD :** ses dépendants s'exécutent-ils ou sont-ils ignorés ? **Recommandation :**
+      par défaut ignorés (propagation, comme les `skipped` des moteurs de CI), avec un champ explicite sur le dépendant pour
+      s'exécuter malgré tout. **TBD :** présence du step ignoré dans la table de sortie du run (clé absente ou valeur
+      sentinelle).
+    - **(d) Rejeu (`NFR-1`).** La condition est une fonction pure de `vars` et des sorties déjà journalisées : l'évaluer dans
+      l'interpréteur ne demande aucun `ctx.run` et se recalcule à l'identique au rejeu. Un step ignoré n'émet aucun appel au
+      dispatcher.
+- **OI-6:** **Exports nommés entre steps** (issue #85, priorité basse, dépend de `OI-5` pour la consommation en `when`). Les
+  « faits » établis par des steps (clé `toto` lue par les steps suivants) ne sont pas retenus tels quels : modifiables, leur
   valeur dépendrait de l'ordonnancement des steps d'une même couche ; en écriture unique, ils ne sont qu'un alias de
-  sortie. Définition candidate si le besoin se confirme après `OI-5` : un **export nommé** déclaré par un step, à
-  producteur unique, dont `validate_dag` vérifie que tout consommateur dépend du producteur.
+  sortie. Définition retenue comme candidate : un **export nommé** déclaré par un step, à producteur unique, dont
+  `validate_dag` vérifie que tout consommateur dépend, directement ou non, du producteur ; pas de contexte modifiable
+  (`OI-8`). Constats à arbitrer avant toute spec :
+    - **(a) Apport réel.** Une sortie de step est déjà lisible par ses dépendants directs. L'export apporte la lecture
+      **transitive** et un nom stable indépendant de l'`id` du step ; c'est donc lui, et non l'élargissement de `inputs`,
+      qui doit porter la visibilité au-delà des dépendances directes (`OI-5`, point (a)).
+    - **(b) Détection des consommateurs.** « Référence dans un `config` ou dans un `when` » : un `config` est opaque pour
+      `validate_dag` (la forme de `kind` et `config` est hors de son périmètre) et les références y sont des gabarits. Le
+      contrôle statique ne peut porter que sur les consommateurs déclarés de façon structurée (par exemple un champ
+      `uses: [export…]` sur le step) ; une lecture dans un gabarit de `config` ne serait vérifiée qu'à l'exécution.
+      **TBD :** acceptation de cette limite, ou déclaration obligatoire des lectures.
+    - **(c) Valeur et déterminisme.** Un export désigne un chemin dans la sortie de son producteur ; son résultat ne dépend
+      pas de l'ordonnancement (producteur unique, consommateur descendant), et l'unicité du nom est vérifiée par
+      `validate_dag` au même titre que celle des `id`. **TBD :** un export dont le producteur est ignoré (`OI-5`, point
+      (c)) vaut la valeur sentinelle.
 - **OI-7:** **Déclaration des `vars`** (noms attendus, défauts, obligatoires) : absente en v1. **TBD :** nécessaire si une
   interface expose les paramètres d'une définition à l'utilisateur.
 - **OI-8:** **Contexte modifiable** : relève d'une feature optionnelle `lymaille`, distincte de `workflow` (pad Rhai

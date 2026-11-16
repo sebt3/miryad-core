@@ -306,18 +306,13 @@ Tasks:
     Recommandation : variante dédiée `007`.
     Validé 2026-11-14 (validator PASS) : batterie 16 combinaisons tests + clippy verte, fmt et specdd lint verts ; test `http_render_007_unique_violation_is_409` ; rendu `Conflict | UniqueViolation` fusionné sans `#[allow]`
     (précédent `rpc_code` de ./../mcp/error.sdd), corps 006 et 007 verrouillés par des tests distincts.
-    [?] (implementer et validator) : parité MCP transitoire — `./../mcp/error.rs` porte le strict branchement de compilation `UniqueViolation` → `McpError::Internal` ; un `create` MCP violant une unicité rend donc
-    `-32603` là où REST rend `409`. Choix provisoire : état intermédiaire assumé jusqu'à la tâche « Issue #77 » de ./../mcp/error.sdd (même lot), qui solde l'écart.
-    [?] (validator) : cette spec n'a pas de ligne `Tasks [ ]` pour #78 alors que son contenu contractuel (`InvalidQuery`/`MRD-REST-008`, 18ᵉ `Scenario`, `Done when` à 18) est engagé depuis l'amendement du 2026-11-13 —
-    le recompte des Scenarios citant « sept variantes » (Must du match, Scenario source) reste à amender avec la tâche #78. Choix provisoire : traité par le cycle #78, sans ligne de tâche ajoutée ici (hors cycle).
-    [?] (implementer) : l'`Example: matrice` (l.437-448) ne nomme ni `UniqueViolation` ni `InvalidInput` — matrice illustrative déjà obsolète avant l'amendement, non normative. La compléter à la prochaine relecture.
   [x] Livraison #78 de ce fichier — `RestError::InvalidQuery` (neuvième variante, tuple d'un @String, `MRD-REST-008` → `400`, corps `MRD-REST-008: invalid query: <message>` nommant la colonne ou le paramètre refusé tel
     que reçu, jamais une valeur de ligne), posée sans case dédiée faute de ligne `Tasks` à l'amendement 2026-11-13. Le `From` MCP (`./../mcp/error.rs`) porte le contrat final `InvalidQuery → InvalidParams` (`-32602`,
     message conservé) : bras posé, son test inline vient avec le cycle surfaces #78 de `./../mcp/error.sdd`.
     Validé 2026-11-14 (batterie complète verte par le primary : 16 combinaisons tests et clippy, fmt ; les sections normatives faisaient foi) : test `http_render_008_invalid_query_is_400` (18ᵉ `Scenario` — `Done when`
     à 18 atteint) ; compteur `error_source_is_some_only_for_database` porté à 9 valeurs (le trou `UniqueViolation` de #77 est soldé au passage) ; compteurs de prose et matrice `Example` complétés par spec-dd
     (récapitulatif des arbitrages 2026-11-13, rien de re-décidé).
-    [?] (implementer) : un run `--features mcp` a montré un échec isolé non reproductible (8 runs verts avant/après, nom non capturé) ; la batterie complète depuis est 16/16 verte, l'incident reste sans mécanisme plausible.
+  [x] Incident isolé `--features mcp` non reproduit (8 runs verts avant/après, nom du test non capturé, 2026-11-14) : sans mécanisme plausible, aucune action ; la batterie complète est verte depuis. À rouvrir si l'incident se reproduit (consigner alors le nom du test).
 
 Done when:
   Les 18 `Scenario` (le dix-septième et le dix-huitième ajoutés le 2026-11-13, issues #77 et #78) ont chacun au moins un test nommé distinct et vert dans ./error.rs, sur features
@@ -456,6 +451,7 @@ Example: matrice variante → code → statut → content-type → corps exact
     (issue #77)
   @RestError::InvalidQuery du message `column not filterable: kind` → `MRD-REST-008` → `400` →
     `text/plain; charset=utf-8` → `MRD-REST-008: invalid query: column not filterable: kind` (issue #78)
+  @RestError::InvalidInput du message `bad input` → `MRD-REST-005` → `422` → `text/plain; charset=utf-8` → `MRD-REST-005: invalid input: bad input`
   @RestError::NotFound → `MRD-REST-001` → `404` → `text/plain; charset=utf-8` → `MRD-REST-001: resource not found`
   @RestError::Forbidden → `MRD-REST-002` → `403` → `text/plain; charset=utf-8` → `MRD-REST-002: access denied`
   @RestError::Database encapsulant @sea_orm::DbErr::Custom `boom` → `MRD-REST-003` → `500` →

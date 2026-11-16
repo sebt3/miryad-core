@@ -65,7 +65,7 @@ Must not:
   Implémenter une méthode du trait par du code propre ici quand elle appartient à un des trois fichiers
     (une seule implémentation par méthode) ; laisser `save_changes` écrire hors transaction ;
     désactiver ou filtrer un test de la suite officielle (un test rouge se corrige dans le store, ou se
-    justifie par un `[?]` tracé, jamais par un `#[ignore]` silencieux).
+    justifie par une dérogation tracée dans `Tasks` (arbitrée par Sébastien le 2026-11-16), jamais par un `#[ignore]` silencieux).
 
 Depends on:
   ./crypto_account.rs, ./crypto_sessions.rs, ./crypto_devices.rs, ./kv.rs, ./error.rs, `async-trait`
@@ -86,12 +86,13 @@ Tasks:
     Note : squelette (struct + `open`) posé en avance par ./crypto_account.sdd, 2026-10-15.
     Validé 2026-10-17 (Claude) : suite officielle branchée (`cryptostore_integration_tests!` et `_time!`, 36 tests) :
     35 verts, 1 `#[ignore]` posé par l'amont. Deux dérogations tracées ci-dessous.
-    [?] `test_save_inbound_group_session_from_old_backup` reste `#[ignore]` (macro amont, intégration_tests.rs,
+    `test_save_inbound_group_session_from_old_backup` reste `#[ignore]` (macro amont, intégration_tests.rs,
       « only works on the MemoryStore, the other stores are waiting for more work »). Le store est volontairement
       **aveugle à la version de sauvegarde** (un booléen `backed_up`, comme ./crypto_sessions.sdd le fixe) : une
       session sauvegardée sous une version est exclue pour une autre. Conséquence assumée : après rotation de la
-      version de sauvegarde, la reprise exigerait un `reset_backup_state`. À rouvrir si le harnais de chatbot a besoin de
-      l'état par version (colonne `backup_version` : migration en place, spec ./crypto_sessions.sdd).
+      version de sauvegarde, la reprise exigerait un `reset_backup_state`. Arbitré par Sébastien le 2026-11-16 : ce
+      choix est accepté. À rouvrir si le harnais de chatbot a besoin de l'état par version (colonne `backup_version` :
+      migration en place, spec ./crypto_sessions.sdd).
     Dérogation de harnais : la macro appelle `get_static_account()` (synchrone) sur le type de `get_store` ; le module
       `conformance` fournit donc un type de **test** `ProbeStore` qui délègue à `SeaOrmCryptoStore` et met en cache le
       `StaticAccountData`. Aucune conséquence en production. Correctif découvert : `Changes::is_empty` (0.18) oublie

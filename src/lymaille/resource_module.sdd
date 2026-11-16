@@ -39,7 +39,7 @@ Must:
     `list(resource, filter) -> Map` et `list(resource, filter, page, per_page) -> Map` : `filter` chaîne vide = pas de filtre, sinon égalité
       exacte sur `filter_column` (celle de REST/MCP, `?filter=valeur`) ; `page` et `per_page` passent par `Pagination::from_raw` puis
       `per_page` est écrêté à `LLM_MAX_PER_PAGE = 50` (défaut `LLM_DEFAULT_PER_PAGE = 20`). Rend `#{ items, page, per_page, total_items,
-      total_pages }` ; `items` = les lignes de `PagedResult` converties en valeurs Rhai.
+      total_pages }` ; `items` = les lignes de `PagedResult` converties en valeurs Rhai. Pas de critères ni de tri : `ListQuery::default()` (arbitré 2026-11-16).
     `get(resource, id) -> Map` : `id` entier ; rend la ligne.
   Erreurs : toute erreur est une erreur Rhai à message **fixe et court**, jamais le texte brut d'une `DbErr` ni d'une `RestError` :
     ressource non enregistrée → `unknown resource: <nom>` ; `NotFound` → `not found` ; `Forbidden` → `forbidden` ; compte absent →
@@ -55,14 +55,14 @@ Must:
     Fonctions ajoutées : `create(resource, body) -> Map`, `update(resource, id, body) -> Map`, `delete(resource, id) -> Map` (`#{ deleted: true }`).
       `describe()` ajoute `writable: bool` (le principal peut écrire d'après `rbac`, sans lire de ligne).
     Idempotence en batch (ordre imposé) : `op_key` (contenu canonique) → `replay` : un résultat journalisé est **rendu tel quel** sans écrire ; sinon écrire, puis
-      `record` du résultat. `create` qui échoue sur une violation d'unicité, journal absent (fenêtre entre l'écriture et `record` après un crash) :
-      relire la ligne par `label_column` ; si tous les champs du corps sont égaux à la ligne → succès et journalisation ; sinon erreur `conflict`.
+      `record` du résultat. Un échec de `record` après écriture réussie rend `internal error` ; le rejeu le rattrape par la relecture de fenêtre de crash (arbitré 2026-11-16). `create` qui échoue sur une violation d'unicité, journal absent (fenêtre entre l'écriture et `record` après un crash) :
+      relire la ligne par `label_column` ; si tous les champs du corps sont égaux à la ligne → succès et journalisation ; sinon erreur `conflict`. Sans `label_column` déclarée, pas de relecture : un corps égal rend `conflict` (arbitré 2026-11-16).
       `update` et `delete` sont naturellement idempotents (`delete` d'une ligne déjà absente après journal manquant → `not found` traité comme succès
       **seulement** si le journal l'atteste ; sinon `not found`).
     Une écriture batch sans `subject` de déclencheur échoue `no account for this session` (jamais d'identité par défaut, `FR-10`).
     Erreurs d'écriture (messages fixes, `RestError` jamais cité) : `invalid body`, `forbidden`, `not found`, `conflict`, `hook refused: <message du HookError>` (le
-      message d'un `HookError` est un texte applicatif sans code et sans contenu de ligne ; il est rendu tel quel), `internal error`.
-    Plafond : `max_writes_per_run` = 100 écritures par session ou par step (au-delà : `write limit reached`), pour borner un agent qui s'emballe.
+      message d'un `HookError` est un texte applicatif sans code et sans contenu de ligne ; il est rendu tel quel), `internal error`. Verbe d'écriture sur une ressource enregistrée par `register_read_only` : `unknown resource: <nom>` (arbitré 2026-11-16).
+    Plafond : `max_writes_per_run` = 100 **tentatives** d'écriture par session ou par step, comptées en tête d'appel avant `replay` et avant le contrôle de politique (un rejeu consomme un crédit ; arbitré 2026-11-16) (au-delà : `write limit reached`), pour borner un agent qui s'emballe.
   La taille d'une réponse est bornée par la pagination (`LLM_MAX_PER_PAGE`) et par le plafond de rendu d'une sortie du bac à sable de
     `lymaille` (`SandboxLimits`), pas par un second plafond ici (DSD `OI-6` : arbitrage de fond, reste ouvert pour le lot 2).
   Compiler sous `#[cfg(feature = "lymaille")]`.
@@ -76,26 +76,21 @@ Depends on:
   ./identity.rs, ./error.rs, ../rest/core.rs, ../rbac.rs, ../ir.rs, ../query.rs, ../auth/principal.rs, @vynil_core, @rhai, @sea_orm
 
 Exposes:
-  `ResourceReaders::{new, register}`, `resources_module`, `LLM_MAX_PER_PAGE`, `LLM_DEFAULT_PER_PAGE`
+  `ResourceRegistry::{new, register, register_read_only}` (alias `ResourceReaders`, `#[deprecated]`), `WriteScope`, `resources_module`, `LLM_MAX_PER_PAGE`, `LLM_DEFAULT_PER_PAGE`
 
 Tasks:
-  [?] (validator, cycle #78 core) : `ReaderImpl::list` passe @ListQuery::default() en transitoire avec un commentaire renvoyant à la tâche #78 de ./../rest/mod.sdd, alors que le parsing des arguments Rhai de `resources::list`
-    relève de ce fichier — aucune tâche #78 n'existe dans cette spec. La parité REST/MCP impose-t-elle un accès aux critères/tri depuis le module resources (les issues #77/#78 ne le demandent pas) ? Choix provisoire :
-    default conservatif, rien d'attendu ici.
-  [!] (cohérence #77 (2), appliquée 2026-11-14 par spec-dd, à reconfirmer) : depuis que ./../rest/core.rs rend la violation d'unicité en `RestError::UniqueViolation` (et non plus `Database` porteur du `DbErr`), le
+  [x] Cohérence #77 (2), appliquée 2026-11-14 par spec-dd, confirmée par Sébastien le 2026-11-16 : depuis que ./../rest/core.rs rend la violation d'unicité en `RestError::UniqueViolation` (et non plus `Database` porteur du `DbErr`), le
     `From<RestError> for Failure` tombait dans le bras `other` → `Failure::Internal` : la fenêtre de crash du `create` n'était plus reconnue comme unicité (test `a_crash_window_is_caught_by_rereading` rouge). Un bras
     `RestError::UniqueViolation => Self::UniqueViolation` est ajouté — même marqueur `Failure` qu'avant, sémantique du `Must` sur la fenêtre de crash inchangée, aucun contrat nouveau.
-    [?] (validator) : dans `WriterImpl::create` (~l.327), le bras `Err(RestError::Database(err))` garde sa garde `sql_err()` unicité devenue inatteignable (core::create ne rend plus la violation sous `Database`). Le retirer
-    maintenant (nettoyage dans le périmètre du `[!]`) ou le laisser jusqu'au prochain passage sur le fichier ? Choix provisoire : laissé, sans effet sur le comportement.
   [x] Amendement lot 2 (`DEC-21`) : registre lecture/écriture, `WriteScope`, scenarios ci-dessus d'abord, puis ./resource_module.rs ; dépend de ./store/write_journal.rs.
     Validé 2026-11-06 (validator PASS : les sept Scenario du lot 2 ont chacun leur test au Then réel, scripts Rhai réels ; parité structurelle prouvée — le delegate est @rest::core lui-même ; journal en ordre replay→écrire→record, interactif jamais journalisé ; alias @ResourceReaders conservé #[deprecated] ; le test lot 1 no_write_exists retiré car son contrat a disparu de la spec ; lymaille vert en tests et clippy `-D warnings` sur build frais, `fmt`, `specdd lint`).
     [x] Ripple mécanique hors `Owns` ratifié le 2026-11-06 (développeur principal, diff relu : renommage `ResourceReaders` → `ResourceRegistry` et argument `scope = None` en interactif, sans changement de comportement) : `Can modify` de cette tâche étendu à ./interactive/assemble.rs, ./interactive/manager.rs, ./../chat/bridge.rs, ./http/routes.rs et ./http/sse.rs (sites de production et `cfg(test)`).
-    [?] (implementer et validator) : verbes d'écriture sur une ressource enregistrée @register_read_only → `unknown resource: <nom>` (choix provisoire conservateur, `writable = false` dans `describe()`) — la taxonomie de la spec ne nomme pas ce cas ; pas de verrou de test tant que non arbitré.
-    [?] (validator) : plafond de 100 compté en tête d'appel, avant `replay` et avant le contrôle de politique — un rejeu consomme un crédit ; « 100 écritures » ≠ « 100 tentatives ». Conforme au Scenario, à confirmer comme sémantique voulue.
-    [?] (validator) : la relecture de fenêtre de crash compare les champs non-PK via `label_column` — sans `label_column` déclarée, un corps égal retombe en `conflict` au lieu de reconnaître le doublon. Voulu ?
-    [?] (validator) : échec de `record` après écriture réussie → `internal error` (le rejeu rattrape par le replay) — acté ou faut-il un traitement distinct ?
-    [?] (validator) : les Must « corps inconnu → `invalid body` » et « écriture batch sans subject → `no account for this session` » n'ont ni Scenario ni verrou exécutable — les ajouter ?
-    [?] (validator) : à resserrer à la prochaine relecture — l'`Exposes` de cette spec cite encore @ResourceReaders::{new, register} au lieu de @ResourceRegistry/@register_read_only/@WriteScope, et les mentions de ./interactive/assemble.sdd:39 et ./interactive/manager.sdd:21 restent sur l'ancien nom.
+    Arbitré par Sébastien le 2026-11-16 : verbe d'écriture sur une ressource enregistrée par `register_read_only` → `unknown resource: <nom>` (Must amendé).
+    Arbitré par Sébastien le 2026-11-16 : plafond de 100 tentatives compté en tête d'appel, avant `replay` et avant le contrôle de politique ; un rejeu consomme un crédit (Must amendé).
+    Arbitré par Sébastien le 2026-11-16 : sans `label_column` déclarée, un corps égal rend `conflict` (Must amendé).
+    Arbitré par Sébastien le 2026-11-16 : un échec de `record` après écriture réussie rend `internal error`, le rejeu le rattrape (Must amendé).
+    Arbitré par Sébastien le 2026-11-16 : les Must « corps inconnu → `invalid body` » et « écriture batch sans subject → `no account for this session` » reçoivent chacun un Scenario et une case `[ ]` de tests (fin de Tasks, Scenario ci-dessous).
+    reporté : mentions de l'ancien nom `ResourceReaders` dans ./interactive/assemble.sdd:39 et ./interactive/manager.sdd:21 (hors de ce fichier), à corriger avec la prochaine tâche sur ces fichiers.
   [x] Amender ../auth/principal.sdd et principal.rs : variante `PrincipalSource::Agent` (unité, `Debug` « Agent »), seule variante
     non rendue par un transport HTTP ; aucun consommateur ne la lit (la crate ne lit pas `source`). Amendement soumis au développeur
     principal avant d'y toucher (hors périmètre de ce fichier). Validé 2026-11-03 (validator PASS ; deux bras `cfg(test)` d'exhaustivité
@@ -104,6 +99,9 @@ Tasks:
     (validator PASS, scripts Rhai réels, parité chiffrée avec `rest::core::list`).
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : la fixture de test (@MiryadResource::before_create, ~ligne 1040 de ./resource_module.rs) est portée au nouveau trait ; aucun changement de comportement (la délégation à @rest::core::create/update/delete suffit, DSD `hooks-async` `DEC-5`). Dépend de /src/resource.sdd (même amendement).
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte).
+  [ ] Arbitré par Sébastien le 2026-11-16 : retirer de `WriterImpl::create` (./resource_module.rs, ~l.327) la garde `sql_err()` unicité du bras `Err(RestError::Database(err))`, inatteignable depuis `RestError::UniqueViolation` ; aucun changement de comportement attendu.
+  [ ] Arbitré par Sébastien le 2026-11-16 : `resources::list` n'a ni critères ni tri (`ReaderImpl::list` passe `ListQuery::default()`) ; corriger le commentaire de `ReaderImpl::list` (./resource_module.rs) qui renvoie à la tâche #78 de ../rest/mod.sdd.
+  [ ] Tests d'abord : `un_corps_inconnu_donne_invalid_body` et `une_ecriture_batch_sans_subject_donne_no_account_for_this_session` (un test par Scenario « un corps inconnu est refusé » et « une écriture batch sans subject échoue »), puis ./resource_module.rs si rouge.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./resource_module.rs.
@@ -167,3 +165,13 @@ Scenario: describe indique writable
   Given une ressource lisible mais non inscriptible pour l'appelant
   When `describe()`
   Then `writable = false`
+
+Scenario: un corps inconnu est refusé
+  Given une ressource en écriture
+  When le script appelle `create("res", #{ champ_inconnu: 1 })`
+  Then l'erreur est `invalid body` et aucune ligne n'est créée
+
+Scenario: une écriture batch sans subject échoue
+  Given un `WriteScope` dont le déclencheur n'a pas de `subject`
+  When le script appelle `create` sur une ressource en écriture
+  Then l'erreur est `no account for this session` et aucune ligne n'est créée

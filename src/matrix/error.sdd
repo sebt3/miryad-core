@@ -25,14 +25,22 @@ Must:
     `Network { message: String, retryable: bool }` → `MRD-MATRIX-007` → `MRD-MATRIX-007: network error: {message}`
     `Sdk(String)` → `MRD-MATRIX-008` → `MRD-MATRIX-008: matrix sdk error: {0}` (toute autre erreur de `matrix-sdk`,
       non retryable)
+    `EventNotFound(String)` → `MRD-MATRIX-009` → `MRD-MATRIX-009: event not found: {0}` (amendement 2026-11-16, issue
+      #87, `matrix#FR-13`) : événement visé par une réponse ou une édition inconnu du serveur, ou illisible pour le
+      compte ; porte l'identifiant de l'événement, jamais son contenu ; non retryable
+    `NotAuthor(String)` → `MRD-MATRIX-010` → `MRD-MATRIX-010: not the author of event: {0}` (amendement 2026-11-16) :
+      édition d'un événement envoyé par un autre compte (interdit par la spécification Matrix) ; porte l'identifiant de
+      l'événement ; non retryable
   `impl From<StoreError> for MatrixError` (variante `Store`).
   `pub fn retryable(&self) -> bool` (`#[must_use]`) : `Network { retryable, .. }` → `retryable` ; `Store(_)` →
     `true` seulement si `StoreError` est un `Db` (panne de base transitoire), sinon `false` ; toutes les
-    autres variantes → `false`.
+    autres variantes (dont `EventNotFound` et `NotAuthor`) → `false`.
   La traduction d'une erreur `matrix-sdk` vers `Network`/`RoomUnavailable`/`Sdk` est faite par
     `pub(crate) fn from_sdk(e: &matrix_sdk::Error) -> MatrixError` dans ce fichier : transport coupé,
     délai, `5xx` HTTP et `429` (`M_LIMIT_EXCEEDED`) → `Network { retryable: true }` ; `403` (`M_FORBIDDEN`),
-    `404` (`M_NOT_FOUND`) → `RoomUnavailable` ; autres `4xx` → `Sdk`. La détection se fait par les types/codes
+    `404` (`M_NOT_FOUND`) → `RoomUnavailable` ; autres `4xx` → `Sdk`. `from_sdk` ne produit jamais `EventNotFound` ni
+    `NotAuthor` : ces deux variantes sont décidées par ./client.rs, qui connaît l'événement visé (un `404` de
+    `/rooms/{id}/event` y est un événement inconnu, pas une salle inconnue). La détection se fait par les types/codes
     HTTP de `matrix-sdk` (à relire en source à l'implémentation), jamais par recherche de sous-chaîne dans
     un message.
   Compiler sous `#[cfg(feature = "matrix")]`.
@@ -44,6 +52,9 @@ Exposes:
   `MatrixError`, `retryable`.
 
 Tasks:
+  [ ] Amendement 2026-11-16 (issue #87, `matrix#FR-13`) : variantes `EventNotFound` et `NotAuthor`, tests d'abord (codes
+    `MRD-MATRIX-009` et `-010`, retryabilité `false`, `Display` sans contenu), puis ./error.rs. Première tâche du lot #87 :
+    ./client.sdd en dépend.
   [x] Tests d'abord (codes, retryabilité, `from_sdk` sur des erreurs `matrix-sdk` construites en test),
     puis ./error.rs.
     Validé 2026-10-17 (Claude) : six tests verts (codes, retryabilité, `from_sdk` sur 429/502/403/404 construits par
@@ -57,12 +68,12 @@ Done when:
 Scenario: les codes sont stables
   Given une variante de chaque sorte
   When `to_string()` est appelé
-  Then chaque message commence par `MRD-MATRIX-001` à `-008`
+  Then chaque message commence par `MRD-MATRIX-001` à `-010`
 
 Scenario: la retryabilité suit le type d'erreur
-  Given `Network { retryable: true }`, `Network { retryable: false }`, `RoomUnavailable`, `Login`, `Store(Db)`, `Store(Cipher)`
+  Given `Network { retryable: true }`, `Network { retryable: false }`, `RoomUnavailable`, `Login`, `Store(Db)`, `Store(Cipher)`, `EventNotFound`, `NotAuthor`
   When `retryable()` est appelé
-  Then les résultats sont `true`, `false`, `false`, `false`, `true`, `false`
+  Then les résultats sont `true`, `false`, `false`, `false`, `true`, `false`, `false`, `false`
 
 Scenario: 429 et 5xx sont retryables, 403 et 404 ne le sont pas
   Given des erreurs `matrix-sdk` portant les statuts HTTP 429, 502, 403, 404

@@ -235,7 +235,7 @@ Handles:
     dans ./definition.rs — le comportement vient entièrement de la déclaration `owner_column`.
 
 Tasks:
-  [!] (cohérence #77 (2), appliquée 2026-11-14 par spec-dd, à reconfirmer) : le constat `[x]` #28 du 2026-10-04 (doublon même propriétaire → `500` `MRD-REST-003` générique) est périmé par l'arbitrage `./../../rest/core.sdd`
+  [x] Cohérence #77 (2), appliquée 2026-11-14 par spec-dd, confirmée par Sébastien le 2026-11-16 : le constat `[x]` #28 du 2026-10-04 (doublon même propriétaire → `500` `MRD-REST-003` générique) est périmé par l'arbitrage `./../../rest/core.sdd`
     du 2026-11-13 : la violation de l'index composite (`name`, `owner_id`) est un `SqlErr::UniqueConstraintViolation` rendu `RestError::UniqueViolation` (`409`, `MRD-REST-007`). Le test inline
     `crud_doublon_meme_proprietaire_rend_database_sans_fuite_de_contrainte` suit le changement de rendu — son objet, l'absence de fuite de la contrainte brute sur le fil, est intégralement conservé (le corps `409` ne
     cite ni contrainte ni colonne ni valeur) ; le nom du test est renommé `..._rend_conflict_sans_fuite_de_contrainte`. Le `[?]` du constat #28 (collision attendue sous `OwnerOnly`) reste ouvert, hors de ce point.

@@ -273,9 +273,9 @@ Tasks:
   [x] Après approbation de R14 : tests d'abord, puis ./dispatcher.rs, puis ./interpreter.rs (cible `handler_name(&step.kind)`), puis la preuve d'intégration `#[ignore]` du dernier `Scenario`
     (`../../tests/workflow_restate.rs`). Après ce fichier : R15 (./subagent_step.sdd).
     Validé 2026-11-06 (validator PASS : execute et execute_long partagent run_step sans divergence ; les quatre Scenario DEC-29 verrouillés (trois unitaires nommés + preuve #[ignore] rejouée verte 4,62 s contre restate 1.7.12) ; recommended_options_for clamp conforme, recommended_options() inchangé au niveau service ; ./interpreter.rs réduit à la cible handler_name citant DEC-29 ; workflow vert en tests et clippy `-D warnings`, `fmt`).
-    [?] (implementer) : le test préexistant recommended_options_plafonne_tentatives_et_pause est restreint au rendu « service » pour son assertion « jamais None » — nécessaire depuis que le handler execute_long porte des champs de retry None. Choix provisoire : cette restriction (le reste des assertions reste sur le rendu complet).
-    [?] (implementer) : forme mesurée de l'admin API Restate (`POST /query` avec `{"query": …}`, `Accept: application/json` pour des lignes, tables système « expecting a partition store » pendant ~20 s au démarrage) — consignée en commentaire du helper, pas en `[?]` dans le fichier ; stable hors 1.7.12 ?
-    [?] (implementer et validator) : `recommended_options_for` et les constantes `pub` de DEC-29 ne sont pas dans la liste plate fermée de ./mod.sdd (atteignables par chemin de module) — R15 tranchera : étendre la liste plate et le test workflow_flat_paths, ou l'assumer par chemin.
+    Arbitré par Sébastien le 2026-11-16 : le test préexistant recommended_options_plafonne_tentatives_et_pause est restreint au rendu « service » pour son assertion « jamais None » — nécessaire depuis que le handler execute_long porte des champs de retry None (restriction désormais dite dans le `Scenario` « recommended_options pose un plafond… »).
+    Arbitré par Sébastien le 2026-11-16 : forme mesurée de l'admin API Restate (`POST /query` avec `{"query": …}`, `Accept: application/json` pour des lignes, tables système « expecting a partition store » pendant ~20 s au démarrage) — consignée en commentaire du helper, pas dans ce fichier. Mesurée sous restate 1.7.12 uniquement ; le comportement hors 1.7.12 n'est pas vérifié.
+    Arbitré par Sébastien le 2026-11-16 : `recommended_options_for` et les constantes `pub` de DEC-29 restent atteignables par le chemin du module (`workflow::dispatcher::…`) ; la liste plate de ./mod.sdd et `workflow_flat_paths` ne sont pas étendues (réglages d'enregistrement, pas de l'API courante d'un hôte).
   [x] Spike OI-11 (DSD `lymaille#OI-11`, 2026-11-03) : `un_step_de_40_minutes_survit_aux_bornes_relevees_du_handler` dans `tests/workflow_restate.rs` (`#[ignore]`, podman) :
     step ordinaire de 40 minutes, `HandlerOptions` du handler `execute` à 50 min (inactivité) et 55 min (abandon) ; vert en 2402 s, un seul `start`, aucun rejeu.
     Le kill du processus service n'est pas couvert par ce banc (serveur dans le processus du test) : la reprise reste celle de `lymaille#AC-10`.
@@ -407,7 +407,8 @@ Scenario: recommended_options pose un plafond de tentatives et une pause, jamais
   Then la chaîne @Debug contient `"retry_policy_max_attempts: Some(5)"` et
     `"retry_policy_on_max_attempts: Some(Pause)"` — jamais `retry_policy_max_attempts: None` (qui
     reproduirait le retry indéfini du serveur), jamais `Some(Kill)` (qui empêcherait la relance
-    manuelle voulue)
+    manuelle voulue). L'assertion porte sur le rendu **service** seul : le handler `execute_long`
+    porte des champs de retry `None` hors de son périmètre (arbitré par Sébastien le 2026-11-16).
 
 Scenario: un panic dans run() n'affecte qu'une seule invocation
   Given un @StepRegistry avec un kind de fixture `"boom"` dont `run` panique systématiquement, un

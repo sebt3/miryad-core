@@ -302,21 +302,15 @@ Tasks:
   [x] Issue #78 — l'`EntityIr` expose les colonnes filtrables et triables d'une ressource (voir ./resource.sdd). Spec d'abord : ajouter `filterable_columns: Vec<String>` et `sortable_columns: Vec<String>` (vides par
     défaut, rendus en `[]` explicite) à côté de `filter_column`, **conservé** ; amender `Must`, le `Scenario` de forme complète et le `Done when` (comptage des `Scenario`). Puis tests d'abord, puis ./ir.rs. Après
     ./resource.sdd.
-    [?] Ordre des deux nouvelles clés dans l'`EntityIr` sérialisé : la consigne de tâche dit « à côté
-      de `filter_column` », l'amendement d'`Exposes` les liste après `label_column`. Choix provisoire :
-      ordre de l'`Exposes` amended (`filter_column`, `label_column`, `filterable_columns`,
-      `sortable_columns`) — l'`Exposes` est le contrat ; options — `(filter_column, filterable_columns,
-      sortable_columns, label_column)` si Sébastien veut la proximité littérale.
-    [?] Le Scenario « Les clés et les valeurs `null` du fichier sont épinglées » énumère sept clés
-      d'entité ; l'amendement d'`Exposes` en porte neuf et le Scenario #78 dit « les autres clés sont
-      inchangées ». Choix provisoire : le test de forme épingle les neuf clés (deux nouvelles rendues
-      `[]` explicite sur une entité sans déclaration) ; le comptage du `Done when` (« exactement
-      dix-neuf `Scenario` ») est confirmé exact — dix-neuf mesurés.
-    [?] Alimentation : `IrRegistration` n'existe nulle part dans la crate — `resource_ir::<E>()` lit
-      `MiryadResource::filterable_columns`/`sortable_columns` en direct (le câblage de `filter_column`
-      est du même niveau trait, pas d'un registre). Aucun ajout à faire dans `./resource.rs` ni de
-      `[?]` vers `./resource.sdd` : les deux méthodes existent déjà (tâche #78 close dans
-      `resource.sdd`).
+    Ordre des deux nouvelles clés dans l'`EntityIr` sérialisé : `filter_column`, `label_column`,
+      `filterable_columns`, `sortable_columns` (ordre de l'`Exposes`, arbitré par Sébastien le 2026-11-16).
+    Le Scenario « Les clés et les valeurs `null` du fichier sont épinglées » épingle les neuf clés
+      d'entité (deux nouvelles rendues `[]` explicite sur une entité sans déclaration), arbitré par
+      Sébastien le 2026-11-16 ; le comptage du `Done when` (« exactement dix-neuf `Scenario` ») est exact.
+    Alimentation : `resource_ir::<E>()` lit `MiryadResource::filterable_columns`/`sortable_columns` en
+      direct, comme `filter_column` (pas de registre d'enregistrement, arbitré par Sébastien le
+      2026-11-16). Aucun ajout à faire dans `./resource.rs` : les deux méthodes existent déjà (tâche #78
+      close dans `resource.sdd`).
     Implémente le 2026-11-15 : batterie 16/16 tests + 16/16 clippy -D warnings + fmt + trees verte,
     validator PASS statique ; Scenario de forme et second Example amendes a neuf cles par le
     primary (la tache le demandait, seul le test avait suivi).
@@ -447,8 +441,7 @@ Scenario: Les clés et les valeurs `null` du fichier sont épinglées
     résolu, sans newline final
   And l'objet entité porte exactement les clés `resource_name`, `fields`, `read_policy`,
     `write_policy`, `owner_column`, `filter_column`, `label_column`, `filterable_columns`,
-    `sortable_columns` (amendement du 2026-11-15, issue #78 — ordre de l'`Exposes`, voir `[?]` de
-    `Tasks`), et chaque champ exactement
+    `sortable_columns` (amendement du 2026-11-15, issue #78 — ordre de l'`Exposes`, arbitré par Sébastien le 2026-11-16 ; voir la tâche #78 de `Tasks`), et chaque champ exactement
     `name`, `type`, `format`, `nullable`, `is_primary_key`, `references`
   And chaque @None apparaît comme `null` explicite — `filter_column`, `label_column` sur une
     entité sans libellé, `format`, `references` — et aucune clé n'est ni sautée ni renommée ;

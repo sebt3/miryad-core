@@ -75,7 +75,7 @@ Tasks:
   [x] Tests d'abord (codes, retryabilité), puis ./error.rs. Validé 2026-11-02 (validator PASS, batterie ciblée).
   [x] Verrouiller par un assert exact le `Debug` du `Scenario` « aucune valeur secrète » (`format!("{:?}", e)` == `SecretUnresolved("LLM_API_KEY")`) au lieu de `contains` (arbitrage du développeur principal, 2026-11-05). Test seul, sans changement de ./error.rs.
     Validé 2026-11-06 (validator PASS : assert exact sur Display et `Debug`, production intacte — diff confiné à `mod tests` ; lymaille vert en tests et clippy `-D warnings`, `fmt`).
-    [?] du validator (la coche exige-t-elle la batterie complète ou la ciblée suffit pour un changement confiné à `mod tests`) : tranché par Sébastien en session du 2026-11-06 — batterie ciblée par cycle, batterie complète en fin de lot.
+    Tranché par Sébastien en session du 2026-11-06 : batterie ciblée par cycle, batterie complète en fin de lot.
   [x] Amendement du 2026-11-11 (DSD `scripts-hote#FR-7`) : quatre variantes `ScriptTimeout`, `ScriptOperationLimit`, `ScriptResultTooLarge`, `ScriptFailed`, `retryable()` faux ; tests d'abord, puis ./error.rs.
     Validé 2026-11-11 : codes `-013` à `-016` et retryabilité verrouillés par tests, batterie ciblée `lymaille` verte. Branches compagnons ajoutées à `code_de` de ./chat/bridge.rs pour la compilation sous `lymaille,matrix` — voir le `[?]` ouvert dans ./chat/bridge.sdd.
 
@@ -85,7 +85,7 @@ Tasks:
     Ratifié 2026-11-12 (arbitrage du développeur principal) — Then amendé à `-016`. (validator, rattrapage du 2026-11-11) : le `Scenario` « les codes sont stables » s'arrête textuellement à `-012` alors que le test couvre `-016` — le Then devrait être amendé d'une ligne à `-016` (le test est déjà plus fort que le contrat écrit). Amender le `Scenario` relève du développeur principal. Choix provisoire : laisser le test tel quel, plus fort que le Then.
   [x] Issue #71 — variante `ScriptCancelled` → `MRD-LYMAILLE-017` → `MRD-LYMAILLE-017: script was cancelled`, `retryable()` faux, sans charge utile. Spec d'abord : amender la liste des variantes, `retryable`,
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Variante `ScriptCancelled` → `MRD-LYMAILLE-017`, non retryable, sans charge utile ; Scenario des codes étendu à `-017`.
-    [?] (implementer) : `code_equals_display_prefix` étendu à `-017` au-delà du texte littéral du Scenario (précédent du 2026-11-12).
+    Arbitré par Sébastien le 2026-11-16 : `code_equals_display_prefix` couvre `-001` à `-017` (extension au-delà du Given littéral du Scenario des codes, précédent du 2026-11-12).
     `code()` et le `Scenario` des codes (`-001` à `-017`). Puis tests d'abord (rouge sur variante absente), puis ./error.rs. À faire avant ./script_runner.sdd (tâche #71).
   [x] Alignement `lymaille` 0.3.0 (2026-11-14, arbitré) — `SessionError::TurnLock(String)` (panne du verrou de tour remplaçable, `TurnLock`, `lymaille` 0.3.0) est traduit par `from_session` (./interactive/manager.rs et ./interactive/assemble.rs) en `LymailleError::Run { message: "turn lock failed: {texte}", retryable: true }` : une panne d'infrastructure, que l'appelant peut relancer ; aucun nouveau code `MRD-LYMAILLE-*`, aucun changement de ce fichier hors tests. `Scenario` à ajouter dans ./interactive/manager.sdd : un `TurnLock` de test qui échoue → `Run { retryable: true }` ; le conflit `TurnActive` reste `Conflict("turn active")`. Tests d'abord, puis ./interactive/manager.rs.
     Soldé 2026-11-16 (vérifié à la lecture, arbitrage du développeur principal) : la traduction `TurnLock` → `Run { retryable: true }` est réalisée et testée dans ./interactive/manager.rs seul (`une_panne_de_la_porte_partagee_est_une_erreur_retryable`). Elle n'a **pas** de bras dans ./interactive/assemble.rs, volontairement : `TurnLock` y est inatteignable — `LeaseTurnLock::try_begin` (assemble.rs) ne rend que `Ok` ou `TurnActive`, et la porte locale par défaut de `lymaille` n'a pas d'échec propre ; le texte « et ./interactive/assemble.rs » de la ligne ci-dessus est caduc. Mineur : le test ne verrouille pas le préfixe littéral « turn lock failed: ».
@@ -99,7 +99,7 @@ Scenario: les codes sont stables
   Then chaque message commence par `MRD-LYMAILLE-001` à `-017` (`ScriptCancelled` ajoutée le 2026-11-13, issue #71)
 
 Scenario: `code()` égale le préfixe de `Display` pour chaque variante
-  Given une variante de chaque sorte (`-001` à `-016`)
+  Given une variante de chaque sorte (`-001` à `-017`)
   When `code()` et `to_string()` sont appelés
   Then `code()` est le préfixe de `to_string()` avant le premier `:`, sans contenu de cause
 

@@ -105,6 +105,7 @@ Must:
     en-tête ; non validé ici (chaîne opaque, vide acceptée ou non est l'affaire de l'application) et non authentifié par le moteur : sa
     confiance repose sur l'accès à l'ingress Restate, que la rustdoc dit de ne rendre joignable que de l'application. Le contenu du
     `trigger` n'est jamais écrit dans une erreur de ce fichier.
+  Injection : `/query` n'a pas de paramètres liés ; chaque identifiant interpolé est validé par une grammaire stricte (`inv_` + alphanumérique) avant la requête, aucun texte libre ne passe.
 
 Must not:
   Attendre la complétion d'un run dans @client::trigger_run. (Amendement du 2026-11-16 : la lecture de statut,
@@ -146,10 +147,10 @@ Depends on:
     `pub async fn list_invocations(config, http, filter: &InvocationFilter) -> Result<Vec<InvocationStatus>, WorkflowError>` : requête sur `sys_invocation` filtrée par les champs posés (valeurs validées par la même grammaire
       stricte `[A-Za-z0-9._:-]`, sinon `InvalidConfig` sans requête), triée par `created_at` décroissant, `limit` plafonné à 1000 (défaut 100) ;
     `pub async fn cancel_invocation(config, http, id: &str) -> Result<(), WorkflowError>` : `PATCH {admin_url}/invocations/{id}/cancel` (annulation propre : `kill` n'est pas exposé) ; `202`/`2xx` → `Ok(())` ; invocation inconnue
-      ou terminée → `Ok(())` (idempotent, la forme exacte des codes est vérifiée contre Restate) ; autre statut → erreur de transport existante ;
+      (`404` `does not exist`) ou déjà terminée (`409` `already completed`) → `Ok(())` (idempotent ; codes mesurés sous `restate-server` 1.8.1, arbitré par Sébastien le 2026-11-16) ; autre statut → erreur de transport existante ;
     `pub struct JournalEntry { pub index: u32, pub kind: String, pub name: Option<String> }` et `pub async fn invocation_journal(config, http, id: &str) -> Result<Vec<JournalEntry>, WorkflowError>` : lecture de `sys_journal`
       d'une invocation, ordonnée par `index`, pour lire les noms d'étapes posés par ./dispatcher.sdd (`step:<id>`, `render:<id>`).
-    Erreurs : **aucune variante nouvelle** (arbitré) — `Transport`/`Retryable` par `classify_transport_error` sur chaque `.send()`/`.json()`, `InvalidConfig` pour une entrée refusée avant requête, `Transport` pour une réponse
+    Erreurs : **aucune variante nouvelle** (arbitré) — `RestateUnreachable`/`Serialization` par `classify_transport_error` sur chaque `.send()`/`.json()`, `InvalidConfig` pour une entrée refusée avant requête, `RestateRejected` (construite à la main) pour une réponse hors `2xx`, `Serialization` pour une réponse
       d'administration inattendue (forme de réponse, colonne absente). Les tables système ne sont servies qu'une fois le partition store prêt (environ 20 s après le démarrage de Restate, mesuré) : cette attente est une
       erreur **retryable**, jamais un résultat vide. Aucune requête n'est faite hors `admin_url` ; aucune trace ne cite d'identifiant d'invocation avec un contenu de run.
 
@@ -222,6 +223,7 @@ Handles:
     ./client.rs peut détecter ou empêcher depuis un seul appel HTTP synchrone. Hors périmètre de ce
     fichier de l'atténuer ; à documenter clairement dans dsd/miryad-core/workflow.md comme un risque
     opérationnel du self-host (stratégie de rollout, `Tasks`).
+  Résolution tardive, double résolution, ou rejet d'un awakeable déjà résolu : `202` silencieux (mesuré sous `restate-server` 1.8.1) → `Ok(())` ; le serveur ne distingue rien au statut, la crate n'invente aucune erreur à ce niveau (arbitré par Sébastien le 2026-11-16).
 
 Tasks:
   [x] Validation de @WorkflowConfig (arbitré par Sébastien le 2026-09-29) : @WorkflowConfig::validate, appelée en tête de
@@ -279,8 +281,8 @@ Tasks:
   [x] Issue #80 (2) — client d'administration Restate : statut, liste, annulation. Spec d'abord (nouvelles fonctions publiques de `workflow::client`, `WorkflowConfig` inchangé) :
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary).
     Mesures `restate-server` **1.8.1** (podman, tests `#[ignore]` verts 2026-11-15, `../../tests/workflow_restate.rs`) : `cancel` sur en cours → 2xx puis statut `completed`/`failure [409] cancelled` ; re-`cancel` terminée → 409 `already completed` ; id inconnu décodable → 404 `does not exist` — les deux absorbés en `Ok(())` (idempotence) ; quirk DataFusion : `WHERE id = '<literal>'` sans `LIMIT` → HTTP 500, la forme `IN (…)` du client rend `Ok` ; `sys_journal` : entrées anonymes `name: ""` normalisées `None`.
-    [?] (implementer) : 404 `does not exist` et 409 `already completed` du `cancel` absorbés en `Ok(())` (idempotence, mesurée) — le contrat écrit ne nommait pas ces codes ; verrouillé par test stub `cancel_invocation_idempotence_404_et_409_mesurés`.
-    [?] (implementer) : variantes réutilisées : `RestateUnreachable`/`RestateRejected`/`Serialization`/`InvalidConfig` (le `Must` de ./error.sdd nommait `Transport` — le nom réel des variantes existantes prévaut).
+    Arbitré par Sébastien le 2026-11-16 : 404 `does not exist` et 409 `already completed` du `cancel` absorbés en `Ok(())` (idempotence, mesurée, désormais nommés dans `Must`) ; verrouillé par test stub `cancel_invocation_idempotence_404_et_409_mesurés`.
+    Arbitré par Sébastien le 2026-11-16 : variantes réutilisées `RestateUnreachable`/`RestateRejected`/`Serialization`/`InvalidConfig` (le nom réel des variantes existantes prévaut sur `Transport`, nommé à tort dans ./error.sdd ; `Must` amendé en conséquence).
     DSD `workflow#OI-4` : la lecture de statut est livrée — soldé le 2026-11-16.
     `invocation_statuses(config, ids: &[String]) -> Result<Vec<InvocationStatus>, WorkflowError>` (**une** requête `POST /query` sur `sys_invocation` pour N identifiants, découpée au-delà de 50 identifiants, arbitré) ;
     `list_invocations(config, filtre) -> Result<Vec<InvocationStatus>, WorkflowError>` ; `cancel_invocation(config, id) -> Result<(), WorkflowError>` (`PATCH /invocations/{id}/cancel` de l'API d'administration) ;
@@ -288,7 +290,6 @@ Tasks:
     en cours puis statut ; identifiant mal formé → erreur sans requête ; tables système pas encore prêtes au démarrage → erreur retryable typée. Les formes (requête, réponse, annulation) sont **vérifiées contre un
     vrai Restate** par test d'intégration `#[ignore]` (`../../tests/workflow_restate.rs`, déjà listé en `Can modify` mais limité aux appels de `trigger_run` : étendre la mention aux tests de ce client) et consignées ici avec la version de Restate. Puis tests d'abord (stub HTTP pour les cas sans
     serveur), puis ./client.rs.
-    [!] Injection : `/query` n'a pas de paramètres liés ; chaque identifiant interpolé est validé par une grammaire stricte (`inv_` + alphanumérique) avant la requête, aucun texte libre ne passe.
     Arbitré le 2026-11-13 (`cancel` seul) : annuler = `cancel` (propre, exécute la compensation) ou `kill` (immédiat, sans nettoyage) : recommandé `cancel` seul, `kill` hors de cette livraison.
     Arbitré le 2026-11-13 (minimale) : forme de `InvocationStatus` (état, dates, service/handler, erreur terminale, nombre de tentatives) : minimale d'abord, étendue à la demande ; le développeur principal tranche la liste des champs publics.
     Arbitré le 2026-11-14 : test d'intégration `#[ignore]` contre le Restate de la DevStation (`../../tests/workflow_restate.rs`) ; la version de Restate et les formes mesurées (`POST /query`, `sys_invocation`, `sys_journal`, `PATCH …/cancel`) sont consignées ici avant la clôture de la tâche ; tables système « pas encore prêtes » (~20 s au démarrage) → erreur retryable typée.
@@ -297,7 +298,7 @@ Tasks:
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary).
     Live `restate-server` **1.8.1** (podman, 6 tests `#[ignore]` verts 2026-11-15, formes consignées dans `../../tests/workflow_restate.rs`) : resolve nominal `POST …/restate/awakeables/{id}/resolve` `application/json` → 202 corps vide ; reject `text/plain` → 202, message restitué verbatim en erreur de step ; résolution tardive, double résolution et rejet sur awakeable résolu → **202 silencieux** (le serveur ne distingue rien au statut).
     Arbitré le 2026-11-16 : la grammaire de l'identifiant accepte **les deux préfixes** `prom_1` et `sign_1` suivis de base64url (`sign_1` mesuré sous `restate-server` 1.8.1, `prom_1` documenté par le SDK 0.12.1) ; le préfixe n'est pas garanti par l'amont, il n'est pas un contrat — seul compte le jeu de caractères restreint (aucun texte libre dans le chemin). Un identifiant d'un autre préfixe est refusé sans requête. Case close le 2026-11-16 (batterie complète verte `BATTERY_FAIL=0`).
-    [?] (implementer) : résolution tardive / double résolution = 202 silencieux (mesuré) — cohérent avec « tout 2xx accepté » du contrat écrit ; à confirmer dans les `Handles`.
+    Arbitré par Sébastien le 2026-11-16 : résolution tardive / double résolution = 202 silencieux (mesuré), consigné dans `Handles`.
     `resolve_awakeable(config, id: &str, value: &serde_json::Value) -> Result<(), WorkflowError>` (`POST {ingress}/restate/awakeables/{id}/resolve`, corps JSON) et `reject_awakeable(config, id: &str, message: &str) -> Result<(), WorkflowError>`
     (`POST …/reject`) ; l'identifiant est validé par une grammaire stricte avant toute requête (préfixe `prom_1` ou `sign_1` + base64url, aucun texte libre dans le chemin ; préfixe non garanti par l'amont) ; échecs → variantes existantes de ./error.sdd (`Transport`, `InvalidConfig`) ;
     ni l'identifiant ni la valeur ne sont tracés. `Scenario` : résolution d'un awakeable en attente → `Ok` et le step reprend avec la valeur ; rejet → le step échoue (message du rejet) ; identifiant mal formé → erreur sans requête ;

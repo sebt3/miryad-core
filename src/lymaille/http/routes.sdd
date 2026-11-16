@@ -30,11 +30,11 @@ Must:
     **rendu sous les mêmes types que le flux SSE** (`../interactive/event.sdd`, DSD `DEC-30` : le client lit l'historique puis s'abonne) ;
     session inconnue ou d'un autre → `404` identique. Aucune donnée brute : les teneurs passent par le `Redactor` du chemin d'affichage.
   `DELETE /conversations/{id}` → `204` ; un re-`DELETE` par la propriétaire est `204` idempotent (la garde de visibilité repasse, la fermeture du
-    gestionnaire est silencieuse).
+    gestionnaire est silencieuse ; l'idempotence repose sur la conservation de la ligne persistée par `close` : arbitré par Sébastien le 2026-11-16).
   `POST /toolsets/{name}/activate` → `200` `ActivationReport` ; `DELETE /toolsets/{name}/draft` → `204` (si un brouillon existait, sinon `404`).
   Traduction d'erreur : `UnknownSubject`/`Forbidden` → `403`, `NotFound` → `404`, `Conflict` → `409`, `InvalidDefinition` → `422`, `Store`/autre → `500`
     avec code `MRD-LYMAILLE-*` ; message à texte fixe, jamais le contenu d'un message, d'un jeton, d'un prompt ni d'une URL.
-  **Amendement du 2026-11-13 (issue #72)** : les structs de corps de requête et de réponse que ./routes.rs possède (ouverture, message, historique, reprise, événements d'histoire) dérivent `ts_rs::TS` sans changer leur sérialisation (champs `u64` annotés `#[ts(type = "number")]`, dates `string`) ; ils sont exportés par `export_typescript` de ../interactive/event.sdd. Les types déjà exportés (`SessionEvent`…) ne sont pas dupliqués.
+  **Amendement du 2026-11-13 (issue #72)** : les structs de corps de requête et de réponse que ./routes.rs possède (ouverture, message, historique, reprise, événements d'histoire) dérivent `ts_rs::TS` sans changer leur sérialisation (champs `u64` annotés `#[ts(type = "number")]`, dates `string`) ; ils sont exportés par `export_typescript` de ../interactive/event.sdd. Les types déjà exportés (`SessionEvent`…) ne sont pas dupliqués. Arbitré par Sébastien le 2026-11-16 : `CancelledBody`, `ListBody`/`SessionItem` et `ActivationBody` dérivent `TS` de la même façon (`SessionItem` sans `&'static str`, JSON inchangé) ; `CreateBody.agent` s'exporte `agent?: string` (`#[ts(optional)]`, serde inchangé) ; `mod routes` est `pub(crate)` dans ./mod.rs et les cinq structs de corps sont `pub(crate)` (visibilité seule, requise par `export_typescript` ; aucune exposition publique).
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -74,16 +74,16 @@ Tasks:
     `forward_token` restant verrouillé à la source ; amender le Purpose : `history` et la garde `DELETE` lisent le store via l'état d'authentification
     (précédent `rest/me.rs`), pas par une méthode du gestionnaire ; tracer dans le `Must` que re-`DELETE` par la propriétaire est `204` idempotent.
     Validé 2026-11-06 (validator PASS : Purpose et Must fidèles au code réel — State(auth)+load_state vérifié handler par handler, re-DELETE 204 verrouillé par le test existant ; preuve e2e réelle par MockOidcClient, 202 ⟹ source Bearer authentique ; verrou source du mapping intact ; lymaille vert en tests et clippy `-D warnings`, `fmt`, `specdd lint`).
-    [?] (implementer, analysé par le validator sans trancher) : la case disait amender le Given ; le When/Then ont été alignés faute de quoi ils décrivaient une preuve que plus rien n'établit — le validator juge le sens du contrat préservé (Some monté en e2e, None ramenée au verrou source, seul niveau observable). Choix provisoire : cet alignement. Valides-tu cette répartition de preuve comme précédent pour les Scenario où le manager concret n'est pas espionnable ?
-    [?] (validator) : le 204 idempotent du re-DELETE repose sur le fait que `close` ne supprime pas la ligne persistée ; si un futur `lymaille` purgeait à la fermeture, ce serait un 404 — verrou amont à arbitrer le moment venu, pas ici.
+    Arbitré par Sébastien le 2026-11-16 : la répartition de preuve (`Some` monté en e2e, `None` ramenée au verrou source, seul niveau observable) est retenue comme précédent pour les Scenario où le manager concret n'est pas espionnable ; When/Then alignés en conséquence.
+    Arbitré par Sébastien le 2026-11-16 : le 204 idempotent du re-DELETE repose sur la conservation de la ligne persistée par `close` (verrou amont) ; si un futur `lymaille` purgeait à la fermeture, ce serait un 404, à reprendre alors.
   [x] Issue #72 — corps de requête et de réponse de la surface de session (`/api/v1/lymaille`) : dériver `TS` sur ceux que ./routes.rs possède, sans changer la sérialisation (champs `u64` en
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, feature non déclarée, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Test : `les_corps_de_la_surface_de_session_sont_types_pour_typescript`.
-    [?] (implementer) : `http/mod.rs` (`mod routes;` → `pub(crate) mod routes;`) touché hors `Owns`/`Can modify` des specs du lot — nécessité mécanique pour que `export_typescript` cite les corps (cette spec, tâche #72). Purement visibilité, aucune exposition publique ; à ratifier.
-    [?] (implementer) : les cinq structs de corps passent `pub(super)`→`pub(crate)` — aucune exposition publique additionnelle (cette spec, `Exposes` ligne 47 inchangé dans les faits).
-    [?] (implementer) : `CreateBody.agent: Option<String>` s'exporte `agent: string | null` (propriété obligatoire) alors que serde accepte la clé absente ; `#[ts(optional)]` rendrait `agent?: string` sans toucher serde. Choix provisoire : défaut de `ts-rs`.
-    [?] (implementer) : `CancelledBody`, `ListBody`/`SessionItem`, `ActivationBody` non dérivés — le `Must` ne parenthèse que « ouverture, message, historique, reprise, événements d'histoire » ; `SessionItem` porte un `&'static str` non typable par `ts-rs`. À étendre par amendement si voulu.
+    Arbitré par Sébastien le 2026-11-16 : `mod routes` en `pub(crate)` dans ./mod.rs (visibilité seule, requise par `export_typescript`), et les cinq structs de corps en `pub(crate)` ; consigné dans le `Must`.
+    Arbitré par Sébastien le 2026-11-16 : `#[ts(optional)]` sur `CreateBody.agent` ; `CancelledBody`, `ListBody`/`SessionItem` et `ActivationBody` dérivés `TS` ; consigné dans le `Must`, code en cases `[ ]` ci-dessous.
     `#[ts(type = "number")]` comme ./../interactive/event.sdd). Spec d'abord : `Must` (dérives) et `Scenario` « le `.ts` exporté déclare le corps de `POST …/send` » ; l'export lui-même est tâche de
     ./../interactive/event.sdd. Puis test de contrat, puis ./routes.rs. Les corps qui contiennent un type de `lymaille` suivent le blocage amont de ./../mod.sdd.
+  [ ] Code (#72, arbitré le 2026-11-16) : dériver `ts_rs::TS` sur `CancelledBody`, `ListBody`, `SessionItem` (son `&'static str` remplacé par un type typable, JSON inchangé) et `ActivationBody` ; test : chaque clé JSON de ces corps est une propriété de la déclaration exportée (étendre `les_corps_de_la_surface_de_session_sont_types_pour_typescript`).
+  [ ] Code (#72, arbitré le 2026-11-16) : `#[ts(optional)]` sur `CreateBody.agent` ; test : la déclaration exportée rend `agent?: string`, et un corps sans `agent` reste accepté par serde (sérialisation inchangée).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./routes.rs.

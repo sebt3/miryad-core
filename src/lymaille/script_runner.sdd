@@ -55,7 +55,7 @@ Exposes:
   `ScriptRunner`, `ScriptDeps`, `ScriptLimits`
 
 Tasks:
-  [!] (cohérence #77 (1), appliquée 2026-11-14 par spec-dd, à reconfirmer) : le Then du Scenario « un script agit sous les droits de son spectateur » attendait `ScriptFailed` (`forbidden`) pour l'`update` d'autrui ; la fixture
+  [x] Cohérence #77 (1), appliquée 2026-11-14 par spec-dd, confirmée par Sébastien le 2026-11-16 : le Then du Scenario « un script agit sous les droits de son spectateur » attendait `ScriptFailed` (`forbidden`) pour l'`update` d'autrui ; la fixture
     `recipes` étant lecture `OwnerOnly`, l'arbitrage `./../rest/core.sdd` du 2026-11-13 rend le refus en `not found` (404 uniforme, pas d'oracle d'existence). Le Then est amendé en conséquence ; le rendu `forbidden` par le
     script reste verrouillé ailleurs dans le fichier (fixture `AdminOnly` du Scenario des modules d'hôte, `static_verdict` non affecté par #77). L'assertion du test suit l'amendement — seul le texte du motif change.
   [x] Tests d'abord (SQLite mémoire, module d'hôte factice, connecteur MCP espion, ressource `recipes`), puis ./script_runner.rs.
@@ -64,7 +64,7 @@ Tasks:
     Ratifié 2026-11-11 : `role_requirements` et `toolset_context_roles` (./interactive/assemble.rs) et `dynamic_to_json` (./resource_module.rs) passés `pub(crate)` (jamais `pub`), hors `Owns`, logique inchangée ; `pub mod script_runner;` repris par ./mod.sdd (commit 8a0dd19).
   [x] Issue #70 — droits d'un contexte `H_…` : le point 2 du `Must` (« y compris un contexte `H_…` : échec fermé ») est le contrat à amender, avec la mention `scripts-hote#OI-6` (Open Issue à solder dans la
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Contexte `H_…` : droits par @LymailleHost::script_grants, bornés par `check_grants` et le principal relu ; absent/`Ok(None)`/panne → `Forbidden("script grants unavailable")` (échec fermé).
-    [?] (implementer) : clause « admin » du Scenario « l'hôte ne contourne pas… » prouvée en faisant rejoindre le groupe admin à `alice` elle-même (le contexte `H_…` de fixture n'est visible que d'elle) ; lecture à valider.
+    Arbitré par Sébastien le 2026-11-16 : clause « admin » du Scenario « l'hôte ne contourne pas… » prouvée en faisant rejoindre le groupe admin à `alice` elle-même (le contexte `H_…` de fixture n'est visible que d'elle).
     Solution par le développeur principal : le besoin est maintenant constaté, vanyline). Spec d'abord : pour un contexte `Host`, résolu comme à l'étape 4 de `assemble_session` (`resolve_context` rend
     `None` = absent ou interdit → inchangé), `script_grants` vient de `LymailleHost::script_grants` (./host.sdd) au lieu de la colonne d'un type ; hôte absent, méthode par défaut (`None`) ou panne de l'hôte →
     `Forbidden("script grants unavailable")` ; les droits restent bornés par `check_grants` (modules réservés admin) et par le principal relu à chaque appel de module (`FR-5`), l'hôte ne peut accorder
@@ -73,7 +73,7 @@ Tasks:
     Après ./host.sdd.
   [x] Issue #71 — annulation : `run_cancellable`. Spec d'abord : `pub async fn run_cancellable(&self, context, subject, source, limits, token, cancel: &CancelToken) -> Result<serde_json::Value, LymailleError>` ;
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). @run_cancellable avec `vynil_core::cancel::CancelToken` ; `run` délègue (une implémentation) ; `cancel::scope` posé dans la fermeture du thread d'évaluation ; annulation → `ScriptCancelled` (jamais partiel). Tests : `loop {}`/`sleep(30)` < 1 s, annulation avant démarrage, annulation vs délai, `run` inchangé.
-    [?] (implementer) : le `sleep` amont capture un clone du jeton (`thread_local` `current()` en `pub(crate)`) ; `cancel::scope` entoure bien l'évaluation, ponts `block_on` compris — vérifié en source `vynil-core` 0.9.1.
+    Arbitré par Sébastien le 2026-11-16 : le `sleep` amont capture un clone du jeton (`thread_local` `current()` en `pub(crate)`) ; `cancel::scope` entoure l'évaluation, ponts `block_on` compris (vérifié en source `vynil-core` 0.9.1).
     `run` conserve sa signature et son comportement (délègue avec un jeton jamais annulé : une seule implémentation) ; le crochet `on_progress` rend aussi la main quand `cancel` est annulé ;
     `vynil_core::cancel::scope(cancel)` entoure l'évaluation pour que `sleep` et les ponts `block_on` des modules MCP la voient ; une annulation rend `LymailleError::ScriptCancelled` (./error.sdd), distincte de
     `ScriptTimeout`, jamais un résultat partiel (`Must not` « tronquer » étendu). `Scenario` : `loop {}` et `sleep(30)` interrompus dans la seconde qui suit l'annulation ; annulation avant le démarrage

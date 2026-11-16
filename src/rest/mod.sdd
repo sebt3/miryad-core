@@ -216,7 +216,7 @@ Depends on:
     @PrimaryKeyToColumn comme bornes de @RestEntity uniquement ; ./mod.rs n'émet aucune
     requête
   @serde — @Serialize + @Deserialize dans les bornes de @RestEntity ; @derive
-    @serde::Deserialize de @ListParams
+    @serde::Deserialize (@ListParams retirée, arbitré le 2026-11-14)
   ./core.rs — les cinq fonctions @async `pub(crate)` que les handlers délèguent intégralement
   ./error.rs — @error::RestError, type d'erreur de retour des cinq handlers et son
     @IntoResponse (codes `MRD-REST-001`..`MRD-REST-004`, pass-through @HookError)
@@ -240,9 +240,7 @@ Exposes:
     celles de `Must`
   Les six déclarations de sous-modules : @admin, @core (à visibilité `pub(crate)` — la logique
     CRUD n'est pas surface de crate), @error, @me, @openapi, @tokens
-  @ListParams — @struct @privée (sans @pub) à cinq champs @Option : @page @u64, @per_page
-    @u64, @filter @String, @sort @String, @order @String (@sort et @order : amendement du 2026-11-13, issue #78), @derive @serde::Deserialize @sans @deny_unknown_fields ; les critères par colonne ne passent pas par cette struct : @list_handler lit en plus `RawQuery` (paires `nom=valeur` hors `page`, `per_page`, `filter`, `sort`, `order`) et remplit @query::ListQuery ; l'entrée
-    query de @list_handler, homonyme des @ListParams @privées de ./admin.rs et ./tokens.rs
+  @list_handler — reçoit `Query<HashMap<String, String>>` (@ListParams retirée, arbitré par Sébastien le 2026-11-14 : clés dynamiques des colonnes) ; `page`, `per_page`, `filter`, `sort` et `order` sont extraits de ce dictionnaire, les autres paires `nom=valeur` sont des critères par colonne transmis à @query::ListQuery ; aucun @deny_unknown_fields.
   @list_handler, @get_handler, @create_handler, @update_handler, @delete_handler — fonctions
     @async @privées (module-private), jamais appelables hors ./mod.rs ni exposées
   En-tête `//!` du module et sa promesse des deux groupes de chemins sous `/api/v1`
@@ -259,9 +257,8 @@ Accepts:
     .merge(resource_router::<E2, S>())...with_state(state)` : le @Router est retourné sans
     état, l'hôte appelle @with_state une fois ; ./mod.rs fonctionne sur @S quelconque tant que
     le @FromRef résout
-  Surface collection — query string `page` et `per_page` parsés en @u64 par @axum @Query sur
-    @ListParams, `filter` en @String, `sort` et `order` en @String (amendement du 2026-11-13, issue #78) ; les autres paires `nom=valeur` sont des critères d'égalité par colonne transmis tels quels à @rest::core::list, qui les valide (colonne filtrable : appliquée ; colonne de l'entité non déclarée filtrable : `400` `MRD-REST-008` ; nom inconnu de l'entité : ignoré, aucun @deny_unknown_fields) ; les noms `page`, `per_page`, `filter`, `sort`, `order` sont réservés ;
-    `page=abc` ou `page=-1` rejetés `400` par @QueryRejection avant tout handler (typage @u64,
+  Surface collection — query string lue dans `Query<HashMap<String, String>>` ; `page` et `per_page` typés en @u64, `filter`, `sort` et `order` en @String (amendement du 2026-11-13, issue #78) ; les autres paires `nom=valeur` sont des critères d'égalité par colonne transmis tels quels à @rest::core::list, qui les valide (colonne filtrable : appliquée ; colonne de l'entité non déclarée filtrable : `400` `MRD-REST-008` ; nom inconnu de l'entité : ignoré, aucun @deny_unknown_fields) ; les noms `page`, `per_page`, `filter`, `sort`, `order` sont réservés ;
+    `page=abc` ou `page=-1` rejetés `400` en `@RestError::InvalidQuery` (`MRD-REST-008`, arbitré par Sébastien le 2026-11-16 : ni `InvalidInput`/`422`, ni rejet `@QueryRejection`) (typage @u64,
     ../query.sdd documente cette asymétrie zéro/négatif)
   Montage de la liste (amendement du 2026-11-13, issue #78) : @resource_router refuse au montage, comme pour @MiryadResource::filter_column, une entité dont @MiryadResource::filterable_columns désigne une colonne d'un type non pris en charge (entiers,
     booléen, texte seulement) ou dont une colonne filtrable ou triable porte un nom réservé (`page`, `per_page`, `filter`, `sort`, `order`) ; une colonne de @MiryadResource::sortable_columns n'a pas de contrainte de type.
@@ -417,43 +414,21 @@ Tasks:
     @resource_router, leurs `use` et le module de tests ; laisser `pub mod openapi;` nu.
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les fixtures de test de ./mod.rs (hooks `before_create`, `before_update`, `before_delete`, ~lignes 398-531) sont portées au nouveau trait asynchrone ; les tests `before_*_hook_*` existants restent verts sans changement d'assertion (statuts `422` et corps inchangés). Dépend de /src/resource.sdd (même amendement).
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte).
-  [!] (cohérence #77 (1), appliquée 2026-11-14 par spec-dd, à reconfirmer) : le test wire `update_forbidden_for_non_owner_allowed_for_owner` encode l'ancien contrat — le `PUT` d'autrui sur une ressource en lecture `OwnerOnly`
+  [x] (cohérence #77 (1), appliquée 2026-11-14 par spec-dd, confirmé par Sébastien le 2026-11-16) : le test wire `update_forbidden_for_non_owner_allowed_for_owner` encode l'ancien contrat — le `PUT` d'autrui sur une ressource en lecture `OwnerOnly`
     rend `404` (`MRD-REST-001`) depuis l'arbitrage `./core.sdd` du 2026-11-13 (404 uniforme, pas d'oracle d'existence), plus `403`. L'assertion est mise à jour vers `404` dans ./mod.rs, sans changement du contrat de ce
     fichier : la correspondance `Forbidden` → `403` reste exacte pour les autres chemins de refus (`static_verdict`). Le nom du test et sa référence ci-dessus sont inchangés (il vérifie toujours refus non-possesseur /
     acceptation possesseur).
   [x] Issue #78 — query string de la liste REST. Implemente le 2026-11-15 ; batterie 16/16 tests + 16/16 clippy -D warnings + fmt + trees verte, validator PASS statique. Spec d'abord : `ListParams` (privée, aujourd'hui `page`, `per_page`, `filter`) accepte en plus `sort`, `order` et des clés libres = colonnes filtrables ; une clé
-    inconnue ou non déclarée filtrable → `400` (`RestError::InvalidInput`, `MRD-REST-005`), **jamais ignorée** (critère d'acceptation) ; les noms `page`, `per_page`, `filter`, `sort`, `order` sont réservés, et une
+    nommant une colonne de l'entité non déclarée filtrable → `400` (`RestError::InvalidQuery`, `MRD-REST-008`), jamais ignorée ; un nom hors de l'entité est ignoré (arbitré par Sébastien le 2026-11-16) ; les noms `page`, `per_page`, `filter`, `sort`, `order` sont réservés, et une
     colonne portant l'un d'eux est refusée **au montage** (comme `filter_column` sans colonne, déjà vérifié par ce fichier) ; valeur typée selon le type de la colonne (entier, booléen, texte, date), sinon `400`.
     `Scenario` : trois colonnes filtrables, liste filtrée sur deux ; colonne non déclarée → `400` ; collision de nom réservé → refus au montage ; `?filter=` seul → comportement actuel. Puis tests d'abord, puis ./mod.rs.
     Après ./../query.sdd et ./../resource.sdd.
     Arbitré le 2026-11-14 : désérialisation : `Query<HashMap<String, String>>` (recommandé, clés dynamiques) en perdant le `deny` de type serde sur `page`/`per_page` : ces deux-là restent validés par `Pagination::from_raw` et
     le rejet non numérique reste un `400` (`Scenario` existant à conserver).
-    [?] (implementer) 2026-11-14 : `page`/`per_page` non numériques — la boîte cite `InvalidInput`
-      (`MRD-REST-005`) rendu `400`, mais `./error.rs` rend cette variante en `422` ; choix
-      provisoire : `RestError::InvalidQuery` (`MRD-REST-008`), seule variante de la famille requête
-      rendue `400`. Le `Scenario` « Paramètre query mal typé répond 400 » conserve son `400` et son
-      test, mais le corps porte désormais un code de la crate — le wording « rejet QueryRejection
-      d'axum » est à aligner par le développeur principal.
-    [?] (implementer) 2026-11-14 : `sort` accepte `colonne` ou `colonne:dir` — scindage sur le
-      dernier `:`, ascendant si le suffixe porte `asc` où qu'il soit, descendant sinon (convention
-      de la note `[?]` de `./core.sdd`, alignée par ./mod.rs le 2026-11-14) ; un `order` explicite
-      l'emporte sur le suffixe. Une valeur d'`order` hors `asc`/`desc` n'est pas re-validée ici :
-      `InvalidQuery` côté ./core.rs, choix documenté, parité MCP conservée.
-    [?] (implementer) 2026-11-14 : typage des valeurs porté par ./core.rs (`typed_filter_value` :
-      entiers, booléen `true`/`false`, texte — `Value` liés typés, pas de cast SQL en chaîne, ni
-      `TryCastU64`/`TryCastBool` dans la crate) ; aucune valeur d'opérateur tranchée : la valeur
-      d'une clé libre est une égalité littérale entière (`kind=dessert:lt` compare cette chaîne ;
-      `count=2:1` → `400`). Le `date` cité par la boîte n'est pas typé côté core : une colonne date
-      déclarée filtrable tombe sous le garde de montage « type non pris en charge » (`Accepts` :
-      entiers, booléen, texte seulement).
-    [?] (implementer) 2026-11-14 : « une clé inconnue … jamais ignorée » lu avec le `Scenario`
-      (qui rend `inconnu=1` → `200` ignoré) : ne sont jamais ignorées que les clés nommant une
-      colonne de l'entité (`400` `MRD-REST-008`, porté par ./core.rs) ; un nom hors de l'entité
-      reste ignoré, comme sous MCP — parité. La colonne `JSON` du Scenario de montage est posée en
-      fixture par un `f32` (`ColumnType::Float`) : `Json` exige la feature `with-json` de sea-orm,
-      hors graphe. `ListParams` retirée (arbitrage de la boîte : `Query<HashMap<String, String>>`)
-      — wordings `Depends on` (« @derive serde::Deserialize de @ListParams ») et `Exposes`
-      (« @struct @privée à cinq champs », « RawQuery ») à aligner par le développeur principal.
+    `page`/`per_page` non numériques → `RestError::InvalidQuery` (`MRD-REST-008`, `400`), et non `InvalidInput` (rendu `422`) : arbitré par Sébastien le 2026-11-16. Le `Scenario` « Paramètre query mal typé répond 400 » conserve son `400` et son test.
+    `sort` accepte `colonne` ou `colonne:dir` — scindage sur le dernier `:`, ascendant si le suffixe porte `asc` où qu'il soit, descendant sinon ; un `order` explicite l'emporte sur le suffixe. Une valeur d'`order` hors `asc`/`desc` n'est pas re-validée ici : `InvalidQuery` côté ./core.rs (arbitré par Sébastien le 2026-11-16, parité MCP conservée).
+    Arbitré par Sébastien le 2026-11-16 (égalité littérale) : le typage des valeurs est porté par ./core.rs (`typed_filter_value` : entiers, booléen `true`/`false`, texte — `Value` liées typées, pas de cast SQL en chaîne). Aucun opérateur en v1 : la valeur d'une clé libre est une **égalité exacte typée** (`kind=dessert:lt` compare cette chaîne ; `count=2:1` → `400`). Des opérateurs se spécifieront par issue si un hôte en a besoin. Le `date` cité par la boîte n'est pas typé côté core : une colonne date déclarée filtrable tombe sous le garde de montage « type non pris en charge » (`Accepts` : entiers, booléen, texte seulement).
+    Arbitré par Sébastien le 2026-11-16 : seules les clés nommant une colonne de l'entité non déclarée filtrable sont refusées (`400` `MRD-REST-008`, porté par ./core.rs) ; un nom hors de l'entité reste ignoré, comme sous MCP (parité). La colonne `JSON` du Scenario de montage est posée en fixture par un `f32` (`ColumnType::Float`) : `Json` exige la feature `with-json` de sea-orm, hors graphe. `ListParams` retirée (`Query<HashMap<String, String>>`).
 
 Done when:
   Chaque `Scenario` de la présente spec dispose d'au moins un test nommé distinct vérifiant son
@@ -540,10 +515,9 @@ Scenario: Refus d'authentification précède tout parsing de corps et de query
 Scenario: Paramètre query mal typé répond 400 avec credentials valides
   Given l'app fixture et un token valide
   When un `GET /api/v1/recipes?page=abc` est envoyé
-  Then la réponse est `400` — rejet @QueryRejection d'@axum (vérifié source), @rest::core::list
+  Then la réponse est `400` avec le corps `MRD-REST-008: invalid query: …` (@RestError::InvalidQuery, arbitré par Sébastien le 2026-11-16 ; ni `422`, ni rejet @QueryRejection), @rest::core::list
     jamais appelé
-  And un `GET /api/v1/recipes?page=2&inconnu=1` réussit en revanche `200` : @ListParams n'a pas
-    de @deny_unknown_fields, le paramètre inconnu est ignoré (question ouverte en `Tasks`)
+  And un `GET /api/v1/recipes?page=2&inconnu=1` réussit en revanche `200` : le dictionnaire de query n'a pas de @deny_unknown_fields, le paramètre `inconnu` (hors de l'entité) est ignoré (arbitré par Sébastien le 2026-11-16)
 
 Scenario: page et per_page à zéro sont renvoyés normalisés
   Given l'app fixture, un token valide et trois recettes créées par le même propriétaire

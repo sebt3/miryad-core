@@ -257,8 +257,7 @@ Tasks:
     d'abord, puis ./query.rs. Avant ./rest/core.sdd (qui applique) et ./rest/mod.sdd, ./mcp/registry.sdd (qui parsent).
     Validé 2026-11-14 (validator PASS en lecture ; batterie complète verte rejouée par le primary : 16 combinaisons tests et clippy, fmt) : @MAX_FILTERS et @ListQuery posés exactement selon l'`Exposes` amendée 2026-11-13 ;
     test `list_query_is_inert_dto` ; module inconditionnel, `Pagination::from_raw` intact. Les `Scenario` de validation évoqués par la ligne (`order` sans `sort`, plafond) vivent dans ./rest/core.sdd, pas ici — conforme.
-    [?] (implementer et validator) : la ligne citait un type `Sort { column, descending }`, formulation antérieure à l'amendement — le contrat réel est l'`Exposes` (`sort`/`order` en `Option<String>` bruts dans
-    @ListQuery). Wording de la ligne non réécrit (hors cycle) ; l'`Exposes` fait foi.
+    Type réel : l'`Exposes` fait foi (`sort`/`order` en `Option<String>` bruts dans @ListQuery, arbitré par Sébastien le 2026-11-16) ; la description `Sort { column, descending }` ci-dessus est antérieure à cet amendement.
 
 Done when:
   Chaque `Scenario` dispose d'au moins un test nommé distinct et vérifie son `Then` dans le

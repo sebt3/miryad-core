@@ -50,7 +50,7 @@ Tasks:
   [x] Tracé dans le `Must` le 2026-11-06 (arbitrage du 2026-11-05) : un corps dépassant la borne de 64 Ko est rendu `422` (le `DefaultBodyLimit`
     borne avant `serde`) — pas de `413` : @RestError n'a pas de variante de trop-plein et en ajouter une est hors périmètre de cette surface.
 
-  [?] `413` serait la sémantique correcte du trop-plein : à rouvrir quand @RestError sera retouché (variante dédiée), hors périmètre de cette surface.
+  [?] `413` serait la sémantique correcte du trop-plein : à rouvrir quand @RestError sera retouché (variante dédiée), hors périmètre de cette surface. reporté (Sébastien, 2026-11-16)
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.

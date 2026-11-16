@@ -33,7 +33,7 @@ Must:
       salle et par heure) et aucune session ; sinon le principal est reconstruit à chaque message (`Identity::resolve`) ;
     4. commandes : `!help`, `!new [<contexte> [agent]]` (ferme la session de la salle puis ouvre via `SessionManager::open(subject, contexte, agent)`, nature portée par le type de
       contexte — DEC-28 ; sans argument, rouvre sur le contexte de la session fermée, sinon celui de `RoomContextResolver`, sinon texte fixe invitant à
-      `!new <contexte>` ; contexte inconnu ou refusé, ou agent hors de l'ensemble autorisé → message fixe, aucune session), `!cancel`,
+      `!new <contexte>`, sans fermer la session (arbitré par Sébastien le 2026-11-16) ; contexte inconnu ou refusé, ou agent hors de l'ensemble autorisé → message fixe, aucune session), `!cancel`,
       `!activate <toolset>` (appelle ../interactive/activation.sdd, le résultat est rendu en une ligne), `!resume` (rend les avis) ;
     5. sinon, texte libre : session de la salle (restaurée si déjà persistée ; sinon ouverte à la demande sur le contexte de `RoomContextResolver`, et si celui-ci rend `None`
       → texte fixe invitant à `!new <contexte>`, aucune session) → `send(subject, id, body, None)` ;
@@ -47,6 +47,7 @@ Must:
   Tout échec interne répond par `format_error(code)` ; le contenu du message de l'utilisateur n'est jamais journalisé ni cité.
   La table des événements vus est élaguée (> `dedupe_window`) opportunément (au plus une fois par heure).
   Compiler sous `#[cfg(all(feature = "lymaille", feature = "matrix"))]`.
+  Libellé d'absence de contexte (arbitré par Sébastien le 2026-11-16, cité au contrat comme les deux textes R13) : « Aucun contexte pour cette salle : utilisez `!new <contexte>`. » (constante `NO_CONTEXT`) ; rendu quand aucun contexte n'est résolvable pour la salle, y compris par `!new` sans argument, qui ne ferme alors pas la session.
 
 Must not:
   Répondre à ses propres messages (`sender` = compte du bot, déjà filtré par `should_deliver`, redoublé ici) ; créer une session pour un mxid non lié ;
@@ -57,18 +58,16 @@ Depends on:
   ./link.rs, ./render.rs, ../interactive/{manager,hub,activation}.rs, ../identity.rs, ../../matrix/{sync,client}.rs, @sea_orm, @tokio
 
 Exposes:
-  `ChatBridge::new`, `ChatConfig`, `impl MatrixEventHandler`, `ChatSender` (`pub(crate)`)
+  `ChatBridge::new`, `ChatConfig` (champs `rooms: Arc<dyn RoomContextResolver>`, `max_event_age`, `dedupe_window`), `RoomContextResolver`, `impl MatrixEventHandler`, `ChatSender` (`pub(crate)`)
 
 Tasks:
   [x] Réalignement R13 (DSD `DEC-28`, 2026-11-03) : Après R10 : `!new <contexte> [agent]` remplace `!agent` ; `Scenario` d'un contexte inconnu ou refusé et d'un agent hors ensemble. Spec seule.
     Validé 2026-11-06 (validator : Must porte `!new [<contexte> [agent]]` et `RoomContextResolver` ; les deux Scenario exigés manquaient — ajoutés au verbatim des tests existants (`Contexte inconnu ou inaccessible.` / `Agent non autorisé pour ce contexte.`, aucune session) et lint vert ; écart spec ↔ code reporté à la case :63, `ChatConfig::default_agent` encore en place).
-    [?] (validator) : le Given du Scenario « `!new` ferme et rouvre » décrit un repli à expliciter sous le nouveau contrat (session fermée → `RoomContextResolver` → texte fixe) — à trancher au cycle code :63.
+  [ ] Test du Scenario « !new ferme et rouvre » : son Given doit nommer le repli (session fermée → `RoomContextResolver` → texte fixe) ; nom proposé `new_ferme_puis_rouvre_sur_le_contexte_ferme` ; entrée : session de la salle dont la colonne `context` est renseignée, puis `!new` sans argument ; assertion : l'ancienne session est fermée et la nouvelle ouverte sur ce contexte, avec un `session_id` distinct.
   [x] Tests d'abord (SQLite mémoire, `ChatSender` espion, `ScriptedProvider`, horloge injectée), puis ./bridge.rs. Après ./link.rs et ./render.rs.
     Validé 2026-11-06 (validator PASS après un renvoi : FAIL d'abord sur un vert vacant du test « session fermée > resolver », corrigé par lecture sur `session_id` de la session rouverte et preuve par mutation ; production conforme aux points 4 et 5 du Must — replis session fermée → `RoomContextResolver` → texte fixe, `default_agent` purgé, `new` public et `with_sender`/`with_clock` `pub(crate)` figés ; 4 tests ajoutés, 19/19 verts ; `lymaille,matrix` vert en tests et clippy `-D warnings`, `fmt` ; ./../chat/mod.rs touché de façon forcee minimale — une assertion et une ligne de doc).
-    [?] (validator) : `RoomContextResolver` (et le champ `rooms`) absent de l'`Exposes` de cette spec — à nommer à la prochaine relecture.
-    [?] (validator) : le libellé exact « Aucun contexte pour cette salle : utilisez `!new <contexte>`. » est verrouillé par les tests mais pas figé dans la spec — le citer dans le `Must` comme les deux textes R13, ou le laisser hors contrat ?
-    [?] (validator) : le défaut `None` du résolveur (`AucunContexte`) n'est exécuté par aucun test réel (le `size_of_val` de `../chat/mod.rs` est un proxy de forme) — ajouter un test `ChatConfig::default().rooms.resolve(…) == None` ?
-    [?] (validator) : `!new` sans argument sur une session dont la colonne `context` est `NULL` ferme puis rend le texte fixe (aucune session) — voulu (« ferme puis… »), ou ne pas fermer sans certitude d'ouvrir ?
+  [ ] Test du défaut du résolveur : `ChatConfig::default().rooms.resolve(<room_id quelconque>).await` rend `None` (nom proposé `defaut_du_resolveur_rend_none`), en remplacement du seul proxy `size_of_val` de ../chat/mod.rs.
+  [ ] Code (arbitré par Sébastien le 2026-11-16) : `!new` sans argument, sans contexte résolvable (colonne `context` `NULL`, `RoomContextResolver` rendant `None`), ne ferme pas la session et rend le texte fixe ; test rouge sur le code actuel (qui ferme puis rend le texte) : nom proposé `new_sans_contexte_resolvable_ne_ferme_pas`.
   [x] Amendement R13 fait le 2026-11-06 (`RoomContextResolver` en trait async, arbitrage du 2026-11-06 ; `default_agent` retiré de `ChatConfig`). Historique : amendement R13 à finaliser en spec (arbitrage de Sébastien du 2026-11-05) : le `Must` point 4 est resté pré-R13 (`!new [agent]`, `!agent <id>`)
     alors que le code est écrit au contrat R13 — remplacer par `!new [<contexte> [agent]]` (ferme la session de la salle puis ouvre via
     `SessionManager::open(subject, contexte, agent)`, nature par le type — DEC-28) ; le **contexte d'une salle est fourni par l'hôte** : @ChatConfig
@@ -76,11 +75,11 @@ Tasks:
     rend un texte fixe invitant à `!new <contexte>`, et `!new` sans argument rouvre sur le contexte de la session fermée) ; retirer `default_agent`
     de l'ouverture à la demande ; figer le couple `ChatBridge::new(… Arc<MatrixClient> …)` public + `with_sender`/`with_clock` `pub(crate)`
     (résolution `private_interfaces` du code en place). Amender le point 5 du `Must` et les textes de confirmation en même temps.
-  [?] Mise à jour d'un message par édition (streaming) et salles multi-utilisateurs : hors lot 2.
+  [?] Mise à jour d'un message par édition (streaming) et salles multi-utilisateurs : hors lot 2. reporté (Sébastien, 2026-11-16)
   [x] Amendement du 2026-11-11 (arbitrage du développeur principal) : `code_de` est supprimée au profit de `LymailleError::code()` (../error.sdd) ; plus aucun code `MRD-LYMAILLE` en littéral dans ./bridge.rs ; tests existants verts, verrou « les codes sont stables » inchangé. Après ../error.sdd.
     Validé 2026-11-11 (validator PASS : `code_de` et `RUN_FAILED_CODE` disparues, zéro littéral `MRD-LYMAILLE` en production dans ./bridge.rs, verrou intact, 19/19 tests du pont verts sous `lymaille,matrix`, clippy `-D warnings` et `fmt` verts).
     Ratifié 2026-11-12 (arbitrage du développeur principal) — garder. (validator, cycle du 2026-11-11) : le site `SessionOutcome::Failed` dérive `-007` via une instance `Run { message: String::new(), retryable: false }` fabriquée — `code()` ne dépend d'aucun champ, comportement observable identique, mais la valeur `retryable: false` fictive pourrait prêter à lire une sémantique qui n'existe pas. Options : garder (recommandé, verrouillé par test) ou exposer plus tard une formulation sans champ fictif (constante de variante). Choix provisoire : garder la forme actuelle.
-  [?] Le banc live (`tests/matrix_live.rs`, cluster media-test) pourra porter un test `#[ignore]` de bout en bout ; non exigé par ce lot.
+  [?] Le banc live (`tests/matrix_live.rs`, cluster media-test) pourra porter un test `#[ignore]` de bout en bout ; non exigé par ce lot. reporté (Sébastien, 2026-11-16)
 
 Done when:
   Les `Scenario` sont verts sous `lymaille,matrix` ; la spec est relue et approuvée avant ./bridge.rs.
@@ -119,6 +118,11 @@ Scenario: !new ferme et rouvre
   Given une session de la salle
   When `!new`
   Then l'ancienne est fermée, une nouvelle ouverte, le contexte repart de zéro
+
+Scenario: !new sans contexte résolvable ne ferme pas la session
+  Given une session de la salle dont la colonne `context` est `NULL`, et un `RoomContextResolver` qui rend `None`
+  When `!new` sans argument
+  Then le texte fixe invitant à `!new <contexte>`, et la session n'est pas fermée (même identifiant, toujours active)
 
 Scenario: un contexte inconnu ou refusé est refusé
   Given un mxid lié, `!new c_inconnu` (contexte absent) puis `!new c_bob` (contexte d'un autre, refusé)
