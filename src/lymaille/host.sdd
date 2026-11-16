@@ -77,6 +77,7 @@ Tasks:
     Puis tests d'abord, puis ./host.rs.
     Arbitré le 2026-11-13 : forme : méthode de `LymailleHost` (recommandé : le `Purpose` de cette spec fait de ce trait « le **seul** point d'extension » de l'hôte, DSD `DEC-27`) plutôt qu'un trait `TokenProvider` distinct comme
     le propose l'issue (deuxième objet à câbler dans `ScriptDeps`, `AssembleDeps` et `SubagentDeps`).
+  [ ] Validation indépendante du 2026-11-16 — `forward_token_ne_divulgue_pas_le_jeton` n'assert que `rendu.is_some()` et la note « jeton opaque au Debug (test) » surévalue ce qu'il prouve ; le test de montage de `mcp_access.rs` n'assert que `bearer: true` : il ne vérifie pas que la valeur du jeton de l'hôte atteint le serveur (« porte ce jeton, et lui seul »). Tests discriminants d'abord (jeton sentinelle absent de `Debug`/`Display`/traces, présent côté serveur `forward` et nulle part ailleurs), puis seulement le code si un écart apparaît. Un fichier par tâche : ./host.rs puis ./mcp_access.rs.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./host.rs.
