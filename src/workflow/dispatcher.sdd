@@ -151,7 +151,7 @@ Must:
     ./error.sdd, le contrat transverse.
   Compiler uniquement sous `#[cfg(feature = "workflow")]`.
   Amendement du 2026-11-13 (issue #80, arbitré) — chaque `ctx.run` du dispatcher porte un **nom** lisible dans le journal Restate, par `RunFuture::name(…)` (trait `RunFuture` de `restate-sdk` 0.12.1,
-    `src/context/run.rs`, vérifié) : le run d'**exécution** d'un kind ordinaire s'appelle `step:<id>` et le run de **rendu** (`ctx.run` dédié au seul rendu, branches ordinaire et durable) `render:<id>`, où `<id>`
+    `src/context/run.rs`, vérifié) : le run d'**exécution** d'un kind ordinaire (qui contient aussi son rendu) s'appelle `step:<id>` et le run de **rendu** d'un kind durable (`ctx.run` dédié au seul rendu) `render:<id>`, où `<id>`
     est l'identifiant du step du DAG tel que reçu dans `req`. Un kind durable n'a donc que `render:<id>` dans le journal du dispatcher (ses effets sont nommés par lui-même). Le **nombre** de `ctx.run` ne change pas
     (un par invocation pour l'exécution ordinaire, aucun englobant pour un kind durable : `Must` et `Must not` inchangés) ; le nom est stable d'un rejeu à l'autre (dérivé de `req` seul, jamais d'une horloge ni d'un
     identifiant généré). Un nom n'embarque aucune valeur de `config`, d'`inputs` ni de `vars`.
@@ -357,12 +357,12 @@ Tasks:
     `RunInfo` unique relayé intact dans les deux branches ; trace de 2 lignes dans ./interpreter.rs (`trigger: None` citant T4,
     champ requis — obligation de compilation, motif B1/B3) ; batterie ciblée workflow et `--all-features` verte, complète due à la
     fin du lot 0.
-  [ ] Issue #80 (1) — nommer les `ctx.run` du `StepDispatcher`. Spec d'abord : chaque `ctx.run` du dispatcher porte un nom lisible dans le journal Restate — le run d'exécution d'un kind ordinaire `step:<id>`, le run de
-    Implémenté 2026-11-15 : les `ctx.run` du dispatcher portent `RunFuture::name` — `step:<id>` (exécution), `render:<id>` (rendu, kind durable) ; nombre de runs inchangé ; tests d'intégration `#[ignore]` contre `restate-server` 1.8.1 (podman) joués verts. La case reste `[ ]` : voir `[!]` ci-dessous.
-    [!] (implementer, mesuré) : le `Scenario` « le journal d'une invocation nomme ses runs » est **auto-contradictoire** avec le `Scenario` « un seul `ctx.run()` par invocation de @execute » du même fichier : le rendu d'un kind ordinaire vit DANS l'unique run d'exécution — la mesure 1.8.1 rend un seul run `step:A` pour un ordinaire, jamais `render:A` puis `step:A`. Le test live verrouille la forme mesurée. Le Scenario attend une correction du développeur principal (soit supprimer la clause « puis `step:A` » pour l'ordinaire, soit introduire un run de rendu séparé — ce qui contredit le `Must` « nombre de runs inchangé »).
-    rendu (`ctx.run` dédié au rendu, branches ordinaire et durable) `render:<id>` — par `RunFuture::name(…)` (trait `RunFuture` de `restate-sdk` 0.12.1, `src/context/run.rs`, vérifié) ; le nombre de `ctx.run`
+  [x] Issue #80 (1) — nommer les `ctx.run` du `StepDispatcher`. Spec d'abord : chaque `ctx.run` du dispatcher porte un nom lisible dans le journal Restate — le run d'exécution d'un kind ordinaire `step:<id>`, le run de
+    Implémenté 2026-11-15 : les `ctx.run` du dispatcher portent `RunFuture::name` — `step:<id>` (exécution), `render:<id>` (rendu, kind durable) ; nombre de runs inchangé ; tests d'intégration `#[ignore]` contre `restate-server` 1.8.1 (podman) joués verts.
+    Arbitré le 2026-11-16 : le `Scenario` est aligné sur la mesure `restate-server` 1.8.1 — un kind ordinaire n'a qu'un run `step:<id>` (rendu et exécution dans la même fermeture, `Must` « un seul `ctx.run()` » inchangé) ; seul un kind durable a `render:<id>`. Validé 2026-11-16 (batterie complète verte `BATTERY_FAIL=0` ; tests `#[ignore]` contre 1.8.1 joués verts le 2026-11-15).
+    rendu d'un kind durable (`ctx.run` dédié au rendu) `render:<id>` — par `RunFuture::name(…)` (trait `RunFuture` de `restate-sdk` 0.12.1, `src/context/run.rs`, vérifié) ; le nombre de `ctx.run`
     (un par invocation pour l'exécution ordinaire, aucun englobant pour un kind durable) est **inchangé** (`Must` et `Must not` actuels). `<id>` est l'identifiant du step du DAG, tel que reçu. `Scenario` :
-    le journal d'une invocation (`sys_journal`) nomme `render:A` puis `step:A`, et `render:S` seul pour un kind durable ; nom stable d'un rejeu à l'autre. Preuve par test d'intégration `#[ignore]`
+    le journal d'une invocation (`sys_journal`) ne nomme que `step:A` pour un kind ordinaire, et `render:S` seul pour un kind durable ; nom stable d'un rejeu à l'autre. Preuve par test d'intégration `#[ignore]`
     (podman + image `restate`, `../../tests/workflow_restate.rs`, rattaché à cette spec) : aucune preuve possible en mémoire. Puis tests d'abord, puis ./dispatcher.rs.
     Arbitré le 2026-11-13 : noms des deux runs : `step:<id>` pour l'exécution et `render:<id>` pour le rendu (recommandé) ; l'issue ne nomme que `step:<id>` (« chaque `ctx.run` ») : deux runs de même nom seraient indiscernables.
     Compatibilité de rejeu (arbitré le 2026-11-14) : renommer un `ctx.run` change des entrées de journal ; une invocation en vol lors de la montée de version peut diverger au rejeu. Le test réel `#[ignore]` (DevStation) vérifie la forme de `/query`, les noms d'étapes dans `sys_journal` et le comportement d'une invocation en vol après une nouvelle révision de déploiement (`register_deployment`) ; le résultat est consigné ici avant livraison, et la montée est documentée comme rupture (invocations en vol à vider) dans la `CHANGELOG`.
@@ -505,7 +505,7 @@ Scenario: un step subagent est exécuté par execute_long (DEC-29, preuve d'int�
 Scenario: le journal d'une invocation nomme ses runs
   Given un DAG dont le step `A` est un kind ordinaire et le step `S` un kind durable, joués contre un vrai `restate-server` (test d'intégration `#[ignore]`, podman, `../../tests/workflow_restate.rs`)
   When le run est terminé et le journal des invocations est lu (`sys_journal`)
-  Then l'invocation du step `A` contient des entrées de run nommées `render:A` puis `step:A`, celle du step `S` `render:S` seule (aucune entrée `step:S`) ; le nombre de runs par invocation est celui d'avant
+  Then l'invocation du step `A` (kind ordinaire) contient **une seule** entrée de run, nommée `step:A` (le rendu vit dans la même fermeture : aucune entrée `render:A`), celle du step `S` (kind durable) `render:S` seule (aucune entrée `step:S`) ; le nombre de runs par invocation est celui d'avant
 
 Scenario: les noms de run sont dérivés de la requête seule
   Given deux appels de `execute` pour la même `req` (rejeu) puis pour un autre `step_id`
