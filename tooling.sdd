@@ -170,7 +170,8 @@ Tasks:
     `./AGENTS.md` et dans les matrices test et clippy de `./.github/workflows/ci.yml`.
   [x] Amendement 2026-10-19 (`db`) : la batterie de `./AGENTS.md`, de `./.github/workflows/ci.yml` (matrices test et clippy) et de l'agent
     `validator` est portée de dix à treize combinaisons (tâche D8 de `./miryad-core.sdd`).
-  [ ] Amendement 2026-11-14 (`lymaille-pg`) : batterie de `./AGENTS.md` (déjà reprise), de `./.github/workflows/ci.yml` (matrices test et clippy, contrôles de graphe), de `./.github/workflows/workflows.sdd` et de l'agent `validator` portée à dix-sept combinaisons. Accord explicite du développeur principal requis ; livré avec la feature de ./src/lymaille/interactive/pg_relay.sdd.
+  [x] Amendement 2026-11-14 (`lymaille-pg`) : batterie de `./AGENTS.md` (déjà reprise), de `./.github/workflows/ci.yml` (matrices test et clippy, contrôles de graphe), de `./.github/workflows/workflows.sdd` et de l'agent `validator` portée à dix-sept combinaisons. Accord explicite du développeur principal requis ; livré avec la feature de ./src/lymaille/interactive/pg_relay.sdd.
+    Validé 2026-11-16 : `./AGENTS.md` et `./.github/workflows/ci.yml` déjà alignés ; `./.github/workflows/workflows.sdd` amendé (17 combinaisons, contrôles `sqlx-postgres`) et l'agent `validator` aligné sur la batterie complète (il portait encore treize combinaisons, sans aucune `lymaille*`). Batterie complète à dix-sept combinaisons verte le même jour.
 
 Done when:
   `cargo clippy --all-targets -- -D warnings`, la même commande sur chacune des combinaisons de

@@ -75,6 +75,10 @@ cargo test --no-default-features --features systemone
 cargo test --no-default-features --features workflow,systemone
 cargo test --no-default-features --features matrix
 cargo test --no-default-features --features workflow,matrix
+cargo test --no-default-features --features lymaille
+cargo test --no-default-features --features workflow,lymaille
+cargo test --no-default-features --features lymaille,matrix
+cargo test --no-default-features --features lymaille-pg
 cargo test --all-features
 cargo clippy --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
@@ -88,17 +92,28 @@ cargo clippy --no-default-features --features systemone --all-targets -- -D warn
 cargo clippy --no-default-features --features workflow,systemone --all-targets -- -D warnings
 cargo clippy --no-default-features --features matrix --all-targets -- -D warnings
 cargo clippy --no-default-features --features workflow,matrix --all-targets -- -D warnings
+cargo clippy --no-default-features --features lymaille --all-targets -- -D warnings
+cargo clippy --no-default-features --features workflow,lymaille --all-targets -- -D warnings
+cargo clippy --no-default-features --features lymaille,matrix --all-targets -- -D warnings
+cargo clippy --no-default-features --features lymaille-pg --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo fmt --check
 cargo tree --no-default-features -e normal -i sea-orm
 cargo tree --no-default-features --features swagger-ui -e normal -i sea-orm
 cargo tree --no-default-features --features static-frontend,swagger-ui -e normal -i sea-orm
+cargo tree --no-default-features -e normal -i lymaille
+cargo tree --no-default-features --features lymaille -e normal -i sea-orm
+cargo tree --no-default-features -e normal -i ts-rs
+cargo tree --no-default-features --features lymaille -e normal -i sqlx-postgres
+cargo tree --no-default-features --features lymaille-pg -e normal -i sqlx-postgres
 ```
 
-Les treize combinaisons de tests et de clippy sont celles de `tooling.sdd` (amendement 2026-10-19,
-feature `db`). Les trois `cargo tree … -e normal -i sea-orm` : sans `db` leur sortie standard doit
-être vide (cargo imprime « nothing to print » et rend 0) ; une ligne `sea-orm v…` en sortie est un
-échec, même avec le code 0.
+Source de vérité : `tooling.sdd` (amendements 2026-10-19 `db`, 2026-11-02 `lymaille`, 2026-11-06 `lymaille,matrix`,
+2026-11-14 `lymaille-pg`) ; en cas d'écart avec cette liste, `tooling.sdd` prévaut et l'écart est signalé. Les dix-sept
+combinaisons de tests et de clippy sont toutes à lancer. Contrôles `cargo tree … -i <paquet>` : pour `sea-orm`, `lymaille`,
+`ts-rs` et `sqlx-postgres` sans la feature concernée, **la sortie standard doit être vide** (selon la version de cargo :
+« nothing to print » rc 0 ou « did not match any packages » rc≠0 — le test est la stdout vide, pas le code) ; avec
+`--features lymaille` pour `sea-orm` et `--features lymaille-pg` pour `sqlx-postgres`, la sortie doit imprimer une ligne.
 
 - Toutes les combinaisons comptent : un lint `pedantic` peut ne se déclencher que sur un seul graphe
   de features (`must_use_candidate`, `missing_errors_doc`). Un harnais lancé uniquement en
