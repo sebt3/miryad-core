@@ -475,6 +475,7 @@ impl Inner {
                 };
                 tracing::warn!("lymaille hub: journal queue full, event delivered without a cursor");
                 self.deliver(&dropped.session, Frame::Event(dropped.event, None));
+                self.relay_missed(&dropped.session);
             }
             return;
         }
@@ -492,6 +493,21 @@ impl Inner {
             origin: self.origin.clone(),
             session: session.to_owned(),
             body: RelayBody::Cursor(seq),
+        });
+    }
+
+    /// Publie `Missed` pour `session` vers le relais s'il y en a un (arbitrage du 2026-11-16 de
+    /// ./hub.sdd, issue #81 lot 3) : file pleine ou panne d'écriture, les autres répliques
+    /// voient `Lagged(1)` et le client relit l'historique. Jamais le wildcard `"*"` : seule la
+    /// session concernée est signalée.
+    fn relay_missed(&self, session: &str) {
+        let Some(relay) = lock(&self.relay).clone() else {
+            return;
+        };
+        relay.publish(RelayMessage {
+            origin: self.origin.clone(),
+            session: session.to_owned(),
+            body: RelayBody::Missed,
         });
     }
 
@@ -745,6 +761,9 @@ async fn run_writer(
                 }
                 Err(_error) => {
                     tracing::warn!("lymaille hub: journal write failed, lot delivered without cursors");
+                    // Un `Missed` par session du lot en panne : les autres répliques voient
+                    // `Lagged(1)` (arbitrage du 2026-11-16 de ./hub.sdd).
+                    inner.relay_missed(session);
                 }
             }
         }
@@ -1799,6 +1818,172 @@ mod tests {
         assert!(
             quiet.is_err(),
             "aucun des événements 6 à 10 n'est livré au nouvel abonné"
+        );
+    }
+
+    // ── File pleine et panne d'écriture : `Missed` au relais (issue #81, lot 3,
+    //    arbitrage du 2026-11-16) ──────────────────────────────────────────────
+
+    /// Capture des lignes `tracing` (`tracing-subscriber` en dev-dependency, même motif que
+    /// `src/auth/oidc.rs`). Le `DefaultGuard` est thread-local : les tests qui assurent un
+    /// `warn` tournent donc sur un runtime `current_thread`, où la tâche d'écriture — émettrice
+    /// de ces traces — est rejouée sur le fil du test.
+    #[derive(Clone, Default)]
+    struct CapturedTraces(Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl CapturedTraces {
+        fn lines(&self) -> Vec<String> {
+            lock(&self.0).clone()
+        }
+    }
+
+    struct CaptureLayer(Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+            if !event.metadata().target().starts_with("miryad_core") {
+                return;
+            }
+            let mut visitor = MessageVisitor::default();
+            event.record(&mut visitor);
+            lock(&self.0).push(visitor.finish());
+        }
+    }
+
+    #[derive(Default)]
+    struct MessageVisitor {
+        rendered: String,
+    }
+
+    impl MessageVisitor {
+        fn finish(&self) -> String {
+            self.rendered.clone()
+        }
+    }
+
+    impl tracing::field::Visit for MessageVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write as _;
+
+            if !self.rendered.is_empty() {
+                self.rendered.push(' ');
+            }
+            let _ = write!(&mut self.rendered, "{}={value:?}", field.name());
+        }
+    }
+
+    fn capture_traces() -> (tracing::subscriber::DefaultGuard, CapturedTraces) {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let captured = CapturedTraces::default();
+        let subscriber =
+            tracing_subscriber::registry::Registry::default().with(CaptureLayer(Arc::clone(&captured.0)));
+        let guard = tracing::subscriber::set_default(subscriber);
+        (guard, captured)
+    }
+
+    /// `Scenario` « file pleine ou panne d'écriture : le relais publie Missed » — cas (a), la
+    /// file du journal pleine. Runtime `current_thread` (horloge réelle, base connectée) : la
+    /// boucle d'émission synchrone ne cède jamais la main, la tâche d'écriture ne peut donc pas
+    /// vider la file de 64 pendant les 200 émissions — le débordement est déterministe et la
+    /// capture thread-local voit les traces du test comme celles de la tâche.
+    #[tokio::test(flavor = "current_thread")]
+    async fn file_pleine_du_journal_le_relais_publie_missed() {
+        let db = crate::lymaille::store::test_support::test_db().await;
+        let bus = Bus::new();
+        let hub_a = EventHub::new(None, 256)
+            .with_log(
+                SeaEventLog::new(db.clone()),
+                LogConfig {
+                    queue_capacity: 64,
+                    flush_interval: Duration::from_secs(1),
+                    ..journal_config()
+                },
+            )
+            .with_relay(bus.relay(256));
+        let hub_b = EventHub::new(None, 256).with_relay(bus.relay(256));
+        hub_a.register(&session("s1"), "alice");
+        let mut on_a = hub_a.subscribe("alice", &session("s1"));
+        let mut on_b = hub_b.subscribe("alice", &session("s1"));
+        let mut on_b_s2 = hub_b.subscribe("alice", &session("s2"));
+        let (_guard, captured) = capture_traces();
+        let started = std::time::Instant::now();
+        for turn in 1..=200 {
+            hub_a.emit(text_delta("s1", turn, "x"));
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "`emit` n'attend jamais la file du journal : {:?}",
+            started.elapsed()
+        );
+        let (cursor, _event) = recv_cursor_of(&mut on_a)
+            .await
+            .expect("l'abonné local reçoit les événements déversés par la file pleine");
+        assert_eq!(cursor, None, "file pleine : l'événement part sans curseur");
+        let lagged = tokio::time::timeout(Duration::from_millis(500), on_b.recv())
+            .await
+            .expect("l'abonné de l'autre hub est averti")
+            .expect_err("un Missed devient Lagged(1)");
+        assert_eq!(lagged, SubscriptionError::Lagged(1), "le relais a publié Missed");
+        let quiet = tokio::time::timeout(Duration::from_millis(100), on_b_s2.recv()).await;
+        assert!(
+            quiet.is_err(),
+            "Missed vise la session concernée, pas le wildcard `*`"
+        );
+        assert!(
+            captured.lines().iter().any(|line| line.contains("queue full")),
+            "un `warn` est tracé, sans contenu d'événement : {:?}",
+            captured.lines()
+        );
+    }
+
+    /// `Scenario` « file pleine ou panne d'écriture : le relais publie Missed » — cas (b), la
+    /// panne d'écriture (table du journal retirée, même recette que
+    /// `une_panne_decriture_n_interrompt_pas_le_flux`). Runtime `current_thread` : le `warn`
+    /// part de la tâche d'écriture, qui doit être rejouée sur le fil du test pour être capturée.
+    #[tokio::test(flavor = "current_thread")]
+    async fn panne_decriture_le_relais_publie_missed() {
+        let db = crate::lymaille::store::test_support::test_db().await;
+        db.execute_unprepared("DROP TABLE miryad_lymaille_session_events")
+            .await
+            .expect("la table du journal est retirée : tout append échouera");
+        let bus = Bus::new();
+        let hub_a = EventHub::new(None, 256)
+            .with_log(SeaEventLog::new(db), journal_config())
+            .with_relay(bus.relay(256));
+        let hub_b = EventHub::new(None, 256).with_relay(bus.relay(256));
+        hub_a.register(&session("s1"), "alice");
+        let mut on_a = hub_a.subscribe("alice", &session("s1"));
+        let mut on_b = hub_b.subscribe("alice", &session("s1"));
+        let mut on_b_s2 = hub_b.subscribe("alice", &session("s2"));
+        let (_guard, captured) = capture_traces();
+        let started = std::time::Instant::now();
+        hub_a.emit(text_delta("s1", 1, "x"));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "`emit` n'attend jamais le journal : {:?}",
+            started.elapsed()
+        );
+        let (cursor, _event) = recv_cursor_of(&mut on_a)
+            .await
+            .expect("l'abonné reçoit malgré la panne du journal");
+        assert_eq!(cursor, None, "panne d'écriture : le lot part sans curseur");
+        let lagged = tokio::time::timeout(Duration::from_millis(500), on_b.recv())
+            .await
+            .expect("l'abonné de l'autre hub est averti")
+            .expect_err("un Missed devient Lagged(1)");
+        assert_eq!(lagged, SubscriptionError::Lagged(1), "le relais a publié Missed");
+        let quiet = tokio::time::timeout(Duration::from_millis(100), on_b_s2.recv()).await;
+        assert!(
+            quiet.is_err(),
+            "Missed vise la session concernée, pas le wildcard `*`"
+        );
+        assert!(
+            captured
+                .lines()
+                .iter()
+                .any(|line| line.contains("journal write failed")),
+            "un `warn` est tracé, sans contenu d'événement : {:?}",
+            captured.lines()
         );
     }
 
