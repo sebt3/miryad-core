@@ -395,16 +395,19 @@ impl EventSink for EventHub {
 impl Inner {
     /// Diffuse une trame au canal de `session` : sans abonné, la trame est abandonnée et le
     /// canal libéré (`Must not` de ./hub.sdd : retenir des événements sans abonné) ; `send`
-    /// n'attend jamais et `SendError` est ignoré.
-    fn deliver(&self, session: &str, frame: Frame) {
+    /// n'attend jamais et `SendError` est ignoré. Rend `true` si la trame a atteint un canal avec
+    /// abonné (diffusion effective : seul cas où l'appelant retient son curseur).
+    fn deliver(&self, session: &str, frame: Frame) -> bool {
         let mut slots = lock(&self.slots);
-        if let Some(slot) = slots.get(session) {
-            if slot.sender.receiver_count() == 0 {
-                self.evict_without_subscribers(&mut slots, session);
-            } else {
-                let _sent = slot.sender.send(frame);
-            }
+        let Some(slot) = slots.get(session) else {
+            return false;
+        };
+        if slot.sender.receiver_count() == 0 {
+            self.evict_without_subscribers(&mut slots, session);
+            return false;
         }
+        let _sent = slot.sender.send(frame);
+        true
     }
 
     /// Marque une session dont le dernier abonné local est parti : son canal est libéré
@@ -469,12 +472,18 @@ impl Inner {
             };
             if let Err(error) = handle.queue.try_send(pending) {
                 let dropped = match error {
-                    mpsc::error::TrySendError::Full(dropped) | mpsc::error::TrySendError::Closed(dropped) => {
+                    mpsc::error::TrySendError::Full(dropped) => {
+                        tracing::warn!("lymaille hub: journal queue full, event delivered without a cursor");
+                        dropped
+                    }
+                    mpsc::error::TrySendError::Closed(dropped) => {
+                        tracing::warn!(
+                            "lymaille hub: journal queue closed, event delivered without a cursor"
+                        );
                         dropped
                     }
                 };
-                tracing::warn!("lymaille hub: journal queue full, event delivered without a cursor");
-                self.deliver(&dropped.session, Frame::Event(dropped.event, None));
+                let _delivered = self.deliver(&dropped.session, Frame::Event(dropped.event, None));
                 self.relay_missed(&dropped.session);
             }
             return;
@@ -511,8 +520,10 @@ impl Inner {
         });
     }
 
-    /// Mémorise le dernier curseur diffusé par cette réplique pour `session` (point de reprise
-    /// des lectures du journal déclenchées par le relais).
+    /// Mémorise le dernier curseur **effectivement diffusé** par cette réplique pour `session`
+    /// (point de reprise des lectures du journal déclenchées par le relais). N'est appelé qu'après
+    /// une diffusion à un abonné local : une session sans abonné ne retient aucun curseur
+    /// (arbitrage du 2026-11-16 de ./hub.sdd, issue #81 lot 3).
     fn note_cursor(&self, session: &str, seq: u64) {
         let mut since = lock(&self.cursor_since);
         let entry = since.entry(session.to_owned()).or_insert(0);
@@ -529,6 +540,9 @@ impl Inner {
     fn has_local_subscriber(&self, session: &str) -> bool {
         let mut slots = lock(&self.slots);
         let Some(slot) = slots.get(session) else {
+            // Pas de canal : aucun curseur ne doit subsister (course « dernier abonné parti »
+            // entre la diffusion et la mémorisation du curseur), purge défensive.
+            lock(&self.cursor_since).remove(session);
             return false;
         };
         if slot.sender.receiver_count() == 0 {
@@ -608,11 +622,13 @@ impl Inner {
                             if logged.seq <= since {
                                 continue;
                             }
-                            self.note_cursor(&message.session, logged.seq);
-                            self.deliver(
+                            let delivered = self.deliver(
                                 &message.session,
                                 Frame::Event(Arc::new(logged.event), Some(logged.seq)),
                             );
+                            if delivered {
+                                self.note_cursor(&message.session, logged.seq);
+                            }
                         }
                     }
                     Err(_error) => {
@@ -769,11 +785,12 @@ async fn run_writer(
         }
         for (index, item) in batch.iter().enumerate() {
             let cursor = cursors.get(&index).copied();
+            let delivered = inner.deliver(&item.session, Frame::Event(Arc::clone(&item.event), cursor));
             if let Some(sequence) = cursor {
-                inner.note_cursor(&item.session, sequence);
-            }
-            inner.deliver(&item.session, Frame::Event(Arc::clone(&item.event), cursor));
-            if let Some(sequence) = cursor {
+                // Curseur retenu seulement après diffusion effective à un abonné local.
+                if delivered {
+                    inner.note_cursor(&item.session, sequence);
+                }
                 inner.relay_cursor(&item.session, sequence);
             }
         }
@@ -1943,6 +1960,121 @@ pub(crate) mod tests {
         assert!(
             quiet.is_err(),
             "aucun des événements 6 à 10 n'est livré au nouvel abonné"
+        );
+    }
+
+    /// Attend que le journal porte au moins `count` lignes de `session_id` : la tâche d'écriture a
+    /// alors commité le lot, et le `sleep` court laisse la diffusion qui suit l'`append` se faire.
+    async fn journal_settled(log: &SeaEventLog, session_id: &str, count: usize) {
+        for _ in 0..200 {
+            let page = log
+                .read_after(&session(session_id), None, 1_000)
+                .await
+                .expect("le journal se relit");
+            if page.events.len() >= count {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("le journal n'a pas reçu les événements dans le délai");
+    }
+
+    /// `Scenario` « une session émettrice sans abonné ne laisse aucun curseur » (issue #81, lot 3,
+    /// arbitré le 2026-11-16) : trois émissions locales sur `s1` sans aucun abonné ; une fois le
+    /// journal commité, `cursor_since` ne retient rien pour `s1` (une entrée par session émettrice
+    /// serait une fuite, et un rejeu périmé au prochain abonné).
+    #[tokio::test]
+    async fn une_session_emettrice_sans_abonne_ne_laisse_aucun_curseur() {
+        let (hub, log) = journal_hub().await;
+        hub.register(&session("s1"), "alice");
+        for turn in 1..=3 {
+            hub.emit(text_delta("s1", turn, "sans abonné"));
+        }
+        journal_settled(&log, "s1", 3).await;
+        assert_eq!(
+            hub.inner.last_cursor("s1"),
+            None,
+            "aucun curseur n'est retenu pour une session sans abonné local"
+        );
+    }
+
+    /// `Scenario` « un abonné tardif ne rejoue pas ce que la réplique a émis sans abonné » (issue
+    /// #81, lot 3, arbitré le 2026-11-16) : `B` émet 1 à 3 sur `s1` sans abonné local, puis un
+    /// abonné simple apparaît sur `B` ; `A` émet 4 — l'abonné ne reçoit que le 4 avec `Some(4)`.
+    /// L'assertion sur `cursor_since` de `B` juste après l'arrivée de l'abonné est le témoin
+    /// discriminant : le résultat observable seul ne distingue pas un curseur retenu à 3 d'une
+    /// reprise depuis `seq − 1`.
+    #[tokio::test]
+    async fn un_abonne_tardif_ne_rejoue_pas_ce_que_la_replique_a_emis_sans_abonne() {
+        let db = crate::lymaille::store::test_support::test_db().await;
+        let bus = Bus::new();
+        let hub_a = EventHub::new(None, 256)
+            .with_log(SeaEventLog::new(db.clone()), journal_config())
+            .with_relay(bus.relay(256));
+        let hub_b = EventHub::new(None, 256)
+            .with_log(SeaEventLog::new(db.clone()), journal_config())
+            .with_relay(bus.relay(256));
+        let log = SeaEventLog::new(db);
+        hub_a.register(&session("s1"), "alice");
+        hub_b.register(&session("s1"), "alice");
+        for turn in 1..=3 {
+            hub_b.emit(text_delta("s1", turn, "b sans abonné"));
+        }
+        journal_settled(&log, "s1", 3).await;
+        let mut on_b = hub_b.subscribe("alice", &session("s1"));
+        assert_eq!(
+            hub_b.inner.last_cursor("s1"),
+            None,
+            "B n'a retenu aucun curseur pour ce qu'il a émis sans abonné"
+        );
+        hub_a.emit(text_delta("s1", 4, "a"));
+        let (cursor, _) = recv_cursor_of(&mut on_b)
+            .await
+            .expect("le quatrième événement arrive sur B");
+        assert_eq!(
+            cursor,
+            Some(4),
+            "le premier événement reçu par l'abonné tardif est le quatrième"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let quiet = tokio::time::timeout(Duration::from_millis(100), on_b.recv()).await;
+        assert!(
+            quiet.is_err(),
+            "aucun des événements 1 à 3 n'est rejoué à l'abonné tardif"
+        );
+    }
+
+    /// Libellé propre à la file du journal fermée (tâche d'écriture morte, `TrySendError::Closed`)
+    /// — distinct de « queue full » ; `Missed` reste publié dans les deux cas (arbitrage du
+    /// 2026-11-16 de ./hub.sdd, issue #81 lot 3). La tâche morte est simulée par une file dont le
+    /// récepteur a été lâché.
+    #[tokio::test(flavor = "current_thread")]
+    async fn file_fermee_du_journal_a_son_propre_warn() {
+        let db = crate::lymaille::store::test_support::test_db().await;
+        let hub = EventHub::new(None, 256).with_log(SeaEventLog::new(db.clone()), journal_config());
+        hub.register(&session("s1"), "alice");
+        let (closed_queue, closed_receiver) = mpsc::channel(1);
+        drop(closed_receiver);
+        *lock(&hub.inner.journal) = Some(Arc::new(super::JournalHandle {
+            log: SeaEventLog::new(db),
+            queue: closed_queue,
+            replay_max: 10,
+        }));
+        let (_guard, captured) = capture_traces();
+        hub.emit(text_delta("s1", 1, "perdu"));
+        assert!(
+            captured
+                .lines()
+                .iter()
+                .any(|line| line.contains("journal queue closed")),
+            "une file fermée a son libellé : {:?}",
+            captured.lines()
+        );
+        assert!(
+            !captured.lines().iter().any(|line| line.contains("queue full")),
+            "une file fermée n'est pas annoncée comme pleine : {:?}",
+            captured.lines()
         );
     }
 
