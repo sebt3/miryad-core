@@ -73,6 +73,10 @@ chrono = { version = "0.4", optional = true }
 utoipa = "5"
 utoipa-swagger-ui = { version = "9", optional = true, features = ["axum", "vendored"] }
 vynil-core = { version = "0.9.1", default-features = false, features = ["hbs"], optional = true }
+# Validation des arguments des outils MCP applicatifs (src/mcp/app_tool.sdd, DSD `mcp#DEC-3`) : `default-features = false`
+# retire `resolve-http` et `resolve-file` (aucune résolution de `$ref` distante ou de fichier). Cargo unifie les features :
+# `lymaille` tire la même crate avec ses features par défaut, d'où le récupérateur de `$ref` qui refuse tout (spec).
+jsonschema = { version = "0.60", default-features = false, optional = true }
 tower-http = { version = "0.6", default-features = false, features = ["fs"], optional = true }
 restate-sdk = { version = "0.12", features = ["http_server"], optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
@@ -123,7 +127,7 @@ static-frontend = ["dep:tower-http"]
 swagger-ui = ["dep:utoipa-swagger-ui"]
 # Entités, comptes locaux, RBAC, migrations, tokens API (miryad-core.sdd, amendement 2026-10-19) ; active sea-orm.
 db = ["dep:sea-orm", "dep:sea-orm-migration", "dep:hmac", "dep:sha2", "dep:rand", "dep:chrono", "dep:hex"]
-mcp = ["db", "dep:vynil-core"]
+mcp = ["db", "dep:vynil-core", "dep:jsonschema"]
 # async-trait n'est pas dans ce tableau : déjà dépendance directe non optionnelle utilisée hors
 # gating (src/auth/oidc.rs, src/migration/*) ; la rendre optionnelle casserait tout build sans
 # workflow — contrat tranché dans src/workflow/mod.sdd `Must` (implémentation 2026-09-23).

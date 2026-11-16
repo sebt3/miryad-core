@@ -112,7 +112,7 @@ Tasks:
       `static_verdict` (touche les sites de ./../rest/core.rs). Recommandation : la nouvelle fonction, diff plus petit.
   [ ] Tâche A1 : @AppTool, @AppToolHandler, `new` (schéma, `OwnerOnly`) et `call` — tests d'abord (Scenarios ci-dessous), puis ./app_tool.rs.
     Après la tâche R et après ./error.sdd (`#[non_exhaustive]`) ; avant ./registry.sdd (tâche A2) et ./handler.sdd (tâche A3).
-  [ ] Tâche A0 (Cargo, hors périmètre de cette spec — diff imposé par ./mod.sdd, fichier possédé par /miryad-core.sdd) :
+  [x] Tâche A0 (Cargo, hors périmètre de cette spec — diff imposé par ./mod.sdd, fichier possédé par /miryad-core.sdd) :
     `jsonschema = { version = "0.60", default-features = false, optional = true }` et `mcp = ["db", "dep:vynil-core", "dep:jsonschema"]` ;
     mesurer `cargo tree --no-default-features --features mcp -e normal -i jsonschema` (une ligne attendue) et
     `cargo tree --no-default-features -e normal -i jsonschema` (stdout vide) ; **ajouter ces deux contrôles à la batterie de
@@ -121,6 +121,8 @@ Tasks:
       features ; le blocage passe donc par le récupérateur qui refuse tout (voir `Must`, `AppTool::new`). API vérifiée en source le
       2026-11-16 : `ValidationOptions::with_retriever(impl Retrieve + 'static)` existe en 0.60.2 et `Retrieve` est ré-exporté par
       `jsonschema` (aucune dépendance supplémentaire sur `referencing`).
+    Fait le 2026-11-16 (Claude, à la demande explicite du développeur principal) : `jsonschema` et la feature `mcp` dans `/Cargo.toml` ; contrôles ajoutés à `/tooling.sdd`,
+    `/AGENTS.md`, `.github/workflows/{ci.yml,workflows.sdd}` et `.opencode/agents/validator.md`. Mesuré : `--features mcp` → une ligne (`jsonschema v0.60.2`) ; sans `mcp` → stdout vide.
 
 Done when:
   Les `Scenario` sont verts sous `--no-default-features --features mcp` et `--all-features` ; la batterie de /tooling.sdd (y compris les deux

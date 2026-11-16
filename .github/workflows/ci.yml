@@ -186,3 +186,16 @@ jobs:
           out=$(cargo tree --no-default-features --features lymaille-pg -e normal -i sqlx-postgres) || exit 1
           if [ -z "$out" ]; then echo "la feature lymaille-pg ne tire pas sqlx-postgres : sortie vide" ; exit 1 ; fi
           echo "$out"
+
+      - name: cargo tree -i jsonschema doit être vide sans mcp
+        shell: bash
+        run: |
+          out=$(cargo tree --no-default-features -e normal -i jsonschema 2>/dev/null) || true
+          if [ -n "$out" ]; then echo "jsonschema est dans le graphe sans la feature mcp :" ; echo "$out" ; exit 1 ; fi
+
+      - name: la feature mcp implique jsonschema
+        shell: bash
+        run: |
+          out=$(cargo tree --no-default-features --features mcp -e normal -i jsonschema) || exit 1
+          if [ -z "$out" ]; then echo "la feature mcp ne tire pas jsonschema : sortie vide" ; exit 1 ; fi
+          echo "$out"

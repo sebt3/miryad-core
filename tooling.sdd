@@ -59,6 +59,11 @@ Must:
     prévaut : s'y ajoute la combinaison `--no-default-features --features lymaille-pg`, soit **dix-sept** combinaisons de tests et dix-sept de clippy. Elle fait exister le relais `LISTEN/NOTIFY` (`sea-orm/sqlx-postgres`). Un contrôle de graphe de plus :
     `cargo tree --no-default-features --features lymaille -e normal -i sqlx-postgres` doit rendre une **sortie stdout vide** (le test est la stdout vide, pas le code de sortie, comme pour `ts-rs`) ; `cargo tree --no-default-features --features lymaille-pg -e normal -i sqlx-postgres`
     doit imprimer une ligne. `./AGENTS.md`, `./.github/workflows/ci.yml`, `./.github/workflows/workflows.sdd` et l'agent `validator` à amender avec l'accord explicite du développeur principal (tâche ci-dessous).
+    **Amendement 2026-11-16 (feature `mcp`, issue #86, DSD `mcp#DEC-3`, ./src/mcp/app_tool.sdd)** — complète les précédents sans les réécrire : la feature `mcp` gagne la dépendance
+    `jsonschema` (`default-features = false`, validation des arguments des outils applicatifs). Deux contrôles de graphe de plus : `cargo tree --no-default-features -e normal -i jsonschema`
+    doit rendre une **sortie stdout vide** (le test est la stdout vide, pas le code de sortie, comme pour `ts-rs`) ; `cargo tree --no-default-features --features mcp -e normal -i jsonschema`
+    doit imprimer une ligne. Le nombre de combinaisons de tests et de clippy ne change pas. `./AGENTS.md`, `./.github/workflows/ci.yml`, `./.github/workflows/workflows.sdd` et l'agent
+    `validator` amendés le même jour avec l'accord explicite du développeur principal.
     **Amendement 2026-10-19** : `graphql` et `graphiql` sortent de la batterie avec la suppression de la
     surface GraphQL — soit **dix** combinaisons de tests et dix de clippy, toutes en
     `--no-default-features --features <liste>` hors défaut et `--all-features`. Les

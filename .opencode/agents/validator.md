@@ -106,14 +106,16 @@ cargo tree --no-default-features --features lymaille -e normal -i sea-orm
 cargo tree --no-default-features -e normal -i ts-rs
 cargo tree --no-default-features --features lymaille -e normal -i sqlx-postgres
 cargo tree --no-default-features --features lymaille-pg -e normal -i sqlx-postgres
+cargo tree --no-default-features -e normal -i jsonschema
+cargo tree --no-default-features --features mcp -e normal -i jsonschema
 ```
 
 Source de vérité : `tooling.sdd` (amendements 2026-10-19 `db`, 2026-11-02 `lymaille`, 2026-11-06 `lymaille,matrix`,
 2026-11-14 `lymaille-pg`) ; en cas d'écart avec cette liste, `tooling.sdd` prévaut et l'écart est signalé. Les dix-sept
 combinaisons de tests et de clippy sont toutes à lancer. Contrôles `cargo tree … -i <paquet>` : pour `sea-orm`, `lymaille`,
-`ts-rs` et `sqlx-postgres` sans la feature concernée, **la sortie standard doit être vide** (selon la version de cargo :
+`ts-rs`, `sqlx-postgres` et `jsonschema` sans la feature concernée, **la sortie standard doit être vide** (selon la version de cargo :
 « nothing to print » rc 0 ou « did not match any packages » rc≠0 — le test est la stdout vide, pas le code) ; avec
-`--features lymaille` pour `sea-orm` et `--features lymaille-pg` pour `sqlx-postgres`, la sortie doit imprimer une ligne.
+`--features lymaille` pour `sea-orm`, `--features lymaille-pg` pour `sqlx-postgres` et `--features mcp` pour `jsonschema`, la sortie doit imprimer une ligne.
 
 - Toutes les combinaisons comptent : un lint `pedantic` peut ne se déclencher que sur un seul graphe
   de features (`must_use_candidate`, `missing_errors_doc`). Un harnais lancé uniquement en

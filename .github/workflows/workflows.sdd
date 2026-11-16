@@ -92,6 +92,11 @@ Must:
     (critère : la stdout vide, pas le code de sortie), et `cargo tree --no-default-features --features lymaille-pg -e normal -i sqlx-postgres`
     qui doit imprimer une ligne. `./ci.yml` est déjà aligné.
 
+  **Amendement 2026-11-16 (feature `mcp`, issue #86, `../../tooling.sdd` amendement 2026-11-16)** — complète les précédents sans les réécrire : le job de
+    preuve de graphe gagne deux contrôles `jsonschema` : `cargo tree --no-default-features -e normal -i jsonschema` dont la **sortie standard doit être vide**
+    (critère : la stdout vide, pas le code de sortie), et `cargo tree --no-default-features --features mcp -e normal -i jsonschema` qui doit imprimer une
+    ligne. `./ci.yml` est aligné.
+
 Must not:
   Publier alors que les tests ou le harnais ont échoué.
   Dockeriser, déployer, appliquer un chart ou brancher un secret PostgreSQL dans cette CI :
