@@ -308,9 +308,16 @@ Example: matrice exhaustive erreur source → code numérique → message @Displ
     `MRD-MCP-007: internal error: MRD-AUTH-003: OIDC error: discovery failed` — double code imbriqué, `Tasks [arbitré 2026-09-29]`)
 
 Tasks:
-  [ ] Amendement 2026-11-16 (issue #86) : poser `#[non_exhaustive]` sur @McpError ; vérifier qu'aucun `match` hors crate de ce dépôt (`tests/`)
+  [x] Amendement 2026-11-16 (issue #86) : poser `#[non_exhaustive]` sur @McpError ; vérifier qu'aucun `match` hors crate de ce dépôt (`tests/`)
     n'est exhaustif sur cet enum (sinon l'adapter avec un bras `_`). Première tâche du lot #86 : ./app_tool.sdd en dépend. Aucun
     nouveau code `MRD-MCP-*`.
+    Validé 2026-11-16 (validator PASS, batterie 17+17 verte, contrôles `cargo tree` conformes) : attribut posé, `grep McpError tests/`
+    vide, `match` intra-crate (`rpc_code`, `From<@RestError>`) inchangés et restent sans joker.
+    - [?] (validator, préexistant #78, hors de cette tâche) : le Scenario « @From @RestError::InvalidQuery devient @McpError::InvalidParams »
+      est couvert indirectement par `list_undeclared_entity_column_is_invalid_params` de ./registry.rs (Display et transit affirmés) mais
+      sans test nommé dans ./error.rs assertant `rpc_code` `-32602` et le `wire_message` exact. Choix provisoire : la cartographie indirecte
+      suffit (précédent de la tâche `[x]` 2026-10-02 « La cartographie suffit »). Option : test nommé dédié dans ./error.rs. À trancher
+      hors cycle #86.
   [x] Trois variantes @McpError::MethodNotFound (`MRD-MCP-008`), @McpError::ParseError (`MRD-MCP-009`),
     @McpError::InvalidRequest (`MRD-MCP-010`), @McpError::wire_message, message de @McpError::Render
     généralisé, @data de @McpError::Application toujours `{"code": …}`, et @From<@RestError> 6/6

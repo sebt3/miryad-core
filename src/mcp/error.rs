@@ -10,6 +10,7 @@ use crate::rest::error::RestError;
 /// les variantes naissent dans le registre MCP, le rendu de sortie, le dispatch du
 /// handler, ou la conversion `From<RestError>`.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum McpError {
     /// `MRD-MCP-001` — refus RBAC, miroir du `403` REST, code JSON-RPC `-32001`.
     #[error("MRD-MCP-001: forbidden")]
