@@ -831,7 +831,7 @@ pub enum RelayCommand {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -1280,17 +1280,29 @@ mod tests {
 
     /// Scenario « un événement émis sur une réplique arrive aux abonnés de l'autre » : `A` et
     /// `B` reliés par un relais de test, un abonné de `s1` sur chacun — les trois événements
-    /// arrivent en ordre aux deux ; l'audit d'un `Script` en erreur n'est appelé que sur `A`.
+    /// arrivent en ordre aux deux.
+    ///
+    /// Volet « l'audit d'un `Script` en erreur n'est appelé que sur `A` » (réécriture du
+    /// 2026-11-16 — le test précédent donnait à `B` un `audit = None` : `B` ne pouvait rien
+    /// auditer même cassé). `B` porte désormais son **propre** `AuditWriter` espion sur la même
+    /// base. Le drainage de la file de `B` est prouvé par un marqueur local : il n'entre dans
+    /// cette file qu'après le `record` éventuel du `Script` relayé (ce `record`, s'il avait lieu,
+    /// précède ou accompagne la diffusion locale dans `apply_relay_message`, donc avant que
+    /// l'abonné de `B` ne reçoive le `Script` — et le marqueur est émis après ce `recv`). La
+    /// file d'audit étant FIFO, `drained` sur le marqueur garantit que toute ligne espionne de
+    /// `s1` née sur `B` est déjà écrite quand on compte.
     #[tokio::test]
     async fn un_evenement_emis_sur_une_replique_arrive_aux_abonnes_de_autre() {
         let db = crate::lymaille::store::test_support::test_db().await;
-        let audit = AuditWriter::spawn(db.clone());
+        let audit_a = AuditWriter::spawn(db.clone());
+        let audit_b = AuditWriter::spawn(db.clone());
         let bus = Bus::new();
-        let hub_a = EventHub::new(Some(audit), 256).with_relay(bus.relay(256));
-        let hub_b = EventHub::new(None, 256).with_relay(bus.relay(256));
+        let hub_a = EventHub::new(Some(audit_a), 256).with_relay(bus.relay(256));
+        let hub_b = EventHub::new(Some(audit_b), 256).with_relay(bus.relay(256));
         for hub in [&hub_a, &hub_b] {
             hub.register(&session("s1"), "alice");
         }
+        hub_b.register(&session("s-marqueur"), "alice");
         let mut on_a = hub_a.subscribe("alice", &session("s1"));
         let mut on_b = hub_b.subscribe("alice", &session("s1"));
         hub_a.emit(text_delta("s1", 1, "un"));
@@ -1315,12 +1327,17 @@ mod tests {
                 received.kind
             );
         }
+        // La file d'audit de `A` est drainée par le record du `Script` lui-même (émis sur `A`).
         drained(&db, "script cancelled").await;
+        // Marqueur dans la file d'audit de `B` : son drainage prouve que tout record que `B`
+        // aurait eu tort de pousser pour le `Script` relayé est déjà écrit.
+        hub_b.emit(script_error("s-marqueur", "marqueur-audit-b"));
+        drained(&db, "marqueur-audit-b").await;
         let rows = audit_rows(&db).await;
         assert_eq!(
             rows.iter().filter(|(session_id, _)| session_id == "s1").count(),
             1,
-            "l'audit n'est appelé que sur A : {rows:?}"
+            "l'audit n'est appelé que sur A, jamais sur B : {rows:?}"
         );
     }
 
@@ -1397,12 +1414,16 @@ mod tests {
 
     /// Scenario « le relais ne bloque jamais l'émission » : file de relais pleine et jamais
     /// consommée, 10 000 émissions — `emit` ne bloque pas, les abonnés locaux reçoivent tout
-    /// aux limites de leur capacité (au moins une rupture `Lagged`, jamais `Closed`).
+    /// aux limites de leur capacité (au moins une rupture `Lagged`, jamais `Closed`), et un
+    /// `warn` sans contenu d'événement est tracé à chaque débordement (assertion du
+    /// 2026-11-16 — le contrat de débordement de la couture `EventRelay` est porté ici par le
+    /// relais de test, que le hub appelle sur le fil de `emit`).
     #[tokio::test(start_paused = true)]
     async fn le_relais_ne_bloque_jamais_lemission() {
         let hub = EventHub::new(None, 4_096).with_relay(stuck_relay());
         hub.register(&session("s1"), "alice");
         let mut subscriber = hub.subscribe("alice", &session("s1"));
+        let (_guard, captured) = capture_traces();
         let started = std::time::Instant::now();
         for turn in 0..10_000 {
             hub.emit(text_delta("s1", turn, "x"));
@@ -1427,6 +1448,22 @@ mod tests {
             "le local reçoit aux limites de sa capacité : {received} reçus, {lagged} ruptures"
         );
         assert!(lagged >= 1, "au-delà de la capacité, une rupture est signalée");
+        let lignes = captured.lines();
+        let debordements: Vec<&String> = lignes
+            .iter()
+            .filter(|line| line.contains("file pleine"))
+            .collect();
+        assert!(
+            !debordements.is_empty(),
+            "le debordement du relais est trace en `warn` ({} lignes capturees)",
+            lignes.len()
+        );
+        assert!(
+            debordements
+                .iter()
+                .all(|line| !line.contains("s1") && !line.contains("text_delta")),
+            "aucun `warn` de debordement ne porte de contenu d'evenement"
+        );
     }
 
     /// Scenario « close et cancel traversent le relais » : un gestionnaire simulé sur `B`
@@ -1553,32 +1590,86 @@ mod tests {
     }
 
     /// `Scenario` « reprise après un curseur sans trou ni doublon » : journal 1 à 5, reprise
-    /// depuis 3, sixième émis pendant la relecture — 4, 5, 6 une seule fois chacun.
+    /// depuis 3, sixième émis **pendant la relecture** — 4, 5, 6 une seule fois chacun.
+    ///
+    /// Réécriture du 2026-11-16 : le test précédent émettait le sixième événement APRÈS le
+    /// retour de `subscribe_from` — la course n'avait jamais lieu et la déduplication par
+    /// curseur n'était pas exercée. Sans couture dans `subscribe_from` l'interleaving exact
+    /// n'est pas branchable à l'octet près (`[?]` dans la spec) ; la construction ci-dessous le
+    /// rend déterministe par l'ordre du pool SQLite (pool d'une connexion, sémaphore
+    /// d'acquisition en FIFO chez sqlx/tokio) :
+    /// 1. le test retient l'unique connexion du pool ;
+    /// 2. le sixième événement est émis : la tâche d'écriture s'aligne sur le pool, PREMIÈRE
+    ///    attendante ;
+    /// 3. la reprise démarre dans une tâche dédiée : son `subscribe()` — exécuté avant toute
+    ///    attente — crée le récepteur du canal `s1`, puis sa lecture s'aligne sur le pool depuis
+    ///    derrière la tâche d'écriture ;
+    /// 4. la connexion est rendue : le FIFO la sert d'abord à la tâche d'écriture — elle
+    ///    commite la ligne 6 et diffuse la trame directe, que le récepteur déjà créé met en
+    ///    tampon ; la relecture, réveillée après le relâchement, ne peut exécuter sa `SELECT`
+    ///    qu'APRÈS le commit et rejeu donc 4, 5 **et 6** ;
+    /// 5. `replay.len() == 3` atteste que la course a bien eu lieu ; si le pool servait les
+    ///    attendants dans l'autre ordre, cette affirmation rougit au lieu de laisser un test
+    ///    silencieusement non discriminant.
+    /// Ensuite : la trame directe du 6 est déduppliquée par curseur, puis silence.
     #[tokio::test]
     async fn reprise_apres_un_curseur_sans_trou_ni_doublon() {
-        let (hub, log) = journal_hub().await;
+        use sea_orm::TransactionTrait as _;
+
+        let db = crate::lymaille::store::test_support::test_db().await;
+        let log = SeaEventLog::new(db.clone());
+        let hub = EventHub::new(None, 256).with_log(SeaEventLog::new(db.clone()), journal_config());
         hub.register(&session("s1"), "alice");
         let seeded: Vec<SessionEvent> = (1..=5).map(|turn| typed("s1", turn)).collect();
         log.append(&session("s1"), &seeded, chrono::Utc::now())
             .await
             .expect("les curseurs 1 à 5 sont posés");
-        let mut subscriber = hub
-            .subscribe_from("alice", &session("s1"), Some(3))
+        // 1. L'unique connexion du pool est retenue : rien ne lit, rien n'écrit.
+        let garde = db
+            .begin()
             .await
-            .expect("la reprise depuis le curseur 3 réussit");
+            .expect("l'unique connexion du pool de test est retenue");
+        // 2. Le sixième événement est émis ; la tâche d'écriture s'aligne sur le pool —
+        //    premier attendant (battement de lot de 10 ms compris).
         hub.emit(text_delta("s1", 6, "six"));
-        for want in [4, 5] {
-            let (cursor, _) = recv_cursor_of(&mut subscriber)
-                .await
-                .expect("le rejeu sert la ligne attendue");
-            assert_eq!(cursor, Some(want), "le rejeu reprend à 4");
-        }
-        let (cursor, _) = recv_cursor_of(&mut subscriber)
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        // 3. La reprise démarre dans sa tâche : le canal est créé, la lecture s'aligne à son
+        //    tour sur le pool — depuis derrière la tâche d'écriture.
+        let hub_reprise = hub.clone();
+        let s1 = session("s1");
+        let reprise = tokio::spawn(async move { hub_reprise.subscribe_from("alice", &s1, Some(3)).await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // 4. Connexion rendue : le FIFO sert la tâche d'écriture avant la relecture ; elle
+        //    committe puis diffuse, la SELECT de la relecture s'exécute après le commit.
+        drop(garde);
+        // 5. La course est attestée, puis le rejeu et la déduplication sont vérifiés.
+        let mut subscriber = reprise
             .await
-            .expect("le direct prend le relais");
-        assert_eq!(cursor, Some(6), "le sixième arrive une seule fois, en direct");
+            .expect("la tâche de reprise termine")
+            .expect("la reprise depuis le curseur 3 reussit");
+        assert_eq!(
+            subscriber.replay.len(),
+            3,
+            "la course a bien eu lieu : la relecture voit deja le sixieme, sa trame directe \
+             doit suivre en tampon"
+        );
+        let mut vus = Vec::new();
+        for _ in 0..3 {
+            let (cursor, _event) = recv_cursor_of(&mut subscriber)
+                .await
+                .expect("l'abonné reçoit la ligne attendue");
+            vus.push(cursor);
+        }
+        assert_eq!(
+            vus,
+            vec![Some(4), Some(5), Some(6)],
+            "les curseurs 4, 5, 6 en ordre, chacun une seule fois"
+        );
         let quiet = tokio::time::timeout(Duration::from_millis(100), subscriber.recv()).await;
-        assert!(quiet.is_err(), "aucun doublon ne suit");
+        assert!(
+            quiet.is_err(),
+            "la trame directe du sixième, déjà servie par le rejeu, est déduppliquée : aucun doublon ne suit"
+        );
     }
 
     /// `Scenario` « reprise après une purge » : 1 à 40 purgés, reprise depuis 10 — `Lagged(30)`
@@ -1669,8 +1760,10 @@ mod tests {
 
     /// `Scenario` « une panne d'écriture n'interrompt pas le flux » : journal dont `append`
     /// échoue (table retirée) — deux événements reçus avec curseur `None`, `emit` jamais
-    /// bloquant.
-    #[tokio::test]
+    /// bloquant, et un `warn` est tracé (assertion du 2026-11-16 — le `warn` part de la tâche
+    /// d'écriture : runtime `current_thread` pour que la capture thread-local le voie, même
+    /// motif que `panne_decriture_le_relais_publie_missed`).
+    #[tokio::test(flavor = "current_thread")]
     async fn une_panne_decriture_n_interrompt_pas_le_flux() {
         let db = crate::lymaille::store::test_support::test_db().await;
         db.execute_unprepared("DROP TABLE miryad_lymaille_session_events")
@@ -1679,6 +1772,7 @@ mod tests {
         let hub = EventHub::new(None, 256).with_log(SeaEventLog::new(db), journal_config());
         hub.register(&session("s1"), "alice");
         let mut subscriber = hub.subscribe("alice", &session("s1"));
+        let (_guard, captured) = capture_traces();
         let started = std::time::Instant::now();
         hub.emit(text_delta("s1", 1, "x"));
         hub.emit(text_delta("s1", 2, "y"));
@@ -1693,12 +1787,32 @@ mod tests {
                 .expect("l'abonné reçoit quand même");
             assert_eq!(cursor, None, "faute de curseur journalisé, `None`");
         }
+        assert!(
+            captured
+                .lines()
+                .iter()
+                .any(|line| line.contains("journal write failed")),
+            "la panne d'écriture est tracée en `warn`, sans contenu d'événement : {:?}",
+            captured.lines()
+        );
     }
 
     /// `Scenario` « un curseur arrive par le relais et la réplique lit le journal » : deux hubs
-    /// sur le même journal, abonné de `s1` sur `B` — `B` lit et diffuse avec les curseurs ; une
-    /// session sans abonné sur `B` ne déclenche aucune lecture.
-    #[tokio::test]
+    /// sur le même journal, abonné de `s1` sur `B` — `B` lit et diffuse avec les curseurs.
+    ///
+    /// Volet « une session sans abonné sur `B` ne déclenche aucune lecture » (réécriture du
+    /// 2026-11-16 — le test précédent n'était pas discriminant : l'abonné tardif créé après le
+    /// `Cursor` n'aurait rien reçu même avec une lecture). Le journal est un `SeaEventLog` sur
+    /// pool partagé et ni SQLite ni PostgreSQL ne peuvent armer un déclencheur sur `SELECT` :
+    /// la LECTURE elle-même est témoinée par deux traces de la branche `Cursor` —
+    /// - la trace `debug` « no journal read » prouve que `B` a pris la branche « sans abonné
+    ///   local » (et y est resté : c'est avant toute lecture) ;
+    /// - `cursor_since` de `B` pour `s2` reste vide : une lecture déclencherait `note_cursor`
+    ///   sur chaque ligne relue. Un `emit` local de `B` est impossible ici (`B` n'émet rien),
+    ///   la table ne peut être touchée que par le chemin `Cursor`.
+    /// Le silence de l'abonné tardif est gardé en troisième verrou. Runtime `current_thread` :
+    /// la capture thread-local doit voir les traces de la tâche de relais de `B`.
+    #[tokio::test(flavor = "current_thread")]
     async fn un_curseur_arrive_par_le_relais_et_la_replique_lit_le_journal() {
         let db = crate::lymaille::store::test_support::test_db().await;
         let bus = Bus::new();
@@ -1710,6 +1824,7 @@ mod tests {
             .with_relay(bus.relay(256));
         hub_a.register(&session("s1"), "alice");
         let mut on_b = hub_b.subscribe("alice", &session("s1"));
+        let (_guard, captured) = capture_traces();
         hub_a.emit(text_delta("s1", 1, "un"));
         hub_a.emit(text_delta("s1", 2, "deux"));
         for want in 1..=2 {
@@ -1724,12 +1839,22 @@ mod tests {
         }
         // Une session sans abonné sur B : le Cursor reçu ne déclenche aucune lecture.
         hub_a.emit(text_delta("s2", 1, "seule"));
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        let sans_lecture = || {
+            captured
+                .lines()
+                .iter()
+                .any(|line| line.contains("no journal read"))
+        };
+        wait_until(sans_lecture).await;
+        assert!(
+            lock(&hub_b.inner.cursor_since).get("s2").is_none(),
+            "aucune lecture du journal pour s2 : aucune ligne relue n'a été notée comme diffusée"
+        );
         let mut late = hub_b.subscribe("alice", &session("s2"));
         let quiet = tokio::time::timeout(Duration::from_millis(100), late.recv()).await;
         assert!(
             quiet.is_err(),
-            "aucune lecture du journal pour une session sans abonné"
+            "l'abonné tardif de la session sans abonné ne reçoit rien rétrospectivement"
         );
     }
 
@@ -1828,11 +1953,13 @@ mod tests {
     /// `src/auth/oidc.rs`). Le `DefaultGuard` est thread-local : les tests qui assurent un
     /// `warn` tournent donc sur un runtime `current_thread`, où la tâche d'écriture — émettrice
     /// de ces traces — est rejouée sur le fil du test.
+    /// Capture thread-local des traces — `pub(crate)` : `./pg_relay.rs` la rejoue sous
+    /// `lymaille-pg` (Scenario « un canal plein abandonne sans bloquer »).
     #[derive(Clone, Default)]
-    struct CapturedTraces(Arc<std::sync::Mutex<Vec<String>>>);
+    pub(crate) struct CapturedTraces(Arc<std::sync::Mutex<Vec<String>>>);
 
     impl CapturedTraces {
-        fn lines(&self) -> Vec<String> {
+        pub(crate) fn lines(&self) -> Vec<String> {
             lock(&self.0).clone()
         }
     }
@@ -1872,7 +1999,7 @@ mod tests {
         }
     }
 
-    fn capture_traces() -> (tracing::subscriber::DefaultGuard, CapturedTraces) {
+    pub(crate) fn capture_traces() -> (tracing::subscriber::DefaultGuard, CapturedTraces) {
         use tracing_subscriber::layer::SubscriberExt as _;
         let captured = CapturedTraces::default();
         let subscriber =

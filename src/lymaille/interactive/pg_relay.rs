@@ -669,9 +669,16 @@ mod tests {
     /// répond plus (pool de deux connexions — l'écouteur en tient une, une transaction retient
     /// l'autre, la tâche d'envoi est bloquée à l'acquisition) ; 1 000 publications ne bloquent
     /// jamais et le récepteur n'en voit qu'une fraction.
-    #[tokio::test]
+    ///
+    /// Assertion du 2026-11-16 : le `warn` exigé par le `Scenario` (« un `warn` sans contenu
+    /// est tracé ») est capté — la capture thread-local de `./hub.rs` est rejouée ici, et
+    /// `publish` est appelé sur le fil du test. Runtime `current_thread` : la trace part de
+    /// `publish` dans le task du test, qu'aucun déplacement entre fils ne doit surprendre.
+    #[tokio::test(flavor = "current_thread")]
     #[ignore = "exige PostgreSQL (MIRYAD_TEST_PG_URL)"]
     async fn un_canal_plein_abandonne_sans_bloquer() {
+        use crate::lymaille::interactive::hub::tests::capture_traces;
+
         let Some(url) = pg_url() else { return };
         let canal = canal_unique();
         let db_envoi = pg_db(&url, 2).await;
@@ -693,6 +700,7 @@ mod tests {
             .begin()
             .await
             .expect("la seconde connexion du pool est retenue : la base ne répond plus");
+        let (_guard, captured) = capture_traces();
         let started = std::time::Instant::now();
         for index in 0..1_000 {
             relais.publish(message("s1", &format!("m{index}")));
@@ -701,6 +709,22 @@ mod tests {
             started.elapsed() < Duration::from_secs(5),
             "`publish` ne bloque jamais : {:?}",
             started.elapsed()
+        );
+        let lignes = captured.lines();
+        let debordements: Vec<&String> = lignes
+            .iter()
+            .filter(|line| line.contains("outgoing queue full"))
+            .collect();
+        assert!(
+            !debordements.is_empty(),
+            "le debordement de la file de publication est trace en `warn` ({} lignes capturees)",
+            lignes.len()
+        );
+        assert!(
+            debordements
+                .iter()
+                .all(|line| !line.contains("s1") && !line.contains("m0") && !line.contains(&canal)),
+            "aucun `warn` de debordement ne porte de contenu ni de canal"
         );
         drop(garde);
         let recus = collect(&mut recu, 1_000, Duration::from_secs(10)).await;
