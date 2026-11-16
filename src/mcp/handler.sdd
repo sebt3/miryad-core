@@ -289,11 +289,17 @@ Handles:
     parse ; UTF-8 ou JSON invalide : `-32700` (enveloppe) — plus aucun `400`/`422` du parseur.
 
 Tasks:
-  [ ] Tâche A3 (2026-11-16, issue #86) : liste et dispatch des outils applicatifs — tests d'abord (Scenarios ci-dessous, au niveau
+  [x] Tâche A3 (2026-11-16, issue #86) : liste et dispatch des outils applicatifs — tests d'abord (Scenarios ci-dessous, au niveau
     HTTP comme les Scenarios existants), puis ./handler.rs. Après ./registry.sdd (tâche A2). Preuves attendues : l'outil apparaît dans
     `tools/list` à la suite des entités avec son `inputSchema` verbatim ; un appel refusé rend `-32001` et le gestionnaire (compteur)
     n'est pas appelé ; des arguments non conformes rendent `-32602` ; une erreur `Application` rend `-32000` avec `data.code` ; un
     nom inconnu rend toujours `-32601`.
+    Validé 2026-11-17 (validator GO, cycle 5/6, batterie 17+17 verte) : 5 tests nommés au niveau HTTP (ordre entités-puis-applicatifs
+    par nom croissant, `inputSchema` verbatim, `-32001` avec compteur à 0, `-32602`, `-32000` avec `data.code`, `-32601` sur nom inconnu
+    y compris motif en suffixe d'entité) ; rendu `RenderShape::Record` par le mécanisme de `get` ; test `-32601` préexistant intact.
+    - [?] (implementer + validator) : les deux `#[allow(dead_code)]` de ./app_tool.rs (l. 82/93) sont devenus inutiles depuis que le
+      dispatch A3 atteint `AppTool` depuis la lib. Choix provisoire : les conserver jusqu'à arbitrage (aucun contrat en jeu) ; la
+      suppression est un nettoyage d'une ligne dans ./app_tool.rs, à jouer quand Sébastien l'aura dit.
   [x] Convertir les `Scenario` (réécrits et complétés le 2026-09-29, une trentaine) en tests nommés distincts dans le `mod tests`
     `#[cfg(test)]` de ./handler.rs — le fichier comptait 0 test inline avant la tâche ; gabarits à
     dupliquer de ./registry.rs (sqlite mémoire + @Migrator::up + entité @RestEntity fixture

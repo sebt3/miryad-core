@@ -205,6 +205,16 @@ fn handle_tools_list(id: Value, registry: &McpToolRegistry) -> JsonRpcResponse {
             input_schema: id_schema.clone(),
         });
     }
+    // Outils applicatifs (amendrement 2026-11-16, issue #86, FR-8) : après les entités, dans
+    // l'ordre croissant de leur nom — un `BTreeMap` —, `name`, `description` et `inputSchema`
+    // verbatim de l'enregistrement (aucune réécriture, aucun `additionalProperties` ajouté).
+    for tool in registry.tools.values() {
+        tools.push(ToolDeclaration {
+            name: tool.name().to_string(),
+            description: tool.description().to_string(),
+            input_schema: tool.input_schema().clone(),
+        });
+    }
 
     match serde_json::to_value(tools) {
         Ok(tools) => JsonRpcResponse::ok(id, json!({ "tools": tools })),
@@ -275,16 +285,40 @@ async fn handle_tools_call(
         Err(err) => return error_response(id, &McpError::InvalidParams(err.to_string())),
     };
 
+    // Absent ou `null`, `arguments` vaut `{}` (arbitré 2026-09-29) — les deux chemins, outil
+    // applicatif comme entité, reçoivent cette forme.
+    let arguments = match call.arguments {
+        Value::Null => empty_arguments(),
+        arguments => arguments,
+    };
+
+    // Outils applicatifs (amendrement 2026-11-16, issue #86) : consultation par nom **exact**
+    // avant le découpage par suffixe ; trouvé → `AppTool::call`, sans `parse_tool_name`. La
+    // collision entre les deux tables étant impossible par construction (./registry.sdd), cet
+    // ordre n'est pas un contrat observable. Le résultat est rendu en `RenderShape::Record` par
+    // le même mécanisme que `get` (arbitré 2026-11-16) ; toute erreur est traduite par
+    // ./error.rs seul (`-32001`, `-32602`, `-32603`, `-32000` applicatif — aucun code nouveau),
+    // traces comprises (`error_response`).
+    if let Some(tool) = registry.tools.get(&call.name) {
+        return match tool.call(&auth.db, principal, arguments).await {
+            Ok(data) => {
+                let mut engine = HandleBars::new();
+                match render(&mut engine, &registry.format, RenderShape::Record, &data) {
+                    Ok(text) => {
+                        JsonRpcResponse::ok(id, json!({ "content": [{ "type": "text", "text": text }] }))
+                    }
+                    Err(err) => error_response(id, &err),
+                }
+            }
+            Err(err) => error_response(id, &err),
+        };
+    }
+
     let Some((resource_name, op)) = parse_tool_name(&call.name) else {
         return error_response(id, &McpError::UnknownTool(call.name));
     };
     let Some(entity) = registry.entities.get(resource_name) else {
         return error_response(id, &McpError::UnknownTool(call.name.clone()));
-    };
-
-    let arguments = match call.arguments {
-        Value::Null => empty_arguments(),
-        arguments => arguments,
     };
 
     match entity.call(op, &auth.db, principal, arguments).await {
@@ -1784,5 +1818,269 @@ mod tests {
         assert_eq!(mcp.rpc_code(), -32002);
         assert_eq!(mcp.wire_message(), "MRD-MCP-002: resource not found");
         assert_eq!(mcp.data(), None);
+    }
+
+    // ——— Outils applicatifs (issue #86, tâche A3) ———
+
+    /// Schéma des `Scenario` de l'issue #86 : un objet exigeant la propriété entière
+    /// `occurrence` (même fixture que `./app_tool.rs`).
+    fn occurrence_schema() -> Value {
+        json!({
+            "type": "object",
+            "required": ["occurrence"],
+            "properties": { "occurrence": { "type": "integer" } }
+        })
+    }
+
+    /// `Scenario` : « tools/list expose un outil applicatif après les entités (issue #86) » —
+    /// les cinq tools de `recipes` puis `analyse`, `description` et `inputSchema` verbatim de
+    /// l'enregistrement.
+    #[tokio::test]
+    async fn tools_list_expose_un_util_applicatif_apres_les_entites() {
+        let _tour = serial_turn();
+        let state = migrated_state().await;
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register::<recipe::Entity>();
+        registry.register_tool(
+            "analyse",
+            "Analyse une occurrence",
+            occurrence_schema(),
+            AccessPolicy::Public,
+            |_db, _principal, _arguments| async { Ok(json!({ "verdict": "ok" })) },
+        );
+        let token = bearer_for(&state.db, "alice").await;
+        let router = mcp_router(registry).with_state(state);
+        let served = post_json(
+            router,
+            &token,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        )
+        .await;
+        assert_eq!(served.status, StatusCode::OK);
+        let body = served.json();
+        let tools = body["result"]["tools"].as_array().expect("tableau de tools");
+        let names: Vec<&str> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("nom"))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "recipes_list",
+                "recipes_get",
+                "recipes_create",
+                "recipes_update",
+                "recipes_delete",
+                "analyse",
+            ],
+            "l'outil applicatif suit les cinq déclarations de l'entité (FR-8)"
+        );
+        let analyse = tools
+            .iter()
+            .find(|tool| tool["name"] == "analyse")
+            .unwrap_or_else(|| panic!("analyse absent : {body}"));
+        assert_eq!(analyse["description"], "Analyse une occurrence");
+        assert_eq!(
+            analyse["inputSchema"],
+            occurrence_schema(),
+            "inputSchema verbatim, aucune réécriture ni additionalProperties ajouté"
+        );
+    }
+
+    /// `Scenario` : « tools/call dispatche un outil applicatif et rend son résultat (issue #86) » —
+    /// `Public`, arguments conformes : bloc `content` de type `text` rendant `verdict`, gestionnaire
+    /// appelé une fois.
+    #[tokio::test]
+    async fn tools_call_dispatche_un_util_applicatif_et_rend_son_resultat() {
+        let _tour = serial_turn();
+        let state = migrated_state().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = Arc::clone(&calls);
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register::<recipe::Entity>();
+        registry.register_tool(
+            "analyse",
+            "Analyse une occurrence",
+            occurrence_schema(),
+            AccessPolicy::Public,
+            move |_db, _principal, _arguments| {
+                let calls = Arc::clone(&handler_calls);
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({ "verdict": "ok" }))
+                }
+            },
+        );
+        let token = bearer_for(&state.db, "alice").await;
+        let router = mcp_router(registry).with_state(state);
+        let served = post_json(
+            router,
+            &token,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"analyse","arguments":{"occurrence":7}}}"#,
+        )
+        .await;
+        assert_eq!(served.status, StatusCode::OK);
+        let body = served.json();
+        assert!(
+            !body.as_object().expect("objet").contains_key("error"),
+            "aucune erreur attendue : {body}"
+        );
+        assert_eq!(body["result"]["content"][0]["type"], "text");
+        let text = body["result"]["content"][0]["text"].as_str().expect("bloc text");
+        let record: Value = serde_json::from_str(text).expect("le rendu Record est du JSON parsable");
+        assert_eq!(record["verdict"], "ok");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "le gestionnaire a été appelé une fois"
+        );
+    }
+
+    /// `Scenario` : « un principal refusé rend -32001 sans exécuter le gestionnaire (issue #86) » —
+    /// `AdminOnly` hors admin, arguments conformes : `-32001`, compteur à zéro.
+    #[tokio::test]
+    async fn principal_refuse_dun_util_applicatif_rend_moins_32001_sans_executer_le_gestionnaire() {
+        let _tour = serial_turn();
+        let state = migrated_state().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = Arc::clone(&calls);
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register::<recipe::Entity>();
+        registry.register_tool(
+            "analyse",
+            "Analyse une occurrence",
+            occurrence_schema(),
+            AccessPolicy::AdminOnly,
+            move |_db, _principal, _arguments| {
+                let calls = Arc::clone(&handler_calls);
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({ "verdict": "ok" }))
+                }
+            },
+        );
+        let token = bearer_for(&state.db, "alice").await;
+        let router = mcp_router(registry).with_state(state);
+        let served = post_json(
+            router,
+            &token,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"analyse","arguments":{"occurrence":7}}}"#,
+        )
+        .await;
+        assert_eq!(served.status, StatusCode::OK);
+        let body = served.json();
+        assert_eq!(body["error"]["code"], -32001);
+        assert_eq!(
+            body["error"]["message"].as_str().expect("message"),
+            "MRD-MCP-001: forbidden"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "le gestionnaire n'a pas été appelé"
+        );
+    }
+
+    /// `Scenario` : « des arguments non conformes rendent -32602 (issue #86) » — `Public`,
+    /// `{"occurrence":"sept"}` : `-32602`, gestionnaire jamais appelé. Verrouille aussi la preuve
+    /// des Tasks : avec la table `tools` consultée d'abord, un nom inconnu rend toujours `-32601`.
+    #[tokio::test]
+    async fn arguments_non_conformes_dun_util_applicatif_rendent_moins_32602() {
+        let _tour = serial_turn();
+        let state = migrated_state().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = Arc::clone(&calls);
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register::<recipe::Entity>();
+        registry.register_tool(
+            "analyse",
+            "Analyse une occurrence",
+            occurrence_schema(),
+            AccessPolicy::Public,
+            move |_db, _principal, _arguments| {
+                let calls = Arc::clone(&handler_calls);
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({ "verdict": "ok" }))
+                }
+            },
+        );
+        let token = bearer_for(&state.db, "alice").await;
+        let router = mcp_router(registry).with_state(state);
+        let served = post_json(
+            router.clone(),
+            &token,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"analyse","arguments":{"occurrence":"sept"}}}"#,
+        )
+        .await;
+        assert_eq!(served.status, StatusCode::OK);
+        let body = served.json();
+        assert_eq!(body["error"]["code"], -32602);
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .expect("message")
+                .starts_with("MRD-MCP-005: invalid params"),
+            "message préfixé MRD-MCP-005 : {:?}",
+            body["error"]["message"]
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "le gestionnaire n'a pas été appelé"
+        );
+
+        let served = post_json(
+            router,
+            &token,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"inconnu","arguments":{}}}"#,
+        )
+        .await;
+        let body = served.json();
+        assert_eq!(body["error"]["code"], -32601);
+        assert_eq!(
+            body["error"]["message"].as_str().expect("message"),
+            "MRD-MCP-006: unknown tool: inconnu",
+            "la consultation préalable de `tools` ne change rien pour un nom inconnu"
+        );
+    }
+
+    /// Preuve des Tasks A3 (issue #86) : une erreur `Application` rendue par le gestionnaire
+    /// traverse la traduction d'./error.rs seul — `-32000`, message nu, `data.code` posé.
+    #[tokio::test]
+    async fn erreur_application_dun_util_applicatif_rend_moins_32000_avec_data_code() {
+        let _tour = serial_turn();
+        let state = migrated_state().await;
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register::<recipe::Entity>();
+        registry.register_tool(
+            "analyse",
+            "Analyse une occurrence",
+            occurrence_schema(),
+            AccessPolicy::Public,
+            |_db, _principal, _arguments| async move {
+                Err::<Value, McpError>(McpError::Application(HookError::with_code(
+                    "MON-001",
+                    "occurrence close",
+                )))
+            },
+        );
+        let token = bearer_for(&state.db, "alice").await;
+        let router = mcp_router(registry).with_state(state);
+        let served = post_json(
+            router,
+            &token,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"analyse","arguments":{"occurrence":7}}}"#,
+        )
+        .await;
+        assert_eq!(served.status, StatusCode::OK);
+        let body = served.json();
+        assert_eq!(body["error"]["code"], -32000);
+        assert_eq!(
+            body["error"]["message"].as_str().expect("message"),
+            "occurrence close",
+            "le message nu de l'hôte, sans préfixe MRD-"
+        );
+        assert_eq!(body["error"]["data"], json!({ "code": "MON-001" }));
     }
 }
