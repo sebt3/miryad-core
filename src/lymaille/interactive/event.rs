@@ -185,6 +185,13 @@ pub enum SessionEventKind {
         /// Le modèle est relancé après la réponse vide.
         will_retry: bool,
     },
+    /// Le bail de la porte de tour a été perdu (`EventKind::TurnLeaseLost`, `lymaille` 0.3.0) :
+    /// le tour est abandonné sans sauvegarde ; `turn` est son rang, aucun contenu.
+    TurnLeaseLost {
+        /// Rang du tour abandonné.
+        #[ts(type = "number")]
+        turn: u64,
+    },
     /// Événement amont non reflété (`MemoryChanged`, `TargetOpened`, `RunInterrupted` et toute
     /// variante future) : le nom de variante tel que `lymaille` le sérialise, aucun contenu.
     Other {
@@ -328,7 +335,7 @@ where
     Ok(path)
 }
 
-/// Variante amont vers sa variante typée : les 15 variantes reflétées champ à champ, toute autre
+/// Variante amont vers sa variante typée : les 16 variantes reflétées champ à champ, toute autre
 /// variante (connue ou future) en `Other { name }` — conversion infaillible, `Must` de ./event.sdd.
 fn kind_of(kind: &EventKind) -> SessionEventKind {
     match kind {
@@ -406,6 +413,7 @@ fn kind_of(kind: &EventKind) -> SessionEventKind {
         EventKind::EmptyResponse { will_retry } => SessionEventKind::EmptyResponse {
             will_retry: *will_retry,
         },
+        EventKind::TurnLeaseLost { turn } => SessionEventKind::TurnLeaseLost { turn: turn.get() },
         other => SessionEventKind::Other {
             name: other_name(other),
         },
@@ -598,6 +606,46 @@ pub(crate) mod tests {
                 "`EmptyResponse` est une variante typée, pas un `Other`"
             );
         }
+    }
+
+    /// Tâche « Alignement `lymaille` 0.3.0 » (`../interactive/event.sdd`) : `TurnLeaseLost` est
+    /// un événement **typé** (miroir de la variante amont 0.3.0), jamais un `Other` — sérialisé
+    /// sous `type` = `turn_lease_lost` avec `turn` numérique et aucun autre contenu.
+    #[test]
+    fn une_perte_de_bail_est_miroitee_en_turn_lease_lost() {
+        let upstream = event("s1", EventKind::TurnLeaseLost { turn: TurnId::new(3) });
+        let value = serde_json::to_value(SessionEvent::from(&upstream)).expect("un miroir sérialise");
+        assert_eq!(
+            value["kind"],
+            json!({"type": "turn_lease_lost", "turn": 3}),
+            "`TurnLeaseLost` est une variante typée, pas un `Other`"
+        );
+        assert!(
+            value["kind"]["turn"].is_number(),
+            "`turn` est un nombre JSON : {value}"
+        );
+    }
+
+    /// Tâche « Alignement `lymaille` 0.3.0 » : l'export TypeScript de `SessionEventKind` porte la
+    /// variante `turn_lease_lost`, dont `turn` est typé `number` (jamais `bigint`).
+    #[test]
+    fn la_perte_de_bail_est_exportee_avec_turn_en_number() {
+        let dir = scratch_dir("export-turn-lease-lost");
+        export_typescript(&dir).expect("l'export réussit dans un répertoire créé");
+        let kinds =
+            std::fs::read_to_string(dir.join("SessionEventKind.ts")).expect("SessionEventKind.ts est écrit");
+        let debut = kinds
+            .find("turn_lease_lost")
+            .expect("la variante turn_lease_lost figure dans l'export");
+        let variante = kinds
+            .get(debut..)
+            .and_then(|reste| reste.find('}').and_then(|fin| reste.get(..fin)))
+            .expect("la variante se termine par une accolade");
+        assert!(
+            variante.contains("turn: number"),
+            "`turn` de la variante turn_lease_lost est typé number : {variante}"
+        );
+        std::fs::remove_dir_all(&dir).expect("le répertoire de test se nettoie");
     }
 
     /// Scenario « un message utilisateur et un appel d'outil se sérialisent sous des noms

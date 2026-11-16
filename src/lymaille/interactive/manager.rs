@@ -2882,7 +2882,7 @@ mod tests {
         }
         let position_perte = kinds
             .iter()
-            .position(|kind| matches!(kind, SessionEventKind::Other { name } if name == "TurnLeaseLost"))
+            .position(|kind| matches!(kind, SessionEventKind::TurnLeaseLost { .. }))
             .expect("TurnLeaseLost est emis");
         let position_fin = kinds
             .iter()

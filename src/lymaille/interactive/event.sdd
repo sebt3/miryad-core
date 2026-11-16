@@ -77,7 +77,8 @@ Tasks:
     ressources (./../definitions/mod.sdd) et les corps de la surface de session (./../http/routes.sdd). Spec d'abord : `Must` d'`export_typescript` (liste des fichiers, idempotence inchangée, erreur
     `Store(…)` sans chemin hors du répertoire) et `Scenario` « chaque type exporté a une déclaration » ; test de contrat par type. Dépend de la version amont de `lymaille` (issue sebt3/lymaille#10, ./../mod.sdd) et par ./../definitions/*.sdd.
     Puis tests d'abord, puis ./event.rs.
-  [ ] Alignement `lymaille` 0.3.0 (2026-11-14) — variante `TurnLeaseLost { turn }` (voir `Must` et `Scenario`). Tests d'abord (variante typée, verrou « pas un Other », export TS), puis ./event.rs. Après la tâche « Montée de dépendance à `lymaille` 0.3.0 » de ../mod.sdd.
+  [x] Alignement `lymaille` 0.3.0 (2026-11-14) — variante `TurnLeaseLost { turn }` (voir `Must` et `Scenario`). Tests d'abord (variante typée, verrou « pas un Other », export TS), puis ./event.rs. Après la tâche « Montée de dépendance à `lymaille` 0.3.0 » de ../mod.sdd.
+    Validé 2026-11-16 (batterie COMPLÈTE verte : 17 combinaisons tests + 17 clippy `-D warnings`, fmt, 8 contrôles `cargo tree`, `specdd lint` ; synthèse `validator` GO). Variante propre `TurnLeaseLost { #[ts(type = "number")] turn }`, jamais `Other` ; JSON `"type":"turn_lease_lost"`. Mutants (retour en `Other`, retrait de `#[ts(type)]`) rouges. Les deux attentes `Other{"TurnLeaseLost"}` de `assemble.rs` et `manager.rs` (tests préexistants qui figeaient le comportement erroné) sont corrigées — seules modifications de tests préexistants.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./event.rs.
