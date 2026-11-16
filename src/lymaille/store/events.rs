@@ -364,6 +364,7 @@ mod tests {
     use sea_orm::DatabaseConnection;
     use sea_orm::sea_query::Alias;
     use sea_orm::sea_query::Expr;
+    use sea_orm::sea_query::ExprTrait as _;
     use sea_orm::sea_query::Query;
 
     /// `now` de fixture : instant figé, les méthodes ne lisent jamais l'horloge (`./events.sdd`).
@@ -573,6 +574,15 @@ mod tests {
 
     /// `Scenario` « des écrivains concurrents n'obtiennent jamais le même curseur » : deux
     /// journaux, deux tâches de 20 événements — les curseurs sont exactement 1 à 40.
+    ///
+    /// Limite assumée (validation du 2026-11-16) : `test_db` sans `MIRYAD_TEST_PG_URL` est un pool
+    /// SQLite mémoire à **une** connexion (deux connexions verraient deux bases distinctes) ; le
+    /// `tokio::join!` est donc de fait séquentiel — chaque transaction détient la connexion
+    /// unique jusqu'au commit. L'invariant (aucun doublon, 1 à 40) est prouvé, mais le chemin
+    /// conflit/reprise `MAX + 1` n'est pas exercé ici : sur SQLite une seconde écriture concurrente
+    /// rend `SQLITE_BUSY`, jamais une violation d'unicité. Ce chemin ne peut être réellement joué
+    /// que sous PostgreSQL (`MIRYAD_TEST_PG_URL`) — voir le `[?]` de la tâche de validation de
+    /// `./events.sdd`.
     #[tokio::test]
     async fn des_ecrivains_concurrents_n_obtiennent_jamais_le_meme_curseur() {
         let db = test_db().await;
@@ -666,15 +676,24 @@ mod tests {
         );
     }
 
-    /// `Scenario` « le journal ne porte ni secret ni contenu journalisé » : un `Script` (résumé
-    /// sans texte) et un `McpCall` (sans arguments) relus portent exactement leurs champs de
-    /// résumé, rien de plus.
-    #[tokio::test]
+    /// `Scenario` « le journal ne porte ni secret ni contenu journalisé » : la preuve se fait sur
+    /// la **colonne brute** lue en SQL (pas sur le `SessionEvent` re-sérialisé après relecture —
+    /// serde ignore les champs inconnus, une colonne enrichie hors contrat passerait inaperçue).
+    /// Un `Script` (résumé, sans `text`) et un `McpCall` (sans `args`) : chaque colonne `event`
+    /// est exactement le JSON que le flux sert (aucune clé `text` ni `args`, aucun texte de
+    /// script) ; la colonne `kind` ne porte que le nom `snake_case` de la variante ; et aucune
+    /// trace `tracing` capturée pendant l'écriture et la relecture ne contient l'identifiant de
+    /// session. Runtime `current_thread` : la capture de traces est thread-local (`hub.rs`).
+    #[tokio::test(flavor = "current_thread")]
     async fn le_journal_ne_porte_ni_secret_ni_contenu_journalise() {
+        use crate::lymaille::interactive::hub::tests::capture_traces;
+
         let log = log().await;
+        // Identifiant distinctif : c'est lui que les traces ne doivent jamais porter (`Must not`).
+        let identifiant = "sess-journal-trace-7c9e";
         let events = vec![
             SessionEvent {
-                session: "s1".to_owned(),
+                session: identifiant.to_owned(),
                 at: now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 kind: SessionEventKind::Script {
                     agent: "agent".to_owned(),
@@ -685,7 +704,7 @@ mod tests {
                 },
             },
             SessionEvent {
-                session: "s1".to_owned(),
+                session: identifiant.to_owned(),
                 at: now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 kind: SessionEventKind::McpCall {
                     role: "serveur".to_owned(),
@@ -695,28 +714,70 @@ mod tests {
                 },
             },
         ];
-        log.append(&session("s1"), &events, now())
+        let (_guard, captured) = capture_traces();
+        log.append(&session(identifiant), &events, now())
             .await
             .expect("les deux résumés sont ajoutés");
         let page = log
-            .read_after(&session("s1"), None, 10)
+            .read_after(&session(identifiant), None, 10)
             .await
             .expect("la relecture réussit");
         assert_eq!(page.events.len(), 2, "les deux lignes sont relues");
-        for logged in &page.events {
-            let stored = serde_json::to_value(&logged.event).expect("l'événement relu se sérialise");
-            assert_eq!(
-                stored["kind"]["text"].as_str(),
-                None,
-                "aucun texte de script ni de fragment n'entre dans la colonne `event`"
-            );
-            assert_eq!(
-                stored["kind"]["args"].as_str(),
-                None,
-                "aucun argument MCP n'entre dans la colonne `event`"
-            );
-        }
         assert_eq!(page.events[0].event, events[0], "le résumé est restitué tel quel");
         assert_eq!(page.events[1].event, events[1], "le résumé est restitué tel quel");
+
+        // La colonne brute, lue en SQL sans repasser par `SessionEvent` : le `SELECT` rend le
+        // JSON tel qu'il est stocké, champs inconnus de serde compris.
+        let rows = log_db(&log)
+            .query_all(
+                &Query::select()
+                    .columns([Alias::new("seq"), Alias::new("kind"), Alias::new("event")])
+                    .from(Alias::new(super::TABLE))
+                    .and_where(Expr::col(Alias::new("session_id")).eq(identifiant))
+                    .order_by(Alias::new("seq"), sea_orm::sea_query::Order::Asc)
+                    .to_owned(),
+            )
+            .await
+            .expect("la colonne brute se lit en SQL");
+        assert_eq!(rows.len(), 2, "deux lignes pour la session");
+        let attendu = events
+            .iter()
+            .map(|e| serde_json::to_value(e).expect("un `SessionEvent` se sérialise"))
+            .collect::<Vec<_>>();
+        let kinds_attendus = ["script", "mcp_call"];
+        for (index, row) in rows.iter().enumerate() {
+            let brut = row
+                .try_get::<serde_json::Value>("", "event")
+                .expect("la colonne `event` est du JSON");
+            assert_eq!(
+                brut, attendu[index],
+                "la colonne brute est exactement ce que le flux sert, rien en plus : {brut}"
+            );
+            let rendu = brut.to_string();
+            for interdit in ["\"text\"", "\"args\"", "secret_looking_script"] {
+                assert!(
+                    !rendu.contains(interdit),
+                    "la colonne brute du {index}e événement ne porte {interdit} : {rendu}"
+                );
+            }
+            let kind = row
+                .try_get::<String>("", "kind")
+                .expect("la colonne `kind` est un texte");
+            assert_eq!(
+                kind,
+                attendu[index]["kind"]["type"].as_str().unwrap_or_default(),
+                "la colonne `kind` porte le nom snake_case de la variante, pas un contenu"
+            );
+            assert_eq!(kind, kinds_attendus[index], "le nom de variante attendu");
+        }
+
+        // Clause « aucune trace `tracing` ne contient l'identifiant de session » (`Must not`) :
+        // toute trace du crate émise pendant l'`append` et la relecture est capturée ici.
+        for ligne in captured.lines() {
+            assert!(
+                !ligne.contains(identifiant),
+                "une trace `tracing` porte l'identifiant de session : {ligne}"
+            );
+        }
     }
 }
