@@ -344,8 +344,33 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
       ordinaire (statu quo du consommateur : non durable).
     - **Consequences:** l'identifiant est un secret porteur (qui le détient résout) : sa confidentialité relève du kind qui
       le remet ; les formes d'ingress (`resolve`, `reject`, résolution tardive) sont mesurées contre un vrai Restate et
-      consignées ; aucune fonction de résolution côté application dans cette Solution tant que `OI-3` n'est pas soldé.
+      consignées ; la résolution et le rejet côté application sont des fonctions de `workflow::client` (`DEC-13`, `OI-3` soldé).
     - **Source:** issue #26 ; user instruction, 2026-11-14
+
+- **DEC-12 - Noms des `ctx.run` du dispatcher : `step:<id>` et `render:<id>`**
+    - **Context:** le journal Restate n'offrait aucun repère lisible pour relier une entrée de run à un step du DAG (issue #80).
+    - **Decision:** chaque `ctx.run` du dispatcher porte un nom par `RunFuture::name` (`restate-sdk` 0.12.1) : le run d'exécution d'un
+      kind ordinaire s'appelle `step:<id>` et contient aussi son rendu (un seul `ctx.run` par invocation) ; le run de rendu dédié
+      d'un kind durable s'appelle `render:<id>` (ses effets sont nommés par lui-même). `<id>` est l'identifiant du step tel que
+      reçu ; le nom est dérivé de la requête seule, stable au rejeu, sans valeur de `config`, d'`inputs` ni de `vars`.
+    - **Alternatives:** un run de rendu séparé pour le kind ordinaire (écarté : change le nombre de runs et contredit l'invariant
+      « un `ctx.run` par step ordinaire » ; la mesure `restate-server` 1.8.1 ne montre que `step:<id>`).
+    - **Consequences:** renommer un `ctx.run` change des entrées de journal : une invocation en vol lors d'une montée de version peut
+      diverger au rejeu (accepté, arbitré le 2026-11-14) ; le Scenario de `dispatcher.sdd` est aligné sur la mesure.
+    - **Source:** issue #80 ; user instruction, 2026-11-13 et 2026-11-16 (alignement sur la mesure 1.8.1)
+
+- **DEC-13 - Awakeable : résolution et rejet par l'ingress, grammaire d'identifiant sans contrat de préfixe**
+    - **Context:** l'application doit résoudre ou rejeter un awakeable (`OI-3`, issue #26) ; l'identifiant est interpolé dans le chemin
+      de l'ingress. Le SDK documente le préfixe `prom_1`, le serveur `restate-server` 1.8.1 émet `sign_1`.
+    - **Decision:** `workflow::client` expose `resolve_awakeable` (corps JSON) et `reject_awakeable` (message en texte brut) ; l'identifiant
+      est validé avant toute requête par une grammaire stricte : préfixe `prom_1` ou `sign_1` suivi de base64url, aucun texte libre
+      dans le chemin. Le préfixe est une tolérance mesurée, pas un contrat : l'amont ne le garantit pas. Tout 2xx est un succès
+      (résolution tardive, double résolution et rejet d'un awakeable résolu rendent un 202 silencieux, mesuré).
+    - **Alternatives:** n'accepter que `sign_1` (écarté : casserait si une autre version réémet `prom_1`) ; ne plus valider le préfixe
+      (écarté : l'identifiant est interpolé dans une URL, la forme reste un garde-fou d'injection).
+    - **Consequences:** l'identifiant n'est jamais tracé ; un préfixe inconnu est refusé sans requête et doit être ajouté ici par une
+      décision, après mesure.
+    - **Source:** issue #26 ; mesures `restate-server` 1.8.1 (`tests/workflow_restate.rs`) ; user instruction, 2026-11-14 et 2026-11-16
 
 ## Operations and Resilience
 
@@ -422,14 +447,14 @@ leurs clients (TBD).
   retirer `jsonnet` lui-même), après quoi `DENIED_HELPERS` disparaît.
 - **OI-2:** AC-8 (reprise sur crash) n'a pas de test automatisable. Une preuve par spike est à refaire à toute évolution
   majeure de `restate-sdk`. **TBD :** décider si un test d'intégration en cluster de CI est souhaitable.
-- **OI-3:** Pilotage d'un run par awakeable : **arbitré le 2026-11-14** (« tout #26 ») — livré par `FR-19` / `DEC-11`
-  (spec `/src/workflow/durable.sdd`, tâches « Issue #26 — awakeable »). **TBD (à solder à la clôture des tâches, par le
-  développeur principal) :** fonctions de résolution/rejet côté application (`workflow::client`), recommandées, à
-  spécifier dans `/src/workflow/client.sdd` après le client d'administration (#80) ; formes d'ingress mesurées à consigner.
-  Source : `roadmap@c62a184`, item 9 ; user instruction, 2026-11-14.
-- **OI-4:** Lecture du statut d'un run : `client.rs` ne fait qu'enregistrer et déclencher ; une fonction de lecture est
-  « un fichier à spécifier si le besoin se confirme ». **TBD.** Source : `arch@c62a184`, « Schéma de
-  déploiement ».
+- **OI-3:** Pilotage d'un run par awakeable : **soldé le 2026-11-16** (« tout #26 » arbitré le 2026-11-14) — livré par `FR-19` /
+  `DEC-11` (`/src/workflow/durable.sdd`) pour le côté kind durable et par `DEC-13` (`/src/workflow/client.sdd`) pour les fonctions
+  de résolution/rejet côté application ; formes d'ingress mesurées (1.8.1) consignées dans `tests/workflow_restate.rs`.
+  Source : `roadmap@c62a184`, item 9 ; user instruction, 2026-11-14 et 2026-11-16.
+- **OI-4:** Lecture du statut d'un run : **soldé le 2026-11-16** par l'issue #80 — le client d'administration de
+  `/src/workflow/client.sdd` livre `invocation_statuses`, `list_invocations`, `cancel_invocation` et `invocation_journal`
+  (mesurés contre `restate-server` 1.8.1, `tests/workflow_restate.rs`) ; aucun état dupliqué en base. Source : `arch@c62a184`,
+  « Schéma de déploiement » ; user instruction, 2026-11-16.
 - **OI-5:** **Conditions d'exécution** : le DAG est statique (`id`, `depends_on`, `kind`, `config`), sans `when`, boucle ni
   branche. **TBD :** sémantique d'un step ignoré pour ses dépendants. Un échec de step est aujourd'hui le seul moyen
   de décider (par exemple `on_fail: "continue"` de `systemone`, qui « laisse l'aval décider »). **TBD :** le kind
@@ -456,7 +481,7 @@ leurs clients (TBD).
     - **Source:** `lymaille` `dsd/agent-sessions/scratchpad.md`, DEC-3 (amendement du 2026-10-27) ; mesures du test A6,
       2026-11-01 ; arbitrage, user instruction, 2026-11-01
 - **OI-10:** **Identité du déclencheur dans `RunInfo`**, arbitrée le 2026-11-02 par la Solution `miryad-core/lymaille`
-  (`FR-10`, `DEC-12`) : `trigger_run` transporte le `subject`, hérité par les runs enfants, sans repli par défaut.
+  (`FR-10`, `lymaille#DEC-12`) : `trigger_run` transporte le `subject`, hérité par les runs enfants, sans repli par défaut.
   Remplace la case reportée de `src/workflow/step.sdd` et celle des droits de l'enfant de `subworkflow.sdd`, **à réaliser**
   avant le step `subagent`. Tranché à la rédaction des specs (2026-11-02) : champ `trigger: Option<String>` de `RunInfo`, porté par le corps
   `RunInput` comme `vars` (pas par un en-tête : un seul canal typé, journalisé avec l'entrée) ; `None` = run sans identité, qu'aucun

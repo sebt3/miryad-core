@@ -9,12 +9,11 @@ Purpose:
     Restate : ./interpreter.rs et ./rhai_step.rs (et tout futur `impl MiryadWorkflowStep`) parlent au
     cluster exclusivement par le protocole `restate-sdk` (@Context, invocations entrantes), jamais en
     sortant par HTTP — ./client.rs est la seule porte sortante.
-  Suit la décision actée avec Sébastien : un seul cluster Restate self-hosté par cluster
+  Suit la décision actée avec le développeur principal : un seul cluster Restate self-hosté par cluster
     Kubernetes (pas d'opérateur, StatefulSet trivial packagé en vynil box — hors périmètre de cette
     crate, /miryad-core.sdd) ; le statut d'un run n'est jamais dupliqué en base par miryad-core, il
-    se lit en proxy direct de Restate (décision Sébastien, ce fichier ne le fait pas encore — pas de
-    fonction de lecture de statut ici, seulement écriture/déclenchement, une lecture de statut est un
-    fichier séparé à spécifier si le besoin se confirme).
+    se lit en proxy direct de Restate (décision du développeur principal ; livré par #80 : `invocation_statuses`,
+    `list_invocations`, `invocation_journal`, `cancel_invocation`).
   Fichier neuf, conception (pas de code existant, pas de spec-reverse). Le format exact de requête et
     de réponse de Restate `1.x` cité dans ce fichier a été vérifié en direct contre un `restate-server`
     local (conteneur `docker.restate.dev/restatedev/restate:latest`), pas seulement contre sa
@@ -108,9 +107,9 @@ Must:
     `trigger` n'est jamais écrit dans une erreur de ce fichier.
 
 Must not:
-  Attendre la complétion d'un run dans @client::trigger_run, ni exposer de fonction de lecture de
-    statut dans ce fichier : la décision actée (proxy Restate direct, pas de duplication d'état) vit
-    dans un fichier séparé quand le besoin se précise, jamais improvisée ici en ajoutant un GET.
+  Attendre la complétion d'un run dans @client::trigger_run. (Amendement du 2026-11-16 : la lecture de statut,
+    exclue à l'origine, est livrée par #80 — `invocation_statuses`, `list_invocations`, `invocation_journal` — sans
+    duplication d'état en base : proxy direct de l'API d'administration Restate ; DSD `workflow#OI-4` soldé.)
   Réutiliser une `run_key` fournie par l'appelant : Restate garantit qu'un handler `run` de workflow
     ne s'exécute qu'une fois par clé (contrat @workflow du SDK Restate, vérifié doc `docs.restate.dev`)
     — laisser l'appelant choisir la clé risquerait une résolution silencieuse vers un run déjà
@@ -282,7 +281,7 @@ Tasks:
     Mesures `restate-server` **1.8.1** (podman, tests `#[ignore]` verts 2026-11-15, `../../tests/workflow_restate.rs`) : `cancel` sur en cours → 2xx puis statut `completed`/`failure [409] cancelled` ; re-`cancel` terminée → 409 `already completed` ; id inconnu décodable → 404 `does not exist` — les deux absorbés en `Ok(())` (idempotence) ; quirk DataFusion : `WHERE id = '<literal>'` sans `LIMIT` → HTTP 500, la forme `IN (…)` du client rend `Ok` ; `sys_journal` : entrées anonymes `name: ""` normalisées `None`.
     [?] (implementer) : 404 `does not exist` et 409 `already completed` du `cancel` absorbés en `Ok(())` (idempotence, mesurée) — le contrat écrit ne nommait pas ces codes ; verrouillé par test stub `cancel_invocation_idempotence_404_et_409_mesurés`.
     [?] (implementer) : variantes réutilisées : `RestateUnreachable`/`RestateRejected`/`Serialization`/`InvalidConfig` (le `Must` de ./error.sdd nommait `Transport` — le nom réel des variantes existantes prévaut).
-    DSD `workflow#OI-4` : la lecture de statut est livrée — solde à faire par le développeur principal.
+    DSD `workflow#OI-4` : la lecture de statut est livrée — soldé le 2026-11-16.
     `invocation_statuses(config, ids: &[String]) -> Result<Vec<InvocationStatus>, WorkflowError>` (**une** requête `POST /query` sur `sys_invocation` pour N identifiants, découpée au-delà de 50 identifiants, arbitré) ;
     `list_invocations(config, filtre) -> Result<Vec<InvocationStatus>, WorkflowError>` ; `cancel_invocation(config, id) -> Result<(), WorkflowError>` (`PATCH /invocations/{id}/cancel` de l'API d'administration) ;
     `invocation_journal(config, id)` (`sys_journal`, noms des étapes de la tâche ./dispatcher.sdd). `Scenario` : statut de 50 invocations en une requête ; invocation inconnue → absente du résultat ; annulation d'un run
@@ -293,7 +292,7 @@ Tasks:
     Arbitré le 2026-11-13 (`cancel` seul) : annuler = `cancel` (propre, exécute la compensation) ou `kill` (immédiat, sans nettoyage) : recommandé `cancel` seul, `kill` hors de cette livraison.
     Arbitré le 2026-11-13 (minimale) : forme de `InvocationStatus` (état, dates, service/handler, erreur terminale, nombre de tentatives) : minimale d'abord, étendue à la demande ; le développeur principal tranche la liste des champs publics.
     Arbitré le 2026-11-14 : test d'intégration `#[ignore]` contre le Restate de la DevStation (`../../tests/workflow_restate.rs`) ; la version de Restate et les formes mesurées (`POST /query`, `sys_invocation`, `sys_journal`, `PATCH …/cancel`) sont consignées ici avant la clôture de la tâche ; tables système « pas encore prêtes » (~20 s au démarrage) → erreur retryable typée.
-    Nouvelle(s) variante(s) d'erreur éventuelle(s) : voir ./error.sdd ; DSD `workflow#OI-4` (lecture du statut) à solder par le développeur principal.
+    Nouvelle(s) variante(s) d'erreur éventuelle(s) : voir ./error.sdd ; DSD `workflow#OI-4` soldé le 2026-11-16.
   [x] Issue #26 (awakeable, arbitré le 2026-11-14) — résolution et rejet d'un awakeable par l'ingress. Spec d'abord (fonctions publiques de `workflow::client`, `WorkflowConfig` inchangé) :
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary).
     Live `restate-server` **1.8.1** (podman, 6 tests `#[ignore]` verts 2026-11-15, formes consignées dans `../../tests/workflow_restate.rs`) : resolve nominal `POST …/restate/awakeables/{id}/resolve` `application/json` → 202 corps vide ; reject `text/plain` → 202, message restitué verbatim en erreur de step ; résolution tardive, double résolution et rejet sur awakeable résolu → **202 silencieux** (le serveur ne distingue rien au statut).
