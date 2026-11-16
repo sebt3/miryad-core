@@ -38,6 +38,7 @@
 pub mod audit;
 pub mod catalog;
 pub mod draft;
+pub mod events;
 pub mod memory;
 pub mod publish;
 pub mod purge;
@@ -49,6 +50,7 @@ pub mod write_journal;
 pub use audit::AuditWriter;
 pub use catalog::{SeaAgentStore, SeaProfileStore, SeaProviderStore};
 pub use draft::SeaDraftStore;
+pub use events::{LoggedEvent, ReplayPage, SeaEventLog};
 pub use memory::SeaMemoryStore;
 pub use purge::{PurgeReport, purge_sessions};
 pub use session::SeaSessionStore;
@@ -343,6 +345,7 @@ mod tests {
                 sessions: 0,
                 script_errors: 0,
                 write_journal: 0,
+                session_events: 0,
             },
             "`purge_sessions` ré-exporté rend un rapport à zéro sur une base neuve"
         );

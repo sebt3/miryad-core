@@ -24,6 +24,7 @@ use crate::lymaille::error::LymailleError;
 
 use super::audit;
 use super::db_text;
+use super::events::SeaEventLog;
 use super::write_journal;
 
 /// Table des sessions, nom complet (`../migration.sdd`, `./session.sdd`).
@@ -41,12 +42,16 @@ pub struct PurgeReport {
     pub script_errors: u64,
     /// Entrées de `miryad_lymaille_write_journal` supprimées.
     pub write_journal: u64,
+    /// Événements de `miryad_lymaille_session_events` supprimés (amendement du 2026-11-14,
+    /// issue #81 lot 3).
+    pub session_events: u64,
 }
 
-/// Supprime les sessions `updated_at < now - retention`, puis les erreurs de script et les
-/// entrées de journal d'écritures `< cutoff` (`./purge.sdd`). Chaque suppression dans sa propre
+/// Supprime les sessions `updated_at < now - retention`, puis les erreurs de script, les
+/// entrées de journal d'écritures et les événements du journal de session `< cutoff`
+/// (`./purge.sdd`). Chaque suppression dans sa propre
 /// requête, sans transaction englobante : une purge partielle reste valide. Idempotente — un
-/// second appel immédiat rend trois zéros.
+/// second appel immédiat rend des zéros.
 ///
 /// # Errors
 ///
@@ -81,10 +86,12 @@ pub async fn purge_sessions(
     // Les traces suivent, chacune dans sa requête (`./purge.sdd`).
     let script_errors = audit::purge_before(db, cutoff).await?;
     let journal = write_journal::purge_before(db, cutoff).await?;
+    let session_events = SeaEventLog::new(db.clone()).purge_before(cutoff).await?;
     Ok(PurgeReport {
         sessions,
         script_errors,
         write_journal: journal,
+        session_events,
     })
 }
 
@@ -211,6 +218,7 @@ mod tests {
                 sessions: 0,
                 script_errors: 1,
                 write_journal: 1,
+                session_events: 0,
             },
             "une trace de chaque table disparaît"
         );
@@ -247,6 +255,7 @@ mod tests {
                 sessions: 0,
                 script_errors: 0,
                 write_journal: 0,
+                session_events: 0,
             },
             "un second appel immédiat rend trois zéros"
         );
@@ -342,5 +351,43 @@ mod tests {
             1,
             "le mémoire existe encore"
         );
+    }
+
+    /// `Scenario` (amendement du 2026-11-14, issue #81 lot 3) « la purge supprime les événements
+    /// anciens » : des lignes du journal de session de 40 jours et de 1 jour — seules les
+    /// anciennes partent, `PurgeReport.session_events` vaut leur nombre, un second appel rend
+    /// zéro.
+    #[tokio::test]
+    async fn the_session_events_follow_their_own_purge_step() {
+        let db = test_db().await;
+        insert_journal_event(&db, "s-vieux", 1, &ago(40)).await;
+        insert_journal_event(&db, "s-vieux", 2, &ago(40)).await;
+        insert_journal_event(&db, "s-neuf", 1, &ago(1)).await;
+
+        let report = purge_sessions(&db, now(), DEFAULT_RETENTION)
+            .await
+            .expect("la purge avec la rétention par défaut réussit");
+        assert_eq!(report.session_events, 2, "les deux événements anciens partent");
+        assert_eq!(
+            count_all(&db, "miryad_lymaille_session_events").await,
+            1,
+            "l'événement récent reste"
+        );
+        let second = purge_sessions(&db, now(), DEFAULT_RETENTION)
+            .await
+            .expect("la seconde purge réussit");
+        assert_eq!(second.session_events, 0, "un second appel immédiat rend zéro");
+    }
+
+    /// Ligne du journal de session posée brutalement (le test n'exerce pas le store, seulement
+    /// la purge par âge).
+    async fn insert_journal_event(db: &DatabaseConnection, session: &str, seq: i64, at: &str) {
+        db.execute_unprepared(&format!(
+            "INSERT INTO miryad_lymaille_session_events (session_id, seq, created_at, kind, event) \
+             VALUES ('{session}', {seq}, '{at}', 'turn_started', '{{\"session\": \"{session}\", \
+             \"at\": \"{at}\", \"kind\": {{\"type\": \"turn_started\", \"turn\": 0}}}}')"
+        ))
+        .await
+        .expect("ligne du journal de session insérée");
     }
 }

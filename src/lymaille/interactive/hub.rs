@@ -14,8 +14,9 @@
 //! `lymaille` garantit le masquage) : le hub n'y ajoute aucune donnée et ne journalise jamais un
 //! contenu d'événement ni un contenu d'hôte.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -28,6 +29,7 @@ use ::lymaille::SessionId;
 
 use super::event::SessionEvent;
 use crate::lymaille::error::LymailleError;
+use crate::lymaille::store::SeaEventLog;
 use crate::lymaille::store::audit::AuditWriter;
 
 /// Longueur maximale, en octets, de la forme sérialisée du `payload` d'un événement d'hôte
@@ -52,13 +54,70 @@ pub const RELAY_EVENT_MAX: usize = 7_000;
 /// sessions » (message poussé par `./pg_relay.rs` après la reconnexion de son écoute).
 const ALL_SESSIONS: &str = "*";
 
-/// Ce que la file d'une session transporte : un événement à diffuser, ou la marque « des
-/// événements ont pu être manqués » injectée par un `Missed` venu d'une autre réplique
-/// (amendement #81 lot 2 de ./hub.sdd). `Clone` : exigé par `broadcast::Sender::send`.
+/// Ce que la file d'une session transporte : un événement à diffuser avec son curseur du journal
+/// (`Some` quand la tâche d'écriture l'a posé — amendement #81 lot 3 de ./hub.sdd ; `None` sans
+/// journal ou après une panne d'écriture), ou la marque « des événements ont pu être manqués »
+/// injectée par un `Missed` venu d'une autre réplique (amendement #81 lot 2 de ./hub.sdd).
+/// `Clone` : exigé par `broadcast::Sender::send`.
 #[derive(Clone)]
 enum Frame {
-    Event(Arc<SessionEvent>),
+    Event(Arc<SessionEvent>, Option<u64>),
     Lagged(u64),
+}
+
+/// File bornée de la tâche d'écriture : un événement déjà converti, avec sa session, en attente
+/// de son curseur (amendement #81 lot 3 de ./hub.sdd).
+struct PendingEvent {
+    session: String,
+    event: Arc<SessionEvent>,
+}
+
+/// Journal posé par [`EventHub::with_log`] : le store, la file bornée qui alimente la tâche
+/// d'écriture unique, et la borne de rejeu (`replay_max` ramené à sa borne).
+struct JournalHandle {
+    log: SeaEventLog,
+    queue: mpsc::Sender<PendingEvent>,
+    replay_max: usize,
+}
+
+/// Rejoins d'écriture de `with_log`, ramenés aux bornes de ./hub.sdd (`Must` de l'amendement
+/// lot 3) : `[10 ms, 1 s]`, `[1, 512]`, `[64, 65 536]`, `[1, 10 000]`.
+#[derive(Clone, Copy, Debug)]
+pub struct LogConfig {
+    /// Battement de la tâche d'écriture : un lot part au plus tard après ce délai.
+    pub flush_interval: Duration,
+    /// Événements maximum par transaction de lot.
+    pub batch_max: usize,
+    /// Capacité de la file bornée entre `emit` et la tâche d'écriture.
+    pub queue_capacity: usize,
+    /// Lignes maximum relues par `subscribe_from`.
+    pub replay_max: usize,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            flush_interval: Duration::from_millis(50),
+            batch_max: 64,
+            queue_capacity: 4_096,
+            replay_max: 1_000,
+        }
+    }
+}
+
+impl LogConfig {
+    /// Ramène chaque rejoint à sa borne la plus proche (`Must` de ./hub.sdd).
+    #[must_use]
+    pub fn clamped(self) -> Self {
+        Self {
+            flush_interval: self
+                .flush_interval
+                .clamp(Duration::from_millis(10), Duration::from_secs(1)),
+            batch_max: self.batch_max.clamp(1, 512),
+            queue_capacity: self.queue_capacity.clamp(64, 65_536),
+            replay_max: self.replay_max.clamp(1, 10_000),
+        }
+    }
 }
 
 /// File d'une session : le canal `broadcast` partagé entre les abonnés de cette session.
@@ -79,6 +138,12 @@ struct Inner {
     slots: Mutex<HashMap<String, Arc<Slot>>>,
     /// Couture de relais entre répliques (`None` : rien ne change, comportement antérieur).
     relay: Mutex<Option<Arc<dyn EventRelay>>>,
+    /// Couture de journal (`None` : rien ne change, comportement antérieur — amendement #81
+    /// lot 3 de ./hub.sdd).
+    journal: Mutex<Option<Arc<JournalHandle>>>,
+    /// Dernier curseur diffusé par cette réplique pour chaque session (branche `Cursor` du
+    /// relais, lot 3) — point de reprise des lectures du journal.
+    cursor_since: Mutex<HashMap<String, u64>>,
     /// Remise des commandes `Cancel`/`Close` venues du relais (posée par ./manager.rs).
     on_command: Mutex<Option<CommandHandler>>,
 }
@@ -106,6 +171,8 @@ impl EventHub {
                 subjects: Mutex::new(HashMap::new()),
                 slots: Mutex::new(HashMap::new()),
                 relay: Mutex::new(None),
+                journal: Mutex::new(None),
+                cursor_since: Mutex::new(HashMap::new()),
                 on_command: Mutex::new(None),
             }),
         }
@@ -127,14 +194,58 @@ impl EventHub {
             .or_insert_with(|| subject.to_owned());
         Subscription {
             receiver: self.slot(id).sender.subscribe(),
+            replay: VecDeque::new(),
+            lag_first: None,
+            cursor: None,
         }
     }
 
+    /// Abonnement avec reprise : enregistre le canal **avant** de lire (aucun trou entre rejeu
+    /// et direct), puis — avec journal et `after = Some(n)` — relit `read_after(id, n,
+    /// replay_max)` et sert les lignes relues **avant** les directs (déduplication par curseur,
+    /// amendement #81 lot 3 de ./hub.sdd). Sans journal, ou `after = None`, équivaut à
+    /// [`subscribe`](Self::subscribe). Si des lignes ont été purgées entre `n` et la première
+    /// conservée, ou si la relecture est tronquée à `replay_max`, le premier `recv` rend
+    /// `Err(Lagged(n))` puis le flux continue.
+    ///
+    /// # Errors
+    ///
+    /// [`LymailleError::Store`] (`MRD-LYMAILLE-009`) : panne de lecture du journal.
+    pub async fn subscribe_from(
+        &self,
+        subject: &str,
+        id: &SessionId,
+        after: Option<u64>,
+    ) -> Result<Subscription, LymailleError> {
+        let mut subscription = self.subscribe(subject, id);
+        let handle = lock(&self.inner.journal).clone();
+        if let (Some(handle), Some(after)) = (handle, after) {
+            let page = handle.log.read_after(id, Some(after), handle.replay_max).await?;
+            subscription.replay = page
+                .events
+                .iter()
+                .map(|logged| (logged.seq, logged.event.clone()))
+                .collect();
+            if let Some(last) = page.events.last() {
+                subscription.cursor = Some(last.seq);
+            }
+            subscription.lag_first = if page.missed > 0 {
+                Some(page.missed)
+            } else if page.truncated {
+                Some(1)
+            } else {
+                None
+            };
+        }
+        Ok(subscription)
+    }
+
     /// Ferme le canal de `id` : les abonnés reçoivent [`SubscriptionError::Closed`]. Appelé quand
-    /// le gestionnaire retire la session ; libère aussi son `subject`.
+    /// le gestionnaire retire la session ; libère aussi son `subject` et son curseur de relais.
     pub fn close(&self, id: &SessionId) {
         lock(&self.inner.slots).remove(id.as_str());
         lock(&self.inner.subjects).remove(id.as_str());
+        lock(&self.inner.cursor_since).remove(id.as_str());
     }
 
     /// Diffuse un événement d'hôte `SessionEventKind::Host { kind, payload }` aux abonnés de `id`
@@ -165,10 +276,7 @@ impl EventHub {
                 payload,
             },
         });
-        self.inner.deliver(id.as_str(), Frame::Event(Arc::clone(&event)));
-        // Amendement #81 lot 2 : un `publish_host` valide publie aussi vers le relais, **après**
-        // la diffusion locale. Sans relais : rien ne change.
-        self.inner.relay_event(&event);
+        self.inner.route(id.as_str(), &event);
         Ok(())
     }
 
@@ -202,11 +310,45 @@ impl EventHub {
         let inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
             while let Some(message) = incoming.recv().await {
-                inner.apply_relay_message(&message);
+                inner.apply_relay_message(&message).await;
             }
             tracing::debug!("lymaille hub: relay incoming stream closed");
         });
         self
+    }
+
+    /// Attache la couture de journal (amendement #81 lot 3 de ./hub.sdd) : mêmes règles de
+    /// constructeur et de runtime que [`with_relay`](Self::with_relay) (hors runtime : `warn`,
+    /// journal inactif). La tâche d'écriture unique vide la file bornée par lots (`batch_max`
+    /// événements ou `flush_interval`, une transaction par lot et par session), **puis diffuse
+    /// dans l'ordre d'entrée**, chaque événement portant son curseur. Une panne d'écriture ou une
+    /// file pleine diffusent sans curseur (`warn`), jamais en bloquant. Avec relais en plus, le
+    /// relais reçoit `Cursor(seq)` à la place de l'événement.
+    #[must_use]
+    pub fn with_log(self, log: SeaEventLog, config: LogConfig) -> Self {
+        let config = config.clamped();
+        if tokio::runtime::Handle::try_current().is_err() {
+            tracing::warn!("lymaille hub: with_log called outside a tokio runtime, journal stays inactive");
+            return self;
+        }
+        let (sender, receiver) = mpsc::channel(config.queue_capacity);
+        *lock(&self.inner.journal) = Some(Arc::new(JournalHandle {
+            log,
+            queue: sender,
+            replay_max: config.replay_max,
+        }));
+        let weak = Arc::downgrade(&self.inner);
+        tokio::spawn(run_writer(receiver, weak, config));
+        self
+    }
+
+    /// Le hub porte-t-il un journal ? Le flux SSE n'a besoin que de ce drapeau : avec journal la
+    /// ligne `id:` est le curseur, sinon le compteur de la connexion — les deux ne se mélangent
+    /// jamais (amendement du 2026-11-14 de ../http/sse.sdd, issue #81 lot 3). Interne à la crate,
+    /// hors de l'`Exposes` de ./hub.sdd.
+    #[must_use]
+    pub(crate) fn has_journal(&self) -> bool {
+        lock(&self.inner.journal).is_some()
     }
 
     /// Remet les commandes `Cancel`/`Close` venues du relais au gestionnaire (appelé une fois
@@ -246,12 +388,7 @@ impl EventSink for EventHub {
             }
         }
         let shared = Arc::new(SessionEvent::from(&event));
-        self.inner
-            .deliver(event.session.as_str(), Frame::Event(Arc::clone(&shared)));
-        // Amendement #81 lot 2 : un `emit` valide publie aussi vers le relais, **après** la
-        // diffusion locale (y compris sans abonné local : d'autres répliques peuvent en avoir).
-        // Sans relais : rien ne change.
-        self.inner.relay_event(&shared);
+        self.inner.route(event.session.as_str(), &shared);
     }
 }
 
@@ -305,18 +442,84 @@ impl Inner {
         });
     }
 
+    /// Route un événement converti : avec journal, il entre dans la file bornée de la tâche
+    /// d'écriture (qui persistera puis diffusera avec curseur) — file pleine, diffusion sans
+    /// curseur et `warn`, jamais d'attente ; sans journal, diffusion immédiate sans curseur puis
+    /// relais de l'événement (comportement lot 2).
+    fn route(&self, session: &str, event: &Arc<SessionEvent>) {
+        if let Some(handle) = lock(&self.journal).clone() {
+            let pending = PendingEvent {
+                session: session.to_owned(),
+                event: Arc::clone(event),
+            };
+            if let Err(error) = handle.queue.try_send(pending) {
+                let dropped = match error {
+                    mpsc::error::TrySendError::Full(dropped) | mpsc::error::TrySendError::Closed(dropped) => {
+                        dropped
+                    }
+                };
+                tracing::warn!("lymaille hub: journal queue full, event delivered without a cursor");
+                self.deliver(&dropped.session, Frame::Event(dropped.event, None));
+            }
+            return;
+        }
+        self.deliver(session, Frame::Event(Arc::clone(event), None));
+        self.relay_event(event);
+    }
+
+    /// Publie `Cursor(seq)` vers le relais s'il y en a un (amendement #81 lot 3 : avec journal,
+    /// le relais ne transporte plus que le curseur, jamais l'événement).
+    fn relay_cursor(&self, session: &str, seq: u64) {
+        let Some(relay) = lock(&self.relay).clone() else {
+            return;
+        };
+        relay.publish(RelayMessage {
+            origin: self.origin.clone(),
+            session: session.to_owned(),
+            body: RelayBody::Cursor(seq),
+        });
+    }
+
+    /// Mémorise le dernier curseur diffusé par cette réplique pour `session` (point de reprise
+    /// des lectures du journal déclenchées par le relais).
+    fn note_cursor(&self, session: &str, seq: u64) {
+        let mut since = lock(&self.cursor_since);
+        let entry = since.entry(session.to_owned()).or_insert(0);
+        *entry = (*entry).max(seq);
+    }
+
+    /// Dernier curseur diffusé pour `session` (`None` si aucun).
+    fn last_cursor(&self, session: &str) -> Option<u64> {
+        lock(&self.cursor_since).get(session).copied()
+    }
+
+    /// La session a-t-elle un abonné local (le message `Cursor` du relais ne déclenche aucune
+    /// lecture sinon) ?
+    fn has_local_subscriber(&self, session: &str) -> bool {
+        let mut slots = lock(&self.slots);
+        let Some(slot) = slots.get(session) else {
+            return false;
+        };
+        if slot.sender.receiver_count() == 0 {
+            slots.remove(session);
+            return false;
+        }
+        true
+    }
+
     /// Traite un message **venu d'une autre réplique** : le message de la réplique elle-même est
     /// ignoré (aucune boucle) ; un `Event` est diffusé localement **sans audit** (l'audit
     /// appartient à la réplique émettrice) et **sans re-relais** ; `Missed` devient `Lagged(1)`
     /// pour les abonnés locaux (wildcard `*` : toutes les sessions) ; `Cancel`/`Close` sont remis
-    /// au gestionnaire ; `Cursor` est la variante du lot 3 (journal) — sans journal, ignorée.
-    fn apply_relay_message(&self, message: &RelayMessage) {
+    /// au gestionnaire ; `Cursor` (lot 3) déclenche une lecture du journal **si** la session a
+    /// un abonné local — depuis le dernier curseur diffusé ici — et diffuse ce qui manque.
+    async fn apply_relay_message(&self, message: &RelayMessage) {
         if message.origin == self.origin {
             return;
         }
         match &message.body {
             RelayBody::Event(event) => {
-                self.deliver(&message.session, Frame::Event(Arc::new(event.clone())));
+                self.deliver(&message.session, Frame::Event(Arc::new(event.clone()), None));
             }
             RelayBody::Missed => {
                 if message.session == ALL_SESSIONS {
@@ -347,9 +550,36 @@ impl Inner {
                 self.dispatch_command(RelayCommand::Close(id));
             }
             RelayBody::Cursor(_sequence) => {
-                // Lot 3 de ./hub.sdd (journal et curseurs) : la réplique réceptrice relit le
-                // journal. Le lot 2 n'a pas de journal — la variante est traitée explicitement.
-                tracing::debug!("lymaille hub: relay cursor ignored without a journal");
+                let Some(handle) = lock(&self.journal).clone() else {
+                    tracing::debug!("lymaille hub: relay cursor ignored without a journal");
+                    return;
+                };
+                if !self.has_local_subscriber(&message.session) {
+                    tracing::debug!("lymaille hub: relay cursor without a local subscriber, no journal read");
+                    return;
+                }
+                let Some(id) = SessionId::new(&message.session) else {
+                    tracing::warn!("lymaille hub: relay cursor with an unusable session identifier ignored");
+                    return;
+                };
+                let since = self.last_cursor(&message.session).unwrap_or(0);
+                match handle.log.read_after(&id, Some(since), handle.replay_max).await {
+                    Ok(page) => {
+                        for logged in page.events {
+                            if logged.seq <= since {
+                                continue;
+                            }
+                            self.note_cursor(&message.session, logged.seq);
+                            self.deliver(
+                                &message.session,
+                                Frame::Event(Arc::new(logged.event), Some(logged.seq)),
+                            );
+                        }
+                    }
+                    Err(_error) => {
+                        tracing::warn!("lymaille hub: relay cursor journal read failed, nothing replayed");
+                    }
+                }
             }
         }
     }
@@ -365,14 +595,56 @@ impl Inner {
     }
 }
 
-/// Abonnement à la file d'une session, rendu par [`EventHub::subscribe`].
+/// Abonnement à la file d'une session, rendu par [`EventHub::subscribe`] ou
+/// [`EventHub::subscribe_from`].
 #[derive(Debug)]
 pub struct Subscription {
     receiver: broadcast::Receiver<Frame>,
+    /// Lignes relues du journal à servir avant le direct (`subscribe_from`, lot 3).
+    replay: VecDeque<(u64, SessionEvent)>,
+    /// `Lagged` à rendre au premier `recv` (lignes purgées ou rejeu tronqué, lot 3).
+    lag_first: Option<u64>,
+    /// Dernier curseur servi : les directs de curseur inférieur ou égal sont ignorés
+    /// (déduplication entre rejeu et direct, `Must not` de ./hub.sdd).
+    cursor: Option<u64>,
 }
 
 impl Subscription {
-    /// Rend l'événement suivant de sa session.
+    /// Rend l'événement suivant de sa session, avec son curseur du journal (`None` sans journal
+    /// ou quand la panne d'écriture l'a privé de curseur — amendement #81 lot 3 de ./hub.sdd).
+    ///
+    /// # Errors
+    ///
+    /// [`SubscriptionError::Lagged`] si la file a débordé (n événements perdus), si un `Missed`
+    /// est venu du relais, ou au premier `recv` d'une reprise avec lignes purgées ou rejeu
+    /// tronqué ; [`SubscriptionError::Closed`] si le canal a été fermé par [`EventHub::close`]
+    /// ou retiré.
+    pub async fn recv_cursor(&mut self) -> Result<(Option<u64>, SessionEvent), SubscriptionError> {
+        loop {
+            if let Some(missed) = self.lag_first.take() {
+                return Err(SubscriptionError::Lagged(missed));
+            }
+            if let Some((seq, event)) = self.replay.pop_front() {
+                self.cursor = Some(self.cursor.unwrap_or(0).max(seq));
+                return Ok((Some(seq), event));
+            }
+            match self.receiver.recv().await {
+                Ok(Frame::Event(shared, Some(seq))) => {
+                    if self.cursor.is_some_and(|last| seq <= last) {
+                        continue; // déjà servi par le rejeu : déduplication par curseur
+                    }
+                    self.cursor = Some(seq);
+                    return Ok((Some(seq), (*shared).clone()));
+                }
+                Ok(Frame::Event(shared, None)) => return Ok((None, (*shared).clone())),
+                Ok(Frame::Lagged(missed)) => Err(SubscriptionError::Lagged(missed))?,
+                Err(broadcast::error::RecvError::Lagged(n)) => Err(SubscriptionError::Lagged(n))?,
+                Err(broadcast::error::RecvError::Closed) => Err(SubscriptionError::Closed)?,
+            }
+        }
+    }
+
+    /// Rend l'événement suivant de sa session, curseur ignoré.
     ///
     /// # Errors
     ///
@@ -381,12 +653,7 @@ impl Subscription {
     /// amendement #81 lot 2 de ./hub.sdd) ; [`SubscriptionError::Closed`] si le canal a été
     /// fermé par [`EventHub::close`] ou retiré.
     pub async fn recv(&mut self) -> Result<SessionEvent, SubscriptionError> {
-        match self.receiver.recv().await {
-            Ok(Frame::Event(shared)) => Ok((*shared).clone()),
-            Ok(Frame::Lagged(missed)) => Err(SubscriptionError::Lagged(missed)),
-            Err(broadcast::error::RecvError::Lagged(n)) => Err(SubscriptionError::Lagged(n)),
-            Err(broadcast::error::RecvError::Closed) => Err(SubscriptionError::Closed),
-        }
+        self.recv_cursor().await.map(|(_cursor, event)| event)
     }
 }
 
@@ -404,6 +671,71 @@ pub enum SubscriptionError {
 /// simple qui ne peut pas rester à demi écrit.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Tâche d'écriture unique du journal (amendement #81 lot 3 de ./hub.sdd) : vide la file bornée
+/// par lots (`batch_max` événements ou `flush_interval`), écrit une transaction par lot et par
+/// session, puis **diffuse dans l'ordre d'entrée** chaque événement avec son curseur. Panne
+/// d'écriture : le lot part sans curseur et `warn`, le flux continue. Le `Weak` évite de retenir
+/// l'`Inner` — le hub clos arrête la tâche (le `sender` meurt avec lui).
+async fn run_writer(
+    mut receiver: mpsc::Receiver<PendingEvent>,
+    weak: std::sync::Weak<Inner>,
+    config: LogConfig,
+) {
+    loop {
+        let Some(first) = receiver.recv().await else {
+            return;
+        };
+        let mut batch = vec![first];
+        while batch.len() < config.batch_max {
+            match tokio::time::timeout(config.flush_interval, receiver.recv()).await {
+                Ok(Some(next)) => batch.push(next),
+                _ => break,
+            }
+        }
+        let Some(inner) = weak.upgrade() else {
+            return;
+        };
+        let Some(handle) = lock(&inner.journal).clone() else {
+            return;
+        };
+        let mut cursors: HashMap<usize, u64> = HashMap::new();
+        let mut by_session: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (index, item) in batch.iter().enumerate() {
+            by_session.entry(item.session.as_str()).or_default().push(index);
+        }
+        for (session, indices) in by_session {
+            let events: Vec<SessionEvent> = indices
+                .iter()
+                .filter_map(|index| batch.get(*index))
+                .map(|item| (*item.event).clone())
+                .collect();
+            let Some(id) = SessionId::new(session) else {
+                continue; // texte inutilisable : diffusion sans curseur, rien à journaliser
+            };
+            match handle.log.append(&id, &events, chrono::Utc::now()).await {
+                Ok(sequences) => {
+                    for (index, sequence) in indices.iter().zip(sequences) {
+                        cursors.insert(*index, sequence);
+                    }
+                }
+                Err(_error) => {
+                    tracing::warn!("lymaille hub: journal write failed, lot delivered without cursors");
+                }
+            }
+        }
+        for (index, item) in batch.iter().enumerate() {
+            let cursor = cursors.get(&index).copied();
+            if let Some(sequence) = cursor {
+                inner.note_cursor(&item.session, sequence);
+            }
+            inner.deliver(&item.session, Frame::Event(Arc::clone(&item.event), cursor));
+            if let Some(sequence) = cursor {
+                inner.relay_cursor(&item.session, sequence);
+            }
+        }
+    }
 }
 
 // ── Relais entre répliques (amendement #81 lot 2 de ./hub.sdd, DSD `DEC-31`) ──
@@ -1099,5 +1431,285 @@ mod tests {
         hub.register(&session("s1"), "alice");
         hub.request_cancel(&session("s1"));
         hub.emit(text_delta("s1", 1, "x"));
+    }
+
+    // ── Journal et curseurs (issue #81, lot 3) ───────────────────────────────
+
+    use super::LogConfig;
+    use crate::lymaille::store::SeaEventLog;
+
+    /// `recv_cursor` borné, même motif que [`recv_of`].
+    async fn recv_cursor_of(
+        subscriber: &mut Subscription,
+    ) -> Result<(Option<u64>, SessionEvent), SubscriptionError> {
+        tokio::time::timeout(Duration::from_millis(2_000), subscriber.recv_cursor())
+            .await
+            .expect("un événement ou une rupture dans le délai")
+    }
+
+    /// Le `SessionEvent` typé correspondant à un `text_delta` de fixture.
+    fn typed(id: &str, turn: u64) -> SessionEvent {
+        SessionEvent::from(&text_delta(id, turn, "x"))
+    }
+
+    /// Config de journal des tests : battement ramené à 10 ms pour des tests rapides (le défaut
+    /// de 50 ms est verrouillé par le `Default` de la spec). Horloge réelle : la base de test est
+    /// connectée et l'auto-avance d'une horloge en pause en ferait expirer le pool (même
+    /// leçon que `laudit_lit_levenement_amont_complet`).
+    fn journal_config() -> LogConfig {
+        LogConfig {
+            flush_interval: Duration::from_millis(10),
+            ..LogConfig::default()
+        }
+    }
+
+    /// Hub avec journal SQLite mémoire migré, les deux partageant la même base.
+    async fn journal_hub() -> (EventHub, SeaEventLog) {
+        let db = crate::lymaille::store::test_support::test_db().await;
+        let log = SeaEventLog::new(db.clone());
+        let hub = EventHub::new(None, 256).with_log(SeaEventLog::new(db), journal_config());
+        (hub, log)
+    }
+
+    /// `Scenario` « avec journal, chaque événement diffusé porte un curseur croissant » : trois
+    /// émissions, `recv_cursor` rend 1, 2, 3 et le journal porte les trois lignes en ordre.
+    #[tokio::test]
+    async fn avec_journal_chaque_evenement_porte_un_curseur_croissant() {
+        let (hub, log) = journal_hub().await;
+        hub.register(&session("s1"), "alice");
+        let mut subscriber = hub.subscribe("alice", &session("s1"));
+        for turn in 1..=3 {
+            hub.emit(text_delta("s1", turn, &format!("t{turn}")));
+        }
+        for turn in 1..=3 {
+            let (cursor, _) = recv_cursor_of(&mut subscriber)
+                .await
+                .expect("l'abonné reçoit avec son curseur");
+            assert_eq!(cursor, Some(turn), "le n-ième événement porte le curseur n");
+        }
+        let page = log
+            .read_after(&session("s1"), None, 10)
+            .await
+            .expect("le journal se relit");
+        assert_eq!(
+            page.events.iter().map(|logged| logged.seq).collect::<Vec<u64>>(),
+            vec![1, 2, 3],
+            "le journal contient les trois lignes dans cet ordre"
+        );
+    }
+
+    /// `Scenario` « sans relais ni journal, le hub est inchangé » : `recv_cursor` rend un
+    /// curseur `None` (les trois Scenarios rejoués sont les tests existants, tous verts).
+    #[tokio::test(start_paused = true)]
+    async fn sans_journal_les_evenements_ne_portent_aucun_curseur() {
+        let hub = EventHub::new(None, 16);
+        hub.register(&session("s1"), "alice");
+        let mut subscriber = hub.subscribe("alice", &session("s1"));
+        hub.emit(text_delta("s1", 1, "x"));
+        let (cursor, _) = recv_cursor_of(&mut subscriber).await.expect("l'abonné reçoit");
+        assert_eq!(cursor, None, "sans journal, `recv_cursor` rend `None`");
+    }
+
+    /// `Scenario` « reprise après un curseur sans trou ni doublon » : journal 1 à 5, reprise
+    /// depuis 3, sixième émis pendant la relecture — 4, 5, 6 une seule fois chacun.
+    #[tokio::test]
+    async fn reprise_apres_un_curseur_sans_trou_ni_doublon() {
+        let (hub, log) = journal_hub().await;
+        hub.register(&session("s1"), "alice");
+        let seeded: Vec<SessionEvent> = (1..=5).map(|turn| typed("s1", turn)).collect();
+        log.append(&session("s1"), &seeded, chrono::Utc::now())
+            .await
+            .expect("les curseurs 1 à 5 sont posés");
+        let mut subscriber = hub
+            .subscribe_from("alice", &session("s1"), Some(3))
+            .await
+            .expect("la reprise depuis le curseur 3 réussit");
+        hub.emit(text_delta("s1", 6, "six"));
+        for want in [4, 5] {
+            let (cursor, _) = recv_cursor_of(&mut subscriber)
+                .await
+                .expect("le rejeu sert la ligne attendue");
+            assert_eq!(cursor, Some(want), "le rejeu reprend à 4");
+        }
+        let (cursor, _) = recv_cursor_of(&mut subscriber)
+            .await
+            .expect("le direct prend le relais");
+        assert_eq!(cursor, Some(6), "le sixième arrive une seule fois, en direct");
+        let quiet = tokio::time::timeout(Duration::from_millis(100), subscriber.recv()).await;
+        assert!(quiet.is_err(), "aucun doublon ne suit");
+    }
+
+    /// `Scenario` « reprise après une purge » : 1 à 40 purgés, reprise depuis 10 — `Lagged(30)`
+    /// d'abord, puis 41 à 50.
+    #[tokio::test]
+    async fn reprise_apres_une_purge_annonce_les_lignes_disparues() {
+        let (hub, log) = journal_hub().await;
+        hub.register(&session("s1"), "alice");
+        let t0 = chrono::Utc::now();
+        let old: Vec<SessionEvent> = (1..=40).map(|turn| typed("s1", turn)).collect();
+        log.append(&session("s1"), &old, t0)
+            .await
+            .expect("les curseurs 1 à 40 sont posés");
+        let fresh: Vec<SessionEvent> = (41..=50).map(|turn| typed("s1", turn)).collect();
+        let t2 = t0
+            .checked_add_signed(chrono::Duration::hours(2))
+            .expect("t0 + 2 h");
+        log.append(&session("s1"), &fresh, t2)
+            .await
+            .expect("les curseurs 41 à 50 sont posés");
+        let cutoff = t0
+            .checked_add_signed(chrono::Duration::hours(1))
+            .expect("t0 + 1 h");
+        log.purge_before(cutoff)
+            .await
+            .expect("la purge des 40 premières réussit");
+        let mut subscriber = hub
+            .subscribe_from("alice", &session("s1"), Some(10))
+            .await
+            .expect("la reprise depuis le curseur 10 réussit");
+        assert_eq!(
+            recv_of(&mut subscriber)
+                .await
+                .expect_err("le premier recv annonce les lignes disparues"),
+            SubscriptionError::Lagged(30),
+            "les curseurs 11 à 40 ont disparu"
+        );
+        for want in 41..=50 {
+            let (cursor, _) = recv_cursor_of(&mut subscriber)
+                .await
+                .expect("la relecture sert la ligne attendue");
+            assert_eq!(cursor, Some(want), "41 à 50 sont relus en ordre");
+        }
+    }
+
+    /// `Scenario` « reprise tronquée à `replay_max` » : `replay_max = 100`, journal de 250,
+    /// reprise depuis 0 — un `Lagged` d'abord, puis 100 lignes consécutives, puis le direct.
+    #[tokio::test]
+    async fn reprise_tronquee_a_replay_max_annonce_puis_sert_cent_lignes() {
+        let db = crate::lymaille::store::test_support::test_db().await;
+        let log = SeaEventLog::new(db.clone());
+        let seeded: Vec<SessionEvent> = (1..=250).map(|turn| typed("s1", turn)).collect();
+        log.append(&session("s1"), &seeded, chrono::Utc::now())
+            .await
+            .expect("deux cent cinquante lignes posées");
+        let hub = EventHub::new(None, 256).with_log(
+            SeaEventLog::new(db),
+            LogConfig {
+                replay_max: 100,
+                ..journal_config()
+            },
+        );
+        hub.register(&session("s1"), "alice");
+        let mut subscriber = hub
+            .subscribe_from("alice", &session("s1"), Some(0))
+            .await
+            .expect("la reprise depuis l'origine réussit");
+        match recv_of(&mut subscriber).await {
+            Err(SubscriptionError::Lagged(_)) => {}
+            other => panic!("un Lagged d'abord (les plus anciens non servis) : {other:?}"),
+        }
+        for want in 1..=100_u64 {
+            let (cursor, _) = recv_cursor_of(&mut subscriber)
+                .await
+                .expect("les cent lignes consécutive");
+            assert_eq!(cursor, Some(want), "le rejeu borne à replay_max sert 1 à 100");
+        }
+        hub.emit(text_delta("s1", 251, "direct"));
+        let (cursor, _) = recv_cursor_of(&mut subscriber)
+            .await
+            .expect("le direct prend le relais");
+        assert_eq!(
+            cursor,
+            Some(251),
+            "après le rejeu tronqué, le flux direct reprend"
+        );
+    }
+
+    /// `Scenario` « une panne d'écriture n'interrompt pas le flux » : journal dont `append`
+    /// échoue (table retirée) — deux événements reçus avec curseur `None`, `emit` jamais
+    /// bloquant.
+    #[tokio::test]
+    async fn une_panne_decriture_n_interrompt_pas_le_flux() {
+        let db = crate::lymaille::store::test_support::test_db().await;
+        db.execute_unprepared("DROP TABLE miryad_lymaille_session_events")
+            .await
+            .expect("la table du journal est retirée : tout append échouera");
+        let hub = EventHub::new(None, 256).with_log(SeaEventLog::new(db), journal_config());
+        hub.register(&session("s1"), "alice");
+        let mut subscriber = hub.subscribe("alice", &session("s1"));
+        let started = std::time::Instant::now();
+        hub.emit(text_delta("s1", 1, "x"));
+        hub.emit(text_delta("s1", 2, "y"));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "`emit` n'attend jamais le journal : {:?}",
+            started.elapsed()
+        );
+        for _ in 1..=2 {
+            let (cursor, _) = recv_cursor_of(&mut subscriber)
+                .await
+                .expect("l'abonné reçoit quand même");
+            assert_eq!(cursor, None, "faute de curseur journalisé, `None`");
+        }
+    }
+
+    /// `Scenario` « un curseur arrive par le relais et la réplique lit le journal » : deux hubs
+    /// sur le même journal, abonné de `s1` sur `B` — `B` lit et diffuse avec les curseurs ; une
+    /// session sans abonné sur `B` ne déclenche aucune lecture.
+    #[tokio::test]
+    async fn un_curseur_arrive_par_le_relais_et_la_replique_lit_le_journal() {
+        let db = crate::lymaille::store::test_support::test_db().await;
+        let bus = Bus::new();
+        let hub_a = EventHub::new(None, 256)
+            .with_log(SeaEventLog::new(db.clone()), journal_config())
+            .with_relay(bus.relay(256));
+        let hub_b = EventHub::new(None, 256)
+            .with_log(SeaEventLog::new(db), journal_config())
+            .with_relay(bus.relay(256));
+        hub_a.register(&session("s1"), "alice");
+        let mut on_b = hub_b.subscribe("alice", &session("s1"));
+        hub_a.emit(text_delta("s1", 1, "un"));
+        hub_a.emit(text_delta("s1", 2, "deux"));
+        for want in 1..=2 {
+            let (cursor, _) = recv_cursor_of(&mut on_b)
+                .await
+                .expect("B lit le journal sur Cursor");
+            assert_eq!(
+                cursor,
+                Some(want),
+                "les deux événements arrivent avec leurs curseurs"
+            );
+        }
+        // Une session sans abonné sur B : le Cursor reçu ne déclenche aucune lecture.
+        hub_a.emit(text_delta("s2", 1, "seule"));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut late = hub_b.subscribe("alice", &session("s2"));
+        let quiet = tokio::time::timeout(Duration::from_millis(100), late.recv()).await;
+        assert!(
+            quiet.is_err(),
+            "aucune lecture du journal pour une session sans abonné"
+        );
+    }
+
+    /// `Scenario` « un hôte journalisé est rejoué » : `publish_host` puis reprise depuis 0 —
+    /// l'abonné reçoit le `Host` tel que publié, avec son curseur.
+    #[tokio::test]
+    async fn un_hote_journalise_est_rejoue() {
+        let (hub, _log) = journal_hub().await;
+        hub.register(&session("s1"), "alice");
+        hub.publish_host(&session("s1"), "dashboard.show", json!({"w": "chart"}))
+            .expect("la publication est valide");
+        let mut subscriber = hub
+            .subscribe_from("alice", &session("s1"), Some(0))
+            .await
+            .expect("la reprise depuis l'origine réussit");
+        let (cursor, event) = recv_cursor_of(&mut subscriber).await.expect("l'hôte est rejoué");
+        assert_eq!(cursor, Some(1), "l'événement d'hôte porte son curseur");
+        assert!(
+            matches!(&event.kind, SessionEventKind::Host { kind, payload }
+                if kind == "dashboard.show" && payload == &json!({"w": "chart"})),
+            "l'hôte est rejoué tel que publié : {:?}",
+            event.kind
+        );
     }
 }

@@ -139,6 +139,7 @@ mod tests {
             "m20261103_000001_create_lymaille_tables",
             "m20261104_000001_lymaille_lot2",
             "m20261113_000001_lymaille_provenance",
+            "m20261114_000001_lymaille_session_events",
         ]);
         stems
     }
@@ -367,11 +368,12 @@ mod tests {
             .pop()
             .expect("the registration list is never empty");
         // Sous `matrix`, la dernière entrée enregistrée est la migration du store (amendement
-        // 2026-10-06, en fin de liste) ; sous `lymaille`, c'est la troisième migration du module
-        // — la provenance (amendements 2026-11-02, 2026-11-03 et du 2026-11-13, issue #73),
-        // ajoutée après toutes les autres en fin de liste. C'est elle que `down(Some(1))` défait.
+        // 2026-10-06, en fin de liste) ; sous `lymaille`, c'est la quatrième migration du module
+        // — le journal d'événements (amendements 2026-11-02, 2026-11-03, du 2026-11-13 issue #73
+        // et du 2026-11-14 issue #81 lot 3), ajoutée après toutes les autres en fin de liste.
+        // C'est elle que `down(Some(1))` défait.
         let expected_last = if cfg!(feature = "lymaille") {
-            "m20261113_000001_lymaille_provenance"
+            "m20261114_000001_lymaille_session_events"
         } else if cfg!(feature = "matrix") {
             "m20261006_000001_create_matrix_store"
         } else {
@@ -498,7 +500,10 @@ mod tests {
             "les tables miryad_matrix_* existent après up"
         );
         let expected_last: &str = if cfg!(feature = "lymaille") {
-            "m20261113_000001_lymaille_provenance"
+            // La dernière entrée du module est le journal d'événements (amendement du 2026-11-14,
+            // issue #81 lot 3), ajoutée après la provenance en fin de liste — même alignement que
+            // `down_one_step_undoes_the_last_applied_entry` (précédent : alignements #73).
+            "m20261114_000001_lymaille_session_events"
         } else {
             "m20261006_000001_create_matrix_store"
         };
@@ -547,13 +552,12 @@ mod tests {
         }
     }
 
-    /// Scenario (amendement 2026-11-02, étendu lot 2 le 2026-11-03 et provenance le 2026-11-13) :
-    /// « sous lymaille, le Migrator applique aussi les tables du module ». Les tables
-    /// `miryad_lymaille_*` existent en dernier (après les historiques et les `miryad_matrix_*`
-    /// éventuelles), et `down(Some(1))` défait d'abord la dernière migration du module — la
-    /// provenance, qui ne retire que ses colonnes — puis le lot 2, sans toucher aux tables
-    /// historiques ni à celles du lot 1, défaites au pas suivant (pas lui-même bloqué : écart
-    /// consigné dans le test matrix ci-dessus).
+    /// Scenario (amendement 2026-11-02, étendu lot 2 le 2026-11-03, provenance le 2026-11-13 et
+    /// journal d'événements le 2026-11-14) : « sous lymaille, le Migrator applique aussi les tables
+    /// du module ». Les tables `miryad_lymaille_*` existent en dernier (après les historiques et
+    /// les `miryad_matrix_*` éventuelles), et `down(Some(1))` défait d'abord la dernière migration
+    /// du module — le journal d'événements, qui ne retire que sa table — puis la provenance (ses
+    /// colonnes), puis le lot 2, sans toucher aux tables historiques ni à celles du lot 1.
     #[cfg(feature = "lymaille")]
     #[tokio::test]
     async fn lymaille_tables_are_applied_last_and_removed_first() {
@@ -578,43 +582,60 @@ mod tests {
         );
         assert_eq!(
             dedicated_versions(&db).await.last().map(String::as_str),
-            Some("m20261113_000001_lymaille_provenance"),
-            "la troisième migration du module (provenance, amendement du 2026-11-13) est la \
-             dernière entrée du tracking"
+            Some("m20261114_000001_lymaille_session_events"),
+            "la quatrième migration du module (journal d'événements, amendement du 2026-11-14) \
+             est la dernière entrée du tracking"
         );
         Migrator::down(&db, Some(1))
             .await
             .expect("down Some(1) défait la dernière migration du module en premier");
         assert!(
             !manager
+                .has_table("miryad_lymaille_session_events")
+                .await
+                .expect("has_table probe succeeds"),
+            "down Some(1) retire d'abord la table du journal d'événements"
+        );
+        assert!(
+            manager
                 .has_column("miryad_lymaille_catalog_agents", "managed_by")
                 .await
                 .expect("has_column probe succeeds"),
-            "down Some(1) retire d'abord les colonnes de provenance (troisième migration)"
+            "le premier pas ne touche pas encore les colonnes de provenance"
+        );
+        Migrator::down(&db, Some(1))
+            .await
+            .expect("le second pas défait la provenance, avant-dernière migration");
+        assert!(
+            !manager
+                .has_column("miryad_lymaille_catalog_agents", "managed_by")
+                .await
+                .expect("has_column probe succeeds"),
+            "le second pas retire les colonnes de provenance"
         );
         assert!(
             manager
                 .has_table("miryad_lymaille_mcp_servers")
                 .await
                 .expect("has_table probe succeeds"),
-            "le premier pas ne défait pas encore le lot 2"
+            "le second pas ne défait pas encore le lot 2"
         );
         Migrator::down(&db, Some(1))
             .await
-            .expect("le second pas défait le lot 2, avant-dernière migration");
+            .expect("le troisième pas défait le lot 2");
         assert!(
             !manager
                 .has_table("miryad_lymaille_mcp_servers")
                 .await
                 .expect("has_table probe succeeds"),
-            "le second pas retire les tables du lot 2"
+            "le troisième pas retire les tables du lot 2"
         );
         assert!(
             manager
                 .has_table("miryad_lymaille_catalog_agents")
                 .await
                 .expect("has_table probe succeeds"),
-            "les tables du lot 1 ne sont défaites qu'au deuxième pas"
+            "les tables du lot 1 ne sont défaites qu'au quatrième pas"
         );
         assert!(
             manager

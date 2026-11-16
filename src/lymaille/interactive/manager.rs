@@ -450,15 +450,49 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Abonnement aux événements de la session, après cloisonnement.
+    /// Abonnement aux événements de la session, après cloisonnement. Vaut
+    /// [`subscribe_from`](Self::subscribe_from) sans curseur (amendement #81 lot 3 de
+    /// ./manager.sdd).
     ///
     /// # Errors
     ///
     /// [`LymailleError::NotFound`] (session absente ou d'un autre).
     pub async fn subscribe(&self, subject: &str, id: &SessionId) -> Result<Subscription, LymailleError> {
+        self.subscribe_from(subject, id, None).await
+    }
+
+    /// Abonnement avec reprise après un curseur du journal, après cloisonnement (amendement #81
+    /// lot 3 de ./manager.sdd) : cloisonne comme [`subscribe`](Self::subscribe) puis délègue à
+    /// [`EventHub::subscribe_from`] (./hub.sdd). Le cloisonnement est vérifié **avant** toute
+    /// lecture du journal : une session d'un autre `subject` rend le même `NotFound`
+    /// indiscernable, sans révéler l'existence d'un journal.
+    ///
+    /// # Errors
+    ///
+    /// [`LymailleError::NotFound`] (session absente ou d'un autre) ; [`LymailleError::Store`]
+    /// (`MRD-LYMAILLE-009`) si la lecture du journal de reprise échoue.
+    pub async fn subscribe_from(
+        &self,
+        subject: &str,
+        id: &SessionId,
+        after: Option<u64>,
+    ) -> Result<Subscription, LymailleError> {
         self.principal(subject).await?;
         self.readable(subject, id).await?;
-        Ok(self.inner.deps.assemble.hub.subscribe(subject, id))
+        self.inner
+            .deps
+            .assemble
+            .hub
+            .subscribe_from(subject, id, after)
+            .await
+    }
+
+    /// Le hub du gestionnaire porte-t-il un journal ? Interne à la crate, pour la ligne `id:` du
+    /// flux SSE (curseur vs compteur de connexion — amendement du 2026-11-14 de ../http/sse.sdd,
+    /// issue #81 lot 3).
+    #[must_use]
+    pub(crate) fn has_journal(&self) -> bool {
+        self.inner.deps.assemble.hub.has_journal()
     }
 
     /// Annule (coopérativement) le tour actif ; `true` si un tour était actif **ici**.
@@ -2998,5 +3032,89 @@ mod tests {
             .subscribe("alice", &handle.id)
             .await
             .expect("la commande fantôme n'a rien fermé ici");
+    }
+
+    /// Scenario « un abonné reprend après un curseur » (issue #81, lot 3) : journal 1 à 5,
+    /// `subscribe_from(.., Some(3))`, sixième publié par le hub — 4, 5 puis 6, chacun avec son
+    /// curseur ; une session d'un autre `subject` rend le même `NotFound` que `subscribe`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_abonne_reprend_apres_un_curseur() {
+        use crate::lymaille::interactive::event::SessionEvent;
+        use crate::lymaille::interactive::hub::LogConfig;
+        use crate::lymaille::store::SeaEventLog;
+        use ::lymaille::Event as UpstreamEvent;
+        use ::lymaille::EventKind as UpstreamKind;
+        use ::lymaille::EventSink as _;
+        use ::lymaille::Timestamp;
+        use ::lymaille::TurnId;
+
+        let db = test_db().await;
+        setup_work(&db).await;
+        let bob = compte(&db, "bob", false).await;
+        let _ = bob;
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let mut deps = deps_with(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider))),
+            None,
+            Limits::default(),
+        );
+        let log = SeaEventLog::new(db.clone());
+        let hub = Arc::new(EventHub::new(None, 256).with_log(
+            SeaEventLog::new(db.clone()),
+            LogConfig {
+                flush_interval: Duration::from_millis(10),
+                ..LogConfig::default()
+            },
+        ));
+        deps.assemble.hub = Arc::clone(&hub);
+        let manager = SessionManager::new(deps);
+        let handle = manager
+            .open("alice", "c1", None)
+            .await
+            .expect("la session s'ouvre sur le contexte de type work");
+
+        let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let seeded: Vec<SessionEvent> = (1..=5)
+            .map(|turn| SessionEvent {
+                session: handle.id.as_str().to_owned(),
+                at: at.clone(),
+                kind: SessionEventKind::TurnStarted { turn },
+            })
+            .collect();
+        log.append(&handle.id, &seeded, chrono::Utc::now())
+            .await
+            .expect("les cinq lignes du journal sont posées");
+
+        let mut subscriber = manager
+            .subscribe_from("alice", &handle.id, Some(3))
+            .await
+            .expect("la reprise depuis le curseur 3 réussit");
+        hub.emit(UpstreamEvent::new(
+            handle.id.clone(),
+            Timestamp::from_millis(1_730_000_000_000),
+            UpstreamKind::TurnStarted { turn: TurnId::new(6) },
+        ));
+        for want in [4, 5, 6] {
+            let (cursor, _event) = tokio::time::timeout(Duration::from_secs(5), subscriber.recv_cursor())
+                .await
+                .expect("la ligne attendue dans le délai")
+                .expect("aucune rupture sur la reprise");
+            assert_eq!(cursor, Some(want), "les curseurs 4, 5 puis 6, chacun une fois");
+        }
+
+        let autre = manager
+            .subscribe_from("bob", &handle.id, Some(0))
+            .await
+            .expect_err("bob ne se reprend pas dans la session d'une autre");
+        let même = manager
+            .subscribe("bob", &handle.id)
+            .await
+            .expect_err("le même refus que subscribe, indiscernable");
+        assert_eq!(
+            autre.to_string(),
+            même.to_string(),
+            "`NotFound` indiscernable de celui de `subscribe`"
+        );
     }
 }

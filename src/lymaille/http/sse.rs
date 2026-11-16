@@ -55,57 +55,104 @@ fn to_rest(error: LymailleError) -> RestError {
 /// `GET /api/v1/lymaille/conversations/{id}/events` (`Must` de `./sse.sdd`) : cloisonnement et
 /// abonnement par `SessionManager` **avant** tout en-tête SSE (session inconnue ou d'un autre →
 /// `404` ordinaire), puis flux `text/event-stream` alimenté par la `Subscription` du hub. Le flux
-/// ne touche jamais la base et n'ajoute aucune donnée aux événements.
+/// ne touche jamais la base et n'ajoute aucune donnée aux événements. Avec journal, un en-tête
+/// `Last-Event-ID` numérique ouvre la reprise par `manager.subscribe_from` (amendement du
+/// 2026-11-14, issue #81 lot 3) ; un en-tête absent, vide, non numérique ou hors `u64` est ignoré,
+/// jamais une erreur `400`.
 pub(super) async fn events(
     principal: AuthPrincipal,
     Extension(manager): Extension<SessionManager>,
     Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, RestError> {
     let session = SessionId::new(id.as_str()).ok_or(RestError::NotFound)?;
     let subscription = manager
-        .subscribe(&principal.subject, &session)
+        .subscribe_from(&principal.subject, &session, last_event_id(&headers))
         .await
         .map_err(to_rest)?;
-    Ok(Sse::new(event_stream(subscription, encode_event)))
+    Ok(Sse::new(event_stream(
+        subscription,
+        manager.has_journal(),
+        encode_event,
+    )))
+}
+
+/// L'en-tête `Last-Event-ID` : un entier décimal (`u64`) ou rien. Absent, vide, non numérique,
+/// négatif ou hors de `u64` → `None`, jamais une erreur (`Must` de `./sse.sdd`, amendement lot 3).
+fn last_event_id(headers: &axum::http::HeaderMap) -> Option<u64> {
+    headers
+        .get(axum::http::HeaderName::from_static("last-event-id"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| text.parse::<u64>().ok())
 }
 
 /// Le flux lui-même : `event:` = le discriminant `type` du `SessionEvent` (miroir typé, DSD
-/// `DEC-30`), `data:` = son JSON complet, `id:` = compteur croissant propre à la connexion ;
+/// `DEC-30`), `data:` = son JSON complet ; `id:` = le curseur du journal quand le hub en porte un
+/// (`recv_cursor`), le compteur croissant propre à la connexion sinon — un événement servi sans
+/// curseur avec journal (panne d'écriture) est émis sans ligne `id:`, les deux identifiants ne se
+/// mélangent jamais (amendement du 2026-11-14 de `./sse.sdd`, issue #81 lot 3).
 /// `Lagged(n)` devient `event: lagged` `{"missed":n}` et le flux continue ; `Closed` le termine ;
 /// 15 s sans événement émettent le commentaire `: keepalive`. `encode` est le seam d'encodage :
 /// `events` passe `encode_event` ; une erreur d'encodage devient `event: error` et le flux continue.
-fn event_stream<E>(subscription: Subscription, encode: E) -> impl Stream<Item = Result<Event, Infallible>>
+fn event_stream<E>(
+    subscription: Subscription,
+    journal: bool,
+    encode: E,
+) -> impl Stream<Item = Result<Event, Infallible>>
 where
-    E: Fn(&SessionEvent, u64) -> Result<Event, LymailleError> + Send + 'static,
+    E: Fn(&SessionEvent, Option<u64>) -> Result<Event, LymailleError> + Send + 'static,
 {
     stream::unfold(
-        (subscription, 0_u64, encode),
-        move |(mut subscription, counter, encode)| async move {
-            let (event, counter) = match tokio::time::timeout(KEEPALIVE_PERIOD, subscription.recv()).await {
-                Ok(Ok(session_event)) => {
-                    let next = counter.checked_add(1).unwrap_or(counter);
-                    (
-                        encode(&session_event, next).unwrap_or_else(|_cause| serialization_error_event(next)),
-                        next,
-                    )
-                }
-                Ok(Err(SubscriptionError::Lagged(missed))) => {
-                    let next = counter.checked_add(1).unwrap_or(counter);
-                    (lagged_event(missed, next), next)
-                }
-                Ok(Err(SubscriptionError::Closed)) => return None,
-                Err(_elapsed) => (Event::default().comment("keepalive"), counter),
-            };
-            Some((Ok(event), (subscription, counter, encode)))
+        (subscription, journal, 0_u64, encode),
+        move |(mut subscription, journal, counter, encode)| async move {
+            let (event, counter) =
+                match tokio::time::timeout(KEEPALIVE_PERIOD, subscription.recv_cursor()).await {
+                    Ok(Ok((cursor, session_event))) => {
+                        let (id, next) = next_id(journal, counter, cursor);
+                        (
+                            encode(&session_event, id).unwrap_or_else(|_cause| serialization_error_event(id)),
+                            next,
+                        )
+                    }
+                    Ok(Err(SubscriptionError::Lagged(missed))) => {
+                        let (id, next) = next_id(journal, counter, None);
+                        (lagged_event(missed, id), next)
+                    }
+                    Ok(Err(SubscriptionError::Closed)) => return None,
+                    Err(_elapsed) => (Event::default().comment("keepalive"), counter),
+                };
+            Some((Ok(event), (subscription, journal, counter, encode)))
         },
     )
+}
+
+/// L'identifiant de la ligne `id:` : avec journal, le curseur porté par l'événement (jamais le
+/// compteur, même quand le curseur manque) ; sans journal, le compteur croissant de la connexion
+/// (`Must` de `./sse.sdd`, amendement lot 3). Rend aussi le compteur à retenir.
+fn next_id(journal: bool, counter: u64, cursor: Option<u64>) -> (Option<u64>, u64) {
+    if journal {
+        (cursor, counter)
+    } else {
+        let next = counter.checked_add(1).unwrap_or(counter);
+        (Some(next), next)
+    }
+}
+
+/// Poser la ligne `id:` quand un identifiant est rendu — curseur du journal ou compteur de la
+/// connexion ; `None` = aucune ligne `id:` (événement servi sans curseur avec journal, `Must` de
+/// `./sse.sdd`).
+fn with_id(event: Event, id: Option<u64>) -> Event {
+    match id {
+        Some(sequence) => event.id(sequence.to_string()),
+        None => event,
+    }
 }
 
 /// Un `SessionEvent` en événement SSE : le nom vient du discriminant `kind.type` du miroir (les
 /// variantes sont déjà en `snake_case` — `../interactive/event.sdd`), le contenu est le JSON
 /// complet, recopié sans lecture d'aucun champ (un `Host` traverse tel quel). Une panne de
 /// sérialisation est rendue en `Err` ; `event_stream` la remplace par `event: error`.
-fn encode_event(session_event: &SessionEvent, id: u64) -> Result<Event, LymailleError> {
+fn encode_event(session_event: &SessionEvent, id: Option<u64>) -> Result<Event, LymailleError> {
     let value = serde_json::to_value(session_event)
         .map_err(|cause| LymailleError::Serialization(cause.to_string()))?;
     let name = value
@@ -113,29 +160,26 @@ fn encode_event(session_event: &SessionEvent, id: u64) -> Result<Event, Lymaille
         .and_then(|kind| kind.get("type"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("error");
-    Event::default()
-        .id(id.to_string())
-        .event(name)
+    with_id(Event::default().event(name), id)
         .json_data(&value)
         .map_err(|cause| LymailleError::Serialization(cause.to_string()))
 }
 
 /// L'événement de rupture `Lagged(n)` (`Must` de `./sse.sdd`) : `event: lagged`, données
 /// `{"missed": n}`, puis le flux continue.
-fn lagged_event(missed: u64, id: u64) -> Event {
-    Event::default()
-        .id(id.to_string())
-        .event("lagged")
-        .json_data(json!({ "missed": missed }))
-        .unwrap_or_else(|_cause| serialization_error_event(id))
+fn lagged_event(missed: u64, id: Option<u64>) -> Event {
+    match Event::default().json_data(json!({ "missed": missed })) {
+        Ok(event) => with_id(event.event("lagged"), id),
+        Err(_cause) => serialization_error_event(id),
+    }
 }
 
 /// L'événement de panne de sérialisation : un code `MRD-*` nu, jamais un contenu de session.
-fn serialization_error_event(id: u64) -> Event {
-    Event::default()
-        .id(id.to_string())
-        .event("error")
-        .data(serialization_error_body())
+fn serialization_error_event(id: Option<u64>) -> Event {
+    with_id(
+        Event::default().event("error").data(serialization_error_body()),
+        id,
+    )
 }
 
 #[cfg(test)]
@@ -169,6 +213,7 @@ mod tests {
     use crate::lymaille::interactive::assemble::DynInference;
     use crate::lymaille::interactive::assemble::InferenceFactory;
     use crate::lymaille::interactive::hub::EventHub;
+    use crate::lymaille::interactive::hub::LogConfig;
     use crate::lymaille::interactive::manager::Limits;
     use crate::lymaille::interactive::manager::ManagerDeps;
     use crate::lymaille::interactive::manager::SessionManager;
@@ -176,6 +221,7 @@ mod tests {
     use crate::lymaille::resource_module::ResourceRegistry;
     use crate::lymaille::secret::SecretResolver;
     use crate::lymaille::store::LymailleStores;
+    use crate::lymaille::store::SeaEventLog;
     use crate::lymaille::store::test_support::test_db;
     use crate::users::resolve_user;
 
@@ -470,16 +516,7 @@ mod tests {
         token: &str,
         id: &str,
     ) -> axum::response::Response {
-        let request = axum::http::Request::builder()
-            .method("GET")
-            .uri(events_url(id))
-            .header("Authorization", format!("Bearer {token}"))
-            .body(axum::body::Body::empty())
-            .expect("requete valide");
-        app(manager.clone(), db.clone())
-            .oneshot(request)
-            .await
-            .expect("le routeur repond")
+        get_events_with(manager, db, token, id, None).await
     }
 
     /// Le corps SSE en fragments de texte (`into_data_stream` : `Body` seul n'est pas `Stream`).
@@ -541,15 +578,14 @@ mod tests {
     }
 
     /// L'installation d'un scénario type : catalogue, agent `dev` (`work`) d'alice, type `t`,
-    /// contexte privé `c1`. Rend `(db, hub, manager)`.
-    async fn setup() -> (DatabaseConnection, Arc<EventHub>, SessionManager) {
-        let db = test_db().await;
-        wire_catalog(&db).await;
-        compte(&db, "alice", false).await;
-        compte(&db, "bob", false).await;
-        put_agent(&db, "alice", &agent("dev", AgentKind::Work)).await;
+    /// contexte privé `c1`.
+    async fn install(db: &DatabaseConnection) {
+        wire_catalog(db).await;
+        compte(db, "alice", false).await;
+        compte(db, "bob", false).await;
+        put_agent(db, "alice", &agent("dev", AgentKind::Work)).await;
         put_type(
-            &db,
+            db,
             "t",
             Some(::lymaille::SessionKind::Work),
             Some("dev"),
@@ -560,7 +596,14 @@ mod tests {
             .resolve("alice")
             .await
             .expect("alice est un compte local");
-        inserer_contexte_prive(&db, alice.user_id, "c1", Some("t")).await;
+        inserer_contexte_prive(db, alice.user_id, "c1", Some("t")).await;
+    }
+
+    /// L'installation d'un scénario type : catalogue, agent `dev` (`work`) d'alice, type `t`,
+    /// contexte privé `c1`. Rend `(db, hub, manager)`.
+    async fn setup() -> (DatabaseConnection, Arc<EventHub>, SessionManager) {
+        let db = test_db().await;
+        install(&db).await;
         let hub = Arc::new(EventHub::new(None, 256));
         let provider = Arc::new(ScriptedProvider::new(vec![Ok(final_text("reponse de tour"))]));
         let manager = SessionManager::new(deps_with(
@@ -569,6 +612,89 @@ mod tests {
             Arc::clone(&hub),
         ));
         (db, hub, manager)
+    }
+
+    // ── Journal (issue #81, lot 3) ───────────────────────────────────────────
+
+    /// Journal de test : battement ramené à 10 ms (les défauts de `LogConfig` sont verrouillés
+    /// par `../interactive/hub.sdd`). Horloge réelle partout : la base SQLite de test expire
+    /// sous horloge en pause (leçon de `../interactive/hub.rs`).
+    fn journal_config() -> LogConfig {
+        LogConfig {
+            flush_interval: Duration::from_millis(10),
+            ..LogConfig::default()
+        }
+    }
+
+    /// Scénario type avec hub journalisé (`with_log` sur la même base que le gestionnaire).
+    async fn setup_journal() -> (DatabaseConnection, Arc<EventHub>, SessionManager) {
+        let db = test_db().await;
+        install(&db).await;
+        let hub = Arc::new(EventHub::new(None, 256).with_log(SeaEventLog::new(db.clone()), journal_config()));
+        let provider = Arc::new(ScriptedProvider::new(vec![Ok(final_text("reponse de tour"))]));
+        let manager = SessionManager::new(deps_with(
+            db.clone(),
+            Arc::new(ScriptFactory(provider)),
+            Arc::clone(&hub),
+        ));
+        (db, hub, manager)
+    }
+
+    /// Attend (5 s max) que le journal porte au moins `want` lignes pour la session —
+    /// l'écriture du hub est asynchrone (tâche de lot).
+    async fn journaled(db: &DatabaseConnection, id: &SessionId, want: u64) {
+        let log = SeaEventLog::new(db.clone());
+        for _ in 0..500 {
+            if log
+                .last_seq(id)
+                .await
+                .expect("le journal se relit")
+                .is_some_and(|seq| seq >= want)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("le journal n'atteint pas le curseur {want}");
+    }
+
+    /// `count` événements d'hôte publiés sur `id`, numérotés `i`.
+    fn publish_hosts(hub: &EventHub, id: &SessionId, count: u64) {
+        for index in 0..count {
+            hub.publish_host(id, "h", json!({ "i": index }))
+                .expect("la publication hote est valide");
+        }
+    }
+
+    /// Les identifiants des lignes `id:` d'un tampon SSE, dans l'ordre du flux.
+    fn ids_in(buffer: &str) -> Vec<u64> {
+        buffer
+            .lines()
+            .filter_map(|line| line.strip_prefix("id: "))
+            .filter_map(|id| id.parse().ok())
+            .collect()
+    }
+
+    /// Requête `GET …/events` avec un en-tête `Last-Event-ID` facultatif.
+    async fn get_events_with(
+        manager: &SessionManager,
+        db: &DatabaseConnection,
+        token: &str,
+        id: &str,
+        last_event_id: Option<&str>,
+    ) -> axum::response::Response {
+        let mut builder = axum::http::Request::builder()
+            .method("GET")
+            .uri(events_url(id))
+            .header("Authorization", format!("Bearer {token}"));
+        if let Some(cursor) = last_event_id {
+            builder = builder.header("Last-Event-ID", cursor.to_owned());
+        }
+        let request = builder.body(axum::body::Body::empty()).expect("requete valide");
+        app(manager.clone(), db.clone())
+            .oneshot(request)
+            .await
+            .expect("le routeur repond")
     }
 
     // ── Scénarios ────────────────────────────────────────────────────────────
@@ -832,7 +958,8 @@ mod tests {
             .expect("l'abonnement de la proprietaire");
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&calls);
-        let encoder = move |session_event: &crate::lymaille::interactive::event::SessionEvent, id: u64| {
+        let encoder = move |session_event: &crate::lymaille::interactive::event::SessionEvent,
+                            id: Option<u64>| {
             if counter.fetch_add(1, Ordering::SeqCst) == 1 {
                 Err(crate::lymaille::error::LymailleError::Serialization(
                     "panne injectee".to_owned(),
@@ -842,7 +969,7 @@ mod tests {
             }
         };
         let response = axum::response::IntoResponse::into_response(axum::response::sse::Sse::new(
-            super::event_stream(subscription, encoder),
+            super::event_stream(subscription, false, encoder),
         ));
         let mut body = body_stream(response);
         for index in 0..3 {
@@ -875,6 +1002,193 @@ mod tests {
         assert!(
             buffer.contains(r#""i":0"#) && buffer.contains(r#""i":2"#),
             "le premier et le troisieme evenements sont emis normalement : {buffer}"
+        );
+    }
+
+    // ── Reprise par `Last-Event-ID` (issue #81, lot 3) ────────────────────────
+
+    /// Scenario « la reprise sert les événements manqués puis le direct » (lot 3) : journal 1 à
+    /// 5, `Last-Event-ID: 3`, sixième publié après l'ouverture — `id: 4`, `id: 5`, `id: 6` dans
+    /// cet ordre, chacun une seule fois.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn la_reprise_sert_les_evenements_manques_puis_le_direct() {
+        let (db, hub, manager) = setup_journal().await;
+        let alice = token_for(&db, "alice").await;
+        let handle = manager.open("alice", "c1", None).await.expect("ouverture");
+        publish_hosts(&hub, &handle.id, 5);
+        journaled(&db, &handle.id, 5).await;
+        let response = get_events_with(&manager, &db, &alice, handle.id.as_str(), Some("3")).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK, "le flux s'ouvre");
+        hub.publish_host(&handle.id, "h", json!({ "i": 5 }))
+            .expect("le sixieme est publie");
+        let mut body = body_stream(response);
+        let buffer = read_until(&mut body, |text| text.contains("id: 6")).await;
+        assert_eq!(
+            ids_in(&buffer),
+            vec![4, 5, 6],
+            "rejeu 4 et 5 puis direct 6, chacun une seule fois : {buffer}"
+        );
+    }
+
+    /// Scenario « les `id` sont les curseurs du journal » (lot 3) : deux événements publiés avant
+    /// l'ouverture, trois après, aucun `Last-Event-ID` — les `id:` rendus portent les curseurs du
+    /// journal (3, 4, 5), pas un compteur de connexion (1, 2, 3).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn les_id_sont_les_curseurs_du_journal() {
+        let (db, hub, manager) = setup_journal().await;
+        let alice = token_for(&db, "alice").await;
+        let handle = manager.open("alice", "c1", None).await.expect("ouverture");
+        publish_hosts(&hub, &handle.id, 2);
+        journaled(&db, &handle.id, 2).await;
+        let response = get_events(&manager, &db, &alice, handle.id.as_str()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK, "le flux s'ouvre");
+        publish_hosts(&hub, &handle.id, 3);
+        let mut body = body_stream(response);
+        let buffer = read_until(&mut body, |text| ids_in(text).len() >= 3).await;
+        assert_eq!(
+            ids_in(&buffer),
+            vec![3, 4, 5],
+            "les lignes id: sont les curseurs du journal, pas un compteur de connexion : {buffer}"
+        );
+    }
+
+    /// Scenario « un `Last-Event-ID` invalide est ignoré » (lot 3) : `abc`, `-1`, vide et hors
+    /// `u64` — quatre réponses `200`, aucune erreur ; et le direct seul est servi (aucun rejeu).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_last_event_id_invalide_est_ignore() {
+        let (db, hub, manager) = setup_journal().await;
+        let alice = token_for(&db, "alice").await;
+        let handle = manager.open("alice", "c1", None).await.expect("ouverture");
+        publish_hosts(&hub, &handle.id, 5);
+        journaled(&db, &handle.id, 5).await;
+        for header in ["abc", "-1", "", "99999999999999999999999"] {
+            let response = get_events_with(&manager, &db, &alice, handle.id.as_str(), Some(header)).await;
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::OK,
+                "un Last-Event-ID `{header}` invalide n'est jamais une erreur 400"
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok()),
+                Some("text/event-stream"),
+                "le flux s'ouvre comme sans en-tete"
+            );
+            drop(response);
+        }
+        // Aucun rejeu : seul l'événement direct suivant arrive, avec son curseur.
+        let response = get_events_with(&manager, &db, &alice, handle.id.as_str(), Some("abc")).await;
+        hub.publish_host(&handle.id, "h", json!({ "i": 5 }))
+            .expect("le sixieme est publie");
+        let mut body = body_stream(response);
+        let buffer = read_until(&mut body, |text| text.contains("event: host")).await;
+        assert_eq!(ids_in(&buffer), vec![6], "aucun rejeu, le direct seul : {buffer}");
+    }
+
+    /// Scenario « un curseur au-delà du dernier ne rejoue rien » (lot 3) : journal 1 à 5,
+    /// `Last-Event-ID: 99`, sixième publié — seul le sixième est servi, sans trou annoncé.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_curseur_au_dela_du_dernier_ne_rejoue_rien() {
+        let (db, hub, manager) = setup_journal().await;
+        let alice = token_for(&db, "alice").await;
+        let handle = manager.open("alice", "c1", None).await.expect("ouverture");
+        publish_hosts(&hub, &handle.id, 5);
+        journaled(&db, &handle.id, 5).await;
+        let response = get_events_with(&manager, &db, &alice, handle.id.as_str(), Some("99")).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK, "le flux s'ouvre");
+        hub.publish_host(&handle.id, "h", json!({ "i": 5 }))
+            .expect("le sixieme est publie");
+        let mut body = body_stream(response);
+        let buffer = read_until(&mut body, |text| text.contains("event: host")).await;
+        assert!(
+            !buffer.contains("event: lagged"),
+            "un curseur au-dela du dernier n'annonce aucun trou : {buffer}"
+        );
+        assert_eq!(ids_in(&buffer), vec![6], "seul le sixieme est servi : {buffer}");
+    }
+
+    /// Scenario « la reprise après une purge annonce le trou » (lot 3) : 1 à 40 purgés (41 à 50
+    /// conservés), `Last-Event-ID: 10` — `event: lagged` `{"missed":30}` en tête, puis 41 à 50.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn la_reprise_apres_une_purge_annonce_le_trou() {
+        let (db, hub, manager) = setup_journal().await;
+        let alice = token_for(&db, "alice").await;
+        let handle = manager.open("alice", "c1", None).await.expect("ouverture");
+        publish_hosts(&hub, &handle.id, 50);
+        journaled(&db, &handle.id, 50).await;
+        db.execute_unprepared("DELETE FROM miryad_lymaille_session_events WHERE seq <= 40")
+            .await
+            .expect("les curseurs 1 a 40 sont purges");
+        let response = get_events_with(&manager, &db, &alice, handle.id.as_str(), Some("10")).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK, "le flux s'ouvre");
+        let mut body = body_stream(response);
+        let buffer = read_until(&mut body, |text| ids_in(text).len() >= 10).await;
+        assert!(
+            buffer.contains("event: lagged") && buffer.contains(r#"{"missed":30}"#),
+            "les curseurs 11 a 40 ont disparu, annonce en tete : {buffer}"
+        );
+        let lagged = buffer.find("event: lagged").expect("le trou est annonce");
+        let premier = buffer.find("id: 41").expect("41 est le premier rejoue");
+        assert!(lagged < premier, "le lagged precede le rejeu : {buffer}");
+        assert_eq!(
+            ids_in(&buffer),
+            (41..=50).collect::<Vec<u64>>(),
+            "41 a 50 sont relus en ordre : {buffer}"
+        );
+    }
+
+    /// Scenario « sans journal, `Last-Event-ID` ne change rien » (lot 3) : hub sans journal,
+    /// en-tête `3` — aucun rejeu, `id:` reste le compteur de la connexion (1, 2, 3).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sans_journal_last_event_id_ne_change_rien() {
+        let (db, hub, manager) = setup().await;
+        let alice = token_for(&db, "alice").await;
+        let handle = manager.open("alice", "c1", None).await.expect("ouverture");
+        let response = get_events_with(&manager, &db, &alice, handle.id.as_str(), Some("3")).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK, "le flux s'ouvre");
+        publish_hosts(&hub, &handle.id, 3);
+        let mut body = body_stream(response);
+        let buffer = read_until(&mut body, |text| text.contains("id: 3")).await;
+        assert_eq!(
+            ids_in(&buffer),
+            vec![1, 2, 3],
+            "le compteur de connexion, pas de rejeu : {buffer}"
+        );
+    }
+
+    /// Scenario « la reprise d'une session d'un autre est un 404 » (lot 3) : `bob` envoie
+    /// `Last-Event-ID: 3` sur la session d'alice — `404` sans en-tête SSE, aucune lecture du
+    /// journal (le cloisonnement précède la relecture, ./../interactive/manager.sdd).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn la_reprise_d_une_session_d_un_autre_est_un_404() {
+        let (db, hub, manager) = setup_journal().await;
+        let alice = token_for(&db, "alice").await;
+        let bob = token_for(&db, "bob").await;
+        let handle = manager.open("alice", "c1", None).await.expect("ouverture");
+        publish_hosts(&hub, &handle.id, 3);
+        journaled(&db, &handle.id, 3).await;
+        let response = get_events_with(&manager, &db, &bob, handle.id.as_str(), Some("3")).await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "introuvable indiscernable, rejeu compris"
+        );
+        assert_ne!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default(),
+            "text/event-stream",
+            "aucun en-tete SSE n'est pose sur le 404"
+        );
+        let probe = get_events_with(&manager, &db, &alice, handle.id.as_str(), Some("3")).await;
+        assert_eq!(
+            probe.status(),
+            axum::http::StatusCode::OK,
+            "la proprietaire retrouve son flux avec rejeu"
         );
     }
 }

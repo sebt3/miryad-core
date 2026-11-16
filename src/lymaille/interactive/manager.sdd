@@ -106,7 +106,8 @@ Tasks:
     [?] (implementer) : la sortie relais sortante du `cancel()` local n'est pas assertée au niveau manager (couverte au niveau hub).
     ou chargée ici, sans cloisonnement supplémentaire (le cloisonnement a été fait par la réplique qui a reçu la requête) ; `cancel` rendu à l'appelant reste `true` seulement pour un tour local — la valeur d'une annulation lointaine
     est « demandée » (`false` conservé, documenté). `Scenario` : « une annulation reçue du relais annule le tour local ». Tests d'abord, puis ./manager.rs. Après la tâche « relais » de ./hub.sdd.
-  [ ] Issue #81 lot 3 — `subscribe_from` : `subscribe_from(&self, subject, id, after: Option<u64>) -> Result<Subscription, LymailleError>` cloisonne comme `subscribe` puis `EventHub::subscribe_from` (./hub.sdd) ; `subscribe`
+  [x] Issue #81 lot 3 — `subscribe_from` : `subscribe_from(&self, subject, id, after: Option<u64>) -> Result<Subscription, LymailleError>` cloisonne comme `subscribe` puis `EventHub::subscribe_from` (./hub.sdd) ; `subscribe`
+    Validé 2026-11-16 (batterie COMPLÈTE verte `BATTERY_FAIL=0`, 17 combinaisons tests + clippy, fmt, `cargo tree` ; relecture `spec-dd` + batterie tenue par le primary). @subscribe_from cloisonne comme `subscribe` puis délègue au hub ; `subscribe` = `subscribe_from(None)` ; 404 pour une session d'un autre (Scenario verrouillé).
     reste, et vaut `subscribe_from(.., None)`. `Scenario` : « un abonné reprend après un curseur ». Tests d'abord, puis ./manager.rs. Après la tâche « journal » de ./hub.sdd.
 
 Done when:

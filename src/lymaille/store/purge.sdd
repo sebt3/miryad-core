@@ -41,7 +41,8 @@ Exposes:
 
 Tasks:
   [x] Tests d'abord (SQLite mémoire), puis ./purge.rs.
-  [ ] Issue #81 lot 3 — la purge couvre le journal d'événements (./events.sdd, DSD `DEC-31`) : `PurgeReport` gagne `session_events: u64` ; `purge_sessions` appelle `SeaEventLog::purge_before(cutoff)` avec le **même** seuil que les autres traces (chaque suppression dans sa
+  [x] Issue #81 lot 3 — la purge couvre le journal d'événements (./events.sdd, DSD `DEC-31`) : `PurgeReport` gagne `session_events: u64` ; `purge_sessions` appelle `SeaEventLog::purge_before(cutoff)` avec le **même** seuil que les autres traces (chaque suppression dans sa
+    Validé 2026-11-16 (batterie COMPLÈTE verte `BATTERY_FAIL=0`, 17 combinaisons tests + clippy, fmt, `cargo tree` ; relecture `spec-dd` + batterie tenue par le primary). `PurgeReport.session_events: u64` ; `purge_sessions` appelle `SeaEventLog::purge_before(cutoff)` au même seuil, dans sa propre requête (étape 3). Scenario « la purge supprime les événements anciens » verrouillé.
     propre requête, comme les autres ; une panne de cette suppression est une erreur `Store`, les suppressions précédentes restent valides) ; `Scenario` « la purge supprime les événements anciens ». Tests d'abord (SQLite mémoire), puis ./purge.rs.
     Après ./events.sdd (tâche « Déclaration et ré-exports »). `[?]` de rétention propre au journal : voir ./events.sdd.
 

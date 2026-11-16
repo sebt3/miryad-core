@@ -10,6 +10,28 @@
 //! installé par le montage de l'état — appel de `install_crypto_provider` (idempotent) avant tout
 //! appel d'inférence ou MCP.
 //!
+//! Déploiement multi-réplique (amendement du 2026-11-14, issue #81, DSD `DEC-31`) : la limite
+//! « mono-réplique » du lot 2 est levée, sous PostgreSQL uniquement — sans lui, chaque réplique
+//! reste une bulle (hub et verrou de tour en mémoire, `pg_turn_lock` rend `None`). Le montage
+//! complet d'une réplique ajoute trois pièces, toutes optionnelles et cumulables :
+//!
+//! - `EventHub::with_log(SeaEventLog::new(db), LogConfig::default())` : le journal des
+//!   événements (table de `migration`, écrite par la tâche d'écriture du hub, purgée par
+//!   `purge_sessions`) pose un curseur monotone par session ; le flux SSE le rend en `id:` et
+//!   rejoue sur `Last-Event-ID` (`http::sse`, `store::events`).
+//! - `EventHub::with_relay(PgEventRelay::connect(&db, PgRelayConfig::default())?)` sous la feature
+//!   de compilation `lymaille-pg` : relais `LISTEN/NOTIFY` entre répliques (`interactive::pg_relay`) —
+//!   événements, marques `Missed` après reconnexion, commandes `Cancel`/`Close` ; l'écoute tient
+//!   une connexion **dédiée**, hors des besoins courants du pool.
+//! - `ManagerDeps::with_turn_lock(pg_turn_lock(&db, heartbeat))` (`turn_lock`) : la porte de tour
+//!   `PgTurnLock`, verrou consultatif transactionnel partagé entre processus — un tour par
+//!   session, toutes répliques confondues. Il retient **une** connexion du pool pendant toute sa
+//!   durée : dimensionner le pool de chaque réplique au nombre de tours simultanés attendus, en
+//!   plus de ses besoins habituels.
+//!
+//! Les trois câblés, une session est ouverte, annulée, reprise et suivie indifféremment d'une
+//! réplique à l'autre ; aucun des trois, le comportement reste celui du lot 2, mono-réplique.
+//!
 //! Surfaces du lot 2 : sessions interactives par REST+SSE (`http::conversations_router`) et par
 //! Matrix (`chat`, features `lymaille` **et** `matrix`), toutes deux adossées au même
 //! `SessionManager` — un seul gestionnaire partagé, jamais un par surface. La rétention est

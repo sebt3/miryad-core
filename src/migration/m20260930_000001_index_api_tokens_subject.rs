@@ -195,6 +195,7 @@ mod tests {
             "m20261103_000001_create_lymaille_tables",
             "m20261104_000001_lymaille_lot2",
             "m20261113_000001_lymaille_provenance",
+            "m20261114_000001_lymaille_session_events",
         ]);
 
         assert_eq!(

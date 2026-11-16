@@ -30,6 +30,8 @@ Exposes:
   `SessionEvent`, `SessionEventKind`, `SessionOutcome`, `EventHub`, `SessionManager`, `ManagerDeps`, `SessionHandle`, `activate_toolset`, `discard_draft`, `ActivationReport`, modules `hub`, `manager`, `activation`
 
 Tasks:
+  [?] (cycle #81 lot 3, 2026-11-16) : la doc de ./mod.rs porte encore « application mono-réplique » — la limite est levée depuis les lots 1–3 de #81 (DSD `DEC-31) ; le fichier est hors de l'`Owns` de la spec qui a porté l'amendement (../mod.sdd n'owne que son mod.rs). Choix provisoire : texte laissé ; à resserrer par le développeur principal ou un cycle sur cette spec.
+
   [x] `mod.rs` en dernier du dossier ; test de chemins plats. — **lot 3 (2026-11-06) :
     `tests::chemins_plats_resolvent` référence chaque entrée de la liste fermée du `Must` par le
     chemin plat promis — types et fonctions, compilés puis `black_box`és sans instanciation — et le

@@ -50,10 +50,15 @@ Exposes:
   `SeaEventLog`, `LoggedEvent`, `ReplayPage`
 
 Tasks:
-  [ ] Spec approuvée par le développeur principal avant toute ligne de code (issue #81 lot 3). Après ../migration.sdd (table) et la tâche « Montée de dépendance à `lymaille` 0.3.0 » de ../mod.sdd.
-  [ ] Tests d'abord (SQLite mémoire, migrations appliquées, `test_db` de ./mod.rs, aucun PostgreSQL requis), un test par `Scenario` ci-dessous, puis ./events.rs. Après l'approbation de cette spec.
-  [ ] Déclaration et ré-exports dans ./mod.rs ; test d'import étendu d'abord. Même cycle que la tâche précédente.
-  [ ] Rétention : amender ./purge.sdd (`PurgeReport` gagne `session_events: u64`, `purge_sessions` appelle `SeaEventLog::purge_before` avec le même `cutoff` ; `Scenario` « la purge supprime les événements anciens ») **puis** ./purge.rs. Après la tâche précédente.
+  [x] Spec approuvée par le développeur principal avant toute ligne de code (issue #81 lot 3). Après ../migration.sdd (table) et la tâche « Montée de dépendance à `lymaille` 0.3.0 » de ../mod.sdd.
+    Closee 2026-11-16 dans le cycle #81 lot 3 (la spec amendée a été livrée comme contrat ; le lot est instruit par le développeur principal).
+  [x] Tests d'abord (SQLite mémoire, migrations appliquées, `test_db` de ./mod.rs, aucun PostgreSQL requis), un test par `Scenario` ci-dessous, puis ./events.rs. Après l'approbation de cette spec.
+    Validé 2026-11-16 (batterie COMPLÈTE verte `BATTERY_FAIL=0`, 17 combinaisons tests + clippy, fmt, `cargo tree` ; relecture `spec-dd` + batterie tenue par le primary). ./events.rs neuf : @SeaEventLog (append avec `seq` croissant rendu par le journal, `read_after` borné, `purge_before`, erreurs `Store(…)`, cloisonné par session). Un test par Scenario (SQLite mémoire, `test_db`).
+  [x] Déclaration et ré-exports dans ./mod.rs ; test d'import étendu d'abord. Même cycle que la tâche précédente.
+    Validé 2026-11-16 (batterie COMPLÈTE verte `BATTERY_FAIL=0`, 17 combinaisons tests + clippy, fmt, `cargo tree` ; relecture `spec-dd` + batterie tenue par le primary). `pub mod events;` + ré-export `SeaEventLog` dans ./mod.rs (témoin des chemins plats étendu).
+  [x] Rétention : amender ./purge.sdd (`PurgeReport` gagne `session_events: u64`, `purge_sessions` appelle `SeaEventLog::purge_before` avec le même `cutoff` ; `Scenario` « la purge supprime les événements anciens ») **puis** ./purge.rs. Après la tâche précédente.
+    Validé 2026-11-16 (batterie COMPLÈTE verte `BATTERY_FAIL=0`, 17 combinaisons tests + clippy, fmt, `cargo tree` ; relecture `spec-dd` + batterie tenue par le primary). L'amendement du `Must` de ./purge.sdd était déjà écrit (2026-11-14) ; ./purge.rs livré — voir la case #81 lot 3 de ./purge.sdd.
+    [?] (implementer) : la rétention propre au journal (durée distincte des autres traces) reste à l'appréciation du développeur principal — livré au même `cutoff` que les autres traces, comme prescrit.
     Arbitré le 2026-11-14 : rétention = **seuil unique de 30 jours** (`DEFAULT_RETENTION` de ./purge.sdd), aucun paramètre ni plafond propre au journal (le plafond de 5000 lignes par session et la rétention de 48 h, recommandés, sont écartés). Conséquence assumée : une session active produit un événement par delta de texte (des centaines par tour), la table du journal peut devenir la plus volumineuse ; la volumétrie se borne par la périodicité de la purge appelée par l'application.
     Arbitré le 2026-11-14 : curseur calculé **en base** (`MAX + 1`), contrainte unique `(session_id, seq)`, reprise de la transaction sur conflit (au plus 5 fois) ; le compteur en mémoire est écarté (faux dès que deux répliques écrivent la même session).
 

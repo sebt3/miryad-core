@@ -12,14 +12,16 @@ const NAME: &str = "m20261103_000001_create_lymaille_tables";
 const TABLE_PREFIX: &str = "miryad_lymaille_";
 
 /// Migrations du module à assembler par l'hôte (`src/migration/mod.sdd`, amendement `lymaille`) :
-/// le lot 1, puis le lot 2, puis la provenance du catalogue (amendements lot 2 du 2026-11-03 et
-/// du 2026-11-13 de `src/lymaille/migration.sdd`, issue #73), en ordre chronologique.
+/// le lot 1, puis le lot 2, puis la provenance du catalogue, puis le journal d'événements
+/// (amendements lot 2 du 2026-11-03, du 2026-11-13 de l'issue #73 et du 2026-11-14 de l'issue #81
+/// lot 3), en ordre chronologique.
 #[must_use]
 pub fn migrations() -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
     vec![
         Box::new(Migration),
         Box::new(m20261104_000001_lymaille_lot2::Migration),
         Box::new(m20261113_000001_lymaille_provenance::Migration),
+        Box::new(m20261114_000001_lymaille_session_events::Migration),
     ]
 }
 
@@ -715,6 +717,117 @@ mod m20261113_000001_lymaille_provenance {
     }
 }
 
+/// Quatrième migration du module — « Amendement du 2026-11-14 (issue #81, lot 3, DSD `DEC-31`) »
+/// du `src/lymaille/migration.sdd` : le **journal d'événements de session**. Nouvelle migration
+/// (règle par défaut de `/AGENTS.md`, aucune exception — la table n'existe pas encore) : les trois
+/// migrations committées restent immuables. Son `up` crée `IF NOT EXISTS`
+/// `miryad_lymaille_session_events` : `session_id` TEXT NOT NULL, `seq` BIGINT NOT NULL,
+/// `created_at` TIMESTAMP WITH TIME ZONE NOT NULL, `kind` TEXT NOT NULL, `event` JSON NOT NULL
+/// (`ColumnDef::json()`, jamais `json_binary()`), **clé primaire composite** `(session_id, seq)`
+/// (les écrivains concurrents de répliques différentes ne reçoivent jamais le même curseur), un
+/// index `idx_miryad_lymaille_session_events_created` sur `created_at` (purge par âge), aucune
+/// `FOREIGN KEY` (couplage lâche). Son `down` est strict : `drop_table` emporte la table et son
+/// index. Contrat d'emploi : `./store/events.sdd`. Aucune autre table ni colonne ne change.
+mod m20261114_000001_lymaille_session_events {
+    use sea_orm_migration::prelude::*;
+
+    use super::{TableSpec, json, table_name, text, timestamp};
+
+    /// Nom de migration (`src/lymaille/migration.sdd`, amendement du 2026-11-14), explicite : le
+    /// `DeriveMigrationName` donnerait le stem du fichier parent (`migration`).
+    const NAME: &str = "m20261114_000001_lymaille_session_events";
+
+    /// Index de purge par âge (`created_at`) posé par le `Must` de l'amendement.
+    const PURGE_INDEX: &str = "idx_miryad_lymaille_session_events_created";
+
+    /// Quatrième migration du module, rendue par `super::migrations()` en quatrième.
+    pub(super) struct Migration;
+
+    /// Colonne `seq` : le curseur BIGINT de la session (`Must` de l'amendement — `u64` rendu par
+    /// le store, stocké en BIGINT signé, portables SQLite et PostgreSQL).
+    fn seq() -> ColumnDef {
+        ColumnDef::new(Alias::new("seq"))
+            .big_integer()
+            .not_null()
+            .to_owned()
+    }
+
+    /// La table unique de l'amendement : PK composite `(session_id, seq)` posée comme les autres
+    /// PK composées (`sessions`, `memories`, `write_journal`).
+    fn table_specs() -> Vec<TableSpec> {
+        vec![TableSpec {
+            suffix: "session_events",
+            columns: vec![
+                text("session_id"),
+                seq(),
+                timestamp("created_at"),
+                text("kind"),
+                json("event"),
+            ],
+            primary_key: &["session_id", "seq"],
+        }]
+    }
+
+    impl MigrationName for Migration {
+        fn name(&self) -> &str {
+            NAME
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MigrationTrait for Migration {
+        /// Création `IF NOT EXISTS` de la table et de son index : le rejeu ne fait rien (règle du
+        /// `Must` parent).
+        async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+            for spec in table_specs() {
+                let mut statement = Table::create();
+                statement
+                    .table(Alias::new(table_name(spec.suffix)))
+                    .if_not_exists();
+                for column in spec.columns {
+                    statement.col(column);
+                }
+                if !spec.primary_key.is_empty() {
+                    let mut primary_key = Index::create();
+                    for column in spec.primary_key {
+                        primary_key.col(Alias::new(*column));
+                    }
+                    statement.primary_key(&mut primary_key);
+                }
+                manager.create_table(statement.take()).await?;
+            }
+            for (index, suffix, columns) in [(PURGE_INDEX, "session_events", &["created_at"][..])] {
+                let mut statement = Index::create();
+                statement
+                    .if_not_exists()
+                    .name(index)
+                    .table(Alias::new(table_name(suffix)));
+                for column in columns {
+                    statement.col(Alias::new(*column));
+                }
+                manager.create_index(statement.take()).await?;
+            }
+            Ok(())
+        }
+
+        /// Remontée stricte, non idempotent (règle de `src/migration/mod.sdd`) : `drop_table` sans
+        /// `if_exists` — la table tombe avec son index (les deux backends lient l'index à sa
+        /// table).
+        async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+            for spec in table_specs().iter().rev() {
+                manager
+                    .drop_table(
+                        Table::drop()
+                            .table(Alias::new(table_name(spec.suffix)))
+                            .to_owned(),
+                    )
+                    .await?;
+            }
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Migration, TABLE_PREFIX, migrations};
@@ -858,12 +971,14 @@ mod tests {
         ("idx_miryad_lymaille_matrix_events_seen_at", "matrix_events"),
     ];
 
-    /// Noms de suivi des trois entrées du module, dans l'ordre chronologique (`Amendement lot 2`,
-    /// puis amendement du 2026-11-13 de la provenance — issue #73).
-    const MIGRATION_NAMES: [&str; 3] = [
+    /// Noms de suivi des quatre entrées du module, dans l'ordre chronologique (`Amendement lot 2`,
+    /// puis amendement du 2026-11-13 de la provenance — issue #73, puis du 2026-11-14 du journal
+    /// d'événements — issue #81 lot 3).
+    const MIGRATION_NAMES: [&str; 4] = [
         "m20261103_000001_create_lymaille_tables",
         "m20261104_000001_lymaille_lot2",
         "m20261113_000001_lymaille_provenance",
+        "m20261114_000001_lymaille_session_events",
     ];
 
     /// Les neuf colonnes de provenance (issue #73) : trois tables du catalogue, trois colonnes
@@ -897,7 +1012,7 @@ mod tests {
         assert_eq!(
             entries.len(),
             MIGRATION_NAMES.len(),
-            "migrations() rend les trois entrées du module (amendement lot 2, puis provenance #73)"
+            "migrations() rend les quatre entrées du module (amendement lot 2, provenance #73, journal #81)"
         );
         entries.remove(1)
     }
@@ -912,6 +1027,18 @@ mod tests {
             "migrations() rend la troisième entrée du module (amendement du 2026-11-13, issue #73)"
         );
         entries.remove(2)
+    }
+
+    /// La quatrième entrée rendue par `migrations()` (le journal d'événements, amendement du
+    /// 2026-11-14, issue #81 lot 3) — même dispatch effectif que `lot2()`.
+    fn session_events() -> Box<dyn MigrationTrait> {
+        let mut entries = migrations();
+        assert_eq!(
+            entries.len(),
+            MIGRATION_NAMES.len(),
+            "migrations() rend la quatrième entrée du module (amendement du 2026-11-14, issue #81 lot 3)"
+        );
+        entries.remove(3)
     }
 
     /// Ligne d'`agents` (privé) : `owner_id` + `agent_id` et les colonnes NOT NULL.
@@ -1048,16 +1175,16 @@ mod tests {
         }
     }
 
-    /// Scenario (amendement lot 2, étendu le 2026-11-13, issue #73) : `migrations()` rend
-    /// `[lot 1, lot 2, provenance]` dans l'ordre chronologique — l'ordre d'assemblage de
-    /// `crate::migration::Migrator` en dépend.
+    /// Scenario (amendement lot 2, étendu le 2026-11-13 issue #73 et le 2026-11-14 issue #81) :
+    /// `migrations()` rend `[lot 1, lot 2, provenance, journal d'événements]` dans l'ordre
+    /// chronologique — l'ordre d'assemblage de `crate::migration::Migrator` en dépend.
     #[test]
-    fn migrations_returns_the_three_module_entries_in_chronological_order() {
+    fn migrations_returns_the_four_module_entries_in_chronological_order() {
         let entries = migrations();
         let names: Vec<&str> = entries.iter().map(|entry| entry.name()).collect();
         assert_eq!(
             names, MIGRATION_NAMES,
-            "les trois entrées du module, en ordre chronologique"
+            "les quatre entrées du module, en ordre chronologique"
         );
     }
 
@@ -1263,11 +1390,11 @@ mod tests {
         LymailleMigrator::up(&db, None)
             .await
             .expect("premier up complet réussit");
-        // Depuis l'amendement du 2026-11-13 (issue #73) la dernière appliquée est la provenance :
-        // deux pas de down défont la provenance puis le lot 2.
-        LymailleMigrator::down(&db, Some(2))
+        // Depuis l'amendement du 2026-11-14 (issue #81 lot 3) la dernière appliquée est le journal
+        // d'événements : trois pas de down défont le journal, la provenance puis le lot 2.
+        LymailleMigrator::down(&db, Some(3))
             .await
-            .expect("deux pas de down défont la provenance puis le lot 2");
+            .expect("trois pas de down défont le journal, la provenance puis le lot 2");
         for suffix in ["catalog_contexts", "user_contexts"] {
             assert!(
                 !manager
@@ -1410,10 +1537,11 @@ mod tests {
         LymailleMigrator::up(&db, None)
             .await
             .expect("premier up complet réussit");
-        // Deux pas : la provenance (amendement du 2026-11-13, issue #73) puis le lot 2.
-        LymailleMigrator::down(&db, Some(2))
+        // Trois pas : le journal d'événements (amendement du 2026-11-14, issue #81 lot 3), puis la
+        // provenance (issue #73), puis le lot 2.
+        LymailleMigrator::down(&db, Some(3))
             .await
-            .expect("deux pas de down défont la provenance puis le lot 2, dernières appliquées");
+            .expect("trois pas de down défont le journal, la provenance puis le lot 2, dernières appliquées");
         LymailleMigrator::up(&db, None)
             .await
             .expect("le rejeu du up complet réussit");
@@ -1641,5 +1769,172 @@ mod tests {
                 .expect("le comptage est un entier");
             assert_eq!(count, 1, "la ligne préexistante de {name} est intacte");
         }
+    }
+
+    /// La table du journal d'événements (amendement du 2026-11-14, issue #81 lot 3) et ses
+    /// colonnes déclarées, plus l'index de purge par âge.
+    const EVENTS_TABLE: (&str, &[&str]) = (
+        "session_events",
+        &["session_id", "seq", "created_at", "kind", "event"],
+    );
+    const EVENTS_INDEX: &str = "idx_miryad_lymaille_session_events_created";
+
+    /// Les migrations du module jusqu'à la provenance incluse (les trois premières), appliquées
+    /// **directement** sur une base vide — le niveau de base du Scenario « la migration du journal
+    /// d'événements crée sa table ».
+    async fn up_through_provenance(manager: &SchemaManager<'_>) {
+        let entries = migrations();
+        for entry in entries.into_iter().take(3) {
+            entry
+                .up(manager)
+                .await
+                .expect("les migrations précédentes (lot 1, lot 2 puis provenance) s'appliquent");
+        }
+    }
+
+    /// Ligne du journal posée brutalement : `session_id` + `seq` et les colonnes NOT NULL.
+    async fn insert_event_row(
+        db: &DatabaseConnection,
+        session: &str,
+        seq: i64,
+    ) -> Result<(), sea_orm::DbErr> {
+        db.execute_unprepared(&format!(
+            "INSERT INTO {TABLE_PREFIX}session_events (session_id, seq, created_at, kind, event) \
+             VALUES ('{session}', {seq}, '2026-11-14T00:00:00Z', 'text_delta', '{{\"a\": 1}}')"
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    /// Scenario (amendement du 2026-11-14, issue #81) : « la migration du journal d'événements
+    /// crée sa table ». Base des migrations précédentes : `up` crée `miryad_lymaille_session_events`
+    /// avec ses cinq colonnes et son index de purge, `IF NOT EXISTS` — le second `up` ne fait rien.
+    #[tokio::test]
+    async fn session_events_up_cree_sa_table_et_rejoue_sans_effet() {
+        let db = fresh_db().await;
+        let manager = SchemaManager::new(&db);
+        up_through_provenance(&manager).await;
+
+        session_events()
+            .up(&manager)
+            .await
+            .expect("le up du journal retourne Ok(()) sur une base des migrations précédentes");
+        let name = table(EVENTS_TABLE.0);
+        assert!(
+            manager
+                .has_table(name.as_str())
+                .await
+                .expect("has_table probe succeeds"),
+            "la table {name} existe après up"
+        );
+        for column in EVENTS_TABLE.1 {
+            assert!(
+                manager
+                    .has_column(name.as_str(), *column)
+                    .await
+                    .expect("has_column probe succeeds"),
+                "la table {name} porte la colonne {column}"
+            );
+        }
+        assert!(
+            manager
+                .has_index(name.as_str(), EVENTS_INDEX)
+                .await
+                .expect("has_index probe succeeds"),
+            "l'index {EVENTS_INDEX} existe sur {name}"
+        );
+
+        session_events()
+            .up(&manager)
+            .await
+            .expect("le up rejoué ne fait rien — if_not_exists sur la création");
+        assert!(
+            manager
+                .has_table(name.as_str())
+                .await
+                .expect("has_table probe succeeds"),
+            "{name} subsiste au rejeu du up (up idempotent)"
+        );
+    }
+
+    /// Scenario (amendement du 2026-11-14, issue #81) : « le journal refuse un curseur en double ».
+    /// La clé primaire composite `(session_id, seq)` refuse le doublon, pas le `(session, seq)`
+    /// d'une autre session.
+    #[tokio::test]
+    async fn le_journal_refuse_un_curseur_en_double() {
+        let db = fresh_db().await;
+        LymailleMigrator::up(&db, None)
+            .await
+            .expect("le up complet pose les quatre migrations");
+        insert_event_row(&db, "s1", 1)
+            .await
+            .expect("la ligne (s1, 1) se pose");
+        let duplicate = insert_event_row(&db, "s1", 1).await;
+        assert!(
+            duplicate.is_err(),
+            "le second (s1, 1) échoue — clé primaire composite (session_id, seq)"
+        );
+        insert_event_row(&db, "s2", 1)
+            .await
+            .expect("le (s2, 1) coexiste — les curseurs sont propres à chaque session");
+    }
+
+    /// Scenario (amendement du 2026-11-14, issue #81) : « le down retire la table du journal ».
+    /// Le `down` de la migration retire la table (et son index avec elle) ; après la chaîne `down`
+    /// complète, plus aucune table `miryad_lymaille_*` n'existe.
+    #[tokio::test]
+    async fn session_events_down_retire_la_table_du_journal() {
+        let db = fresh_db().await;
+        let manager = SchemaManager::new(&db);
+        LymailleMigrator::up(&db, None)
+            .await
+            .expect("le up complet pose les quatre migrations");
+        LymailleMigrator::down(&db, Some(1))
+            .await
+            .expect("le down du journal (dernière appliquée) retourne Ok(())");
+        let name = table(EVENTS_TABLE.0);
+        assert!(
+            !manager
+                .has_table(name.as_str())
+                .await
+                .expect("has_table probe succeeds"),
+            "le down du journal supprime {name}"
+        );
+        assert!(
+            !manager
+                .has_index(name.as_str(), EVENTS_INDEX)
+                .await
+                .expect("has_index probe succeeds"),
+            "l'index {EVENTS_INDEX} n'existe plus avec sa table"
+        );
+
+        LymailleMigrator::down(&db, None)
+            .await
+            .expect("le down de toute la chaîne réussit après celui du journal");
+        for (suffix, _) in TABLES {
+            assert!(
+                !manager
+                    .has_table(table(suffix).as_str())
+                    .await
+                    .expect("has_table probe succeeds"),
+                "plus aucune table du lot 1 : {suffix}"
+            );
+        }
+        for (suffix, _) in TABLES_LOT2 {
+            assert!(
+                !manager
+                    .has_table(table(suffix).as_str())
+                    .await
+                    .expect("has_table probe succeeds"),
+                "plus aucune table du lot 2 : {suffix}"
+            );
+        }
+        assert!(
+            !manager
+                .has_table(name.as_str())
+                .await
+                .expect("has_table probe succeeds"),
+            "la table du journal reste absente après la chaîne complète"
+        );
     }
 }
