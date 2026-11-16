@@ -18,7 +18,7 @@ use crate::mcp::protocol::{
     InitializeResult, JsonRpcResponse, PROTOCOL_VERSION, ParsedRequest, ProtocolRejection, ToolDeclaration,
     parse_request,
 };
-use crate::mcp::registry::{McpOp, McpToolRegistry};
+use crate::mcp::registry::{DeclaredColumns, FilterType, McpOp, McpToolRegistry};
 
 const OPERATIONS: &[(&str, McpOp)] = &[
     ("_list", McpOp::List),
@@ -166,25 +166,18 @@ fn handle_tools_list(id: Value, registry: &McpToolRegistry) -> JsonRpcResponse {
         "required": ["id"],
     });
 
-    let mut names: Vec<&'static str> = registry
+    let mut entities: Vec<(&'static str, DeclaredColumns)> = registry
         .entities
         .values()
-        .map(|entity| entity.resource_name())
+        .map(|entity| (entity.resource_name(), entity.declared_columns()))
         .collect();
-    names.sort_unstable();
-    let mut tools = Vec::with_capacity(names.len().saturating_mul(OPERATIONS.len()));
-    for name in names {
+    entities.sort_unstable_by_key(|(name, _)| *name);
+    let mut tools = Vec::with_capacity(entities.len().saturating_mul(OPERATIONS.len()));
+    for (name, declared) in entities {
         tools.push(ToolDeclaration {
             name: format!("{name}_list"),
             description: format!("List {name}, paginated"),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "page": { "type": "integer" },
-                    "per_page": { "type": "integer" },
-                    "filter": { "type": "string" },
-                },
-            }),
+            input_schema: list_input_schema(&declared),
         });
         tools.push(ToolDeclaration {
             name: format!("{name}_get"),
@@ -217,6 +210,37 @@ fn handle_tools_list(id: Value, registry: &McpToolRegistry) -> JsonRpcResponse {
         Ok(tools) => JsonRpcResponse::ok(id, json!({ "tools": tools })),
         Err(err) => error_response(id, &McpError::Render(err.to_string())),
     }
+}
+
+/// `inputSchema` de `{name}_list` (issue #78, amendement du 2026-11-13 et 2026-11-16) : `page` et
+/// `per_page` entiers, `filter` string (inconditionnel, schéma d'avant préservé) ; une propriété
+/// par colonne filtrable, typée par son `FilterType` ; `sort` (enum des colonnes triables) et
+/// `order` (`asc`|`desc`) seulement s'il y a des colonnes triables. Aucun `additionalProperties`,
+/// aucun `required`.
+fn list_input_schema(declared: &DeclaredColumns) -> Value {
+    let mut properties = serde_json::Map::new();
+    properties.insert("page".to_string(), json!({ "type": "integer" }));
+    properties.insert("per_page".to_string(), json!({ "type": "integer" }));
+    properties.insert("filter".to_string(), json!({ "type": "string" }));
+    for (column, filter_type) in &declared.filterable {
+        let json_type = match filter_type {
+            FilterType::Integer => "integer",
+            FilterType::Boolean => "boolean",
+            FilterType::String => "string",
+        };
+        properties.insert(column.clone(), json!({ "type": json_type }));
+    }
+    if !declared.sortable.is_empty() {
+        properties.insert(
+            "sort".to_string(),
+            json!({ "type": "string", "enum": declared.sortable }),
+        );
+        properties.insert(
+            "order".to_string(),
+            json!({ "type": "string", "enum": ["asc", "desc"] }),
+        );
+    }
+    json!({ "type": "object", "properties": properties })
 }
 
 /// Absent ou `null`, `arguments` vaut l'objet vide `{}` (arbitré 2026-09-29) : les outils
@@ -487,6 +511,49 @@ mod tests {
         }
     }
 
+    /// Fixture du `Scenario` « l'inputSchema de _list décrit les colonnes filtrables et triables »
+    /// (amendement 2026-11-13, issue #78) — `project_id` (entier) et `kind` (texte) filtrables,
+    /// `created_at` triable, pas de `filter_column`. Table `schema_filterables`.
+    mod schema_filterable {
+        use super::*;
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "schema_filterables")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub project_id: i32,
+            pub kind: String,
+            pub created_at: i64,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "schema_filterables"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+            fn filterable_columns() -> Vec<Column> {
+                vec![Column::ProjectId, Column::Kind]
+            }
+            fn sortable_columns() -> Vec<Column> {
+                vec![Column::CreatedAt]
+            }
+        }
+    }
+
     fn state_around(db: DatabaseConnection) -> MiryadAuthState {
         MiryadAuthState {
             oidc_client: Arc::new(MockOidcClient::default()),
@@ -545,6 +612,12 @@ mod tests {
     fn app_with_public_reads(state: MiryadAuthState, format: OutputFormat) -> Router {
         let mut registry = McpToolRegistry::new(format);
         registry.register::<public_read::Entity>();
+        mcp_router(registry).with_state(state)
+    }
+
+    fn app_with_schema_filterables(state: MiryadAuthState, format: OutputFormat) -> Router {
+        let mut registry = McpToolRegistry::new(format);
+        registry.register::<schema_filterable::Entity>();
         mcp_router(registry).with_state(state)
     }
 
@@ -1243,6 +1316,46 @@ mod tests {
                 "aucun gabarit dans une description : {description}"
             );
         }
+    }
+
+    /// `Scenario` : « l'inputSchema de _list décrit les colonnes filtrables et triables » (issue
+    /// #78) — schéma exact de `schema_filterables_list` : `page`/`per_page` inchangés,
+    /// une propriété par colonne filtrable (type dérivé de la colonne), `sort` énuméré sur les
+    /// colonnes triables, `order` `asc`|`desc`, `filter` toujours déclaré, pas de
+    /// `required`, pas d'`additionalProperties`.
+    #[tokio::test]
+    async fn list_input_schema_decrit_colonnes_filtrables_et_triables() {
+        let _tour = serial_turn();
+        let state = migrated_state().await;
+        let token = bearer_for(&state.db, "alice").await;
+        let served = post_json(
+            app_with_schema_filterables(state, OutputFormat::Json),
+            &token,
+            r#"{"jsonrpc":"2.0","id":6,"method":"tools/list"}"#,
+        )
+        .await;
+        assert_eq!(served.status, StatusCode::OK);
+        let body = served.json();
+        let tools = body["result"]["tools"].as_array().expect("tableau de tools");
+        let list = tools
+            .iter()
+            .find(|tool| tool["name"] == "schema_filterables_list")
+            .unwrap_or_else(|| panic!("schema_filterables_list absent : {body}"));
+        assert_eq!(
+            list["inputSchema"],
+            json!({
+                "type": "object",
+                "properties": {
+                    "page": { "type": "integer" },
+                    "per_page": { "type": "integer" },
+                    "filter": { "type": "string" },
+                    "project_id": { "type": "integer" },
+                    "kind": { "type": "string" },
+                    "sort": { "type": "string", "enum": ["created_at"] },
+                    "order": { "type": "string", "enum": ["asc", "desc"] },
+                },
+            })
+        );
     }
 
     /// `Scenario` : « méthode JSON-RPC sans dispatch répond -32601 préfixé sous 200 ».

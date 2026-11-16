@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use sea_orm::DatabaseConnection;
+use sea_orm::{ColumnTrait, DatabaseConnection, IdenStatic};
 use serde_json::Value;
 
 use crate::auth::AuthPrincipal;
@@ -17,11 +17,31 @@ pub(crate) enum McpOp {
     Delete,
 }
 
+/// Type JSON d'une colonne filtrable exposé dans l'`inputSchema` de `_list` (amendement du
+/// 2026-11-16, issue #78) — même mapping `ColumnType` que `rest/openapi.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FilterType {
+    Integer,
+    Boolean,
+    String,
+}
+
+/// Déclarations de colonnes d'une entité, relues en direct à chaque appel (amendement du
+/// 2026-11-16, issue #78) : colonnes filtrables avec leur type JSON, noms des colonnes triables.
+/// `filter_column` n'y figure pas : elle ne donne lieu qu'à la propriété `filter`, toujours
+/// déclarée par le handler.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct DeclaredColumns {
+    pub(crate) filterable: Vec<(String, FilterType)>,
+    pub(crate) sortable: Vec<String>,
+}
+
 /// Dispatch par nom d'entité (runtime) plutôt
 /// que par type : `tools/call` arrive avec un nom de méthode string, pas un type Rust.
 #[async_trait::async_trait]
 pub(crate) trait McpEntity: Send + Sync {
     fn resource_name(&self) -> &'static str;
+    fn declared_columns(&self) -> DeclaredColumns;
     async fn call(
         &self,
         op: McpOp,
@@ -94,6 +114,44 @@ fn split_sort_direction(sort: Option<&str>) -> (Option<String>, Option<&'static 
     }
 }
 
+/// Noms réservés par la query string de `_list` (`page`, `per_page`, `filter`, `sort`, `order`) :
+/// une colonne filtrable de ce nom ferait collision dans l'`inputSchema` (amendement 2026-11-16,
+/// issue #78). Refusée au `register` par `assert!`.
+const RESERVED_LIST_NAMES: &[&str] = &["page", "per_page", "filter", "sort", "order"];
+
+/// Type JSON d'une colonne filtrable — même mapping `ColumnType` que `rest/openapi.rs`
+/// (`filterable_parameter_type`). `None` pour un type hors de ce mapping : la colonne n'est alors
+/// pas déclarée dans le schéma (`[?]` signalé à l'arbitrage).
+fn filter_type(column_type: &sea_orm::sea_query::ColumnType) -> Option<FilterType> {
+    use sea_orm::sea_query::ColumnType;
+    match column_type {
+        ColumnType::TinyInteger | ColumnType::SmallInteger | ColumnType::Integer | ColumnType::BigInteger => {
+            Some(FilterType::Integer)
+        }
+        ColumnType::Boolean => Some(FilterType::Boolean),
+        ColumnType::Char(_) | ColumnType::String(_) | ColumnType::Text => Some(FilterType::String),
+        _ => None,
+    }
+}
+
+/// Relit en direct les déclarations de `E` (amendement 2026-11-16, issue #78) : rien n'est copié
+/// au registre.
+fn declared_columns_of<E: RestEntity>() -> DeclaredColumns {
+    DeclaredColumns {
+        filterable: E::filterable_columns()
+            .into_iter()
+            .filter_map(|column| {
+                let filter_type = filter_type(column.def().get_column_type())?;
+                Some((column.as_str().to_string(), filter_type))
+            })
+            .collect(),
+        sortable: E::sortable_columns()
+            .into_iter()
+            .map(|column| column.as_str().to_string())
+            .collect(),
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct IdParams {
     id: i32,
@@ -103,6 +161,10 @@ struct IdParams {
 impl<E: RestEntity> McpEntity for McpEntityImpl<E> {
     fn resource_name(&self) -> &'static str {
         E::resource_name()
+    }
+
+    fn declared_columns(&self) -> DeclaredColumns {
+        declared_columns_of::<E>()
     }
 
     async fn call(
@@ -221,6 +283,15 @@ impl McpToolRegistry {
              (the same entity type registered twice counts) is a programming error, refusing to \
              register it a second time"
         );
+        for column in E::filterable_columns() {
+            let column_name = column.as_str();
+            assert!(
+                !RESERVED_LIST_NAMES.contains(&column_name),
+                "`{name}` declares a filterable column named `{column_name}` — `page`, `per_page`, \
+                 `filter`, `sort` and `order` are reserved by the list query string, refusing to \
+                 register it"
+            );
+        }
         self.entities
             .insert(name, Box::new(McpEntityImpl::<E>(std::marker::PhantomData)));
         self
@@ -636,6 +707,170 @@ mod tests {
             "`recipes` enregistré en premier ne précède pas `ingredients` — l'ordre est celui \
              des clés, pas celui d'insertion"
         );
+    }
+
+    /// Entité du `Scenario` « `declared_columns` relit le trait en direct » (issue #78, 2026-11-16) :
+    /// `project_id` (entier), `kind` (texte) et `active` (booléen) filtrables, `created_at`
+    /// triable, pas de `filter_column`.
+    mod declared {
+        use super::*;
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "declared_columns")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub project_id: i32,
+            pub kind: String,
+            pub active: bool,
+            pub created_at: i64,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "declared"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+            fn filterable_columns() -> Vec<Column> {
+                vec![Column::ProjectId, Column::Kind, Column::Active]
+            }
+            fn sortable_columns() -> Vec<Column> {
+                vec![Column::CreatedAt]
+            }
+        }
+    }
+
+    /// Entité dont `filter_column` est `kind` sans que `kind` figure dans `filterable_columns`
+    /// (`Scenario` issue #78, 2026-11-16) : la colonne n'apparaît que sous `filter`.
+    mod filter_only {
+        use super::*;
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "filter_only")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub kind: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "filter_only"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+            fn filter_column() -> Option<Column> {
+                Some(Column::Kind)
+            }
+        }
+    }
+
+    /// Entité dont une colonne filtrable porte un nom réservé par la query string (`sort`) —
+    /// `register` doit refuser l'entité (`Scenario` issue #78, 2026-11-16).
+    mod sort_clash {
+        use super::*;
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "sort_clash")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub sort: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "sort_clash"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+            fn filterable_columns() -> Vec<Column> {
+                vec![Column::Sort]
+            }
+        }
+    }
+
+    #[test]
+    fn declared_columns_relit_le_trait_en_direct() {
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register::<declared::Entity>();
+        let entity = registry.entities.get("declared").expect("`declared` enregistrée");
+        assert_eq!(
+            entity.declared_columns(),
+            DeclaredColumns {
+                filterable: vec![
+                    ("project_id".to_string(), FilterType::Integer),
+                    ("kind".to_string(), FilterType::String),
+                    ("active".to_string(), FilterType::Boolean),
+                ],
+                sortable: vec!["created_at".to_string()],
+            }
+        );
+    }
+
+    /// `filter_column` (`kind`) absente de `filterable_columns` : aucune propriété au nom de la
+    /// colonne n'est déclarée, la valeur ne sort que sous `filter` (géré par le handler).
+    #[test]
+    fn filter_column_hors_filterable_n_est_declaree_que_comme_filter() {
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register::<filter_only::Entity>();
+        let entity = registry
+            .entities
+            .get("filter_only")
+            .expect("`filter_only` enregistrée");
+        let declared = entity.declared_columns();
+        assert!(
+            declared.filterable.is_empty() && declared.sortable.is_empty(),
+            "aucune colonne déclarée pour `filter_only` : {declared:?}"
+        );
+        assert!(
+            !declared.filterable.iter().any(|(name, _)| name == "kind"),
+            "`kind` ne doit pas apparaître sous son nom : {declared:?}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "`sort_clash` declares a filterable column named `sort`")]
+    fn register_refuse_une_colonne_filtrable_au_nom_reserve() {
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register::<sort_clash::Entity>();
     }
 
     /// Base sqlite en mémoire migrée des seules tables de `crate::migration` (dont

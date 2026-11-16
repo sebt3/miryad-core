@@ -137,9 +137,9 @@ Must:
   (amendement du 2026-11-16, issue #78, arbitré : option A) @McpEntity gagne `fn declared_columns(&self) -> DeclaredColumns` (`pub(crate)`), implémentée par @McpEntityImpl::<E> : elle **relit en direct, à chaque appel**,
     @E::filterable_columns(), @E::sortable_columns() et @E::filter_column() — rien n'est copié au registre (le principe « rien de @MiryadResource n'est copié » reste vrai). Elle rend pour chaque colonne filtrable son nom
     (`Column::as_str()`, comme ./../rest/core.rs) et son type JSON (`integer`, `boolean`, `string`, par le même mapping `ColumnType` que ./../rest/openapi.rs ; une colonne d'un autre type suit le comportement de la liste REST
-    — à aligner à l'implémentation et à signaler en `[?]`), les noms des colonnes triables, et si `filter_column` est `Some`. Consommée par ./handler.rs seul (`tools/list`, contrat de ./handler.sdd).
+    — à aligner à l'implémentation et à signaler en `[?]`), les noms des colonnes triables, (pas d'indicateur `filter_column` : `filter` est toujours déclaré par ./handler.rs, 2026-11-16). Consommée par ./handler.rs seul (`tools/list`, contrat de ./handler.sdd).
     **Collision de noms** : une colonne filtrable nommée `page`, `per_page`, `filter`, `sort` ou `order` fait échouer @register par `assert!` explicite citant l'entité et le nom (même motif que la clé dupliquée, erreur de
-    programmation au démarrage ; aucun nouveau code `MRD-*`). La colonne `filter_column`, absente de `filterable_columns`, n'est déclarée que sous le nom `filter`, jamais sous son nom de colonne.
+    programmation au démarrage ; aucun nouveau code `MRD-*`). La colonne `filter_column`, absente de `filterable_columns`, n'est jamais déclarée sous son nom de colonne (seul `filter` existe).
 
 Must not:
   Réévaluer une autorisation, normaliser une pagination, retoucher une colonne ou appeler un
@@ -433,7 +433,8 @@ Tasks:
       entre les deux surfaces ne serait attrapee que par la coincidence des suites miroirs. Choix
       provisoire : acceptable (la validation vit dans le core) ; la factorisation de
       @split_sort_direction (note ci-dessus) fermerait l'essentiel de ce trou.
-  [ ] Issue #78 (suite, 2026-11-16) — `McpEntity::declared_columns` (voir `Must`) et l'`assert!` de collision de noms dans @register : tests d'abord (le Scenario ci-dessus), puis ./registry.rs. Tâche jumelle de la tâche « `inputSchema` de `{name}_list` » de ./handler.sdd (un seul cycle d'implementer, deux fichiers dépendants : ./registry.rs puis ./handler.rs).
+  [x] Issue #78 (suite, 2026-11-16) — `McpEntity::declared_columns` (voir `Must`) et l'`assert!` de collision de noms dans @register : tests d'abord (le Scenario ci-dessus), puis ./registry.rs. Tâche jumelle de la tâche « `inputSchema` de `{name}_list` » de ./handler.sdd (un seul cycle d'implementer, deux fichiers dépendants : ./registry.rs puis ./handler.rs).
+    Validé 2026-11-16 (batterie COMPLÈTE verte : 17 combinaisons tests + 17 clippy `-D warnings`, fmt, 8 contrôles `cargo tree`, `specdd lint` ; synthèse `validator` GO conditionnel). `McpEntity::declared_columns` relit le trait en direct (aucune copie au registre, `McpEntityImpl` reste un `PhantomData`), mapping de type identique à `rest/openapi.rs`, `assert!` de collision de noms réservés sur les colonnes filtrables. Mutants M1 à M5 rouges ; M6 (mémorisation) non testable, les méthodes du trait étant statiques et pures — vérifié à la lecture.
 
 Done when:
   La spec porte exactement vingt `Scenario` (amendement du 2026-11-15 : le vingtième, « liste MCP
@@ -651,7 +652,7 @@ Scenario: traduction @RestError → @McpError sans perte de décision, @UnknownT
 Scenario: declared_columns relit le trait en direct et la collision de noms échoue au register (issue #78, 2026-11-16)
   Given une entité qui déclare `project_id` (entier), `kind` (texte) filtrables et `created_at` triable, puis une entité dont une colonne filtrable s'appelle `sort`
   When `declared_columns` est appelée sur la première, puis `register` sur la seconde
-  Then la première rend `project_id` (`integer`), `kind` (`string`), `created_at` triable et aucun `filter` (pas de `filter_column`) ; la seconde fait échouer `register` (panic attendu) avec un message citant l'entité et `sort`
+  Then la première rend `project_id` (`integer`), `kind` (`string`) et `created_at` triable, sans propriété au nom de `filter_column` ; la seconde fait échouer `register` (panic attendu) avec un message citant l'entité et `sort`
 
 Scenario: liste MCP filtrée et triée comme la liste REST
   Given une entité qui déclare trois colonnes filtrables et une triable, des lignes variées
