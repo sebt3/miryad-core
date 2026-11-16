@@ -2,8 +2,14 @@
 //! résolvent sans connaître la structure interne du module », depuis l'extérieur de la crate
 //! (`miryad_core::workflow::…`, chemin d'un vrai consommateur — le test unitaire de `mod.rs` n'a
 //! que `crate::`, `E0433` sur le nom propre de la crate en cible `--test` d'une lib).
-//! Compilation seule : aucun des treize chemins ne nomme `client`, `dispatcher`, `durable`,
+//! Compilation seule : aucun des chemins exercés ne nomme `client`, `dispatcher`, `durable`,
 //! `interpreter`, `step`, `rhai_step`, `error`, `definition` ni `subworkflow`.
+//!
+//! Depuis l'issue #80 (amendement du 2026-11-13 de ./mod.sdd), le test exerce en plus les trois
+//! types du client d'administration (`InvocationStatus`, `InvocationFilter`, `JournalEntry`) en
+//! position de type et ses quatre fonctions (`invocation_statuses`, `list_invocations`,
+//! `cancel_invocation`, `invocation_journal`) en position de valeur — toujours sans jamais nommer
+//! `client`.
 
 // Famille panic/unwrap/indexation tolérée dans cette crate de test : en-tête d'exemption
 // équivalent à celui de `src/lib.rs`, posé d'après le `Must` de `tooling.sdd` — une crate
@@ -56,10 +62,29 @@ fn chemins_plats_resolvent_depuis_l_exterieur() {
         _: Option<miryad_core::workflow::RunInfo>,
     ) {
     }
+    // Issue #80 (amendement du 2026-11-13 de ./mod.sdd) : les types du client d'administration en
+    // position de type, sans instanciation.
+    fn witness_admin(
+        _: Option<miryad_core::workflow::InvocationStatus>,
+        _: Option<miryad_core::workflow::InvocationFilter>,
+        _: Option<miryad_core::workflow::JournalEntry>,
+    ) {
+    }
     witness_execution(None, None, None, None);
     witness_definition(None, None, None, None);
     witness_lot_26(None, None, None, None);
+    witness_admin(None, None, None);
     std::hint::black_box(miryad_core::workflow::configure_policy);
+    // Les quatre fonctions d'administration en position de valeur, sans appel (mêmes motifs que
+    // `configure_policy` ci-dessus : la résolution du chemin plat est la seule chose prouvée).
+    std::hint::black_box(miryad_core::workflow::invocation_statuses);
+    std::hint::black_box(miryad_core::workflow::list_invocations);
+    std::hint::black_box(miryad_core::workflow::cancel_invocation);
+    std::hint::black_box(miryad_core::workflow::invocation_journal);
+    // Issue #26 (awakeable, amendé 2026-11-14) : les deux fonctions de résolution par l'ingress,
+    // en dernier dans la liste plate, en position de valeur sans appel (mêmes motifs que ci-dessus).
+    std::hint::black_box(miryad_core::workflow::resolve_awakeable);
+    std::hint::black_box(miryad_core::workflow::reject_awakeable);
 }
 
 /// Scenario « les steps croisés n'existent que sous leur croisement de features » : depuis l'extérieur de
