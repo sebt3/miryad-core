@@ -400,11 +400,26 @@ impl Inner {
         let mut slots = lock(&self.slots);
         if let Some(slot) = slots.get(session) {
             if slot.sender.receiver_count() == 0 {
-                slots.remove(session);
+                self.evict_without_subscribers(&mut slots, session);
             } else {
                 let _sent = slot.sender.send(frame);
             }
         }
+    }
+
+    /// Marque une session dont le dernier abonné local est parti : son canal est libéré
+    /// (`Must not` de ./hub.sdd : retenir des événements sans abonné) **et** son dernier curseur
+    /// diffusé retiré — le prochain abonné repart de `seq − 1` sur le premier `Cursor` reçu,
+    /// sans rejeu périmé (arbitrage du 2026-11-16 de ./hub.sdd, issue #81 lot 3). Le verrou de
+    /// `slots` est détenu par l'appelant ; aucun chemin ne verrouille `slots` sous le verrou de
+    /// `cursor_since`, l'ordre d'acquisition est sûr.
+    fn evict_without_subscribers(
+        &self,
+        slots: &mut MutexGuard<'_, HashMap<String, Arc<Slot>>>,
+        session: &str,
+    ) {
+        slots.remove(session);
+        lock(&self.cursor_since).remove(session);
     }
 
     /// Publie un événement local vers le relais s'il y en a un : la forme sérialisée dépasse
@@ -501,7 +516,7 @@ impl Inner {
             return false;
         };
         if slot.sender.receiver_count() == 0 {
-            slots.remove(session);
+            self.evict_without_subscribers(&mut slots, session);
             return false;
         }
         true
@@ -525,8 +540,11 @@ impl Inner {
             RelayBody::Missed => {
                 if message.session == ALL_SESSIONS {
                     let mut slots = lock(&self.slots);
-                    slots.retain(|_session, slot| {
+                    slots.retain(|session, slot| {
                         if slot.sender.receiver_count() == 0 {
+                            // Le dernier abonné local est parti : même purge que partout
+                            // ailleurs (canal et curseur de reprise, arbitrage du 2026-11-16).
+                            lock(&self.cursor_since).remove(session);
                             return false;
                         }
                         let _sent = slot.sender.send(Frame::Lagged(1));
@@ -1730,6 +1748,58 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
         let quiet = tokio::time::timeout(Duration::from_millis(100), on_b.recv()).await;
         assert!(quiet.is_err(), "aucun des événements 1 à 5 ne suit");
+    }
+
+    /// `Scenario` « le départ du dernier abonné remet la reprise à zéro » (issue #81, lot 3,
+    /// arbitré le 2026-11-16) : l'abonné de `B` qui reçoit 1 à 5 se désabonne, `A` émet 6 à 10
+    /// (ignorés par `B`, sans abonné) ; le nouvel abonné simple de `s1` ne doit pas repartir du
+    /// curseur périmé 5 — il reçoit **uniquement** l'événement 11 avec `Some(11)`. Horloge réelle
+    /// (pas de `start_paused`) : la base de test est connectée, comme dans les autres tests du
+    /// journal ; les attentes sont des `sleep` bornés.
+    #[tokio::test]
+    async fn le_depart_du_dernier_abonne_remet_la_reprise_a_zero() {
+        let db = crate::lymaille::store::test_support::test_db().await;
+        let bus = Bus::new();
+        let hub_a = EventHub::new(None, 256)
+            .with_log(SeaEventLog::new(db.clone()), journal_config())
+            .with_relay(bus.relay(256));
+        let hub_b = EventHub::new(None, 256)
+            .with_log(SeaEventLog::new(db), journal_config())
+            .with_relay(bus.relay(256));
+        hub_a.register(&session("s1"), "alice");
+        let mut on_b = hub_b.subscribe("alice", &session("s1"));
+        for turn in 1..=5 {
+            hub_a.emit(text_delta("s1", turn, "avant"));
+        }
+        for want in 1..=5 {
+            let (cursor, _) = recv_cursor_of(&mut on_b)
+                .await
+                .expect("l'abonné de B reçoit les événements 1 à 5");
+            assert_eq!(cursor, Some(want), "l'abonné de B a reçu le curseur attendu");
+        }
+        drop(on_b);
+        for turn in 6..=10 {
+            hub_a.emit(text_delta("s1", turn, "silence"));
+        }
+        // Les Cursor 6 à 10 traversent le relais sans abonné sur B : rien ne doit être retenu
+        // pour la reprise, y compris le dernier curseur diffusé.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut fresh = hub_b.subscribe("alice", &session("s1"));
+        hub_a.emit(text_delta("s1", 11, "onze"));
+        let (cursor, _) = recv_cursor_of(&mut fresh)
+            .await
+            .expect("le onzième événement arrive sur B");
+        assert_eq!(
+            cursor,
+            Some(11),
+            "le premier événement du nouvel abonné est le onzième, avec son curseur"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let quiet = tokio::time::timeout(Duration::from_millis(100), fresh.recv()).await;
+        assert!(
+            quiet.is_err(),
+            "aucun des événements 6 à 10 n'est livré au nouvel abonné"
+        );
     }
 
     /// `Scenario` « un hôte journalisé est rejoué » : `publish_host` puis reprise depuis 0 —
