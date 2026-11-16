@@ -511,8 +511,9 @@ impl Inner {
     /// ignoré (aucune boucle) ; un `Event` est diffusé localement **sans audit** (l'audit
     /// appartient à la réplique émettrice) et **sans re-relais** ; `Missed` devient `Lagged(1)`
     /// pour les abonnés locaux (wildcard `*` : toutes les sessions) ; `Cancel`/`Close` sont remis
-    /// au gestionnaire ; `Cursor` (lot 3) déclenche une lecture du journal **si** la session a
-    /// un abonné local — depuis le dernier curseur diffusé ici — et diffuse ce qui manque.
+    /// au gestionnaire ; `Cursor(seq)` (lot 3) déclenche une lecture du journal **si** la session
+    /// a un abonné local — depuis le dernier curseur diffusé ici, sinon depuis `seq − 1` (une
+    /// réplique neuve ne rejoue pas l'historique) — et diffuse ce qui manque.
     async fn apply_relay_message(&self, message: &RelayMessage) {
         if message.origin == self.origin {
             return;
@@ -549,7 +550,7 @@ impl Inner {
                 };
                 self.dispatch_command(RelayCommand::Close(id));
             }
-            RelayBody::Cursor(_sequence) => {
+            RelayBody::Cursor(sequence) => {
                 let Some(handle) = lock(&self.journal).clone() else {
                     tracing::debug!("lymaille hub: relay cursor ignored without a journal");
                     return;
@@ -562,7 +563,11 @@ impl Inner {
                     tracing::warn!("lymaille hub: relay cursor with an unusable session identifier ignored");
                     return;
                 };
-                let since = self.last_cursor(&message.session).unwrap_or(0);
+                // Reprise : depuis le dernier curseur diffusé ici, sinon juste avant le curseur
+                // reçu (une réplique neuve ne relit pas l'historique de la session).
+                let since = self
+                    .last_cursor(&message.session)
+                    .unwrap_or_else(|| sequence.saturating_sub(1));
                 match handle.log.read_after(&id, Some(since), handle.replay_max).await {
                     Ok(page) => {
                         for logged in page.events {
@@ -1689,6 +1694,42 @@ mod tests {
             quiet.is_err(),
             "aucune lecture du journal pour une session sans abonné"
         );
+    }
+
+    /// `Scenario` « une réplique neuve ne rejoue pas l'historique » (issue #81, lot 3,
+    /// correctif du 2026-11-16) : `A` émet cinq événements avant qu'un abonné de `s1` existe sur
+    /// `B` ; `B` ne doit rien lire pour eux. Le sixième arrive seul, avec le curseur `Some(6)`.
+    /// Horloge réelle (pas de `start_paused`) : la base de test est connectée, comme dans les
+    /// autres tests du journal ; les attentes sont des `sleep` bornés.
+    #[tokio::test]
+    async fn une_replique_neuve_ne_rejoue_pas_lhistorique() {
+        let db = crate::lymaille::store::test_support::test_db().await;
+        let bus = Bus::new();
+        let hub_a = EventHub::new(None, 256)
+            .with_log(SeaEventLog::new(db.clone()), journal_config())
+            .with_relay(bus.relay(256));
+        let hub_b = EventHub::new(None, 256)
+            .with_log(SeaEventLog::new(db), journal_config())
+            .with_relay(bus.relay(256));
+        hub_a.register(&session("s1"), "alice");
+        for turn in 1..=5 {
+            hub_a.emit(text_delta("s1", turn, "avant"));
+        }
+        // Les Cursor 1 à 5 traversent le relais sans abonné sur B : aucune lecture attendue.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut on_b = hub_b.subscribe("alice", &session("s1"));
+        hub_a.emit(text_delta("s1", 6, "six"));
+        let (cursor, _) = recv_cursor_of(&mut on_b)
+            .await
+            .expect("le sixième événement arrive sur B");
+        assert_eq!(
+            cursor,
+            Some(6),
+            "le premier événement reçu est le sixième, avec son curseur"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let quiet = tokio::time::timeout(Duration::from_millis(100), on_b.recv()).await;
+        assert!(quiet.is_err(), "aucun des événements 1 à 5 ne suit");
     }
 
     /// `Scenario` « un hôte journalisé est rejoué » : `publish_host` puis reprise depuis 0 —
