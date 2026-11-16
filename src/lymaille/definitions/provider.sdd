@@ -39,7 +39,7 @@ Exposes:
 Tasks:
   [x] Tests d'abord (hooks purs, politiques), puis ./provider.rs. Validé 2026-11-02 (validator PASS, batterie ciblée).
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les hooks de ./provider.rs passent à la signature asynchrone (`db` ignoré : la validation reste pure, aucune lecture en base ajoutée par cette tâche) ; les tests `before_*` du fichier passent à `.await` avec une connexion simulée, assertions inchangées. Le contrôle à la sauvegarde que la connexion rend possible (DSD `hooks-async` `FR-3`) n'est **pas** dans cette tâche : il fera l'objet d'un amendement de spec distinct. Dépend de /src/resource.sdd (même amendement).
-    Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
+    Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte).
   [x] Issue #79 — `Model` dérive `utoipa::ToSchema` (sous `lymaille`, qui implique `db`) pour que `resource_openapi::<Entity>()` compile sur cette ressource. Spec d'abord : amender le `Must` (dérives du `Model`) et
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; `validator` remplacé par relecture `spec-dd` + batterie tenue par le primary). Test : `resource_openapi_compile_et_decrit_ressource`.
     ajouter le `Scenario` « `resource_openapi::<Entity>()` compile et décrit la ressource » ; colonnes JSON `provider` décrites en objet libre (`#[schema(value_type = Object)]`) tant que l'issue #72 n'a pas

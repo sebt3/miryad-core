@@ -407,7 +407,7 @@ Tasks:
     ./registry.rs deviennent obsolètes : une tâche autorisée les retire.
   [x] Amendement 2026-10-19 (suppression de GraphQL) : dans `./registry.rs`, doc (ligne ~20) : retirer « comme en GraphQL — cf. `graphql::PolicyRegistry` » (dispatch par nom d'entité à l'exécution). Aucun changement de comportement.
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : la fixture de test (@MiryadResource::before_create, ~ligne 431 de ./registry.rs) est portée au nouveau trait ; aucun changement de comportement ni de dispatch (le registre délègue à @rest::core). Dépend de /src/resource.sdd (même amendement).
-    Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
+    Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte).
   [x] Issue #78 — parité MCP de la liste. Spec d'abord : `ListParams` MCP accepte les mêmes critères et le tri (arguments JSON : colonnes filtrables par nom, `sort`, `order`) ; clé inconnue → `InvalidParams`
     (`MRD-MCP-005`), comme REST `400` ; transmis à `rest::core::list` sans logique propre. Les deux surfaces lisent la **même** déclaration de colonnes (`FR-1`). `Scenario` miroir de ./../rest/mod.sdd.
     Puis tests d'abord, puis ./registry.rs. Après ./../rest/mod.sdd.

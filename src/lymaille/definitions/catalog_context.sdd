@@ -51,7 +51,7 @@ Tasks:
     Approuvé le 2026-11-04.
   [x] Tests d'abord (hooks purs), puis ./catalog_context.rs. Validé 2026-11-04 (validator PASS checkpoint R1–R5 ; les 7 rouges du WIP sont verts).
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les hooks de ./catalog_context.rs passent à la signature asynchrone (`db` ignoré : la validation reste pure, aucune lecture en base ajoutée par cette tâche) ; les tests `before_*` du fichier passent à `.await` avec une connexion simulée, assertions inchangées. Le contrôle à la sauvegarde que la connexion rend possible (DSD `hooks-async` `FR-3`) n'est **pas** dans cette tâche : il fera l'objet d'un amendement de spec distinct. Dépend de /src/resource.sdd (même amendement).
-    Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
+    Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte).
   [x] Issue #74 — la référence `context_type` en forme `G_…` est refusée par le hook (écart spec ↔ code). Qualification (procédure « Correction de bug » de `/.specdd/bootstrap.project.md`) : le `Must` ne dit que
     « de forme identifiant valide » ; ./context_type.sdd fait des noms de type des `G_…` depuis le 2026-11-05 et ./../interactive/manager.sdd ne résout `context_type` que sous cette forme ; or
     ./catalog_context.rs exige `classify(reference) == Private` (commentaire R10, arbitrage du 2026-11-04 renversé le lendemain). Le contrat est donc incomplet **et** le code obsolète. Spec d'abord : préciser

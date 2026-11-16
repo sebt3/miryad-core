@@ -416,7 +416,7 @@ Tasks:
   [x] Amendement 2026-10-19 (`db`) : dans `./mod.rs`, poser `#[cfg(feature = "db")]` sur les cinq `mod` enfants gatés, le trait @RestEntity,
     @resource_router, leurs `use` et le module de tests ; laisser `pub mod openapi;` nu.
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les fixtures de test de ./mod.rs (hooks `before_create`, `before_update`, `before_delete`, ~lignes 398-531) sont portées au nouveau trait asynchrone ; les tests `before_*_hook_*` existants restent verts sans changement d'assertion (statuts `422` et corps inchangés). Dépend de /src/resource.sdd (même amendement).
-    Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
+    Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte).
   [!] (cohérence #77 (1), appliquée 2026-11-14 par spec-dd, à reconfirmer) : le test wire `update_forbidden_for_non_owner_allowed_for_owner` encode l'ancien contrat — le `PUT` d'autrui sur une ressource en lecture `OwnerOnly`
     rend `404` (`MRD-REST-001`) depuis l'arbitrage `./core.sdd` du 2026-11-13 (404 uniforme, pas d'oracle d'existence), plus `403`. L'assertion est mise à jour vers `404` dans ./mod.rs, sans changement du contrat de ce
     fichier : la correspondance `Forbidden` → `403` reste exacte pour les autres chemins de refus (`static_verdict`). Le nom du test et sa référence ci-dessus sont inchangés (il vérifie toujours refus non-possesseur /

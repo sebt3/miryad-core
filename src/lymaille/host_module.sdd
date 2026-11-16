@@ -48,7 +48,7 @@ Exposes:
 
 Tasks:
   [x] Tests d'abord (SQLite mémoire, module factice `dashboard`), puis ./host_module.rs.
-    Validé 2026-11-11 : 5 tests ↔ 5 `Scenario`, rouge d'abord démontré (34 symboles absents), batterie ciblée `lymaille` tests+clippy et clippy `--all-features` + fmt verts ; synthèse tenue par le primary (`validator` indisponible).
+    Validé 2026-11-11 : 5 tests ↔ 5 `Scenario`, rouge d'abord démontré (34 symboles absents), batterie ciblée `lymaille` tests+clippy et clippy `--all-features` + fmt verts.
     Soldé 2026-11-11 : `Module::set_raw_fn` n'existe pas dans `rhai` 1.27 ; le `Must` nomme désormais l'API réelle, `FuncRegistration::set_into_module_raw` (contrat identique).
     [?] (spec-dd) : `pub mod host_module;` déclaré TEMPORAIREMENT dans ../mod.rs (hors `Owns`) pour faire tourner les tests inline ; la tâche « déclarations et ré-exports » de ../mod.sdd le remplacera — à ne pas oublier. — SOLDÉ 2026-11-11 : déclaration propre + ré-exports posés par la tâche de ../mod.sdd (commit 8a0dd19).
 

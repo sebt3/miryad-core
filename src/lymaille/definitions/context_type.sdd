@@ -63,10 +63,10 @@ Tasks:
     entité : le `G_` n'est plus qu'une convention, la garantie de catalogue est `AdminOnly` + la table. Le Scenario « un type valide » perd son
     `#[ignore]`, le Scenario « un nom privé est refusé » est retiré.
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : les hooks de ./context_type.rs passent à la signature asynchrone (`db` ignoré : la validation reste pure, aucune lecture en base ajoutée par cette tâche) ; les tests `before_*` du fichier passent à `.await` avec une connexion simulée, assertions inchangées. Le contrôle à la sauvegarde que la connexion rend possible (DSD `hooks-async` `FR-3`) n'est **pas** dans cette tâche : il fera l'objet d'un amendement de spec distinct. Dépend de /src/resource.sdd (même amendement).
-    Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte ; synthèse tenue par le primary, `validator` indisponible — `[?]` de ./identity.sdd).
+    Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte).
   [x] Amendement du 2026-11-11 (DSD `scripts-hote` `DEC-2`) : colonne `script_grants` et sa validation par le hook ; test d'abord (`Scenario` ci-dessous), puis ./context_type.rs. Après ../migration.sdd.
     Arbitrages du 2026-11-11 : « toolset existant » = existence de la ligne (actif ou brouillon, l'exécution exige l'actif et échoue fermé) confirmé ; grammaire ASCII figée par `is_module_name`.
-    Validé 2026-11-11 (tests `before_create_refuse_script_grants_mal_forme_ou_toolset_absent` et `before_create_accepte_des_grants_d_un_toolset_existant_sans_chercher_les_modules` ; batterie ciblée `lymaille` verte ; synthèse tenue par le primary).
+    Validé 2026-11-11 (tests `before_create_refuse_script_grants_mal_forme_ou_toolset_absent` et `before_create_accepte_des_grants_d_un_toolset_existant_sans_chercher_les_modules` ; batterie ciblée `lymaille` verte).
 
   [x] Amendement du 2026-11-11 : le hook appelle `host_module::is_module_name` au lieu de sa copie locale de la grammaire ; tests existants verts sans retouche. Après ../host_module.sdd.
     Validé 2026-11-11 (validator PASS : copie locale `est_nom_de_module` supprimée, hook branché sur `host_module::is_module_name`, grammaires prouvées équivalentes ASCII — 19 tests `context_type` verts sans retouche ; condition « seule copie » du `Must` de ../host_module.sdd atteinte ; batterie ciblée `lymaille` verte).
