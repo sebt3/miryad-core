@@ -21,6 +21,8 @@ Can modify:
   ../workflow/matrix_step.rs — **uniquement** le site d'appel de `MatrixClient::send` (nouveau paramètre `relation`, passé à
     `None`) et l'implémentation de `Sender` pour @MatrixClient, pour que le crate compile sous `workflow,matrix` à la fin de la
     tâche F ; la config, les kinds et leurs tests restent à ../workflow/matrix_step.sdd (amendement 2026-11-16)
+  ../lymaille/chat/bridge.rs — **uniquement** le site d'appel de `MatrixClient::send` de l'impl `Sender` pour @MatrixClient (~l.809 : nouveau paramètre
+    `relation`, passé à `None`) ; le reste du fichier reste à ../lymaille/chat/bridge.sdd (amendement 2026-11-16 : appelant omis de la première rédaction)
   ../../tests/matrix_live.rs — test d'intégration `#[ignore]` contre un vrai homeserver (variables
     `MIRYAD_MATRIX_HOMESERVER`, `MIRYAD_MATRIX_PASSPHRASE`, `MIRYAD_MATRIX_ROOM`, `MIRYAD_MATRIX_SESSION`
     — jeton importé —, base SQLite en mémoire) : connexion, envoi, relecture, idempotence du `txn_id`
@@ -230,8 +232,8 @@ Tasks:
 
   [ ] Tâche F (2026-11-16, issue #87, `matrix#FR-9`) : @MessageRelation, nouveau paramètre `relation` de `send`, validation des
     identifiants d'événement, `apply_thread`, branche `Reply` — tests d'abord (Scenario `apply_thread`, identifiant d'événement
-    mal formé sans réseau), puis ./client.rs ; adaptation ponctuelle de ../workflow/matrix_step.rs (voir `Can modify`) pour que
-    `workflow,matrix` compile. Après ./error.sdd (variante `EventNotFound`) et ./sync.sdd (`MessageParts`) ; les `[?]` de `Must` sont
+    mal formé sans réseau), puis ./client.rs ; adaptation ponctuelle des deux appelants, ../workflow/matrix_step.rs et ../lymaille/chat/bridge.rs (voir `Can modify`), et des appels de
+    ../../tests/matrix_live.rs, pour que `workflow,matrix`, `lymaille,matrix` et les tests d'intégration compilent. Après ./error.sdd (variante `EventNotFound`) et ./sync.sdd (`MessageParts`) ; les `[?]` de `Must` sont
     à consigner ici avec le choix retenu.
   [ ] Tâche G (2026-11-16, `matrix#FR-10`) : `edit` et sa traduction d'erreurs — tests d'abord (identifiants mal formés sans réseau),
     puis ./client.rs. Après la tâche F. La partie qui parle au serveur (remplacement effectivement affiché, `NotAuthor`,
