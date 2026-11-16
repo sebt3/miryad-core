@@ -3,6 +3,57 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). L'API reste
 instable avant `1.0` : un changement de version mineure peut être cassant.
 
+## [0.4.0] — 2026-11-16
+
+Livraison des besoins de l'intégration vanyline (cadrage #83 : #26, #70 à #82).
+
+### Ruptures
+
+- **`lymaille` 0.3** (au lieu de 0.2.1) avec sa feature `ts-rs` ; `zeroize` exige `1.9.1` (le `Debug` de 1.9.0 affichait le secret).
+- **`RestError`** (enum non `#[non_exhaustive]`) : deux variantes — `UniqueViolation` (`MRD-REST-007`, `409`) et
+  `InvalidQuery` (`MRD-REST-008`, `400`) ; un `match` exhaustif côté appelant doit être complété.
+- **`SessionEventKind`** (enum non `#[non_exhaustive]`, feature `lymaille`) : variante `TurnLeaseLost { turn }` ;
+  la perte du bail de tour n'est plus rendue en `Other`.
+- **CRUD générique** : sous une lecture `OwnerOnly`, la ligne d'un autre propriétaire rend le même `404` qu'une ligne
+  absente (plus de `403` qui révèle l'existence) ; une violation de contrainte unique en `create`/`update` rend `409`
+  au lieu de `500` (REST et MCP).
+- **`EntityIr`** expose `filterable_columns` et `sortable_columns` (nouveaux champs).
+- **Migrations `miryad_lymaille_*`** : modifiées en place (feature `lymaille` jamais déployée), conformément aux
+  exceptions actées dans `AGENTS.md`.
+
+### Ajouts
+
+- **Liste REST et MCP** : critères d'égalité sur plusieurs colonnes déclarées (`MiryadResource::filterable_columns`),
+  tri (`sort`, `order`, `MiryadResource::sortable_columns`), `ListQuery` ; une colonne non déclarée est refusée (`400`,
+  `-32602`), jamais ignorée ; `?filter=` reste accepté. L'`inputSchema` de `{name}_list` décrit ces propriétés
+  (`McpEntity::declared_columns`, relue en direct) ; OpenAPI porte les paramètres de filtre et de tri.
+- **`lymaille`** :
+  - export TypeScript (`ts-rs`) des définitions, des lignes de ressource et des corps de la surface de session ;
+    `ToSchema` (OpenAPI) sur les dix `Model` de `definitions` ;
+  - publication du catalogue par l'hôte (chemin système create-only, lignes gérées et versionnées, provenance) ;
+  - profil par défaut fourni par l'hôte (`LymailleHost`) ;
+  - `ScriptRunner` : `script_grants` des contextes `H_…` fournis par l'hôte, annulation du script, jeton `forward`
+    fourni par l'hôte hors session interactive (`LymailleHost::forward_token`) ;
+  - identifiants `H_…` : le tiret est accepté ;
+  - **haute disponibilité des sessions** (#81) : porte de tour PostgreSQL partagée avec lease, relais d'événements et de
+    commandes entre répliques (`EventRelay`, `pg_relay`), journal d'événements avec curseurs et reprise SSE
+    (`subscribe_from`), feature `lymaille-pg`.
+- **`workflow`** : awakeables (`StepContext`, `resolve_awakeable`, `reject_awakeable`), nommage des `ctx.run` du
+  `StepDispatcher` et client d'administration Restate.
+
+### Corrections
+
+- **`lymaille`** : le hook du catalogue et celui des contextes privés acceptent une référence `context_type` de forme
+  `G_…` ; le relais `Cursor` ne rejoue plus l'historique sur une réplique neuve ; `cursor_since` est purgé au départ du
+  dernier abonné et ne retient plus de curseur pour une session sans abonné ; `Missed` nommatif au relais sur file du
+  journal pleine ou panne d'écriture.
+
+### Limites connues
+
+- Au-delà d'une file du journal pleine, l'ordre de diffusion à une même session n'est plus garanti : le client qui voit
+  `Lagged` ou un curseur manquant relit l'historique.
+- Reliquats non bloquants suivis dans #91.
+
 ## [0.3.1] — 2026-11-12
 
 ### Corrections
