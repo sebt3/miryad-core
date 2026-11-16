@@ -323,7 +323,7 @@ Tasks:
     `appel_refuse_par_la_politique_rend_moins_32001_sous_200` et `appel_interdit_trace_un_warn_sans_arguments` portent la nouvelle fixture ; `parite_refus_rest_rendus_moins_32001_et_moins_32002` garde ses deux codes
     vivants : `-32001` par refus d'écriture sous lecture `Public`, `-32002` par ligne d'autrui en lecture `OwnerOnly`.
   [ ] Issue #78 — `inputSchema` de l'outil `{name}_list` : propriétés `string`/typées pour chaque colonne filtrable déclarée, `sort` (énuméré sur les colonnes triables), `order` (`asc`|`desc`) ; `filter` seulement quand
-    `filter_column` est `Some` (inchangé) ; `additionalProperties: false`. Spec d'abord (`Must` et `Scenario` sur le schéma exact par entité de test), puis tests, puis ./handler.rs. Après ./registry.sdd.
+    `filter_column` est `Some` (inchangé) ; **aucun** `additionalProperties: false` (tolérance conservée, conforme au `Must` ; la ligne d'origine de cette tâche disait l'inverse, corrigée le 2026-11-16 — le refus d'une colonne non déclarée reste au runtime, 400/`-32602`). Spec d'abord (`Must` et `Scenario` sur le schéma exact par entité de test), puis tests, puis ./handler.rs. Après ./registry.sdd.
 
 Done when:
   Chaque `Scenario` a au moins un test nommé distinct et vert, joués sur
