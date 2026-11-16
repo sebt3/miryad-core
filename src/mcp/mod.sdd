@@ -261,6 +261,9 @@ Tasks:
   [ ] Amendement 2026-11-16 (issue #86) : déclarer `mod app_tool;` (privé, sans ré-export) et étendre le test de surface (« rien d'autre
     que les quatre items ») ; dernier du lot MCP, après ./app_tool.sdd, ./registry.sdd et ./handler.sdd. Le diff Cargo est la tâche A0 de
     ./app_tool.sdd.
+    - [!] (validator, cycle A1 2026-11-16) : la déclaration `mod app_tool;` est déjà posée depuis le cycle A1 (exigence de compilation) ;
+      la doc de ./mod.rs dit encore « les cinq sous-modules » (ils sont six) — la case doit porter la correction de compteur et la
+      mention de l'incursion déjà faite.
   [x] Convertir les six `Scenario` en au moins six preuves nommées distinctes, une par scenario,
     avec la correspondance : « quatre ré-exports et la chaîne de montage résolvent sous mcp » →
     `mcp_surface_four_reexports_resolve`, test inline du `#[cfg(test)] mod tests` à créer dans

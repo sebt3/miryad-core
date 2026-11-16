@@ -11,6 +11,7 @@
 //! use miryad_core::mcp::protocol;
 //! ```
 
+mod app_tool;
 mod error;
 mod format;
 mod handler;

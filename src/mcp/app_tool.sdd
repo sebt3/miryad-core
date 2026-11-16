@@ -104,14 +104,29 @@ Handles:
   Arguments non objet alors que le schéma l'exige : `InvalidParams` par la validation, jamais un panic.
 
 Tasks:
-  [ ] Tâche R (préalable, ./../rbac.sdd) : ajouter `pub(crate) async fn policy_verdict(db: &DatabaseConnection, policy: AccessPolicy,
+  [x] Tâche R (préalable, ./../rbac.sdd) : ajouter `pub(crate) async fn policy_verdict(db: &DatabaseConnection, policy: AccessPolicy,
     user: &user::Model) -> Result<Option<bool>, DbErr>`, non générique, qui porte la logique de `static_verdict` ; `static_verdict::<E>` en
     devient une enveloppe (aucun changement de ses sites d'appel dans ./../rest/core.rs). Spec de ./../rbac.sdd amendée dans le même
     cycle (Exposes, un Scenario `policy_verdict` sans entité, un `Must` d'une ligne).
     - [?] **choix provisoire :** nouvelle fonction, `static_verdict` conservée. Option : retirer le paramètre `E` inutilisé de
       `static_verdict` (touche les sites de ./../rest/core.rs). Recommandation : la nouvelle fonction, diff plus petit.
-  [ ] Tâche A1 : @AppTool, @AppToolHandler, `new` (schéma, `OwnerOnly`) et `call` — tests d'abord (Scenarios ci-dessous), puis ./app_tool.rs.
+    Réalisé au cycle 2/6 (rbac.sdd validé validator GO 2026-11-16) ; case `[x]` dans ./../rbac.sdd.
+  [x] Tâche A1 : @AppTool, @AppToolHandler, `new` (schéma, `OwnerOnly`) et `call` — tests d'abord (Scenarios ci-dessous), puis ./app_tool.rs.
     Après la tâche R et après ./error.sdd (`#[non_exhaustive]`) ; avant ./registry.sdd (tâche A2) et ./handler.sdd (tâche A3).
+    Validé 2026-11-16 (validator GO, batterie 17+17 verte, cycle 3/6 du lot #86) : ./app_tool.rs créé, 10 Scenarios → 11 tests nommés
+    (rouge puis vert), ordre `resolve_user` → `policy_verdict` → validation → gestionnaire, récupérateur `NoExternalRetrieval` vérifié
+    en source jsonschema 0.60.2 et par écouteur TCP sous `--all-features`, paniques limitées aux deux cas d'enregistrement.
+    - [?] (implementer) : `policy_verdict` rend `None` seulement pour `OwnerOnly` (refusée à `new`) — `None` est irreachable ;
+      pli conservateur retenu : `Some(false) | None → Forbidden` avant validation, commentaire en place. Option : le rendre explicite
+      dans le `Must`. Recommandation : conserver le fail-closed défensif.
+    - [?] (implementer) : forme exacte du message `InvalidParams` — chemin d'instance + mot-clé violé, jamais la valeur fautive.
+      Le Scenario borne le contenu, pas le wording. Choix sans contrat observable.
+    - [?] (validator) : incursion minimale dans ./mod.rs (+1 ligne `mod app_tool;`, exigence de compilation) avant la tâche de clôture
+      de ./mod.sdd ; la valider expressément, ou reporter A1 derrière elle — mais rien ne compile alors.
+    - [?] (validator) : mention « en attente d'approbation (aucun code avant) » devenue périmée depuis que le code existe — mise à
+      jour = domaine du développeur principal, hors cycle.
+    - [!] (validator, reporté à la tâche de clôture de ./mod.sdd) : la doc de ./mod.rs dit encore « les cinq sous-modules » (ils sont
+      six) ; la correction et la mention « déclaration déjà posée au cycle A1 » doivent figurer à cette case.
   [x] Tâche A0 (Cargo, hors périmètre de cette spec — diff imposé par ./mod.sdd, fichier possédé par /miryad-core.sdd) :
     `jsonschema = { version = "0.60", default-features = false, optional = true }` et `mcp = ["db", "dep:vynil-core", "dep:jsonschema"]` ;
     mesurer `cargo tree --no-default-features --features mcp -e normal -i jsonschema` (une ligne attendue) et
