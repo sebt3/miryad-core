@@ -297,11 +297,54 @@ mod tests {
         assert!(autre.is_none(), "un autre contexte n'a aucun droit : {autre:?}");
     }
 
-    /// `Scenario` « `forward_token` ne divulgue pas le jeton » (./host.sdd, issue #82) : le `Debug`
-    /// de l'impl de l'hôte ne porte aucun jeton (aucun champ), et le `Display` de `HostError`
-    /// reste la phrase fixe — rien venu de l'hôte.
+    /// Capture des traces (patron des tests de `./mcp_access.rs`) : preuve négative sur le texte
+    /// consigné — le jeton rendu par `forward_token` n'y paraît jamais.
+    #[derive(Default)]
+    struct CapturedTraces(std::sync::Mutex<Vec<String>>);
+
+    struct CaptureLayer(std::sync::Arc<CapturedTraces>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+            if !event.metadata().target().starts_with("miryad_core") {
+                return;
+            }
+            let mut rendered = String::new();
+            event.record(&mut RenderVisitor(&mut rendered));
+            self.0
+                .0
+                .lock()
+                .expect("verrou de la capture non empoisonne")
+                .push(rendered);
+        }
+    }
+
+    struct RenderVisitor<'a>(&'a mut String);
+
+    impl tracing::field::Visit for RenderVisitor<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write as _;
+            let _ = write!(self.0, " {}={value:?}", field.name());
+        }
+    }
+
+    /// `Scenario` « `forward_token` ne divulgue pas le jeton » (./host.sdd, issue #82 ; validation
+    /// indépendante du 2026-11-16) : la sentinelle rendue par l'hôte factice n'apparaît dans
+    /// AUCUN rendu `Debug` du résultat (le `Result` nu, l'`Option<Zeroizing<String>>` qu'il
+    /// porte, le `McpGrant` et le `McpDecision` qui la portent), dans aucun `Display`, et dans
+    /// aucune trace émise pendant les appels d'hôte. Témoin positif d'abord : la détection de
+    /// containment est prouvée effective sur la sentinelle nue et sur une trace de passage, sans
+    /// quoi les assertions négatives ne prouveraient rien. `Display` de `HostError` reste la
+    /// phrase fixe. Le `Debug` de `Zeroizing<String>` est opaque en `zeroize` >= 1.9.1 (version
+    /// du graphe, verrou direct de `/Cargo.toml`) : si un retour en 1.9.0 faisait réapparaître la
+    /// valeur dans `{rendu:?}`, ce test vire au rouge — c'est la preuve demandée par le `[?]` du
+    /// cycle #82, sans verrou de dépendance posé hors `Owns`.
     #[tokio::test]
     async fn forward_token_ne_divulgue_pas_le_jeton() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        const SENTINELLE: &str = "secret-token";
+
         #[derive(Debug)]
         struct HoteJeton {
             panne: bool,
@@ -313,12 +356,27 @@ mod tests {
                 _request: &McpRequest<'_>,
                 _caller: &CallerPrincipal,
             ) -> Result<Option<Zeroizing<String>>, HostError> {
+                // Trace fixe de passage : témoin positif — la capture voit bien les événements
+                // émis pendant l'appel d'hôte.
+                tracing::info!("hote factice : jeton rendu");
                 if self.panne {
                     return Err(HostError);
                 }
-                Ok(Some(Zeroizing::new("secret-token".to_owned())))
+                Ok(Some(Zeroizing::new(SENTINELLE.to_owned())))
             }
         }
+
+        // Témoin positif : la sentinelle est bien détectable par le contrôle de containment — un
+        // `contains` qui ne matcherait jamais rendrait toutes les assertions négatives vides.
+        assert!(
+            format!("{SENTINELLE:?}").contains(SENTINELLE),
+            "témoin : la détection de containment fonctionne sur la sentinelle nue"
+        );
+
+        let captured = std::sync::Arc::new(CapturedTraces::default());
+        let subscriber = tracing_subscriber::registry::Registry::default()
+            .with(CaptureLayer(std::sync::Arc::clone(&captured)));
+        let _garde = tracing::subscriber::set_default(subscriber);
 
         let request = McpRequest {
             context: "G_prod",
@@ -328,19 +386,47 @@ mod tests {
         // Le `Debug` de l'impl de l'hôte : elle ne garde aucun jeton en champ, rien à divulguer.
         let rendu_impl = format!("{concret:?}");
         assert!(
-            !rendu_impl.contains("secret-token"),
+            !rendu_impl.contains(SENTINELLE),
             "le Debug de l'impl de l'hôte ne contient pas le jeton : {rendu_impl}"
         );
+
         let hote: SharedHost = Arc::new(concret);
-        let rendu = hote
-            .forward_token(&request, &caller())
-            .await
-            .expect("l'hôte fournit le jeton");
-        // La crate n'affiche jamais le résultat brut : il n'entre que dans le `SeaMcpAuth` au
-        // `Debug` opaque (`./mcp_access.rs`). Le `Debug` nu du `Zeroizing` rendu dépend du graphe
-        // `zeroize` — voir le `[?]` du rapport (#82) : en `zeroize` 1.9.0 (version courante du
-        // graphe) son `Debug` dérivé affiche la valeur, en 1.9.1 il est redevenu opaque.
-        assert!(rendu.is_some(), "le jeton est bien rendu à qui le porte");
+        let rendu_resultat = hote.forward_token(&request, &caller()).await;
+
+        // Le `Debug` du résultat complet (`Result<Option<Zeroizing<String>>, HostError>`) ne
+        // contient pas la sentinelle — ce que l'ancien test, réduit à `rendu.is_some()`, ne
+        // prouvait pas.
+        let rendu_brut = format!("{rendu_resultat:?}");
+        assert!(
+            !rendu_brut.contains(SENTINELLE),
+            "le Debug du résultat rendu porte le jeton : {rendu_brut}"
+        );
+        let rendu = rendu_resultat.expect("l'hôte fournit le jeton");
+        // Le `Debug` de l'`Option<Zeroizing<String>>` seule : opacité de `Zeroizing` dans le
+        // graphe courant (`zeroize` 1.9.1), verrouillée par ce test.
+        let rendu_jeton = format!("{rendu:?}");
+        assert!(
+            !rendu_jeton.contains(SENTINELLE),
+            "le Debug du Zeroizing rendu porte le jeton : {rendu_jeton}"
+        );
+
+        // La sentinelle logée dans un `McpGrant` (et dans le `McpDecision` qui l'enveloppe) ne
+        // transparaît dans aucun rendu : ni jeton ni URL.
+        let grant = McpGrant {
+            url: "https://sbx.example/mcp".to_owned(),
+            token: Zeroizing::new(SENTINELLE.to_owned()),
+            expires_at: None,
+        };
+        let rendu_grant = format!("{grant:?}");
+        assert!(
+            !rendu_grant.contains(SENTINELLE) && !rendu_grant.contains("sbx.example"),
+            "le Debug du McpGrant porte le jeton ou l'URL : {rendu_grant}"
+        );
+        let rendu_decision = format!("{:?}", McpDecision::Granted(grant));
+        assert!(
+            !rendu_decision.contains(SENTINELLE) && !rendu_decision.contains("sbx.example"),
+            "le Debug du McpDecision Granted porte le jeton ou l'URL : {rendu_decision}"
+        );
 
         let hote_en_panne: SharedHost = Arc::new(HoteJeton { panne: true });
         let erreur = hote_en_panne
@@ -348,6 +434,27 @@ mod tests {
             .await
             .expect_err("l'hôte panne rend HostError");
         assert_eq!(format!("{erreur}"), "host resolution failed");
+        assert_eq!(format!("{erreur:?}"), "HostError");
+        assert!(
+            !format!("{erreur}").contains(SENTINELLE),
+            "le Display de HostError ne porte rien : {erreur}"
+        );
+
+        // Volet traces : la trace de passage a bien été capturée (témoin positif), et aucune des
+        // lignes capturées pendant les deux appels d'hôte ne contient la sentinelle.
+        let lignes = captured
+            .0
+            .lock()
+            .expect("verrou de la capture non empoisonne")
+            .clone();
+        assert!(
+            lignes.iter().any(|l| l.contains("hote factice")),
+            "témoin : la capture voit les traces de l'appel d'hôte : {lignes:?}"
+        );
+        assert!(
+            !lignes.iter().any(|l| l.contains(SENTINELLE)),
+            "le jeton apparaît dans une trace émise pendant l'appel d'hôte : {lignes:?}"
+        );
     }
 
     /// `Scenario` de la tâche « Issue #75 » de ./host.sdd (moitié « défaut → `None` » du

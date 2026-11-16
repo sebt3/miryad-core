@@ -1030,26 +1030,124 @@ mod tests {
         }
     }
 
+    /// Sonde tous cibles (validation indépendante du 2026-11-16) : un jeton ne doit paraître
+    /// dans aucune trace émise par personne pendant le montage et la connexion — y compris les
+    /// traces `rmcp` / `reqwest` que la couche filtrée par cible ne voit pas.
+    struct CaptureTousTargets(std::sync::Arc<CapturedTraces>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureTousTargets {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+            let mut rendered = String::new();
+            event.record(&mut RenderVisitor(&mut rendered));
+            self.0
+                .0
+                .lock()
+                .expect("verrou de la capture tous cibles non empoisonne")
+                .push(rendered);
+        }
+    }
+
+    /// Serveur MCP factice de la validation du 2026-11-16 : capture l'en-tête `authorization` de
+    /// chaque requête reçue (sa valeur, pas seulement sa présence — ce que `McpHeaders` ne montre
+    /// jamais), puis répond `500` pour que la poignée de main `rmcp` échoue aussitôt. L'adresse
+    /// rendue s'insère dans l'URL du connecteur ; le récepteur rend les en-têtes dans l'ordre des
+    /// requêtes (`None` = requête sans porteur).
+    async fn serveur_captureur() -> (String, tokio::sync::mpsc::UnboundedReceiver<Option<String>>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind du serveur MCP factice");
+        let adresse = listener
+            .local_addr()
+            .expect("adresse locale du serveur MCP factice");
+        let (emitteur, recu) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            loop {
+                let Ok((socket, _client)) = listener.accept().await else {
+                    return;
+                };
+                let emitteur = emitteur.clone();
+                tokio::spawn(async move {
+                    let (mut lecture, mut ecriture) = socket.into_split();
+                    let mut tampon: Vec<u8> = Vec::new();
+                    let mut morceau = [0u8; 4096];
+                    // Lit jusqu'à la fin des en-têtes (le corps n'a pas à être consommé : la
+                    // réponse est rendue et la connexion fermée aussitôt).
+                    while tampon.len() < 65_536 && !tampon.windows(4).any(|fenetre| fenetre == b"\r\n\r\n") {
+                        match lecture.read(&mut morceau).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(lu) => tampon.extend_from_slice(&morceau[..lu]),
+                        }
+                    }
+                    let requete = String::from_utf8_lossy(&tampon).into_owned();
+                    let autorisation = requete.lines().find_map(|ligne| {
+                        let (nom, valeur) = ligne.split_once(':')?;
+                        nom.trim()
+                            .eq_ignore_ascii_case("authorization")
+                            .then(|| valeur.trim().to_owned())
+                    });
+                    let _ = emitteur.send(autorisation);
+                    let _ = ecriture
+                        .write_all(
+                            b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                        )
+                        .await;
+                    let _ = ecriture.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{adresse}"), recu)
+    }
+
+    /// Auth factice sans en-tête : même transport, même serveur, aucun porteur — la sentinelle
+    /// relevée sur la première connexion ne peut venir que du `SeaMcpAuth` forward (« ce jeton,
+    /// et lui seul »).
+    #[derive(Debug)]
+    struct SansEnTete;
+
+    impl McpAuth for SansEnTete {
+        fn headers(&self) -> impl std::future::Future<Output = Result<McpHeaders, McpError>> + Send {
+            std::future::ready(Ok(McpHeaders::new()))
+        }
+    }
+
     /// Scenario « un hôte fournit le jeton forward hors session interactive » : `forward_token`
-    /// rend `Some(jeton)` ; `build_auth` sur ce résultat produit un `SeaMcpAuth` dont l'en-tête
-    /// porte ce jeton, et lui seul. Le jeton n'apparaît dans aucune trace capturée et dans aucun
+    /// rend `Some(jeton)` (valeur vérifiée, pas seulement `is_some`) ; `build_auth` sur ce
+    /// résultat produit un `SeaMcpAuth` dont l'en-tête porte ce jeton, et lui seul. Validation
+    /// indépendante du 2026-11-16 : la valeur atteignant le serveur est observée **sur le fil** —
+    /// `SeaMcpAuth` monté dans un `RmcpConnector` de production pointé sur un serveur HTTP
+    /// factice qui relève l'en-tête `Authorization` reçu (la valeur n'est observable ni par le
+    /// `Debug` de `McpHeaders`, ni par un espion de `mcp_mount`) — puis une seconde connexion
+    /// **sans** auth sur le même serveur prouve qu'aucun porteur n'est injecté par ailleurs. Le
+    /// jeton n'apparaît dans aucune trace capturée (cibles filtrées et tous cibles) ni dans aucun
     /// `Debug` de `mcp_access` ; `McpGrant::expires_at` ne s'applique pas à ce chemin (aucune
-    /// date n'existe sur ce flux — le test le prouve par l'absence de toute expiration).
+    /// date n'existe sur ce flux).
     #[tokio::test]
     async fn un_hote_fournit_le_jeton_forward_hors_session_interactive() {
+        use ::lymaille::{McpClientConfig, McpLister as _, RmcpConnector};
         use tracing_subscriber::layer::SubscriberExt as _;
 
+        const SENTINELLE: &str = "JETON-HOTE-FORWARD-UNIQUE";
+
+        crate::lymaille::install_crypto_provider();
         let db = db_migre().await;
         let alice = compte(&db, "alice").await;
-        let hote = HoteForward::new(Ok(Some(Zeroizing::new("JETON-HOTE-FORWARD-UNIQUE".to_owned()))));
+        let hote = HoteForward::new(Ok(Some(Zeroizing::new(SENTINELLE.to_owned()))));
         let captured = std::sync::Arc::new(CapturedTraces::default());
+        let captured_tout = std::sync::Arc::new(CapturedTraces::default());
         let subscriber = tracing_subscriber::registry::Registry::default()
-            .with(CaptureLayer(std::sync::Arc::clone(&captured)));
+            .with(CaptureLayer(std::sync::Arc::clone(&captured)))
+            .with(CaptureTousTargets(std::sync::Arc::clone(&captured_tout)));
         let _guard = tracing::subscriber::set_default(subscriber);
 
         let jeton = forward_token(Some(&*hote), &alice, "G_prod", "fwd", None)
             .await
             .expect("l'hôte fournit le jeton");
+        assert_eq!(
+            &*jeton, SENTINELLE,
+            "la valeur rendue est celle de l'hôte, pas une enveloppe opaque"
+        );
 
         let srv = modele("fwd_srv", "forward", None, json!(["all"]));
         let auth = build_auth(&srv, ScriptedResolver::with(vec![]), Some(jeton))
@@ -1066,17 +1164,68 @@ mod tests {
         );
         let rendu_debug = format!("{auth:?}");
         assert!(
-            !rendu_debug.contains("JETON-HOTE-FORWARD-UNIQUE"),
+            !rendu_debug.contains(SENTINELLE),
             "le Debug de l'auth ne porte pas le jeton : {rendu_debug}"
         );
+
+        // ── Volet fil (validation du 2026-11-16) : la valeur réellement portée ──
+        // Le `SeaMcpAuth` rendu par `build_auth` est monté dans le connecteur de production et
+        // appelle le serveur factice : seule la valeur du jeton de l'hôte doit arriver dans
+        // l'en-tête `Authorization`.
+        let (base, mut recu) = serveur_captureur().await;
+        let connecteur = RmcpConnector::new(
+            McpClientConfig::new(&format!("{base}/mcp"))
+                .with_request_timeout(std::time::Duration::from_secs(5))
+                .with_connect_timeout(std::time::Duration::from_secs(5)),
+            Arc::new(auth.expect("le SeaMcpAuth forward est monté dans le connecteur")),
+        );
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(15), connecteur.list_tools()).await;
+        let porte = tokio::time::timeout(std::time::Duration::from_secs(10), recu.recv())
+            .await
+            .expect("le serveur factice a reçu la requête du connecteur")
+            .expect("une requête a été capturée");
+        assert_eq!(
+            porte.as_deref(),
+            Some(format!("Bearer {SENTINELLE}").as_str()),
+            "le serveur forward porte le jeton de l'hôte, et lui seul : {porte:?}"
+        );
+
+        // « Et lui seul » côté transport : la même fabrique de requêtes, auth sans en-tête, ne
+        // porte rien — la sentinelle du premier relevé ne peut venir que du `SeaMcpAuth` forward.
+        let connecteur_nu = RmcpConnector::new(
+            McpClientConfig::new(&format!("{base}/mcp"))
+                .with_request_timeout(std::time::Duration::from_secs(5))
+                .with_connect_timeout(std::time::Duration::from_secs(5)),
+            Arc::new(SansEnTete),
+        );
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(15), connecteur_nu.list_tools()).await;
+        let second = tokio::time::timeout(std::time::Duration::from_secs(10), recu.recv())
+            .await
+            .expect("le serveur factice a reçu la seconde requête")
+            .expect("la seconde requête a été capturée");
+        assert!(
+            second.is_none(),
+            "le transport n'injecte aucun porteur hors SeaMcpAuth forward : {second:?}"
+        );
+
         let lignes = captured
             .0
             .lock()
             .expect("verrou de la capture non empoisonne")
             .clone();
         assert!(
-            !lignes.iter().any(|l| l.contains("JETON-HOTE-FORWARD-UNIQUE")),
+            !lignes.iter().any(|l| l.contains(SENTINELLE)),
             "le jeton n'apparaît dans aucune trace capturée : {lignes:?}"
+        );
+        let lignes_tout = captured_tout
+            .0
+            .lock()
+            .expect("verrou de la capture tous cibles non empoisonne")
+            .clone();
+        assert!(
+            !lignes_tout.iter().any(|l| l.contains(SENTINELLE)),
+            "le jeton n'apparaît dans aucune trace, toutes cibles confondues : {} lignes capturées",
+            lignes_tout.len()
         );
     }
 
