@@ -41,10 +41,10 @@ Must:
     `pub fn request_cancel(&self, id: &SessionId)` et `pub fn request_close(&self, id: &SessionId)` publient `Cancel`/`Close` vers le relais (sans relais : sans effet).
     Lot 3 — journal et reprise. `pub fn with_log(self, log: SeaEventLog, config: LogConfig) -> Self` (mêmes règles de constructeur et de runtime) où `pub struct LogConfig { pub flush_interval: Duration, pub batch_max: usize, pub queue_capacity: usize,
     pub replay_max: usize }` (`Clone`, `Debug`, `Default` : 50 ms, 64, 4096, 1000 ; bornes : `flush_interval` [10 ms, 1 s], `batch_max` [1, 512], `queue_capacity` [64, 65 536], `replay_max` [1, 10 000], ramenés à la borne la plus proche).
-    Avec un journal, `emit` et `publish_host` **persistent puis diffusent** : l'événement converti entre dans une file bornée (`queue_capacity`, sans attente ; file pleine → l'événement est diffusé **sans curseur** et `tracing::warn`, jamais bloquant) ;
+    Avec un journal, `emit` et `publish_host` **persistent puis diffusent** : l'événement converti entre dans une file bornée (`queue_capacity`, sans attente ; file pleine → l'événement est diffusé **sans curseur** et `tracing::warn`, jamais bloquant ; avec relais, `Missed` est publié pour la session : les autres répliques voient `Lagged(1)` et le client relit l'historique — arbitré le 2026-11-16) ;
     une tâche d'écriture unique vide la file par lots (au plus `batch_max` événements ou `flush_interval`, une transaction par lot et par session, ../store/events.sdd) puis **diffuse dans l'ordre d'entrée**, chaque événement portant son **curseur** (le `seq` rendu par le journal).
-    Une panne d'écriture (`LymailleError::Store`) → les événements du lot sont diffusés sans curseur et `tracing::warn` (le flux continue ; un client qui se reconnecte peut manquer ces événements). Avec journal **et** relais, le relais reçoit `Cursor(seq)` à la place de
-    l'événement (jamais plus de 7000 octets) : la réplique réceptrice lit le journal (`read_after`, depuis le dernier curseur qu'elle a diffusé pour cette session ; **si elle n'en a diffusé aucun, depuis `seq − 1`** : le curseur reçu est le seul rattrapage dû, jamais l'historique antérieur à l'arrivée de l'abonné) et diffuse localement ce qui manque, **si** la session a un abonné local ; sans abonné, le message est ignoré.
+    Une panne d'écriture (`LymailleError::Store`) → les événements du lot sont diffusés sans curseur, `tracing::warn`, et — avec relais — `Missed` est publié pour la session (arbitré le 2026-11-16) (le flux continue ; un client qui se reconnecte peut manquer ces événements). Avec journal **et** relais, le relais reçoit `Cursor(seq)` à la place de
+    l'événement (jamais plus de 7000 octets) : la réplique réceptrice lit le journal (`read_after`, depuis le dernier curseur qu'elle a diffusé pour cette session ; **si elle n'en a diffusé aucun, depuis `seq − 1`** : le curseur reçu est le seul rattrapage dû, jamais l'historique antérieur à l'arrivée de l'abonné) et diffuse localement ce qui manque, **si** la session a un abonné local ; sans abonné, le message est ignoré **et** l'entrée « dernier curseur diffusé » de la session est retirée (le prochain abonné repart de `seq − 1` : pas de rejeu périmé — arbitré le 2026-11-16).
     Les événements de l'historique seul (`UserMessage`, `ToolCallSummary`) ne passent jamais par le hub. Les événements `Host` sont journalisés comme les autres (DSD `DEC-30` amendé : ils étaient « non rejoués », ils le deviennent) ; la route d'historique (../http/routes.sdd) n'en rend toujours aucun.
     `pub async fn subscribe_from(&self, subject: &str, id: &SessionId, after: Option<u64>) -> Result<Subscription, LymailleError>` : enregistre le canal **avant** de lire (aucun trou entre rejeu et direct) ; sans journal, ou `after = None`, équivaut à `subscribe` ;
     avec journal et `after = Some(n)` : relit `read_after(id, n, replay_max)` puis sert les événements relus, **puis** les directs dont le curseur est > au dernier relu (déduplication par curseur) ; si des événements ont été purgés (`n + 1` < plus ancien curseur conservé) ou si la relecture
@@ -81,7 +81,11 @@ Tasks:
     Arbitré le 2026-11-14 : rétention du journal = **seuil unique de 30 jours** du `purge_sessions` (voir ../store/events.sdd) ; sans purge planifiée par l'application, la table croît sans borne. Risque de volumétrie assumé : une ligne par delta de texte.
   [x] Issue #81 lot 3 (correctif, validation indépendante du 2026-11-16) — la branche `Cursor` du relais ne rejoue pas l'historique : tests d'abord (Scenario « une réplique neuve ne rejoue pas l'historique », rouge sur le code actuel qui lit depuis 0), puis ./hub.rs (`since = dernier curseur diffusé, sinon seq − 1`). Un seul fichier.
     Validé 2026-11-16 (batterie COMPLÈTE verte `BATTERY_FAIL=0` : 17 combinaisons tests + 17 clippy `-D warnings`, fmt, 8 contrôles `cargo tree` ; synthèse `validator` GO conditionnel : test discriminant, rouge `Some(1)` puis vert, aucune régression).
-    [?] (validator) : `cursor_since` n'est jamais remis à zéro quand le dernier abonné local part ; un nouvel abonné après un long silence relit depuis ce curseur périmé (jusqu'à `replay_max` événements d'historique) — même défaut par une autre porte. Pistes : retirer l'entrée quand `receiver_count` tombe à 0 (recommandé), ou `max(last, seq − 1)`. À arbitrer. Mineurs : `Cursor` perdu juste avant le premier reçu = événement direct perdu (reprise à la reconnexion) ; pas de `Lagged` si la lecture est tronquée par `replay_max` ; `cursor_since` jamais purgé.
+    [?] (validator) : `cursor_since` n'est jamais remis à zéro quand le dernier abonné local part ; un nouvel abonné après un long silence relit depuis ce curseur périmé (jusqu'à `replay_max` événements d'historique) — même défaut par une autre porte. Pistes : retirer l'entrée quand `receiver_count` tombe à 0 (recommandé), ou `max(last, seq − 1)`. Arbitré le 2026-11-16 : purge au départ du dernier abonné (tâche 1/2 ci-dessous). Mineurs : `Cursor` perdu juste avant le premier reçu = événement direct perdu (reprise à la reconnexion) ; pas de `Lagged` si la lecture est tronquée par `replay_max` ; `cursor_since` jamais purgé.
+
+  [ ] Issue #81 lot 3 (arbitrage du 2026-11-16, 1/2) — purge de `cursor_since` au départ du dernier abonné : tests d'abord (Scenario « le départ du dernier abonné remet la reprise à zéro »), puis ./hub.rs. Un seul fichier.
+  [ ] Issue #81 lot 3 (arbitrage du 2026-11-16, 2/2) — `Missed` au relais en cas de file pleine ou de panne d'écriture : tests d'abord (Scenario « file pleine ou panne d'écriture : le relais publie Missed »), puis ./hub.rs. Un seul fichier.
+    [?] (spec-dd) : file pleine → l'événement local sans curseur peut doubler des événements encore en file chez le writer (ordre) ; le `Must not` « pas de désordre » n'est tenu que sans file pleine. Option : documenter la limite, ou bloquer l'ordre local derrière la file. Non arbitré.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./hub.rs.
@@ -200,6 +204,16 @@ Scenario: une réplique neuve ne rejoue pas l'historique (issue #81, lot 3, vali
   Given deux hubs sur le **même** journal reliés par un relais de test ; `A` a émis cinq événements pour `s1` avant qu'un abonné simple (`subscribe`) de `s1` n'existe sur `B`
   When `A` émet un sixième événement puis `B` reçoit `Cursor(6)`
   Then l'abonné de `B` reçoit **uniquement** l'événement 6 avec le curseur `Some(6)` ; les événements 1 à 5 ne lui sont jamais livrés
+
+Scenario: le départ du dernier abonné remet la reprise à zéro (issue #81, lot 3, arbitré le 2026-11-16)
+  Given deux hubs sur le même journal reliés par un relais de test ; un abonné de `s1` sur `B` a reçu les événements 1 à 5 puis se désabonne ; `A` émet les événements 6 à 10 (ignorés par `B`, sans abonné)
+  When un nouvel abonné simple de `s1` apparaît sur `B` puis `A` émet l'événement 11
+  Then il reçoit **uniquement** l'événement 11 avec le curseur `Some(11)` ; aucun des événements 6 à 10 ne lui est livré
+
+Scenario: file pleine ou panne d'écriture : le relais publie Missed (issue #81, lot 3, arbitré le 2026-11-16)
+  Given un hub avec journal **et** relais de test, dont la file du journal est pleine (ou dont l'écriture échoue) ; un abonné de `s1` sur l'autre hub
+  When un événement de `s1` est émis
+  Then l'abonné local le reçoit sans curseur, l'abonné de l'autre hub reçoit `Lagged(1)`, un `warn` est tracé et l'émission n'a pas bloqué
 
 Scenario: un hôte journalisé est rejoué (issue #81, lot 3)
   Given un `publish_host` suivi d'un `subscribe_from(s1, Some(0))`
