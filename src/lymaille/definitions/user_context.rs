@@ -931,7 +931,7 @@ mod tests {
         let schema = json
             .get("components")
             .and_then(|c| c.get("schemas"))
-            .and_then(|s| s.get("Model"))
+            .and_then(|s| s.get("LymailleContexts"))
             .unwrap_or_else(|| panic!("le schéma du `Model` figure dans les composants : {json}"));
         let proprietes = schema["properties"]
             .as_object()

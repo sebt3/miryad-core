@@ -70,7 +70,7 @@ impl<E> OpenApiEntity for E where E: RestEntity<Model: ToSchema> {}
 #[cfg(feature = "db")]
 pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
     let resource = E::resource_name();
-    let schema_name = E::Model::name().into_owned();
+    let schema_name = model_schema_name(&E::Model::name(), resource);
     let model_ref = RefOr::Ref(Ref::from_schema_name(schema_name.clone()));
 
     let mut components = ComponentsBuilder::new().schema(schema_name.clone(), E::Model::schema());
@@ -166,6 +166,35 @@ pub fn resource_openapi<E: OpenApiEntity>() -> OpenApi {
             Vec::<String>::new(),
         )]))
         .build()
+}
+
+/// Nom du schéma du `Model` (et de son enveloppe `Paged{nom}`) — `openapi.sdd` `Must`,
+/// amendement du 2026-11-17 (issue #92). Un `Model` non renommé rend « Model » : on le remplace
+/// par `PascalCase(resource)` pour que deux ressources n'entrent pas en collision à la fusion.
+/// Tout autre nom (ex. `#[schema(as = Recipe)]`) est conservé tel quel.
+#[cfg(feature = "db")]
+fn model_schema_name(model_name: &str, resource: &str) -> String {
+    if model_name == "Model" {
+        pascal_case(resource)
+    } else {
+        model_name.to_owned()
+    }
+}
+
+/// `PascalCase` d'un `resource_name` : segments séparés par `_`, première lettre de chaque
+/// segment en capitale, le reste inchangé, aucune singularisation (`alpha_items` → `AlphaItems`).
+#[cfg(feature = "db")]
+fn pascal_case(resource: &str) -> String {
+    resource
+        .split('_')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let mut chars = segment.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect::<String>()
+            })
+        })
+        .collect()
 }
 
 /// Les cinq opérations CRUD du fragment, ajoutées à `paths` — extraction privée de
@@ -614,6 +643,81 @@ mod tests {
             }
             fn sortable_columns() -> Vec<Column> {
                 vec![Column::CreatedAt]
+            }
+        }
+    }
+
+    /// Fixture du `Scenario` « deux ressources au Model non renommé ont deux schémas distincts
+    /// (#92) » : `Model` sans `#[schema(as)]`, donc `ToSchema::name()` rend « Model ».
+    #[cfg(feature = "db")]
+    mod alpha {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+        use utoipa::ToSchema;
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema, DeriveEntityModel)]
+        #[sea_orm(table_name = "alpha_items")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub label: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "alpha_items"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::AdminOnly
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+        }
+    }
+
+    /// Second pendant de `alpha` (#92) : même forme, `resource_name` `beta_items`.
+    #[cfg(feature = "db")]
+    mod beta {
+        use crate::resource::{AccessPolicy, MiryadResource};
+        use sea_orm::entity::prelude::*;
+        use serde::{Deserialize, Serialize};
+        use utoipa::ToSchema;
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema, DeriveEntityModel)]
+        #[sea_orm(table_name = "beta_items")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub label: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "beta_items"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::AdminOnly
+            }
+            fn owner_column() -> Option<Column> {
+                None
             }
         }
     }
@@ -1334,5 +1438,47 @@ mod tests {
 
         assert_no_x_miryad_keys(&spec_json(&fragment), "le fragment d'une entité");
         assert_no_x_miryad_keys(&spec_json(&merged), "la fusion de deux fragments");
+    }
+
+    /// Conversion pure du nom de schéma (#92) : `PascalCase` des segments de `resource_name`,
+    /// sans singularisation ; `Model` seul est remplacé, un autre nom reste tel quel.
+    #[cfg(feature = "db")]
+    #[test]
+    fn model_schema_name_pascal_cases_resource_only_for_default_model_name() {
+        assert_eq!(pascal_case("alpha_items"), "AlphaItems");
+        assert_eq!(pascal_case("lymaille_agents"), "LymailleAgents");
+        assert_eq!(pascal_case("recipes"), "Recipes");
+        assert_eq!(pascal_case("a__b"), "AB");
+        assert_eq!(model_schema_name("Model", "alpha_items"), "AlphaItems");
+        assert_eq!(model_schema_name("Recipe", "recipes"), "Recipe");
+    }
+
+    /// `Scenario` : « deux ressources au Model non renommé ont deux schémas distincts (#92) ».
+    #[cfg(feature = "db")]
+    #[test]
+    fn unrenamed_models_get_distinct_schemas_named_after_resource() {
+        let mut merged = resource_openapi::<alpha::Entity>();
+        merged.merge(resource_openapi::<beta::Entity>());
+
+        let components = merged.components.as_ref().expect("components present");
+        for name in ["AlphaItems", "PagedAlphaItems", "BetaItems", "PagedBetaItems"] {
+            assert!(components.schemas.contains_key(name), "schéma {name} absent");
+        }
+        assert!(!components.schemas.contains_key("Model"));
+        assert!(!components.schemas.contains_key("PagedModel"));
+
+        let json = spec_json(&merged);
+        let alpha_list = &operation(&json, "/api/v1/alpha_items", "get")["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"];
+        assert_eq!(alpha_list, "#/components/schemas/PagedAlphaItems");
+        let alpha_item = &operation(&json, "/api/v1/alpha_items", "post")["responses"]["201"]["content"]["application/json"]
+            ["schema"]["$ref"];
+        assert_eq!(alpha_item, "#/components/schemas/AlphaItems");
+        let beta_list = &operation(&json, "/api/v1/beta_items", "get")["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"];
+        assert_eq!(beta_list, "#/components/schemas/PagedBetaItems");
+        let beta_item = &operation(&json, "/api/v1/beta_items/{id}", "get")["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"];
+        assert_eq!(beta_item, "#/components/schemas/BetaItems");
     }
 }
