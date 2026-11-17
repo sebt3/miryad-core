@@ -32,7 +32,8 @@ Exposes:
 Tasks:
   [x] `mod.rs` en dernier du dossier ; test de chemins plats.
     Validé 2026-11-06 (validator PASS clôture : `chemins_plats_attendus` à jour du cycle `RoomContextResolver` (pont, config, annuaire, `IssuedCode`, résolveur sur le défaut) ; verrou structurel `cfg(all(lymaille, matrix))` pour le Scenario « absent sans matrix »).
-  [ ] Retirer de `chemins_plats_attendus` le seul proxy `size_of_val(&salles)` (et la variable `salles` devenue inutile) : le défaut du résolveur est verrouillé par `defaut_du_resolveur_rend_none` dans ./bridge.rs ; le reste du test est inchangé. Périmètre : ./mod.rs seul. Arbitré le 2026-11-17 (solde du `[!]` de ./bridge.sdd).
+  [x] Retirer de `chemins_plats_attendus` le seul proxy `size_of_val(&salles)` (et la variable `salles` devenue inutile) : le défaut du résolveur est verrouillé par `defaut_du_resolveur_rend_none` dans ./bridge.rs ; le reste du test est inchangé. Périmètre : ./mod.rs seul. Arbitré le 2026-11-17 (solde du `[!]` de ./bridge.sdd).
+    Validé 2026-11-17 (implementer Haiku + validator Sonnet GO, batterie 17+17, fmt, `cargo tree`, `specdd lint` verts) : sept lignes retirées de ./mod.rs, rien d'autre touché.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./mod.rs.

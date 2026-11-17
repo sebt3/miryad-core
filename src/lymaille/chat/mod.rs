@@ -67,12 +67,5 @@ mod tests {
             expires_at: chrono::Utc::now(),
         };
         assert_eq!(issu.code, "AB23");
-        let salles: std::sync::Arc<dyn super::bridge::RoomContextResolver> =
-            super::ChatConfig::default().rooms;
-        assert_eq!(
-            std::mem::size_of_val(&salles),
-            2 * std::mem::size_of::<usize>(),
-            "la defaut monte un resolveur de contexte"
-        );
     }
 }
