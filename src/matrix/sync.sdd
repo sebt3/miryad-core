@@ -107,7 +107,7 @@ Handles:
   Invitation d'un inviteur non autorisé : ignorée sans erreur.
 
 Tasks:
-  [ ] Amendement 2026-11-16 (issue #87, `matrix#FR-12`, `matrix#DEC-3`) : `thread_root` et `in_reply_to` sur @MatrixMessage
+  [x] Amendement 2026-11-16 (issue #87, `matrix#FR-12`, `matrix#DEC-3`) : `thread_root` et `in_reply_to` sur @MatrixMessage
     (`#[non_exhaustive]`), sur `MessageParts` et `to_message`, lecture de la relation à la remise en direct — tests d'abord
     (Scenario `to_message` étendu, Scenario relation d'un fil, d'une réponse, d'un message à plat), puis ./sync.rs.
     Dépend de ./error.sdd (aucune variante utilisée ici, mais même lot). Le site d'appel de `to_message` dans ./client.rs
@@ -116,6 +116,12 @@ Tasks:
     consigne ici le choix retenu (ordre des deux tâches dans le même cycle, ou `Can modify` ponctuel de ./client.rs).
     - [?] **choix provisoire :** `in_reply_to` rapporte aussi le repli d'un message de fil (un seul champ). Option : un
       second champ `reply_is_fallback: bool`. Recommandation : un seul champ, tant qu'aucun hôte ne distingue.
+    Validé 2026-11-17 (validator GO, cycle 2/8, batterie 45/45 verte) : 5 tests nommés (to_message étendu, fil avec repli, réponse
+    seule, à plat, remplacement) ; `relation_ids` lue sur le contenu déchiffré dans `deliver_message` ; `#[non_exhaustive]` posé ;
+    incursion `None, None` dans `text_message` de ./client.rs autorisée par la case, régularisée par la tâche F de ./client.sdd.
+    - [?] (validator) : incursion **hors `Owns`** de 3 lignes dans le fixture `texte` du `mod tests` de ./../lymaille/chat/bridge.rs
+      (champs `None, None` imposés par la compilation, contrat inchangé) — à régulariser soit par un `Can modify` ponctuel de cette
+      spec, soit par reprise dans la tâche de ./client.sdd qui suit.
   [x] Partie pure d'abord (amendement 2026-10-18 : `client.rs` et `run_sync` se dépendent mutuellement ; ordre
     sync pur → client → run_sync) : `MatrixMessage`, `MatrixEventHandler`, `MessageParts`, `should_deliver`,
     `to_message`, `invite_allowed`, `lease_ms`, `backoff` — tests unitaires d'abord, puis ./sync.rs.

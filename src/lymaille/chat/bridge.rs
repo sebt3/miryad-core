@@ -1209,6 +1209,9 @@ mod tests {
                 msgtype: "m.text".to_owned(),
                 timestamp_ms: at_ms,
                 encrypted: false,
+                // Message à plat : pas de fil, pas de réponse (amendement 2026-11-16, issue #87).
+                thread_root: None,
+                in_reply_to: None,
             }
         }
         fn now(&self) -> u64 {

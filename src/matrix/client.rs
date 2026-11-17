@@ -390,6 +390,10 @@ fn text_message(room_id: &str, event: &TimelineEvent) -> Option<MatrixMessage> {
         formatted_body: formatted.map(|f| f.body.as_str()),
         timestamp_ms: u64::from(original.origin_server_ts.0),
         encrypted: event.encryption_info().is_some(),
+        // Lecture des relations dans l'historique : tâche de ./client.sdd (issue #87) ; la remise
+        // en direct passe par sync::relation_ids.
+        thread_root: None,
+        in_reply_to: None,
     }))
 }
 

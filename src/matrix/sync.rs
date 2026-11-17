@@ -15,7 +15,9 @@ use matrix_sdk::event_handler::EventHandlerDropGuard;
 use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::events::room::encrypted::OriginalSyncRoomEncryptedEvent;
 use matrix_sdk::ruma::events::room::member::{MembershipState, StrippedRoomMemberEvent};
-use matrix_sdk::ruma::events::room::message::{MessageType, Relation, SyncRoomMessageEvent};
+use matrix_sdk::ruma::events::room::message::{
+    MessageType, Relation, RoomMessageEventContent, SyncRoomMessageEvent,
+};
 use matrix_sdk::{Client, LoopCtrl, Room};
 use matrix_sdk_crypto::store::CryptoStore;
 
@@ -36,6 +38,7 @@ const JOIN_RETRY_DELAYS: [Duration; 3] = [
 /// Message texte remis à l'application (`src/matrix/sync.sdd`). Identifiants en `String` : aucun
 /// type de `matrix-sdk` ni de `ruma` n'entre dans l'API publique.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct MatrixMessage {
     /// Identifiant de la salle, ex. `!room:server`.
     pub room_id: String,
@@ -53,6 +56,12 @@ pub struct MatrixMessage {
     pub timestamp_ms: u64,
     /// Vrai si le message a été déchiffré (salle chiffrée).
     pub encrypted: bool,
+    /// Identifiant de l'événement racine du fil (`m.thread`), `None` pour un message à plat.
+    pub thread_root: Option<String>,
+    /// Identifiant de l'événement auquel le message répond (`m.in_reply_to`), `None` quand il
+    /// n'y a pas de réponse. Le repli `m.in_reply_to` d'un message de fil (`is_falling_back`) est
+    /// rapporté ici aussi (`src/matrix/sync.sdd`, arbitrage `[?]` du 2026-11-16).
+    pub in_reply_to: Option<String>,
 }
 
 /// Réception des messages texte par l'application (`src/matrix/sync.sdd`). Le harnais de chatbot
@@ -84,6 +93,10 @@ pub(crate) struct MessageParts<'a> {
     pub(crate) timestamp_ms: u64,
     /// Vrai si la salle est chiffrée.
     pub(crate) encrypted: bool,
+    /// Racine du fil (`m.thread`), `None` pour un message à plat.
+    pub(crate) thread_root: Option<&'a str>,
+    /// Événement auquel répond le message (`m.in_reply_to`, repli de fil inclus), `None` sinon.
+    pub(crate) in_reply_to: Option<&'a str>,
 }
 
 /// Décide si un message est remis en direct au handler (`src/matrix/sync.sdd`). Faux pour le bot
@@ -106,6 +119,28 @@ pub(crate) fn to_message(parts: MessageParts<'_>) -> MatrixMessage {
         msgtype: parts.msgtype.to_owned(),
         timestamp_ms: parts.timestamp_ms,
         encrypted: parts.encrypted,
+        thread_root: parts.thread_root.map(str::to_owned),
+        in_reply_to: parts.in_reply_to.map(str::to_owned),
+    }
+}
+
+/// Extrait (`thread_root`, `in_reply_to`) de la relation `m.relates_to` d'un contenu de message
+/// déchiffré (`src/matrix/sync.sdd`, amendement 2026-11-16, `matrix#FR-12`). Fonction pure,
+/// testable sans homeserver : `m.thread` donne la racine et son `m.in_reply_to` éventuel (repli
+/// `is_falling_back` inclus, sans distinction), `m.in_reply_to` seul ne donne qu'une réponse,
+/// toute autre relation (remplacement, annotation) ne donne rien.
+#[must_use]
+pub(crate) fn relation_ids(content: &RoomMessageEventContent) -> (Option<String>, Option<String>) {
+    match &content.relates_to {
+        Some(Relation::Thread(thread)) => (
+            Some(thread.event_id.to_string()),
+            thread
+                .in_reply_to
+                .as_ref()
+                .map(|reply| reply.event_id.to_string()),
+        ),
+        Some(Relation::Reply(reply)) => (None, Some(reply.in_reply_to.event_id.to_string())),
+        _ => (None, None),
     }
 }
 
@@ -421,6 +456,7 @@ async fn deliver_message(
     if !should_deliver(own, sender, msgtype, is_replacement) {
         return;
     }
+    let (thread_root, in_reply_to) = relation_ids(&original.content);
     let message = to_message(MessageParts {
         room_id: room.room_id().as_str(),
         event_id: original.event_id.as_str(),
@@ -430,6 +466,8 @@ async fn deliver_message(
         formatted_body: formatted_body.map(|f| f.body.as_str()),
         timestamp_ms: u64::from(original.origin_server_ts.0),
         encrypted,
+        thread_root: thread_root.as_deref(),
+        in_reply_to: in_reply_to.as_deref(),
     });
     deliver(handler, message).await;
 }
@@ -458,8 +496,8 @@ async fn deliver(handler: &Arc<dyn MatrixEventHandler>, message: MatrixMessage) 
 #[cfg(test)]
 mod tests {
     use super::{
-        MatrixEventHandler, MatrixMessage, MessageParts, SyncFailure, backoff, classify_sync_error,
-        invite_allowed, lease_ms, should_deliver, to_message,
+        MatrixEventHandler, MatrixMessage, MessageParts, RoomMessageEventContent, SyncFailure, backoff,
+        classify_sync_error, invite_allowed, lease_ms, relation_ids, should_deliver, to_message,
     };
     use crate::matrix::client::MatrixClient;
     use crate::matrix::config::MatrixConfig;
@@ -625,6 +663,8 @@ mod tests {
             formatted_body: Some("<b>salut</b>"),
             timestamp_ms: 1_700_000_000_000,
             encrypted: true,
+            thread_root: Some("$root"),
+            in_reply_to: Some("$prev"),
         });
         assert_eq!(
             message,
@@ -637,6 +677,8 @@ mod tests {
                 msgtype: "m.text".into(),
                 timestamp_ms: 1_700_000_000_000,
                 encrypted: true,
+                thread_root: Some("$root".into()),
+                in_reply_to: Some("$prev".into()),
             }
         );
     }
@@ -652,9 +694,74 @@ mod tests {
             formatted_body: None,
             timestamp_ms: 1,
             encrypted: false,
+            thread_root: None,
+            in_reply_to: None,
         });
         assert_eq!(message.formatted_body, None);
         assert_eq!(message.msgtype, "m.emote");
         assert!(!message.encrypted);
+        assert_eq!(message.thread_root, None);
+        assert_eq!(message.in_reply_to, None);
+    }
+
+    /// Contenu `m.room.message` désérialisé depuis le JSON du test : même chemin serde que la
+    /// réception réelle, sans homeserver.
+    fn content(json: serde_json::Value) -> RoomMessageEventContent {
+        serde_json::from_value(json).expect("contenu de test valide")
+    }
+
+    // Scenario: la relation d'un message entrant est extraite (issue #87) — message d'un fil avec
+    // repli m.in_reply_to (is_falling_back) : racine du fil ET événement du repli rapportés.
+    #[test]
+    fn relation_of_thread_message_yields_root_and_fallback_reply() {
+        let thread = content(serde_json::json!({
+            "msgtype": "m.text",
+            "body": "dans le fil",
+            "m.relates_to": {
+                "rel_type": "m.thread",
+                "event_id": "$root",
+                "is_falling_back": true,
+                "m.in_reply_to": { "event_id": "$prev" },
+            },
+        }));
+        assert_eq!(
+            relation_ids(&thread),
+            (Some("$root".to_owned()), Some("$prev".to_owned()))
+        );
+    }
+
+    // Scenario: la relation d'un message entrant est extraite (issue #87) — m.in_reply_to seul :
+    // seule la réponse est rapportée.
+    #[test]
+    fn relation_of_reply_yields_reply_only() {
+        let reply = content(serde_json::json!({
+            "msgtype": "m.text",
+            "body": "réponse",
+            "m.relates_to": { "m.in_reply_to": { "event_id": "$x" } },
+        }));
+        assert_eq!(relation_ids(&reply), (None, Some("$x".to_owned())));
+    }
+
+    // Scenario: la relation d'un message entrant est extraite (issue #87) — message à plat : rien.
+    #[test]
+    fn relation_of_flat_message_yields_nothing() {
+        let flat = content(serde_json::json!({ "msgtype": "m.text", "body": "à plat" }));
+        assert_eq!(relation_ids(&flat), (None, None));
+    }
+
+    // Scenario: la relation d'un message entrant est extraite (issue #87) — remplacement
+    // m.replace : rien (il n'est de toute façon pas remis, should_deliver l'exclut).
+    #[test]
+    fn relation_of_replacement_yields_nothing() {
+        let edit = content(serde_json::json!({
+            "msgtype": "m.text",
+            "body": "* édité",
+            "m.relates_to": {
+                "rel_type": "m.replace",
+                "event_id": "$original",
+            },
+            "m.new_content": { "msgtype": "m.text", "body": "édité" },
+        }));
+        assert_eq!(relation_ids(&edit), (None, None));
     }
 }
