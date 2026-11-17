@@ -66,6 +66,7 @@ Must:
     par `#[schema(as = …)]` dans les fixtures — `Recipe`), plus les schémas imbriqués rapportés par
     @ToSchema::schemas à leurs propres noms, plus l'enveloppe @Paged{nom du schéma du model} construite
     à la main.
+  **Amendement du 2026-11-17 (issue #92, arbitré)** : quand @ToSchema::name() rend « Model » — le nom par défaut d'un struct non renommé —, le schéma du @Model et son enveloppe sont nommés d'après `resource_name` : `PascalCase(resource_name)` (segments séparés par `_`, première lettre en capitale, aucune singularisation — `lymaille_agents` donne `LymailleAgents`, enveloppe `PagedLymailleAgents`). Un nom déclaré par `#[schema(as = …)]` est conservé tel quel (aucune application existante ne change de nom de schéma). Les `$ref` des opérations (item, page) visent le nom retenu. Deux ressources d'un même document dont le @Model n'est pas renommé ont ainsi deux schémas distincts, sans que l'application pose `#[schema(as)]` ; deux ressources qui déclarent le même nom restent un homonyme documentaire (arbitrage du 2026-09-29 inchangé).
   Épingler le schéma @Paged{Model} à exactement cinq propriétés toutes requises — `items` (tableau de
     références vers le schéma du model), `page`, `per_page`, `total_items`, `total_pages` (quatre
     `integer` nues) — mêmes clés que les cinq champs sérialisés de @PagedResult de ../query.rs : les
@@ -341,10 +342,11 @@ Tasks:
     Modalités de surface non documentées (colonne de `filter_column` acceptée comme clé libre nommée ; `sort=col:asc|desc`) : le document n'annonce que la forme canonique, arbitré par Sébastien le 2026-11-16 ; ces modalités restent acceptées par la surface sans être documentées.
     Implémente le 2026-11-15 : batterie 16/16 tests + 16/16 clippy -D warnings + fmt + trees verte,
     validator PASS statique ; `Done when` amendé a quinze par le primary.
+  [ ] Issue #92 (arbitré le 2026-11-17) : nom de schéma d'après `resource_name` quand @ToSchema::name() rend « Model » (voir `Must`, amendement du 2026-11-17) ; test d'abord (nouveau `Scenario` ci-dessous, rouge avant le code : sans la règle, les deux schémas s'enregistrent sous « Model » et un seul survit à la fusion ; les tests existants `Recipe`/`PagedRecipe` restent verts, preuve que `#[schema(as)]` est conservé), puis ./openapi.rs. Périmètre : ./openapi.rs seul (le renvoi de ./../lymaille/definitions/mod.sdd est déjà posé). Le `Done when` passe à seize `Scenario`.
 
 Done when:
-  La spec porte exactement quinze `Scenario` (décompte corrigé le 2026-11-15 : quinze mesurés, les
-    treize du cycle 2026-10-01 plus l'ajout `db` et l'ajout #78), chacun vérifié par son test nommé distinct dans le
+  La spec porte exactement seize `Scenario` (décompte du 2026-11-17 : quinze mesurés le 2026-11-15, les
+    treize du cycle 2026-10-01 plus l'ajout `db` et l'ajout #78, plus l'ajout #92), chacun vérifié par son test nommé distinct dans le
     `#[cfg(test)] mod tests` de ./openapi.rs (treize conservés, deux créés — quinze tests minimum),
     exerçant son `Then` sans invention supplémentaire.
   @openapi_router est servi sur `--no-default-features` (le `Scenario` hors feature le prouve),
@@ -483,3 +485,8 @@ Scenario: le document décrit critères, tri et conflit
   Given une entité qui déclare deux colonnes filtrables et une triable, à lecture `OwnerOnly`, puis une entité sans déclaration
   When @resource_openapi est appelée pour chacune
   Then la première porte les query parameters des deux colonnes, `sort`, `order`, la réponse `400` de la liste, la réponse `409` de `POST` et `PUT` et le `404` décrit pour l'item ; la seconde garde son document de liste d'avant (aucun paramètre #78) mais porte la réponse `409` de `POST` et `PUT` (arbitré par Sébastien le 2026-11-16)
+
+Scenario: deux ressources au Model non renommé ont deux schémas distincts (#92)
+  Given deux entités dont le @Model ne porte pas de `#[schema(as)]` (resource_name `alpha_items` et `beta_items`)
+  When @resource_openapi est appelée pour chacune puis les deux fragments sont fusionnés
+  Then `components.schemas` porte `AlphaItems`, `PagedAlphaItems`, `BetaItems` et `PagedBetaItems`, aucun schéma « Model » ni « PagedModel », et les `$ref` des opérations de chaque ressource visent son propre schéma

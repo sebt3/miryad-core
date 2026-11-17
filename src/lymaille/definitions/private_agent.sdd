@@ -123,7 +123,7 @@ Scenario: resource_openapi compile et décrit la ressource
 
 Scenario: l'export TypeScript du Model correspond à la sérialisation
   Given un `Model` construit avec toutes ses colonnes, sérialisé en JSON, et l'export TypeScript de ../interactive/event.sdd écrit dans un répertoire temporaire
-  When la déclaration `private_agent.ts` est lue
+  When la déclaration `PrivateAgentModel.ts` est lue
   Then chaque clé du JSON est une propriété de la déclaration avec le type attendu (`string` pour les dates, `number` pour les entiers), sans propriété en plus ; la sérialisation du `Model` n'a pas changé
 
 Scenario: une définition privée sans profil donne une colonne profile vide
