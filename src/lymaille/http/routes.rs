@@ -120,7 +120,9 @@ pub(crate) struct ResumeBody {
 pub(crate) struct CreateBody {
     /// Nom du contexte (`G_…`, privé, ou `H_…`) sur lequel ouvrir.
     context: String,
-    /// Agent explicite, sinon le défaut du type du contexte.
+    /// Agent explicite, sinon le défaut du type du contexte (`#[ts(optional)]` de l'arbitrage
+    /// #72 du 2026-11-16 : `agent?: string` à l'export ; côté serde, absent vaut `None`, inchangé).
+    #[ts(optional)]
     agent: Option<String>,
 }
 
@@ -142,23 +144,24 @@ pub(super) struct ListQuery {
 
 /// Résumés expurgés rendus par `GET /conversations` : six clés par ligne, le détail (fonctions,
 /// erreurs rhai) de `SessionSummary` reste derrière.
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 pub(super) struct ListBody {
     /// Les sessions de l'appelante selon le filtre.
     items: Vec<SessionItem>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 struct SessionItem {
     id: String,
     title: String,
     agent: String,
     kind: SessionKind,
+    #[ts(type = "number")]
     turns: u64,
-    review: Option<&'static str>,
+    review: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 pub(super) struct CancelledBody {
     /// `true` si un tour actif venait d'être signalé.
     cancelled: bool,
@@ -174,7 +177,7 @@ pub(crate) struct HistoryBody {
 
 /// Le rapport d'activation rendu par `POST /toolsets/{name}/activate` (miroir JSON de
 /// `ActivationReport`).
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 pub(super) struct ActivationBody {
     name: String,
     version: String,
@@ -246,10 +249,10 @@ fn session_item(summary: &SessionSummary) -> SessionItem {
     }
 }
 
-fn render_review(review: Option<&ReviewState>) -> Option<&'static str> {
+fn render_review(review: Option<&ReviewState>) -> Option<String> {
     match review {
-        Some(ReviewState::Done) => Some("done"),
-        Some(ReviewState::Requested(_)) => Some("requested"),
+        Some(ReviewState::Done) => Some("done".to_owned()),
+        Some(ReviewState::Requested(_)) => Some("requested".to_owned()),
         Some(_) | None => None,
     }
 }
@@ -1506,35 +1509,118 @@ mod tests {
             let chemin = dir.join(format!("{nom}.ts"));
             assert!(rendu.contains(&chemin), "`{nom}.ts` est dans les chemins rendus");
             let texte = std::fs::read_to_string(&chemin).expect("le corps exporté se relit");
-            let champs = crate::lymaille::interactive::event::tests::decl_fields(&texte);
-            let noms: std::collections::BTreeSet<&str> =
-                champs.iter().map(|(champ, ..)| champ.as_str()).collect();
-            let cles: std::collections::BTreeSet<&str> = valeur
-                .as_object()
-                .unwrap_or_else(|| panic!("le corps {nom} sérialise en objet"))
-                .keys()
-                .map(String::as_str)
-                .collect();
-            for cle in &cles {
-                assert!(
-                    noms.contains(cle),
-                    "chaque clé du JSON est propriété de la déclaration : {cle} dans {nom}"
-                );
-            }
-            for (champ, optionnel, _) in &champs {
-                assert!(
-                    *optionnel || cles.contains(champ.as_str()),
-                    "aucune propriété obligatoire de {nom} n'est en trop : {champ}"
-                );
-            }
-            assert!(!texte.contains("bigint"), "jamais de bigint dans {nom} : {texte}");
+            verifier_declaration(nom, &valeur, &texte);
         }
         let session = std::fs::read_to_string(dir.join("SessionBody.ts")).expect("SessionBody.ts est écrit");
         assert!(
             session.contains("kind: SessionKind"),
             "la nature rendue vient du type exporté SessionKind : {session}"
         );
+        // Issue #72 (arbitré le 2026-11-16) : les quatre corps de ./routes.rs également dérivés
+        // `TS`. Leur ajout à la liste d'`export_typescript` est tâche de ../interactive/event.sdd
+        // (inchangée ici) ; la déclaration est lue à la source par le même générateur que
+        // l'export. Chaque clé du JSON échantillonné est propriété de la déclaration, aucune
+        // propriété obligatoire n'est en trop, et aucun `u64` ne passe en `bigint` (précédent
+        // `#[ts(type = "number")]` de ../interactive/event.rs).
+        let derives: Vec<(&str, serde_json::Value, String)> = vec![
+            (
+                "CancelledBody",
+                serde_json::to_value(super::CancelledBody { cancelled: true })
+                    .expect("le corps d'annulation sérialise"),
+                ts_text::<super::CancelledBody>(),
+            ),
+            (
+                "ListBody",
+                serde_json::to_value(super::ListBody {
+                    items: vec![session_item_exemple()],
+                })
+                .expect("le corps de liste sérialise"),
+                ts_text::<super::ListBody>(),
+            ),
+            (
+                "SessionItem",
+                serde_json::to_value(session_item_exemple()).expect("la ligne de liste sérialise"),
+                ts_text::<super::SessionItem>(),
+            ),
+            (
+                "ActivationBody",
+                serde_json::to_value(super::ActivationBody {
+                    name: "ts_prive".to_owned(),
+                    version: "2.0.0".to_owned(),
+                    previous_version: Some("1.0.0".to_owned()),
+                })
+                .expect("le rapport d'activation sérialise"),
+                ts_text::<super::ActivationBody>(),
+            ),
+        ];
+        for (nom, valeur, texte) in &derives {
+            verifier_declaration(nom, valeur, texte);
+        }
+        // Issue #72 (arbitré le 2026-11-16) : `CreateBody.agent` s'exporte `agent?: string`
+        // (`#[ts(optional)]`) ; côté serde rien ne change — un corps sans `agent` reste accepté
+        // et tombe sur `None` (l'agent par défaut du type du contexte, `DEC-28`).
+        let create = ts_text::<super::CreateBody>();
+        assert!(
+            create.contains("agent?: string"),
+            "le champ agent est typé optionnel : {create}"
+        );
+        let sans_agent: super::CreateBody = serde_json::from_value(json!({ "context": "c1" }))
+            .expect("un corps sans agent reste accepté par serde");
+        assert_eq!(sans_agent.context, "c1", "le contexte est lu");
+        assert!(sans_agent.agent.is_none(), "l'agent absent tombe sur None");
         std::fs::remove_dir_all(&dir).expect("le répertoire de test se nettoie");
+    }
+
+    /// Vérification d'une déclaration de corps contre l'échantillon JSON sérialisé : chaque clé
+    /// du JSON est une propriété de la déclaration, aucune propriété obligatoire n'est en trop,
+    /// et aucun champ `u64` ne passe en `bigint` (contrat de l'amendement du 2026-11-13). Partagée
+    /// par les déclarations lues dans les fichiers d'export et par celles lues à la source.
+    fn verifier_declaration(nom: &str, valeur: &serde_json::Value, texte: &str) {
+        let champs = crate::lymaille::interactive::event::tests::decl_fields(texte);
+        let noms: std::collections::BTreeSet<&str> =
+            champs.iter().map(|(champ, ..)| champ.as_str()).collect();
+        let cles: std::collections::BTreeSet<&str> = valeur
+            .as_object()
+            .unwrap_or_else(|| panic!("le corps {nom} sérialise en objet"))
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for cle in &cles {
+            assert!(
+                noms.contains(cle),
+                "chaque clé du JSON est propriété de la déclaration : {cle} dans {nom}"
+            );
+        }
+        for (champ, optionnel, _) in &champs {
+            assert!(
+                *optionnel || cles.contains(champ.as_str()),
+                "aucune propriété obligatoire de {nom} n'est en trop : {champ}"
+            );
+        }
+        assert!(!texte.contains("bigint"), "jamais de bigint dans {nom} : {texte}");
+    }
+
+    /// La déclaration ts-rs d'un corps, générée par le même appel qu'`export_one` de
+    /// `export_typescript` (../interactive/event.rs) — la liste d'export elle-même est tâche de
+    /// `../interactive/event.sdd` et n'est pas touchée par cette case.
+    fn ts_text<T>() -> String
+    where
+        T: ts_rs::TS + 'static,
+    {
+        T::export_to_string(&ts_rs::Config::new()).expect("la déclaration ts-rs est générée")
+    }
+
+    /// Ligne de liste d'exemple (mêmes valeurs que la route `GET /conversations`) : la revue
+    /// rendue `done`, trois tours.
+    fn session_item_exemple() -> super::SessionItem {
+        super::SessionItem {
+            id: "s1".to_owned(),
+            title: "titre".to_owned(),
+            agent: "dev".to_owned(),
+            kind: ::lymaille::SessionKind::Work,
+            turns: 3,
+            review: Some("done".to_owned()),
+        }
     }
 }
 
