@@ -89,7 +89,8 @@ fn chemins_plats_resolvent_depuis_l_exterieur() {
 
 /// Scenario « les steps croisés n'existent que sous leur croisement de features » : depuis l'extérieur de
 /// la crate, `SystemOneStep` et `MatrixSendStep` ne résolvent que sous leur croisement (le test est lui-même
-/// gated par `cfg`).
+/// gated par `cfg`). Depuis #87 (amendement du 2026-11-16 de ./mod.sdd), `MatrixEditStep` est exercé sous le
+/// même croisement `workflow` + `matrix`.
 #[cfg(feature = "systemone")]
 #[test]
 fn systemone_step_resout_depuis_l_exterieur() {
@@ -101,5 +102,12 @@ fn systemone_step_resout_depuis_l_exterieur() {
 #[test]
 fn matrix_send_step_resout_depuis_l_exterieur() {
     fn witness(_: Option<miryad_core::workflow::MatrixSendStep>) {}
+    witness(None);
+}
+
+#[cfg(feature = "matrix")]
+#[test]
+fn matrix_edit_step_resout_depuis_l_exterieur() {
+    fn witness(_: Option<miryad_core::workflow::MatrixEditStep>) {}
     witness(None);
 }

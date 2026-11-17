@@ -1,5 +1,5 @@
-//! Kind natif `"matrix_send"` (features `workflow` **et** `matrix`) : envoi d'un message dans une
-//! salle Matrix via [`MatrixClient`].
+//! Kinds natifs `"matrix_send"` et `"matrix_edit"` (features `workflow` **et** `matrix`) : envoi
+//! d'un message dans une salle Matrix et édition d'un message déjà publié via [`MatrixClient`].
 //!
 //! Le step dérive un `txn_id` déterministe de l'identité du run (`run_key`, `step_id`) : un
 //! rejeu Restate envoie le même identifiant de transaction, et le homeserver dédoublonne.
@@ -7,8 +7,9 @@
 //! La `config` accepte une relation optionnelle (`thread_root`/`thread_latest` ou `reply_to`,
 //! champs à plat validés avant tout envoi — issue #87).
 //!
-//! L'application enregistre elle-même le kind, comme `RhaiStep` :
-//! `registry.register(MatrixSendStep::new(client))`. Le step ne journalise jamais `body` ni `html`.
+//! L'application enregistre elle-même chaque kind, comme `RhaiStep` :
+//! `registry.register(MatrixSendStep::new(client))`, `registry.register(MatrixEditStep::new(client))`.
+//! Le step ne journalise jamais `body` ni `html`.
 
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -50,7 +51,8 @@ impl MatrixSendStep {
     }
 }
 
-/// Couture d'envoi : rend le step testable sans homeserver. Implémentée pour [`MatrixClient`].
+/// Couture d'envoi et d'édition : rend les steps testables sans homeserver. Implémentée pour
+/// [`MatrixClient`].
 #[async_trait::async_trait]
 trait Sender: Send + Sync {
     async fn send(
@@ -60,6 +62,16 @@ trait Sender: Send + Sync {
         html: Option<&str>,
         kind: MessageKind,
         relation: Option<&MessageRelation>,
+        txn_id: &str,
+    ) -> Result<String, MatrixError>;
+
+    async fn edit(
+        &self,
+        room_id: &str,
+        event_id: &str,
+        body: &str,
+        html: Option<&str>,
+        kind: MessageKind,
         txn_id: &str,
     ) -> Result<String, MatrixError>;
 }
@@ -76,6 +88,18 @@ impl Sender for MatrixClient {
         txn_id: &str,
     ) -> Result<String, MatrixError> {
         MatrixClient::send(self, room_id, body, html, kind, relation, Some(txn_id)).await
+    }
+
+    async fn edit(
+        &self,
+        room_id: &str,
+        event_id: &str,
+        body: &str,
+        html: Option<&str>,
+        kind: MessageKind,
+        txn_id: &str,
+    ) -> Result<String, MatrixError> {
+        MatrixClient::edit(self, room_id, event_id, body, html, kind, Some(txn_id)).await
     }
 }
 
@@ -177,6 +201,69 @@ fn message_kind(kind: SendKind) -> MessageKind {
     }
 }
 
+/// Kind de step `"matrix_edit"` (amendement 2026-11-16, issue #87) : remplace un message déjà
+/// publié dans une salle Matrix par un événement `m.replace`.
+pub struct MatrixEditStep {
+    sender: Arc<dyn Sender>,
+}
+
+impl MatrixEditStep {
+    /// Construit le step autour d'un client Matrix déjà connecté.
+    #[must_use]
+    pub fn new(client: MatrixClient) -> Self {
+        Self {
+            sender: Arc::new(client),
+        }
+    }
+
+    /// Construit le step autour d'un `Sender` quelconque (tests unitaires uniquement).
+    #[cfg(test)]
+    fn with_sender(sender: Arc<dyn Sender>) -> Self {
+        Self { sender }
+    }
+}
+
+/// `config` du kind `"matrix_edit"`, après rendu de template. Clés inconnues refusées
+/// (amendement 2026-11-16, issue #87).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MatrixEditConfig {
+    room_id: String,
+    event_id: String,
+    body: String,
+    html: Option<String>,
+    #[serde(default)]
+    kind: SendKind,
+}
+
+/// Erreur de configuration d'un `matrix_edit` : non retryable, jamais d'appel réseau.
+fn invalid_edit(detail: impl Display) -> StepError {
+    StepError {
+        message: format!("config matrix_edit invalide: {detail}"),
+        retryable: false,
+    }
+}
+
+/// Validation pure de la `config` d'un `matrix_edit`, avant tout appel réseau : mêmes règles que
+/// `matrix_send` pour `room_id`, `body` et `html`, plus `event_id` en `$…` non vide.
+fn validate_edit(cfg: &MatrixEditConfig) -> Result<(), StepError> {
+    if !cfg.room_id.starts_with('!') {
+        return Err(invalid_edit("room_id doit commencer par '!'"));
+    }
+    if cfg.body.trim().is_empty() {
+        return Err(invalid_edit("body vide"));
+    }
+    if cfg.html.as_deref().is_some_and(str::is_empty) {
+        return Err(invalid_edit("html vide"));
+    }
+    if cfg.event_id.is_empty() || !cfg.event_id.starts_with('$') {
+        return Err(invalid_edit(
+            "event_id doit commencer par '$' et ne pas être vide",
+        ));
+    }
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl MiryadWorkflowStep for MatrixSendStep {
     fn kind(&self) -> &'static str {
@@ -220,6 +307,50 @@ impl MiryadWorkflowStep for MatrixSendStep {
     }
 }
 
+#[async_trait::async_trait]
+impl MiryadWorkflowStep for MatrixEditStep {
+    fn kind(&self) -> &'static str {
+        "matrix_edit"
+    }
+
+    async fn run(
+        &self,
+        run: &RunInfo,
+        config: Value,
+        _inputs: HashMap<String, Value>,
+    ) -> Result<Value, StepError> {
+        let cfg: MatrixEditConfig = serde_json::from_value(config).map_err(invalid_edit)?;
+        validate_edit(&cfg)?;
+        let MatrixEditConfig {
+            room_id,
+            event_id,
+            body,
+            html,
+            kind,
+        } = cfg;
+        let replacement_id = self
+            .sender
+            .edit(
+                &room_id,
+                &event_id,
+                &body,
+                html.as_deref(),
+                message_kind(kind),
+                &txn_id(run),
+            )
+            .await
+            .map_err(|err| StepError {
+                retryable: err.retryable(),
+                message: err.to_string(),
+            })?;
+        Ok(json!({
+            "event_id": replacement_id,
+            "edited_event_id": event_id,
+            "room_id": room_id,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -233,6 +364,7 @@ mod tests {
     use super::super::step::MiryadWorkflowStep;
     use super::super::step::RunInfo;
     use super::super::step::StepError;
+    use super::MatrixEditStep;
     use super::MatrixSendStep;
     use super::Sender;
     use super::txn_id;
@@ -240,7 +372,7 @@ mod tests {
     use crate::matrix::MessageKind;
     use crate::matrix::client::MessageRelation;
 
-    /// Appel reçu par le faux `Sender`.
+    /// Appel d'envoi reçu par le faux `Sender`.
     #[derive(Debug, Clone, PartialEq)]
     struct Call {
         room_id: String,
@@ -251,13 +383,29 @@ mod tests {
         txn_id: String,
     }
 
-    /// Journal des appels reçus par le faux `Sender`.
+    /// Appel d'édition reçu par le faux `Sender`.
+    #[derive(Debug, Clone, PartialEq)]
+    struct EditCall {
+        room_id: String,
+        event_id: String,
+        body: String,
+        html: Option<String>,
+        kind: MessageKind,
+        txn_id: String,
+    }
+
+    /// Journal des appels de réception du faux `Sender`.
     type Calls = Arc<Mutex<Vec<Call>>>;
 
-    /// Faux `Sender` : enregistre chaque appel et rend `outcome` au premier appel.
+    /// Journal des appels d'édition reçus par le faux `Sender`.
+    type EditCalls = Arc<Mutex<Vec<EditCall>>>;
+
+    /// Faux `Sender` : enregistre chaque appel (`send` comme `edit`) et rend ses `outcomes` en file.
     struct FakeSender {
         calls: Calls,
         outcomes: Mutex<VecDeque<Result<String, MatrixError>>>,
+        edit_calls: EditCalls,
+        edit_outcomes: Mutex<VecDeque<Result<String, MatrixError>>>,
     }
 
     #[async_trait::async_trait]
@@ -285,16 +433,61 @@ mod tests {
                 .pop_front()
                 .unwrap_or_else(|| Ok("$evt".to_string()))
         }
+
+        async fn edit(
+            &self,
+            room_id: &str,
+            event_id: &str,
+            body: &str,
+            html: Option<&str>,
+            kind: MessageKind,
+            txn_id: &str,
+        ) -> Result<String, MatrixError> {
+            self.edit_calls.lock().unwrap().push(EditCall {
+                room_id: room_id.to_string(),
+                event_id: event_id.to_string(),
+                body: body.to_string(),
+                html: html.map(str::to_string),
+                kind,
+                txn_id: txn_id.to_string(),
+            });
+            self.edit_outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Ok("$new".to_string()))
+        }
     }
 
-    /// Step branché sur un faux `Sender` qui rendra `outcome`, et son journal d'appels.
-    fn step_with(outcome: Result<String, MatrixError>) -> (MatrixSendStep, Calls) {
+    /// Construction partagée du faux `Sender` (journaux vides, outcomes en file).
+    fn fake_sender(
+        outcomes: VecDeque<Result<String, MatrixError>>,
+        edit_outcomes: VecDeque<Result<String, MatrixError>>,
+    ) -> (FakeSender, Calls, EditCalls) {
         let calls: Calls = Arc::new(Mutex::new(Vec::new()));
-        let sender: Arc<dyn Sender> = Arc::new(FakeSender {
+        let edit_calls: EditCalls = Arc::new(Mutex::new(Vec::new()));
+        let sender = FakeSender {
             calls: Arc::clone(&calls),
-            outcomes: Mutex::new(VecDeque::from([outcome])),
-        });
+            outcomes: Mutex::new(outcomes),
+            edit_calls: Arc::clone(&edit_calls),
+            edit_outcomes: Mutex::new(edit_outcomes),
+        };
+        (sender, calls, edit_calls)
+    }
+
+    /// Step d'envoi branché sur un faux `Sender` qui rendra `outcome`, et son journal d'envois.
+    fn step_with(outcome: Result<String, MatrixError>) -> (MatrixSendStep, Calls) {
+        let (sender, calls, _edits) = fake_sender(VecDeque::from([outcome]), VecDeque::new());
+        let sender: Arc<dyn Sender> = Arc::new(sender);
         (MatrixSendStep::with_sender(sender), calls)
+    }
+
+    /// Step d'édition branché sur un faux `Sender` qui rendra `outcome` sur `edit`, et son
+    /// journal d'éditions.
+    fn edit_step_with(outcome: Result<String, MatrixError>) -> (MatrixEditStep, EditCalls) {
+        let (sender, _calls, edits) = fake_sender(VecDeque::new(), VecDeque::from([outcome]));
+        let sender: Arc<dyn Sender> = Arc::new(sender);
+        (MatrixEditStep::with_sender(sender), edits)
     }
 
     fn run_info() -> RunInfo {
@@ -485,5 +678,82 @@ mod tests {
             .await
             .expect("envoi réussi");
         assert_eq!(out, json!({"event_id": "$abc", "room_id": "!r:x"}));
+    }
+
+    /// Scenario « `matrix_edit` transmet l'identifiant visé et rend le remplacement (issue #87) ».
+    #[tokio::test]
+    async fn matrix_edit_transmet_l_identifiant_vise_et_rend_le_remplacement() {
+        let (step, edits) = edit_step_with(Ok("$new".into()));
+        let config = json!({"room_id": "!r:x", "event_id": "$old", "body": "mis à jour"});
+        let out: Value = step
+            .run(&run_info(), config, HashMap::new())
+            .await
+            .expect("édition réussie");
+        let sent = edits.lock().unwrap();
+        assert_eq!(sent.len(), 1, "un seul appel d'édition");
+        assert_eq!(sent[0].event_id, "$old", "l'identifiant visé est transmis");
+        assert_eq!(sent[0].room_id, "!r:x");
+        assert_eq!(sent[0].body, "mis à jour");
+        assert_eq!(sent[0].html, None);
+        assert_eq!(sent[0].kind, MessageKind::Text, "défaut : text");
+        assert_eq!(
+            sent[0].txn_id,
+            txn_id(&run_info()),
+            "le txn_id est dérivé comme pour matrix_send"
+        );
+        assert_eq!(
+            out,
+            json!({"event_id": "$new", "edited_event_id": "$old", "room_id": "!r:x"})
+        );
+    }
+
+    /// Scenario « une config `matrix_edit` invalide ne fait aucun appel réseau (issue #87) ».
+    #[tokio::test]
+    async fn une_config_matrix_edit_invalide_ne_fait_aucun_appel_reseau() {
+        let cas = [
+            json!({"room_id": "!r:x", "body": "ok"}),
+            json!({"room_id": "!r:x", "event_id": "pas-un-id", "body": "ok"}),
+            json!({"room_id": "!r:x", "event_id": "$old", "body": "  "}),
+            json!({"room_id": "!r:x", "event_id": "$old", "body": "ok", "thread_root": "$r"}),
+        ];
+        for config in cas {
+            let (step, edits) = edit_step_with(Ok("$new".into()));
+            let err = step
+                .run(&run_info(), config.clone(), HashMap::new())
+                .await
+                .unwrap_err();
+            assert!(!err.retryable, "config invalide : jamais retryable ({config})");
+            assert!(
+                err.message.starts_with("config matrix_edit invalide:"),
+                "message : {}",
+                err.message
+            );
+            assert!(edits.lock().unwrap().is_empty(), "aucune édition pour {config}");
+        }
+    }
+
+    /// Scenario « les refus d'édition ne sont pas retryables (issue #87) ».
+    #[tokio::test]
+    async fn les_refus_d_edition_ne_sont_pas_retryables() {
+        let config = json!({"room_id": "!r:x", "event_id": "$old", "body": "ok"});
+        let cas = [
+            (Err(MatrixError::EventNotFound("$old".into())), false),
+            (Err(MatrixError::NotAuthor("$old".into())), false),
+            (
+                Err(MatrixError::Network {
+                    message: "x".into(),
+                    retryable: true,
+                }),
+                true,
+            ),
+        ];
+        for (outcome, expected) in cas {
+            let (step, _) = edit_step_with(outcome);
+            let err: StepError = step
+                .run(&run_info(), config.clone(), HashMap::new())
+                .await
+                .unwrap_err();
+            assert_eq!(err.retryable, expected, "retryabilité attendue : {expected}");
+        }
     }
 }

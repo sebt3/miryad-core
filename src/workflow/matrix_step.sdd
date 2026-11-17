@@ -114,6 +114,10 @@ Tasks:
   [ ] Tâche M2 (2026-11-16, `matrix#FR-11`) : `MatrixEditStep`, `MatrixEditConfig`, `Sender::edit` — tests d'abord (Scenarios
     édition), puis ./matrix_step.rs ; ré-export dans ./mod.rs et amendement de ./mod.sdd (même lot). Après la tâche M1 et
     ./../matrix/client.sdd (tâche G).
+    - [!] (validator, clôture #87 2026-11-17) : le code, les tests et la batterie sont au vert (GO différé) mais le ressoudage
+      demandé au cycle M1 n'est pas fait et relève du développeur principal : l'item 3 du `Must` `run` (ligne ~60) énumère encore
+      `sender.send(…, kind, &txn_id(run))` **sans `relation`**, alors que le trait amendé et le code la passent. Une ligne de `Must`
+      à ressouder — hors du cycle. La case passe `[x]` dès que cette ligne est ressoudée (rien à reprendre dans le code).
   [x] Tests unitaires d'abord pour `txn_id`, la désérialisation et la validation (fonctions pures) ; le
     chemin d'envoi réel est couvert par `../../tests/matrix_live.rs` (../matrix/client.sdd). Puis
     ./matrix_step.rs ; ré-export dans ./mod.rs et amendement de ./mod.sdd (même lot).

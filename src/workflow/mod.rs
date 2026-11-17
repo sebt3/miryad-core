@@ -9,7 +9,8 @@
 //!
 //! Les kinds natifs à dépendance externe ne sont **pas** enregistrés par le moteur : l'application les
 //! enregistre elle-même dans son `StepRegistry`, comme `RhaiStep` — `register(SystemOneStep::new(client))`
-//! sous `workflow` + `systemone`, `register(MatrixSendStep::new(client))` sous `workflow` + `matrix`,
+//! sous `workflow` + `systemone`, `register(MatrixSendStep::new(client))` et
+//! `register(MatrixEditStep::new(client))` sous `workflow` + `matrix`,
 //! `register(SubagentStep::new(deps))` sous `workflow` + `lymaille` (./subagent_step.sdd).
 
 pub mod client;
@@ -49,7 +50,7 @@ pub use durable::{MiryadDurableStep, StepContext};
 pub use error::WorkflowError;
 pub use interpreter::DagInterpreter;
 #[cfg(all(feature = "workflow", feature = "matrix"))]
-pub use matrix_step::MatrixSendStep;
+pub use matrix_step::{MatrixEditStep, MatrixSendStep};
 pub use rhai_step::RhaiStep;
 pub use step::{MiryadWorkflowStep, RunInfo, StepError, StepRegistry};
 #[cfg(all(feature = "workflow", feature = "lymaille"))]
@@ -137,6 +138,15 @@ mod tests {
     #[test]
     fn matrix_send_step_est_importable_sous_son_croisement() {
         fn witness(_: Option<crate::workflow::MatrixSendStep>) {}
+        witness(None);
+    }
+
+    /// Issue #87 (amendement du 2026-11-16 de ./mod.sdd, matrix#FR-11) : `MatrixEditStep` est
+    /// ré-exporté à plat à côté de `MatrixSendStep`, sous le même croisement.
+    #[cfg(all(feature = "workflow", feature = "matrix"))]
+    #[test]
+    fn matrix_edit_step_est_importable_sous_son_croisement() {
+        fn witness(_: Option<crate::workflow::MatrixEditStep>) {}
         witness(None);
     }
 

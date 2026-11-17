@@ -161,6 +161,11 @@ Tasks:
     même `cfg(all(workflow, matrix))` (chemin supplémentaire ; l'amendement 2026-10-06 compte « vingt-sixième chemin au plus », celui-ci
     prévaut en cas de contradiction de comptage) ; étendre le Scenario « les steps croisés » à `MatrixEditStep`. Même lot que
     ./matrix_step.sdd (tâche M2).
+    - [!] (validator, clôture #87 2026-11-17) : ré-export posé sous le `cfg` exigé, preuves de chemins plats étendues sur les deux
+      surfaces (`mod tests` de ./mod.rs et ../../tests/workflow_flat_paths.rs, discriminateurs prouvés par retrait), batterie verte —
+      mais le **texte** du Scenario « les steps croisés » (lignes ~251-254) cite encore `{SystemOneStep, MatrixSendStep}` sans
+      `MatrixEditStep` : l'extension demandée par la case touche un `Scenario`, hors du cycle. À faire d'une ligne par le développeur
+      principal (ou arbitrer que l'extension au niveau du test suffit) ; la case passe `[x]` dans la foulée.
   [x] #26 (2026-10-04) : déclarer `durable` et `subworkflow`, ajouter les quatre ré-exports
     (`MiryadDurableStep`, `StepContext`, `SubWorkflowStep`, `RunInfo`) et étendre le test de chemins
     plats (`../../tests/workflow_flat_paths.rs` et `mod tests`) à ces quatre chemins — dernier
