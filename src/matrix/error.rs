@@ -36,6 +36,14 @@ pub enum MatrixError {
     /// Toute autre erreur de `matrix-sdk`, non retryable.
     #[error("MRD-MATRIX-008: matrix sdk error: {0}")]
     Sdk(String),
+    /// Événement visé par une réponse ou une édition inconnu du serveur, ou illisible pour le
+    /// compte ; porte l'identifiant de l'événement, jamais son contenu. Non retryable.
+    #[error("MRD-MATRIX-009: event not found: {0}")]
+    EventNotFound(String),
+    /// Édition d'un événement envoyé par un autre compte (interdit par la spécification Matrix) ;
+    /// porte l'identifiant de l'événement. Non retryable.
+    #[error("MRD-MATRIX-010: not the author of event: {0}")]
+    NotAuthor(String),
 }
 
 impl MatrixError {
@@ -135,11 +143,29 @@ mod tests {
                 "MRD-MATRIX-007",
             ),
             (MatrixError::Sdk("x".into()), "MRD-MATRIX-008"),
+            (MatrixError::EventNotFound("$ev".into()), "MRD-MATRIX-009"),
+            (MatrixError::NotAuthor("$ev".into()), "MRD-MATRIX-010"),
         ];
         for (err, code) in cases {
             let msg = err.to_string();
             assert!(msg.starts_with(code), "attendu préfixe {code}, obtenu : {msg}");
         }
+    }
+
+    // Scenario: les codes sont stables — Display d'EventNotFound/NotAuthor porte l'identifiant de
+    // l'événement, jamais son contenu (amendement 2026-11-16, issue #87).
+    #[test]
+    fn event_variants_display_carries_event_id_not_content() {
+        let msg = MatrixError::EventNotFound("$AbCdef:example.org".into()).to_string();
+        assert_eq!(
+            msg, "MRD-MATRIX-009: event not found: $AbCdef:example.org",
+            "Display d'EventNotFound"
+        );
+        let msg = MatrixError::NotAuthor("$AbCdef:example.org".into()).to_string();
+        assert_eq!(
+            msg, "MRD-MATRIX-010: not the author of event: $AbCdef:example.org",
+            "Display de NotAuthor"
+        );
     }
 
     // Scenario: la retryabilité suit le type d'erreur
@@ -167,6 +193,8 @@ mod tests {
                 true,
             ),
             (MatrixError::Store(StoreError::Cipher("x".into())), false),
+            (MatrixError::EventNotFound("$ev".into()), false),
+            (MatrixError::NotAuthor("$ev".into()), false),
         ];
         for (err, expected) in cases {
             assert_eq!(err.retryable(), expected, "variante : {err}");
