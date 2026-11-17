@@ -616,7 +616,14 @@ impl Inner {
                 let since = self
                     .last_cursor(&message.session)
                     .unwrap_or_else(|| sequence.saturating_sub(1));
-                match handle.log.read_after(&id, Some(since), handle.replay_max).await {
+                let after = Some(since);
+                // Verrou C-TESTS de ./hub.sdd (2026-11-17) : le point de départ réellement
+                // passé à `read_after` est observable en test — jamais depuis 0, depuis `seq − 1`.
+                tracing::debug!(
+                    after = ?after,
+                    "lymaille hub: relay cursor replay from journal"
+                );
+                match handle.log.read_after(&id, after, handle.replay_max).await {
                     Ok(page) => {
                         for logged in page.events {
                             if logged.seq <= since {
@@ -2005,7 +2012,14 @@ pub(crate) mod tests {
     /// L'assertion sur `cursor_since` de `B` juste après l'arrivée de l'abonné est le témoin
     /// discriminant : le résultat observable seul ne distingue pas un curseur retenu à 3 d'une
     /// reprise depuis `seq − 1`.
-    #[tokio::test]
+    ///
+    /// Verrou C-TESTS du 2026-11-17 : la reprise est en plus observée **au point de lecture** —
+    /// la trace `debug` « relay cursor replay from journal » porte le paramètre `after` réellement
+    /// passé à `read_after`, qui doit être `Some(3)` (soit `seq − 1`), jamais `Some(0)` ni `None`.
+    /// Un filtre `seq <= since` qui masquerait une lecture partie de 0 (résultat observable
+    /// identique, journal relu en entier) rougit ici alors qu'il laissait le test muet. Runtime
+    /// `current_thread` : la capture thread-local doit voir la trace de la tâche de relais de `B`.
+    #[tokio::test(flavor = "current_thread")]
     async fn un_abonne_tardif_ne_rejoue_pas_ce_que_la_replique_a_emis_sans_abonne() {
         let db = crate::lymaille::store::test_support::test_db().await;
         let bus = Bus::new();
@@ -2028,6 +2042,7 @@ pub(crate) mod tests {
             None,
             "B n'a retenu aucun curseur pour ce qu'il a émis sans abonné"
         );
+        let (_guard, captured) = capture_traces();
         hub_a.emit(text_delta("s1", 4, "a"));
         let (cursor, _) = recv_cursor_of(&mut on_b)
             .await
@@ -2037,11 +2052,119 @@ pub(crate) mod tests {
             Some(4),
             "le premier événement reçu par l'abonné tardif est le quatrième"
         );
+        let reads = || {
+            captured
+                .lines()
+                .iter()
+                .filter(|line| line.contains("relay cursor replay from journal"))
+                .cloned()
+                .collect::<Vec<String>>()
+        };
+        wait_until(|| !reads().is_empty()).await;
+        assert_eq!(
+            reads()
+                .iter()
+                .filter(|line| line.contains("after=Some(3)"))
+                .count(),
+            1,
+            "la lecture déclenchée par Cursor(4) part de seq − 1 = 3 : {:?}",
+            reads()
+        );
         tokio::time::sleep(Duration::from_millis(300)).await;
         let quiet = tokio::time::timeout(Duration::from_millis(100), on_b.recv()).await;
         assert!(
             quiet.is_err(),
             "aucun des événements 1 à 3 n'est rejoué à l'abonné tardif"
+        );
+    }
+
+    /// Verrou C-TESTS du 2026-11-17 — « pas de doublon à la reprise » (nom proposé
+    /// `cursor_recu_pendant_une_diffusion_locale_ne_double_pas`, ./hub.sdd Tasks) : un `Cursor`
+    /// distant arrive **pendant** la diffusion locale du même `seq` ; l'abonné ne reçoit
+    /// l'événement qu'une seule fois — la seconde trame, de curseur ≤ au dernier servi, est
+    /// ignorée par `recv_cursor` (`Must not` de ./hub.sdd : servir un événement dont le curseur
+    /// est ≤ au dernier déjà servi à ce même abonné).
+    ///
+    /// La course est jouée de façon déterministe, même recette que
+    /// `reprise_apres_un_curseur_sans_trou_ni_doublon` (sémaphore FIFO du pool SQLite à une
+    /// connexion) :
+    /// 1. le test retient l'unique connexion du pool ;
+    /// 2. l'émission locale de `B` est mise en file : la tâche d'écriture s'aligne sur le pool,
+    ///    PREMIÈRE attendante (battement de lot de 10 ms compris) ;
+    /// 3. un `Cursor(1)` d'une autre réplique est injecté sur le bus : la branche `Cursor` de `B`
+    ///    constate l'abonné local, calcule `since = 0` (aucun curseur retenu) et s'aligne sur le
+    ///    pool depuis derrière la tâche d'écriture ;
+    /// 4. connexion rendue : le FIFO sert l'écriture d'abord — commit de la ligne 1, trame
+    ///    directe avec curseur ; la relecture s'exécute après le commit, retrouve la ligne 1 et
+    ///    diffuse sa propre trame du même curseur ;
+    /// 5. témoin de la course : un **second récepteur brut** du même canal (le `broadcast`
+    ///    diffuse à tous) lit deux trames portant le curseur 1 — si le pool servait les
+    ///    attendants dans l'autre ordre, cette affirmation rougit au lieu de laisser un test
+    ///    silencieusement non discriminant (précédent l.108).
+    /// Ensuite : `recv_cursor` sert le curseur 1 une fois, puis silence — la trame dupliquée est
+    /// consumée par le filtre de déduplication.
+    #[tokio::test]
+    async fn cursor_recu_pendant_une_diffusion_locale_ne_double_pas() {
+        use sea_orm::TransactionTrait as _;
+
+        let db = crate::lymaille::store::test_support::test_db().await;
+        let bus = Bus::new();
+        let hub_b = EventHub::new(None, 256)
+            .with_log(SeaEventLog::new(db.clone()), journal_config())
+            .with_relay(bus.relay(256));
+        // Relais témoin branché sur le bus : le test l'utilise pour injecter un message « venu
+        // d'une autre réplique » dont l'origin n'est celle d'aucun hub.
+        let inject = bus.relay(256);
+        hub_b.register(&session("s1"), "alice");
+        let mut on_b = hub_b.subscribe("alice", &session("s1"));
+        // Second abonné-témoin, lu BRUT (champ `receiver`) : la déduplication verrouillée reste
+        // exercée par `on_b` seul.
+        let mut watcher = hub_b.subscribe("alice", &session("s1"));
+        // 1. L'unique connexion du pool est retenue : rien n'écrit, rien ne lit.
+        let garde = db
+            .begin()
+            .await
+            .expect("l'unique connexion du pool de test est retenue");
+        // 2. L'émission locale part vers le journal ; la tâche d'écriture s'aligne sur le pool.
+        hub_b.emit(text_delta("s1", 1, "course"));
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        // 3. Le curseur d'une autre réplique arrive pendant cette diffusion : la relecture de
+        //    `B` s'aligne sur le pool derrière la tâche d'écriture.
+        inject.publish(RelayMessage {
+            origin: "autre-replique".to_owned(),
+            session: "s1".to_owned(),
+            body: RelayBody::Cursor(1),
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // 4. Connexion rendue : le FIFO sert l'écriture avant la relecture ; la `SELECT` de
+        //    celle-ci s'exécute après le commit et retrouve la ligne 1.
+        drop(garde);
+        // 5. Témoin de la course, puis service et déduplication.
+        for want in 1..=2 {
+            let frame = tokio::time::timeout(Duration::from_millis(2_000), watcher.receiver.recv())
+                .await
+                .unwrap_or_else(|_| panic!("la {want}-ième trame du curseur 1 est parvenue au canal-témoin"))
+                .expect("le canal n'est pas fermé");
+            assert!(
+                matches!(frame, super::Frame::Event(_event, Some(1))),
+                "les DEUX trames parvenues au canal portent le curseur 1 : la trame directe et \
+                 la trame rejouée — la course a bien eu lieu"
+            );
+        }
+        let (cursor, received) = recv_cursor_of(&mut on_b)
+            .await
+            .expect("l'abonné reçoit l'événement");
+        assert_eq!(cursor, Some(1), "l'événement porte le curseur 1");
+        assert!(
+            matches!(received.kind, SessionEventKind::TextDelta { turn: 1, .. }),
+            "l'événement reçu est bien celui de la course : {:?}",
+            received.kind
+        );
+        let quiet = tokio::time::timeout(Duration::from_millis(100), on_b.recv_cursor()).await;
+        assert!(
+            quiet.is_err(),
+            "la seconde trame du même `seq`, parvenue au canal, est ignorée par `recv_cursor` : \
+             l'abonné ne reçoit l'événement qu'une seule fois"
         );
     }
 
