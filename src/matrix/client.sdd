@@ -202,13 +202,14 @@ Tasks:
     `build_client` sur SQLite mémoire sans réseau), 146 tests matrix verts sous `workflow,matrix`, clippy des deux combinaisons
     et rustdoc `-D warnings` sans écart. Côté `matrix-sdk` : `from_pem_bundle` (donne le `Vec` attendu) avec garde « aucun
     certificat » → `Config` ; côté device code : `from_pem` du `reqwest` de la crate.
-  [ ] Tâche D : `../../tests/matrix_live.rs` (`#[ignore]`) ; les chemins réseau/E2EE ne sont couverts que par lui. Le
+  [x] Tâche D : `../../tests/matrix_live.rs` (`#[ignore]`) ; les chemins réseau/E2EE ne sont couverts que par lui. Le
     coût d'un faux homeserver complet pour `matrix-sdk` est élevé — un faux minimal (versions, join, send) n'est
     écrit que s'il tient en moins d'une centaine de lignes, sinon on s'en tient au test live.
     Écrit le 2026-10-18 (fichier posé, jamais exécuté faute de homeserver) : quatre tests `#[ignore]` (connexion, envoi
     idempotent, ordre de `recent_messages`, `run_sync` ne remet pas les messages du bot puis s'arrête proprement) ;
     compile, listés ignorés, échoue explicitement sans les variables. **La case reste `[ ]` jusqu'à une exécution réelle** ;
     les scénarios à deux comptes ou deux processus de ./sync.sdd restent à écrire (liste en tête du fichier).
+    **Exécutée en réel le 2026-11-17** (Palpo 0.1.4 / MAS, `media-test`, compte de service du bot, session par device code) : les quatre tests passent (`import_session_connects_bot`, `send_with_same_txn_id_is_idempotent`, `recent_messages_is_chronological`, `run_sync_never_delivers_own_messages_and_stops_cleanly`) ; aucun code modifié.
     **Persistance sur PostgreSQL, exécutée le 2026-10-18** (`persisted_session_survives_token_expiry`, schéma `miryad_live` d'un CNPG
     jetable, trois temps) : login par device code, puis `connect` plus de 5 minutes après → `NotLoggedIn` (**bug réel** : `matrix-sdk`
     ne rafraîchit pas sans `handle_refresh_tokens()`), correctif posé dans `build_client`, puis `connect` → session rafraîchie et
@@ -263,14 +264,17 @@ Tasks:
     site d'appel (fil+repli, réponse seule, à plat — garde de régression, vert d'emblée et signalé) ; fonction pure déjà couverte
     par les 4 tests du cycle 2, suffisant selon le validator. Le reste (relations relues via `Room::messages` en salle chiffrée)
     est attendu de la tâche D bis (live), comme la case le prévoit.
-  [ ] Tâche D bis (2026-11-16) : cinq tests `#[ignore]` ajoutés à ../../tests/matrix_live.rs — message dans un fil (relation `m.thread`
+  [x] Tâche D bis (2026-11-16) : cinq tests `#[ignore]` ajoutés à ../../tests/matrix_live.rs — message dans un fil (relation `m.thread`
     relue par `recent_messages`), réponse, édition (corps relu), rejeu du même `txn_id` pour chacun (aucun doublon), et **mesure du
     comportement de Palpo** pour une relation vers un événement inconnu (consigner le résultat dans `matrix#OI-7`, point (b)).
     Reste `[ ]` jusqu'à l'exécution réelle, comme la tâche D.
     Écrit le 2026-11-17 (validator PASS, cycle 10, batterie 17+17 verte) : quatre fonctions `#[ignore]` pour les cinq cas — rejeu du
     `txn_id` intégré aux trois cas fil/réponse/édition (assertion `first == second` + compteur à 1 dans `recent_messages`), mesure
     Palpo séparée (`relation_to_unknown_event_measures_palpo`, stdout `MESURE_OI7B`, garde `!InvalidId` seule) ; style des helpers
-    tenu, 10 tests listés ignorés, aucune exécution réseau. **La case reste `[ ]` jusqu'à l'exécution réelle.**
+    tenu, 10 tests listés ignorés, aucune exécution réseau.
+    **Exécutée en réel le 2026-11-17** (Palpo 0.1.4 / MAS, `media-test`) : fil (`send_in_thread_relreads_thread_root`), réponse (`send_reply_relreads_in_reply_to`), édition (`edit_body_visible_in_recent_messages`) et rejeu du `txn_id` passent, une session fraîche par test (voir les deux `[?]` ci-dessous) ; mesure de Palpo consignée dans le DSD `matrix#OI-7` (b) : HTTP 500 immédiat sur une relation vers un événement inconnu.
+    - [?] (primary, constaté en réel 2026-11-17) : `MatrixClient::send` avec `MessageRelation::Thread` vers une racine inconnue **ne rend pas la main pendant plus de 300 s** : Palpo répond `500 M_UNKNOWN "unknown db error"` en 0,0 s (mesuré en requête directe) et le SDK retente ; le test `relation_to_unknown_event_measures_palpo` n'a fini (306 s) que parce que le jeton d'accès a expiré. La spec ne promet aucune erreur pour le fil. Options : (1) borner la durée de `send` (délai d'ensemble ou nombre de tentatives, erreur typée) ; (2) vérifier l'existence de la racine avant l'envoi (une requête de plus, erreur `EventNotFound` comme pour la réponse) ; (3) documenter seulement. Recommandation : (2), cohérent avec `FR-13`.
+    - [?] (primary, constaté en réel 2026-11-17) : une session importée par `import_session` ne se rafraîchit pas à l'expiration du jeton d'accès (300 s côté MAS) : `401 M_UNKNOWN_TOKEN: Invalid refresh token`, y compris avec un jeton de rafraîchissement neuf (hypothèse non vérifiée : le SDK n'a pas le `client_id` OAuth de l'enregistrement). `login_with_device_code` persiste et fait tourner le refresh (banc PostgreSQL du 2026-10-18). Conséquence pratique : le banc D/D bis demande une session fraîche par test. À documenter dans `import_session`, ou à traiter.
     - [?] (implementer + validator) : forme « quatre tests, cinq cas » retenue pour le rejeu (d) — la phrase « cinq tests » de la case
       mérite d'être relue « quatre tests couvrant cinq cas » à la prochaine édition de la spec (domaine développeur principal).
     - [?] (validator) : dans le cas (e), le commentaire « un 403 ou un 203 ferait échouer ce test » est faux — `from_fetch_error`

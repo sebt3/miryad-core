@@ -216,7 +216,7 @@ non vérifiée dans la migration DSD.
     - **Source (OI-1 à OI-5):** `roadmap@c62a184`, item 12 ; `arch@c62a184`, « Pas encore fait »
 - **OI-7:** **Fils, réponses et éditions (issue #87)** — arbitrages attendus avant les specs de `FR-9` à `FR-13`. Les
   points (a) et (e) sont soldés (`DEC-3`) ; (b) est partiellement soldé (réponse sans fil, `edit` avec `kind`, voir
-  `SpecDD /src/matrix/client.sdd`), reste la mesure de Palpo ; (c) et (d) restent des recommandations non arbitrées.
+  `SpecDD /src/matrix/client.sdd`), la mesure de Palpo est faite (2026-11-17, voir (b)) ; (c) et (d) restent des recommandations non arbitrées.
     - **(a) Soldé le 2026-11-16** par `DEC-3` : la relation est un paramètre de `send`
       (`MessageRelation` : énumération `Thread { root, latest: Option<String> }` / `Reply { to }`, champs en `String`).
     - **(b) Construction de la relation.** Deux voies sous `matrix-sdk` 0.18 (lu dans `room/reply.rs` et `room/edit.rs`) :
@@ -225,9 +225,12 @@ non vérifiée dans la migration DSD.
       et, pour l'édition, le refus d'éditer l'événement d'un autre (`EditError::NotAuthor`) ; mais l'assistant de fil prend
       pour repli l'événement visé, pas un « dernier événement » fourni par l'appelant. La construction manuelle de la
       relation honore `latest` et n'ajoute aucune requête, mais ne détecte pas un événement inconnu. **Recommandation :**
-      assistants du SDK pour la réponse et l'édition ; construction manuelle pour le fil, avec **TBD** : le homeserver cible
-      (Palpo) refuse-t-il à l'envoi une relation vers un événement inconnu ? À mesurer sur le banc live avant de promettre
-      l'erreur de `FR-13` pour le fil.
+      assistants du SDK pour la réponse et l'édition ; construction manuelle pour le fil. **Mesuré le 2026-11-17** sur Palpo 0.1.4
+      (banc live, requêtes `PUT …/send/m.room.message` directes) : une relation `m.thread`, `m.in_reply_to` ou `m.replace` vers un
+      événement inconnu est refusée **immédiatement** (0,0 s) par un **HTTP 500** `M_UNKNOWN` « unknown db error » — pas un
+      404 ni un 4xx — alors qu'un message plat répond 200. Le homeserver ne fournit donc pas l'erreur typée de `FR-13` pour
+      le fil, et le SDK retente ce 500 (un `send` de fil vers une racine inconnue a duré plus de 300 s) : voir le `[?]` de
+      `SpecDD /src/matrix/client.sdd` (vérifier la racine avant l'envoi, recommandé, ou borner la durée).
     - **(c) Édition.** `EditError::NotAuthor` est une cause nouvelle : `MatrixError` est `#[non_exhaustive]`, une variante
       (`MRD-MATRIX-009`, non retryable) s'ajoute sans casser les hôtes. Une édition ne reprend pas la relation de fil de
       l'original (le remplacement porte uniquement `m.replace`).
