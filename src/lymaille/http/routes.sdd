@@ -90,7 +90,7 @@ Tasks:
   [x] Code (#72, arbitré le 2026-11-16) : `#[ts(optional)]` sur `CreateBody.agent` ; test : la déclaration exportée rend `agent?: string`, et un corps sans `agent` reste accepté par serde (sérialisation inchangée).
     Validé 2026-11-17 (validator GO, cycle I5) : `agent?: string` dans la déclaration, `from_value({"context":"c1"})` → `agent`
     `None`, sérialisation inchangée.
-    - [!] (implementer + validator) : le `Must` amendé dit au présent « ils sont exportés par `export_typescript` » — faux pour les
+    - [x] Soldé 2026-11-17 par la tâche « Reliquat #72 » de ./../interactive/event.sdd (les quatre `.ts` sont dans la liste d'export, validator GO) ; énoncé d'origine : le `Must` amendé dit au présent « ils sont exportés par `export_typescript` » — faux pour les
       quatre nouveaux `.ts` : la liste d'`export_typescript` (./../interactive/event.rs) ne porte que les cinq corps d'origine, et
       ./../interactive/event.sdd ne porte aucune tâche correspondante. Tâche à inscrire dans ./../interactive/event.sdd (les quatre
       `.ts` dans la liste d'export), hors du périmètre de cette spec — le reliquat du lot #72 est là.

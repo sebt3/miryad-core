@@ -145,13 +145,13 @@ pub(super) struct ListQuery {
 /// Résumés expurgés rendus par `GET /conversations` : six clés par ligne, le détail (fonctions,
 /// erreurs rhai) de `SessionSummary` reste derrière.
 #[derive(Serialize, ts_rs::TS)]
-pub(super) struct ListBody {
+pub(crate) struct ListBody {
     /// Les sessions de l'appelante selon le filtre.
     items: Vec<SessionItem>,
 }
 
 #[derive(Serialize, ts_rs::TS)]
-struct SessionItem {
+pub(crate) struct SessionItem {
     id: String,
     title: String,
     agent: String,
@@ -162,7 +162,7 @@ struct SessionItem {
 }
 
 #[derive(Serialize, ts_rs::TS)]
-pub(super) struct CancelledBody {
+pub(crate) struct CancelledBody {
     /// `true` si un tour actif venait d'être signalé.
     cancelled: bool,
 }
@@ -178,7 +178,7 @@ pub(crate) struct HistoryBody {
 /// Le rapport d'activation rendu par `POST /toolsets/{name}/activate` (miroir JSON de
 /// `ActivationReport`).
 #[derive(Serialize, ts_rs::TS)]
-pub(super) struct ActivationBody {
+pub(crate) struct ActivationBody {
     name: String,
     version: String,
     previous_version: Option<String>,

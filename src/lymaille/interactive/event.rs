@@ -306,6 +306,10 @@ pub fn export_typescript(dir: &Path) -> Result<Vec<PathBuf>, LymailleError> {
         export_one::<crate::lymaille::http::routes::SessionBody>(dir, "SessionBody"),
         export_one::<crate::lymaille::http::routes::ResumeBody>(dir, "ResumeBody"),
         export_one::<crate::lymaille::http::routes::HistoryBody>(dir, "HistoryBody"),
+        export_one::<crate::lymaille::http::routes::CancelledBody>(dir, "CancelledBody"),
+        export_one::<crate::lymaille::http::routes::ListBody>(dir, "ListBody"),
+        export_one::<crate::lymaille::http::routes::SessionItem>(dir, "SessionItem"),
+        export_one::<crate::lymaille::http::routes::ActivationBody>(dir, "ActivationBody"),
     ];
     let mut written = Vec::with_capacity(files.len());
     for file in files {
@@ -930,9 +934,9 @@ pub(crate) mod tests {
     /// (issue #72) : trois fichiers d'événements, le helper `JsonValue` des déclarations amont,
     /// les types que les définitions de `lymaille` importent, les six types de définition, les
     /// dix `Model` (fichiers nommés d'après l'entité, comme les `Scenario` de
-    /// `../definitions/*.sdd`) et les cinq corps de la surface de session
+    /// `../definitions/*.sdd`) et les neuf corps de la surface de session
     /// (`../http/routes.sdd`).
-    const EXPECTED_EXPORTS: [&str; 37] = [
+    const EXPECTED_EXPORTS: [&str; 41] = [
         "SessionEvent.ts",
         "SessionEventKind.ts",
         "SessionOutcome.ts",
@@ -970,6 +974,10 @@ pub(crate) mod tests {
         "SessionBody.ts",
         "ResumeBody.ts",
         "HistoryBody.ts",
+        "CancelledBody.ts",
+        "ListBody.ts",
+        "SessionItem.ts",
+        "ActivationBody.ts",
     ];
 
     /// Scenario « l'export couvre les définitions, les lignes et les corps de session »
