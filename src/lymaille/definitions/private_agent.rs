@@ -939,7 +939,7 @@ mod tests {
         let dir = crate::lymaille::interactive::event::tests::scratch_dir("export-private_agent");
         let rendu = crate::lymaille::interactive::event::export_typescript(&dir)
             .expect("l'export TypeScript réussit");
-        let chemin = dir.join("private_agent.ts");
+        let chemin = dir.join("PrivateAgentModel.ts");
         assert!(
             rendu.contains(&chemin),
             "`private_agent.ts` est dans les chemins rendus"

@@ -534,7 +534,7 @@ mod tests {
         let dir = crate::lymaille::interactive::event::tests::scratch_dir("export-toolset");
         let rendu = crate::lymaille::interactive::event::export_typescript(&dir)
             .expect("l'export TypeScript réussit");
-        let chemin = dir.join("toolset.ts");
+        let chemin = dir.join("ToolsetModel.ts");
         assert!(
             rendu.contains(&chemin),
             "`toolset.ts` est dans les chemins rendus"

@@ -341,7 +341,7 @@ mod tests {
         let dir = crate::lymaille::interactive::event::tests::scratch_dir("export-profile");
         let rendu = crate::lymaille::interactive::event::export_typescript(&dir)
             .expect("l'export TypeScript réussit");
-        let chemin = dir.join("profile.ts");
+        let chemin = dir.join("ProfileModel.ts");
         assert!(
             rendu.contains(&chemin),
             "`profile.ts` est dans les chemins rendus"

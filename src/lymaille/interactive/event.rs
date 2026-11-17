@@ -290,16 +290,16 @@ pub fn export_typescript(dir: &Path) -> Result<Vec<PathBuf>, LymailleError> {
         export_one::<::lymaille::ToolsetContext>(dir, "ToolsetContext"),
         // Les `Model` des dix ressources, un fichier par entité (nom du `Scenario` de chaque
         // spec de `../definitions/`).
-        export_one::<crate::lymaille::definitions::agent::Model>(dir, "agent"),
-        export_one::<crate::lymaille::definitions::private_agent::Model>(dir, "private_agent"),
-        export_one::<crate::lymaille::definitions::profile::Model>(dir, "profile"),
-        export_one::<crate::lymaille::definitions::provider::Model>(dir, "provider"),
-        export_one::<crate::lymaille::definitions::toolset::Model>(dir, "toolset"),
-        export_one::<crate::lymaille::definitions::private_toolset::Model>(dir, "private_toolset"),
-        export_one::<crate::lymaille::definitions::context_type::Model>(dir, "context_type"),
-        export_one::<crate::lymaille::definitions::mcp_server::Model>(dir, "mcp_server"),
-        export_one::<crate::lymaille::definitions::catalog_context::Model>(dir, "catalog_context"),
-        export_one::<crate::lymaille::definitions::user_context::Model>(dir, "user_context"),
+        export_one::<crate::lymaille::definitions::agent::Model>(dir, "AgentModel"),
+        export_one::<crate::lymaille::definitions::private_agent::Model>(dir, "PrivateAgentModel"),
+        export_one::<crate::lymaille::definitions::profile::Model>(dir, "ProfileModel"),
+        export_one::<crate::lymaille::definitions::provider::Model>(dir, "ProviderModel"),
+        export_one::<crate::lymaille::definitions::toolset::Model>(dir, "ToolsetModel"),
+        export_one::<crate::lymaille::definitions::private_toolset::Model>(dir, "PrivateToolsetModel"),
+        export_one::<crate::lymaille::definitions::context_type::Model>(dir, "ContextTypeModel"),
+        export_one::<crate::lymaille::definitions::mcp_server::Model>(dir, "McpServerModel"),
+        export_one::<crate::lymaille::definitions::catalog_context::Model>(dir, "CatalogContextModel"),
+        export_one::<crate::lymaille::definitions::user_context::Model>(dir, "UserContextModel"),
         // Les corps de la surface de session (../http/routes.sdd).
         export_one::<crate::lymaille::http::routes::CreateBody>(dir, "CreateBody"),
         export_one::<crate::lymaille::http::routes::TextBody>(dir, "TextBody"),
@@ -959,16 +959,16 @@ pub(crate) mod tests {
         "Toolset.ts",
         "ContextType.ts",
         "ToolsetContext.ts",
-        "agent.ts",
-        "private_agent.ts",
-        "profile.ts",
-        "provider.ts",
-        "toolset.ts",
-        "private_toolset.ts",
-        "context_type.ts",
-        "mcp_server.ts",
-        "catalog_context.ts",
-        "user_context.ts",
+        "AgentModel.ts",
+        "PrivateAgentModel.ts",
+        "ProfileModel.ts",
+        "ProviderModel.ts",
+        "ToolsetModel.ts",
+        "PrivateToolsetModel.ts",
+        "ContextTypeModel.ts",
+        "McpServerModel.ts",
+        "CatalogContextModel.ts",
+        "UserContextModel.ts",
         "CreateBody.ts",
         "TextBody.ts",
         "SessionBody.ts",
@@ -1032,6 +1032,28 @@ pub(crate) mod tests {
                 again,
                 *contents.get(path).expect("chemin connu"),
                 "le second appel rend les mêmes octets (déterminisme sans horodatage)"
+            );
+        }
+        std::fs::remove_dir_all(&dir).expect("le répertoire de test se nettoie");
+    }
+
+    /// Scenario « aucun nom exporté ne se confond à la casse près » (issue #93) : deux fichiers
+    /// rendus dont les noms ne diffèrent que par la casse seraient un seul fichier sur un système
+    /// de fichiers insensible à la casse ; la liste rendue n'en contient donc aucun.
+    #[test]
+    fn aucun_nom_exporte_ne_se_confond_a_la_casse_pres() {
+        let dir = scratch_dir("export-casse");
+        let written = export_typescript(&dir).expect("l'export réussit dans un répertoire créé");
+        let mut seen = std::collections::HashSet::new();
+        for path in &written {
+            let relative = path
+                .strip_prefix(&dir)
+                .expect("chemin rendu sous le répertoire d'export")
+                .display()
+                .to_string();
+            assert!(
+                seen.insert(relative.to_lowercase()),
+                "{relative} se confond à la casse près avec un autre nom exporté"
             );
         }
         std::fs::remove_dir_all(&dir).expect("le répertoire de test se nettoie");

@@ -622,7 +622,7 @@ mod tests {
         let dir = crate::lymaille::interactive::event::tests::scratch_dir("export-agent");
         let rendu = crate::lymaille::interactive::event::export_typescript(&dir)
             .expect("l'export TypeScript réussit");
-        let chemin = dir.join("agent.ts");
+        let chemin = dir.join("AgentModel.ts");
         assert!(rendu.contains(&chemin), "`agent.ts` est dans les chemins rendus");
         let texte = std::fs::read_to_string(&chemin).expect("`agent.ts` s'écrit et se relit");
         assert!(

@@ -776,7 +776,7 @@ mod tests {
         let dir = crate::lymaille::interactive::event::tests::scratch_dir("export-mcp_server");
         let rendu = crate::lymaille::interactive::event::export_typescript(&dir)
             .expect("l'export TypeScript réussit");
-        let chemin = dir.join("mcp_server.ts");
+        let chemin = dir.join("McpServerModel.ts");
         assert!(
             rendu.contains(&chemin),
             "`mcp_server.ts` est dans les chemins rendus"

@@ -967,7 +967,7 @@ mod tests {
         let dir = crate::lymaille::interactive::event::tests::scratch_dir("export-user_context");
         let rendu = crate::lymaille::interactive::event::export_typescript(&dir)
             .expect("l'export TypeScript réussit");
-        let chemin = dir.join("user_context.ts");
+        let chemin = dir.join("UserContextModel.ts");
         assert!(
             rendu.contains(&chemin),
             "`user_context.ts` est dans les chemins rendus"
