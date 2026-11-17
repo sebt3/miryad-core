@@ -267,6 +267,21 @@ Tasks:
     relue par `recent_messages`), réponse, édition (corps relu), rejeu du même `txn_id` pour chacun (aucun doublon), et **mesure du
     comportement de Palpo** pour une relation vers un événement inconnu (consigner le résultat dans `matrix#OI-7`, point (b)).
     Reste `[ ]` jusqu'à l'exécution réelle, comme la tâche D.
+    Écrit le 2026-11-17 (validator PASS, cycle 10, batterie 17+17 verte) : quatre fonctions `#[ignore]` pour les cinq cas — rejeu du
+    `txn_id` intégré aux trois cas fil/réponse/édition (assertion `first == second` + compteur à 1 dans `recent_messages`), mesure
+    Palpo séparée (`relation_to_unknown_event_measures_palpo`, stdout `MESURE_OI7B`, garde `!InvalidId` seule) ; style des helpers
+    tenu, 10 tests listés ignorés, aucune exécution réseau. **La case reste `[ ]` jusqu'à l'exécution réelle.**
+    - [?] (implementer + validator) : forme « quatre tests, cinq cas » retenue pour le rejeu (d) — la phrase « cinq tests » de la case
+      mérite d'être relue « quatre tests couvrant cinq cas » à la prochaine édition de la spec (domaine développeur principal).
+    - [?] (validator) : dans le cas (e), le commentaire « un 403 ou un 203 ferait échouer ce test » est faux — `from_fetch_error`
+      traduit tout `Fetch` non retryable en `EventNotFound` (403 → `RoomUnavailable` → `EventNotFound`) ; seul un succès 2xx ferait
+      échouer. Corriger le commentaire (une ligne) et, à l'exécution, consigner le statut HTTP réel vu par Palpo, pas seulement
+      l'erreur traduite.
+    - [?] (validator) : le volet `NotAuthor` du Scenario (« édition d'un message d'un autre compte ») attend le second compte, listé
+      en tête du fichier — à acter comme limite ou à écrire quand le banc à deux comptes sera posé.
+    - [?] (validator) : à l'exécution, signaler que les chemins `make_reply_event`/`make_edit_event` et la salle chiffrée n'ont jamais
+      été prouvés en réel (`device_code_login_then_echo` ne prouvait que les `send` sans relation) ; consigner la mesure `OI-7(b)`
+      dans `dsd/miryad-core/matrix.md` (domaine développeur principal).
 
 Done when:
   Les `Scenario` unitaires sont verts ; `../../tests/matrix_live.rs` est écrit et a été exécuté au moins
