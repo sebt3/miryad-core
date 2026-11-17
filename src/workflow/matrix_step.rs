@@ -4,6 +4,8 @@
 //! Le step dérive un `txn_id` déterministe de l'identité du run (`run_key`, `step_id`) : un
 //! rejeu Restate envoie le même identifiant de transaction, et le homeserver dédoublonne.
 //! Une erreur de configuration est non retryable et ne fait aucun appel réseau.
+//! La `config` accepte une relation optionnelle (`thread_root`/`thread_latest` ou `reply_to`,
+//! champs à plat validés avant tout envoi — issue #87).
 //!
 //! L'application enregistre elle-même le kind, comme `RhaiStep` :
 //! `registry.register(MatrixSendStep::new(client))`. Le step ne journalise jamais `body` ni `html`.
@@ -21,6 +23,7 @@ use sha2::Sha256;
 use crate::matrix::MatrixClient;
 use crate::matrix::MatrixError;
 use crate::matrix::MessageKind;
+use crate::matrix::client::MessageRelation;
 
 use super::step::MiryadWorkflowStep;
 use super::step::RunInfo;
@@ -56,6 +59,7 @@ trait Sender: Send + Sync {
         body: &str,
         html: Option<&str>,
         kind: MessageKind,
+        relation: Option<&MessageRelation>,
         txn_id: &str,
     ) -> Result<String, MatrixError>;
 }
@@ -68,13 +72,16 @@ impl Sender for MatrixClient {
         body: &str,
         html: Option<&str>,
         kind: MessageKind,
+        relation: Option<&MessageRelation>,
         txn_id: &str,
     ) -> Result<String, MatrixError> {
-        MatrixClient::send(self, room_id, body, html, kind, None, Some(txn_id)).await
+        MatrixClient::send(self, room_id, body, html, kind, relation, Some(txn_id)).await
     }
 }
 
 /// `config` du kind `"matrix_send"`, après rendu de template. Clés inconnues refusées.
+/// Les trois champs de relation sont des chaînes à plat, rendues par le gabarit comme les autres
+/// (amendement 2026-11-16, issue #87).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MatrixSendConfig {
@@ -83,6 +90,12 @@ struct MatrixSendConfig {
     html: Option<String>,
     #[serde(default)]
     kind: SendKind,
+    #[serde(default)]
+    thread_root: Option<String>,
+    #[serde(default)]
+    thread_latest: Option<String>,
+    #[serde(default)]
+    reply_to: Option<String>,
 }
 
 /// Type de message demandé par la `config`. Défaut : `text`.
@@ -124,7 +137,36 @@ fn validate(cfg: &MatrixSendConfig) -> Result<(), StepError> {
     if cfg.html.as_deref().is_some_and(str::is_empty) {
         return Err(invalid("html vide"));
     }
+    if cfg.thread_root.is_some() && cfg.reply_to.is_some() {
+        return Err(invalid("thread_root et reply_to sont exclusifs"));
+    }
+    if cfg.thread_latest.is_some() && cfg.thread_root.is_none() {
+        return Err(invalid("thread_latest exige thread_root"));
+    }
+    for (name, value) in [
+        ("thread_root", cfg.thread_root.as_deref()),
+        ("thread_latest", cfg.thread_latest.as_deref()),
+        ("reply_to", cfg.reply_to.as_deref()),
+    ] {
+        if value.is_some_and(|v| v.is_empty() || !v.starts_with('$')) {
+            return Err(invalid(format!(
+                "{name} doit commencer par '$' et ne pas être vide"
+            )));
+        }
+    }
     Ok(())
+}
+
+/// Dérivation de la relation à partir des champs validés de la `config` : `thread_root` →
+/// `Thread` (avec `thread_latest` en repli), `reply_to` → `Reply`, sinon `None`.
+fn relation(cfg: &MatrixSendConfig) -> Option<MessageRelation> {
+    cfg.thread_root
+        .as_ref()
+        .map(|root| MessageRelation::Thread {
+            root: root.clone(),
+            latest: cfg.thread_latest.clone(),
+        })
+        .or_else(|| cfg.reply_to.clone().map(|to| MessageRelation::Reply { to }))
 }
 
 /// Type de message Matrix correspondant au `kind` de la `config`.
@@ -149,15 +191,26 @@ impl MiryadWorkflowStep for MatrixSendStep {
     ) -> Result<Value, StepError> {
         let cfg: MatrixSendConfig = serde_json::from_value(config).map_err(invalid)?;
         validate(&cfg)?;
+        let relation = relation(&cfg);
         let MatrixSendConfig {
             room_id,
             body,
             html,
             kind,
+            thread_root: _,
+            thread_latest: _,
+            reply_to: _,
         } = cfg;
         let event_id = self
             .sender
-            .send(&room_id, &body, html.as_deref(), message_kind(kind), &txn_id(run))
+            .send(
+                &room_id,
+                &body,
+                html.as_deref(),
+                message_kind(kind),
+                relation.as_ref(),
+                &txn_id(run),
+            )
             .await
             .map_err(|err| StepError {
                 retryable: err.retryable(),
@@ -185,6 +238,7 @@ mod tests {
     use super::txn_id;
     use crate::matrix::MatrixError;
     use crate::matrix::MessageKind;
+    use crate::matrix::client::MessageRelation;
 
     /// Appel reçu par le faux `Sender`.
     #[derive(Debug, Clone, PartialEq)]
@@ -193,6 +247,7 @@ mod tests {
         body: String,
         html: Option<String>,
         kind: MessageKind,
+        relation: Option<MessageRelation>,
         txn_id: String,
     }
 
@@ -213,6 +268,7 @@ mod tests {
             body: &str,
             html: Option<&str>,
             kind: MessageKind,
+            relation: Option<&MessageRelation>,
             txn_id: &str,
         ) -> Result<String, MatrixError> {
             self.calls.lock().unwrap().push(Call {
@@ -220,6 +276,7 @@ mod tests {
                 body: body.to_string(),
                 html: html.map(str::to_string),
                 kind,
+                relation: relation.cloned(),
                 txn_id: txn_id.to_string(),
             });
             self.outcomes
@@ -335,7 +392,66 @@ mod tests {
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].kind, MessageKind::Notice);
         assert_eq!(sent[0].html, Some("<b>ok</b>".to_string()));
+        assert_eq!(
+            sent[0].relation, None,
+            "aucun champ de relation : aucune relation"
+        );
         assert_eq!(sent[0].txn_id, txn_id(&run_info()));
+    }
+
+    /// Scenario « la relation d'un `matrix_send` est dérivée et validée (issue #87) ».
+    #[tokio::test]
+    async fn la_relation_d_un_matrix_send_est_derivee_et_validee() {
+        // Dérivations valides : `thread_root` (+ `thread_latest`) → Thread ; `reply_to` → Reply.
+        let (step, calls) = step_with(Ok("$evt".into()));
+        step.run(
+            &run_info(),
+            json!({"room_id": "!r:x", "body": "ok", "thread_root": "$root", "thread_latest": "$last"}),
+            HashMap::new(),
+        )
+        .await
+        .expect("config de fil valide");
+        // Deuxième envoi sur le même faux `Sender` pour la configuration `reply_to`.
+        step.run(
+            &run_info(),
+            json!({"room_id": "!r:x", "body": "ok", "reply_to": "$e"}),
+            HashMap::new(),
+        )
+        .await
+        .expect("config de réponse valide");
+        {
+            let sent = calls.lock().unwrap();
+            assert_eq!(sent.len(), 2);
+            assert_eq!(
+                sent[0].relation,
+                Some(MessageRelation::Thread {
+                    root: "$root".into(),
+                    latest: Some("$last".into()),
+                })
+            );
+            assert_eq!(sent[1].relation, Some(MessageRelation::Reply { to: "$e".into() }));
+        }
+        // Validations : `thread_root` et `reply_to` exclusifs ; `thread_latest` exige
+        // `thread_root` ; chaque valeur présente commence par `$` et n'est pas vide. Aucun appel.
+        let cas = [
+            json!({"room_id": "!r:x", "body": "ok", "thread_root": "$root", "reply_to": "$e"}),
+            json!({"room_id": "!r:x", "body": "ok", "thread_latest": "$last"}),
+            json!({"room_id": "!r:x", "body": "ok", "thread_root": "root"}),
+        ];
+        for config in cas {
+            let (step, calls) = step_with(Ok("$evt".into()));
+            let err = step
+                .run(&run_info(), config.clone(), HashMap::new())
+                .await
+                .unwrap_err();
+            assert!(!err.retryable, "relation invalide : jamais retryable ({config})");
+            assert!(
+                err.message.starts_with("config matrix_send invalide:"),
+                "message : {}",
+                err.message
+            );
+            assert!(calls.lock().unwrap().is_empty(), "aucun envoi pour {config}");
+        }
     }
 
     /// Scenario « les erreurs du client suivent leur retryabilité ».

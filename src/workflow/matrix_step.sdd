@@ -95,9 +95,17 @@ Handles:
     fenêtre de déduplication est celle du homeserver).
 
 Tasks:
-  [ ] Tâche M1 (2026-11-16, issue #87, `matrix#FR-11`) : champs de relation de `matrix_send` et leur validation, `Sender::send` à
+  [x] Tâche M1 (2026-11-16, issue #87, `matrix#FR-11`) : champs de relation de `matrix_send` et leur validation, `Sender::send` à
     quatre paramètres plus `relation` — tests d'abord (Scenarios relation), puis ./matrix_step.rs. Après ./../matrix/client.sdd
     (tâche F : l'adaptation ponctuelle du site d'appel y est déjà faite, cette tâche la remplace par la vraie dérivation).
+    Validé 2026-11-17 (validator GO, cycle 6/8, batterie 17+17 verte) : `thread_root`/`thread_latest`/`reply_to` en chaînes à plat
+    (`Option<String>`, `serde(default)`), validation pure avant réseau (exclusivité `thread_root`/`reply_to`, `thread_latest` exige
+    `thread_root`, valeurs non vides en `$`, préfixe `config matrix_send invalide:`, non retryable, Sender jamais appelé — prouvé par
+    compteur) ; dérivation pure `relation(cfg)` vers `MessageRelation` ; le `None` du site d'appel F est remplacé par la vraie
+    dérivation ; rendu gabarit des trois champs par `render_config` sans code supplémentaire.
+    - [?] (validator) : au passage de M2, ressouder le script de la spec — l'item 3 du `Must` `run` énumère encore `sender.send(…,
+      kind, &txn_id(run))` sans `relation`, et le trait/`Exposes`/`Accepts` décrivent déjà `edit`/`MatrixEditStep` absents de l'arbre
+      jusqu'à M2 (la spec décrit l'état cible du lot).
     - [?] **choix provisoire (`matrix#OI-7`, point (d)) :** un kind distinct `matrix_edit`. Option : un champ `edit_of` optionnel
       de `matrix_send`. Recommandation : le kind distinct (le `config` de `matrix_send` refuse les champs inconnus et exige
       `body` ; un champ qui change les champs requis brouille le contrat).
