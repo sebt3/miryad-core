@@ -219,7 +219,8 @@ impl<E: RestEntity> Reader for ReaderImpl<E> {
         per_page: u64,
         filter: Option<&str>,
     ) -> Result<JsonValue, Failure> {
-        // parsing traité par la tâche #78 de ./../rest/mod.sdd — le module Rhai garde page/per_page/filter.
+        // `resources::list` n'a ni critères ni tri : `ListQuery::default()` (arbitré 2026-11-16) —
+        // le module Rhai garde page/per_page/filter.
         let page_result = core::list::<E>(
             db,
             principal,
@@ -331,15 +332,11 @@ impl<E: RestEntity> Writer for WriterImpl<E> {
         body: &JsonValue,
     ) -> Result<JsonValue, Failure> {
         let model = model_from_json::<E>(body)?;
-        match core::create::<E>(db, principal, model).await {
-            Ok(created) => serde_json::to_value(created).map_err(Failure::log),
-            Err(RestError::Database(err))
-                if matches!(err.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) =>
-            {
-                Err(Failure::UniqueViolation)
-            }
-            Err(other) => Err(other.into()),
-        }
+        // La violation d'unicité arrive déjà traduite en `RestError::UniqueViolation` par
+        // `rest::core::create` (`unique_violation_or_database`, issue #77) : `RestError::Database`
+        // n'en porte jamais une, aucune garde `sql_err()` ici (arbitré 2026-11-16).
+        let created = core::create::<E>(db, principal, model).await?;
+        serde_json::to_value(created).map_err(Failure::log)
     }
 
     async fn update(
@@ -1878,6 +1875,70 @@ mod tests {
         assert_eq!(
             message, "not found",
             "delete d'une ligne absente sans attestation du journal"
+        );
+    }
+
+    // ——— Scenario : « un corps inconnu est refusé » ———
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_corps_inconnu_donne_invalid_body() {
+        let db = migrated_db().await;
+        create_entity_table(&db, public_res::Entity).await;
+        crate::users::resolve_user(&db, "alice", None)
+            .await
+            .expect("le compte local d'alice");
+        let engine = engine(public_and_secret_readers(), db.clone(), "alice");
+
+        let message =
+            error_text(engine.eval::<Dynamic>(r#"resources::create("public_res", #{ champ_inconnu: 1 })"#));
+        assert_eq!(
+            message, "invalid body",
+            "un champ absent de l'IR est refusé avant toute écriture, sans texte serde au script"
+        );
+        assert_eq!(
+            public_res::Entity::find()
+                .all(&db)
+                .await
+                .expect("la table public est lisible")
+                .len(),
+            0,
+            "aucune ligne n'est créée par le refus"
+        );
+    }
+
+    // ——— Scenario : « une écriture batch sans subject échoue » ———
+    #[tokio::test(flavor = "multi_thread")]
+    async fn une_ecriture_batch_sans_subject_donne_no_account_for_this_session() {
+        let db = migrated_db().await;
+        create_entity_table(&db, public_res::Entity).await;
+        // Aucun `resolve_user` : le déclencheur du step batch n'a pas de compte local — `FR-10`,
+        // jamais d'identité par défaut.
+        let engine = engine_scope(
+            public_and_secret_readers(),
+            db.clone(),
+            "declarateur-sans-compte",
+            Some(write_scope()),
+        );
+
+        let message = error_text(
+            engine.eval::<Dynamic>(r#"resources::create("public_res", #{ id: 0, title: "tarte" })"#),
+        );
+        assert_eq!(
+            message, "no account for this session",
+            "une écriture batch sans compte de déclencheur échoue, jamais une identité par défaut"
+        );
+        assert_eq!(
+            public_res::Entity::find()
+                .all(&db)
+                .await
+                .expect("la table public est lisible")
+                .len(),
+            0,
+            "aucune ligne n'est créée"
+        );
+        assert_eq!(
+            journal_row_count(&db).await,
+            0,
+            "aucune écriture n'est journalisée non plus"
         );
     }
 
