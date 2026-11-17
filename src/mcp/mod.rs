@@ -3,12 +3,27 @@
 //! Nécessite la feature `mcp`. Voir [`McpToolRegistry`](crate::mcp::McpToolRegistry) et [`mcp_router`](crate::mcp::mcp_router).
 //!
 //! La surface publique du module est exactement ces deux chemins courts (plus `McpError` et
-//! `OutputFormat`) : les cinq sous-modules enfants — `error`, `format`, `handler`, `protocol`,
-//! `registry` — sont déclarés `mod` privés et ne sont jamais joignables de l'extérieur. Un
-//! chemin long vers un enfant échoue à la compilation (`E0603`, preuve `compile_fail`) :
+//! `OutputFormat`) : les six sous-modules enfants — `app_tool`, `error`, `format`, `handler`,
+//! `protocol`, `registry` — sont déclarés `mod` privés et ne sont jamais joignables de
+//! l'extérieur. Un chemin long vers un enfant échoue à la compilation (`E0603`, preuve
+//! `compile_fail`) :
 //!
 //! ```compile_fail
 //! use miryad_core::mcp::protocol;
+//! ```
+//!
+//! `app_tool` est le sixième enfant (amendement 2026-11-16, issue #86) : déclaré `mod` privé
+//! depuis le cycle A1, il ne contribue aucun item à la surface publique — ni en chemin long
+//! (`E0603`), ni en chemin court (`E0432` : `AppTool` est `pub(crate)` chez son enfant et
+//! ./mod.rs n'en porte aucun `pub use`). Les quatre items ci-dessus restent la surface totale
+//! et exclusive ; `McpToolRegistry` gagne seulement la méthode `register_tool`.
+//!
+//! ```compile_fail
+//! use miryad_core::mcp::app_tool;
+//! ```
+//!
+//! ```compile_fail
+//! use miryad_core::mcp::AppTool;
 //! ```
 
 mod app_tool;
@@ -74,6 +89,13 @@ mod tests {
     /// travers ./mod.rs seul, sans instance d'état (la construction du `Router` générique
     /// n'en requiert pas). Le module de test entier n'existe que sous `mcp` — lui-même
     /// preuve d'atomicité de l'unique `#[cfg(feature = "mcp")]` de ../lib.rs.
+    ///
+    /// Le sixième enfant, `app_tool` (issue #86), n'apparaît ici à dessein : il est `mod` privé
+    /// sans ré-export et ne contribue aucun item public. Son absence de la surface ne peut
+    /// s'exprimer dans un code qui compile — elle est prouvée par les deux doctests
+    /// `compile_fail` du bloc `//!` (`miryad_core::mcp::app_tool` : `E0603` ;
+    /// `miryad_core::mcp::AppTool` : `E0432`). La surface testée ici reste exactement les
+    /// quatre items.
     #[cfg(feature = "mcp")]
     #[test]
     fn mcp_surface_four_reexports_resolve() {
