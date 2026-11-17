@@ -244,9 +244,18 @@ Tasks:
       typée → `EventNotFound`) et ne forme pas de fil (`EnforceThread::Unthreaded`, `AddMentions::Yes`). Choix retenu, conforme à
       l'arbitrage du 2026-11-16 ; la mesure du comportement de Palpo pour une relation vers un événement inconnu reste attendue de la
       tâche D bis.
-  [ ] Tâche G (2026-11-16, `matrix#FR-10`) : `edit` et sa traduction d'erreurs — tests d'abord (identifiants mal formés sans réseau),
+  [x] Tâche G (2026-11-16, `matrix#FR-10`) : `edit` et sa traduction d'erreurs — tests d'abord (identifiants mal formés sans réseau),
     puis ./client.rs. Après la tâche F. La partie qui parle au serveur (remplacement effectivement affiché, `NotAuthor`,
     événement inconnu, salle chiffrée) n'est prouvée que par le test live.
+    Validé 2026-11-17 (validator GO, cycle 4/8, batterie 17+17 verte) : `MatrixClient::edit` à six paramètres (`kind` inclus,
+    arbitré 2026-11-16), validations avant réseau (`InvalidId`), `make_edit_event` avec `m.new_content` (relation de l'original non
+    reprise — déréférencée par le SDK), rend l'`event_id` de remplacement ; `from_edit_error` : 404 → `EventNotFound` (-009),
+    NotAuthor → -010, retryable 429 conservée, reste → `Sdk` ; 3 tests (dont volet `edit` du Scenario mal formé, dette F soldée).
+    - [?] **choix consigné (implementer, qualifié par le validator) :** la règle `Fetch` est dupliquée de `from_fetch_error` dans
+      `from_edit_error` (≈4 lignes, deux enums SDK distincts, « même règle » et non « même code »). Option : helper commun sur
+      `matrix_sdk::Error`. Recommandation : factoriser seulement si un troisième appelant apparaît.
+    - [?] **choix consigné (implementer, qualifié conforme par le validator) :** `edit` utilise `joined_room` comme `send` (jonction
+      à la demande, retryable conservée, reste → `RoomUnavailable`) — cas salle non jointe vérifiable seulement en live (D bis).
   [ ] Tâche H (2026-11-16, `matrix#DEC-3`) : `recent_messages` porte `thread_root` et `in_reply_to` (site d'appel de `to_message`
     dans `text_message`) — après ./sync.sdd et la tâche F ; test unitaire sur la fonction pure de ./sync.sdd, le reste en live.
   [ ] Tâche D bis (2026-11-16) : cinq tests `#[ignore]` ajoutés à ../../tests/matrix_live.rs — message dans un fil (relation `m.thread`

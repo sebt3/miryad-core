@@ -20,6 +20,7 @@ use matrix_sdk::authentication::oauth::{ClientId, OAuthSession, UserSession};
 use matrix_sdk::cross_process_lock::CrossProcessLockConfig;
 use matrix_sdk::deserialized_responses::TimelineEvent;
 use matrix_sdk::room::MessagesOptions;
+use matrix_sdk::room::edit::{EditError, EditedContent};
 use matrix_sdk::room::reply::{EnforceThread, Reply as SdkReply, ReplyError};
 use matrix_sdk::ruma::events::relation::Thread;
 use matrix_sdk::ruma::events::room::message::{
@@ -296,6 +297,58 @@ impl MatrixClient {
         Ok(event_id.to_string())
     }
 
+    /// Publie un remplacement (`m.replace` avec `m.new_content`) de l'événement `event_id`
+    /// (`src/matrix/client.sdd`, amendement 2026-11-16, `matrix#FR-10`). Rend l'identifiant de
+    /// l'événement de **remplacement** (pas celui de l'original). Même salle, même `txn_id`, mêmes
+    /// validations d'identifiants et même format de corps que [`MatrixClient::send`] ; l'édition ne
+    /// porte **que** `m.replace`, sans reprendre la relation de fil de l'original. `kind` est
+    /// exigé pour que l'édition d'une notice reste une notice (arbitré le 2026-11-16).
+    ///
+    /// # Errors
+    ///
+    /// `MatrixError::InvalidId` si `room_id` n'est pas un identifiant de salle `!x:y` ou si
+    /// `event_id` n'est pas un identifiant d'événement `$…`, `MatrixError::NotAuthor` si
+    /// l'événement visé n'est pas du bot, `MatrixError::EventNotFound` si le serveur ne le
+    /// retrouve pas, `MatrixError::RoomUnavailable` si la salle est inaccessible, `MatrixError::Sdk`
+    /// ou `MatrixError::Network` pour les autres échecs.
+    pub async fn edit(
+        &self,
+        room_id: &str,
+        event_id: &str,
+        body: &str,
+        html: Option<&str>,
+        kind: MessageKind,
+        txn_id: Option<&str>,
+    ) -> Result<String, MatrixError> {
+        let room_id = parse_room_id(room_id)?;
+        // L'identifiant de l'événement visé est validé avant toute requête réseau, comme `room_id`
+        // (`src/matrix/client.sdd`, tâche G).
+        let event_id = parse_event_id(event_id)?;
+        let content = build_content(body, html, kind);
+        let room = self.joined_room(&room_id).await?;
+        // `make_edit_event` récupère l'original (une requête de plus), refuse un événement d'état
+        // et un événement qui n'est pas de l'auteur (`src/matrix/client.sdd`, `matrix#FR-10`).
+        let replacement = room
+            .make_edit_event(
+                &event_id,
+                EditedContent::RoomMessage(RoomMessageEventContentWithoutRelation::from(content)),
+            )
+            .await
+            .map_err(|err| from_edit_error(err, event_id.as_str()))?;
+        let edited = match txn_id {
+            Some(txn) => {
+                room.send(replacement)
+                    .with_transaction_id(OwnedTransactionId::from(txn))
+                    .await
+            }
+            None => room.send(replacement).await,
+        }
+        .map_err(|err| from_sdk(&err))?
+        .response
+        .event_id;
+        Ok(edited.to_string())
+    }
+
     /// Salle à laquelle envoyer : celle du cache du client, sinon jonction par identifiant.
     async fn joined_room(&self, room_id: &RoomId) -> Result<Room, MatrixError> {
         if let Some(room) = self.inner.client.get_room(room_id) {
@@ -467,6 +520,27 @@ fn from_fetch_error(err: ReplyError, event_id: &str) -> MatrixError {
             }
         }
         ReplyError::Deserialization | ReplyError::StateEvent => MatrixError::Sdk(err.to_string()),
+    }
+}
+
+/// Traduit une erreur d'édition (`src/matrix/client.sdd`, tâche G, `matrix#FR-10`) : `NotAuthor` →
+/// `NotAuthor` de l'identifiant visé ; `Fetch` par la même règle que `from_fetch_error` (retryable
+/// conservée pour le retry du step, sinon `EventNotFound`) ; `StateEvent`, `IncompatibleEditType`
+/// et `Deserialize` sont des erreurs `Sdk`.
+fn from_edit_error(err: EditError, event_id: &str) -> MatrixError {
+    match err {
+        EditError::Fetch(inner) => {
+            let translated = from_sdk(&inner);
+            if translated.retryable() {
+                translated
+            } else {
+                MatrixError::EventNotFound(event_id.to_owned())
+            }
+        }
+        EditError::NotAuthor => MatrixError::NotAuthor(event_id.to_owned()),
+        EditError::StateEvent | EditError::IncompatibleEditType { .. } | EditError::Deserialize(_) => {
+            MatrixError::Sdk(err.to_string())
+        }
     }
 }
 
@@ -656,7 +730,8 @@ mod tests {
     use super::{
         MatrixClient, MessageKind, MessageRelation, OAUTH_CLIENT_KEY, SessionImport, apply_thread,
         build_client, build_content, decode_client_id, device_code_ca_certificate, device_code_http_client,
-        encode_client_id, from_fetch_error, load_client_id, oauth_session, sdk_ca_certificates,
+        encode_client_id, from_edit_error, from_fetch_error, load_client_id, oauth_session,
+        sdk_ca_certificates,
     };
     use crate::matrix::config::{MatrixConfig, TEST_CA_PEM};
     use crate::matrix::device_code::DeviceCodeTokens;
@@ -810,8 +885,8 @@ mod tests {
         );
     }
 
-    // Scenario: un identifiant d'événement mal formé est refusé sans réseau (issue #87). Le volet
-    // `edit` de ce Scenario appartient à la tâche G (`edit` n'existe pas encore).
+    // Scenario: un identifiant d'événement mal formé est refusé sans réseau (issue #87, tâche G
+    // pour le volet `edit`).
     #[tokio::test]
     async fn send_refuses_malformed_event_relation() {
         let client = imported_client().await;
@@ -842,6 +917,41 @@ mod tests {
                 "relation {relation:?} : obtenu {result:?}"
             );
         }
+        let result = client
+            .edit(
+                "!salon:example.org",
+                "pas-un-id",
+                "korrigé",
+                None,
+                MessageKind::Text,
+                None,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(MatrixError::InvalidId(_))),
+            "edit avec event_id mal formé : obtenu {result:?}"
+        );
+    }
+
+    // Must « edit » (issue #87, `matrix#FR-10`) : mêmes validations d'identifiants (`room_id`,
+    // `event_id`) que `send`, avant toute requête réseau.
+    #[tokio::test]
+    async fn edit_refuses_room_alias() {
+        let client = imported_client().await;
+        let result = client
+            .edit(
+                "#salon:example.org",
+                "$vise:example.org",
+                "korrigé",
+                None,
+                MessageKind::Text,
+                None,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(MatrixError::InvalidId(_))),
+            "obtenu : {result:?}"
+        );
     }
 
     // Garde hors scénario (@MessageRelation, `Must` client.sdd) : `Debug`, `Clone`, `PartialEq`, `Eq`
@@ -905,6 +1015,71 @@ mod tests {
         for err_in in [ReplyError::Deserialization, ReplyError::StateEvent] {
             let shown = err_in.to_string();
             let err = from_fetch_error(err_in, target);
+            assert!(
+                matches!(err, MatrixError::Sdk(_)),
+                "variante {shown} : Sdk attendu, obtenu : {err}"
+            );
+        }
+    }
+
+    // Must « edit » (issue #87, tâche G, `matrix#FR-10`) : traduction — `NotAuthor` → `NotAuthor` de
+    // l'identifiant visé ; `Fetch` comme la réponse (`from_fetch_error` : retryable conservée, sinon
+    // `EventNotFound`) ; `StateEvent`, `IncompatibleEditType` et `Deserialize` → `Sdk`. Sans réseau :
+    // erreurs `EditError` construites à la main.
+    #[test]
+    fn from_edit_error_maps_edit_failures() {
+        use matrix_sdk::room::edit::EditError;
+        use ruma::api::EndpointError;
+        use ruma::api::error::FromHttpResponseError;
+        let sdk_http = |status: u16, body: &str| -> matrix_sdk::Error {
+            let response = ruma::exports::http::Response::builder()
+                .status(status)
+                .body(body.as_bytes().to_vec())
+                .expect("réponse de test valide");
+            matrix_sdk::Error::Http(Box::new(matrix_sdk::HttpError::Api(Box::new(
+                FromHttpResponseError::Server(matrix_sdk::RumaApiError::from_http_response(response)),
+            ))))
+        };
+        let target = "$vise:example.org";
+        let err = from_edit_error(
+            EditError::Fetch(Box::new(sdk_http(
+                404,
+                r#"{"errcode":"M_NOT_FOUND","error":"Not found"}"#,
+            ))),
+            target,
+        );
+        assert!(
+            matches!(err, MatrixError::EventNotFound(ref id) if id.as_str() == target),
+            "404 → EventNotFound de l'identifiant visé attendu, obtenu : {err}"
+        );
+        let err = from_edit_error(
+            EditError::Fetch(Box::new(sdk_http(
+                429,
+                r#"{"errcode":"M_LIMIT_EXCEEDED","error":"Too many requests"}"#,
+            ))),
+            target,
+        );
+        assert!(
+            matches!(err, MatrixError::Network { retryable: true, .. }),
+            "429 retryable conservée attendue, obtenu : {err}"
+        );
+        let err = from_edit_error(EditError::NotAuthor, target);
+        assert!(
+            matches!(err, MatrixError::NotAuthor(ref id) if id.as_str() == target),
+            "NotAuthor → NotAuthor de l'identifiant visé attendu, obtenu : {err}"
+        );
+        let deserialize =
+            serde_json::from_str::<serde_json::Value>("{ pas du json").expect_err("JSON invalide de test");
+        for err_in in [
+            EditError::StateEvent,
+            EditError::IncompatibleEditType {
+                target: "m.text".to_owned(),
+                new_content: "room message",
+            },
+            EditError::Deserialize(deserialize),
+        ] {
+            let shown = err_in.to_string();
+            let err = from_edit_error(err_in, target);
             assert!(
                 matches!(err, MatrixError::Sdk(_)),
                 "variante {shown} : Sdk attendu, obtenu : {err}"
