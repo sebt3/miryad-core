@@ -313,7 +313,7 @@ Tasks:
     nouveau code `MRD-MCP-*`.
     Validé 2026-11-16 (validator PASS, batterie 17+17 verte, contrôles `cargo tree` conformes) : attribut posé, `grep McpError tests/`
     vide, `match` intra-crate (`rpc_code`, `From<@RestError>`) inchangés et restent sans joker.
-    - [?] (validator, préexistant #78, hors de cette tâche) : le Scenario « @From @RestError::InvalidQuery devient @McpError::InvalidParams »
+    - [x] Arbitré 2026-11-17 : test nommé dédié, voir la tâche « Test nommé de la conversion `InvalidQuery` » ci-dessous. Énoncé d'origine : (validator, préexistant #78, hors de cette tâche) : le Scenario « @From @RestError::InvalidQuery devient @McpError::InvalidParams »
       est couvert indirectement par `list_undeclared_entity_column_is_invalid_params` de ./registry.rs (Display et transit affirmés) mais
       sans test nommé dans ./error.rs assertant `rpc_code` `-32602` et le `wire_message` exact. Choix provisoire : la cartographie indirecte
       suffit (précédent de la tâche `[x]` 2026-10-02 « La cartographie suffit »). Option : test nommé dédié dans ./error.rs. À trancher
@@ -368,6 +368,7 @@ Tasks:
     Validé 2026-11-14 (validator PASS en lecture ; batterie complète rejouée par le primary : 16 combinaisons tests et clippy vertes, fmt) : variante `Conflict` + `-32003` + `MRD-MCP-011: conflict` ; les sections
     récapitulatives manquantes de l'amendement 2026-11-13 (table 12/12, `Returns`, matrice `Example`, compteurs onze/douze, Scenario source) ont été complétées par spec-dd — récapitulatif de l'arbitrage déjà pris, rien de
     re-décidé ; `[x]` historiques laissés tels quels.
+  [ ] Test nommé de la conversion `InvalidQuery` (arbitré 2026-11-17) : dans le `mod tests` de ./error.rs, `@From<@RestError>` de `RestError::InvalidQuery` rend `McpError::InvalidParams`, avec `rpc_code` `-32602` et le `wire_message` exact ; vert d'emblée (verrou d'un comportement existant, aujourd'hui couvert indirectement par `list_undeclared_entity_column_is_invalid_params` de ./registry.rs). Périmètre : ./error.rs seul (tests).
 
 Done when:
   Les vingt-trois `Scenario` (les vingt-deuxième et vingt-troisième ajoutés le 2026-11-13, issues #77 et #78) disposent chacun d'au moins un test nommé distinct et vert, sous `--features mcp` et

@@ -11,7 +11,7 @@ Purpose:
   Le fichier ne décide ni du nom (assertions de ./registry.rs), ni du fil JSON-RPC (./handler.rs), ni du rendu (./format.rs). Il ne
     compile que sous la feature `mcp` (déclaration `mod app_tool;` de ./mod.rs, gating porté par ./../lib.rs). Il n'ajoute aucun
     code `MRD-*` : il réutilise `MRD-MCP-001` (refus), `MRD-MCP-003` (base) et `MRD-MCP-005` (arguments invalides) de ./error.sdd.
-    Spec rédigée le 2026-11-16 pour l'issue #86 ; **en attente d'approbation** (aucun code avant).
+    Spec rédigée le 2026-11-16 pour l'issue #86 ; approuvée le 2026-11-16, **implémentée** (cycles 1/6 à 6/6, clôture validée le 2026-11-17).
 
 Owns:
   ./app_tool.rs
@@ -108,7 +108,7 @@ Tasks:
     user: &user::Model) -> Result<Option<bool>, DbErr>`, non générique, qui porte la logique de `static_verdict` ; `static_verdict::<E>` en
     devient une enveloppe (aucun changement de ses sites d'appel dans ./../rest/core.rs). Spec de ./../rbac.sdd amendée dans le même
     cycle (Exposes, un Scenario `policy_verdict` sans entité, un `Must` d'une ligne).
-    - [?] **choix provisoire :** nouvelle fonction, `static_verdict` conservée. Option : retirer le paramètre `E` inutilisé de
+    - [x] Soldé 2026-11-17 : nouvelle fonction, `static_verdict` conservée (arbitré, réalisé au cycle 2/6). Énoncé d'origine : **choix provisoire :** nouvelle fonction, `static_verdict` conservée. Option : retirer le paramètre `E` inutilisé de
       `static_verdict` (touche les sites de ./../rest/core.rs). Recommandation : la nouvelle fonction, diff plus petit.
     Réalisé au cycle 2/6 (rbac.sdd validé validator GO 2026-11-16) ; case `[x]` dans ./../rbac.sdd.
   [x] Tâche A1 : @AppTool, @AppToolHandler, `new` (schéma, `OwnerOnly`) et `call` — tests d'abord (Scenarios ci-dessous), puis ./app_tool.rs.
@@ -116,16 +116,16 @@ Tasks:
     Validé 2026-11-16 (validator GO, batterie 17+17 verte, cycle 3/6 du lot #86) : ./app_tool.rs créé, 10 Scenarios → 11 tests nommés
     (rouge puis vert), ordre `resolve_user` → `policy_verdict` → validation → gestionnaire, récupérateur `NoExternalRetrieval` vérifié
     en source jsonschema 0.60.2 et par écouteur TCP sous `--all-features`, paniques limitées aux deux cas d'enregistrement.
-    - [?] (implementer) : `policy_verdict` rend `None` seulement pour `OwnerOnly` (refusée à `new`) — `None` est irreachable ;
+    - [x] Acté 2026-11-17 : fail-closed défensif conservé (`Some(false) | None → Forbidden`), le `Must` n'est pas modifié. Énoncé d'origine : (implementer) : `policy_verdict` rend `None` seulement pour `OwnerOnly` (refusée à `new`) — `None` est irreachable ;
       pli conservateur retenu : `Some(false) | None → Forbidden` avant validation, commentaire en place. Option : le rendre explicite
       dans le `Must`. Recommandation : conserver le fail-closed défensif.
-    - [?] (implementer) : forme exacte du message `InvalidParams` — chemin d'instance + mot-clé violé, jamais la valeur fautive.
+    - [x] Acté 2026-11-17 : wording libre, sans contrat observable. Énoncé d'origine : (implementer) : forme exacte du message `InvalidParams` — chemin d'instance + mot-clé violé, jamais la valeur fautive.
       Le Scenario borne le contenu, pas le wording. Choix sans contrat observable.
-    - [?] (validator) : incursion minimale dans ./mod.rs (+1 ligne `mod app_tool;`, exigence de compilation) avant la tâche de clôture
+    - [x] Validé expressément 2026-11-17 (la clôture de ./mod.sdd est faite, validator GO 2026-11-17). Énoncé d'origine : (validator) : incursion minimale dans ./mod.rs (+1 ligne `mod app_tool;`, exigence de compilation) avant la tâche de clôture
       de ./mod.sdd ; la valider expressément, ou reporter A1 derrière elle — mais rien ne compile alors.
-    - [?] (validator) : mention « en attente d'approbation (aucun code avant) » devenue périmée depuis que le code existe — mise à
+    - [x] Corrigé 2026-11-17 (ligne 14). Énoncé d'origine : (validator) : mention « en attente d'approbation (aucun code avant) » devenue périmée depuis que le code existe — mise à
       jour = domaine du développeur principal, hors cycle.
-    - [!] (validator, reporté à la tâche de clôture de ./mod.sdd) : la doc de ./mod.rs dit encore « les cinq sous-modules » (ils sont
+    - [x] Soldé 2026-11-17 par la clôture de ./mod.sdd (compteur « six sous-modules » corrigé). Énoncé d'origine : (validator, reporté à la tâche de clôture de ./mod.sdd) : la doc de ./mod.rs dit encore « les cinq sous-modules » (ils sont
       six) ; la correction et la mention « déclaration déjà posée au cycle A1 » doivent figurer à cette case.
   [x] Tâche A0 (Cargo, hors périmètre de cette spec — diff imposé par ./mod.sdd, fichier possédé par /miryad-core.sdd) :
     `jsonschema = { version = "0.60", default-features = false, optional = true }` et `mcp = ["db", "dep:vynil-core", "dep:jsonschema"]` ;
@@ -138,6 +138,7 @@ Tasks:
       `jsonschema` (aucune dépendance supplémentaire sur `referencing`).
     Fait le 2026-11-16 (Claude, à la demande explicite du développeur principal) : `jsonschema` et la feature `mcp` dans `/Cargo.toml` ; contrôles ajoutés à `/tooling.sdd`,
     `/AGENTS.md`, `.github/workflows/{ci.yml,workflows.sdd}` et `.opencode/agents/validator.md`. Mesuré : `--features mcp` → une ligne (`jsonschema v0.60.2`) ; sans `mcp` → stdout vide.
+  [ ] Nettoyage (arbitré 2026-11-17, reliquat de ./handler.sdd) : retirer les deux `#[allow(dead_code)]` de ./app_tool.rs (l. ~82 et ~93), devenus inutiles depuis que le dispatch de ./handler.rs atteint `AppTool` depuis la lib. Aucun test nouveau : la preuve est `cargo clippy -D warnings` vert sur toutes les combinaisons de features. Périmètre : ./app_tool.rs seul.
 
 Done when:
   Les `Scenario` sont verts sous `--no-default-features --features mcp` et `--all-features` ; la batterie de /tooling.sdd (y compris les deux

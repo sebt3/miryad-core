@@ -261,17 +261,17 @@ Tasks:
   [x] Amendement 2026-11-16 (issue #86) : déclarer `mod app_tool;` (privé, sans ré-export) et étendre le test de surface (« rien d'autre
     que les quatre items ») ; dernier du lot MCP, après ./app_tool.sdd, ./registry.sdd et ./handler.sdd. Le diff Cargo est la tâche A0 de
     ./app_tool.sdd.
-    - [!] (validator, cycle A1 2026-11-16) : la déclaration `mod app_tool;` est déjà posée depuis le cycle A1 (exigence de compilation) ;
+    - [x] Soldé 2026-11-17 : voir « Validé 2026-11-17 » ci-dessous. Énoncé d'origine : (validator, cycle A1 2026-11-16) : la déclaration `mod app_tool;` est déjà posée depuis le cycle A1 (exigence de compilation) ;
       la doc de ./mod.rs dit encore « les cinq sous-modules » (ils sont six) — la case doit porter la correction de compteur et la
       mention de l'incursion déjà faite.
     Validé 2026-11-17 (validator GO, cycle 6/6, batterie 17+17 verte — clôture du lot #86) : compteur corrigé (« six sous-modules »,
     `app_tool` privé sans contribution, incursion A1 mentionnée) ; surface publique tenue par deux doctests `compile_fail` ajoutés
     (`use miryad_core::mcp::app_tool` → E0603, `use miryad_core::mcp::AppTool` → E0432) en plus du test inline des quatre items ;
     caractère discriminant prouvé par mutations contrôlées revertées.
-    - [?] (validator) : les décomptes « cinq » du corps de la spec (Purpose, `Exposes`, Scenario « enfants jamais joignables »)
+    - [x] Acté 2026-11-17 : on s'en tient à la clause de prévalence de l'amendement du 2026-11-16 (les « cinq » du corps désignent tantôt les enfants, tantôt les cinq outils CRUD : une resynchronisation globale mélangerait les deux sens, sans effet sur le code). Énoncé d'origine : (validator) : les décomptes « cinq » du corps de la spec (Purpose, `Exposes`, Scenario « enfants jamais joignables »)
       restent datés — la clause de prévalence de l'amendement suffit contractuellement ; resynchroniser sur « six » à la prochaine
       édition, ou s'en tenir à la clause ? Choix provisoire : s'en tenir à la clause (aucun effet sur le code).
-    - [?] (validator) : les trois doctests du module sont nommés par rustdoc `src/lib.rs - mcp (line …)` (fusion de la doc de
+    - [x] Acté 2026-11-17 : l'identité réelle des trois doctests est `src/lib.rs - mcp (line …)` (fusion de la doc de `lib.rs` et de celle de `mod.rs`) ; les validations suivantes la lisent ainsi. Énoncé d'origine : (validator) : les trois doctests du module sont nommés par rustdoc `src/lib.rs - mcp (line …)` (fusion de la doc de
       `lib.rs` et de celle de `mod.rs`) — une note dans la spec mérite-t-elle d'acter cette identité réelle pour les prochaines
       validations ?
   [x] Convertir les six `Scenario` en au moins six preuves nommées distinctes, une par scenario,

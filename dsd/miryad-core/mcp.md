@@ -139,6 +139,16 @@ arguments (`FR-6` à `FR-9`).
       plus les `match` des hôtes. Cassure assumée (API instable avant `1.0`).
     - **Source:** user instruction, 2026-11-16 (arbitrage de `OI-4`)
 
+- **DEC-5 - Une colonne filtrable d'un type hors {entier, booléen, texte} est refusée à l'enregistrement**
+    - **Context:** `GET` de liste REST et `_list` MCP déclarent un paramètre par colonne filtrable ; seuls les entiers, les
+      booléens et le texte ont une forme de paramètre. Une colonne d'un autre type serait silencieusement non filtrable
+      (omise du schéma sans erreur).
+    - **Decision:** `McpToolRegistry::register::<E>` échoue par `assert!`, en citant la colonne et le nom de l'entité, comme le
+      fait `resource_router` côté REST (`rest-api`, même règle) : la colonne n'est donc jamais annoncée.
+    - **Consequences:** erreur de programmation détectée au démarrage, aucun nouveau code `MRD-*` ; les deux surfaces refusent
+      le même domaine, conformément à la règle de parité.
+    - **Source:** user instruction, 2026-11-16 (arbitrage #105, `SpecDD /src/mcp/registry.sdd`)
+
 ## SpecDD Realization
 
 Les specs de `src/mcp/`.

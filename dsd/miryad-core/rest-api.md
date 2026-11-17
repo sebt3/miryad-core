@@ -120,6 +120,11 @@ Hors Solution pour l'instant : pagination par curseur, tri, filtre multi-champs,
     - **Consequences:** voir `OI-2`.
     - **Source:** `roadmap@c62a184`, item 10
 
+- **DEC-2 - Une colonne filtrable d'un type hors {entier, booléen, texte} fait échouer le montage**
+    - **Decision:** `resource_router` refuse, au démarrage, une colonne filtrable d'un autre type, en citant la colonne et le
+      nom de l'entité ; la surface MCP applique la même règle (`mcp` `DEC-5`).
+    - **Source:** user instruction, 2026-11-16 (arbitrage #105)
+
 ## SpecDD Realization
 
 `SpecDD /src/rest/mod.sdd`, `SpecDD /src/rest/core.sdd`, `SpecDD /src/rest/error.sdd`, `SpecDD /src/rest/openapi.sdd`,

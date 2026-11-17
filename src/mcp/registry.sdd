@@ -141,7 +141,7 @@ Must:
   (amendement du 2026-11-16, issue #78, arbitré : option A) @McpEntity gagne `fn declared_columns(&self) -> DeclaredColumns` (`pub(crate)`), implémentée par @McpEntityImpl::<E> : elle **relit en direct, à chaque appel**,
     @E::filterable_columns(), @E::sortable_columns() et @E::filter_column() — rien n'est copié au registre (le principe « rien de @MiryadResource n'est copié » reste vrai). Elle rend pour chaque colonne filtrable son nom
     (`Column::as_str()`, comme ./../rest/core.rs) et son type JSON (`integer`, `boolean`, `string`, par le même mapping `ColumnType` que ./../rest/openapi.rs ; une colonne d'un autre type suit le comportement de la liste REST
-    — à aligner à l'implémentation et à signaler en `[?]`), les noms des colonnes triables, (pas d'indicateur `filter_column` : `filter` est toujours déclaré par ./handler.rs, 2026-11-16). Consommée par ./handler.rs seul (`tools/list`, contrat de ./handler.sdd).
+    — arbitré #105 : refusée à l'enregistrement par `assert!`, voir plus bas), les noms des colonnes triables, (pas d'indicateur `filter_column` : `filter` est toujours déclaré par ./handler.rs, 2026-11-16). Consommée par ./handler.rs seul (`tools/list`, contrat de ./handler.sdd).
     **Collision de noms** : une colonne filtrable nommée `page`, `per_page`, `filter`, `sort` ou `order` fait échouer @register par `assert!` explicite citant l'entité et le nom (même motif que la clé dupliquée, erreur de
     programmation au démarrage ; aucun nouveau code `MRD-*`). La colonne `filter_column`, absente de `filterable_columns`, n'est jamais déclarée sous son nom de colonne (seul `filter` existe).
     **Type de colonne filtrable** (arbitré par Sébastien le 2026-11-16, issue #105) : une colonne filtrable d'un type hors {entier, booléen, texte} fait échouer @register par `assert!` citant la colonne et le nom de l'entité, comme le refus du routeur REST (`resource_router`) ; elle n'est donc jamais annoncée.
@@ -354,12 +354,12 @@ Tasks:
     symétriquement une entité dont l'un des cinq noms existe déjà parmi les outils applicatifs (ajout à ses assertions actuelles).
     `tools/call` découpe un nom par suffixe : sans cette symétrie, l'ordre des deux appels déciderait du gagnant. Les paniques
     de @AppTool::new (schéma invalide, `OwnerOnly`) se propagent telles quelles.
-    - [?] **choix provisoire :** nom en `impl Into<String>` (les entités ont `&'static str`, mais un hôte peut composer un nom).
+    - [x] Acté 2026-11-17 : nom en `impl Into<String>`. Énoncé d'origine : **choix provisoire :** nom en `impl Into<String>` (les entités ont `&'static str`, mais un hôte peut composer un nom).
       Option : `&'static str`. Recommandation : `impl Into<String>`, aucune contrainte inutile.
-    - [?] (validator, 2026-11-16) : `ENTITY_TOOL_SUFFIXES` duplique `OPERATIONS` de ./handler.rs (const privée hors `Owns`, duplication
+    - [x] Arbitré 2026-11-17 : factorisation, voir la tâche « Factorisation d'`OPERATIONS` » ci-dessous. Énoncé d'origine : (validator, 2026-11-16) : `ENTITY_TOOL_SUFFIXES` duplique `OPERATIONS` de ./handler.rs (const privée hors `Owns`, duplication
       commentée, précédent `split_sort_direction` qui porte lui une tâche de factorisation) — ajouter une tâche de factorisation ou
       acter la duplication permanente ?
-    - [?] (validator, 2026-11-16) : l'assertion « registre non modifié » après panic ne couvre que le cas A et les noms invalides ; les
+    - [x] Arbitré 2026-11-17 : ajout des assertions d'état, voir la tâche « Assertions d'état » ci-dessous. Énoncé d'origine : (validator, 2026-11-16) : l'assertion « registre non modifié » après panic ne couvre que le cas A et les noms invalides ; les
       cas B/C ne verrouillent que la panic (non-insertion garantie structurellement, vérifiée à la lecture). Ajout d'assertions d'état
       aux cas B/C, ou s'en tenir à la garantie structurelle ?
     Validé 2026-11-16 (validator GO, cycle 4/6, batterie 17+17 verte) : 3 Scenarios → 6 tests nommés ; symétrie des collisions exercée
@@ -462,10 +462,10 @@ Tasks:
     dans la boucle `filterable_columns` de `register` — domaine accepté exactement celui de `filter_type` par construction, symétrique
     de l'assert du `resource_router` ; message citant entité et colonne ; fixture `weights`/`weight` `f32` ; `# Panics` complété ;
     schéma `_list` et `declared_columns_of` intacts ; aucune entité de test existante délogée.
-    - [!] (validator, éditorial hors cycle) : la parenthèse du `Must` (ligne ~143, « à aligner à l'implémentation et à signaler en
+    - [x] Corrigé 2026-11-17 (la parenthèse du `Must` renvoie à l'arbitrage #105). Énoncé d'origine : (validator, éditorial hors cycle) : la parenthèse du `Must` (ligne ~143, « à aligner à l'implémentation et à signaler en
       `[?]` ») est caduque pour les colonnes filtrables depuis l'assert #105 — la remplacer par un renvoi à l'arbitrage #105 relève
       du développeur principal.
-    - [?] (validator) : aucune `DEC` dans le DSD `mcp.md` pour l'arbitrage #105 (le côté REST n'en porte pas non plus) — en tracer
+    - [x] Tracé 2026-11-17 : `DEC-5` de `dsd/miryad-core/mcp.md`, avec renvoi dans `rest-api.md`. Énoncé d'origine : (validator) : aucune `DEC` dans le DSD `mcp.md` pour l'arbitrage #105 (le côté REST n'en porte pas non plus) — en tracer
       une des deux côtés, ou acter que le motif vit dans les specs seules ?
   [x] Verrou de duplication `split_sort_direction` : le test `list_sort_and_order_delegated_to_core` doit aussi asserter que `sort=created_at:desc` sans `order` produit le même `ListQuery` que `sort=created_at` + `order=desc` ; la factorisation dans `query.rs` (cycle ultérieur) supprimera la duplication sans changer ce test.
     Validé 2026-11-17 (validator GO, cycle I1, batterie 17+17 verte) : assertion directe ajoutée contre `rest::core::list` explicite
@@ -477,10 +477,12 @@ Tasks:
   [x] Parité de construction : test `list_parity_goes_through_rest_list_handler` — entrée `{"project_id":3,"sort":"created_at","order":"desc"}` côté MCP et `?project_id=3&sort=created_at&order=desc` via `@rest::list_handler` ; assertion : mêmes lignes et même `ListQuery` construit, en remplacement de la comparaison à un `@ListQuery` écrit à la main.
     Validé 2026-11-17 (validator GO, cycle I1) : la vraie frontière `list_handler` (router + bearer) contre le dispatch MCP, égalité des
     `PagedResult` rendus — aucune oracle manuelle dans ce test.
-    - [?] (validator) : « en remplacement de la comparaison à un `ListQuery` écrit à la main » lu comme remplacement de la technique
+    - [x] Acté 2026-11-17 : conservation des tests à oracle (aucune perte de couverture de Scenario). Énoncé d'origine : (validator) : « en remplacement de la comparaison à un `ListQuery` écrit à la main » lu comme remplacement de la technique
       d'assertion de la parité, non comme suppression des tests existants à oracle (`list_sort_and_order_delegated_to_core`,
       `list_named_filters_forwarded_to_core_like_rest`) — ces derniers portent les Then du Scenario « liste MCP filtrée et triée comme
       la liste REST ». Choix provisoire : conservation (les dénuder serait une perte de couverture de Scenario).
+  [ ] Factorisation d'`OPERATIONS` (arbitré 2026-11-17) : `OPERATIONS` de ./handler.rs passe `pub(super)` (visibilité seule) et ./registry.rs en dérive les suffixes d'outils d'entité ; `ENTITY_TOOL_SUFFIXES` est supprimée. Les tests de collision des deux ordres d'enregistrement restent verts sans modification (verrou de comportement). Périmètre : ./registry.rs et, pour la visibilité seule, ./handler.rs.
+  [ ] Assertions d'état (arbitré 2026-11-17) : aux cas B et C de panic de `register_tool` (collisions), asserter après la panic que le registre est inchangé (nombre d'outils applicatifs et absence du nom refusé), comme le cas A ; tests seuls, dans le `mod tests` de ./registry.rs ; verts d'emblée (verrou d'une garantie structurelle existante).
 
 Done when:
   La spec porte exactement vingt `Scenario` (amendement du 2026-11-15 : le vingtième, « liste MCP
