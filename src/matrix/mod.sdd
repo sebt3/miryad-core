@@ -71,8 +71,11 @@ Exposes:
     `MatrixEventHandler`, `MatrixMessage`, module `store`.
 
 Tasks:
-  [ ] Amendement 2026-11-16 (issue #87) : ré-exporter à plat `MessageRelation` (`client::{…, MessageRelation, …}`) ; étendre le test de
+  [x] Amendement 2026-11-16 (issue #87) : ré-exporter à plat `MessageRelation` (`client::{…, MessageRelation, …}`) ; étendre le test de
     chemins plats. Dernière tâche du lot #87 côté matrix, après ./client.sdd (tâche F).
+    Validé 2026-11-17 (validator GO, cycle 9, batterie 17+17 verte) : `pub use client::{MatrixClient, MessageKind, MessageRelation,
+    SessionImport}` à la forme exacte du `Must` ; `chemins_plats_resolvent_sans_structure_interne` étendu au 9ᵉ chemin
+    (`crate::matrix::MessageRelation`, rouge E0425 d'abord) ; aucun autre chemin touché ; Exposes conforme.
   [x] `mod.rs` en dernier du lot matrix (après tous les enfants) ; test de chemins plats.
     Validé 2026-10-18 (Claude) : ré-exports à plat exacts (`device_code` et `session` privés), rustdoc du module (promesse,
     déploiement, limite, épinglage) sans lien cassé sous `matrix` et `workflow,matrix` (`-D warnings`), test de chemins

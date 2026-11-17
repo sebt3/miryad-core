@@ -31,7 +31,7 @@ mod session;
 pub mod store;
 pub mod sync;
 
-pub use client::{MatrixClient, MessageKind, SessionImport};
+pub use client::{MatrixClient, MessageKind, MessageRelation, SessionImport};
 pub use config::MatrixConfig;
 pub use device_code::DeviceCodePrompt;
 pub use error::MatrixError;
@@ -39,7 +39,7 @@ pub use sync::{MatrixEventHandler, MatrixMessage};
 
 #[cfg(test)]
 mod tests {
-    /// Scenario « les chemins plats existent » : les huit types ré-exportés à plat résolvent sans
+    /// Scenario « les chemins plats existent » : les neuf types ré-exportés à plat résolvent sans
     /// nommer les sous-modules. Compilation seule.
     #[test]
     fn chemins_plats_resolvent_sans_structure_interne() {
@@ -47,6 +47,7 @@ mod tests {
             _: Option<crate::matrix::MatrixConfig>,
             _: Option<crate::matrix::MatrixClient>,
             _: Option<crate::matrix::MessageKind>,
+            _: Option<crate::matrix::MessageRelation>,
             _: Option<crate::matrix::SessionImport>,
         ) {
         }
@@ -57,7 +58,7 @@ mod tests {
             _: Option<crate::matrix::MatrixMessage>,
         ) {
         }
-        witness_client(None, None, None, None);
+        witness_client(None, None, None, None, None);
         witness_events(None, None, None, None);
     }
 }
