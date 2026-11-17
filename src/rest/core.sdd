@@ -630,7 +630,12 @@ Tasks:
     en transitoire commenté (./mod.rs, ./../mcp/registry.rs, ./../lymaille/resource_module.rs) — leurs cycles #78 respectifs porteront le parsing.
     Plafond `MAX_FILTERS` compté avant la résolution des noms (neuf noms quelconques → `InvalidQuery`), arbitré par Sébastien le 2026-11-16.
     Une valeur d'`order` fautive est vérifiée avant « `order` sans `sort` » (les deux rendent `InvalidQuery`), arbitré par Sébastien le 2026-11-16.
-  [ ] Test `filter_column_nommee_dans_filters_refusee_si_repetee` (./core.rs) : entrée — entité dont `filter_column` est `kind`, requête `filters` contenant `kind` deux fois ; assertion — `@RestError::InvalidQuery`, aucune ligne lue. Verrou explicite du `Must` (arbitré 2026-11-16).
+  [x] Test `filter_column_nommee_dans_filters_refusee_si_repetee` (./core.rs) : entrée — entité dont `filter_column` est `kind`, requête `filters` contenant `kind` deux fois ; assertion — `@RestError::InvalidQuery`, aucune ligne lue. Verrou explicite du `Must` (arbitré 2026-11-16).
+    Validé 2026-11-17 (validator GO, cycle I3, batterie 17+17 verte) : fixture `filterable` étendue (`filter_column() = kind`, sans
+    incidence sur les 13 appels existants qui passent `filter: None`, vérifiée site par site) ; table volontairement non créée — tout
+    SELECT aurait rendu `Database`, jamais `InvalidQuery` : « aucune ligne lue » prouvé par la technique du fichier ; refus porté par
+    le `seen` de `apply_named_filters` (MRD-REST-008), distinct du cas nommé-une-fois licite. Verrou vert d'emblée, consigné comme
+    tel (pas une découverte de bug).
 
 Done when:
   Les `Scenario` de l’amendement du 2026-11-13 (issue #77 : quatre nouveaux, deux amendés) disposent aussi chacun d’un test nommé distinct.

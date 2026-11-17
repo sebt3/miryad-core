@@ -1922,7 +1922,9 @@ mod tests {
 
     /// Lecture et écriture `OwnerOnly`, filtrable sur `owner_id`, `kind` et `project_id`, triable
     /// sur `created_at` — fixture des trois Scenario de l'issue #78. `secret_note` est une colonne
-    /// de l'entité non déclarée filtrable.
+    /// de l'entité non déclarée filtrable. `kind` est aussi la `filter_column` — verrou du `Must`
+    /// « une colonne qui est à la fois `filter_column` et nommée dans `filters` est refusée si le
+    /// nom est répété » (arbitré 2026-11-16).
     mod filterable {
         use crate::resource::{AccessPolicy, MiryadResource};
         use sea_orm::entity::prelude::*;
@@ -1960,6 +1962,9 @@ mod tests {
             }
             fn filterable_columns() -> Vec<Column> {
                 vec![Column::OwnerId, Column::Kind, Column::ProjectId]
+            }
+            fn filter_column() -> Option<Column> {
+                Some(Column::Kind)
             }
             fn sortable_columns() -> Vec<Column> {
                 vec![Column::CreatedAt]
@@ -2363,6 +2368,34 @@ mod tests {
         assert!(
             matches!(refused, RestError::InvalidQuery(_)),
             "le nom de critère répété est un InvalidQuery : {refused:?}"
+        );
+    }
+
+    /// Tâche 2026-11-16 — verrou explicite du `Must` (amendement #78) : « une colonne qui est à la
+    /// fois `filter_column` et nommée dans `filters` est refusée si le nom est répété ». La fixture
+    /// `filterable` a `kind` pour `filter_column` ; la requête nomme `kind` deux fois dans
+    /// `filters`. La table des entités n'est pas créée : une requête qui atteindrait la table
+    /// rendrait `RestError::Database` (table absente), jamais `InvalidQuery` — l'assertion prouve
+    /// donc aussi qu'aucune ligne n'est lue.
+    #[tokio::test]
+    async fn filter_column_nommee_dans_filters_refusee_si_repetee() {
+        let db = migrated_db().await;
+        // Pas de `create_entity_table` : « aucune ligne lue » est verrouillée par la table absente.
+        let duplicated = ListQuery {
+            filters: vec![
+                ("kind".to_string(), "a".to_string()),
+                ("kind".to_string(), "b".to_string()),
+            ],
+            sort: None,
+            order: None,
+        };
+        let refused = list::<filterable::Entity>(&db, &principal("alice"), None, None, None, duplicated)
+            .await
+            .expect_err("kind, filter_column, nommé deux fois dans filters est refusé");
+        assert!(
+            matches!(refused, RestError::InvalidQuery(_)) && refused.to_string().starts_with("MRD-REST-008"),
+            "le nom répété d'une colonne qui est aussi `filter_column` est un InvalidQuery sans \
+             aucune lecture : {refused:?}"
         );
     }
 
