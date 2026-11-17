@@ -256,8 +256,13 @@ Tasks:
       `matrix_sdk::Error`. Recommandation : factoriser seulement si un troisième appelant apparaît.
     - [?] **choix consigné (implementer, qualifié conforme par le validator) :** `edit` utilise `joined_room` comme `send` (jonction
       à la demande, retryable conservée, reste → `RoomUnavailable`) — cas salle non jointe vérifiable seulement en live (D bis).
-  [ ] Tâche H (2026-11-16, `matrix#DEC-3`) : `recent_messages` porte `thread_root` et `in_reply_to` (site d'appel de `to_message`
+  [x] Tâche H (2026-11-16, `matrix#DEC-3`) : `recent_messages` porte `thread_root` et `in_reply_to` (site d'appel de `to_message`
     dans `text_message`) — après ./sync.sdd et la tâche F ; test unitaire sur la fonction pure de ./sync.sdd, le reste en live.
+    Validé 2026-11-17 (validator GO, cycle 5/8, batterie 47/47 verte) : `text_message` lit `sync::relation_ids` sur le contenu du
+    `TimelineEvent` — même fonction, même type que la remise en direct de ./sync.rs (DEC-3 sans divergence) ; 3 tests nommés sur le
+    site d'appel (fil+repli, réponse seule, à plat — garde de régression, vert d'emblée et signalé) ; fonction pure déjà couverte
+    par les 4 tests du cycle 2, suffisant selon le validator. Le reste (relations relues via `Room::messages` en salle chiffrée)
+    est attendu de la tâche D bis (live), comme la case le prévoit.
   [ ] Tâche D bis (2026-11-16) : cinq tests `#[ignore]` ajoutés à ../../tests/matrix_live.rs — message dans un fil (relation `m.thread`
     relue par `recent_messages`), réponse, édition (corps relu), rejeu du même `txn_id` pour chacun (aucun doublon), et **mesure du
     comportement de Palpo** pour une relation vers un événement inconnu (consigner le résultat dans `matrix#OI-7`, point (b)).

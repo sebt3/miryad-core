@@ -569,6 +569,8 @@ fn text_message(room_id: &str, event: &TimelineEvent) -> Option<MatrixMessage> {
         MessageType::Emote(emote) => ("m.emote", emote.body.as_str(), emote.formatted.as_ref()),
         _ => return None,
     };
+    // La relation est extraite par la même fonction pure que la remise en direct (`sync.rs`).
+    let (thread_root, in_reply_to) = sync::relation_ids(&original.content);
     Some(sync::to_message(MessageParts {
         room_id,
         event_id: original.event_id.as_str(),
@@ -578,10 +580,10 @@ fn text_message(room_id: &str, event: &TimelineEvent) -> Option<MatrixMessage> {
         formatted_body: formatted.map(|f| f.body.as_str()),
         timestamp_ms: u64::from(original.origin_server_ts.0),
         encrypted: event.encryption_info().is_some(),
-        // Lecture des relations dans l'historique : tâche de ./client.sdd (issue #87) ; la remise
-        // en direct passe par sync::relation_ids.
-        thread_root: None,
-        in_reply_to: None,
+        // Lecture des relations dans l'historique : la même fonction pure que la remise en direct
+        // (`src/matrix/client.sdd`, amendement 2026-11-16, `matrix#DEC-3`).
+        thread_root: thread_root.as_deref(),
+        in_reply_to: in_reply_to.as_deref(),
     }))
 }
 
@@ -731,15 +733,18 @@ mod tests {
         MatrixClient, MessageKind, MessageRelation, OAUTH_CLIENT_KEY, SessionImport, apply_thread,
         build_client, build_content, decode_client_id, device_code_ca_certificate, device_code_http_client,
         encode_client_id, from_edit_error, from_fetch_error, load_client_id, oauth_session,
-        sdk_ca_certificates,
+        sdk_ca_certificates, text_message,
     };
     use crate::matrix::config::{MatrixConfig, TEST_CA_PEM};
     use crate::matrix::device_code::DeviceCodeTokens;
     use crate::matrix::error::MatrixError;
     use crate::matrix::session::StoredSession;
     use crate::matrix::store::{SeaOrmCryptoStore, StoreError};
+    use matrix_sdk::deserialized_responses::TimelineEvent;
     use matrix_sdk::ruma::EventId;
+    use matrix_sdk::ruma::events::AnySyncTimelineEvent;
     use matrix_sdk::ruma::events::room::message::{MessageType, RoomMessageEventContent};
+    use matrix_sdk::ruma::serde::Raw;
     use matrix_sdk_crypto::store::CryptoStore;
     use sea_orm::{ConnectOptions, Database, DatabaseConnection};
     use sea_orm_migration::MigratorTrait;
@@ -1098,6 +1103,79 @@ mod tests {
                 "limit {limit} : obtenu {result:?}"
             );
         }
+    }
+
+    /// `TimelineEvent` texte construit hors réseau (`TimelineEvent::from_plaintext`) : même chemin
+    /// serde que la relecture de `Room::messages`, sans homeserver (tâche H, issue #87).
+    fn history_event(body: &str, relates_to: Option<serde_json::Value>) -> TimelineEvent {
+        let mut content = serde_json::json!({ "msgtype": "m.text", "body": body });
+        if let Some(rel) = relates_to {
+            content["m.relates_to"] = rel;
+        }
+        let raw = serde_json::json!({
+            "type": "m.room.message",
+            "sender": "@alice:example.org",
+            "event_id": "$evt:example.org",
+            "origin_server_ts": 1_700_000_000_000_u64,
+            "content": content,
+        });
+        let raw = Raw::<AnySyncTimelineEvent>::from_json_string(raw.to_string())
+            .expect("événement d'historique de test valide");
+        TimelineEvent::from_plaintext(raw)
+    }
+
+    // Must « recent_messages » (amendement 2026-11-16, `matrix#DEC-3`) : la relation d'un message
+    // d'historique est extraite comme la remise en direct (sync::relation_ids) — message de fil avec
+    // repli : racine ET événement du repli rapportés.
+    #[test]
+    fn history_thread_message_carries_root_and_fallback() {
+        let event = history_event(
+            "dans le fil",
+            Some(serde_json::json!({
+                "rel_type": "m.thread",
+                "event_id": "$root:example.org",
+                "is_falling_back": true,
+                "m.in_reply_to": { "event_id": "$prev:example.org" },
+            })),
+        );
+        let message = text_message("!salon:example.org", &event).expect("message texte de l'historique");
+        assert_eq!(
+            message.thread_root.as_deref(),
+            Some("$root:example.org"),
+            "racine du fil attendue : {message:?}"
+        );
+        assert_eq!(
+            message.in_reply_to.as_deref(),
+            Some("$prev:example.org"),
+            "repli du fil attendu : {message:?}"
+        );
+    }
+
+    // Must « recent_messages » (amendement 2026-11-16, `matrix#DEC-3`) : réponse simple lue dans
+    // l'historique — `in_reply_to` seul, comme en direct.
+    #[test]
+    fn history_reply_message_carries_reply_only() {
+        let event = history_event(
+            "réponse",
+            Some(serde_json::json!({ "m.in_reply_to": { "event_id": "$vise:example.org" } })),
+        );
+        let message = text_message("!salon:example.org", &event).expect("message texte de l'historique");
+        assert_eq!(message.thread_root, None, "pas de fil attendu : {message:?}");
+        assert_eq!(
+            message.in_reply_to.as_deref(),
+            Some("$vise:example.org"),
+            "réponse attendue : {message:?}"
+        );
+    }
+
+    // Must « recent_messages » (amendement 2026-11-16, `matrix#DEC-3`) : message à plat lu dans
+    // l'historique — aucune relation rapportée.
+    #[test]
+    fn history_flat_message_carries_no_relation() {
+        let event = history_event("à plat", None);
+        let message = text_message("!salon:example.org", &event).expect("message texte de l'historique");
+        assert_eq!(message.thread_root, None, "aucune racine attendue : {message:?}");
+        assert_eq!(message.in_reply_to, None, "aucune réponse attendue : {message:?}");
     }
 
     #[tokio::test]
