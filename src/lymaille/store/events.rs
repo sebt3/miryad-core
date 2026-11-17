@@ -612,6 +612,89 @@ mod tests {
         );
     }
 
+    /// Nombre d'événements écrits par écrivain dans le test de conflit/reprise (`C-TESTS`).
+    const EVENEMENTS_PAR_ECRIVAIN: u64 = 10;
+
+    /// Tâche « Test du chemin conflit/reprise (C-TESTS) » de `./events.sdd` : `MAX + 1` repris
+    /// au plus 5 fois sur violation `(session_id, seq)`, sur PostgreSQL réel (la fixture SQLite à
+    /// une connexion ne peut pas produire la violation — voir la limite assumée du test
+    /// ci-dessus). Deux `SeaEventLog` sur la même session, entrelacés par une barrière à chaque
+    /// lot (aucun délai temporel) : les deux transactions lisent le même maximum et s'affrontent
+    /// sur la contrainte unique ; PostgreSQL sérialise les insertions de même clé, le perdant
+    /// relit le maximum à sa reprise et s'insère juste après — chaque lot aboutit en deux
+    /// tentatives au plus, loin des 5 reprises promises. Assertions : les 2N curseurs rendus
+    /// sont exactement 1 à 2N (distincts et consécutifs, sans trou ni doublon), `read_after` et
+    /// `last_seq` les confirment, aucune erreur remontée. Le nombre de reprises par lot n'est
+    /// pas mesurable par l'API publique (`append` ne rend que les curseurs) : un épuisement
+    /// des 5 reprises serait rattrapé ici comme `Store` (erreur remontée) et comme trou dans la
+    /// séquence.
+    ///
+    /// Gate à la convention du banc `turn_lock.rs` : `#[ignore]` + lecture de
+    /// `MIRYAD_TEST_PG_URL` (sans elle le corps part sur SQLite, donc retour immédiat sans
+    /// affirmation). `test_db()` porte la bascule PostgreSQL et les migrations de l'hôte ; le
+    /// pool par défaut (10 connexions PostgreSQL) rend les deux transactions réellement
+    /// concurrentes sur un seul pool.
+    #[tokio::test]
+    #[ignore = "exige PostgreSQL (MIRYAD_TEST_PG_URL)"]
+    async fn ecrivains_concurrents_reprennent_le_maximum() {
+        const PG_URL_VAR: &str = "MIRYAD_TEST_PG_URL";
+        if !std::env::var(PG_URL_VAR).is_ok_and(|url| !url.is_empty()) {
+            return; // même convention que `turn_lock.rs` : sans base, le test ne dit rien.
+        }
+        let db = test_db().await;
+        assert!(
+            matches!(db.get_database_backend(), sea_orm::DatabaseBackend::Postgres),
+            "`{PG_URL_VAR}` doit pointer sur un PostgreSQL réel : la fixture SQLite à une \
+             connexion ne produit jamais la violation d'unicité visée"
+        );
+        let a = SeaEventLog::new(db.clone());
+        let b = SeaEventLog::new(db.clone());
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let writer = |log: SeaEventLog, tag: &'static str| {
+            let barrier = std::sync::Arc::clone(&barrier);
+            async move {
+                let mut cursors = Vec::new();
+                for turn in 0..EVENEMENTS_PAR_ECRIVAIN {
+                    // Même instant de départ à chaque lot : les deux `MAX + 1` sont lus sur le
+                    // même maximum, la collision est recherchée (barrière, jamais un délai).
+                    barrier.wait().await;
+                    let mut rendu = log
+                        .append(&session("s1"), &[event(tag, turn)], now())
+                        .await
+                        .expect("un lot d'un écrivain concurrent est accepté (reprise ≤ 5)");
+                    assert_eq!(rendu.len(), 1, "un lot d'un événement rend un curseur");
+                    cursors.append(&mut rendu);
+                }
+                cursors
+            }
+        };
+        let (first, second) = tokio::join!(writer(a, "a"), writer(b, "b"));
+        let total = EVENEMENTS_PAR_ECRIVAIN * 2;
+        let mut cursors = first;
+        cursors.extend(second);
+        cursors.sort_unstable();
+        assert_eq!(
+            cursors,
+            (1..=total).collect::<Vec<u64>>(),
+            "les {total} curseurs rendus sont tous distincts et consécutifs, de 1 à {total}"
+        );
+        let log = SeaEventLog::new(db);
+        let page = log
+            .read_after(&session("s1"), None, 1_000)
+            .await
+            .expect("la relecture du journal croisé réussit");
+        assert_eq!(
+            seqs(&page),
+            cursors,
+            "les lignes écrites portent exactement les mêmes curseurs, en ordre croissant"
+        );
+        assert_eq!(
+            log.last_seq(&session("s1")).await.expect("last_seq"),
+            Some(total),
+            "le dernier curseur de s1 est {total}"
+        );
+    }
+
     /// `Scenario` « `purge_before` ne supprime que l'ancien » : les lignes de `t0` partent, celles
     /// de `t0 + 2 h` restent ; le second appel rend 0.
     #[tokio::test]
