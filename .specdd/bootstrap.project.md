@@ -110,6 +110,9 @@ l'écart est un `[!]`.
   — `/auth/*`, `GET /api/v1/me`, `GET /api/v1/users`, `/api/v1/tokens` — ne sont pas des
   @MiryadResource et sont **REST-only par nature** ; la règle de parité ne les vise pas (`rest/me.sdd`,
   `rest/admin.sdd`, `rest/tokens.sdd`).
+  Exemption nommée (arbitrée le 2026-11-16, issue #86) : les outils applicatifs enregistrés par l'hôte
+  (`McpToolRegistry::register_tool`) ne sont pas des @MiryadResource et n'ont pas d'équivalent REST ; la
+  règle de parité ne les vise pas (`mcp/app_tool.sdd`, DSD `mcp` `DEC-1`).
 - Frontière de dépôt : miryad-core est une bibliothèque publiée sur crates.io, pas un
   déployable. Dockerfile, chart Helm, doc de déploiement CNPG/Authentik et générateur
   frontend TypeScript vivent dans `miryad` (le template), pas dans ce dépôt.
