@@ -211,11 +211,11 @@ async fn send_with_same_txn_id_is_idempotent() {
     let txn = format!("live-idem-{}", live.suffix);
 
     let first = client
-        .send(&room, &body, None, MessageKind::Text, Some(&txn))
+        .send(&room, &body, None, MessageKind::Text, None, Some(&txn))
         .await
         .expect("premier envoi");
     let second = client
-        .send(&room, &body, None, MessageKind::Text, Some(&txn))
+        .send(&room, &body, None, MessageKind::Text, None, Some(&txn))
         .await
         .expect("second envoi avec le même txn_id");
     assert_eq!(first, second, "même txn_id : même event_id attendu");
@@ -244,11 +244,11 @@ async fn recent_messages_is_chronological() {
     let second_body = format!("miryad live test ordre b {}", live.suffix);
 
     client
-        .send(&room, &first_body, None, MessageKind::Text, None)
+        .send(&room, &first_body, None, MessageKind::Text, None, None)
         .await
         .expect("envoi du premier message");
     client
-        .send(&room, &second_body, None, MessageKind::Text, None)
+        .send(&room, &second_body, None, MessageKind::Text, None, None)
         .await
         .expect("envoi du second message");
 
@@ -308,7 +308,7 @@ async fn run_sync_never_delivers_own_messages_and_stops_cleanly() {
 
     let body = format!("miryad live test bot {}", live.suffix);
     client
-        .send(&room, &body, None, MessageKind::Text, None)
+        .send(&room, &body, None, MessageKind::Text, None, None)
         .await
         .expect("envoi du message du bot");
     tokio::time::sleep(OWN_MESSAGE_WAIT).await;
@@ -419,6 +419,7 @@ impl MatrixEventHandler for EchoOnce {
                 &body,
                 None,
                 MessageKind::Text,
+                None,
                 Some(&message.event_id),
             )
             .await

@@ -806,7 +806,7 @@ impl MatrixEventHandler for ChatBridge {
 #[async_trait::async_trait]
 impl ChatSender for MatrixClient {
     async fn send(&self, room_id: &str, body: &str, txn_id: Option<&str>) -> Result<String, String> {
-        MatrixClient::send(self, room_id, body, None, MessageKind::Text, txn_id)
+        MatrixClient::send(self, room_id, body, None, MessageKind::Text, None, txn_id)
             .await
             .map_err(|panne| panne.to_string())
     }

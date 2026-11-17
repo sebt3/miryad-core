@@ -230,11 +230,20 @@ Tasks:
     refuse avec `RoomUnavailable` plutôt que d'envoyer en clair (jamais de repli non chiffré) et on
     avise (par exemple n'enregistrer `matrix_send` que dans le processus qui synchronise).
 
-  [ ] Tâche F (2026-11-16, issue #87, `matrix#FR-9`) : @MessageRelation, nouveau paramètre `relation` de `send`, validation des
+  [x] Tâche F (2026-11-16, issue #87, `matrix#FR-9`) : @MessageRelation, nouveau paramètre `relation` de `send`, validation des
     identifiants d'événement, `apply_thread`, branche `Reply` — tests d'abord (Scenario `apply_thread`, identifiant d'événement
     mal formé sans réseau), puis ./client.rs ; adaptation ponctuelle des deux appelants, ../workflow/matrix_step.rs et ../lymaille/chat/bridge.rs (voir `Can modify`), et des appels de
     ../../tests/matrix_live.rs, pour que `workflow,matrix`, `lymaille,matrix` et les tests d'intégration compilent. Après ./error.sdd (variante `EventNotFound`) et ./sync.sdd (`MessageParts`) ; les `[?]` de `Must` sont
     à consigner ici avec le choix retenu.
+    Validé 2026-11-17 (validator GO, cycle 3/8, batterie 17+17 verte) : `MessageRelation` aux derives exigés (identifiants `String`) ;
+    `send` à six paramètres, `parse_relation` avant tout réseau (3 cas mal formés → `InvalidId`, `MRD-MATRIX-005`, prouvés sans
+    homeserver) ; `from_fetch_error` : 404 → `EventNotFound` portant l'identifiant visé, 429 retryable conservée, autres → `Sdk` ;
+    4 tests ajoutés, 1 adapté ; appelants à `None` (les vraies valeurs viennent en M1/G).
+    - [?] **choix consigné (Must, `matrix#OI-7` point (b)) :** `Thread` construit sa relation à la main (`Thread::plain`, aucune
+      requête) et ne détecte pas une racine inconnue du serveur ; `Reply` passe par `Room::make_reply_event` (une requête, erreur
+      typée → `EventNotFound`) et ne forme pas de fil (`EnforceThread::Unthreaded`, `AddMentions::Yes`). Choix retenu, conforme à
+      l'arbitrage du 2026-11-16 ; la mesure du comportement de Palpo pour une relation vers un événement inconnu reste attendue de la
+      tâche D bis.
   [ ] Tâche G (2026-11-16, `matrix#FR-10`) : `edit` et sa traduction d'erreurs — tests d'abord (identifiants mal formés sans réseau),
     puis ./client.rs. Après la tâche F. La partie qui parle au serveur (remplacement effectivement affiché, `NotAuthor`,
     événement inconnu, salle chiffrée) n'est prouvée que par le test live.

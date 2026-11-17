@@ -20,9 +20,16 @@ use matrix_sdk::authentication::oauth::{ClientId, OAuthSession, UserSession};
 use matrix_sdk::cross_process_lock::CrossProcessLockConfig;
 use matrix_sdk::deserialized_responses::TimelineEvent;
 use matrix_sdk::room::MessagesOptions;
-use matrix_sdk::ruma::events::room::message::{MessageType, RoomMessageEventContent};
+use matrix_sdk::room::reply::{EnforceThread, Reply as SdkReply, ReplyError};
+use matrix_sdk::ruma::events::relation::Thread;
+use matrix_sdk::ruma::events::room::message::{
+    AddMentions, MessageType, Relation, RoomMessageEventContent, RoomMessageEventContentWithoutRelation,
+};
 use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent};
-use matrix_sdk::ruma::{OwnedDeviceId, OwnedRoomId, OwnedTransactionId, RoomId, RoomOrAliasId, UInt, UserId};
+use matrix_sdk::ruma::{
+    EventId, OwnedDeviceId, OwnedEventId, OwnedRoomId, OwnedTransactionId, RoomId, RoomOrAliasId, UInt,
+    UserId,
+};
 use matrix_sdk_crypto::store::CryptoStore;
 use sea_orm::DatabaseConnection;
 use tokio::sync::broadcast::error::RecvError;
@@ -72,6 +79,28 @@ impl fmt::Debug for SessionImport {
     }
 }
 
+/// Relation d'un message envoyé (`src/matrix/client.sdd`, amendement 2026-11-16, issue #87).
+/// Identifiants en `String` (`matrix#FR-1`) : la validation et la conversion en `EventId` sont
+/// faites par `send`, avant toute requête réseau. Les deux formes sont exclusives par
+/// construction (une seule valeur).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageRelation {
+    /// Message dans le fil dont `root` est l'événement racine (`m.relates_to` de type `m.thread`).
+    Thread {
+        /// Identifiant de l'événement racine du fil (forme `$…`).
+        root: String,
+        /// Dernier événement connu du fil, cible du repli `m.in_reply_to` avec
+        /// `is_falling_back: true` pour les clients sans fils ; absent : la racine.
+        latest: Option<String>,
+    },
+    /// Réponse à l'événement `to` (`m.in_reply_to`, sans fil — arbitré le 2026-11-16,
+    /// `EnforceThread::Unthreaded`).
+    Reply {
+        /// Identifiant de l'événement visé (forme `$…`).
+        to: String,
+    },
+}
+
 /// Construit le contenu d'un message : texte brut, ou texte brut plus HTML (`formatted_body`,
 /// `org.matrix.custom.html`) quand `html` est fourni (`src/matrix/client.sdd`).
 pub(crate) fn build_content(body: &str, html: Option<&str>, kind: MessageKind) -> RoomMessageEventContent {
@@ -81,6 +110,20 @@ pub(crate) fn build_content(body: &str, html: Option<&str>, kind: MessageKind) -
         (MessageKind::Notice, None) => RoomMessageEventContent::notice_plain(body),
         (MessageKind::Notice, Some(html)) => RoomMessageEventContent::notice_html(body, html),
     }
+}
+
+/// Applique la relation `m.thread` à un contenu : `m.relates_to` de type `m.thread` visant `root`,
+/// avec le repli `m.in_reply_to` sur `latest` (sinon `root`) et `is_falling_back: true`
+/// (`src/matrix/client.sdd`, issue #87). Aucune requête réseau.
+pub(crate) fn apply_thread(
+    content: RoomMessageEventContent,
+    root: &EventId,
+    latest: Option<&EventId>,
+) -> RoomMessageEventContent {
+    let fallback = latest.unwrap_or(root);
+    RoomMessageEventContentWithoutRelation::from(content).with_relation(Some(Relation::Thread(
+        Thread::plain(root.to_owned(), fallback.to_owned()),
+    )))
 }
 
 /// État partagé du client (`src/matrix/client.sdd`). Visibilité `pub(crate)` : `sync.rs` lit ses
@@ -201,20 +244,44 @@ impl MatrixClient {
     ///
     /// # Errors
     ///
-    /// `MatrixError::InvalidId` si `room_id` n'est pas un identifiant de salle `!x:y`,
-    /// `MatrixError::RoomUnavailable` si la salle est inaccessible, `MatrixError::Sdk` ou
-    /// `MatrixError::Network` pour les autres échecs.
+    /// `MatrixError::InvalidId` si `room_id` n'est pas un identifiant de salle `!x:y`, ou si un
+    /// identifiant d'événement de `relation` est mal formé, `MatrixError::RoomUnavailable` si la
+    /// salle est inaccessible, `MatrixError::EventNotFound` si l'événement visé par une `Reply` est
+    /// introuvable, `MatrixError::Sdk` ou `MatrixError::Network` pour les autres échecs.
     pub async fn send(
         &self,
         room_id: &str,
         body: &str,
         html: Option<&str>,
         kind: MessageKind,
+        relation: Option<&MessageRelation>,
         txn_id: Option<&str>,
     ) -> Result<String, MatrixError> {
         let room_id = parse_room_id(room_id)?;
+        // Tout identifiant d'événement de `relation` est validé avant toute requête réseau, comme
+        // `room_id` (`src/matrix/client.sdd`, issue #87).
+        let relation = relation.map(parse_relation).transpose()?;
         let content = build_content(body, html, kind);
         let room = self.joined_room(&room_id).await?;
+        let content = match relation {
+            None => content,
+            Some(ParsedRelation::Thread { root, latest }) => apply_thread(content, &root, latest.as_deref()),
+            Some(ParsedRelation::Reply { to }) => {
+                // `EnforceThread::Unthreaded` : une réponse ne forme pas de fil (arbitré le
+                // 2026-11-16) ; pour y rester, l'hôte utilise `Thread`.
+                let target = to.to_string();
+                room.make_reply_event(
+                    RoomMessageEventContentWithoutRelation::from(content),
+                    SdkReply {
+                        event_id: to,
+                        enforce_thread: EnforceThread::Unthreaded,
+                        add_mentions: AddMentions::Yes,
+                    },
+                )
+                .await
+                .map_err(|err| from_fetch_error(err, &target))?
+            }
+        };
         let event_id = match txn_id {
             Some(txn) => {
                 room.send(content)
@@ -354,6 +421,53 @@ async fn build_client(
 /// Identifiant de salle `!x:y`. Un alias (`#x:y`) ou une forme invalide est `InvalidId`.
 fn parse_room_id(room_id: &str) -> Result<OwnedRoomId, MatrixError> {
     RoomId::parse(room_id).map_err(|_| MatrixError::InvalidId(room_id.to_owned()))
+}
+
+/// Relation validée : identifiants d'événement convertis, aucune requête réseau implicite
+/// (`src/matrix/client.sdd`, issue #87).
+enum ParsedRelation {
+    Thread {
+        root: OwnedEventId,
+        latest: Option<OwnedEventId>,
+    },
+    Reply {
+        to: OwnedEventId,
+    },
+}
+
+/// Identifiant d'événement `$…`. Toute forme invalide est `InvalidId`.
+fn parse_event_id(id: &str) -> Result<OwnedEventId, MatrixError> {
+    EventId::parse(id).map_err(|_| MatrixError::InvalidId(id.to_owned()))
+}
+
+/// Valide les identifiants d'une `MessageRelation` avant toute requête (`src/matrix/client.sdd`).
+fn parse_relation(relation: &MessageRelation) -> Result<ParsedRelation, MatrixError> {
+    match relation {
+        MessageRelation::Thread { root, latest } => Ok(ParsedRelation::Thread {
+            root: parse_event_id(root)?,
+            latest: latest.as_deref().map(parse_event_id).transpose()?,
+        }),
+        MessageRelation::Reply { to } => Ok(ParsedRelation::Reply {
+            to: parse_event_id(to)?,
+        }),
+    }
+}
+
+/// Traduit une erreur de récupération de l'événement visé par une réponse
+/// (`src/matrix/client.sdd`, `matrix#DEC-3`) : retryable conservée pour le retry du step, sinon
+/// `EventNotFound` de l'identifiant visé ; `Deserialization` et `StateEvent` sont des erreurs `Sdk`.
+fn from_fetch_error(err: ReplyError, event_id: &str) -> MatrixError {
+    match err {
+        ReplyError::Fetch(inner) => {
+            let translated = from_sdk(&inner);
+            if translated.retryable() {
+                translated
+            } else {
+                MatrixError::EventNotFound(event_id.to_owned())
+            }
+        }
+        ReplyError::Deserialization | ReplyError::StateEvent => MatrixError::Sdk(err.to_string()),
+    }
 }
 
 /// Message texte, notice ou emote d'un événement de l'historique (`src/matrix/client.sdd`). Rend
@@ -540,15 +654,16 @@ fn spawn_session_persistence(
 #[cfg(test)]
 mod tests {
     use super::{
-        MatrixClient, MessageKind, OAUTH_CLIENT_KEY, SessionImport, build_client, build_content,
-        decode_client_id, device_code_ca_certificate, device_code_http_client, encode_client_id,
-        load_client_id, oauth_session, sdk_ca_certificates,
+        MatrixClient, MessageKind, MessageRelation, OAUTH_CLIENT_KEY, SessionImport, apply_thread,
+        build_client, build_content, decode_client_id, device_code_ca_certificate, device_code_http_client,
+        encode_client_id, from_fetch_error, load_client_id, oauth_session, sdk_ca_certificates,
     };
     use crate::matrix::config::{MatrixConfig, TEST_CA_PEM};
     use crate::matrix::device_code::DeviceCodeTokens;
     use crate::matrix::error::MatrixError;
     use crate::matrix::session::StoredSession;
     use crate::matrix::store::{SeaOrmCryptoStore, StoreError};
+    use matrix_sdk::ruma::EventId;
     use matrix_sdk::ruma::events::room::message::{MessageType, RoomMessageEventContent};
     use matrix_sdk_crypto::store::CryptoStore;
     use sea_orm::{ConnectOptions, Database, DatabaseConnection};
@@ -655,12 +770,146 @@ mod tests {
     async fn send_refuses_room_alias() {
         let client = imported_client().await;
         let result = client
-            .send("#salon:example.org", "salut", None, MessageKind::Text, None)
+            .send("#salon:example.org", "salut", None, MessageKind::Text, None, None)
             .await;
         assert!(
             matches!(result, Err(MatrixError::InvalidId(_))),
             "obtenu : {result:?}"
         );
+    }
+
+    // Scenario: apply_thread pose une relation de fil avec repli (issue #87)
+    #[test]
+    fn apply_thread_poses_thread_relation_with_fallback() {
+        let root = EventId::parse("$root").expect("racine de test valide");
+        let latest = EventId::parse("$last").expect("dernier événement de test valide");
+        let relates_to = |latest: Option<&EventId>| {
+            let content = apply_thread(build_content("salut", None, MessageKind::Text), &root, latest);
+            let json = serde_json::to_value(&content).expect("contenu sérialisable");
+            json["m.relates_to"].clone()
+        };
+        assert_eq!(
+            relates_to(None),
+            serde_json::json!({
+                "rel_type": "m.thread",
+                "event_id": "$root",
+                "is_falling_back": true,
+                "m.in_reply_to": { "event_id": "$root" }
+            }),
+            "repli sans `latest` attendu sur la racine"
+        );
+        assert_eq!(
+            relates_to(Some(&latest)),
+            serde_json::json!({
+                "rel_type": "m.thread",
+                "event_id": "$root",
+                "is_falling_back": true,
+                "m.in_reply_to": { "event_id": "$last" }
+            }),
+            "repli sur `latest` attendu"
+        );
+    }
+
+    // Scenario: un identifiant d'événement mal formé est refusé sans réseau (issue #87). Le volet
+    // `edit` de ce Scenario appartient à la tâche G (`edit` n'existe pas encore).
+    #[tokio::test]
+    async fn send_refuses_malformed_event_relation() {
+        let client = imported_client().await;
+        let cases = [
+            MessageRelation::Thread {
+                root: "pas-un-id".into(),
+                latest: None,
+            },
+            MessageRelation::Reply { to: String::new() },
+            MessageRelation::Thread {
+                root: "$ok".into(),
+                latest: Some("x".into()),
+            },
+        ];
+        for relation in &cases {
+            let result = client
+                .send(
+                    "!salon:example.org",
+                    "salut",
+                    None,
+                    MessageKind::Text,
+                    Some(relation),
+                    None,
+                )
+                .await;
+            assert!(
+                matches!(result, Err(MatrixError::InvalidId(_))),
+                "relation {relation:?} : obtenu {result:?}"
+            );
+        }
+    }
+
+    // Garde hors scénario (@MessageRelation, `Must` client.sdd) : `Debug`, `Clone`, `PartialEq`, `Eq`
+    // — les deux formes sont discernables et comparables.
+    #[test]
+    fn message_relation_derives_identity() {
+        let thread = MessageRelation::Thread {
+            root: "$r:example.org".into(),
+            latest: Some("$l:example.org".into()),
+        };
+        assert_eq!(thread, thread.clone());
+        assert_ne!(
+            thread,
+            MessageRelation::Reply {
+                to: "$r:example.org".into()
+            }
+        );
+        assert!(format!("{thread:?}").contains("Thread"), "Debug : {thread:?}");
+    }
+
+    // Must « Reply » (issue #87, `matrix#DEC-3`) : traduction de la récupération de l'événement visé
+    // — retryable conservée, sinon `EventNotFound` de l'identifiant visé ; `Deserialization` et
+    // `StateEvent` sont des erreurs `Sdk`. Sans réseau : erreurs construites à la main.
+    #[test]
+    fn from_fetch_error_maps_event_lookup_failures() {
+        use matrix_sdk::room::reply::ReplyError;
+        use ruma::api::EndpointError;
+        use ruma::api::error::FromHttpResponseError;
+        let sdk_http = |status: u16, body: &str| -> matrix_sdk::Error {
+            let response = ruma::exports::http::Response::builder()
+                .status(status)
+                .body(body.as_bytes().to_vec())
+                .expect("réponse de test valide");
+            matrix_sdk::Error::Http(Box::new(matrix_sdk::HttpError::Api(Box::new(
+                FromHttpResponseError::Server(matrix_sdk::RumaApiError::from_http_response(response)),
+            ))))
+        };
+        let target = "$vise:example.org";
+        let err = from_fetch_error(
+            ReplyError::Fetch(Box::new(sdk_http(
+                404,
+                r#"{"errcode":"M_NOT_FOUND","error":"Not found"}"#,
+            ))),
+            target,
+        );
+        assert!(
+            matches!(err, MatrixError::EventNotFound(ref id) if id.as_str() == target),
+            "404 → EventNotFound de l'identifiant visé attendu, obtenu : {err}"
+        );
+        let err = from_fetch_error(
+            ReplyError::Fetch(Box::new(sdk_http(
+                429,
+                r#"{"errcode":"M_LIMIT_EXCEEDED","error":"Too many requests"}"#,
+            ))),
+            target,
+        );
+        assert!(
+            matches!(err, MatrixError::Network { retryable: true, .. }),
+            "429 retryable conservée attendue, obtenu : {err}"
+        );
+        for err_in in [ReplyError::Deserialization, ReplyError::StateEvent] {
+            let shown = err_in.to_string();
+            let err = from_fetch_error(err_in, target);
+            assert!(
+                matches!(err, MatrixError::Sdk(_)),
+                "variante {shown} : Sdk attendu, obtenu : {err}"
+            );
+        }
     }
 
     // Scenario: limit hors bornes est refusée

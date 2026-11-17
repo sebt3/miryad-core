@@ -70,7 +70,7 @@ impl Sender for MatrixClient {
         kind: MessageKind,
         txn_id: &str,
     ) -> Result<String, MatrixError> {
-        MatrixClient::send(self, room_id, body, html, kind, Some(txn_id)).await
+        MatrixClient::send(self, room_id, body, html, kind, None, Some(txn_id)).await
     }
 }
 
