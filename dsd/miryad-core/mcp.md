@@ -66,19 +66,19 @@ arguments (`FR-6` à `FR-9`).
   avec la même sémantique que pour une entité (`Public`, `Group`, `AdminOnly` ; l'admin passe toujours). Un refus rend
   `-32001` sans exécuter le gestionnaire.
     - **Source:** issue #86, « Proposition » 2 et 3 ; `access-control` (`rbac::static_verdict`)
-    - **Realized by:** TBD
+    - **Realized by:** SpecDD /src/mcp/app_tool.sdd, SpecDD /src/mcp/handler.sdd
     - **Verified by:** `AC-4`
 
 - **FR-8 - MUST:** `tools/list` expose les outils applicatifs à la suite de ceux des entités, dans l'ordre croissant de leur
   nom ; `tools/call` les dispatche. Les codes JSON-RPC restent ceux de `FR-3` (`-32001` refusé, `-32602` paramètres
   invalides, `-32603` interne).
     - **Source:** issue #86, « Proposition » 3
-    - **Realized by:** TBD
+    - **Realized by:** SpecDD /src/mcp/handler.sdd
     - **Verified by:** `AC-4`
 
 - **FR-9 - MUST:** Des arguments qui ne respectent pas le schéma déclaré rendent `-32602` sans exécuter le gestionnaire.
     - **Source:** issue #86, « Critère d'acceptation »
-    - **Realized by:** TBD (dépend de `OI-1`)
+    - **Realized by:** SpecDD /src/mcp/app_tool.sdd (validation par `jsonschema`, `DEC-3`)
     - **Verified by:** `AC-5`
 
 - **FR-10 - MUST:** Un nom d'outil applicatif qui entre en collision avec un autre outil applicatif ou avec un outil
@@ -87,7 +87,7 @@ arguments (`FR-6` à `FR-9`).
     - **Source:** issue #86, « Proposition » 4 ; `SpecDD /src/mcp/registry.sdd`, `Must` (collision par `assert!`)
     - **Rationale:** `tools/call` découpe un nom en `{entité}_{opération}` (suffixe) ; un outil applicatif nommé
       `recipes_list` serait ambigu avec l'entité `recipes`, et l'ordre des deux appels ne doit pas décider du gagnant.
-    - **Realized by:** TBD
+    - **Realized by:** SpecDD /src/mcp/registry.sdd
     - **Verified by:** `AC-6`
 
 ## Constraints
@@ -116,7 +116,7 @@ arguments (`FR-6` à `FR-9`).
       ressource.
     - **Source:** issue #86, « Proposition » 5
 
-- **DEC-2 - `OwnerOnly` est refusée pour un outil applicatif** (proposé, à confirmer, voir `OI-3`)
+- **DEC-2 - `OwnerOnly` est refusée pour un outil applicatif** (confirmée le 2026-11-16, voir `OI-3`)
     - **Context:** `OwnerOnly` compare une colonne propriétaire d'un enregistrement ; `rbac::static_verdict` rend `None`
       pour elle, faute d'enregistrement. Un outil applicatif n'a pas d'enregistrement à l'évaluation.
     - **Decision:** l'enregistrement d'un outil avec `AccessPolicy::OwnerOnly` échoue au démarrage (même mécanisme que
@@ -160,7 +160,7 @@ Les specs de `src/mcp/`.
 
 Arbitrages de l'issue #86, tous soldés le 2026-11-16.
 
-- **OI-1:** **Soldé le 2026-11-16** par `DEC-3`. **TBD** restant : impact mesuré de `jsonschema` sur `cargo tree --features mcp`.
+- **OI-1:** **Soldé le 2026-11-16** par `DEC-3`. Impact mesuré le 2026-11-17 (`cargo tree --no-default-features -e normal --prefix none`, entrées uniques) : `--features mcp` en compte 409 contre 323 sous `--features db` (`mcp` implique `db`), soit 86 de plus, qui viennent de `vynil-core` **et** de `jsonschema` (`jsonschema`, `jsonschema-regex`, `jsonschema-value`, `referencing`, `fancy-regex`, `email_address`, `fluent-uri`, `fraction`, `num-*`, `bit-set`, `ahash`…) : la part de `jsonschema` seule n'est pas isolable par `cargo tree`. Le contrôle de `tooling.sdd` (`cargo tree --features mcp -e normal -i jsonschema` non vide, sans `mcp` stdout vide) est en place et vert.
   Piège constaté (source de `jsonschema` 0.60.2) : `lymaille` tire `jsonschema` avec `resolve-http` et `resolve-file` ; Cargo unifie
   les features, donc `default-features = false` ne suffit pas. Arbitré le 2026-11-16 : le validateur est construit avec un
   récupérateur de `$ref` qui refuse toute résolution (`ValidationOptions::with_retriever`).
