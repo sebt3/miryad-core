@@ -1817,9 +1817,9 @@ mod tests {
         )
         .await
         .expect("rest::core::list direct trié réussit");
+        let direct_value = serde_json::to_value(&direct).expect("PagedResult serializes");
         assert_eq!(
-            dispatched,
-            serde_json::to_value(direct).expect("PagedResult serializes"),
+            dispatched, direct_value,
             "tri délégué sans re-décision : la valeur rendue égale le core::list direct"
         );
         assert_eq!(
@@ -1835,6 +1835,16 @@ mod tests {
             suffixed, dispatched,
             "`sort=col:desc` équivaut à `sort=col` + `order=desc` (order explicite l'emporte, \
              logique partagée avec rest/mod.rs)"
+        );
+        // Verrou de la duplication de `split_sort_direction` (tâche `registry.sdd` du
+        // 2026-11-16) : comparaison SANS intermédiaire du suffixe seul au `rest::core::list`
+        // direct portant le `ListQuery` explicite — la factorisation en `query.rs` devra garder
+        // cette assertion verte, c'est elle qui grave l'égalité des deux constructions.
+        assert_eq!(
+            suffixed, direct_value,
+            "`sort=created_at:desc` sans `order` produit le MÊME `ListQuery` que \
+             `sort=created_at` + `order=desc` : égalité directe au core::list explicite, pas par \
+             la seule transitivité via `dispatched`"
         );
     }
 
@@ -1860,6 +1870,193 @@ mod tests {
             with_unknown, plain,
             "la trichotomie est identique aux deux surfaces : nom inconnu de l'entité ignoré"
         );
+    }
+
+    /// Tâche « Parité d'assertion » de `registry.sdd` (2026-11-16) — miroirs des assertions
+    /// REST de `../rest/mod.rs`, verrouillés côté MCP : (a) `sort=created_at:asc` + `order=desc`,
+    /// miroir de `wire_list_sort_suffix_and_explicit_order_combined` : l'explicite l'emporte, le
+    /// résultat égale celui de la forme `sort=created_at` + `order=desc` et celui du
+    /// `rest::core::list` direct portant le `ListQuery` `{sort: created_at, order: desc}` ;
+    /// (b) `inconnu=1` + `kind=complementary`, miroir de
+    /// `wire_list_key_unknown_to_entity_is_ignored` : seule la clé nommant une colonne déclarée
+    /// filtre, `inconnu` est ignorée et n'entre dans aucun `ListQuery`.
+    #[tokio::test]
+    async fn list_sort_conflict_and_mixed_keys_mirror_rest() {
+        let db = filterable_db().await;
+        let alice = principal("alice");
+        let entity = McpEntityImpl::<filterable::Entity>(std::marker::PhantomData);
+
+        // (a) conflit suffixe `:asc` / `order=desc` : l'explicite l'emporte.
+        let conflicted = entity
+            .call(
+                McpOp::List,
+                &db,
+                &alice,
+                json!({"sort": "created_at:asc", "order": "desc"}),
+            )
+            .await
+            .expect("le conflit suffixe/order se résout, il n'est jamais refusé");
+        let explicit = entity
+            .call(
+                McpOp::List,
+                &db,
+                &alice,
+                json!({"sort": "created_at", "order": "desc"}),
+            )
+            .await
+            .expect("la forme explicite réussit");
+        assert_eq!(
+            conflicted, explicit,
+            "miroir de `wire_list_sort_suffix_and_explicit_order_combined` : `order` explicite \
+             l'emporte sur le suffixe de `sort` (`params.order.or_else(suffix)`)"
+        );
+        let direct_desc = crate::rest::core::list::<filterable::Entity>(
+            &db,
+            &alice,
+            None,
+            None,
+            None,
+            crate::query::ListQuery {
+                filters: Vec::new(),
+                sort: Some("created_at".to_owned()),
+                order: Some("desc".to_owned()),
+            },
+        )
+        .await
+        .expect("rest::core::list direct en descendant réussit");
+        assert_eq!(
+            conflicted,
+            serde_json::to_value(direct_desc).expect("PagedResult serializes"),
+            "le `ListQuery` construit est bien celui de la forme explicite sort=created_at, \
+             order=desc : le conflit n'est pas seulement résolu en valeur, il construit la \
+             requête descendante"
+        );
+        assert_eq!(
+            conflicted["items"][0]["created_at"], 30,
+            "rendu descendant : la ligne au `created_at` 30 en tête"
+        );
+
+        // (b) clé hors entité + colonne déclarée : seul `kind` filtre.
+        let mixed = entity
+            .call(
+                McpOp::List,
+                &db,
+                &alice,
+                json!({"inconnu": 1, "kind": "complementary"}),
+            )
+            .await
+            .expect("la clé hors entité est ignorée, jamais refusée");
+        let kind_only = entity
+            .call(McpOp::List, &db, &alice, json!({"kind": "complementary"}))
+            .await
+            .expect("le critère seul réussit");
+        assert_eq!(
+            mixed, kind_only,
+            "miroir de `wire_list_key_unknown_to_entity_is_ignored` : `inconnu` est ignorée, \
+             seul `kind` filtre"
+        );
+        let direct_kind = crate::rest::core::list::<filterable::Entity>(
+            &db,
+            &alice,
+            None,
+            None,
+            None,
+            crate::query::ListQuery {
+                filters: vec![("kind".to_owned(), "complementary".to_owned())],
+                sort: None,
+                order: None,
+            },
+        )
+        .await
+        .expect("rest::core::list direct sur `kind` réussit");
+        assert_eq!(
+            mixed,
+            serde_json::to_value(direct_kind).expect("PagedResult serializes"),
+            "le `ListQuery` construit ne porte que `kind` : `inconnu` n'y entre pas"
+        );
+        assert_eq!(
+            mixed["total_items"], 2,
+            "les deux lignes `complementary` passent, la `primary` reste exclue"
+        );
+    }
+
+    /// Tâche « Parité de construction » de `registry.sdd` (2026-11-16) — la comparaison MCP ↔
+    /// REST ne passe plus par un `ListQuery` écrit à la main : MCP
+    /// `{"project_id":3,"sort":"created_at","order":"desc"}` et REST
+    /// `?project_id=3&sort=created_at&order=desc` traversent chacun leur propre frontière
+    /// (`McpEntity::call` / `rest::list_handler` monté par `resource_router`) et rendent les
+    /// MÊMES lignes, dans le MÊME ordre, sous les MÊMES totaux. L'égalité des deux `PagedResult`
+    /// rendus prouve l'équivalence des deux `ListQuery` construits — chaque frontière construit
+    /// la sienne (`ListParams` aplati ici, `Query<HashMap>` là), aucune des deux ne le recopie.
+    #[tokio::test]
+    async fn list_parity_goes_through_rest_list_handler() {
+        let db = filterable_db().await;
+        let alice = principal("alice");
+        let entity = McpEntityImpl::<filterable::Entity>(std::marker::PhantomData);
+
+        let mcp = entity
+            .call(
+                McpOp::List,
+                &db,
+                &alice,
+                json!({"project_id": 3, "sort": "created_at", "order": "desc"}),
+            )
+            .await
+            .expect("`_list` MCP avec critère, tri et ordre réussit");
+
+        // Même entrée, frontière REST : la query string arrive brute à `list_handler` via le
+        // routeur monté (mêmes helpers que `../rest/mod.rs`, portés ici car le `mod tests` de
+        // ce fichier-là est privé).
+        let token = crate::auth::issue_token(&db, "alice", "parity-test", None, "test-pepper")
+            .await
+            .expect("issue_token succeeds")
+            .token;
+        let state = crate::auth::MiryadAuthState {
+            oidc_client: std::sync::Arc::new(crate::auth::oidc::MockOidcClient::default()),
+            cookie_key: cookie::Key::from(&[0u8; 64]),
+            post_login_redirect: "/".to_string(),
+            post_logout_redirect: "/".to_string(),
+            db: db.clone(),
+            secure_cookies: false,
+            token_pepper: "test-pepper".to_string(),
+        };
+        let app = axum::Router::new()
+            .merge(crate::rest::resource_router::<
+                filterable::Entity,
+                crate::auth::MiryadAuthState,
+            >())
+            .with_state(state);
+        let response = tower::ServiceExt::oneshot(
+            app,
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/v1/filterables?project_id=3&sort=created_at&order=desc")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("router does not fail");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let rest: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("readable body"),
+        )
+        .expect("PagedResult JSON body");
+
+        assert_eq!(
+            rest, mcp,
+            "mêmes lignes, même ordre, mêmes totaux : `list_handler` (query string) et \
+             `McpEntity::call` (arguments JSON aplatis) construisent le même `ListQuery`, sans \
+             comparaison à un `ListQuery` écrit à la main"
+        );
+        assert_eq!(rest["total_items"], 2, "les deux lignes du projet 3");
+        assert_eq!(
+            rest["items"][0]["created_at"], 30,
+            "tri descendant rendu à l'identique par les deux surfaces"
+        );
+        assert_eq!(rest["items"][1]["created_at"], 20);
     }
 
     /// `Handles` (amendement du 2026-11-13, issue #78) : une valeur de critère non scalaire est
