@@ -305,6 +305,12 @@ impl McpToolRegistry {
     /// générés `{resource_name}{suffixe}` existe déjà parmi les outils applicatifs : le message
     /// cite ce nom d'outil ; `register_tool` refuse la collision inverse, l'ordre des deux
     /// appels ne décide jamais du gagnant.
+    ///
+    /// Refuse enfin (issue #105) une entité dont une colonne filtrable est d'un type hors
+    /// {entier, booléen, texte}, c'est-à-dire sans facette dans le mapping `filter_type` de
+    /// `declared_columns` : la colonne ne serait jamais annoncée dans le schéma de `_list`, et
+    /// un filtre sur elle serait incohérent avec sa déclaration. Le message cite la colonne et
+    /// le nom de l'entité, comme le refus des noms réservés.
     pub fn register<E: RestEntity>(&mut self) -> &mut Self {
         let name = E::resource_name();
         assert!(
@@ -320,6 +326,13 @@ impl McpToolRegistry {
                 "`{name}` declares a filterable column named `{column_name}` — `page`, `per_page`, \
                  `filter`, `sort` and `order` are reserved by the list query string, refusing to \
                  register it"
+            );
+            assert!(
+                filter_type(column.def().get_column_type()).is_some(),
+                "`{name}` declares a filterable column `{column_name}` of an unsupported type — \
+                 only integer, boolean and text columns are filterable over MCP (the same mapping \
+                 `declared_columns` uses for the `_list` schema); refusing to register an entity \
+                 whose filterable column could never be advertised"
             );
         }
         for suffix in ENTITY_TOOL_SUFFIXES {
@@ -931,6 +944,44 @@ mod tests {
         }
     }
 
+    /// Entité dont une colonne filtrable est d'un type hors {entier, booléen, texte} (`weight`
+    /// `f32`) — `register` doit refuser l'entité (issue #105 : le type n'a pas de facette dans le
+    /// mapping `filter_type`, la colonne ne serait jamais annoncée dans le schéma de `_list`).
+    mod float_filterable {
+        use super::*;
+
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, DeriveEntityModel)]
+        #[sea_orm(table_name = "float_filterable")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub weight: f32,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+
+        impl MiryadResource for Entity {
+            fn resource_name() -> &'static str {
+                "weights"
+            }
+            fn read_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn write_policy() -> AccessPolicy {
+                AccessPolicy::Public
+            }
+            fn owner_column() -> Option<Column> {
+                None
+            }
+            fn filterable_columns() -> Vec<Column> {
+                vec![Column::Weight]
+            }
+        }
+    }
+
     #[test]
     fn declared_columns_relit_le_trait_en_direct() {
         let mut registry = McpToolRegistry::new(OutputFormat::Json);
@@ -975,6 +1026,17 @@ mod tests {
     fn register_refuse_une_colonne_filtrable_au_nom_reserve() {
         let mut registry = McpToolRegistry::new(OutputFormat::Json);
         registry.register::<sort_clash::Entity>();
+    }
+
+    /// Issue #105 : colonne filtrable d'un type hors {entier, booléen, texte} (`weight` `f32`) —
+    /// `register` échoue par `assert!`, message citant la colonne et le nom de l'entité (même
+    /// style que le refus des noms réservés). Aucun changement du schéma de `_list` : la colonne
+    /// n'y est pas annoncée, c'est précisément ce que le refus rend cohérent.
+    #[test]
+    #[should_panic(expected = "`weights` declares a filterable column `weight`")]
+    fn colonne_filtrable_type_non_pris_en_charge_panique_au_register() {
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register::<float_filterable::Entity>();
     }
 
     /// Base sqlite en mémoire migrée des seules tables de `crate::migration` (dont
