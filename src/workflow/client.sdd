@@ -306,6 +306,10 @@ Tasks:
     Puis tests d'abord (stub HTTP pour les cas sans serveur), puis ./client.rs. Après la tâche « Issue #80 (2) » ci-dessus et la tâche d'implémentation de ./durable.sdd (la forme d'ingress y est mesurée une première fois).
   [x] Issue #26 — ré-exports `resolve_awakeable` et `reject_awakeable` : étendre la liste plate de ./mod.sdd et le test `workflow_flat_paths` (voir la tâche « ré-exports #80 » de ./mod.sdd, même cycle). Après la tâche précédente.
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). `resolve_awakeable` et `reject_awakeable` ajoutés en dernier à la liste plate de ./mod.rs ; test `workflow_flat_paths` étendu (rouge d'abord).
+    - [!] (cycle I7 2026-11-17, reporté de ./../lymaille/definitions/mod.sdd) : `cargo doc
+      --all-features --no-deps` relève ici 5 liens `unresolved` vers `../../tests/workflow_restate.rs` (./client.rs
+      ~l. 416/507/552/611/639) et 1 lien `unresolved` vers `EventRelay` — à convertir en texte inline (ou lien résolvable),
+      même correction que le cycle I7.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.

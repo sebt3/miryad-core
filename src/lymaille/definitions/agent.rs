@@ -329,7 +329,7 @@ mod tests {
     /// colonne `profile` fausse dans l'`ActiveModel`, rend `profile = ""` (« suit le profil par
     /// défaut de l'hôte ») et la définition JSON traverse inchangée. La moitié « avec profil » du
     /// Scenario est verrouillée par
-    /// [`before_create_accepte_une_definition_valide_et_derive_les_colonnes`] (`profile = "qwen"`,
+    /// `before_create_accepte_une_definition_valide_et_derive_les_colonnes` (`profile = "qwen"`,
     /// copie inchangée).
     #[tokio::test]
     async fn une_definition_sans_profil_donne_une_colonne_profile_vide() {

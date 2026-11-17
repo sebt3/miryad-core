@@ -135,7 +135,7 @@ impl Entity {
     const PANNE_AUTORISATION: &'static str = "authorization check unavailable";
 
     /// Porte commune de `before_create` (`existing` absent) et `before_update`, dans l'ordre du
-    /// `Must` de `./user_context.sdd` : d'abord [`Self::valider_et_deriver`] (`context` désérialisé
+    /// `Must` de `./user_context.sdd` : d'abord `Self::valider_et_deriver` (`context` désérialisé
     /// sans secret, `level` = `User`, `name` privé, `context_type` de forme valide, nom inchangé à
     /// la mise à jour) — `Must not` : aucun contrôle de serveur avant cette validation. Ensuite
     /// (amendement du 2026-11-11, DSD `hooks-async` `DEC-7`), **chaque rôle lié** passe par
@@ -145,7 +145,7 @@ impl Entity {
     /// sans ligne `mcp_servers`, est refusé à l'écriture comme dans le store ; absent et interdit
     /// rendent le même `HookError` sans code `mcp server unavailable`, sans oracle d'existence.
     /// Une panne de lecture ou un `subject` inconnu rendent le texte fixe
-    /// [`Self::PANNE_AUTORISATION`] (échec fermé). Le principal est reconstruit **une fois par
+    /// `Self::PANNE_AUTORISATION` (échec fermé). Le principal est reconstruit **une fois par
     /// sauvegarde**, jamais mis en cache entre deux écritures (`Must not`).
     async fn valider_et_controler_serveurs<C: sea_orm::ConnectionTrait>(
         db: &C,

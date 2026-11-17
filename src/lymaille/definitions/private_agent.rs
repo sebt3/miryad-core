@@ -101,7 +101,7 @@ impl Entity {
     /// de ./agent.rs dans le même ordre, interrompues au premier échec — `definition` objet JSON
     /// présent, désérialisable en `lymaille::AgentDefinition` et validée par sa `validate` (la
     /// cause traverse, jamais le prompt), puis ici `classify = Private`
-    /// ([`Self::verifier_identifiant`], à la place de l'étape `G_` du catalogue) ; sur une mise à jour
+    /// (`Self::verifier_identifiant`, à la place de l'étape `G_` du catalogue) ; sur une mise à jour
     /// l'identifiant ne change pas et `created_at` reste celui de la ligne existante. Les colonnes
     /// dérivées sont toujours réécrites ; `owner_id` n'est jamais touché (injection du moteur
     /// d'accès). **Après** cette validation (`Must not` de `./private_agent.sdd`), le contrôle des
@@ -112,7 +112,7 @@ impl Entity {
     /// passe `identity::ADMIN_ONLY_MODULES`, le test une liste non vide — précédent
     /// `activate_with`). Un module réservé refusé rend un `HookError` sans code nommant le module,
     /// jamais le prompt ; une panne de lecture ou un `subject` inconnu rendent le texte fixe
-    /// [`Self::PANNE_AUTORISATION`] (échec fermé).
+    /// `Self::PANNE_AUTORISATION` (échec fermé).
     async fn sauvegarde_avec<C: sea_orm::ConnectionTrait>(
         db: &C,
         active: ActiveModel,
@@ -134,7 +134,7 @@ impl Entity {
     }
 
     /// Validation des étapes de ./agent.rs, puis dérivation des colonnes : rend l'`ActiveModel`
-    /// dérivé **et** la définition désérialisée, dont [`Self::sauvegarde_avec`] lit les modules
+    /// dérivé **et** la définition désérialisée, dont `Self::sauvegarde_avec` lit les modules
     /// accordés pour le contrôle `FR-9`.
     fn valider_et_deriver(
         mut active: ActiveModel,
@@ -363,7 +363,7 @@ mod tests {
     }
 
     /// Définition valide accordant les modules `modules` — la colonne `definition` construite par
-    /// la bibliothèque elle-même, comme la fixture [`definition`].
+    /// la bibliothèque elle-même, comme la fixture `definition`.
     fn definition_avec_modules(id: &str, prompt: &str, profile: &str, modules: &[&str]) -> serde_json::Value {
         serde_json::to_value(
             AgentDefinition::new(id.to_string(), AgentKind::Sub, prompt.to_string())
@@ -477,7 +477,7 @@ mod tests {
     /// amendement du 2026-11-13 de `./private_agent.sdd`) : une définition `triage` sans profil
     /// explicite rend `profile = ""` (« suit le profil par défaut de l'hôte ») ; la moitié
     /// « avec un profil `qwen`, `profile = "qwen"` » est verrouillée par
-    /// [`before_create_accepte_un_agent_prive_valide_et_derive_les_colonnes`].
+    /// `before_create_accepte_un_agent_prive_valide_et_derive_les_colonnes`.
     #[tokio::test]
     async fn une_definition_privee_sans_profil_donne_une_colonne_profile_vide() {
         let db = db_avec_compte("sujet-de-test").await;

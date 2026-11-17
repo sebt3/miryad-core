@@ -102,8 +102,8 @@ impl Entity {
 
     /// Porte commune de `before_create` (`existing` absent) et `before_update`, `after` : les étapes
     /// de ./toolset.sdd dans le même ordre — au moins une version, chacune valide via le
-    /// [`check_toolset`] partagé, les deux présentes portent le même `name` — sauf l'étape
-    /// d'identifiant : ici `classify(name) = Private` ([`Self::verifier_identifiant`], à la place
+    /// `check_toolset` partagé, les deux présentes portent le même `name` — sauf l'étape
+    /// d'identifiant : ici `classify(name) = Private` (`Self::verifier_identifiant`, à la place
     /// de l'étape `G_` du catalogue). Sur une mise à jour le `name` ne change pas. `toolset_id`
     /// et `version` (celle de l'active, à défaut du brouillon) sont toujours réécrits ; `owner_id`
     /// n'est jamais touché (injection du moteur d'accès). **Après** `check_toolset` (`Must not` de
@@ -112,11 +112,11 @@ impl Entity {
     /// [`identity::caller_of`] sur la **connexion du hook** — état admin relu, jamais mis en
     /// cache —, puis [`identity::check_grants`] tranche, pour **chacune des versions posées**
     /// (`active` et `draft`), les modules extraits de la forme JSON par la fonction partagée avec
-    /// l'activation ([`crate::lymaille::interactive::activation::toolset_json_modules`]), contre
+    /// l'activation (`crate::lymaille::interactive::activation::toolset_json_modules`), contre
     /// la liste `reserved` injectée (la fonction publique passe `identity::ADMIN_ONLY_MODULES`, le
     /// test une liste non vide — précédent `activate_with`). Un module réservé refusé rend un
     /// `HookError` sans code nommant le module, jamais le source ; une panne de lecture ou un
-    /// `subject` inconnu rendent le texte fixe [`Self::PANNE_AUTORISATION`] (échec fermé).
+    /// `subject` inconnu rendent le texte fixe `Self::PANNE_AUTORISATION` (échec fermé).
     async fn sauvegarde_avec<C: sea_orm::ConnectionTrait>(
         db: &C,
         active: ActiveModel,
@@ -158,7 +158,7 @@ impl Entity {
     }
 
     /// Étape 2 des étapes de ./toolset.sdd : la version se désérialise en `lymaille::Toolset` et
-    /// passe le [`check_toolset`] partagé de ./toolset.rs ; l'échec cite la cause, que la
+    /// passe le `check_toolset` partagé de ./toolset.rs ; l'échec cite la cause, que la
     /// bibliothèque n'établit jamais depuis un fragment de source (`Must not`).
     fn charger(brute: &serde_json::Value) -> Result<::lymaille::Toolset, HookError> {
         let toolset: ::lymaille::Toolset = serde_json::from_value(brute.clone())
@@ -169,8 +169,8 @@ impl Entity {
 
     /// Porte commune de `before_create` (`existing` absent) et `before_update` : les étapes de
     /// ./toolset.sdd dans le même ordre — au moins une version, chacune valide via le
-    /// [`check_toolset`] partagé, les deux présentes portent le même `name` — sauf l'étape
-    /// d'identifiant : ici `classify(name) = Private` ([`Self::verifier_identifiant`], à la place
+    /// `check_toolset` partagé, les deux présentes portent le même `name` — sauf l'étape
+    /// d'identifiant : ici `classify(name) = Private` (`Self::verifier_identifiant`, à la place
     /// de l'étape `G_` du catalogue). Sur une mise à jour le `name` ne change pas. `toolset_id`
     /// et `version` (celle de l'active, à défaut du brouillon) sont toujours réécrits ; `owner_id`
     /// n'est jamais touché (injection du moteur d'accès). Aucun `check_grants` : hook synchrone

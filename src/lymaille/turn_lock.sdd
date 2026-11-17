@@ -55,6 +55,9 @@ Tasks:
     `heartbeat`. Tests contre un PostgreSQL réel, `#[ignore]` sauf `MIRYAD_TEST_PG_URL` (même convention que le banc Matrix, `/Cargo.toml` section dev-dependencies) : les `Scenario` ci-dessous. Après l'approbation de cette spec.
   [x] Déclaration et ré-exports dans ./mod.rs (la ligne `mod turn_lock;` et `pub use turn_lock::{PgTurnLock, pg_turn_lock};`) ; test d'import (« les chemins plats existent ») étendu d'abord. Même cycle que la tâche précédente.
     Validé 2026-11-15 (batterie COMPLÈTE verte `BATTERY_FAIL=0` — `lymaille-pg` comprise ; relecture `spec-dd` + batterie tenue par le primary). `pub mod turn_lock;` + ré-exports ; witness ajouté au test « les chemins plats existent » (rouge d'abord).
+    - [!] (cycle I7 2026-11-17, reporté de ./definitions/mod.sdd) : `cargo doc --all-features --no-deps`
+      relève ici 2 liens « links to private item » vers `HEARTBEAT_MIN`/`HEARTBEAT_MAX` (./turn_lock.rs ~l. 91, doc de
+      `new`) — à convertir en texte inline, même correction que le cycle I7.
 
 Done when:
   Les `Scenario` sont verts (ceux qui exigent PostgreSQL contre un serveur réel) ; `cargo test --no-default-features --features lymaille` et `cargo clippy --no-default-features --features lymaille --all-targets -- -D warnings` sont

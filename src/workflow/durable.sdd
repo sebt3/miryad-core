@@ -235,6 +235,10 @@ Tasks:
     Arbitré le 2026-11-14 : `awakeable_timeout` est **inclus** (sans délai un awakeable jamais résolu bloque le run, le SDK `0.12.1` n'ayant pas d'annulation d'awakeable ; @StepContext est opaque, l'appelant ne peut pas composer `select!`).
     Arbitré le 2026-11-14 : @StepError **inchangé** : un kind qui doit distinguer rejet, délai et annulation compare la constante `AWAKEABLE_TIMEOUT_MESSAGE` (`pub(crate)`) ; aucun genre d'erreur, aucun code `MRD-WORKFLOW-*` nouveau.
     Arbitré le 2026-11-14 : alternative écartée : `ctx.signal` (`ContextSignals` du SDK, promesse nommée scoped à une invocation, complétée par l'id d'invocation) : adaptée à une autre invocation Restate, pas à un appel HTTP externe porteur d'un identifiant ; `ctx.signal` écarté.
+    - [!] (cycle I7 2026-11-17, reporté de ./../lymaille/definitions/mod.sdd) : `cargo doc
+      --all-features --no-deps` relève ici 2 liens « links to private item » vers `AWAKEABLE_TIMEOUT_MESSAGE`
+      (`pub(crate)`, ./durable.rs ~l. 273/278, doc de `awakeable_timeout`) — à convertir en texte inline, même correction
+      que le cycle I7.
 
 Done when:
   Les `Scenario` ci-dessous ont chacun un test nommé distinct et vert, sur la feature `workflow` ; les

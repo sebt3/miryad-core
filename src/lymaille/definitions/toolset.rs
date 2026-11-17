@@ -76,7 +76,7 @@ impl Entity {
     }
 
     /// Étape 2 du `Must` : la version se désérialise en `lymaille::Toolset` et passe les
-    /// contrôles partagés [`check_toolset`] ; l'échec cite la cause, que la bibliothèque n'établit
+    /// contrôles partagés `check_toolset` ; l'échec cite la cause, que la bibliothèque n'établit
     /// jamais depuis un fragment de source (`Must not`).
     fn charger(brute: &serde_json::Value) -> Result<::lymaille::Toolset, HookError> {
         let toolset: ::lymaille::Toolset = serde_json::from_value(brute.clone())
@@ -436,7 +436,7 @@ mod tests {
         }
     }
 
-    /// `Must` étape 2 : la fonction [`check_toolset`] est le contrat partagé de `put_draft` — elle
+    /// `Must` étape 2 : la fonction `check_toolset` est le contrat partagé de `put_draft` — elle
     /// rend la variante typée de `lymaille`, le plafond de rendu est celui de la bibliothèque, un
     /// toolset sain passe, un module qui ne compile pas est refusé sans citer sa source.
     #[test]
