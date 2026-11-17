@@ -2099,14 +2099,80 @@ mod tests {
         );
     }
 
-    /// Scenario « un contexte sans type exploitable est refusé » : référence absente comme
-    /// référence sans type existant rendent le même `InvalidDefinition`, aucune session créée.
+    /// Tâche « Test de garde (C-TESTS) » (`./manager.sdd`, arbitrage du 2026-11-06) : un
+    /// `default_agent` de type absent du catalogue refuse l'ouverture **même avec un agent
+    /// explicite valide** — `resolve_start` du type précède la sélection d'agent (`agent.or_else`
+    /// sur le défaut, puis `allowed_agents`). Type `t` dont le défaut nomme `ghost` (jamais écrit
+    /// dans le catalogue), agent explicite `dev` existant et autorisé : `InvalidDefinition`,
+    /// aucune session créée.
     #[tokio::test(flavor = "multi_thread")]
-    async fn un_contexte_sans_type_exploitable_est_refuse() {
+    async fn un_default_agent_introuvable_refuse_meme_avec_agent_explicite() {
+        let db = test_db().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
+        put_type(&db, "t", Some(SessionKind::Work), Some("ghost"), &["dev"]).await;
+        inserer_contexte_prive(&db, alice.user_id, "c1", Some("t")).await;
+
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let manager = SessionManager::new(deps_with(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider))),
+            None,
+            Limits::default(),
+        ));
+
+        let refus = manager
+            .open("alice", "c1", Some("dev"))
+            .await
+            .expect_err("un default_agent introuvable refuse l'ouverture meme avec un agent explicite");
+        assert!(
+            matches!(refus, crate::lymaille::error::LymailleError::InvalidDefinition(_)),
+            "resolve_start precede la selection d'agent et rend un `InvalidDefinition`, obtenu : {refus:?}"
+        );
+        assert_eq!(session_count(&db).await, 0, "aucune session creee");
+    }
+
+    /// Scenario « un contexte sans type exploitable est refusé », premier cas : un contexte dont
+    /// la colonne `context_type` n'est pas posée. Aucun type résolvable : `InvalidDefinition` au
+    /// message exact, aucune session créée.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_contexte_sans_context_type_est_refuse() {
         let db = test_db().await;
         wire_catalog(&db).await;
         let alice = compte(&db, "alice", false).await;
         inserer_contexte_prive(&db, alice.user_id, "c_sans_type", None).await;
+
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let manager = SessionManager::new(deps_with(
+            db.clone(),
+            Arc::new(ScriptFactory(Arc::clone(&provider))),
+            None,
+            Limits::default(),
+        ));
+
+        let refus = manager
+            .open("alice", "c_sans_type", None)
+            .await
+            .expect_err("un contexte sans context_type ne doit ouvrir de session");
+        match refus {
+            crate::lymaille::error::LymailleError::InvalidDefinition(message) => assert_eq!(
+                message, "context has no usable type",
+                "le refus nomme la regle : {message}"
+            ),
+            autre => panic!("un `InvalidDefinition` est attendu : {autre:?}"),
+        }
+        assert_eq!(session_count(&db).await, 0, "aucune session creee");
+    }
+
+    /// Scenario « un contexte sans type exploitable est refusé », deuxième cas : le
+    /// `context_type` du contexte ne désigne aucun type existant. Le type introuvable rend le même
+    /// `InvalidDefinition` que l'absence de référence, aucune session créée.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_contexte_de_type_inexistant_est_refuse() {
+        let db = test_db().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
         inserer_contexte_prive(&db, alice.user_id, "c_fantome", Some("t_fantome")).await;
 
         let provider = Arc::new(ScriptedProvider::new(Vec::new()));
@@ -2117,18 +2183,16 @@ mod tests {
             Limits::default(),
         ));
 
-        for contexte in ["c_sans_type", "c_fantome"] {
-            let refus = manager
-                .open("alice", contexte, None)
-                .await
-                .expect_err("aucun type exploitable ne doit ouvrir de session");
-            match refus {
-                crate::lymaille::error::LymailleError::InvalidDefinition(message) => assert_eq!(
-                    message, "context has no usable type",
-                    "le refus nomme la regle pour {contexte}"
-                ),
-                autre => panic!("un `InvalidDefinition` est attendu pour {contexte} : {autre:?}"),
-            }
+        let refus = manager
+            .open("alice", "c_fantome", None)
+            .await
+            .expect_err("un context_type sans type existant ne doit ouvrir de session");
+        match refus {
+            crate::lymaille::error::LymailleError::InvalidDefinition(message) => assert_eq!(
+                message, "context has no usable type",
+                "le refus nomme la regle : {message}"
+            ),
+            autre => panic!("un `InvalidDefinition` est attendu : {autre:?}"),
         }
         assert_eq!(session_count(&db).await, 0, "aucune session creee");
     }

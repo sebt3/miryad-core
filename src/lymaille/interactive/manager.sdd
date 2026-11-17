@@ -85,8 +85,17 @@ Tasks:
   [x] Tests d'abord (SQLite mémoire, `ScriptedProvider` de lymaille, horloge injectée), puis ./manager.rs. Après ./hub.rs et ./assemble.rs. Validé 2026-11-05 (validator PASS checkpoints 5 et 6 — 15 Scenario, 16 tests, tous verts sur les graphes lymaille).
   [x] Type au seul `draft` (arbitrage du 2026-11-06) : le `Scenario` « contexte sans type exploitable » compte désormais trois cas ; tests d'abord (le troisième cas est rouge ou déjà vert), puis ./manager.rs seulement si le comportement diverge.
     Validé 2026-11-06 (validator PASS : troisième cas verrouillé par un test au fixture exploitable au seul draft — rouge prouvé par mutation puis restauration ; production conforme sans changement, `context_type()` ne lit que l'`active` ; les deux premiers cas gardent leurs assertions ; lymaille vert en tests et clippy `-D warnings`, `fmt`, `specdd lint`).
-  [ ] Test de garde (C-TESTS) : `un_default_agent_introuvable_refuse_meme_avec_agent_explicite` — type dont le `default_agent` est absent du catalogue, `open(contexte, Some(agent valide))` ; assertion : `InvalidDefinition`, aucune session créée (`resolve_start` précède la sélection d'agent).
-  [ ] Scinder `un_contexte_sans_type_exploitable_est_refuse` en deux tests nommés (cas 1 : sans `context_type` ; cas 2 : type inexistant), chacun avec son assertion dédiée ; le cas 3 (type au seul `draft`) garde le sien ; attendu : `InvalidDefinition("context has no usable type")` et aucune session.
+  [x] Test de garde (C-TESTS) : `un_default_agent_introuvable_refuse_meme_avec_agent_explicite` — type dont le `default_agent` est absent du catalogue, `open(contexte, Some(agent valide))` ; assertion : `InvalidDefinition`, aucune session créée (`resolve_start` précède la sélection d'agent).
+    Validé 2026-11-17 (validator GO, cycle I9, batterie 17+17 verte) : fixture à `default_agent` `ghost` jamais inséré au catalogue,
+    `dev` valide et autorisé ; verrou vert d'emblée, rouge prouvé par mutation (neutralisation du `?` de `resolve_start` → session
+    ouverte) ; ordre conforme au `Must` (`resolve_start` l. 687 avant sélection d'agent l. 693) ; non dupliqué du test
+    sans-agent-explicite préexistant.
+    - [?] (validator) : le verrou assert la variante `InvalidDefinition` sans message exact (le message vient de `resolve_start`
+      amont, épingler son texte exposerait le test à une upstream-pin) — la tâche ne l'exige pas. Acter, ou épingler le message ?
+  [x] Scinder `un_contexte_sans_type_exploitable_est_refuse` en deux tests nommés (cas 1 : sans `context_type` ; cas 2 : type inexistant), chacun avec son assertion dédiée ; le cas 3 (type au seul `draft`) garde le sien ; attendu : `InvalidDefinition("context has no usable type")` et aucune session.
+    Validé 2026-11-17 (validator GO, cycle I9) : `un_contexte_sans_context_type_est_refuse` et
+    `un_contexte_de_type_inexistant_est_refuse`, chacun avec le message exact et son `session_count == 0` dédiés (assertions ≥ à
+    l'original en boucle, aucune perte) ; le cas 3 reste dans son test inchangé.
   [x] Issue #74 — test de cohérence ouverture ↔ hooks. Un test (dans ./manager.rs ou ./../definitions/catalog_context.rs, à fixer à l'écriture de la spec) fait créer un contexte du catalogue par le
     CRUD d'un admin (hooks réels) puis ouvre une session sur ce contexte : ce que les hooks acceptent comme `context_type` est exactement ce que l'ouverture résout. `Scenario` : « le contexte créé par REST
     s'ouvre » (critère d'acceptation de l'issue). Après ./../definitions/catalog_context.sdd.
