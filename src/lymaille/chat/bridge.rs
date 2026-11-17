@@ -8,8 +8,9 @@
 //!
 //! Le contexte des salles est fourni par l'hôte : [`ChatConfig::rooms`] porte un
 //! [`RoomContextResolver`](crate::lymaille::chat::bridge::RoomContextResolver) sur lequel le pont ouvre à la demande (texte libre sans session) et
-//! rouvre (`!new` sans argument, à défaut du contexte de la session fermée) ; un résolveur qui
-//! rend `None` répond par le texte fixe invitant à `!new <contexte>`, sans session.
+//! rouvre (`!new` sans argument, à défaut du contexte de la session encore ouverte) ; un
+//! résolveur qui rend `None` répond par le texte fixe invitant à `!new <contexte>` — sans session
+//! et, pour `!new`, sans fermer la session existante (arbitré par Sébastien le 2026-11-16).
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -76,9 +77,10 @@ const CONTEXT_UNAVAILABLE: &str = "Contexte inconnu ou inaccessible.";
 /// Réponse d'un `!new` dont l'agent est hors de l'ensemble autorisé du type (`Scenario` R13).
 const AGENT_REFUSED: &str = "Agent non autorisé pour ce contexte.";
 
-/// Réponse d'un texte libre ou d'un `!new` sans contexte connu : ni session fermée ni
-/// `RoomContextResolver` n'en fournissent (`Must` points 4 et 5 de `./bridge.sdd`, arbitrage du
-/// 2026-11-06).
+/// Réponse d'un texte libre ou d'un `!new` sans contexte connu : ni session ouverte (ni son
+/// contexte, ni le `RoomContextResolver`) n'en fournit (`Must` points 4 et 5 de `./bridge.sdd`,
+/// arbitrage du 2026-11-06 ; `!new` ne ferme alors pas la session — arbitré par Sébastien le
+/// 2026-11-16).
 const NO_CONTEXT: &str = "Aucun contexte pour cette salle : utilisez `!new <contexte>`.";
 
 /// Réponse d'un `Cancelled`.
@@ -359,9 +361,10 @@ impl ChatBridge {
 
     /// `!new [<contexte> [agent]]` (`Must` point 4 de `./bridge.sdd`, DSD `DEC-28`, arbitrage du
     /// 2026-11-06) : ferme la session de la salle, en ouvre une sur le contexte choisi — la
-    /// nature vient du type du contexte. Sans argument : le contexte de la session qui vient
-    /// d'être fermée, sinon celui que rend le `RoomContextResolver` de l'hôte, sinon un texte
-    /// fixe invitant à `!new <contexte>` — aucune session dans ce dernier cas.
+    /// nature vient du type du contexte. Sans argument : le contexte de la session encore ouverte,
+    /// sinon celui que rend le `RoomContextResolver` de l'hôte, sinon un texte fixe invitant à
+    /// `!new <contexte>` **sans fermer la session** (arbitré par Sébastien le 2026-11-16) —
+    /// aucune session dans ce dernier cas.
     async fn nouvelle_session(
         &self,
         sujet: &str,
@@ -385,12 +388,14 @@ impl ChatBridge {
                 None => self.config.rooms.resolve(room_id).await,
             }
         };
-        if let Some(id) = session {
-            self.manager.close(sujet, id).await;
-        }
         let Some(contexte) = contexte else {
             return self.dire(room_id, NO_CONTEXT).await;
         };
+        // La session n'est fermée que quand une réouverture s'amorce : sans contexte résolvable,
+        // elle reste ouverte (`Must` point 4, arbitré par Sébastien le 2026-11-16).
+        if let Some(id) = session {
+            self.manager.close(sujet, id).await;
+        }
         match self.manager.open(sujet, &contexte, agent).await {
             Ok(anse) => {
                 self.ecrire_salle(room_id, sujet, Some(&anse.id), Some(&anse.agent_id))
@@ -1793,10 +1798,13 @@ mod tests {
         assert_eq!(m.sessions_count("alice").await, 0, "aucune session creee");
     }
 
-    /// Scenario `!new` sans argument (`Must` point 4, arbitrage du 2026-11-06) : rouvre sur le
-    /// contexte de la session fermee, pas sur celui du resolveur (qui rend `c2` ici).
+    /// Scenario « !new ferme et rouvre » (`Tasks` de `./bridge.sdd`) : Given — session de la salle
+    /// dont la colonne `context` est renseignée, repli **session fermée → `RoomContextResolver`
+    /// → texte fixe** ; entrée — `!new` sans argument ; assertion — l'ancienne session est fermée
+    /// (`send` rend `NotFound`, `../interactive/manager.sdd`), la nouvelle est ouverte sur ce
+    /// contexte avec un `session_id` distinct — pas sur celui du resolveur (qui rend `c2` ici).
     #[tokio::test(flavor = "multi_thread")]
-    async fn new_sans_argument_rouvre_sur_la_session_fermee() {
+    async fn new_ferme_puis_rouvre_sur_le_contexte_ferme() {
         let db = installe().await;
         let manager = gestionnaire(
             &db,
@@ -1804,7 +1812,7 @@ mod tests {
         );
         let m = monture_avec(
             db,
-            manager,
+            manager.clone(),
             FixedClock::at(1_800_000_000_000),
             Arc::new(ContexteFixe(Some("c2".to_owned()))),
         );
@@ -1825,6 +1833,14 @@ mod tests {
         let (_subject, apres) = m.rooms_session("!qz:srv").await;
         let apres = apres.expect("une nouvelle session est ouverte");
         assert_ne!(avant, apres, "!new a rouvre une autre session");
+        let ancien = ::lymaille::SessionId::new(&avant).expect("identifiant de session valide");
+        let refus = manager
+            .send("alice", &ancien, "relancer l'ancienne".to_owned(), None)
+            .await;
+        assert!(
+            matches!(refus, Err(crate::lymaille::LymailleError::NotFound(_))),
+            "l'ancienne session est fermee : {refus:?}"
+        );
         assert_eq!(
             m.session_context_by_id(&apres).await.as_deref(),
             Some("c1"),
@@ -1861,6 +1877,82 @@ mod tests {
             "texte fixe R13"
         );
         assert_eq!(m.sessions_count("alice").await, 0, "aucune session creee");
+    }
+
+    /// `Must` de `./bridge.sdd` : l'implémentation par défaut du `RoomContextResolver` —
+    /// `ChatConfig::default().rooms` — rend `None` pour toute salle (verrou comportemental du
+    /// défaut, `Tasks` de `./bridge.sdd` : en remplacement du proxy `size_of_val` de
+    /// `../chat/mod.rs`, qui ne prouvait que la présence d'un vtableau).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn defaut_du_resolveur_rend_none() {
+        let config = ChatConfig::default();
+        assert_eq!(
+            config.rooms.resolve("!une_salle_quelconque:srv").await,
+            None,
+            "le defaut de `ChatConfig` monte un resolveur qui rend `None`"
+        );
+    }
+
+    /// Scenario « !new sans contexte resolvable ne ferme pas la session » (`Must` point 4,
+    /// arbitré par Sebastien le 2026-11-16) : session de la salle dont la colonne `context` est
+    /// `NULL` et `RoomContextResolver` rendant `None` — `!new` sans argument rend le texte fixe
+    /// et **ne ferme pas** la session (statut intact : `send` y est encore accepte).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_sans_contexte_resolvable_ne_ferme_pas() {
+        let db = installe().await;
+        let manager = gestionnaire(
+            &db,
+            Arc::new(ScriptFactory(Arc::new(ScriptedProvider::new(vec![Ok(
+                final_text("sonde"),
+            )])))),
+        );
+        let m = monture_avec(
+            db,
+            manager.clone(),
+            FixedClock::at(1_800_000_000_000),
+            Arc::new(ContexteFixe(None)),
+        );
+        m.linked("@alice:srv", "alice").await;
+        m.bridge
+            .on_message(Monture::texte("!new c1", "@alice:srv", "f1", "!qf:srv", m.now()))
+            .await;
+        let (_subject, avant) = m.rooms_session("!qf:srv").await;
+        let avant = avant.expect("une session est ouverte sur c1");
+        // Given du Scenario : la colonne `context` de la session est `NULL` (ligne d'avant le
+        // contrat R13 — la relecture du pont rendra `None`).
+        let mut annuler_contexte = Query::update();
+        annuler_contexte
+            .table(Alias::new(SESSIONS_TABLE))
+            .value(Alias::new("context"), Expr::null())
+            .and_where(Expr::col(Alias::new("session_id")).eq(avant.as_str()));
+        m.db.execute(&annuler_contexte)
+            .await
+            .expect("contexte de session mis a null");
+        assert_eq!(
+            m.session_context_by_id(&avant).await,
+            None,
+            "la session est bien sans contexte resolvable"
+        );
+        m.bridge
+            .on_message(Monture::texte("!new", "@alice:srv", "f2", "!qf:srv", m.now()))
+            .await;
+        let envoyes = m.spy.bodies();
+        assert_eq!(
+            envoyes.last().map(String::as_str),
+            Some("Aucun contexte pour cette salle : utilisez `!new <contexte>`."),
+            "texte fixe R13 : {envoyes:?}"
+        );
+        let (_subject, apres) = m.rooms_session("!qf:srv").await;
+        assert_eq!(
+            apres.as_deref(),
+            Some(avant.as_str()),
+            "la salle garde la meme session"
+        );
+        let id = ::lymaille::SessionId::new(&avant).expect("identifiant de session valide");
+        let sonde = manager
+            .send("alice", &id, "la session est encore ouverte".to_owned(), None)
+            .await;
+        assert!(sonde.is_ok(), "la session n'est pas fermee : {sonde:?}");
     }
 
     /// `Must` : `!help` rend l'aide des commandes.
