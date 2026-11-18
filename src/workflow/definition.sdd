@@ -63,8 +63,11 @@ References:
 
 Must:
   `StepDefinition` — struct `pub`, `#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]`,
-    quatre champs `pub` : `id: @String`, `depends_on: @Vec<@String>`, `kind: @String`,
-    `config: @serde_json::Value`. Aucune validation portée par le type lui-même — n'importe quel
+    six champs `pub` : `id: @String`, `depends_on: @Vec<@String>`, `kind: @String`,
+    `config: @serde_json::Value`, et (amendement 2026-11-18, issue #84, DSD `workflow` `FR-20`) `when: @Option<@Predicate>`
+    (`#[serde(default, skip_serializing_if = "Option::is_none")]` : condition d'exécution, ./predicate.sdd) et `run_if_skipped: @bool`
+    (`#[serde(default, skip_serializing_if = "std::ops::Not::not")]` : le step s'exécute même si l'une de ses dépendances a été ignorée, ./interpreter.sdd) —
+    un DAG écrit sans ces deux champs reste lisible à l'identique et se réécrit sans eux. Aucune validation portée par le type lui-même — n'importe quel
     `StepDefinition` isolé est constructible, seule la liste complète d'un DAG est validable
     (`validate_dag`).
   `DagSteps` — struct `pub` tuple à un champ `pub`, `DagSteps(pub @Vec<StepDefinition>)`,
@@ -88,6 +91,11 @@ Must:
       @Err(WorkflowError::InvalidDag(format!("cycle détecté impliquant le step {id}"))) (couvre aussi
       l'auto-dépendance `depends_on: [id lui-même]`, cas particulier d'un cycle de longueur un, sans
       branche séparée)
+    5. (amendement 2026-11-18, issue #84) Conditions `when`, dans l'ordre de la liste : pour chaque step portant un `when`, (a) `Predicate::validate` en erreur →
+      @Err(WorkflowError::InvalidDag(format!("le step {id} porte un `when` invalide : {raison}"))) ; (b) premier `id` rendu par `Predicate::referenced_steps` qui n'est
+      **pas** dans le `depends_on` de ce step →
+      @Err(WorkflowError::InvalidDag(format!("le step {id} lit {ref} dans son `when` sans en dépendre directement"))) (lecture limitée aux dépendances directes,
+      arbitré le 2026-11-18 : la visibilité transitive relève de l'issue #85). Un `when` qui ne lit que des `var` est toujours valide. `run_if_skipped` n'est jamais une erreur.
     5. Sinon @Ok(())
   `Entity`/`Model`/`ActiveModel` via `#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize,
     Deserialize)]` sur `Model`, `#[sea_orm(table_name = "miryad_workflow_definitions")]` : `id: @i32`
@@ -182,7 +190,7 @@ Depends on:
   @std::sync::OnceLock — cellule `POLICY`, aucune dépendance externe
 
 Exposes:
-  `StepDefinition` — struct `pub`, quatre champs `pub`
+  `StepDefinition` — struct `pub`, six champs `pub` (amendement 2026-11-18, `when` et `run_if_skipped`)
   `DagSteps` — struct `pub`, un champ `pub` (tuple)
   `validate_dag` — `pub(crate) fn validate_dag(steps: &[StepDefinition]) -> Result<(), WorkflowError>`
   `WorkflowPolicy` — struct `pub`, deux champs `pub`, `Default`
@@ -308,6 +316,7 @@ Tasks:
     GraphQL). Aucun changement de comportement.
   [x] Amendement du 2026-11-11 (hooks asynchrones, DSD `hooks-async` `DEC-2` à `DEC-6`, réécriture totale `DEC-4`) : @WorkflowDefinition passe `before_create` et `before_update` à la signature asynchrone (`db` ignoré : `validate_dag` reste pure), `before_delete` garde son défaut ; les cinq tests `before_*` de ./definition.rs passent à `.await` avec une connexion simulée, assertions inchangées. Dépend de /src/resource.sdd (même amendement).
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte).
+  [ ] Conditions d'exécution `when` (issue #84, arbitré le 2026-11-18, DSD `workflow` `FR-20`) : `StepDefinition` gagne `when` et `run_if_skipped` (voir le `Must`), `validate_dag` gagne l'étape 5 ; tests d'abord (les `Scenario` « when… » ci-dessous, rouges avant le code), puis ./definition.rs ; les quinze sites qui construisent un `StepDefinition` par littéral (./definition.rs, ./interpreter.rs, ./client.rs, `../../tests/workflow_restate.rs`) reçoivent `when: None, run_if_skipped: false` sans autre modification de leurs assertions. Après ./predicate.sdd. Périmètre : ./definition.rs, et pour les littéraux seulement ./interpreter.rs (tests), ./client.rs (tests), `../../tests/workflow_restate.rs`.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
@@ -427,3 +436,23 @@ Scenario: le Model ne déclare plus d'unicité globale sur name (#28)
   When l'attribut de colonne de `name` est inspecté (`ColumnTrait::def(&Column::Name)`)
   Then la définition de colonne n'est pas marquée unique (`ColumnDef::is_unique()` faux) — l'unicité
     par propriétaire n'existe que dans le schéma de migration
+
+Scenario: when lisant une dépendance directe et une variable est valide (#84)
+  Given un step `B` avec `depends_on: ["A"]` et `when: all[{step A …}, {var mode …}]`
+  When `validate_dag` est appelé
+  Then `Ok(())`
+
+Scenario: when lisant un step qui n'est pas une dépendance directe est rejeté (#84)
+  Given `C` avec `depends_on: ["B"]`, `B` avec `depends_on: ["A"]`, et `when: {step A …}` sur `C`
+  When `validate_dag` est appelé
+  Then `Err(InvalidDag)` dont le texte nomme `C` et `A`
+
+Scenario: when structurellement invalide est rejeté (#84)
+  Given un step portant `when: all[]`
+  When `validate_dag` est appelé
+  Then `Err(InvalidDag)` dont le texte nomme le step et ne cite aucune valeur utilisateur
+
+Scenario: un DAG sans when ni run_if_skipped garde son JSON (#84)
+  Given un DAG écrit comme avant l'amendement (quatre champs par step)
+  When il est désérialisé puis resérialisé
+  Then le JSON est identique, `when` vaut `None` et `run_if_skipped` vaut `false`

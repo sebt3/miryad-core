@@ -165,6 +165,16 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
     - **Realized by:** SpecDD /src/workflow/durable.sdd
     - **Verified by:** `AC-15`
 
+- **FR-20 - MUST:** Un step peut porter une **condition d'exécution** `when` (prédicat JSON structuré : feuille `{step | var, path, op, value}`, `all`, `any` ;
+  opérateurs `eq`, `ne`, `gt`, `ge`, `lt`, `le`, `in`, `exists`). Le step n'est exécuté que si la condition est vraie ; un step ignoré compte comme terminé
+  pour l'ordonnancement, n'est jamais dispatché, et n'a aucune clé dans la table de sortie du run. Ses dépendants sont **ignorés par propagation**, sauf
+  `run_if_skipped: true` sur le dépendant (il s'exécute alors, et lit `null` pour l'entrée du step ignoré). La condition ne lit que des `var` et les sorties
+  des **dépendances directes** du step (`validate_dag` refuse le reste) ; une valeur absente rend toujours `false`. Les décisions sont des fonctions pures de
+  `vars` et des sorties journalisées : rejeu identique après crash (`NFR-1`).
+    - **Source:** issue #84 ; user instruction, 2026-11-18 (arbitrage de `OI-5` : prédicat structuré, dépendances directes, propagation par défaut)
+    - **Realized by:** SpecDD /src/workflow/predicate.sdd, SpecDD /src/workflow/definition.sdd, SpecDD /src/workflow/interpreter.sdd
+    - **Verified by:** `AC-16`
+
 ## Constraints
 
 - **CON-1 - MUST:** Le fan-out d'une couche passe par `ctx.request(...).call()` poussé dans un
@@ -372,6 +382,17 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
       décision, après mesure.
     - **Source:** issue #26 ; mesures `restate-server` 1.8.1 (`tests/workflow_restate.rs`) ; user instruction, 2026-11-14 et 2026-11-16
 
+- **DEC-14 - Condition d'exécution : prédicat structuré, dépendances directes, propagation (2026-11-18)**
+    - **Context:** le DAG est statique ; seul un échec de step permettait de décider (`on_fail: "continue"`). Trois langages étaient possibles pour un `when` :
+      gabarit Handlebars (analyse d'arbre à faire pour valider les lectures), expression Rhai (couple l'interpréteur à Rhai et à son fil de 256 Mio, `DEC-10`),
+      prédicat structuré.
+    - **Decision:** prédicat structuré JSON (`SpecDD /src/workflow/predicate.sdd`), lecture limitée aux dépendances directes, ignorance propagée par défaut
+      avec `run_if_skipped` sur le dépendant, sortie d'un step ignoré absente de la table du run (`null` dans les `inputs` d'un dépendant qui s'exécute malgré tout).
+    - **Consequences:** validation statique triviale, aucun moteur, aucun `ctx.run`, rejeu déterministe ; expressivité bornée, extensible vers un gabarit si le besoin
+      se confirme ; la visibilité transitive passe par l'issue #85 (exports nommés, `OI-6`) ; `StepDefinition` gagne deux champs (cassure assumée pour les hôtes
+      qui la construisent par littéral, API instable avant 1.0).
+    - **Source:** user instruction, 2026-11-18
+
 ## Operations and Resilience
 
 - **Rollout :** `force: true` (CON-2) peut, selon l'OpenAPI de l'admin API de Restate, laisser des invocations en cours
@@ -434,6 +455,10 @@ leurs clients (TBD).
     - **Verification:** tests d'intégration `#[ignore]` de `tests/workflow_restate.rs` (podman, hors CI : même statut que
       `AC-8`, voir `OI-2`).
 
+- **AC-16:** Un DAG `A → B → C` dont `B` porte `when: {step A, /status eq "ok"}` et dont `A` rend `{"status": "ko"}` s'exécute sans `B` ni `C` (propagation) et rend
+  une table de sortie qui ne contient que `A` ; avec `run_if_skipped: true` sur `C`, `C` s'exécute et lit `null` pour `B` ; un `when` lisant un step qui n'est pas
+  une dépendance directe est refusé à la création de la définition.
+
 - **AC-8:** Reprise sur crash du service en milieu de couche sans rejeu des steps journalisés.
     - **Verification:** par la méthode du spike du 2026-09-22 (tuer le processus, le relancer, vérifier). Les tests
       `#[ignore]` de `tests/workflow_restate.rs` exigent `podman` et ne tournent pas en CI : AC-8 n'est donc **pas
@@ -455,7 +480,7 @@ leurs clients (TBD).
   `/src/workflow/client.sdd` livre `invocation_statuses`, `list_invocations`, `cancel_invocation` et `invocation_journal`
   (mesurés contre `restate-server` 1.8.1, `tests/workflow_restate.rs`) ; aucun état dupliqué en base. Source : `arch@c62a184`,
   « Schéma de déploiement » ; user instruction, 2026-11-16.
-- **OI-5:** **Conditions d'exécution** (issue #84, priorité basse, aucun consommateur ne bloque) : le DAG est statique
+- **OI-5:** **Soldé le 2026-11-18** par `FR-20` et `DEC-14` (prédicat structuré, dépendances directes, propagation par défaut ; le kind `gate` de vanyline n'a pas été retenu comme substitut). Énoncé d'origine : **Conditions d'exécution** (issue #84, priorité basse, aucun consommateur ne bloque) : le DAG est statique
   (`id`, `depends_on`, `kind`, `config`), sans `when`, boucle ni branche. Un échec de step est aujourd'hui le seul moyen de
   décider (`on_fail: "continue"` de `systemone`, qui « laisse l'aval décider »). **TBD :** le kind `gate` de `vanyline`
   couvre-t-il ce besoin chez lui ? Proposition de l'issue : un champ optionnel `when` sur un step, une sémantique de step

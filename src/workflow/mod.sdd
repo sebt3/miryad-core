@@ -41,7 +41,7 @@ Must:
   `mod.rs` déclare les neuf sous-modules, tous `pub` (chaque enfant expose des types que l'app doit
     atteindre, directement ou via les ré-exports ci-dessous) : `pub mod client;`, `pub mod
     definition;`, `pub mod dispatcher;`, `pub mod error;`, `pub mod interpreter;`, `pub mod step;`,
-    `pub mod rhai_step;`, `pub mod durable;`, `pub mod subworkflow;` — un seul bloc, aucun sous-module gated par une feature plus fine que
+    `pub mod rhai_step;`, `pub mod durable;`, `pub mod subworkflow;`, `pub mod predicate;` (amendement 2026-11-18, issue #84 : `Predicate` figure dans la signature publique de `StepDefinition`) — un seul bloc, aucun sous-module gated par une feature plus fine que
     `workflow` elle-même (./rhai_step.sdd : le kind `"rhai"` compile dès que `workflow` est active,
     pas derrière une feature séparée — décision actée lors de la rédaction de ce fichier, cohérente
     avec `mcp` qui active `vynil-core` sans sous-feature dédiée).
@@ -231,6 +231,7 @@ Tasks:
   [x] Issue #80 — ré-exports des nouvelles fonctions de `workflow::client` et de leurs types (`InvocationStatus`…). Spec d'abord : la liste plate fermée de ce fichier et le test `workflow_flat_paths` sont étendus
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Liste plate étendue (fonctions admin + types) et test `workflow_flat_paths` mis à jour (rouge d'abord). Les ré-exports `resolve_awakeable`/`reject_awakeable` (#26) s'ajouteront en dernier, après les tâches de ./client.sdd.
     (même arbitrage que le `[?]` « liste plate » de ./dispatcher.sdd : étendre la liste ou assumer l'accès par chemin de module). Puis test d'abord, puis ./mod.rs. Après ./client.sdd. Même cycle : `resolve_awakeable` et `reject_awakeable` (issue #26, arbitré le 2026-11-14) sont ajoutés en dernier à la liste plate et au test, après les tâches correspondantes de ./client.sdd.
+  [ ] Conditions d'exécution `when` (issue #84, arbitré le 2026-11-18) : ./mod.rs déclare `pub mod predicate;` et ré-exporte à plat `predicate::{Predicate, Op}` ; le test de chemins plats (`../../tests/workflow_flat_paths.rs` et le `mod tests` de ./mod.rs) gagne ces deux chemins. Après ./predicate.sdd. Périmètre : ./mod.rs et `../../tests/workflow_flat_paths.rs`.
 
 Done when:
   Les neuf specs enfants (`error`, `client`, `step`, `dispatcher`, `definition`, `interpreter`,

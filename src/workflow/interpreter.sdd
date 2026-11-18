@@ -78,7 +78,11 @@ Must:
         dont toutes les dépendances sont dans `completed` et qui n'y sont pas déjà ; ne peut être
         vide tant que l'étape 1 a réussi (`validate_dag` garantit l'absence de cycle et de dépendance
         pendante sur l'ensemble du DAG, `Handles`).
-      b. Pour chaque step de `ready`, assembler les `inputs` par @build_inputs (fonction pure, `Must`
+      a'. (amendement 2026-11-18, issue #84, DSD `workflow` `FR-20`, `DEC-14`) **Décision d'exécution** de chaque step de `ready`, par `decide` (`Must` ci-dessous) : un step
+        `Skip` est ajouté à `completed` **et** à `skipped: HashSet<String>` (initialement vide), n'est **pas** dispatché, n'entre **pas** dans `results`, et émet une trace
+        `tracing::info!` portant son `step_id` et la raison (`dependency` ou `when`), jamais une valeur lue ; seuls les steps `Run` passent à l'étape b. Une couche dont tous les
+        steps sont ignorés ne construit aucun `DurableFuturesUnordered` et la boucle reprend à l'étape a.
+      b. Pour chaque step de `ready` décidé `Run`, assembler les `inputs` par @build_inputs (fonction pure, `Must`
         ci-dessous) — une entrée par id de `depends_on`, valeur = `results.get(id)` (toujours @Some à
         ce point, chaque dépendance étant dans `completed`, donc déjà dans `results`) ; construire `StepInvocation {
         kind: step.kind.clone(), config: step.config.clone(), inputs, run_key: ctx.key().to_string(),
@@ -109,8 +113,14 @@ Must:
     un `ready_ids` déterministe entre deux exécutions du même DAG (propriété exploitée par les tests,
     pas garantie contractuelle vis-à-vis de Restate qui ne fan-oute pas dans un ordre observable de
     toute façon).
-  `build_inputs(step: &StepDefinition, results: &HashMap<@String, @serde_json::Value>) ->
-    @HashMap<@String, @serde_json::Value>`, `pub(crate)`, fonction pure sans effet de bord, sans
+  `decide(step: &StepDefinition, skipped: &HashSet<String>, vars: &Map<String, Value>, results: &HashMap<String, Value>) -> StepDecision` (amendement 2026-11-18, issue #84) —
+    `pub(crate)`, fonction pure sans `ctx`, `StepDecision { Run, Skip(SkipReason) }`, `SkipReason { Dependency, When }` : `Skip(Dependency)` si `step.run_if_skipped` est faux et qu'au moins un id de
+    `depends_on` est dans `skipped` (propagation, par défaut) ; sinon `Skip(When)` si `step.when` est `Some(p)` et `p.evaluate(vars, results)` rend `false` ; sinon `Run`. Un step qui s'exécute
+    malgré une dépendance ignorée (`run_if_skipped`) évalue quand même son `when`, lequel lit une valeur absente (donc `false`) s'il vise le step ignoré. Les décisions sont des fonctions
+    pures de `vars` (journalisées avec l'entrée du run) et de `results` (journalisés par Restate) : aucun `ctx.run`, **rejeu identique après crash** (`NFR-1`).
+  `build_inputs(step: &StepDefinition, results: &HashMap<@String, @serde_json::Value>, skipped: &HashSet<String>) ->
+    @HashMap<@String, @serde_json::Value>` (amendement 2026-11-18 : le paramètre `skipped` est nouveau ; un id de `depends_on` présent dans `skipped` donne l'entrée `Value::Null` — l'entrée existe, aucune
+    ne manque ; la table `results` d'un run n'a, elle, aucune clé pour un step ignoré), `pub(crate)`, fonction pure sans effet de bord, sans
     `ctx` (même rationale de séparaison que @run_invocation de ./dispatcher.sdd, tranchage Sébastien
     2026-09-23 : le « harnais » complet de @run exige un WorkflowContext que @restate-sdk `0.12.1`
     ne virtualise pas ; l'assemblage des `inputs` est la seule partie de la couche décidable sans
@@ -273,6 +283,7 @@ Tasks:
     verbatim) ; trace de T3 retirée ; ../../tests/workflow_restate.rs non repris — justifié, les neuf intégrations compilent et le
     corps sans `trigger` reste valide ; traces d'une ligne posées à ./client.rs (T5, ./client.sdd) et ./durable.rs (T6a, ./durable.sdd),
     motif B5/B7 ; batterie ciblée workflow et `--all-features` verte, complète due à la fin du lot 0.
+  [ ] Conditions d'exécution `when` (issue #84, arbitré le 2026-11-18, DSD `workflow` `FR-20`, `DEC-14`) : `decide`, `StepDecision`, `SkipReason`, étape a' de `run`, `build_inputs` avec `skipped` (voir le `Must` et les `Scenario` « when… » ci-dessous) ; tests d'abord (rouges avant le code, `decide` et `build_inputs` se testent sans contexte Restate), puis ./interpreter.rs. Après ./definition.sdd. Périmètre : ./interpreter.rs seul.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow` — périmètre
@@ -370,3 +381,33 @@ Scenario: le trigger du RunInput est facultatif et omis quand il est absent (202
   Given le JSON `{"dag": [<un step>]}` puis `{"dag": [<un step>], "trigger": "sub-42"}`
   When ils sont désérialisés en `RunInput`
   Then `trigger` vaut `None` puis `Some("sub-42")` ; un `RunInput` de `trigger: None` sérialise sans clé `trigger`
+
+Scenario: un step dont le when est faux est ignoré, sans dispatch (#84)
+  Given un step `B` avec `depends_on: ["A"]` et `when: {step A, /status eq "ok"}`, et `results = {"A": {"status": "ko"}}`
+  When `decide(B, skipped vide, vars, results)` est appelé
+  Then `Skip(When)` ; avec `{"status": "ok"}`, `Run`
+
+Scenario: l'ignorance se propage aux dépendants par défaut (#84)
+  Given `C` avec `depends_on: ["B"]` et `skipped = {"B"}`
+  When `decide(C, …)` est appelé
+  Then `Skip(Dependency)`, même si `C` n'a aucun `when`
+
+Scenario: run_if_skipped fait s'exécuter le dépendant malgré l'ignorance (#84)
+  Given `C` avec `depends_on: ["B"]`, `run_if_skipped: true`, `skipped = {"B"}`, sans `when`
+  When `decide(C, …)` est appelé
+  Then `Run`, et `build_inputs(C, results, skipped)` porte l'entrée `B` à `Value::Null`
+
+Scenario: un step ignoré ne figure pas dans la table de sortie du run (#84)
+  Given un DAG `A → B → C` où `B` est ignoré par `when` et `C` par propagation
+  When `run` se termine
+  Then `Ok(results)` ne contient que `A`, et `completed` contenait bien les trois steps
+
+Scenario: les décisions sont déterministes au rejeu (#84)
+  Given les mêmes `vars`, `results` et `skipped`
+  When `decide` est appelé deux fois pour chaque step d'un DAG
+  Then les décisions sont identiques, et aucun `ctx.run` n'est requis (`decide` ne prend pas de contexte)
+
+Scenario: une couche entièrement ignorée ne bloque pas la boucle (#84)
+  Given un DAG `A → B` où `B` est ignoré (`when` faux)
+  When la boucle atteint la couche de `B`
+  Then aucun futur n'est construit pour cette couche et le run se termine `Ok`

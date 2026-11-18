@@ -1,0 +1,78 @@
+Spec: predicate — condition d'exécution structurée d'un step (`when`)
+
+Purpose:
+  Porter le prédicat JSON structuré d'un champ `when` de step (issue #84, DSD `workflow` `OI-5` soldé le 2026-11-18, `FR-20`, `DEC-14`) : un type
+    `Predicate`, son évaluation pure et sa validation structurelle. Le langage est volontairement borné (arbitré le 2026-11-18 : option (C) du DSD, prédicat
+    structuré plutôt que gabarit Handlebars ou expression Rhai) : aucune expression, aucun moteur, aucun effet de bord, donc une validation statique
+    triviale (les steps lus sont connus sans exécuter quoi que ce soit) et un déterminisme évident au rejeu après crash (`NFR-1`). Fichier neuf, conception.
+
+Owns:
+  ./predicate.rs
+
+References:
+  /dsd/miryad-core/workflow.md — `OI-5`, `FR-20`, `DEC-14`, `NFR-1`
+  ./definition.sdd — `StepDefinition::when` porte un `Predicate`, `validate_dag` appelle `Predicate::validate` et `Predicate::referenced_steps`
+  ./interpreter.sdd — évalue `Predicate::evaluate` avant de dispatcher un step
+
+Must:
+  `Predicate` — enum `pub`, `#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]`, `#[serde(untagged)]`, trois formes JSON, chacune `deny_unknown_fields` :
+    - **feuille** : `{"step": "<id>" ou "var": "<nom>", "path": "<pointeur JSON RFC 6901, facultatif, défaut : la valeur entière>", "op": "<opérateur>", "value": <JSON, selon l'opérateur>}` — exactement **une** source, `step` (la sortie du step `<id>`, telle que l'interpréteur l'a rangée dans les résultats du run) ou `var` (la variable `<nom>` de `vars`) ;
+    - **`{"all": [Predicate, …]}`** : vrai si tous les éléments sont vrais ;
+    - **`{"any": [Predicate, …]}`** : vrai si au moins un élément est vrai.
+  `Op` — enum `pub`, `#[serde(rename_all = "snake_case")]` : `eq`, `ne`, `gt`, `ge`, `lt`, `le`, `in`, `exists`.
+  `Predicate::evaluate(&self, vars: &serde_json::Map<String, serde_json::Value>, results: &std::collections::HashMap<String, serde_json::Value>) -> bool` — `pub(crate)`, **fonction pure et totale** (jamais de panique, jamais d'erreur, aucune horloge, aucun hasard, aucune entrée-sortie) : une feuille résout sa source (`results.get(id)` ou `vars.get(nom)`), applique le pointeur `path` (`Value::pointer` ; pointeur mal formé ou chemin absent → valeur **absente**), puis l'opérateur. **Une valeur absente rend `false` pour tous les opérateurs**, `exists` et `ne` compris (aucun opérateur ne rend vrai sur une absence : pas de surprise sur une donnée manquante). `exists` : vrai si la valeur est présente et n'est pas JSON `null`. `eq` : égalité JSON, les nombres étant comparés par valeur numérique (`1` égale `1.0`). `ne` : l'inverse de `eq` sur une valeur présente. `gt`, `ge`, `lt`, `le` : deux nombres (comparés en flottant) ou deux chaînes (ordre lexicographique des octets) ; tout autre couple de types rend `false`. `in` : la valeur de l'opérateur est un tableau, vrai si la valeur résolue est égale à l'un de ses éléments.
+  `Predicate::validate(&self) -> Result<(), String>` — `pub(crate)`, structure seulement, premier défaut rencontré (parcours en profondeur, dans l'ordre du document) : feuille sans source ou avec les deux (`step` et `var`) ; `step` ou `var` vide ; `path` non vide qui ne commence pas par `/` ; `value` absente pour tout opérateur sauf `exists`, `value` présente pour `exists` ; `value` non tableau pour `in` ; `all` ou `any` vide ; profondeur d'imbrication supérieure à 8 ; plus de 64 nœuds au total. Le texte de l'erreur décrit le défaut sans citer de valeur de l'utilisateur.
+  `Predicate::referenced_steps(&self) -> Vec<&str>` — `pub(crate)`, les `id` de step lus par les feuilles (sources `step`), dans l'ordre du document, doublons conservés ; les sources `var` n'y figurent pas.
+  Compiler uniquement sous `#[cfg(feature = "workflow")]`.
+
+Must not:
+  Évaluer un gabarit, une expression, du Rhai, ou appeler `ctx.run`/Restate ; lire l'horloge, un hasard ou l'environnement ; émettre une trace contenant une valeur lue (une donnée de step peut être sensible) ; paniquer.
+
+Exposes:
+  `Predicate`, `Op` (`pub`), `evaluate`, `validate`, `referenced_steps` (`pub(crate)`)
+
+Tasks:
+  [ ] Tests d'abord (un par `Scenario` ci-dessous), puis ./predicate.rs. Avant ./definition.sdd et ./interpreter.sdd (qui le consomment).
+
+Done when:
+  Les `Scenario` sont verts sous `workflow` ; la spec est relue et approuvée avant ./predicate.rs.
+
+Scenario: chaque opérateur sur une valeur présente
+  Given les résultats `{"A": {"status": "ok", "n": 3, "tags": ["x", "y"]}}` et les `vars` `{"mode": "fast"}`
+  When on évalue `eq`, `ne`, `gt`, `ge`, `lt`, `le`, `in` et `exists` sur `/status`, `/n`, `/tags/0` et sur la variable `mode`
+  Then chaque feuille rend la valeur attendue de son opérateur (`/status eq "ok"` vrai, `/n gt 2` vrai, `/n lt 3` faux, `/n le 3` vrai, `/tags/0 in ["x","z"]` vrai, `mode eq "fast"` vrai, `/status exists` vrai)
+
+Scenario: une valeur absente rend toujours faux
+  Given les résultats `{"A": {"status": "ok"}}`
+  When on évalue `/inconnu exists`, `/inconnu ne "x"`, `/inconnu eq null`, un step absent des résultats et une variable absente de `vars`
+  Then tout rend `false`, sans panique
+
+Scenario: des types incomparables rendent faux, sans erreur
+  Given `{"A": {"n": 3, "s": "abc"}}`
+  When on évalue `/n gt "2"` et `/s lt 5`
+  Then `false` pour les deux
+
+Scenario: all et any composent, null n'existe pas
+  Given `{"A": {"k": null, "v": 1}}`
+  When on évalue `all[v eq 1, k exists]`, `any[v eq 2, v eq 1]` et `any[k exists, v exists]`
+  Then `false`, `true`, `true`
+
+Scenario: un chemin inexistant est une absence
+  Given `{"A": {"v": 1}}` et le chemin `/v/x/y`, structurellement valide mais inexistant
+  When on évalue `eq 1`
+  Then `false`, sans panique
+
+Scenario: validate rejette les formes invalides
+  Given une feuille avec les deux sources, une feuille sans source, `path` sans `/` initial, `eq` sans `value`, `exists` avec `value`, `in` avec une valeur non tableau, `all: []`, un prédicat de profondeur 9, un prédicat de 65 nœuds
+  When `validate` est appelé
+  Then `Err` pour chacun, avec un texte qui ne reprend aucune valeur utilisateur ; un prédicat valide rend `Ok(())`
+
+Scenario: referenced_steps ne rend que les sources step
+  Given `all[{step A …}, {var mode …}, any[{step B …}, {step A …}]]`
+  When `referenced_steps` est appelé
+  Then `["A", "B", "A"]`
+
+Scenario: aller-retour JSON stable
+  Given les trois formes (feuille, all, any) écrites en JSON
+  When elles sont désérialisées puis resérialisées
+  Then le JSON est identique, et un champ inconnu (`{"step":"A","op":"eq","value":1,"extra":1}`) est rejeté à la désérialisation
