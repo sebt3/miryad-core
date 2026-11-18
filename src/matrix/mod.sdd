@@ -40,7 +40,7 @@ Must:
     la limite « sync initial au démarrage, pas de rattrapage des messages reçus pendant une coupure »
     (`Tasks`), la contrainte d'épinglage `matrix-sdk` et le renvoi vers `dsd/miryad-core/matrix.md`.
   Documenter dans `/Cargo.toml` (hors `Owns`, diff imposé) exactement :
-    `matrix = ["dep:matrix-sdk", "dep:matrix-sdk-crypto", "dep:matrix-sdk-store-encryption", "dep:tokio"]`
+    `matrix = ["dep:matrix-sdk", "dep:matrix-sdk-crypto", "dep:matrix-sdk-store-encryption", "dep:tokio", "dep:rustls"]` (`dep:rustls` ajouté le 2026-11-18 : provider `ring` de ./tls.sdd ; `rustls` est déjà une dépendance optionnelle, features `ring` et `std`, partagée avec `lymaille`)
     (`tokio` est déjà une dépendance optionnelle, partagée avec `workflow` — ses features passent à
     `["rt-multi-thread", "macros", "time", "sync"]`) ;
     `matrix-sdk = { version = "0.19", default-features = false, features = ["e2e-encryption"], optional = true }` ;
@@ -64,7 +64,7 @@ Must not:
   Activer la feature `sqlite` de `matrix-sdk` ou dépendre de `matrix-sdk-sqlite`.
 
 Depends on:
-  ./error.rs, ./config.rs, ./session.rs, ./device_code.rs, ./client.rs, ./sync.rs, ./store/mod.rs
+  ./error.rs, ./config.rs, ./session.rs, ./device_code.rs, ./client.rs, ./sync.rs, ./tls.rs, ./store/mod.rs
 
 Exposes:
   `MatrixConfig`, `MatrixClient`, `MessageKind`, `MessageRelation`, `SessionImport`, `DeviceCodePrompt`, `MatrixError`,
@@ -92,6 +92,7 @@ Tasks:
     jamais silencieuse (trace `info` au démarrage, ./sync.sdd). Si le besoin se confirme (harnais), la voie
     retenue est le rattrapage par `/messages` salon par salon depuis le dernier `event_id` traité, persisté en
     base — moins coûteux qu'un `StateStore` persistant (trait d'une cinquantaine de méthodes).
+  [ ] Déclarer `mod tls;` (module privé, `pub(crate)` pour `install_crypto_provider`) dans ./mod.rs (arbitré le 2026-11-18, DSD `matrix` `DEC-4`) ; aucune nouvelle ré-exportation publique ; `Exposes` inchangé. Périmètre : ./mod.rs seul, après ./tls.sdd.
 
 Done when:
   Les `Scenario` sont verts ; `cargo build --no-default-features --features matrix` et `--all-features`

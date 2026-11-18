@@ -42,6 +42,7 @@ References:
   /dsd/miryad-core/matrix.md — `FR-9` à `FR-13`, `DEC-3`, `OI-7`
 
 Must:
+  **Amendement 2026-11-18 (DSD `matrix` `DEC-4`)** : `build_client` appelle `crate::matrix::tls::install_crypto_provider()` (./tls.sdd) avant `Client::builder()` : sans provider rustls, `reqwest` 0.13 panique à la construction du client HTTP sous `matrix-sdk` 0.19. L'appel est idempotent et n'échoue jamais.
   @MessageKind — `pub enum`, `#[derive(Debug, Clone, Copy, PartialEq, Eq)]` : `Text` (`m.text`), `Notice`
     (`m.notice`, convention des bots : les autres bots ne répondent pas aux notices).
   @SessionImport — struct `pub`, `#[derive(Clone)]`, champs `pub` : `user_id: String`, `device_id: String`,
@@ -287,6 +288,7 @@ Tasks:
       été prouvés en réel (`device_code_login_then_echo` ne prouvait que les `send` sans relation) ; consigner la mesure `OI-7(b)`
       dans `dsd/miryad-core/matrix.md` (domaine développeur principal).
   [ ] Montée de `matrix-sdk` en 0.19 (arbitré le 2026-11-18, DSD `matrix` `DEC-4`, tâche de `/miryad-core.sdd`) : dans le bloc `#[cfg(test)]` de ./client.rs, les deux constructions de `matrix_sdk::RumaApiError::from_http_response(response)` (vers les lignes 994 et 1045) passent de `Response<Vec<u8>>` à `Response<&[u8]>` (signature de `ruma` 0.17) ; `../../tests/matrix_live.rs` déclare `#![recursion_limit = "256"]` (profondeur de layout de ses futures asynchrones, mesurée). Assertions et noms de tests inchangés. **Hors tests (constaté par l'implementer le 2026-11-18)** : sous `ruma` 0.17, la fermeture `|id| id.to_string()` de `text_message` (vers la ligne 553, `.map_or_else(|| "inconnu".to_owned(), |id| id.to_string())`) devient redondante et fait échouer `cargo clippy` (pedantic, `redundant_closure_for_method_calls`) : elle est remplacée par `ToString::to_string`, comportement strictement identique. Preuve : `cargo check --no-default-features --features matrix --all-targets` rouge avant (E0308 ×2, « queries overflow the depth limit » ×2 pour `matrix_live`), vert après ; `cargo clippy --no-default-features --features matrix --all-targets -- -D warnings` vert. Périmètre : ./client.rs (bloc de tests, plus cette seule ligne de `text_message`) et ../../tests/matrix_live.rs (attribut de crate seul).
+  [ ] Provider TLS (arbitré le 2026-11-18) : `build_client` appelle `install_crypto_provider()` avant `Client::builder()` ; test d'abord : les tests existants de `build_client`/`connect` sur SQLite mémoire sans réseau (aujourd'hui en panique « No rustls crypto provider is configured » sous 0.19 : `connect_without_session_is_not_logged_in` et ses voisins) sont rouges avant, verts après. Après ./tls.sdd. Périmètre : ./client.rs (`build_client`) seul.
 
 Done when:
   Les `Scenario` unitaires sont verts ; `../../tests/matrix_live.rs` est écrit et a été exécuté au moins

@@ -182,13 +182,17 @@ Source : `arch@c62a184`, « Client Matrix de bot ».
     - **Decision:** `matrix-sdk`, `matrix-sdk-crypto`, `matrix-sdk-store-encryption` en `0.19` (dev : `matrix-sdk-crypto`,
       `matrix-sdk-test`, `matrix-sdk-common` en `0.19`, `ruma` en `0.17`) ; `#![recursion_limit = "256"]` à la racine de la crate
       et de `tests/matrix_live.rs` (profondeur de layout des futures de `MatrixClient::send`, mesurée) ; les quatre
-      constructions de test de `RumaApiError::from_http_response` passent à `Response<&[u8]>`.
+      constructions de test de `RumaApiError::from_http_response` passent à `Response<&[u8]>`. Deux effets constatés en réel
+      par l'implementer : la fermeture `|id| id.to_string()` de `text_message` devient redondante (clippy pedantic), et la suite
+      de conformité 0.19 gagne `test_secret_request_replacement` (une nouvelle demande de secret remplace celle de même
+      `info_key`, `SpecDD /src/matrix/store/crypto_devices.sdd`, sans migration).
     - **Consequences:** `aquamarine`, `proc-macro-error2` et `bitmaps` quittent le graphe (trois `ignore` de `.cargo/audit.toml` à
       retirer après vérification par `cargo audit`) ; `vodozemac` 0.11.2 (#89, #68), `matrix-sdk-crypto` 0.19.1 (#41),
       `imbl-sized-chunks` 0.2.0 (#40), `libsqlite3-sys` unique (#66) ; `rust-version` amont 1.96 (la CI suit la stable).
-    - **Pitfall:** avec `default-features = false`, `matrix-sdk` 0.19 n'active plus `rustls-aws-lc-rs` : le provider rustls du
-      process doit venir d'ailleurs (le projet impose `ring`, `lymaille` `DEC-4`) — **à vérifier à l'exécution** (banc live), pas
-      à la compilation. Les sessions persistées par une 0.18 (pickles `vodozemac` 0.10) doivent se relire en 0.11.
+    - **Pitfall (constaté en réel le 2026-11-18 et arbitré) :** avec `default-features = false`, `matrix-sdk` 0.19 n'active plus
+      `rustls-aws-lc-rs` : `reqwest` 0.13 panique à la construction du client HTTP (« No rustls crypto provider is configured »).
+      **Arbitré :** la crate installe `ring` de façon idempotente dans `build_client` (`SpecDD /src/matrix/tls.sdd`, feature
+      `matrix` → `dep:rustls`), l'hôte n'a rien à faire ; même politique `ring` que `lymaille` `DEC-4`. Les sessions persistées par une 0.18 (pickles `vodozemac` 0.10) doivent se relire en 0.11.
     - **Source:** user instruction, 2026-11-18 (arbitrage de #94, essai jetable puis cycles spécifiés)
 
 ## SpecDD Realization

@@ -34,6 +34,7 @@ Must:
     (`Some(details)` → upsert dans `rooms_pending_key_bundle`, `None` → suppression de la ligne du salon) ;
     `tracked_users` : `save_tracked_users` écrit `dirty` et le `TrackedUser` scellé dans `payload`, et
     `load_tracked_users` relit les `TrackedUser` depuis `payload` (amendement 2026-10-17, ./migration.sdd).
+  **Amendement 2026-11-18 (`matrix-sdk-crypto` 0.19, suite de conformité `test_secret_request_replacement`, DSD `matrix` `DEC-4`)** : dans `apply_devices`, enregistrer une demande de `key_requests` supprime, dans la même transaction et pour le même compte, toute **autre** demande de même `info_key` (`request_id` différent) avant l'upsert — une nouvelle demande pour le même secret remplace la précédente, les demandes pour d'autres secrets restent ; ré-enregistrer la **même** demande (même `request_id`, par exemple pour passer `sent_out` à vrai) ne la supprime pas. Aucune migration : la colonne `info_key` existe déjà.
   Les colonnes de recherche (`user_id`, `device_id`, `hash`, `request_id`, `info_key`, `secret_name`,
     `room_id`) sont hachées par `Kv::hash(<table>, <valeur>)` ; `payload` scellé par `Kv::seal`.
     `info_key` est la sérialisation canonique de `SecretInfo` (celle de `matrix-sdk-sqlite`).
@@ -64,6 +65,7 @@ Tasks:
     Validé 2026-10-17 (Claude) : sept tests verts (un par Scenario, dont l'aller-retour des utilisateurs suivis avec
     `user_id` haché en base), clippy `matrix` et `workflow,matrix` sans écart. `seq` de la boîte démarre à 0 ;
     `identities.unchanged` est upserté comme `new`/`changed`. La conformité complète reste jugée par ./crypto.sdd.
+  [ ] Remplacement des demandes de secret (arbitré le 2026-11-18, `matrix-sdk-crypto` 0.19) : tests d'abord (le `Scenario` « une nouvelle demande de secret remplace celle de même information » ci-dessous, rouge avant le code ; la suite de conformité `test_secret_request_replacement` de ./crypto.sdd rouge aussi), puis ./crypto_devices.rs (`apply_devices`, boucle de `key_requests`). Périmètre : ./crypto_devices.rs seul.
 
 Done when:
   Les `Scenario` sont verts ; la suite officielle passe pour les méthodes de ce fichier ; la spec est
@@ -104,3 +106,8 @@ Scenario: un bundle en attente apparaît puis disparaît
   Given `rooms_pending_key_bundle = {room: Some(details)}` appliqué, puis `{room: None}`
   When `get_pending_key_bundle_details_for_room(room)` est appelé après chaque étape
   Then le résultat est `Some(details)` puis `None`
+
+Scenario: une nouvelle demande de secret remplace celle de même information
+  Given une demande `r1` pour `RecoveryKey` et une demande `m` pour `CrossSigningMasterKey` enregistrées pour le même compte
+  When une demande `r2` pour `RecoveryKey` est enregistrée, puis `r2` est ré-enregistrée avec `sent_out` vrai
+  Then `get_outgoing_secret_requests(r1)` rend `None`, `get_outgoing_secret_requests(r2)` et `get_outgoing_secret_requests(m)` rendent `Some`, et `r2` existe toujours après son ré-enregistrement

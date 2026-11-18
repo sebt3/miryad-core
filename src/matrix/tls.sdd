@@ -1,0 +1,46 @@
+Spec: tls — installation idempotente du provider rustls pour le client Matrix
+
+Purpose:
+  Sous `matrix-sdk` 0.19 avec `default-features = false`, le SDK n'active plus le provider `aws-lc-rs` et `reqwest` 0.13 refuse de construire
+    un client TLS tant qu'aucun provider rustls n'est installé (panique « No rustls crypto provider is configured », constatée en réel le
+    2026-11-18 sur `build_client`). Ce fichier installe `ring` (politique du projet, DSD `lymaille` `DEC-4`) de façon idempotente, pour que
+    `MatrixClient` soit prêt à l'emploi sans que l'hôte ait à y penser (arbitré le 2026-11-18, DSD `matrix` `DEC-4`). Même contrat que
+    ../lymaille/tls.sdd, dupliqué volontairement : les deux features sont indépendantes. Fichier neuf, conception.
+
+Owns:
+  ./tls.rs
+
+References:
+  /dsd/miryad-core/matrix.md — `DEC-4` (pitfall TLS)
+  ../lymaille/tls.sdd — même contrat côté `lymaille`
+  ./mod.sdd — déclaration du module et dépendance `rustls` (features `ring`, `std`)
+
+Must:
+  `pub(crate) fn install_crypto_provider()` — appelle `rustls::crypto::ring::default_provider().install_default()` et **ignore** le résultat
+    (`Err` quand un provider est déjà posé par une autre partie du processus, y compris celui de `lymaille`) ; n'émet qu'une trace
+    `tracing::debug!` du cas « déjà installé ». Appelable autant de fois qu'on veut, depuis plusieurs threads, sans panic.
+  Être appelée par `build_client` de ./client.rs avant `Client::builder()`.
+  Compiler sous `#[cfg(feature = "matrix")]`.
+
+Must not:
+  Paniquer si un provider est déjà installé ; installer `aws-lc-rs` ; poser un état global autre que celui du `CryptoProvider` de rustls ;
+    être exposée dans l'API publique de la crate.
+
+Exposes:
+  `install_crypto_provider` (`pub(crate)`)
+
+Tasks:
+  [ ] Tests d'abord (appels répétés, provider préinstallé), puis ./tls.rs, sur le modèle de ../lymaille/tls.rs (verrou de sérialisation des tests, le provider par défaut de rustls étant global au processus). Après ./mod.sdd (déclaration `mod tls;`).
+
+Done when:
+  Les `Scenario` sont verts sous `matrix` ; la spec est relue et approuvée avant ./tls.rs.
+
+Scenario: deux appels successifs réussissent
+  Given aucun provider installé par le test
+  When `install_crypto_provider()` est appelé deux fois
+  Then aucun panic et `rustls::crypto::CryptoProvider::get_default()` rend `Some`
+
+Scenario: un provider déjà installé n'est pas une erreur
+  Given un provider installé par le test avant l'appel
+  When `install_crypto_provider()` est appelé
+  Then aucun panic et le provider par défaut reste celui du test
