@@ -175,6 +175,17 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
     - **Realized by:** SpecDD /src/workflow/predicate.sdd, SpecDD /src/workflow/definition.sdd, SpecDD /src/workflow/interpreter.sdd
     - **Verified by:** `AC-16`
 
+- **FR-21 - MUST:** Un step peut déclarer des **exports nommés** (`exports`, map nom → pointeur JSON RFC 6901 dans sa sortie, `""` pour la sortie
+  entière). Un nom d'export est unique dans le DAG (producteur unique) et se lit dans la condition `when` d'un step par une feuille de source `export`.
+  `validate_dag` refuse un export lu mais déclaré par aucun step, et un export dont le producteur n'est pas un **ancêtre** du lecteur (direct ou non, par
+  `depends_on`) : c'est la visibilité transitive que la lecture `step` de `FR-20` (dépendances directes) n'offre pas. La valeur d'un export est extraite de la
+  sortie journalisée du producteur ; un export dont le producteur est ignoré, ou dont le pointeur ne trouve rien, est **absent** (toute feuille qui le lit rend
+  `false`) et **ne propage pas** l'ignorance : un export n'est pas une `depends_on`. Les exports n'entrent ni dans la table de sortie du run ni dans
+  `StepInvocation`. Aucun contexte modifiable : l'ordre d'ordonnancement ne change jamais le résultat (`NFR-1`).
+    - **Source:** issue #85 ; user instruction, 2026-11-18 (arbitrage de `OI-6` : lecture dans `when` seulement, map nom → pointeur, producteur ignoré = absent)
+    - **Realized by:** SpecDD /src/workflow/predicate.sdd, SpecDD /src/workflow/definition.sdd, SpecDD /src/workflow/interpreter.sdd
+    - **Verified by:** `AC-17`
+
 ## Constraints
 
 - **CON-1 - MUST:** Le fan-out d'une couche passe par `ctx.request(...).call()` poussé dans un
@@ -393,6 +404,17 @@ S'appliquent `miryad-core#CON-1` (bibliothèque, pas déployable), `miryad-core#
       qui la construisent par littéral, API instable avant 1.0).
     - **Source:** user instruction, 2026-11-18
 
+- **DEC-15 - Exports nommés : lecture dans `when`, map nom → pointeur, producteur ignoré = absent (2026-11-18)**
+    - **Context:** une sortie de step n'est lisible que par ses dépendants directs ; le besoin (monitoring-bot) est de bâtir un contexte de connaissance que
+      les steps suivants lisent, y compris dans un `when`. Un contexte modifiable dépendrait de l'ordonnancement (`OI-8`, réservé à `lymaille`) ; un export à
+      producteur unique non. Un `config` est opaque pour `validate_dag` (ses lectures sont des gabarits rendus à l'exécution).
+    - **Decision:** export nommé déclaré par le producteur (`exports`: nom → pointeur) ; **lecture limitée au `when`**, seul consommateur déclaré de façon
+      structurée, donc entièrement vérifiable statiquement ; valeur absente si le producteur est ignoré, sans propagation. L'injection des exports dans
+      `StepInvocation` (gabarits, Rhai) est écartée pour ce lot : à rouvrir si un consommateur le réclame.
+    - **Consequences:** aucun changement du dispatcher ni des kinds ; `StepDefinition` gagne un troisième champ (`exports`, cassure assumée pour les hôtes qui la
+      construisent par littéral, API instable avant 1.0).
+    - **Source:** user instruction, 2026-11-18
+
 ## Operations and Resilience
 
 - **Rollout :** `force: true` (CON-2) peut, selon l'OpenAPI de l'admin API de Restate, laisser des invocations en cours
@@ -459,6 +481,10 @@ leurs clients (TBD).
   une table de sortie qui ne contient que `A` ; avec `run_if_skipped: true` sur `C`, `C` s'exécute et lit `null` pour `B` ; un `when` lisant un step qui n'est pas
   une dépendance directe est refusé à la création de la définition.
 
+- **AC-17:** Un DAG `A → B → C` où `A` déclare l'export `verdict` (`/v`) et `C`, qui ne dépend que de `B`, porte `when: {export: verdict, op: eq, value: "ok"}` :
+  `C` s'exécute quand `A` rend `{"v":"ok"}` et est ignoré avec `{"v":"ko"}` ; si `A` est ignoré, l'export est absent, le `when` de `C` est faux et un `C` sans
+  `when` s'exécute (aucune propagation). Un `when` qui lit un export déclaré par un step qui n'est pas un ancêtre, ou par deux steps, est refusé à la création.
+
 - **AC-8:** Reprise sur crash du service en milieu de couche sans rejeu des steps journalisés.
     - **Verification:** par la méthode du spike du 2026-09-22 (tuer le processus, le relancer, vérifier). Les tests
       `#[ignore]` de `tests/workflow_restate.rs` exigent `podman` et ne tournent pas en CI : AC-8 n'est donc **pas
@@ -506,7 +532,7 @@ leurs clients (TBD).
     - **(d) Rejeu (`NFR-1`).** La condition est une fonction pure de `vars` et des sorties déjà journalisées : l'évaluer dans
       l'interpréteur ne demande aucun `ctx.run` et se recalcule à l'identique au rejeu. Un step ignoré n'émet aucun appel au
       dispatcher.
-- **OI-6:** **Exports nommés entre steps** (issue #85, priorité basse, dépend de `OI-5` pour la consommation en `when`). Les
+- **OI-6:** **Soldé le 2026-11-18** par `FR-21` et `DEC-15` (lecture dans `when` seulement ; la limite (b) du DSD est acceptée : seules les lectures structurées se vérifient statiquement). Énoncé d'origine : **Exports nommés entre steps** (issue #85, priorité basse, dépend de `OI-5` pour la consommation en `when`). Les
   « faits » établis par des steps (clé `toto` lue par les steps suivants) ne sont pas retenus tels quels : modifiables, leur
   valeur dépendrait de l'ordonnancement des steps d'une même couche ; en écriture unique, ils ne sont qu'un alias de
   sortie. Définition retenue comme candidate : un **export nommé** déclaré par un step, à producteur unique, dont

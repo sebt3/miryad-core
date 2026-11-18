@@ -63,11 +63,11 @@ References:
 
 Must:
   `StepDefinition` — struct `pub`, `#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]`,
-    six champs `pub` : `id: @String`, `depends_on: @Vec<@String>`, `kind: @String`,
+    sept champs `pub` : `id: @String`, `depends_on: @Vec<@String>`, `kind: @String`,
     `config: @serde_json::Value`, et (amendement 2026-11-18, issue #84, DSD `workflow` `FR-20`) `when: @Option<@Predicate>`
     (`#[serde(default, skip_serializing_if = "Option::is_none")]` : condition d'exécution, ./predicate.sdd) et `run_if_skipped: @bool`
     (`#[serde(default, skip_serializing_if = "std::ops::Not::not")]` : le step s'exécute même si l'une de ses dépendances a été ignorée, ./interpreter.sdd) —
-    un DAG écrit sans ces deux champs reste lisible à l'identique et se réécrit sans eux. Aucune validation portée par le type lui-même — n'importe quel
+    et (amendement 2026-11-18, issue #85, DSD `workflow` `FR-21`) `exports: @BTreeMap<@String, @String>` (`#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]` : nom d'export → pointeur JSON RFC 6901 dans la sortie du step, `""` pour la sortie entière ; `BTreeMap` pour un ordre déterministe) — un DAG écrit sans ces trois champs reste lisible à l'identique et se réécrit sans eux. Aucune validation portée par le type lui-même — n'importe quel
     `StepDefinition` isolé est constructible, seule la liste complète d'un DAG est validable
     (`validate_dag`).
   `DagSteps` — struct `pub` tuple à un champ `pub`, `DagSteps(pub @Vec<StepDefinition>)`,
@@ -96,6 +96,8 @@ Must:
       **pas** dans le `depends_on` de ce step →
       @Err(WorkflowError::InvalidDag(format!("le step {id} lit {ref} dans son `when` sans en dépendre directement"))) (lecture limitée aux dépendances directes,
       arbitré le 2026-11-18 : la visibilité transitive relève de l'issue #85). Un `when` qui ne lit que des `var` est toujours valide. `run_if_skipped` n'est jamais une erreur.
+    6. (amendement 2026-11-18, issue #85) Exports déclarés, dans l'ordre de la liste puis de `exports` (ordre des noms) : nom invalide (vide, plus de 64 caractères, ou caractère hors `[A-Za-z0-9_-]`) ou pointeur invalide (non vide et ne commençant pas par `/`) → @Err(WorkflowError::InvalidDag(format!("le step {id} déclare un export invalide : {raison}"))) ; premier nom déjà déclaré par un step précédent → @Err(WorkflowError::InvalidDag(format!("export dupliqué: {nom}"))) (producteur unique, comme l'unicité des `id`).
+    7. (amendement 2026-11-18, issue #85) Lectures d'exports : pour chaque step portant un `when`, chaque nom rendu par `Predicate::referenced_exports` doit être déclaré par un step (sinon @Err(WorkflowError::InvalidDag(format!("le step {id} lit l'export {nom}, que aucun step ne déclare")))) **et** son producteur doit être un **ancêtre** du step lecteur, direct ou non, par `depends_on` (sinon @Err(WorkflowError::InvalidDag(format!("le step {id} lit l'export {nom} dont le producteur {p} n'est pas un de ses ancêtres")))) — jamais le step lui-même. C'est la visibilité transitive : un export se lit au-delà des dépendances directes que l'étape 5 impose aux lectures `step`.
     5. Sinon @Ok(())
   `Entity`/`Model`/`ActiveModel` via `#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize,
     Deserialize)]` sur `Model`, `#[sea_orm(table_name = "miryad_workflow_definitions")]` : `id: @i32`
@@ -190,7 +192,7 @@ Depends on:
   @std::sync::OnceLock — cellule `POLICY`, aucune dépendance externe
 
 Exposes:
-  `StepDefinition` — struct `pub`, six champs `pub` (amendement 2026-11-18, `when` et `run_if_skipped`)
+  `StepDefinition` — struct `pub`, sept champs `pub` (amendements 2026-11-18, `when`, `run_if_skipped` et `exports`)
   `DagSteps` — struct `pub`, un champ `pub` (tuple)
   `validate_dag` — `pub(crate) fn validate_dag(steps: &[StepDefinition]) -> Result<(), WorkflowError>`
   `WorkflowPolicy` — struct `pub`, deux champs `pub`, `Default`
@@ -318,6 +320,7 @@ Tasks:
     Validé 2026-11-11 (cycle hooks-async : batterie ciblée 6 combinaisons tests+clippy `-D warnings` + fmt, verte).
   [x] Conditions d'exécution `when` (issue #84, arbitré le 2026-11-18, DSD `workflow` `FR-20`) : `StepDefinition` gagne `when` et `run_if_skipped` (voir le `Must`), `validate_dag` gagne l'étape 5 ; tests d'abord (les `Scenario` « when… » ci-dessous, rouges avant le code), puis ./definition.rs ; les quinze sites qui construisent un `StepDefinition` par littéral (./definition.rs, ./interpreter.rs, ./client.rs, `../../tests/workflow_restate.rs`) reçoivent `when: None, run_if_skipped: false` sans autre modification de leurs assertions. Après ./predicate.sdd. Périmètre : ./definition.rs, et pour les littéraux seulement ./interpreter.rs (tests), ./client.rs (tests), `../../tests/workflow_restate.rs`.
     Validé 2026-11-18 (implementer Qwen `qwen3.8-flash-next`, validator Sonnet GO, batterie 17+17, fmt, `cargo tree`, `specdd lint` verts ; ni PostgreSQL ni serveur Restate réels) ; mutations rouges (contrôle « référence ∈ depends_on » retiré ; `skip_serializing_if` retiré) ; ordre des erreurs inchangé pour les DAG sans `when`.
+  [ ] Exports nommés (issue #85, arbitré le 2026-11-18, DSD `workflow` `FR-21`) : `StepDefinition` gagne `exports`, `validate_dag` les étapes 6 et 7 ; tests d'abord (les `Scenario` « export… » ci-dessous, rouges avant le code), puis ./definition.rs ; les littéraux `StepDefinition` des mêmes fichiers que la tâche `when` (./definition.rs, ./interpreter.rs, ./client.rs, `../../tests/workflow_restate.rs`) reçoivent `exports: std::collections::BTreeMap::new()` sans autre modification de leurs assertions. Après ./predicate.sdd. Périmètre : ./definition.rs, et pour les littéraux seulement ./interpreter.rs (tests), ./client.rs (tests), `../../tests/workflow_restate.rs`.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
@@ -457,3 +460,33 @@ Scenario: un DAG sans when ni run_if_skipped garde son JSON (#84)
   Given un DAG écrit comme avant l'amendement (quatre champs par step)
   When il est désérialisé puis resérialisé
   Then le JSON est identique, `when` vaut `None` et `run_if_skipped` vaut `false`
+
+Scenario: un export se lit au-delà des dépendances directes (#85)
+  Given `A` qui déclare l'export `verdict` (`/v`), `B` avec `depends_on: ["A"]`, `C` avec `depends_on: ["B"]` et `when: {export: verdict, …}`
+  When `validate_dag` est appelé
+  Then `Ok(())` (A est un ancêtre de C, pas une dépendance directe)
+
+Scenario: un export dont le producteur n'est pas un ancêtre est refusé (#85)
+  Given `A` qui déclare `verdict`, `B` sans lien avec `A`, et `B` portant `when: {export: verdict, …}`
+  When `validate_dag` est appelé
+  Then `Err(InvalidDag)` dont le texte nomme `B`, `verdict` et `A`
+
+Scenario: un export inconnu est refusé (#85)
+  Given un step portant `when: {export: inconnu, …}` et aucun step qui le déclare
+  When `validate_dag` est appelé
+  Then `Err(InvalidDag)` dont le texte nomme le step et `inconnu`
+
+Scenario: deux steps ne peuvent pas déclarer le même export (#85)
+  Given `A` et `B` qui déclarent tous deux `verdict`
+  When `validate_dag` est appelé
+  Then `Err(InvalidDag("export dupliqué: verdict"))`
+
+Scenario: nom ou pointeur d'export invalide est refusé (#85)
+  Given un export au nom vide, un autre au nom contenant un espace, un troisième au pointeur `v` (sans `/`)
+  When `validate_dag` est appelé pour chacun
+  Then `Err(InvalidDag)` pour les trois, sans citer de valeur utilisateur au-delà du nom de step
+
+Scenario: un DAG sans exports garde son JSON (#85)
+  Given un DAG écrit sans le champ `exports`
+  When il est désérialisé puis resérialisé
+  Then le JSON est identique et `exports` est vide

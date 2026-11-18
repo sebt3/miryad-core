@@ -113,7 +113,7 @@ Must:
     un `ready_ids` déterministe entre deux exécutions du même DAG (propriété exploitée par les tests,
     pas garantie contractuelle vis-à-vis de Restate qui ne fan-oute pas dans un ordre observable de
     toute façon).
-  `decide(step: &StepDefinition, skipped: &HashSet<String>, vars: &Map<String, Value>, results: &HashMap<String, Value>) -> StepDecision` (amendement 2026-11-18, issue #84) —
+  `decide(step: &StepDefinition, skipped: &HashSet<String>, vars: &Map<String, Value>, results: &HashMap<String, Value>, exports: &HashMap<String, Value>) -> StepDecision` (amendement 2026-11-18, issue #85 : le paramètre `exports` est la table des valeurs d'export résolues, transmise à `Predicate::evaluate`) (amendement 2026-11-18, issue #84) —
     `pub(crate)`, fonction pure sans `ctx`, `StepDecision { Run, Skip(SkipReason) }`, `SkipReason { Dependency, When }` : `Skip(Dependency)` si `step.run_if_skipped` est faux et qu'au moins un id de
     `depends_on` est dans `skipped` (propagation, par défaut) ; sinon `Skip(When)` si `step.when` est `Some(p)` et `p.evaluate(vars, results)` rend `false` ; sinon `Run`. Un step qui s'exécute
     malgré une dépendance ignorée (`run_if_skipped`) évalue quand même son `when`, lequel lit une valeur absente (donc `false`) s'il vise le step ignoré. Les décisions sont des fonctions
@@ -142,6 +142,8 @@ Must:
     StepInvocation` — `pub(crate)`, fonction pure (amendement 2026-10-30) : l'unique endroit où une `StepInvocation` est assemblée
     depuis un step ; `vars` y est recopiée en `Value::Object`, `trigger` en `Option<String>`. Extraction de l'étape 2.b, pour que le passage des `vars` soit testable
     sans contexte Restate.
+
+  **Exports nommés (amendement 2026-11-18, issue #85, DSD `workflow` `FR-21`, `DEC-15`)** : `run` tient une table `exports: HashMap<String, Value>` (initialement vide). `collect_exports(step: &StepDefinition, output: &Value) -> Vec<(String, Value)>` — `pub(crate)`, fonction pure : pour chaque `(nom, pointeur)` de `step.exports`, la valeur `output.pointer(pointeur)` clonée quand elle existe ; un pointeur sans résultat ne produit **aucune** entrée (valeur absente). `run` appelle `collect_exports` à l'étape 2.e pour chaque step `Run` terminé en `Ok` et insère les entrées dans `exports` ; un step ignoré n'en insère aucune (ses exports sont absents, `FR-21`). `apply_decisions` et `decide` reçoivent `exports`. Les exports n'entrent pas dans la table de sortie du run ni dans `StepInvocation` (lecture par `when` seulement, arbitré le 2026-11-18) ; ils se déduisent des sorties journalisées par Restate : rejeu identique après crash (`NFR-1`).
 
 Must not:
   Utiliser `futures::future::join_all` ou tout combinateur hors `DurableFuturesUnordered`/`select!`
@@ -289,6 +291,8 @@ Tasks:
     Validé 2026-11-18 (implementer Qwen `qwen3.8-flash-next`, validator Sonnet GO, batterie 17+17, fmt, `cargo tree`, `specdd lint` verts ; ni PostgreSQL ni serveur Restate réels) ; `apply_decisions` extraite et appelée par `run` ET par la simulation de test ; mutations « `completed.insert` retiré » et « `skipped.insert` retiré » rouges ; comportement de `run` inchangé (relecture ligne à ligne, trace désormais émise après la boucle de décision, sans incidence fonctionnelle). **Limite** : une mutation de `run` qui ignore la liste « à dispatcher » reste invisible ici (le corps de `run` exige un `WorkflowContext` Restate) ; seule l'intégration AC-16 ci-dessous la prouve.
   [ ] Intégration AC-16 (arbitré le 2026-11-18) : dans `../../tests/workflow_restate.rs`, test `#[ignore]` contre un vrai `restate-server` : DAG `A → B → C`, `B` ignoré par `when`, `C` par propagation → table de sortie réduite à `A` ; puis `run_if_skipped: true` sur `C` → `C` s'exécute et lit `null` pour `B`. À rejouer sur le banc Restate réel (podman et image `restate-server`) ; la case reste `[ ]` jusqu'à une exécution réelle, comme les autres tests de ce fichier. Périmètre : `../../tests/workflow_restate.rs`.
     Écrit 2026-11-18 (implementer Qwen ; validator Sonnet : relecture GO, compile, listé ignoré, **non exécuté** — ni `podman` ni `restate-server` sur ce pod) : la case reste `[ ]` jusqu'à une exécution réelle sur un banc Restate ; elle porte aussi la preuve du câblage de `run` (voir la case précédente).
+  [ ] Exports nommés (issue #85, arbitré le 2026-11-18, DSD `workflow` `FR-21`, `DEC-15`) : `collect_exports`, table `exports` de `run`, paramètre `exports` de `decide` et de `apply_decisions` (voir le paragraphe « Exports nommés » et les `Scenario` « export… » ci-dessous) ; tests d'abord (rouges avant le code), puis ./interpreter.rs ; la simulation de test (`marche_simulee`) alimente la table `exports` par `collect_exports`, la même fonction que `run`. Après ./definition.sdd. Périmètre : ./interpreter.rs seul.
+  [ ] Intégration des exports (issue #85, arbitré le 2026-11-18) : dans `../../tests/workflow_restate.rs`, test `#[ignore]` contre un vrai `restate-server` : DAG `A → B → C` où `A` déclare l'export `verdict` et `C` (qui ne dépend que de `B`) porte `when: {export: verdict, op: eq, value: "ok"}` → `C` s'exécute quand `A` rend `{"v":"ok"}`, est ignoré quand `A` rend `{"v":"ko"}` ; et quand `A` est lui-même ignoré, `C` lit un export absent (donc `when` faux) sans être ignoré par propagation s'il n'a pas de `when`. À rejouer sur le banc Restate réel ; la case reste `[ ]` jusqu'à une exécution réelle. Périmètre : `../../tests/workflow_restate.rs`.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow` — périmètre
@@ -416,3 +420,23 @@ Scenario: une couche entièrement ignorée ne bloque pas la boucle (#84)
   Given un DAG `A → B` où `B` est ignoré (`when` faux)
   When la boucle atteint la couche de `B`
   Then aucun futur n'est construit pour cette couche et le run se termine `Ok`
+
+Scenario: collect_exports extrait les valeurs par pointeur (#85)
+  Given un step déclarant `{"verdict": "/analysis/verdict", "tout": ""}` et la sortie `{"analysis": {"verdict": "ok"}}`
+  When `collect_exports` est appelé
+  Then `[("tout", la sortie entière), ("verdict", "ok")]` (ordre des noms)
+
+Scenario: un pointeur sans résultat ne produit aucun export (#85)
+  Given un step déclarant `{"manquant": "/absent"}` et la sortie `{"v": 1}`
+  When `collect_exports` est appelé
+  Then liste vide
+
+Scenario: un step lit l'export d'un ancêtre non direct (#85)
+  Given `A` (export `verdict` = `/v`) → `B` → `C` portant `when: {export: verdict, op: eq, value: "ok"}`, la table `exports = {"verdict": "ok"}`
+  When `decide(C, …, exports)` est appelé
+  Then `Run` ; avec `{"verdict": "ko"}`, `Skip(When)` ; avec une table vide, `Skip(When)`
+
+Scenario: l'export d'un producteur ignoré est absent et ne propage rien (#85)
+  Given `A` ignoré par son `when`, donc aucune entrée dans `exports`, et `C` (sans `when`, qui ne dépend que de `B` non ignoré) 
+  When `decide(C, …)` est appelé
+  Then `Run` : un export n'est pas une dépendance, il ne propage pas l'ignorance
