@@ -76,10 +76,8 @@ impl jsonschema::Retrieve for NoExternalRetrieval {
 /// `dsd/miryad-core/mcp.md` `FR-6` à `FR-9`). Réunit nom, description, schéma JSON des arguments
 /// (conservé tel qu'enregistré, publié tel quel par `tools/list`), politique d'accès, validateur
 /// compilé une fois à l'enregistrement, et gestionnaire asynchrone de l'hôte.
-// Consommé par les tâches A2 (./registry.rs, `register_tool`) et A3 (./handler.rs,
-// `tools/list` et dispatch) de app_tool.sdd `Tasks` : pas encore monté tant que ces tâches
-// n'ont pas été implémentées.
-#[allow(dead_code)]
+// Consommé par ./registry.rs (`register_tool`, tâche A2) et ./handler.rs (`tools/list` et
+// dispatch, tâche A3) de app_tool.sdd `Tasks`.
 pub(crate) struct AppTool {
     name: String,
     description: String,
@@ -90,7 +88,6 @@ pub(crate) struct AppTool {
 }
 
 // Consommé par ./registry.rs (tâche A2 de app_tool.sdd `Tasks`).
-#[allow(dead_code)]
 impl AppTool {
     /// Compile `input_schema` une fois pour toutes et emballe `handler` ; `AppTool::call` n'a
     /// plus rien à construire.

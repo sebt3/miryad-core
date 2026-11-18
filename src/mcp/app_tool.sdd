@@ -138,7 +138,8 @@ Tasks:
       `jsonschema` (aucune dépendance supplémentaire sur `referencing`).
     Fait le 2026-11-16 (Claude, à la demande explicite du développeur principal) : `jsonschema` et la feature `mcp` dans `/Cargo.toml` ; contrôles ajoutés à `/tooling.sdd`,
     `/AGENTS.md`, `.github/workflows/{ci.yml,workflows.sdd}` et `.opencode/agents/validator.md`. Mesuré : `--features mcp` → une ligne (`jsonschema v0.60.2`) ; sans `mcp` → stdout vide.
-  [ ] Nettoyage (arbitré 2026-11-17, reliquat de ./handler.sdd) : retirer les deux `#[allow(dead_code)]` de ./app_tool.rs (l. ~82 et ~93), devenus inutiles depuis que le dispatch de ./handler.rs atteint `AppTool` depuis la lib. Aucun test nouveau : la preuve est `cargo clippy -D warnings` vert sur toutes les combinaisons de features. Périmètre : ./app_tool.rs seul.
+  [x] Nettoyage (arbitré 2026-11-17, reliquat de ./handler.sdd) : retirer les deux `#[allow(dead_code)]` de ./app_tool.rs (l. ~82 et ~93), devenus inutiles depuis que le dispatch de ./handler.rs atteint `AppTool` depuis la lib. Aucun test nouveau : la preuve est `cargo clippy -D warnings` vert sur toutes les combinaisons de features. Périmètre : ./app_tool.rs seul.
+    Validé 2026-11-17 (implementer Haiku + validator Sonnet GO, batterie 17+17, fmt, `cargo tree`, `specdd lint` verts ; PostgreSQL réel non joué, sans objet ici) : deux `#[allow(dead_code)]` retirés ; le commentaire `// Consommé par …` (devenu faux) reformulé, doc seule ; clippy `-D warnings` vert sur les 17 combinaisons.
 
 Done when:
   Les `Scenario` sont verts sous `--no-default-features --features mcp` et `--all-features` ; la batterie de /tooling.sdd (y compris les deux
