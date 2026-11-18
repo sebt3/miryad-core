@@ -90,7 +90,7 @@ Tasks:
     `dev` valide et autorisé ; verrou vert d'emblée, rouge prouvé par mutation (neutralisation du `?` de `resolve_start` → session
     ouverte) ; ordre conforme au `Must` (`resolve_start` l. 687 avant sélection d'agent l. 693) ; non dupliqué du test
     sans-agent-explicite préexistant.
-    - [?] (validator) : le verrou assert la variante `InvalidDefinition` sans message exact (le message vient de `resolve_start`
+    - [x] Acté 2026-11-18 (triage de #91) : le message amont n'est pas épinglé (dépendance du test à un texte de `resolve_start`). Énoncé d'origine : (validator) : le verrou assert la variante `InvalidDefinition` sans message exact (le message vient de `resolve_start`
       amont, épingler son texte exposerait le test à une upstream-pin) — la tâche ne l'exige pas. Acter, ou épingler le message ?
   [x] Scinder `un_contexte_sans_type_exploitable_est_refuse` en deux tests nommés (cas 1 : sans `context_type` ; cas 2 : type inexistant), chacun avec son assertion dédiée ; le cas 3 (type au seul `draft`) garde le sien ; attendu : `InvalidDefinition("context has no usable type")` et aucune session.
     Validé 2026-11-17 (validator GO, cycle I9) : `un_contexte_sans_context_type_est_refuse` et

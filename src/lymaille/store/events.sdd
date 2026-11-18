@@ -70,11 +70,11 @@ Tasks:
     d'égalité vectorielle `1..=20` (distincts + consécutifs + sans trou), `read_after` et `last_seq` cohérents. **Joué vert contre
     PostgreSQL 17.12 réel** : 11/11 runs côté implementer, 4/4 runs indépendants côté validator (podman, conteneur supprimé après
     mesure) ; listé ignoré sans la variable, les 10 autres tests du fichier intacts.
-    - [?] (implementer + validator) : le nombre de reprises par lot n'est pas mesurable par l'API publique (`append` ne rend que les
+    - [x] Acté 2026-11-18 (triage de #91) : l'assertion sur le résultat suffit ; aucune trace `debug!` de production ajoutée pour instrumenter la borne. Énoncé d'origine : (implementer + validator) : le nombre de reprises par lot n'est pas mesurable par l'API publique (`append` ne rend que les
       curseurs, `append_once` ne trace rien) ; un épuisement des 5 reprises est rattrapé par le test comme `Store` et comme trou —
       seule la borné (≤ 5) reste non instrumentable. Option : une trace `debug!` muette sur l'identifiant dans `append_once`,
       capturable en test (modification de production, hors C-TESTS). Choix provisoire : assertion sur le résultat. À arbitrer.
-    - [?] (implementer) : la barrière rend la collision fortement probable à chaque tour sans la prouver tour par tour (fenêtre
+    - [x] Acté 2026-11-18 (triage de #91) : pas de détecteur de non-collision ; 15/15 runs verts sur PostgreSQL 17.12. Énoncé d'origine : (implementer) : la barrière rend la collision fortement probable à chaque tour sans la prouver tour par tour (fenêtre
       `begin` → `SELECT MAX` non verrouillée) — le test reste valide sans collision et exerce la reprise dès qu'elle survient ;
       15/15 runs verts sur PostgreSQL 17.12. Détecteur de non-collision à ajouter, ou s'en tenir là ?
 
