@@ -23,10 +23,9 @@ ignore = [
   "RUSTSEC-2026-0386", # tokio : `AsyncFd::new` unsound, la crate n'utilise pas `AsyncFd` (grep src/ tests/ vide)
 
   # --- Crates non maintenues, transitives, sans alternative côté consommateur.
+  #     Retirés le 2026-11-18 (matrix-sdk 0.19, DSD `matrix` `DEC-4`) : RUSTSEC-2026-0173
+  #     (`proc-macro-error2`, via `aquamarine`) et RUSTSEC-2026-0247 / RUSTSEC-2025-0167 (`bitmaps`).
   "RUSTSEC-2024-0449", # unsafe-libyaml (via serde_yaml)
   "RUSTSEC-2026-0249", # smartstring (via rhai)
-  "RUSTSEC-2026-0173", # proc-macro-error2 (via aquamarine, proc-macro à la compilation)
-  "RUSTSEC-2026-0247", # bitmaps (via imbl, matrix-sdk)
-  "RUSTSEC-2025-0167", # bitmaps : `Bitmap::try_from(&[u8])`, non appelé par la crate
   "RUSTSEC-2026-0319", # anymap2 (via matrix-sdk) — remplaçant `anymap3` à la charge de matrix-sdk
 ]

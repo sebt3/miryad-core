@@ -65,7 +65,8 @@ Tasks:
     Validé 2026-10-17 (Claude) : sept tests verts (un par Scenario, dont l'aller-retour des utilisateurs suivis avec
     `user_id` haché en base), clippy `matrix` et `workflow,matrix` sans écart. `seq` de la boîte démarre à 0 ;
     `identities.unchanged` est upserté comme `new`/`changed`. La conformité complète reste jugée par ./crypto.sdd.
-  [ ] Remplacement des demandes de secret (arbitré le 2026-11-18, `matrix-sdk-crypto` 0.19) : tests d'abord (le `Scenario` « une nouvelle demande de secret remplace celle de même information » ci-dessous, rouge avant le code ; la suite de conformité `test_secret_request_replacement` de ./crypto.sdd rouge aussi), puis ./crypto_devices.rs (`apply_devices`, boucle de `key_requests`). Périmètre : ./crypto_devices.rs seul.
+  [x] Remplacement des demandes de secret (arbitré le 2026-11-18, `matrix-sdk-crypto` 0.19) : tests d'abord (le `Scenario` « une nouvelle demande de secret remplace celle de même information » ci-dessous, rouge avant le code ; la suite de conformité `test_secret_request_replacement` de ./crypto.sdd rouge aussi), puis ./crypto_devices.rs (`apply_devices`, boucle de `key_requests`). Périmètre : ./crypto_devices.rs seul.
+    Validé 2026-11-18 (implementer Qwen `qwen3.8-flash-next`, validator Sonnet GO, batterie 17+17, fmt, `cargo tree`, `specdd lint` verts ; banc live Matrix rejoué 7/7 sous `matrix-sdk` 0.19 contre Palpo/MAS ; PostgreSQL réel non joué) ; mutations rouges (suppression par `info_key` retirée : le test du Scenario et `test_secret_request_replacement` ; auto-suppression : 4 tests). La clause `request_id !=` du `DELETE` est un mutant équivalent (suppression avant l'upsert dans la même transaction) : conservée, documentaire et sûre si l'ordre change.
 
 Done when:
   Les `Scenario` sont verts ; la suite officielle passe pour les méthodes de ce fichier ; la spec est

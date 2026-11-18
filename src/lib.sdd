@@ -302,7 +302,8 @@ Tasks:
     adapter les tests de surface : `default_surface_compiles` reste sous défaut, `static_frontend_absent_surface` perd
     @rest::resource_router/@resource/@ir (désormais sous `db`), ajouter `db_absent_surface` et `db_gates_modules`
     (scenarios ci-dessous), conserver `all_features_surface`.
-  [ ] Montée de `matrix-sdk` en 0.19 (arbitré le 2026-11-18) : ajouter `#![recursion_limit = "256"]` à ./lib.rs (voir le `Must` amendé) ; test d'abord : sous `./Cargo.toml` en 0.19 (tâche de `/miryad-core.sdd`), `cargo check --no-default-features --features matrix` est rouge (« queries overflow the depth limit », `src/matrix/client.rs`), puis vert avec l'attribut. Périmètre : ./lib.rs seul.
+  [x] Montée de `matrix-sdk` en 0.19 (arbitré le 2026-11-18) : ajouter `#![recursion_limit = "256"]` à ./lib.rs (voir le `Must` amendé) ; test d'abord : sous `./Cargo.toml` en 0.19 (tâche de `/miryad-core.sdd`), `cargo check --no-default-features --features matrix` est rouge (« queries overflow the depth limit », `src/matrix/client.rs`), puis vert avec l'attribut. Périmètre : ./lib.rs seul.
+    Validé 2026-11-18 (implementer Qwen `qwen3.8-flash-next`, validator Sonnet GO, batterie 17+17, fmt, `cargo tree`, `specdd lint` verts ; banc live Matrix rejoué 7/7 sous `matrix-sdk` 0.19 contre Palpo/MAS ; PostgreSQL réel non joué) ; rouge d'abord (« queries overflow the depth limit »), vert avec l'attribut.
 
 Done when:
   La spec porte exactement treize `Scenario` (douze originaux, un pour l'amendement @workflow du

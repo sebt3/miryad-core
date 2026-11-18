@@ -92,7 +92,8 @@ Tasks:
     jamais silencieuse (trace `info` au démarrage, ./sync.sdd). Si le besoin se confirme (harnais), la voie
     retenue est le rattrapage par `/messages` salon par salon depuis le dernier `event_id` traité, persisté en
     base — moins coûteux qu'un `StateStore` persistant (trait d'une cinquantaine de méthodes).
-  [ ] Déclarer `mod tls;` (module privé, `pub(crate)` pour `install_crypto_provider`) dans ./mod.rs (arbitré le 2026-11-18, DSD `matrix` `DEC-4`) ; aucune nouvelle ré-exportation publique ; `Exposes` inchangé. Périmètre : ./mod.rs seul, après ./tls.sdd.
+  [x] Déclarer `mod tls;` (module privé, `pub(crate)` pour `install_crypto_provider`) dans ./mod.rs (arbitré le 2026-11-18, DSD `matrix` `DEC-4`) ; aucune nouvelle ré-exportation publique ; `Exposes` inchangé. Périmètre : ./mod.rs seul, après ./tls.sdd.
+    Validé 2026-11-18 (implementer Qwen `qwen3.8-flash-next`, validator Sonnet GO, batterie 17+17, fmt, `cargo tree`, `specdd lint` verts ; banc live Matrix rejoué 7/7 sous `matrix-sdk` 0.19 contre Palpo/MAS ; PostgreSQL réel non joué).
 
 Done when:
   Les `Scenario` sont verts ; `cargo build --no-default-features --features matrix` et `--all-features`

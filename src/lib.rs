@@ -1,3 +1,6 @@
+// Profondeur de layout de la future de `matrix::client::MatrixClient::send` sous `matrix-sdk` 0.19 :
+// mesurée à 130 au-delà de la limite par défaut de 128 — DSD `matrix` `DEC-4`.
+#![recursion_limit = "256"]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc(html_root_url = "https://docs.rs/miryad-core")]
 //! # miryad-core

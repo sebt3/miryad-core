@@ -81,11 +81,11 @@ tower-http = { version = "0.6", default-features = false, features = ["fs"], opt
 restate-sdk = { version = "0.12", features = ["http_server"], optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"], optional = true }
-# Client Matrix (src/matrix/mod.sdd) : épinglé en 0.18 (>= 0.19 impose libsqlite3-sys 0.38, en conflit avec
-# le sqlx-sqlite de SeaORM) ; la feature `sqlite` de matrix-sdk n'est jamais activée.
-matrix-sdk = { version = "0.18", default-features = false, features = ["e2e-encryption"], optional = true }
-matrix-sdk-crypto = { version = "0.18", optional = true }
-matrix-sdk-store-encryption = { version = "0.18", optional = true }
+# Client Matrix (src/matrix/mod.sdd) : 0.19 depuis l'arbitrage 2026-11-18 (DSD `matrix` `DEC-4`) ; le pin
+# en 0.18 tenait au conflit `libsqlite3-sys` avec `sqlx`, il a disparu. La feature `sqlite` n'est jamais activée.
+matrix-sdk = { version = "0.19", default-features = false, features = ["e2e-encryption"], optional = true }
+matrix-sdk-crypto = { version = "0.19", optional = true }
+matrix-sdk-store-encryption = { version = "0.19", optional = true }
 # `Zeroizing<String>` apparaît dans la signature du trait CryptoStore (secrets de la boîte) ; déjà dans le graphe.
 zeroize = { version = "1.9.1", optional = true }
 # Hôte de la bibliothèque `lymaille` (src/lymaille/mod.sdd) : features par défaut conservées
@@ -135,7 +135,9 @@ workflow = ["db", "dep:restate-sdk", "dep:uuid", "dep:vynil-core", "vynil-core?/
 # Client System One (src/systemone/mod.sdd) : aucune dépendance nouvelle, hors `default` (décision 2026-10-06).
 systemone = []
 # Client Matrix de bot (src/matrix/mod.sdd), hors `default` (arbitrage 2026-10-06).
-matrix = ["db", "dep:matrix-sdk", "dep:matrix-sdk-crypto", "dep:matrix-sdk-store-encryption", "dep:zeroize", "dep:tokio"]
+# `dep:rustls` (arbitrage 2026-11-18, DSD `matrix` `DEC-4`) : provider `ring` de src/matrix/tls.sdd,
+# sans lequel `reqwest` 0.13 panique à la construction du client HTTP sous `matrix-sdk` 0.19.
+matrix = ["db", "dep:matrix-sdk", "dep:matrix-sdk-crypto", "dep:matrix-sdk-store-encryption", "dep:zeroize", "dep:tokio", "dep:rustls"]
 # Hôte de la bibliothèque `lymaille` (src/lymaille/mod.sdd), hors `default` (arbitrage 2026-11-02) ; implique `db`.
 # `dep:uuid` (amendement R10 du 2026-11-05) : identifiant opaque des sessions du SessionManager —
 # `Depends on: @uuid` de `src/lymaille/interactive/manager.sdd`. `dep:subtle` et `dep:getrandom`
@@ -158,11 +160,11 @@ sea-orm = { version = "2", features = ["sqlx-sqlite", "sqlx-postgres", "runtime-
 sea-orm-migration = { version = "2", features = ["sqlx-sqlite", "sqlx-postgres"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util", "net"] }
 tower = { version = "0.5", features = ["util"] }
-# Suite de conformité officielle du store de chiffrement (src/matrix/store/crypto.sdd), versions alignées sur 0.18.
-matrix-sdk-crypto = { version = "0.18", features = ["testing"] }
-matrix-sdk-test = "0.18"
-matrix-sdk-common = "0.18"
-ruma = "0.16"
+# Suite de conformité officielle du store de chiffrement (src/matrix/store/crypto.sdd), versions alignées sur 0.19 (DSD `matrix` `DEC-4`).
+matrix-sdk-crypto = { version = "0.19", features = ["testing"] }
+matrix-sdk-test = "0.19"
+matrix-sdk-common = "0.19"
+ruma = "0.17"
 assert_matches = "1"
 # Capture des `tracing::error` des chemins d'échec d'échange dans les tests de `auth/oidc.rs`
 # (stratégie fixture arbitrée `[x]` 2026-09-27, `Depends on` de `oidc.sdd`).

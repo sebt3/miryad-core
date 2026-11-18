@@ -30,6 +30,8 @@ pub mod error;
 mod session;
 pub mod store;
 pub mod sync;
+// Fournisseur TLS `ring` du client (src/matrix/tls.sdd) : appelé par `build_client`, privé.
+mod tls;
 
 pub use client::{MatrixClient, MessageKind, MessageRelation, SessionImport};
 pub use config::MatrixConfig;

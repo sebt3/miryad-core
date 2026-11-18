@@ -114,7 +114,7 @@ mod tests {
     fn sdk_http(status: u16, body: &str) -> matrix_sdk::Error {
         let response = ruma::exports::http::Response::builder()
             .status(status)
-            .body(body.as_bytes().to_vec())
+            .body(body.as_bytes())
             .expect("réponse de test valide");
         let api_error = matrix_sdk::RumaApiError::from_http_response(response);
         matrix_sdk::Error::Http(Box::new(HttpError::Api(Box::new(FromHttpResponseError::Server(

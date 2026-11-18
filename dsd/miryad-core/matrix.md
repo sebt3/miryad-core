@@ -193,6 +193,7 @@ Source : `arch@c62a184`, « Client Matrix de bot ».
       `rustls-aws-lc-rs` : `reqwest` 0.13 panique à la construction du client HTTP (« No rustls crypto provider is configured »).
       **Arbitré :** la crate installe `ring` de façon idempotente dans `build_client` (`SpecDD /src/matrix/tls.sdd`, feature
       `matrix` → `dep:rustls`), l'hôte n'a rien à faire ; même politique `ring` que `lymaille` `DEC-4`. Les sessions persistées par une 0.18 (pickles `vodozemac` 0.10) doivent se relire en 0.11.
+    - **Verified by:** banc live Matrix rejoué 7/7 sous `matrix-sdk` 0.19 (Palpo 0.1.4 / MAS, 2026-11-18) ; suite de conformité du store verte ; batterie complète de `tooling.sdd`.
     - **Source:** user instruction, 2026-11-18 (arbitrage de #94, essai jetable puis cycles spécifiés)
 
 ## SpecDD Realization

@@ -438,14 +438,27 @@ impl SeaOrmCryptoStore {
         }
         for request in &changes.key_requests {
             let sealed = self.kv.seal(request)?;
+            let request_hash = self.dev_hashed(SECRET_REQUESTS_TABLE, request.request_id.as_str());
+            let info_hash = self.dev_hashed(SECRET_REQUESTS_TABLE, &request.info.as_key());
+            // Amendement 2026-11-18 (`crypto_devices.sdd`, DSD `matrix` `DEC-4`, suite de conformité
+            // `test_secret_request_replacement`) : une demande nouvelle remplace, dans la même transaction
+            // et pour le même compte, toute AUTRE demande de même `info_key` ; ré-enregistrer la même
+            // `request_id` (par exemple pour passer `sent_out` à vrai) ne la supprime pas.
+            let replaced = Query::delete()
+                .from_table(Alias::new(SECRET_REQUESTS_TABLE))
+                .and_where(Expr::col(Alias::new("account_key")).eq(account))
+                .and_where(Expr::col(Alias::new("info_key")).eq(info_hash.clone()))
+                .and_where(Expr::col(Alias::new("request_id")).ne(request_hash.clone()))
+                .to_owned();
+            execute(txn, &replaced).await?;
             upsert(
                 txn,
                 SECRET_REQUESTS_TABLE,
                 &["account_key", "request_id", "info_key", "sent_out", "payload"],
                 vec![
                     Expr::val(account),
-                    Expr::val(self.dev_hashed(SECRET_REQUESTS_TABLE, request.request_id.as_str())),
-                    Expr::val(self.dev_hashed(SECRET_REQUESTS_TABLE, &request.info.as_key())),
+                    Expr::val(request_hash),
+                    Expr::val(info_hash),
                     Expr::val(request.sent_out),
                     Expr::val(sealed),
                 ],
@@ -695,6 +708,23 @@ mod tests {
         }
     }
 
+    /// `Changes` portant uniquement les requêtes de secrets sortantes données.
+    fn only_requests(requests: Vec<GossipRequest>) -> Changes {
+        Changes {
+            key_requests: requests,
+            ..Default::default()
+        }
+    }
+
+    /// Demande `request_id` du store, en paniquant sur une erreur de store (lisibilité des
+    /// assertions de `Scenario`).
+    async fn outgoing(store: &SeaOrmCryptoStore, request_id: &TransactionId) -> Option<GossipRequest> {
+        store
+            .get_outgoing_secret_requests(request_id)
+            .await
+            .expect("get_outgoing_secret_requests")
+    }
+
     // Scenario: un appareil enregistré est retrouvé, puis supprimé
     #[tokio::test]
     async fn device_is_found_then_removed() {
@@ -919,5 +949,64 @@ mod tests {
             .await
             .expect("second probe");
         assert!(second.is_none(), "le bundle supprimé n'est plus rendu");
+    }
+
+    // Scenario: une nouvelle demande de secret remplace celle de même information
+    #[tokio::test]
+    async fn a_new_secret_request_replaces_the_one_for_same_information() {
+        let store = fresh_store().await;
+        let recipient = user("u");
+        let recovery: SecretInfo = SecretName::RecoveryKey.into();
+        let master: SecretInfo = SecretName::CrossSigningMasterKey.into();
+        let request = |info: SecretInfo, sent_out| GossipRequest {
+            request_recipient: recipient.clone(),
+            request_id: TransactionId::new(),
+            info,
+            sent_out,
+        };
+
+        // Given : `r1` pour `RecoveryKey` et `m` pour `CrossSigningMasterKey`, même compte.
+        let r1 = request(recovery.clone(), false);
+        let m = request(master, false);
+        apply(&store, only_requests(vec![r1.clone(), m.clone()])).await;
+        assert!(
+            outgoing(&store, &r1.request_id).await.is_some(),
+            "étape Given : r1 (RecoveryKey) est enregistrée"
+        );
+        assert!(
+            outgoing(&store, &m.request_id).await.is_some(),
+            "étape Given : m (CrossSigningMasterKey) est enregistrée"
+        );
+
+        // When : `r2` pour `RecoveryKey` est enregistrée.
+        let r2 = request(recovery, false);
+        apply(&store, only_requests(vec![r2.clone()])).await;
+
+        // Then : r1 est remplacée, r2 et m restent.
+        assert!(
+            outgoing(&store, &r1.request_id).await.is_none(),
+            "la demande précédente de même information est remplacée"
+        );
+        assert!(
+            outgoing(&store, &r2.request_id).await.is_some(),
+            "la nouvelle demande de RecoveryKey est enregistrée"
+        );
+        assert!(
+            outgoing(&store, &m.request_id).await.is_some(),
+            "la demande d'un autre secret reste"
+        );
+
+        // When : `r2` est ré-enregistrée avec `sent_out` vrai.
+        let r2_sent = GossipRequest {
+            sent_out: true,
+            ..r2.clone()
+        };
+        apply(&store, only_requests(vec![r2_sent])).await;
+
+        // Then : la même demande (même `request_id`) ne se supprime pas elle-même.
+        let kept = outgoing(&store, &r2.request_id)
+            .await
+            .expect("la demande ré-enregistrée existe toujours");
+        assert!(kept.sent_out, "le ré-enregistrement a bien mis `sent_out` à vrai");
     }
 }

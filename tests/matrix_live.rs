@@ -57,6 +57,8 @@
     )
 )]
 #![cfg(feature = "matrix")]
+// Profondeur de layout des futures asynchrones de cette crate, mesurée : 256 (DSD `matrix` DEC-4).
+#![recursion_limit = "256"]
 
 use std::io::Write;
 use std::sync::Arc;

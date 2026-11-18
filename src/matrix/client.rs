@@ -455,6 +455,10 @@ async fn build_client(
     let ca_roots = config.ca_cert.as_deref().map(sdk_ca_certificates).transpose()?;
     let store = SeaOrmCryptoStore::open(db, &config.account_key, &config.store_passphrase).await?;
     let lock = CrossProcessLockConfig::multi_process(config.holder_name.clone());
+    // Provider TLS : `matrix-sdk` 0.19 est construit sans provider `rustls` (`default-features = false`)
+    // et `reqwest` 0.13 panique à la construction du client HTTP si aucun n'est posé. L'appel est
+    // idempotent et n'échoue jamais (`src/matrix/tls.sdd`, DSD `matrix` `DEC-4`).
+    crate::matrix::tls::install_crypto_provider();
     // `handle_refresh_tokens` : sans lui `matrix-sdk` ne rafraîchit jamais le jeton d'accès (300 s chez
     // MAS) et la session meurt à la première expiration (`src/matrix/client.sdd`, « Rafraîchissement automatique »).
     let mut builder = matrix_sdk::Client::builder()
@@ -550,7 +554,7 @@ fn text_message(room_id: &str, event: &TimelineEvent) -> Option<MatrixMessage> {
     if event.kind.is_utd() {
         let event_id = event
             .event_id()
-            .map_or_else(|| "inconnu".to_owned(), |id| id.to_string());
+            .map_or_else(|| "inconnu".to_owned(), ToString::to_string);
         tracing::warn!(room_id, event_id, "événement indéchiffrable omis de l'historique");
         return None;
     }
@@ -988,7 +992,7 @@ mod tests {
         let sdk_http = |status: u16, body: &str| -> matrix_sdk::Error {
             let response = ruma::exports::http::Response::builder()
                 .status(status)
-                .body(body.as_bytes().to_vec())
+                .body(body.as_bytes())
                 .expect("réponse de test valide");
             matrix_sdk::Error::Http(Box::new(matrix_sdk::HttpError::Api(Box::new(
                 FromHttpResponseError::Server(matrix_sdk::RumaApiError::from_http_response(response)),
@@ -1039,7 +1043,7 @@ mod tests {
         let sdk_http = |status: u16, body: &str| -> matrix_sdk::Error {
             let response = ruma::exports::http::Response::builder()
                 .status(status)
-                .body(body.as_bytes().to_vec())
+                .body(body.as_bytes())
                 .expect("réponse de test valide");
             matrix_sdk::Error::Http(Box::new(matrix_sdk::HttpError::Api(Box::new(
                 FromHttpResponseError::Server(matrix_sdk::RumaApiError::from_http_response(response)),

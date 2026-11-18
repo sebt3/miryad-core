@@ -30,7 +30,8 @@ Exposes:
   `install_crypto_provider` (`pub(crate)`)
 
 Tasks:
-  [ ] Tests d'abord (appels répétés, provider préinstallé), puis ./tls.rs, sur le modèle de ../lymaille/tls.rs (verrou de sérialisation des tests, le provider par défaut de rustls étant global au processus). Avant la déclaration `mod tls;` de ./mod.sdd (le fichier est écrit d'abord, déclaré et prouvé ensuite).
+  [x] Tests d'abord (appels répétés, provider préinstallé), puis ./tls.rs, sur le modèle de ../lymaille/tls.rs (verrou de sérialisation des tests, le provider par défaut de rustls étant global au processus). Avant la déclaration `mod tls;` de ./mod.sdd (le fichier est écrit d'abord, déclaré et prouvé ensuite).
+    Validé 2026-11-18 (implementer Qwen `qwen3.8-flash-next`, validator Sonnet GO, batterie 17+17, fmt, `cargo tree`, `specdd lint` verts ; banc live Matrix rejoué 7/7 sous `matrix-sdk` 0.19 contre Palpo/MAS ; PostgreSQL réel non joué) ; trois tests (deux appels, provider préinstallé, multi-threads) ; coexistence des deux modules `tls` sous `lymaille,matrix` vérifiée.
 
   [x] Acté 2026-11-18 : les Then des deux tests sont l'invariance du provider en place (provider présent, au moins une suite, jamais remplacé) plutôt que l'égalité de suites du modèle `lymaille`, car les deux modules `tls` ont chacun leur verrou de test et peuvent s'exécuter en parallèle sous `lymaille,matrix` ; un verrou partagé serait un état global, interdit par le `Must not`.
 
