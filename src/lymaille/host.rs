@@ -333,8 +333,8 @@ mod tests {
     /// AUCUN rendu `Debug` du résultat (le `Result` nu, l'`Option<Zeroizing<String>>` qu'il
     /// porte, le `McpGrant` et le `McpDecision` qui la portent), dans aucun `Display`, et dans
     /// aucune trace émise pendant les appels d'hôte. Témoin positif d'abord : la détection de
-    /// containment est prouvée effective sur la sentinelle nue et sur une trace de passage, sans
-    /// quoi les assertions négatives ne prouveraient rien. `Display` de `HostError` reste la
+    /// containment est prouvée effective sur le `Debug` dérivé d'une struct qui porte la sentinelle,
+    /// et sur une trace de passage, sans quoi les assertions négatives ne prouveraient rien. `Display` de `HostError` reste la
     /// phrase fixe. Le `Debug` de `Zeroizing<String>` est opaque en `zeroize` >= 1.9.1 (version
     /// du graphe, verrou direct de `/Cargo.toml`) : si un retour en 1.9.0 faisait réapparaître la
     /// valeur dans `{rendu:?}`, ce test vire au rouge — c'est la preuve demandée par le `[?]` du
@@ -366,11 +366,18 @@ mod tests {
             }
         }
 
-        // Témoin positif : la sentinelle est bien détectable par le contrôle de containment — un
-        // `contains` qui ne matcherait jamais rendrait toutes les assertions négatives vides.
+        // Témoin positif : un `Debug` dérivé qui porte la sentinelle doit être détecté par le
+        // contrôle de containment — un `contains` qui ne matcherait jamais rendrait toutes les
+        // assertions négatives vides. Le témoin passe par un rendu `Debug` de struct, la forme
+        // réelle d'une fuite, et non par la chaîne nue (qui ne prouvait que `contains` sur lui-même).
+        #[derive(Debug)]
+        struct Fuyard(String);
+        let fuyard = Fuyard(SENTINELLE.to_owned());
+        // Le champ est lu ici : `Debug` dérivé ne compte pas pour `dead_code`.
+        assert_eq!(fuyard.0, SENTINELLE, "témoin : le champ porte la sentinelle");
         assert!(
-            format!("{SENTINELLE:?}").contains(SENTINELLE),
-            "témoin : la détection de containment fonctionne sur la sentinelle nue"
+            format!("{fuyard:?}").contains(SENTINELLE),
+            "témoin : la détection de containment voit la sentinelle dans le Debug dérivé d'une struct"
         );
 
         let captured = std::sync::Arc::new(CapturedTraces::default());
