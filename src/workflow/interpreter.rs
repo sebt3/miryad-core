@@ -127,6 +127,11 @@ impl DagInterpreter {
         // rejouées à l'identique après crash — `NFR-1`).
         let mut skipped: HashSet<String> = HashSet::new();
         let mut results: HashMap<String, serde_json::Value> = HashMap::new();
+        // Exports nommés résolus (amendement 2026-11-18, issue #85, « Exports nommés ») —
+        // alimentée à l'étape 2.e pour chaque step `Run` terminé en `Ok` ; un step ignoré n'y a
+        // aucune entrée. Jamais dans la table de sortie du run ni dans `StepInvocation` ;
+        // reconstituée par rejeu des sorties journalisées (`NFR-1`).
+        let mut exports: HashMap<String, serde_json::Value> = HashMap::new();
         while completed.len() != dag.0.len() {
             let prepared = ready_steps(&dag.0, &completed);
             // Étape a' — décision d'exécution de chaque step de la couche par le code partagé
@@ -135,7 +140,7 @@ impl DagInterpreter {
             // passent à l'étape b ; les ignorés ne doivent qu'une trace d'un `step_id` et de la
             // raison — jamais une valeur lue.
             let (a_lancer, a_tracer) =
-                apply_decisions(prepared, &mut completed, &mut skipped, &vars, &results);
+                apply_decisions(prepared, &mut completed, &mut skipped, &vars, &results, &exports);
             for (step_id, raison) in &a_tracer {
                 match raison {
                     SkipReason::Dependency => tracing::info!(
@@ -159,8 +164,13 @@ impl DagInterpreter {
             // couches, jamais `join_all` (spike 2026-09-22 : ~60 s de blocage par couche).
             let mut futures = DurableFuturesUnordered::new();
             let mut ready_ids: Vec<String> = Vec::with_capacity(a_lancer.len());
+            // Les steps poussés, dans le même ordre que `ready_ids` et que les `push` de
+            // `futures` : l'étape 2.e retrouve l'exportation déclarée du step terminé par ce
+            // même index (amendement 2026-11-18, issue #85).
+            let mut poussees: Vec<&StepDefinition> = Vec::with_capacity(a_lancer.len());
             for step in &a_lancer {
                 ready_ids.push(step.id.clone());
+                poussees.push(step);
                 // #26 : identité du run — clé de workflow Restate de cette invocation, `id`
                 // du step, profondeur lue une fois à l'étape 1b. B4 (lot B, `FR-12`) : les
                 // `vars` du run, lues une fois à l'étape 0, sont recopiées dans chaque
@@ -202,6 +212,16 @@ impl DagInterpreter {
                 // frère dispatché poursuit ses effets de bord côté ./dispatcher.rs, son résultat
                 // n'est simplement plus attendu (`Tasks` actée 2026-09-23).
                 let Json(output) = result?;
+                // Étape 2.e (amendement 2026-11-18, issue #85) — collecte des exports nommés du
+                // step terminé : un step `Run` couronné en `Ok` alimente la table `exports` ;
+                // un step ignoré n'y parvient jamais (aucun résultat à collecter). Le repli sur
+                // un `None` de `poussees.get` est défensif, hors contrat : `poussees` et les
+                // poussées de `futures` sont construits dans la même boucle, même longueur.
+                if let Some(etape) = poussees.get(idx).copied() {
+                    for (nom, valeur) in collect_exports(etape, &output) {
+                        exports.insert(nom, valeur);
+                    }
+                }
                 results.insert(id.clone(), output);
                 completed.insert(id.clone());
             }
@@ -248,23 +268,25 @@ pub(crate) enum SkipReason {
 }
 
 /// Décision d'exécution d'un step prêt : fonction pure, sans `ctx` — fonctions pures de `vars`
-/// (journalisées avec l'entrée du run) et de `results` (journalisés par Restate), donc rejeu
-/// identique après crash (`NFR-1`). Propagation d'abord : une dépendance ignorée et
-/// `run_if_skipped` faux → `Skip(Dependency)`, sans même évaluer le `when`. Un step qui
-/// s'exécute malgré une dépendance ignorée (`run_if_skipped`) évalue quand même son `when`,
-/// lequel lit une valeur absente (donc `false`) s'il vise le step ignoré — `evaluate` est
-/// totale (./predicate.rs).
+/// (journalisées avec l'entrée du run), de `results` (journalisés par Restate) et de `exports`
+/// (la table des valeurs d'export déjà résolues, amendement 2026-11-18 issue #85 — extraites des
+/// mêmes sorties, donc rejeu identique), donc rejeu identique après crash (`NFR-1`). Propagation
+/// d'abord : une dépendance ignorée et `run_if_skipped` faux → `Skip(Dependency)`, sans même
+/// évaluer le `when`. Un step qui s'exécute malgré une dépendance ignorée (`run_if_skipped`)
+/// évalue quand même son `when`, lequel lit une valeur absente (donc `false`) s'il vise le step
+/// ignoré ou un export jamais résolu — `evaluate` est totale (./predicate.rs).
 pub(crate) fn decide(
     step: &StepDefinition,
     skipped: &HashSet<String>,
     vars: &serde_json::Map<String, serde_json::Value>,
     results: &HashMap<String, serde_json::Value>,
+    exports: &HashMap<String, serde_json::Value>,
 ) -> StepDecision {
     if !step.run_if_skipped && step.depends_on.iter().any(|dep| skipped.contains(dep.as_str())) {
         return StepDecision::Skip(SkipReason::Dependency);
     }
     if let Some(when) = &step.when
-        && !when.evaluate(vars, results)
+        && !when.evaluate(vars, results, exports)
     {
         return StepDecision::Skip(SkipReason::When);
     }
@@ -286,11 +308,12 @@ pub(crate) fn apply_decisions<'a>(
     skipped: &mut HashSet<String>,
     vars: &serde_json::Map<String, serde_json::Value>,
     results: &HashMap<String, serde_json::Value>,
+    exports: &HashMap<String, serde_json::Value>,
 ) -> (Vec<&'a StepDefinition>, Vec<(String, SkipReason)>) {
     let mut a_lancer: Vec<&'a StepDefinition> = Vec::with_capacity(prets.len());
     let mut a_tracer: Vec<(String, SkipReason)> = Vec::new();
     for step in prets {
-        if let StepDecision::Skip(raison) = decide(step, skipped, vars, results) {
+        if let StepDecision::Skip(raison) = decide(step, skipped, vars, results, exports) {
             completed.insert(step.id.clone());
             skipped.insert(step.id.clone());
             a_tracer.push((step.id.clone(), raison));
@@ -299,6 +322,26 @@ pub(crate) fn apply_decisions<'a>(
         }
     }
     (a_lancer, a_tracer)
+}
+
+/// Valeurs des exports nommés d'un step terminé (amendement 2026-11-18, issue #85, DSD
+/// `workflow` `FR-21`) : pour chaque `(nom, pointeur)` de `step.exports` (ordre déterministe du
+/// `BTreeMap`), la valeur `output.pointer(pointeur)` clonée quand elle existe. Un pointeur sans
+/// résultat ne produit **aucune** entrée — la valeur est absente, jamais un `Value::Null` de
+/// fabrication. Fonction pure, sans `ctx` : les sorties étant journalisées par Restate, la table
+/// `exports` d'un run se reconstruit à l'identique au rejeu (`NFR-1`).
+pub(crate) fn collect_exports(
+    step: &StepDefinition,
+    output: &serde_json::Value,
+) -> Vec<(String, serde_json::Value)> {
+    step.exports
+        .iter()
+        .filter_map(|(nom, pointeur)| {
+            output
+                .pointer(pointeur)
+                .map(|valeur| (nom.clone(), valeur.clone()))
+        })
+        .collect()
 }
 
 /// Une entrée par id de `step.depends_on`, valeur = la sortie collectée du step amont dans
@@ -362,6 +405,7 @@ mod tests {
     use super::apply_decisions;
     use super::build_inputs;
     use super::build_invocation;
+    use super::collect_exports;
     use super::decide;
     use super::parse_depth;
     use super::ready_steps;
@@ -385,6 +429,7 @@ mod tests {
             config: serde_json::Value::Null,
             when: None,
             run_if_skipped: false,
+            exports: std::collections::BTreeMap::new(),
         }
     }
 
@@ -516,6 +561,7 @@ mod tests {
             config: json!({"m": 1}),
             when: None,
             run_if_skipped: false,
+            exports: std::collections::BTreeMap::new(),
         };
         let vars = json!({"project": "p1"})
             .as_object()
@@ -601,6 +647,7 @@ mod tests {
             config: json!({}),
             when: None,
             run_if_skipped: false,
+            exports: std::collections::BTreeMap::new(),
         };
 
         let declenche = build_invocation(
@@ -697,11 +744,12 @@ mod tests {
         ids.iter().copied().map(String::from).collect()
     }
 
-    /// Marche simulée de l'étape 2 de `run` par les seules fonctions pures : `ready_steps` et
-    /// l'application des décisions par [`apply_decisions`] — le code partagé de `run` lui-même,
-    /// plus de copie parallèle de la boucle (case « câblage de l'étape a' prouvé par du code
-    /// partagé », 2026-11-18). Le seul pas propre à la simulation est l'exécution elle-même :
-    /// une identité journalisable (`{ "sortie": <id> }`), seule la décision des steps compte ici.
+    /// Marche simulée de l'étape 2 de `run` par les seules fonctions pures : `ready_steps`,
+    /// l'application des décisions par [`apply_decisions`] et la collecte des exports par
+    /// [`collect_exports`] — le code partagé de `run` lui-même, plus de copie parallèle de la
+    /// boucle (cases « câblage de l'étape a' prouvé par du code partagé » et « Exports nommés »,
+    /// 2026-11-18). Le seul pas propre à la simulation est l'exécution elle-même : une identité
+    /// journalisable (`{ "sortie": <id> }`), seule la décision des steps compte ici.
     fn marche_simulee(
         dag: &[StepDefinition],
         vars: &serde_json::Map<String, serde_json::Value>,
@@ -709,16 +757,24 @@ mod tests {
         let mut completed: HashSet<String> = HashSet::new();
         let mut ignores: HashSet<String> = HashSet::new();
         let mut results: HashMap<String, serde_json::Value> = HashMap::new();
+        // Table des exports résolus, alimentée par `collect_exports` comme dans `run` (#85).
+        let mut exports: HashMap<String, serde_json::Value> = HashMap::new();
         let mut couches_dispatchees = 0usize;
         while completed.len() != dag.len() {
             let prepares = ready_steps(dag, &completed);
             let (a_lancer, _a_tracer) =
-                apply_decisions(prepares, &mut completed, &mut ignores, vars, &results);
+                apply_decisions(prepares, &mut completed, &mut ignores, vars, &results, &exports);
             if !a_lancer.is_empty() {
                 couches_dispatchees = couches_dispatchees.saturating_add(1);
                 for etape in &a_lancer {
                     let _ = build_inputs(etape, &results, &ignores);
-                    results.insert(etape.id.clone(), json!({ "sortie": etape.id }));
+                    let sortie = json!({ "sortie": etape.id });
+                    // Les exports sont collectés par `collect_exports` — la même fonction que
+                    // `run` (case « Exports nommés » de ./interpreter.sdd, #85).
+                    for (nom, valeur) in collect_exports(etape, &sortie) {
+                        exports.insert(nom, valeur);
+                    }
+                    results.insert(etape.id.clone(), sortie);
                     completed.insert(etape.id.clone());
                 }
             }
@@ -741,7 +797,7 @@ mod tests {
         let ko: HashMap<String, serde_json::Value> =
             HashMap::from([("A".to_string(), json!({ "status": "ko" }))]);
         assert_eq!(
-            decide(&b, &vide, &vars, &ko),
+            decide(&b, &vide, &vars, &ko, &HashMap::new()),
             StepDecision::Skip(SkipReason::When),
             "`when` faux : ignorance, pas de dispatch"
         );
@@ -749,7 +805,7 @@ mod tests {
         let ok: HashMap<String, serde_json::Value> =
             HashMap::from([("A".to_string(), json!({ "status": "ok" }))]);
         assert_eq!(
-            decide(&b, &vide, &vars, &ok),
+            decide(&b, &vide, &vars, &ok, &HashMap::new()),
             StepDecision::Run,
             "`when` vrai : exécution"
         );
@@ -763,7 +819,7 @@ mod tests {
         let vars = serde_json::Map::new();
         let results = HashMap::new();
         assert_eq!(
-            decide(&c, &skipped(&["B"]), &vars, &results),
+            decide(&c, &skipped(&["B"]), &vars, &results, &HashMap::new()),
             StepDecision::Skip(SkipReason::Dependency),
             "`run_if_skipped` faux par défaut : l'ignorance se propage, même sans `when`"
         );
@@ -781,7 +837,7 @@ mod tests {
         let ignores = skipped(&["B"]);
 
         assert_eq!(
-            decide(&c, &ignores, &vars, &results),
+            decide(&c, &ignores, &vars, &results, &HashMap::new()),
             StepDecision::Run,
             "`run_if_skipped: true` : le dépendant s'exécute malgré l'ignorance de `\"B\"`"
         );
@@ -832,11 +888,11 @@ mod tests {
 
         let premiere: Vec<StepDecision> = dag
             .iter()
-            .map(|etape| decide(etape, &vide, &vars, &results))
+            .map(|etape| decide(etape, &vide, &vars, &results, &HashMap::new()))
             .collect();
         let seconde: Vec<StepDecision> = dag
             .iter()
-            .map(|etape| decide(etape, &vide, &vars, &results))
+            .map(|etape| decide(etape, &vide, &vars, &results, &HashMap::new()))
             .collect();
         assert_eq!(
             premiere, seconde,
@@ -895,6 +951,7 @@ mod tests {
             &mut ignores,
             &serde_json::Map::new(),
             &results,
+            &HashMap::new(),
         );
 
         assert_eq!(
@@ -916,6 +973,138 @@ mod tests {
             a_tracer,
             vec![("B".to_string(), SkipReason::When)],
             "la liste à tracer porte l'ignoré et sa raison, jamais le step exécuté"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Exports nommés (issue #85, DSD `workflow` `FR-21`/`DEC-15`) — `collect_exports`, table
+    // `exports` de la marche, paramètre `exports` de `decide` et `apply_decisions`. Mêmes bornes
+    // de tranchage que `when` (#84) : la boucle de `run` elle-même relève des intégrations
+    // `#[ignore]` de ../../tests/workflow_restate.rs ; la simulation `marche_simulee` passe par
+    // les mêmes fonctions que `run`, dont `collect_exports`.
+    // ---------------------------------------------------------------------------
+
+    /// Step déclarant des exports de fixture (forme du `BTreeMap` de ./definition.rs).
+    fn etape_avec_exports(id: &str, depends_on: &[&str], exports: &[(&str, &str)]) -> StepDefinition {
+        let mut s = sans_quand(id, depends_on);
+        s.exports = exports
+            .iter()
+            .map(|(nom, pointeur)| ((*nom).to_string(), (*pointeur).to_string()))
+            .collect();
+        s
+    }
+
+    /// Scenario « `collect_exports` extrait les valeurs par pointeur » (#85) : `{"tout": "",
+    /// "verdict": "/analysis/verdict"}` sur la sortie `{"analysis": {"verdict": "ok"}}` rend
+    /// `[("tout", la sortie entière), ("verdict", "ok")]`, dans l'ordre des noms.
+    #[test]
+    fn collect_exports_extrait_les_valeurs_par_pointeur() {
+        let etape = etape_avec_exports("A", &[], &[("verdict", "/analysis/verdict"), ("tout", "")]);
+        let sortie = json!({ "analysis": { "verdict": "ok" } });
+
+        assert_eq!(
+            collect_exports(&etape, &sortie),
+            vec![
+                ("tout".to_string(), sortie.clone()),
+                ("verdict".to_string(), json!("ok"))
+            ],
+            "le pointeur vide rend la sortie entière, l'autre sa cible — dans l'ordre des noms"
+        );
+    }
+
+    /// Scenario « un pointeur sans résultat ne produit aucun export » (#85) : `{"manquant":
+    /// "/absent"}` sur `{"v": 1}` rend la liste vide — valeur absente, jamais une entrée à
+    /// `Value::Null`.
+    #[test]
+    fn un_pointeur_sans_resultat_ne_produit_aucun_export() {
+        let etape = etape_avec_exports("A", &[], &[("manquant", "/absent")]);
+        assert_eq!(
+            collect_exports(&etape, &json!({ "v": 1 })),
+            Vec::new(),
+            "un pointeur qui ne trouve rien ne produit aucune entrée d'export"
+        );
+    }
+
+    /// Scenario « un step lit l'export d'un ancêtre non direct » (#85) : `decide` avec la table
+    /// `{"verdict": "ok"}` rend `Run`, avec `{"verdict": "ko"}` et avec une table vide
+    /// `Skip(When)` ; la marche simulée — `A` déclare `verdict` (`/sortie`), `C` ne dépend que
+    /// de `B` — alimente la table par `collect_exports`, la même fonction que `run` : `C` s'y
+    /// exerce quand l'export porte la valeur lue, jamais quand elle diffère.
+    #[test]
+    fn un_step_lit_lexport_d_un_ancetre_non_direct() {
+        let mut c = sans_quand("C", &["B"]);
+        c.when = Some(quand(json!({ "export": "verdict", "op": "eq", "value": "ok" })));
+        let vars = serde_json::Map::new();
+        let vide = HashSet::new();
+        let results = HashMap::new();
+
+        let ok: HashMap<String, serde_json::Value> = HashMap::from([("verdict".to_string(), json!("ok"))]);
+        assert_eq!(
+            decide(&c, &vide, &vars, &results, &ok),
+            StepDecision::Run,
+            "`verdict` vaut `\"ok\"` : le `when` est vrai, malgré un producteur non direct"
+        );
+        let ko: HashMap<String, serde_json::Value> = HashMap::from([("verdict".to_string(), json!("ko"))]);
+        assert_eq!(
+            decide(&c, &vide, &vars, &results, &ko),
+            StepDecision::Skip(SkipReason::When),
+            "`verdict` vaut `\"ko\"` : ignorance par `when`"
+        );
+        assert_eq!(
+            decide(&c, &vide, &vars, &results, &HashMap::new()),
+            StepDecision::Skip(SkipReason::When),
+            "table vide : valeur absente, donc ignorance"
+        );
+
+        // ————— Volet marche simulée : la table d'exports est alimentée par `collect_exports` à
+        // la fin de chaque step exécuté, comme dans `run` (étape 2.e).
+        let mut c_qui_passe = sans_quand("C", &["B"]);
+        c_qui_passe.when = Some(quand(json!({ "export": "verdict", "op": "eq", "value": "A" })));
+        let dag = [
+            etape_avec_exports("A", &[], &[("verdict", "/sortie")]),
+            sans_quand("B", &["A"]),
+            c_qui_passe,
+        ];
+        let (completed, results_run, _) = marche_simulee(&dag, &serde_json::Map::new());
+        assert!(
+            results_run.contains_key("C"),
+            "`verdict` vaut `\"A\"` (sortie simulée de `\"A\"`) : `C` s'exécute — {results_run:?}"
+        );
+        assert_eq!(completed, skipped(&["A", "B", "C"]));
+
+        let mut c_qui_tombe = sans_quand("C", &["B"]);
+        c_qui_tombe.when = Some(quand(
+            json!({ "export": "verdict", "op": "eq", "value": "autre" }),
+        ));
+        let dag_faux = [
+            etape_avec_exports("A", &[], &[("verdict", "/sortie")]),
+            sans_quand("B", &["A"]),
+            c_qui_tombe,
+        ];
+        let (_, results_faux, _) = marche_simulee(&dag_faux, &serde_json::Map::new());
+        assert!(
+            !results_faux.contains_key("C"),
+            "l'export simulé ne porte pas `\"autre\"` : `C` est ignoré par son `when`"
+        );
+    }
+
+    /// Scenario « l'export d'un producteur ignoré est absent et ne propage rien » (#85) : `A`
+    /// ignoré laisse la table `exports` sans entrée ; `C`, sans `when`, qui ne dépend que de `B`
+    /// non ignoré, rend `Run` — un export n'est pas une `depends_on`, il ne propage pas
+    /// l'ignorance.
+    #[test]
+    fn l_export_d_un_producteur_ignore_est_absent_et_ne_propage_rien() {
+        let c = sans_quand("C", &["B"]);
+        assert_eq!(
+            decide(
+                &c,
+                &HashSet::new(),
+                &serde_json::Map::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+            ),
+            StepDecision::Run,
+            "`B` non ignoré, export absent : `Run` — l'absence d'un export ne propage rien"
         );
     }
 }

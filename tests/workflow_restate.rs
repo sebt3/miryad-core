@@ -219,6 +219,29 @@ impl MiryadWorkflowStep for Flaky {
     }
 }
 
+/// Kind `"rendu"` de fixture (issue #85, intégration AC-17) : rend `config["output"]` verbatim —
+/// une sortie dont la forme est posée par le DAG, seule façon de viser un pointeur d'export
+/// (`/v`) depuis un step — après avoir journalisé `start:<id>`/`end:<id>` comme [`Record`].
+struct Rendu(Log);
+
+#[async_trait::async_trait]
+impl MiryadWorkflowStep for Rendu {
+    fn kind(&self) -> &'static str {
+        "rendu"
+    }
+    async fn run(
+        &self,
+        _run: &RunInfo,
+        config: Value,
+        _inputs: HashMap<String, Value>,
+    ) -> Result<Value, StepError> {
+        let id = config["id"].as_str().unwrap_or_default().to_string();
+        self.0.lock().expect("journal").push(format!("start:{id}"));
+        self.0.lock().expect("journal").push(format!("end:{id}"));
+        Ok(config.get("output").cloned().unwrap_or(Value::Null))
+    }
+}
+
 #[async_trait::async_trait]
 impl MiryadDurableStep for DurableSleeper {
     fn kind(&self) -> &'static str {
@@ -607,6 +630,7 @@ impl Stack {
             .register(Record(Arc::clone(&log)))
             .and_then(|r| r.register(Fail))
             .and_then(|r| r.register(Flaky(Arc::clone(&flaky_calls))))
+            .and_then(|r| r.register(Rendu(Arc::clone(&log))))
             .and_then(|r| r.register(EchoTrigger))
             .and_then(|r| r.register(Subagent(Arc::clone(&log))))
             .and_then(|r| r.register_durable(DurableSleeper))
@@ -773,6 +797,7 @@ fn step(id: &str, depends_on: &[&str], kind: &str, config: Value) -> StepDefinit
         config,
         when: None,
         run_if_skipped: false,
+        exports: std::collections::BTreeMap::new(),
     }
 }
 
@@ -2167,5 +2192,120 @@ async fn ac16_l_ignorance_de_b_propage_a_c_puis_run_if_skipped_sur_c_la_franchit
         journal.iter().filter(|e| e.as_str() == "start:C").count(),
         1,
         "`C` s'exécute une fois, dans le second run : {journal:?}"
+    );
+}
+
+/// Scenario « un step lit l'export d'un ancêtre non direct », « l'export d'un producteur ignoré
+/// est absent et ne propage rien » (`src/workflow/interpreter.sdd`, issue #85, intégration AC-17
+/// arbitrée le 2026-11-18), contre un vrai `restate-server` : DAG `A → B → C` où `A` déclare
+/// l'export `verdict` (`/v`) et `C`, qui ne dépend que de `B`, porte `when: {export: verdict,
+/// op: eq, value: "ok"}` — `C` s'exécute quand `A` rend `{"v": "ok"}` (run 1) et est ignoré
+/// quand `A` rend `{"v": "ko"}` (run 2), sans que `B` le sache. Run 3 : `A` est ignoré par son
+/// propre `when` (une `var` absente), donc son export n'est jamais résolu ; `B` s'exécute
+/// (`run_if_skipped`), `C` lit un export absent — `when` faux, ignorant — tandis que `D`, sans
+/// `when`, qui ne dépend que de `B` non ignoré, s'exécute : un export n'est pas une `depends_on`,
+/// il ne propage pas l'ignorance.
+#[tokio::test]
+#[ignore = "exige podman et l'image restate"]
+async fn ac17_un_export_se_lit_en_aval_de_son_producteur_et_absent_s_il_est_ignore() {
+    let stack = Stack::start().await;
+    let quand_export = |value: &str| json!({ "export": "verdict", "op": "eq", "value": value });
+    let producteur = |id: &str, sortie: Value| {
+        let mut a = step("A", &[], "rendu", json!({ "id": id, "output": sortie }));
+        a.exports = std::collections::BTreeMap::from([("verdict".to_string(), "/v".to_string())]);
+        a
+    };
+    let etape_qui_lit = |value: &str| {
+        let mut c = step("C", &["B"], "record", json!({ "id": "C" }));
+        c.when = Some(
+            serde_json::from_value(quand_export(value))
+                .expect("la fixture `when` est un prédicat désérialisable"),
+        );
+        c
+    };
+
+    // ————— Run 1 : `A` rend `{"v": "ok"}` — l'export se lit en aval non direct, `C` s'exécute.
+    let dag = DagSteps(vec![
+        producteur("A", json!({ "v": "ok" })),
+        step("B", &["A"], "record", json!({ "id": "B" })),
+        etape_qui_lit("ok"),
+    ]);
+    let (status, body) = stack.run_to_completion(&dag, None).await;
+    assert_eq!(
+        status, 200,
+        "un run dont l'export vérifie le `when` doit aboutir : {body}"
+    );
+    assert_eq!(
+        body["C"]["id"], "C",
+        "`C` s'exécute quand l'export vaut `\"ok\"` : {body}"
+    );
+    let journal = stack.journal();
+    assert!(
+        journal.iter().any(|e| e == "start:C"),
+        "`C` doit avoir été dispatché au moins une fois : {journal:?}"
+    );
+
+    // ————— Run 2 : `A` rend `{"v": "ko"}` — `C` est ignoré par son `when`, `B` indemne.
+    let avant_deux = stack.journal().len();
+    let dag_deux = DagSteps(vec![
+        producteur("A-deux", json!({ "v": "ko" })),
+        step("B", &["A"], "record", json!({ "id": "B" })),
+        etape_qui_lit("ok"),
+    ]);
+    let (status, body) = stack.run_to_completion(&dag_deux, None).await;
+    assert_eq!(
+        status, 200,
+        "un run dont un step est ignoré doit aboutir : {body}"
+    );
+    let results = body.as_object().expect("table id → sortie");
+    assert!(
+        results.contains_key("A") && results.contains_key("B") && !results.contains_key("C"),
+        "`A` et `B` seulement — `C` lit `\"ko\"` et est ignoré par son `when` : {body}"
+    );
+    let journal = stack.journal();
+    assert_eq!(
+        journal[avant_deux..]
+            .iter()
+            .filter(|e| e.as_str() == "start:C")
+            .count(),
+        0,
+        "aucun dispatch de `C` dans le run 2 : {:?}",
+        &journal[avant_deux..]
+    );
+
+    // ————— Run 3 : `A` ignoré par son `when` → export jamais résolu ; `B` (`run_if_skipped`)
+    // s'exécute ; `C`, qui lit cet export absent, est ignoré par son `when` ; `D`, sans `when`
+    // sur la seule dépendance `B` non ignorée, s'exécute — aucune propagation par l'export.
+    let avant_trois = stack.journal().len();
+    let mut a_ignore = producteur("A-trois", json!({ "v": "ok" }));
+    a_ignore.when = Some(
+        serde_json::from_value(json!({ "var": "absente-de-vars", "op": "exists" }))
+            .expect("la fixture `when` est un prédicat désérialisable"),
+    );
+    let mut b = step("B", &["A"], "record", json!({ "id": "B" }));
+    b.run_if_skipped = true;
+    let dag_trois = DagSteps(vec![
+        a_ignore,
+        b,
+        etape_qui_lit("ok"),
+        step("D", &["B"], "record", json!({ "id": "D" })),
+    ]);
+    let (status, body) = stack.run_to_completion(&dag_trois, None).await;
+    assert_eq!(status, 200, "le run du producteur ignoré doit aboutir : {body}");
+    let results = body.as_object().expect("table id → sortie");
+    assert_eq!(results.len(), 2, "exactement `B` et `D` en sortie : {body}");
+    assert!(
+        results.contains_key("B") && results.contains_key("D"),
+        "`B` et `D` s'exécutent — l'export absent ne propage rien : {body}"
+    );
+    assert!(
+        !results.contains_key("A") && !results.contains_key("C"),
+        "`A` ignoré par son `when`, `C` par le sien (export absent) : {body}"
+    );
+    let journal = stack.journal();
+    let nouveau: Vec<&str> = journal[avant_trois..].iter().map(String::as_str).collect();
+    assert!(
+        !nouveau.contains(&"start:A-trois") && !nouveau.contains(&"start:C"),
+        "ni `A-trois` (ignoré) ni `C` (export absent) ne sont dispatchés dans le run 3 : {nouveau:?}"
     );
 }

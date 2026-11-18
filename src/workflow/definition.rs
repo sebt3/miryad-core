@@ -10,6 +10,7 @@
 //! serveur). La politique d'accès effective se pose une seule fois au démarrage par
 //! [`configure_policy`] ; sans appel, elle vaut `AdminOnly` en lecture comme en écriture.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -53,6 +54,13 @@ pub struct StepDefinition {
     /// `false` par défaut, jamais réécrit à `false` explicite.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub run_if_skipped: bool,
+    /// Exports nommés déclarés par ce step (amendement 2026-11-18, issue #85, DSD `workflow`
+    /// `FR-21`) : nom d'export → pointeur JSON RFC 6901 dans la sortie du step, `""` pour la
+    /// sortie entière ; `BTreeMap` pour un ordre déterministe. Lu par la source `export` des
+    /// `when` en aval (./predicate.rs, `validate_dag` étapes 6 et 7) ; absent du JSON écrit, la
+    /// table reste vide et n'est jamais réécrite.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub exports: BTreeMap<String, String>,
 }
 
 /// Enveloppe fine d'une liste de steps : le type de la colonne `steps` (JSON) de [`Model`].
@@ -82,6 +90,17 @@ pub struct DagSteps(
 ///    de ses lectures — un `when` qui lit un step absent du `depends_on` de son porteur est
 ///    rejeté ; un `when` qui ne lit que des `var` est toujours valide, et `run_if_skipped`
 ///    n'est jamais une erreur.
+/// 6. exports déclarés, dans l'ordre de la liste puis de `exports` (ordre des noms ; amendement
+///    2026-11-18, issue #85) : nom invalide (vide, plus de 64 caractères, ou caractère hors
+///    `[A-Za-z0-9_-]`) ou pointeur invalide (non vide et ne commençant pas par `/`) → « le step
+///    {id} déclare un export invalide : » ; premier nom déjà déclaré par un step précédent →
+///    « export dupliqué: » (producteur unique, comme l'unicité des `id`).
+/// 7. lectures d'exports des `when`, dans l'ordre de la liste (même amendement) : chaque nom lu
+///    doit être déclaré par un step (« le step {id} lit l'export {nom}, qu'aucun step ne
+///    déclare ») et son producteur doit être un ancêtre du lecteur, direct ou non, par
+///    `depends_on`, jamais le step lui-même (« le step {id} lit l'export {nom} dont le producteur
+///    {p} n'est pas un de ses ancêtres ») — la visibilité transitive que la lecture `step` de
+///    l'étape 5 n'offre pas.
 ///
 /// Une chaîne vide est un `id` comme un autre, sans traitement spécial. `Ok(())` au-delà : la
 /// forme du `kind` et du `config` de chaque step reste hors du périmètre de cette fonction.
@@ -165,6 +184,14 @@ pub(crate) fn validate_dag(steps: &[StepDefinition]) -> Result<(), WorkflowError
         )));
     }
 
+    // Carte des dépendances directes par id, posée après le contrôle de cycle : sa seule
+    // utilisatrice (l'étape 7, amendement 2026-11-18 issue #85) ferme la transitivité sur un
+    // graphe désormais garanti acyclique — la descente en `ancetres` termine toujours.
+    let dependances: HashMap<&str, &[String]> = steps
+        .iter()
+        .map(|etape| (etape.id.as_str(), etape.depends_on.as_slice()))
+        .collect();
+
     // Étape 5 (amendement 2026-11-18, issue #84) — conditions `when`, dans l'ordre de la liste :
     // d'abord la forme du prédicat (`Predicate::validate`, ./predicate.rs), puis la portée de ses
     // lectures : un `when` ne lit que des `var` (toujours valides) et les sorties des dépendances
@@ -190,7 +217,106 @@ pub(crate) fn validate_dag(steps: &[StepDefinition]) -> Result<(), WorkflowError
         }
     }
 
+    // Étape 6 (amendement 2026-11-18, issue #85) — déclarations d'exports, dans l'ordre de la
+    // liste puis de `exports` (ordre des noms du `BTreeMap`) : forme du nom et du pointeur
+    // ([`forme_export_valide`]), puis unicité du nom (producteur unique, comme l'unicité des
+    // `id`). Le texte décrit le défaut sans citer le nom ni le pointeur fautifs.
+    let mut producteurs: HashMap<&str, &str> = HashMap::with_capacity(steps.len());
+    for etape in steps {
+        for (nom, pointeur) in &etape.exports {
+            forme_export_valide(etape.id.as_str(), nom, pointeur)?;
+            if producteurs.insert(nom.as_str(), etape.id.as_str()).is_some() {
+                return Err(WorkflowError::InvalidDag(format!("export dupliqué: {nom}")));
+            }
+        }
+    }
+
+    // Étape 7 (amendement 2026-11-18, issue #85) — lectures d'exports des `when`.
+    valider_lectures_exports(steps, &producteurs, &dependances)?;
+
     Ok(())
+}
+
+/// Forme d'une déclaration d'export (étape 6 de [`validate_dag`], amendement 2026-11-18,
+/// issue #85) : nom non vide, de 64 caractères au plus, limité à `[A-Za-z0-9_-]` ; pointeur vide
+/// (sortie entière) ou commençant par `/` (RFC 6901). Le texte d'erreur décrit le défaut, jamais
+/// la valeur fautive.
+fn forme_export_valide(etape_id: &str, nom: &str, pointeur: &str) -> Result<(), WorkflowError> {
+    let raison = if nom.is_empty() {
+        Some("le nom est vide")
+    } else if nom.chars().count() > 64 {
+        Some("le nom dépasse 64 caractères")
+    } else if !nom
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        Some("le nom contient un caractère hors `[A-Za-z0-9_-]`")
+    } else if !pointeur.is_empty() && !pointeur.starts_with('/') {
+        Some("le pointeur est non vide et ne commence pas par `/`")
+    } else {
+        None
+    };
+    match raison {
+        Some(raison) => Err(WorkflowError::InvalidDag(format!(
+            "le step {etape_id} déclare un export invalide : {raison}"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Étape 7 de [`validate_dag`] (amendement 2026-11-18, issue #85) — lectures d'exports des
+/// `when`, dans l'ordre de la liste : le nom doit être déclaré, et son producteur être un ancêtre
+/// (transitif, par `depends_on`) du lecteur — jamais le lecteur lui-même, qu'une transitivité
+/// sur un graphe acyclique rend de toute façon absent de ses ancêtres.
+fn valider_lectures_exports(
+    steps: &[StepDefinition],
+    producteurs: &HashMap<&str, &str>,
+    dependances: &HashMap<&str, &[String]>,
+) -> Result<(), WorkflowError> {
+    for etape in steps {
+        let Some(when) = &etape.when else {
+            continue;
+        };
+        let noms = when.referenced_exports();
+        if noms.is_empty() {
+            continue;
+        }
+        let ancetres = ancetres(etape.id.as_str(), dependances);
+        for nom in noms {
+            let Some(&producteur) = producteurs.get(nom) else {
+                return Err(WorkflowError::InvalidDag(format!(
+                    "le step {} lit l'export {nom}, qu'aucun step ne déclare",
+                    etape.id
+                )));
+            };
+            if !ancetres.contains(producteur) {
+                return Err(WorkflowError::InvalidDag(format!(
+                    "le step {} lit l'export {nom} dont le producteur {producteur} n'est pas un de ses ancêtres",
+                    etape.id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Ancêtres transitifs d'un step — clôture de `dependances` par `depends_on`, le step lui-même
+/// jamais inclus (le graphe est garanti acyclique à l'appel : `validate_dag` appelle cette
+/// descente après son contrôle de cycle, amendement 2026-11-18 issue #85). Itératif, un `id`
+/// visité au plus une fois.
+fn ancetres<'a>(id: &str, dependances: &HashMap<&'a str, &'a [String]>) -> HashSet<&'a str> {
+    let mut ancetres: HashSet<&'a str> = HashSet::new();
+    let mut file: Vec<&'a str> = dependances
+        .get(id)
+        .map_or_else(Vec::new, |deps| deps.iter().map(String::as_str).collect());
+    while let Some(candidat) = file.pop() {
+        if ancetres.insert(candidat)
+            && let Some(deps) = dependances.get(candidat)
+        {
+            file.extend(deps.iter().map(String::as_str));
+        }
+    }
+    ancetres
 }
 
 /// Définition de workflow persistée — la table `miryad_workflow_definitions` posée par la
@@ -401,6 +527,7 @@ mod tests {
             config: serde_json::Value::Null,
             when: None,
             run_if_skipped: false,
+            exports: std::collections::BTreeMap::new(),
         }
     }
 
@@ -533,6 +660,137 @@ mod tests {
                 .iter()
                 .all(|etape| etape.when.is_none() && !etape.run_if_skipped),
             "`when` vaut None et `run_if_skipped` false partout : {dag:?}"
+        );
+        let rendu = serde_json::to_value(&dag).expect("un `DagSteps` se sérialise");
+        assert_eq!(
+            rendu, json_avant,
+            "le round-trip ne doit ni inventer ni perdre de clé"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Exports nommés (issue #85, DSD `workflow` `FR-21`/`DEC-15`) — `validate_dag` étapes 6 et 7 :
+    // déclarations (forme, unicité) puis lectures (déclaration existante, producteur ancêtre).
+    // Fonctions pures, fixtures purement mémoire comme le reste du module.
+    // ---------------------------------------------------------------------------
+
+    /// Step portant des exports de fixture : la forme JSON réelle est exercée ailleurs, ici la
+    /// construction directe suffit (`validate_dag` est une fonction pure).
+    fn etape_export(id: &str, depends_on: &[&str], exports: &[(&str, &str)]) -> StepDefinition {
+        let mut s = etape(id, depends_on);
+        s.exports = exports
+            .iter()
+            .map(|(nom, pointeur)| ((*nom).to_string(), (*pointeur).to_string()))
+            .collect();
+        s
+    }
+
+    /// Scenario « un export se lit au-delà des dépendances directes » (#85) : `A` déclare
+    /// `verdict`, `C` ne dépend que de `B` (petit-fils de `A`) et lit l'export dans son `when` —
+    /// `Ok(())`, la visibilité transitive est le contrat de l'étape 7.
+    #[test]
+    fn validate_dag_accepte_un_export_lu_par_un_petit_fils() {
+        let a = etape_export("A", &[], &[("verdict", "/v")]);
+        let b = etape("B", &["A"]);
+        let mut c = etape("C", &["B"]);
+        c.when = Some(quand(
+            serde_json::json!({ "export": "verdict", "op": "eq", "value": "ok" }),
+        ));
+        let resultat = validate_dag(&[a, b, c]);
+        assert!(
+            resultat.is_ok(),
+            "`A` est un ancêtre (non direct) de `C` : {resultat:?}"
+        );
+    }
+
+    /// Scenario « un export dont le producteur n'est pas un ancêtre est refusé » (#85) : `B`,
+    /// sans lien avec `A`, lit l'export que `A` déclare — `Err(InvalidDag)` nommant `B`,
+    /// `verdict` et `A`.
+    #[test]
+    fn validate_dag_refuse_un_export_dont_le_producteur_n_est_pas_ancetre() {
+        let a = etape_export("A", &[], &[("verdict", "/v")]);
+        let mut b = etape("B", &[]);
+        b.when = Some(quand(
+            serde_json::json!({ "export": "verdict", "op": "eq", "value": "ok" }),
+        ));
+        let message = message_invalid_dag(validate_dag(&[a, b]));
+        assert!(
+            message.contains('B') && message.contains("verdict") && message.contains('A'),
+            "le texte doit nommer le lecteur (`B`), l'export (`verdict`) et le producteur (`A`) : {message}"
+        );
+        assert_eq!(
+            message,
+            "le step B lit l'export verdict dont le producteur A n'est pas un de ses ancêtres"
+        );
+    }
+
+    /// Scenario « un export inconnu est refusé » (#85) : le `when` lit `inconnu`, qu'aucun step
+    /// ne déclare — `Err(InvalidDag)` nommant le step et `inconnu`.
+    #[test]
+    fn validate_dag_refuse_un_export_inconnu() {
+        let mut b = etape("B", &["A"]);
+        b.when = Some(quand(serde_json::json!({ "export": "inconnu", "op": "exists" })));
+        let message = message_invalid_dag(validate_dag(&[etape("A", &[]), b]));
+        assert!(
+            message.contains('B') && message.contains("inconnu"),
+            "le texte doit nommer le step lecteur et l'export inconnu : {message}"
+        );
+        assert_eq!(
+            message,
+            "le step B lit l'export inconnu, qu'aucun step ne déclare"
+        );
+    }
+
+    /// Scenario « deux steps ne peuvent pas déclarer le même export » (#85) : producteur unique,
+    /// comme l'unicité des `id` — `Err(InvalidDag("export dupliqué: verdict"))`.
+    #[test]
+    fn validate_dag_refuse_deux_producteurs_du_meme_export() {
+        let a = etape_export("A", &[], &[("verdict", "/v")]);
+        let b = etape_export("B", &["A"], &[("verdict", "/v")]);
+        let message = message_invalid_dag(validate_dag(&[a, b]));
+        assert_eq!(message, "export dupliqué: verdict");
+    }
+
+    /// Scenario « nom ou pointeur d'export invalide est refusé » (#85) : nom vide, nom avec un
+    /// espace, pointeur sans `/` initial — `Err` pour les trois, sans citer de valeur utilisateur
+    /// au-delà du nom de step.
+    #[test]
+    fn validate_dag_refuse_un_nom_ou_un_pointeur_d_export_invalide() {
+        // Un jeton jamais admis dans le texte d'erreur : les raisons décrivent le défaut, pas la
+        // valeur fautive (même règle que ./predicate.rs).
+        let invalides: Vec<(Vec<(&str, &str)>, &str)> = vec![
+            (vec![("", "/v")], "nom vide"),
+            (vec![("alpha s3cr3t", "/v")], "nom avec un espace"),
+            (vec![("verdict", "alpha-s3cr3t")], "pointeur sans `/` initial"),
+        ];
+        for (exports, motif) in invalides {
+            let etape = etape_export("A", &[], &exports);
+            let message = message_invalid_dag(validate_dag(&[etape]));
+            assert!(
+                message.contains('A') && message.contains("export invalide"),
+                "le texte de « {motif} » doit nommer le step et qualifier le défaut : {message}"
+            );
+            assert!(
+                !message.contains("s3cr3t"),
+                "le texte de « {motif} » ne doit citer aucune valeur de l'utilisateur : {message}"
+            );
+        }
+    }
+
+    /// Scenario « un DAG sans exports garde son JSON » (#85) : un DAG écrit sans le champ
+    /// `exports` se désérialise avec `exports` vide et se resérialise à l'identique — aucune clé
+    /// nouvelle inventée.
+    #[test]
+    fn un_dag_sans_exports_garde_son_json() {
+        let json_avant = serde_json::json!([
+            { "id": "A", "depends_on": [], "kind": "entree", "config": {} },
+            { "id": "B", "depends_on": ["A"], "kind": "transform", "config": {} }
+        ]);
+        let dag: DagSteps =
+            serde_json::from_value(json_avant.clone()).expect("le JSON sans `exports` se lit");
+        assert!(
+            dag.0.iter().all(|etape| etape.exports.is_empty()),
+            "`exports` est vide partout : {dag:?}"
         );
         let rendu = serde_json::to_value(&dag).expect("un `DagSteps` se sérialise");
         assert_eq!(
@@ -865,6 +1123,7 @@ mod tests {
                 config: serde_json::json!({ "sortie": "brut", "lignes": 12 }),
                 when: None,
                 run_if_skipped: false,
+                exports: std::collections::BTreeMap::new(),
             },
             StepDefinition {
                 id: "B".to_string(),
@@ -873,6 +1132,7 @@ mod tests {
                 config: serde_json::json!({ "sorties": ["net", "reduit"], "seuil": 0.5, "strict": true }),
                 when: None,
                 run_if_skipped: false,
+                exports: std::collections::BTreeMap::new(),
             },
             StepDefinition {
                 id: "C".to_string(),
@@ -883,6 +1143,7 @@ mod tests {
                 }),
                 when: None,
                 run_if_skipped: false,
+                exports: std::collections::BTreeMap::new(),
             },
         ]);
 

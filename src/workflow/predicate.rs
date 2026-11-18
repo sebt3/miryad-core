@@ -1,9 +1,10 @@
 //! Porteur du prédicat JSON structuré d'un champ `when` de step — contrat porté par
-//! `./predicate.sdd` (issue #84, DSD `workflow` `FR-20`, `DEC-14`, `NFR-1`).
+//! `./predicate.sdd` (issue #84, DSD `workflow` `FR-20`, `DEC-14`, `NFR-1` ; amendement #85,
+//! `FR-21`, `DEC-15` : la source `export` des feuilles).
 //!
-//! Langage volontairement borné : une feuille `{step | var, path, op, value}`, `all` et `any` ;
-//! aucune expression, aucun gabarit, aucun moteur, aucun effet de bord — donc une validation
-//! statique triviale (les steps lus sont connus sans exécuter quoi que ce soit) et un
+//! Langage volontairement borné : une feuille `{step | var | export, path, op, value}`, `all`
+//! et `any` ; aucune expression, aucun gabarit, aucun moteur, aucun effet de bord — donc une
+//! validation statique triviale (les steps lus sont connus sans exécuter quoi que ce soit) et un
 //! déterminisme évident au rejeu après crash.
 
 use std::cmp::Ordering;
@@ -40,8 +41,9 @@ pub enum Op {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum Predicate {
-    /// Feuille : exactement une source (`step` ou `var`), un pointeur `path` facultatif
-    /// (RFC 6901, défaut : la valeur entière), un opérateur et une `value` selon l'opérateur.
+    /// Feuille : exactement une source (`step`, `var` ou `export` — amendement 2026-11-18,
+    /// issue #85), un pointeur `path` facultatif (RFC 6901, défaut : la valeur entière), un
+    /// opérateur et une `value` selon l'opérateur.
     Leaf {
         /// Sortie du step d'`id` donné, telle que rangée dans les résultats du run.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,6 +51,11 @@ pub enum Predicate {
         /// Variable `vars` du run (constante, journalisée avec l'entrée).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         var: Option<String>,
+        /// Valeur de l'export nommé `nom`, déjà extraite de la sortie de son producteur par
+        /// l'interpréteur (amendement 2026-11-18, issue #85, DSD `workflow` `FR-21`) ; un export
+        /// absent de la table (producteur ignoré, pointeur sans résultat) est une valeur absente.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        export: Option<String>,
         /// Pointeur JSON RFC 6901 appliqué à la source ; mal formé ou absent → valeur absente.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
@@ -73,28 +80,39 @@ pub enum Predicate {
 impl Predicate {
     /// Évalue le prédicat : fonction **pure et totale** — jamais de panique, jamais d'erreur,
     /// aucune horloge, aucun hasard, aucune entrée-sortie (`./predicate.sdd` `Must`, `NFR-1`).
-    /// Une feuille résout sa source (`results` pour `step`, `vars` pour `var`), applique son
-    /// pointeur `path`, puis son opérateur. **Une valeur absente rend `false` pour tous les
-    /// opérateurs**, `exists` et `ne` compris. Si une feuille porte par construction les deux
-    /// sources (forme que `validate` refuse), `step` est résolue en premier : le résultat reste
-    /// déterminé, jamais une panique.
+    /// Une feuille résout sa source (`results` pour `step`, `vars` pour `var`, `exports` pour
+    /// `export` — amendement 2026-11-18, issue #85), applique son pointeur `path`, puis son
+    /// opérateur. **Une valeur absente rend `false` pour tous les opérateurs**, `exists` et `ne`
+    /// compris. Si une feuille porte par construction plus d'une source (forme que `validate`
+    /// refuse), l'ordre de résolution `step` → `var` → `export` fixe le résultat : déterminé,
+    /// jamais une panique.
     pub(crate) fn evaluate(
         &self,
         vars: &serde_json::Map<String, serde_json::Value>,
         results: &HashMap<String, serde_json::Value>,
+        exports: &HashMap<String, serde_json::Value>,
     ) -> bool {
         match self {
             // Court-circuit : les deux conjoncteurs sont purs, aucun ordre observable exigé.
-            Self::All { all } => all.iter().all(|element| element.evaluate(vars, results)),
-            Self::Any { any } => any.iter().any(|element| element.evaluate(vars, results)),
+            Self::All { all } => all.iter().all(|element| element.evaluate(vars, results, exports)),
+            Self::Any { any } => any.iter().any(|element| element.evaluate(vars, results, exports)),
             Self::Leaf {
                 step,
                 var,
+                export,
                 path,
                 op,
                 value,
-            } => resoudre(step.as_deref(), var.as_deref(), path.as_deref(), results, vars)
-                .is_some_and(|valeur| appliquer(*op, valeur, value.as_ref())),
+            } => resoudre(
+                step.as_deref(),
+                var.as_deref(),
+                export.as_deref(),
+                path.as_deref(),
+                results,
+                vars,
+                exports,
+            )
+            .is_some_and(|valeur| appliquer(*op, valeur, value.as_ref())),
         }
     }
 
@@ -106,10 +124,19 @@ impl Predicate {
     }
 
     /// Les `id` de step lus par les feuilles (sources `step`), dans l'ordre du document,
-    /// doublons conservés ; les sources `var` n'y figurent pas.
+    /// doublons conservés ; les sources `var` et `export` n'y figurent pas.
     pub(crate) fn referenced_steps(&self) -> Vec<&str> {
         let mut references = Vec::new();
         self.collecter_references(&mut references);
+        references
+    }
+
+    /// Les noms d'export lus par les feuilles (sources `export` — amendement 2026-11-18,
+    /// issue #85), dans l'ordre du document, doublons conservés ; les sources `step` et `var`
+    /// n'y figurent pas.
+    pub(crate) fn referenced_exports(&self) -> Vec<&str> {
+        let mut references = Vec::new();
+        self.collecter_references_exports(&mut references);
         references
     }
 
@@ -136,29 +163,31 @@ impl Predicate {
             Self::Leaf {
                 step,
                 var,
+                export,
                 path,
                 op,
                 value,
             } => {
-                // Ordre des défauts tel que `Must` : source, contenu des sources, `path`,
-                // `value` selon l'opérateur.
-                match (step.as_deref(), var.as_deref()) {
-                    (Some(_), Some(_)) => {
-                        return Err(
-                            "une feuille `when` porte à la fois une source `step` et une source `var`"
-                                .to_string(),
-                        );
-                    }
-                    (None, None) => {
-                        return Err("une feuille `when` ne porte aucune source (`step` ni `var`)".to_string());
-                    }
-                    (Some(""), None) => {
-                        return Err("une feuille `when` porte une source `step` vide".to_string());
-                    }
-                    (None, Some("")) => {
-                        return Err("une feuille `when` porte une source `var` vide".to_string());
-                    }
-                    _ => {}
+                // Ordre des défauts tel que `Must` : nombre de sources, contenu des sources,
+                // `path`, `value` selon l'opérateur. Exactement une source parmi `step`, `var`,
+                // `export` (amendement 2026-11-18, issue #85).
+                let nb_sources = usize::from(step.is_some())
+                    .saturating_add(usize::from(var.is_some()))
+                    .saturating_add(usize::from(export.is_some()));
+                if nb_sources != 1 {
+                    return Err(
+                        "une feuille `when` doit porter exactement une source (`step`, `var` ou `export`)"
+                            .to_string(),
+                    );
+                }
+                if step.as_deref().is_some_and(str::is_empty) {
+                    return Err("une feuille `when` porte une source `step` vide".to_string());
+                }
+                if var.as_deref().is_some_and(str::is_empty) {
+                    return Err("une feuille `when` porte une source `var` vide".to_string());
+                }
+                if export.as_deref().is_some_and(str::is_empty) {
+                    return Err("une feuille `when` porte une source `export` vide".to_string());
                 }
                 if path
                     .as_deref()
@@ -223,23 +252,51 @@ impl Predicate {
             }
         }
     }
+
+    /// Cœur de [`Self::referenced_exports`] : parcours en profondeur dans l'ordre du document,
+    /// doublons conservés (amendement 2026-11-18, issue #85).
+    fn collecter_references_exports<'a>(&'a self, acc: &mut Vec<&'a str>) {
+        match self {
+            Self::Leaf {
+                step: None,
+                var: None,
+                export: Some(nom),
+                ..
+            } => acc.push(nom.as_str()),
+            Self::Leaf { .. } => {}
+            Self::All { all } => {
+                for element in all {
+                    element.collecter_references_exports(acc);
+                }
+            }
+            Self::Any { any } => {
+                for element in any {
+                    element.collecter_references_exports(acc);
+                }
+            }
+        }
+    }
 }
 
-/// Résolution de la source d'une feuille : sortie du step (`results`) ou variable (`vars`),
-/// puis pointeur `path` (`Value::pointer` — mal formé ou chemin absent → `None`, donc valeur
-/// absente). Totalité : si les deux sources sont posées par construction (forme que `validate`
-/// refuse), `step` est résolue en premier, `var` ignorée — jamais de panique.
+/// Résolution de la source d'une feuille : sortie du step (`results`), variable (`vars`) ou
+/// valeur d'export (`exports` — amendement 2026-11-18, issue #85), puis pointeur `path`
+/// (`Value::pointer` — mal formé ou chemin absent → `None`, donc valeur absente). Totalité : si
+/// une feuille pose par construction plus d'une source (forme que `validate` refuse), l'ordre
+/// `step` → `var` → `export` fixe la résolution, les autres sont ignorées — jamais de panique.
 fn resoudre<'a>(
     step: Option<&str>,
     var: Option<&str>,
+    export: Option<&str>,
     path: Option<&str>,
     results: &'a HashMap<String, serde_json::Value>,
     vars: &'a serde_json::Map<String, serde_json::Value>,
+    exports: &'a HashMap<String, serde_json::Value>,
 ) -> Option<&'a serde_json::Value> {
-    let racine = match (step, var) {
-        (Some(id), _) => results.get(id),
-        (None, Some(nom)) => vars.get(nom),
-        (None, None) => None,
+    let racine = match (step, var, export) {
+        (Some(id), _, _) => results.get(id),
+        (None, Some(nom), _) => vars.get(nom),
+        (None, None, Some(nom)) => exports.get(nom),
+        (None, None, None) => None,
     }?;
     path.map_or(Some(racine), |chemin| racine.pointer(chemin))
 }
@@ -334,7 +391,16 @@ mod tests {
         vars: &serde_json::Map<String, serde_json::Value>,
         results: &HashMap<String, serde_json::Value>,
     ) -> bool {
-        pred(forme).evaluate(vars, results)
+        // Table d'exports vide : les Scenario antérieurs à #85 ne lisent que `step` et `var` —
+        // les appels existants d'`evaluate` reçoivent une table vide, sans autre changement
+        // (amendement #85 de ./predicate.sdd).
+        pred(forme).evaluate(vars, results, &HashMap::new())
+    }
+
+    /// `eval` sous la source `export` (issue #85) : la table d'exports déjà résolues, telle que
+    /// `run` la tient (./interpreter.sdd « Exports nommés »).
+    fn eval_avec_exports(forme: serde_json::Value, exports: &HashMap<String, serde_json::Value>) -> bool {
+        pred(forme).evaluate(&serde_json::Map::new(), &HashMap::new(), exports)
     }
 
     /// Chaîne distinctive jamais admise dans un texte d'erreur : les messages de `validate` ne
@@ -682,6 +748,76 @@ mod tests {
         assert!(
             inconnu_apres_any.is_err(),
             "`{{\"any\": […], \"extra\": 1}}` doit être rejeté à la désérialisation : {inconnu_apres_any:?}"
+        );
+    }
+
+    /// Scenario « une feuille lit la valeur d'un export » (#85) : la table d'exports
+    /// `{"verdict": "ok", "score": 7}` — la feuille `{export: "verdict", eq, "ok"}` rend `true`,
+    /// `{export: "score", gt, 5}` aussi. L'export est une source au même titre que `step`/`var`.
+    #[test]
+    fn une_feuille_lit_la_valeur_d_un_export() {
+        let exports: HashMap<String, serde_json::Value> = HashMap::from([
+            ("verdict".to_string(), json!("ok")),
+            ("score".to_string(), json!(7)),
+        ]);
+
+        assert!(
+            eval_avec_exports(json!({"export": "verdict", "op": "eq", "value": "ok"}), &exports),
+            "`verdict` vaut `\"ok\"` dans la table d'exports"
+        );
+        assert!(
+            eval_avec_exports(json!({"export": "score", "op": "gt", "value": 5}), &exports),
+            "`score` vaut `7`, `gt 5` est vrai"
+        );
+    }
+
+    /// Scenario « un export absent de la table rend faux » (#85) : table vide — `exists` comme
+    /// `ne` rendent `false` (une valeur absente rend faux pour tout opérateur), sans panique.
+    #[test]
+    fn un_export_absent_de_la_table_rend_faux() {
+        let vide = HashMap::new();
+        assert!(
+            !eval_avec_exports(json!({"export": "verdict", "op": "exists"}), &vide),
+            "`exists` sur un export absent rend faux"
+        );
+        assert!(
+            !eval_avec_exports(json!({"export": "verdict", "op": "ne", "value": "x"}), &vide),
+            "`ne` sur un export absent rend faux, sans panique"
+        );
+    }
+
+    /// Scenario « validate refuse plus d'une source et accepte export seul » (#85) : `step` +
+    /// `export`, `var` + `export` et `export: ""` sont rejetés (texte sans valeur utilisateur),
+    /// la feuille `export: "verdict"` est valide et `referenced_exports` rend `["verdict"]`.
+    #[test]
+    fn validate_refuse_plus_d_une_source_et_accepte_export_seul() {
+        for (forme, motif) in [
+            (
+                json!({"step": VALEUR_UTILISATEUR, "export": VALEUR_UTILISATEUR, "op": "exists"}),
+                "`step` et `export`",
+            ),
+            (
+                json!({"var": VALEUR_UTILISATEUR, "export": VALEUR_UTILISATEUR, "op": "exists"}),
+                "`var` et `export`",
+            ),
+            (json!({"export": "", "op": "exists"}), "`export` vide"),
+        ] {
+            let resultat = pred(forme.clone()).validate();
+            let Err(message) = resultat else {
+                panic!("« {motif} » devait être rejeté, rendu : {resultat:?}");
+            };
+            assert!(
+                !message.contains(VALEUR_UTILISATEUR),
+                "le texte d'erreur de « {motif} » ne doit citer aucune valeur de l'utilisateur : {message}"
+            );
+        }
+
+        let valide = pred(json!({"export": "verdict", "op": "exists"}));
+        assert_eq!(valide.validate(), Ok(()), "une feuille `export` seule est valide");
+        assert_eq!(
+            valide.referenced_exports(),
+            vec!["verdict"],
+            "`referenced_exports` rend les noms des feuilles `export`, dans l'ordre du document"
         );
     }
 }

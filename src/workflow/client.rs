@@ -739,6 +739,7 @@ mod tests {
                 config: serde_json::json!({ "script": "1 + 1" }),
                 when: None,
                 run_if_skipped: false,
+                exports: std::collections::BTreeMap::new(),
             },
             StepDefinition {
                 id: "notify".to_string(),
@@ -747,6 +748,7 @@ mod tests {
                 config: serde_json::json!({ "channel": "ops" }),
                 when: None,
                 run_if_skipped: false,
+                exports: std::collections::BTreeMap::new(),
             },
         ])
     }
@@ -761,6 +763,7 @@ mod tests {
             config: serde_json::json!({ "script": "1 + 1" }),
             when: None,
             run_if_skipped: false,
+            exports: std::collections::BTreeMap::new(),
         }])
     }
 
