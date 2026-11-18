@@ -1813,7 +1813,7 @@ mod tests {
 
     // ------------------------------------------- ORDER BY clé primaire (arbitré 2026-09-29)
 
-    /// `Must` « Toute liste est ordonnée par la clé primaire croissante » (arbitré par Sébastien
+    /// `Must` « Toute liste est ordonnée par la clé primaire croissante » (arbitré
     /// le 2026-09-29) — preuve d'émission par `sea_orm::MockDatabase` : le `SELECT` paginé doit
     /// porter `ORDER BY` sur la colonne de clé primaire avant `paginate`. TEST ROUGE avant
     /// implémentation : sous `SQLite` toute table `rowid` est balayée en ordre de `rowid` — le

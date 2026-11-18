@@ -41,7 +41,7 @@ pub enum AuthError {
     #[error("MRD-AUTH-015: expired API token")]
     TokenExpired,
     /// `MRD-AUTH-017` — l'empreinte fournie est déjà provisionnée en base sous un autre
-    /// `subject` (`ensure_token`) ; variante arbitrée en session avec Sébastien le
+    /// `subject` (`ensure_token`) ; variante arbitrée en session le
     /// 2026-09-27, rendue `409` : la ressource est déjà allouée.
     #[error("MRD-AUTH-017: token hash already provisioned for another subject")]
     TokenHashConflict,
@@ -62,7 +62,7 @@ pub enum AuthError {
     #[error("MRD-AUTH-016: database error: {0}")]
     Database(#[from] sea_orm::DbErr),
     /// Variante tuple d'un `String`, code `MRD-AUTH-018`, rendue `500` — arrêt interne de la
-    /// crate, jamais une faute du client (variante arbitrée par Sébastien le 2026-09-30,
+    /// crate, jamais une faute du client (variante arbitrée le 2026-09-30,
     /// option a) : construite par `token::hash_token` quand `hmac::Mac::new_from_slice`
     /// refuse le poivre — infaillible en pratique (HMAC accepte toute longueur de clé,
     /// source hmac-0.12.1) mais le contrat rend un `Err` explicite plutôt que l'`expect`
@@ -212,7 +212,7 @@ mod tests {
     }
 
     /// `Scenario` : « Display 017 empreinte détenue par un autre sujet » — littéral
-    /// exact arbitré en session avec Sébastien le 2026-09-27.
+    /// exact arbitré en session le 2026-09-27.
     #[test]
     fn display_017_token_hash_conflict() {
         assert_eq!(
@@ -222,7 +222,7 @@ mod tests {
     }
 
     /// `Scenario` rendu « HTTP 500 pour 018 » et littéral `Must` de la dixième variante
-    /// (arbitrée par Sébastien le 2026-09-30, option a) — patron `{0}` comme `Oidc`,
+    /// (arbitrée le 2026-09-30, option a) — patron `{0}` comme `Oidc`,
     /// charge utile verbatim sans filtre ni troncature.
     #[test]
     fn display_018_internal_payload_verbatim() {
@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(&body[..], b"MRD-AUTH-016: database error: Custom Error: boom");
     }
 
-    /// `Scenario` : « rendu HTTP 409 pour 017 » — arbitré en session avec Sébastien
+    /// `Scenario` : « rendu HTTP 409 pour 017 » — arbitré en session
     /// le 2026-09-27, l'empreinte est une ressource déjà allouée.
     #[tokio::test]
     async fn http_render_017_token_hash_conflict_is_409() {
@@ -326,7 +326,7 @@ mod tests {
         );
     }
 
-    /// `Scenario` : « rendu HTTP 500 pour 018 » (dixième variante arbitrée par Sébastien le
+    /// `Scenario` : « rendu HTTP 500 pour 018 » (dixième variante arbitrée le
     /// 2026-09-30, option a) — arrêt interne de la crate, jamais une faute du client :
     /// `500`, corps = octets exacts de la `Display` (préfixe `MRD-AUTH-018: internal error: `
     /// puis charge utile verbatim, patron `{0}` comme `Oidc`), `Content-Type` texte.

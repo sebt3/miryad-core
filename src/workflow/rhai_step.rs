@@ -203,7 +203,7 @@ impl RhaiStep {
 }
 
 /// Aucun chemin de résolution par défaut, aucune closure de setup : les capacités d'`import` et
-/// de fonctions hôte sont présentes, jamais activées par la crate (décision Sébastien,
+/// de fonctions hôte sont présentes, jamais activées par la crate (décision,
 /// 2026-09-23 et arbitrage #27 2026-10-04, `./rhai_step.sdd` `Must`).
 impl Default for RhaiStep {
     fn default() -> Self {

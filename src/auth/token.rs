@@ -70,7 +70,7 @@ fn generate_token() -> String {
 /// Empreinte du secret : HMAC-SHA256 des octets UTF-8 de `token` (préfixe `mrd_` inclus),
 /// clé par le poivre `pepper`, rendue en hexadécimal minuscule (`64` caractères).
 ///
-/// Retour : `Result<String, AuthError>` depuis l'arbitrage de Sébastien du 2026-09-30
+/// Retour : `Result<String, AuthError>` depuis l'arbitrage du 2026-09-30
 /// (option a) — le refus de `Mac::new_from_slice` (infaillible en pratique, clé de longueur
 /// libre vérifiée source hmac-0.12.1) devient `AuthError::Internal` (`MRD-AUTH-018`) de charge
 /// utile littérale `token hash construction failed`, propagé par `?` par les appelants ;
@@ -225,7 +225,7 @@ pub async fn ensure_token(
         if existing.subject != subject {
             // L'empreinte est une ressource déjà allouée à un autre titulaire : rejet
             // explicite, le second demandeur doit être informé (src/auth/token.sdd
-            // `Handles`, arbitré avec Sébastien le 2026-09-27).
+            // `Handles`, arbitré le 2026-09-27).
             return Err(AuthError::TokenHashConflict);
         }
         return Ok(());

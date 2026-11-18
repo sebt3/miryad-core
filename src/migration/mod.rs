@@ -14,12 +14,12 @@ use sea_orm::sea_query::IntoIden;
 /// **Attention — `fresh` et `reset` héritées de `sea_orm_migration` restent destructeurs
 /// au-delà de `miryad_*`** : `fresh` droppe **toutes** les tables de la connexion, celles de
 /// l'application consommatrice comprises. Pas de wrapper — ne jamais les appeler sur une
-/// connexion partagée en production (arbitré par Sébastien le 2026-09-29, ./mod.sdd `Must`).
+/// connexion partagée en production (arbitré le 2026-09-29, ./mod.sdd `Must`).
 ///
 /// **`steps` `Some(n)` peut laisser le moteur dans un état partiel** — par exemple une base à
 /// jour de la migration 002 sans le groupe `admin` posé par le seed 003. C'est une
 /// responsabilité du caller : aucun wrapper ne force `None` ; n'appeler `up`/`down` avec
-/// `Some(n)` que si cet état intermédiaire est celui voulu (arbitré par Sébastien le
+/// `Some(n)` que si cet état intermédiaire est celui voulu (arbitré le
 /// 2026-09-29, ./mod.sdd `Must`).
 pub struct Migrator;
 
@@ -664,7 +664,7 @@ mod tests {
         // sea-orm-macros/sea-orm-migration 2.0.2). Ce test est inline dans `src/migration/mod.rs`,
         // donc l'entrée est couchée dans `seaql_migrations` sous le nom `mod` — stem de ./mod.rs.
         // Inoffensif tant que les tables de test (`app_widgets`) restent distinctes des tables
-        // `miryad_*` : aucun renommage, arbitré par Sébastien le 2026-09-29 (./mod.sdd `Must`).
+        // `miryad_*` : aucun renommage, arbitré le 2026-09-29 (./mod.sdd `Must`).
         AppMigrator::up(&db, None)
             .await
             .expect("app migrator composes without colliding on the tracking table");

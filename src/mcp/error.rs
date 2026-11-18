@@ -82,7 +82,7 @@ impl McpError {
         }
     }
 
-    /// Message envoyé au client (arbitré par Sébastien le 2026-09-29) : les `-32603`
+    /// Message envoyé au client (arbitré le 2026-09-29) : les `-32603`
     /// deviennent génériques, sans charge utile — le détail (message `DbErr`, texte de
     /// moteur) reste dans la `Display`, que la trace `error!` du handler porte sur le
     /// fil du log, jamais sur le fil du client. Toutes les autres variantes, y compris

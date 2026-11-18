@@ -138,7 +138,7 @@ pub(crate) fn find_sealed_cookie(header: Option<&str>, name: &str, key: &Key) ->
 /// désérialisation vers une structure minimale portant `exp: Option<f64>`. Aucune indexation
 /// ni tranche de chaîne ici.
 ///
-/// Portillon d'entier exact (arbitré par Sébastien le 2026-09-30, option A′,
+/// Portillon d'entier exact (arbitré le 2026-09-30, option A′,
 /// `src/auth/cookie.sdd` `Must`) : JSON n'ayant qu'un seul type nombre, `1700000000` et
 /// `1.7e9` sont le même nombre ; la tolérance porte sur le seul format de sérialisation,
 /// jamais sur la valeur. La valeur `f` n'est retenue que si `f.is_finite() && f == f.trunc()

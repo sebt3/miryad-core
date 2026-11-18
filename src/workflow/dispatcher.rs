@@ -217,7 +217,7 @@ fn render_run_name(step_id: &str) -> String {
 }
 
 /// Seul corps de la fermeture de `ctx.run` du handler : dispatch du kind, puis attente de son
-/// futur. Séparaison tranchée par Sébastien (2026-09-23) : `restate-sdk` ne virtualise aucun
+/// futur. Séparaison tranchée (2026-09-23) : `restate-sdk` ne virtualise aucun
 /// `Context`, cette fonction rend les trois branches (404 kind inconnu, transit intact du
 /// résultat, exécution exactement une fois) testables sans serveur. L'invariant « un seul
 /// `ctx.run()` par invocation » vit dans le handler, la logique ici.
@@ -299,7 +299,7 @@ pub const LONG_CEILING_MAX_SECS: u64 = 14_400;
 #[must_use]
 pub fn recommended_options_for(ceiling: Duration) -> ServiceOptions {
     let c = ceiling.clamp(Duration::from_secs(1), Duration::from_secs(LONG_CEILING_MAX_SECS));
-    // Tronc commun : pas de retry permanent (décision Sébastien 2026-09-23, ./dispatcher.sdd
+    // Tronc commun : pas de retry permanent (décision 2026-09-23, ./dispatcher.sdd
     // `Must`) — au 5e essai l'invocation passe en `paused`, relable manuellement (jamais `Kill`,
     // jamais le retry indéfini du serveur par absence de plafond).
     ServiceOptions::new()
@@ -610,7 +610,7 @@ mod tests {
     /// Scenario « kind inconnu produit une erreur 404, distincte d'un `StepError` applicatif » :
     /// la `Must` « Kind inconnu » pose `404` explicitement (jamais le `500` du scénario
     /// précédent, jamais `step_error_to_handler_error`). Forme adaptée au seam `run_invocation`
-    /// (tranchage Sébastien 2026-09-23, `Tasks` de ./dispatcher.sdd : « les tests appellent
+    /// (tranchage 2026-09-23, `Tasks` de ./dispatcher.sdd : « les tests appellent
     /// `run_invocation` directement » — un `execute` réel suppose un serveur Restate).
     #[tokio::test]
     async fn kind_inconnu_produit_une_erreur_404() {

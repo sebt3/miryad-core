@@ -43,24 +43,24 @@ pub enum RestError {
     Internal(String),
     /// `MRD-REST-005` — entrée invalide signalée par la crate (message contrôlé, jamais un
     /// texte de driver), rendu `422` en texte porteur du code (sixième variante, arbitrée
-    /// par Sébastien le 2026-09-29) ; `422` partagé avec `Application`, qui garde son corps JSON.
+    /// le 2026-09-29) ; `422` partagé avec `Application`, qui garde son corps JSON.
     #[error("MRD-REST-005: invalid input: {0}")]
     InvalidInput(String),
     /// `MRD-REST-006` — conflit d'empreinte de token, rendu `409` (septième variante,
-    /// arbitrée par Sébastien le 2026-10-03 : une décision de politique, pas une panne
+    /// arbitrée le 2026-10-03 : une décision de politique, pas une panne
     /// interne). Émetteur : `to_rest_error` de `rest::tokens` sur
     /// `AuthError::TokenHashConflict`, parité avec le `409` de `auth::error`.
     #[error("MRD-REST-006: conflict")]
     Conflict,
     /// `MRD-REST-007` — violation d'une contrainte d'unicité, rendu `409` (huitième
-    /// variante, arbitrée par Sébastien le 2026-11-13, issue #77 : une décision de
+    /// variante, arbitrée le 2026-11-13, issue #77 : une décision de
     /// l'appelant, pas une panne). Émetteur : `rest::core::create` et `rest::core::update`
     /// sur `SqlErr::UniqueConstraintViolation`. Distincte de `Conflict` (`006`, conflit
     /// d'empreinte de jeton).
     #[error("MRD-REST-007: unique constraint violated")]
     UniqueViolation,
     /// `MRD-REST-008` — critères ou tri de liste refusés, rendu `400` (neuvième variante,
-    /// arbitrée par Sébastien le 2026-11-13, issue #78 : une décision de l'appelant, pas une
+    /// arbitrée le 2026-11-13, issue #78 : une décision de l'appelant, pas une
     /// panne). Tuple d'un `String` de la crate — le message nomme la colonne ou le paramètre
     /// refusé tel que reçu, jamais une valeur de ligne. Émetteur : `rest::core::list` (critère
     /// sur une colonne non déclarée filtrable, valeur non convertible, tri non déclaré, `order`
@@ -81,7 +81,7 @@ impl IntoResponse for RestError {
         match self {
             RestError::NotFound => (StatusCode::NOT_FOUND, self.to_string()).into_response(),
             RestError::Forbidden => (StatusCode::FORBIDDEN, self.to_string()).into_response(),
-            // `500` génériques (arbitré par Sébastien le 2026-09-29) : le client ne voit que
+            // `500` génériques (arbitré le 2026-09-29) : le client ne voit que
             // le code, la `Display` complète (détail du `DbErr`, charge utile) part dans
             // l'unique trace `error!` de la variante — jamais sur le fil.
             rest @ RestError::Database(_) => {
@@ -292,7 +292,7 @@ mod tests {
     }
 
     /// `Scenario` : « rendu HTTP 500 pour 003, corps générique et détail en trace » —
-    /// arbitré par Sébastien le 2026-09-29 : le `DbErr` ne sort jamais sur le fil.
+    /// arbitré le 2026-09-29 : le `DbErr` ne sort jamais sur le fil.
     #[tokio::test]
     async fn http_render_003_database_is_500_generic_body_with_error_trace() {
         let (_guard, traces) = capture_traces();
@@ -315,7 +315,7 @@ mod tests {
     }
 
     /// `Scenario` : « rendu HTTP 500 pour 004, corps générique et détail en trace » —
-    /// arbitré par Sébastien le 2026-09-29 : la charge utile ne sort jamais sur le fil.
+    /// arbitré le 2026-09-29 : la charge utile ne sort jamais sur le fil.
     #[tokio::test]
     async fn http_render_004_internal_is_500_generic_body_with_error_trace() {
         let (_guard, traces) = capture_traces();
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(object["message"], "boom");
     }
 
-    /// `Scenario` : « rendu HTTP 422 pour 005 » — sixième variante arbitrée par Sébastien
+    /// `Scenario` : « rendu HTTP 422 pour 005 » — sixième variante arbitrée
     /// le 2026-09-29 : texte porteur du code, `422` partagé avec `Application`.
     #[tokio::test]
     async fn http_render_005_invalid_input_is_422() {
@@ -388,7 +388,7 @@ mod tests {
         );
     }
 
-    /// `Scenario` : « rendu HTTP 409 pour 006 » — septième variante arbitrée par Sébastien
+    /// `Scenario` : « rendu HTTP 409 pour 006 » — septième variante arbitrée
     /// le 2026-10-03, émetteur `to_rest_error` de `rest::tokens` sur
     /// `AuthError::TokenHashConflict` (parité avec le `409` de `auth::error`). La variante
     /// est muette — la spec n'autorise que les deux traces `error!` des variantes `500` —
@@ -404,7 +404,7 @@ mod tests {
         assert_eq!(&body[..], b"MRD-REST-006: conflict");
     }
 
-    /// `Scenario` : « rendu HTTP 409 pour 007 » — huitième variante arbitrée par Sébastien
+    /// `Scenario` : « rendu HTTP 409 pour 007 » — huitième variante arbitrée
     /// le 2026-11-13 (issue #77) : violation de contrainte d'unicité, décision de l'appelant
     /// et non une panne ; distincte de `Conflict` (`006`, conflit d'empreinte de jeton). La
     /// variante est muette — la spec n'autorise que les deux traces `error!` des variantes
@@ -420,7 +420,7 @@ mod tests {
         assert_eq!(&body[..], b"MRD-REST-007: unique constraint violated");
     }
 
-    /// `Scenario` : « rendu HTTP 400 pour 008 » — neuvième variante arbitrée par Sébastien
+    /// `Scenario` : « rendu HTTP 400 pour 008 » — neuvième variante arbitrée
     /// le 2026-11-13 (issue #78) : critères ou tri de liste refusés par `rest::core::list`,
     /// décision de l'appelant et non une panne ; le message nomme la colonne ou le paramètre
     /// refusé tel que reçu, jamais une valeur de ligne. Distincte de `InvalidInput` (`005`,
@@ -445,7 +445,7 @@ mod tests {
 
     /// `Scenario` : « `Internal` portant un `AuthError` garde le code AUTH hors du corps
     /// client » — ce que produit `to_rest_error` de ./tokens.rs ; le double code ne vit que
-    /// dans la `Display` et la trace (arbitré par Sébastien le 2026-09-29).
+    /// dans la `Display` et la trace (arbitré le 2026-09-29).
     #[tokio::test]
     async fn internal_carrying_auth_error_keeps_auth_code_out_of_body() {
         let auth_err = crate::auth::AuthError::Oidc("discovery failed".to_string());

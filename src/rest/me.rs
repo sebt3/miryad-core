@@ -538,7 +538,7 @@ mod tests {
         let (status, _headers, body) = serve(app(test_state(db)), get_request(&token)).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         let raw = String::from_utf8(body).expect("utf-8");
-        // Corps 500 générique (arbitré par Sébastien le 2026-09-29, ./error.sdd) : seul
+        // Corps 500 générique (arbitré le 2026-09-29, ./error.sdd) : seul
         // `MRD-REST-003: database error` sort sur le fil, la Display complète du DbErr
         // ne vit que dans la trace `error!` — contrat amendé dans me.sdd le 2026-10-01.
         assert!(
@@ -583,7 +583,7 @@ mod tests {
         );
     }
 
-    // ——— Tri des groupes par nom (arbitré par Sébastien le 2026-09-29, `Must`) ———
+    // ——— Tri des groupes par nom (arbitré le 2026-09-29, `Must`) ———
 
     /// `Must` « Trier le tableau groups par nom croissant » — TEST ROUGE avant implémentation :
     /// les appartenances sont posées en ordre décroissant (`viewers` puis `editors`), le balayage

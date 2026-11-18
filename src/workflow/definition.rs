@@ -707,7 +707,7 @@ mod tests {
             .expect("le même `name` chez un autre propriétaire est accepté par le CRUD (#28)");
     }
 
-    /// Scenario « aller-retour d'un DAG par la colonne `steps` » (arbitré par Sébastien le
+    /// Scenario « aller-retour d'un DAG par la colonne `steps` » (arbitré le
     /// 2026-09-29, batch de clôture du moteur) : un `DagSteps` valide de trois steps dont deux
     /// dépendances, inséré par `SeaORM` sur le schéma migré (`base_migreee`, vraie migration), est
     /// relu par `Entity::find_by_id` **égal** à ce qui a été écrit — `ids`, `depends_on`, `kind`

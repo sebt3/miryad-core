@@ -1241,7 +1241,7 @@ mod tests {
     /// `Scenario` : « tout outil appelé avec `arguments` `null` est `MRD-MCP-005` avant tout
     /// accès base » — les cinq bras, base intacte après les cinq tentatives.
     ///
-    /// Qualification (Q6 arbitré par Sébastien le 2026-10-03, `registry.sdd` `Tasks`) : le test
+    /// Qualification (Q6 arbitré le 2026-10-03, `registry.sdd` `Tasks`) : le test
     /// reste en deçà de l'exemple de `Raises` — lu comme illustratif — en verrouillant la
     /// sous-chaîne `expected struct` sans verrouiller le nom de structure (détail interne de
     /// `serde`). Le `Then` de la spec cite `invalid type: null` mesuré (harmonisé 2026-10-02).

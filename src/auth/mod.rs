@@ -662,7 +662,7 @@ mod tests {
 
     /// `Scenario` : « verbe non monté sous /auth renvoie 405 avec Allow » sur les trois routes.
     /// `Allow` = `GET,HEAD` : contrat aligné sur la réalité amont (`get()` seul ajoute `HEAD`,
-    /// axum 0.8.9), arbitré par Sébastien le 2026-09-28 (`./mod.sdd`, même posture que la
+    /// axum 0.8.9), arbitré le 2026-09-28 (`./mod.sdd`, même posture que la
     /// découverte OIDC).
     #[tokio::test]
     async fn unmounted_method_under_auth_is_405_with_allow() {

@@ -10,7 +10,7 @@
 //! [`RoomContextResolver`](crate::lymaille::chat::bridge::RoomContextResolver) sur lequel le pont ouvre à la demande (texte libre sans session) et
 //! rouvre (`!new` sans argument, à défaut du contexte de la session encore ouverte) ; un
 //! résolveur qui rend `None` répond par le texte fixe invitant à `!new <contexte>` — sans session
-//! et, pour `!new`, sans fermer la session existante (arbitré par Sébastien le 2026-11-16).
+//! et, pour `!new`, sans fermer la session existante (arbitré le 2026-11-16).
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -79,7 +79,7 @@ const AGENT_REFUSED: &str = "Agent non autorisé pour ce contexte.";
 
 /// Réponse d'un texte libre ou d'un `!new` sans contexte connu : ni session ouverte (ni son
 /// contexte, ni le `RoomContextResolver`) n'en fournit (`Must` points 4 et 5 de `./bridge.sdd`,
-/// arbitrage du 2026-11-06 ; `!new` ne ferme alors pas la session — arbitré par Sébastien le
+/// arbitrage du 2026-11-06 ; `!new` ne ferme alors pas la session — arbitré le
 /// 2026-11-16).
 const NO_CONTEXT: &str = "Aucun contexte pour cette salle : utilisez `!new <contexte>`.";
 
@@ -363,7 +363,7 @@ impl ChatBridge {
     /// 2026-11-06) : ferme la session de la salle, en ouvre une sur le contexte choisi — la
     /// nature vient du type du contexte. Sans argument : le contexte de la session encore ouverte,
     /// sinon celui que rend le `RoomContextResolver` de l'hôte, sinon un texte fixe invitant à
-    /// `!new <contexte>` **sans fermer la session** (arbitré par Sébastien le 2026-11-16) —
+    /// `!new <contexte>` **sans fermer la session** (arbitré le 2026-11-16) —
     /// aucune session dans ce dernier cas.
     async fn nouvelle_session(
         &self,
@@ -392,7 +392,7 @@ impl ChatBridge {
             return self.dire(room_id, NO_CONTEXT).await;
         };
         // La session n'est fermée que quand une réouverture s'amorce : sans contexte résolvable,
-        // elle reste ouverte (`Must` point 4, arbitré par Sébastien le 2026-11-16).
+        // elle reste ouverte (`Must` point 4, arbitré le 2026-11-16).
         if let Some(id) = session {
             self.manager.close(sujet, id).await;
         }

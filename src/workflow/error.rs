@@ -353,7 +353,7 @@ mod tests {
     /// Scenario « Rejected tronque le corps au-delà de 1 KiB dans la Display seulement » :
     /// un corps de 3000 caractères ASCII rend le préfixe contracté, exactement 1024
     /// caractères de corps puis `…` — et le champ `body` conserve les 3000 caractères
-    /// (arbitré par Sébastien le 2026-09-29).
+    /// (arbitré le 2026-09-29).
     #[test]
     fn rejected_tronque_le_corps_au_dela_de_1kib_dans_la_display_seulement() {
         let prefix = "MRD-WORKFLOW-002: restate rejected request (status 500): ";

@@ -267,7 +267,7 @@ impl OidcClient {
         })
     }
 
-    /// Lecture du signal de rotation JWKS (arbitré par Sébastien le 2026-09-27) : `true` dès
+    /// Lecture du signal de rotation JWKS (arbitré le 2026-09-27) : `true` dès
     /// qu'une vérification d'`id_token` a échoué parce qu'aucune clé du JWKS (snapshot de la
     /// discovery) ne correspond au `kid`/à l'algorithme du token — la seule cause qui justifie
     /// un renouvellement du JWKS par redémarrage. Les autres rejets `MRD-AUTH-011` (expiration,
@@ -1273,7 +1273,7 @@ mod tests {
     }
 
     /// `Scenario` 6 : « Issuer avec chemin sans slash final : la concaténation conserve le
-    /// préfixe » (contrat réécrit et arbitré par Sébastien le 2026-09-28 — RFC 8414 §3.1).
+    /// préfixe » (contrat réécrit et arbitré le 2026-09-28 — RFC 8414 §3.1).
     /// L'URL de discovery est une CONCATÉNATION `issuer + "/.well-known/openid-configuration"`
     /// (source vendue `openidconnect-4.0.1`, `types/mod.rs` `IssuerUrl::join`) : le préfixe
     /// `/reverse` est conservé tel quel, aucun segment n'est effacé ; le `jwks_uri` du document

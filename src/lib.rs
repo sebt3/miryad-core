@@ -558,7 +558,7 @@ mod tests {
     }
 
     /// Scénario verrouillé : « commentaire de @query aligne la réalité » (`./lib.sdd`, arbitré
-    /// par Sébastien le 2026-09-29, à l'unisson du `Must` de `./query.sdd`). Le `///` de
+    /// le 2026-09-29, à l'unisson du `Must` de `./query.sdd`). Le `///` de
     /// `pub mod query` présente la pagination comme partagée par REST et MCP (MCP via
     /// `rest::core::list`) — jamais l'énumération « REST/GraphQL/MCP » ni le futur « plus tard ».
     #[test]
