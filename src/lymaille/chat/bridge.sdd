@@ -63,8 +63,8 @@ Exposes:
 Tasks:
   [x] Réalignement R13 (DSD `DEC-28`, 2026-11-03) : Après R10 : `!new <contexte> [agent]` remplace `!agent` ; `Scenario` d'un contexte inconnu ou refusé et d'un agent hors ensemble. Spec seule.
     Validé 2026-11-06 (validator : Must porte `!new [<contexte> [agent]]` et `RoomContextResolver` ; les deux Scenario exigés manquaient — ajoutés au verbatim des tests existants (`Contexte inconnu ou inaccessible.` / `Agent non autorisé pour ce contexte.`, aucune session) et lint vert ; écart spec ↔ code reporté à la case :63, `ChatConfig::default_agent` encore en place).
-  [ ] Test du Scenario « !new ferme et rouvre » : son Given doit nommer le repli (session fermée → `RoomContextResolver` → texte fixe) ; nom proposé `new_ferme_puis_rouvre_sur_le_contexte_ferme` ; entrée : session de la salle dont la colonne `context` est renseignée, puis `!new` sans argument ; assertion : l'ancienne session est fermée et la nouvelle ouverte sur ce contexte, avec un `session_id` distinct.
-    [?] Le Given du Scenario « !new ferme et rouvre » dit encore « une session de la salle » et ne nomme pas le repli (session fermée → `RoomContextResolver` → texte fixe) — le réécrire relève du développeur principal, la spec n'est pas touchée ici. Choix provisoire : verrouillage du comportement tel quel par renommage/extension du test existant `new_sans_argument_rouvre_sur_la_session_fermee` (le « session fermée > resolver » du validateur 2026-11-06) en `new_ferme_puis_rouvre_sur_le_contexte_ferme`, avec la fermeture de l'ancienne session prouvé en plus par `SessionManager::send` → `NotFound` sur son `session_id` (l'état persisté demeure, la marque de fermeture est en mémoire — `../interactive/manager.rs`) ; les verrous existants (repli sur le contexte de la session, distinctement du resolveur qui rend `c2`) sont conservés.
+  [x] Test du Scenario « !new ferme et rouvre » : son Given doit nommer le repli (session fermée → `RoomContextResolver` → texte fixe) ; nom proposé `new_ferme_puis_rouvre_sur_le_contexte_ferme` ; entrée : session de la salle dont la colonne `context` est renseignée, puis `!new` sans argument ; assertion : l'ancienne session est fermée et la nouvelle ouverte sur ce contexte, avec un `session_id` distinct.
+    [x] Soldé 2026-11-18 : Given réécrit par le développeur principal (arbitré), le Scenario nomme le repli et la colonne `context`. Énoncé d'origine : Le Given du Scenario « !new ferme et rouvre » dit encore « une session de la salle » et ne nomme pas le repli (session fermée → `RoomContextResolver` → texte fixe) — le réécrire relève du développeur principal, la spec n'est pas touchée ici. Choix provisoire : verrouillage du comportement tel quel par renommage/extension du test existant `new_sans_argument_rouvre_sur_la_session_fermee` (le « session fermée > resolver » du validateur 2026-11-06) en `new_ferme_puis_rouvre_sur_le_contexte_ferme`, avec la fermeture de l'ancienne session prouvé en plus par `SessionManager::send` → `NotFound` sur son `session_id` (l'état persisté demeure, la marque de fermeture est en mémoire — `../interactive/manager.rs`) ; les verrous existants (repli sur le contexte de la session, distinctement du resolveur qui rend `c2`) sont conservés.
     Fait 2026-11-17 (validator GO, cycle I6) : le test nommé est posé, vert d'emblée, sans perte d'assertion au renommage — la case
     n'attend plus que la réécriture du Given ci-dessus pour passer `[x]`.
   [x] Tests d'abord (SQLite mémoire, `ChatSender` espion, `ScriptedProvider`, horloge injectée), puis ./bridge.rs. Après ./link.rs et ./render.rs.
@@ -128,9 +128,9 @@ Scenario: un tour actif
   Then « Un tour est en cours. » et aucun `send`
 
 Scenario: !new ferme et rouvre
-  Given une session de la salle
-  When `!new`
-  Then l'ancienne est fermée, une nouvelle ouverte, le contexte repart de zéro
+  Given une session de la salle dont la colonne `context` est renseignée (repli de `!new` sans argument : contexte de la session encore ouverte, puis `RoomContextResolver`, puis texte fixe), et un `RoomContextResolver` qui rend un autre contexte
+  When `!new` sans argument
+  Then l'ancienne session est fermée (`send` rend `NotFound`), une nouvelle est ouverte sur le contexte de la session — pas sur celui du résolveur — avec un `session_id` distinct, et l'historique de conversation repart de zéro
 
 Scenario: !new sans contexte résolvable ne ferme pas la session
   Given une session de la salle dont la colonne `context` est `NULL`, et un `RoomContextResolver` qui rend `None`

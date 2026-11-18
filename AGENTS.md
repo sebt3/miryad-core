@@ -51,6 +51,7 @@ Le contexte durable vit ici et n'est pas à re-déduire du code :
 | `spec-dd` | primary | Rédige les specs avec Sébastien et orchestre les sous-agents. Ne code jamais. |
 | `spec-reverse` | subagent | Reverse-engineering : produit la spec la plus complète possible d'un fichier existant, sans jamais toucher le code. |
 | `implementer` | subagent | Réalise une spec précise : tests d'abord depuis les `Scenario`, puis implémentation minimale dans `Owns`/`Can modify`. |
+| `implementer-primary` | primary | Variante lançable par `opencode run --agent` de `implementer` : mêmes règles, mais ne commite jamais et ne touche pas aux `.sdd` (exécution non interactive par un modèle local). |
 | `validator` | subagent | Lecture seule : confronte spec ↔ code ↔ tests, lance la batterie, produit une synthèse d'écarts. |
 
 ## Harnais clippy
