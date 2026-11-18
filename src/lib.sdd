@@ -24,6 +24,7 @@ References:
   /dsd/miryad-core.md — priorisation, linké par la documentation racine
 
 Must:
+  **Amendement 2026-11-18 (montée `matrix-sdk` 0.19, DSD `matrix` `DEC-4`)** : la racine de la crate déclare `#![recursion_limit = "256"]` — sans elle, `rustc` refuse (« queries overflow the depth limit ») de calculer le layout de la future de `MatrixClient::send` sous `matrix-sdk` 0.19 (profondeur mesurée 130 au-delà de la limite par défaut de 128). Aucune autre modification de la racine.
   Déclarer toute la surface publique — exactement douze `pub mod` (amendement 2026-09-23) — et
     respecter le gating du graphe `[features]` de `/Cargo.toml` : @frontend gated par
     `static-frontend` (feature par défaut), @mcp gated par `mcp`,
@@ -33,7 +34,7 @@ Must:
     **quatorze** `pub mod`, dont deux nouveaux gated : `#[cfg(feature = "systemone")] pub mod systemone;`
     (./systemone/mod.sdd) et `#[cfg(feature = "matrix")] pub mod matrix;` (./matrix/mod.sdd) — six modules gated
     au total ; le tableau de la doc racine passe à **huit** features (`systemone` : client HTTP System One,
-    aucune dépendance lourde, hors défaut ; `matrix` : client Matrix de bot sur `matrix-sdk` 0.18, E2EE, store
+    aucune dépendance lourde, hors défaut ; `matrix` : client Matrix de bot sur `matrix-sdk` 0.19, E2EE, store
     SeaORM, hors défaut) ; la doc nomme aussi les deux croisements `workflow` + `systemone` (kind `systemone`) et
     `workflow` + `matrix` (kind `matrix_send`), sans les présenter comme des features. Dépendances optionnelles
     à ajouter à la liste « Déclarer hors de son `#[cfg]` protecteur » : `matrix-sdk`, `matrix-sdk-crypto`,
@@ -301,6 +302,7 @@ Tasks:
     adapter les tests de surface : `default_surface_compiles` reste sous défaut, `static_frontend_absent_surface` perd
     @rest::resource_router/@resource/@ir (désormais sous `db`), ajouter `db_absent_surface` et `db_gates_modules`
     (scenarios ci-dessous), conserver `all_features_surface`.
+  [ ] Montée de `matrix-sdk` en 0.19 (arbitré le 2026-11-18) : ajouter `#![recursion_limit = "256"]` à ./lib.rs (voir le `Must` amendé) ; test d'abord : sous `./Cargo.toml` en 0.19 (tâche de `/miryad-core.sdd`), `cargo check --no-default-features --features matrix` est rouge (« queries overflow the depth limit », `src/matrix/client.rs`), puis vert avec l'attribut. Périmètre : ./lib.rs seul.
 
 Done when:
   La spec porte exactement treize `Scenario` (douze originaux, un pour l'amendement @workflow du

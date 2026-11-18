@@ -114,10 +114,11 @@ dont la remontée de code et de spec n'est pas prête) consommera `MatrixEventHa
 
 ## Constraints
 
-- **CON-1 - MUST:** `matrix-sdk` est épinglé en `0.18`, sans la feature `sqlite`.
+- **CON-1 - MUST:** `matrix-sdk` est en `0.19` (depuis le 2026-11-18, `DEC-4`), sans la feature `sqlite`.
     - **Source:** `arch@c62a184`, « Client Matrix de bot »
-    - **Rationale:** `matrix-sdk` ≥ 0.19 impose `libsqlite3-sys` 0.38 et casse le graphe avec le `sqlx-sqlite` de SeaORM
-      (`links = "sqlite3"`). Critère de sortie : relever le plafond `sqlx` ou `matrix-sdk-sqlite`.
+    - **Rationale:** le pin en `0.18` (spike du 2026-10-06) tenait au conflit `links = "sqlite3"` entre `libsqlite3-sys` de
+      `matrix-sdk-sqlite` et celui du `sqlx-sqlite` de SeaORM. **Levé** : mesuré le 2026-11-18 (essai jetable sur `matrix-sdk` 0.19.1), le
+      `Cargo.lock` ne porte plus qu'une version de `libsqlite3-sys` (0.38.2) ; la feature `sqlite` de `matrix-sdk` reste désactivée.
     - **Realized by:** SpecDD /src/matrix/mod.sdd
 
 - **CON-2 - MUST:** La logique dérivée de `matrix-sdk-sqlite` (schéma, formats, sémantique ; six fichiers) porte une
@@ -173,6 +174,22 @@ Pièges constatés :
 - Au démarrage, le sync initial est sans jeton : ses messages ne sont pas remis (trace `info`).
 
 Source : `arch@c62a184`, « Client Matrix de bot ».
+- **DEC-4 - `matrix-sdk` monte en 0.19 (2026-11-18)**
+    - **Context:** `proc-macro-error2` (via `aquamarine`, tiré par `matrix-sdk` 0.18) sera rejeté par un futur `rustc` (issue
+      #94) ; `vodozemac` ^0.10 et `matrix-sdk-crypto` 0.18 portent des advisories ouvertes (#89, #68, #41) ; le pin
+      (`CON-1`) ne tient plus. Essai jetable le 2026-11-18 : le code de la crate n'a aucun changement `[breaking]` amont dans 0.19 sur
+      ce qu'il utilise ; le trait `CryptoStore` de `matrix-sdk-crypto` n'a pas changé (l'impl compile telle quelle).
+    - **Decision:** `matrix-sdk`, `matrix-sdk-crypto`, `matrix-sdk-store-encryption` en `0.19` (dev : `matrix-sdk-crypto`,
+      `matrix-sdk-test`, `matrix-sdk-common` en `0.19`, `ruma` en `0.17`) ; `#![recursion_limit = "256"]` à la racine de la crate
+      et de `tests/matrix_live.rs` (profondeur de layout des futures de `MatrixClient::send`, mesurée) ; les quatre
+      constructions de test de `RumaApiError::from_http_response` passent à `Response<&[u8]>`.
+    - **Consequences:** `aquamarine`, `proc-macro-error2` et `bitmaps` quittent le graphe (trois `ignore` de `.cargo/audit.toml` à
+      retirer après vérification par `cargo audit`) ; `vodozemac` 0.11.2 (#89, #68), `matrix-sdk-crypto` 0.19.1 (#41),
+      `imbl-sized-chunks` 0.2.0 (#40), `libsqlite3-sys` unique (#66) ; `rust-version` amont 1.96 (la CI suit la stable).
+    - **Pitfall:** avec `default-features = false`, `matrix-sdk` 0.19 n'active plus `rustls-aws-lc-rs` : le provider rustls du
+      process doit venir d'ailleurs (le projet impose `ring`, `lymaille` `DEC-4`) — **à vérifier à l'exécution** (banc live), pas
+      à la compilation. Les sessions persistées par une 0.18 (pickles `vodozemac` 0.10) doivent se relire en 0.11.
+    - **Source:** user instruction, 2026-11-18 (arbitrage de #94, essai jetable puis cycles spécifiés)
 
 ## SpecDD Realization
 
@@ -209,7 +226,7 @@ non vérifiée dans la migration DSD.
   `event_id` traité, persisté en base). Voir `SpecDD /src/matrix/mod.sdd`.
 - **OI-5:** **Identité Matrix → utilisateur miryad (RBAC)** : à trancher avec le harnais de chatbot, hors périmètre de ce
   lot et à venir.
-- **OI-6:** Relever le plafond de `matrix-sdk` (CON-1) quand `sqlx` ou `matrix-sdk-sqlite` le permet. **Mesuré le
+- **OI-6:** **Soldé le 2026-11-18** par `DEC-4` (le conflit `links = "sqlite3"` n'existe plus avec `matrix-sdk` 0.19.1). Énoncé d'origine : Relever le plafond de `matrix-sdk` (CON-1) quand `sqlx` ou `matrix-sdk-sqlite` le permet. **Mesuré le
   2026-11-16 :** `matrix-sdk` 0.19.1 est publiée mais le conflit `links = "sqlite3"` persiste (`cargo update` refuse la
   résolution). Le relèvement corrigerait quatre advisories ouvertes (issues #40 `imbl-sized-chunks`, #41
   `matrix-sdk-crypto`, #68 et #89 `vodozemac`) ; il est aussi lié à RUSTSEC-2026-0459 (`libsqlite3-sys` ≥ 0.39, issue #66).

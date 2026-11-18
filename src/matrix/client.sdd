@@ -286,6 +286,7 @@ Tasks:
     - [?] (validator) : à l'exécution, signaler que les chemins `make_reply_event`/`make_edit_event` et la salle chiffrée n'ont jamais
       été prouvés en réel (`device_code_login_then_echo` ne prouvait que les `send` sans relation) ; consigner la mesure `OI-7(b)`
       dans `dsd/miryad-core/matrix.md` (domaine développeur principal).
+  [ ] Montée de `matrix-sdk` en 0.19 (arbitré le 2026-11-18, DSD `matrix` `DEC-4`, tâche de `/miryad-core.sdd`) : dans le bloc `#[cfg(test)]` de ./client.rs, les deux constructions de `matrix_sdk::RumaApiError::from_http_response(response)` (vers les lignes 994 et 1045) passent de `Response<Vec<u8>>` à `Response<&[u8]>` (signature de `ruma` 0.17) ; `../../tests/matrix_live.rs` déclare `#![recursion_limit = "256"]` (profondeur de layout de ses futures asynchrones, mesurée). Assertions et noms de tests inchangés. Preuve : `cargo check --no-default-features --features matrix --all-targets` rouge avant (E0308 ×2, « queries overflow the depth limit » ×2 pour `matrix_live`), vert après. Périmètre : ./client.rs (bloc de tests) et ../../tests/matrix_live.rs (attribut de crate seul).
 
 Done when:
   Les `Scenario` unitaires sont verts ; `../../tests/matrix_live.rs` est écrit et a été exécuté au moins

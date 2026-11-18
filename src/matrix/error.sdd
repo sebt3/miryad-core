@@ -67,6 +67,7 @@ Tasks:
     `RumaApiError::from_http_response`), clippy `matrix` et `workflow,matrix` sans écart. Lectures retenues :
     `matrix_sdk::Error::Io` → `Sdk` (non retryable) ; transport coupé = timeout, connect ou request ; les erreurs
     non-HTTP gardent `to_string()` du SDK. `allow(dead_code)` de `from_sdk` à retirer avec ./client.rs.
+  [ ] Montée de `matrix-sdk` en 0.19 (arbitré le 2026-11-18, DSD `matrix` `DEC-4`, tâche de `/miryad-core.sdd`) : dans le bloc `#[cfg(test)]` de ./error.rs, la construction de `matrix_sdk::RumaApiError::from_http_response(response)` (vers la ligne 119) passe de `Response<Vec<u8>>` à `Response<&[u8]>` (signature de `ruma` 0.17) ; assertions et noms de tests inchangés. Preuve : E0308 avant, vert après. Périmètre : ./error.rs (bloc de tests) seul.
 
 Done when:
   Les `Scenario` sont verts ; la spec est relue et approuvée avant ./error.rs.

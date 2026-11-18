@@ -75,6 +75,8 @@ Must:
   **Amendement 2026-10-06** : le graphe de features compte huit entrées ; `systemone` et `matrix` y sont ajoutées,
     **hors défaut**. `matrix-sdk` est épinglé en `0.18` (conflit `libsqlite3-sys` avec `sqlx` à partir de la
     `0.19`, spike 2026-10-06 — voir `./src/matrix/store/mod.sdd`) et sa feature `sqlite` n'est jamais activée.
+    **Amendement 2026-11-18** : le conflit a disparu (une seule version de `libsqlite3-sys` dans le lock) ; `matrix-sdk` monte en `0.19`
+    (DSD `matrix` `CON-1` et `DEC-4`), toujours sans la feature `sqlite`.
     Le diff de `./Cargo.toml` est documenté par `./src/systemone/mod.sdd` et `./src/matrix/mod.sdd`,
     `[package.metadata.docs.rs].features` y ajoute `systemone` et `matrix`, `./README.md` nomme les huit features.
   **Amendement 2026-11-02 (`lymaille`)** : le graphe de features compte une entrée de plus, `lymaille` (implique `db`, **hors défaut**), qui
@@ -297,6 +299,7 @@ Tasks:
     `mcp` et `--all-features` passent comme avant et si `cargo tree --no-default-features -e normal -i sea-orm`
     reste vide. Si la 0.9 impose un changement de code, STOP et question.
     Validé 2026-10-30 : delta de lock conforme, tests (workflow, mcp, all-features) et clippy verts, `cargo tree -i sea-orm` vide sans `db`.
+  [ ] Montée de `matrix-sdk` en 0.19 (arbitré le 2026-11-18, DSD `matrix` `DEC-4`, issues #94 #89 #68 #41 #40 #66) — dépendances : dans `./Cargo.toml`, `matrix-sdk`, `matrix-sdk-crypto` et `matrix-sdk-store-encryption` passent à `"0.19"` ; en dev-dependencies `matrix-sdk-crypto` (feature `testing`), `matrix-sdk-test` et `matrix-sdk-common` à `"0.19"` et `ruma` à `"0.17"` ; le commentaire qui justifie le pin en `0.18` (conflit `libsqlite3-sys`) est remplacé par un renvoi à `DEC-4` ; `Cargo.lock` mis à jour (`cargo update` limité aux paquets de la chaîne). Puis `./.cargo/audit.toml` : retirer `RUSTSEC-2026-0173` (`proc-macro-error2`), `RUSTSEC-2026-0247` et `RUSTSEC-2025-0167` (`bitmaps`) **seulement si** `cargo audit` (ou `cargo tree -i`) confirme que ces paquets ont quitté le graphe ; `RUSTSEC-2026-0319` (`anymap2`) reste. Preuves : `cargo check --no-default-features --features matrix` compile avec la tâche de `./src/lib.sdd` posée ; la batterie complète de `./tooling.sdd` est verte. Périmètre : `./Cargo.toml`, `./Cargo.lock`, `./.cargo/audit.toml`.
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec `.sdd` relue et approuvée par Sébastien, sans
