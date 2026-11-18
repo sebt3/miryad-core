@@ -389,6 +389,22 @@ mod tests {
         );
     }
 
+    /// `Scenario` : « `@From @RestError::InvalidQuery` devient `@McpError::InvalidParams` » —
+    /// issue #78 (arbitré 2026-11-13) : même monnaie que `InvalidInput` (bras fusionné de
+    /// `From`), `MRD-MCP-005`, `-32602`, message conservé intact. Verrou d'un comportement
+    /// existant, couvert jusqu'ici seulement indirectement par le test de `registry.rs`.
+    #[test]
+    fn rest_invalid_query_devient_mcp_invalid_params() {
+        let err: McpError = RestError::InvalidQuery("column not filterable: kind".to_string()).into();
+        assert!(matches!(err, McpError::InvalidParams(_)), "{err:?}");
+        assert_eq!(err.rpc_code(), -32602);
+        assert_eq!(
+            err.wire_message(),
+            "MRD-MCP-005: invalid params: column not filterable: kind"
+        );
+        assert_eq!(err.data(), None);
+    }
+
     /// `Scenario` : « `From` `RestError::Conflict` devient `McpError::Internal` sans
     /// charge utile » — miroir défensif sans chemin MCP vivant (arbitré 2026-10-03) :
     /// `wire_message` générique, `-32603`, `data` absent.

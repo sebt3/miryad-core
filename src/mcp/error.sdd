@@ -368,7 +368,8 @@ Tasks:
     Validé 2026-11-14 (validator PASS en lecture ; batterie complète rejouée par le primary : 16 combinaisons tests et clippy vertes, fmt) : variante `Conflict` + `-32003` + `MRD-MCP-011: conflict` ; les sections
     récapitulatives manquantes de l'amendement 2026-11-13 (table 12/12, `Returns`, matrice `Example`, compteurs onze/douze, Scenario source) ont été complétées par spec-dd — récapitulatif de l'arbitrage déjà pris, rien de
     re-décidé ; `[x]` historiques laissés tels quels.
-  [ ] Test nommé de la conversion `InvalidQuery` (arbitré 2026-11-17) : dans le `mod tests` de ./error.rs, `@From<@RestError>` de `RestError::InvalidQuery` rend `McpError::InvalidParams`, avec `rpc_code` `-32602` et le `wire_message` exact ; vert d'emblée (verrou d'un comportement existant, aujourd'hui couvert indirectement par `list_undeclared_entity_column_is_invalid_params` de ./registry.rs). Périmètre : ./error.rs seul (tests).
+  [x] Test nommé de la conversion `InvalidQuery` (arbitré 2026-11-17) : dans le `mod tests` de ./error.rs, `@From<@RestError>` de `RestError::InvalidQuery` rend `McpError::InvalidParams`, avec `rpc_code` `-32602` et le `wire_message` exact ; vert d'emblée (verrou d'un comportement existant, aujourd'hui couvert indirectement par `list_undeclared_entity_column_is_invalid_params` de ./registry.rs). Périmètre : ./error.rs seul (tests).
+    Validé 2026-11-17 (implementer Haiku + validator Sonnet GO, batterie 17+17, fmt, `cargo tree`, `specdd lint` verts ; PostgreSQL réel non joué, sans objet ici) : `rest_invalid_query_devient_mcp_invalid_params` (variante, `-32602`, `wire_message` exact, `data` absent) ; mutation « `InvalidQuery` vers `Internal` » rouge.
 
 Done when:
   Les vingt-trois `Scenario` (les vingt-deuxième et vingt-troisième ajoutés le 2026-11-13, issues #77 et #78) disposent chacun d'au moins un test nommé distinct et vert, sous `--features mcp` et
