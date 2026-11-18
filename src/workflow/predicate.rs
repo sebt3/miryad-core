@@ -666,5 +666,22 @@ mod tests {
             inconnu.is_err(),
             "un champ inconnu doit être rejeté à la désérialisation : {inconnu:?}"
         );
+
+        // Verrou `deny_unknown_fields` sur `all` et `any` (Tasks de ./predicate.sdd, validator
+        // 2026-11-18) : la feuille n'est pas la seule forme verrouillée — « trois formes JSON,
+        // chacune `deny_unknown_fields` » du `Must` vaut aussi pour les deux formes composites.
+        let inconnu_apres_all =
+            serde_json::from_value::<Predicate>(json!({"all": [{"step": "A", "op": "exists"}], "extra": 1}));
+        assert!(
+            inconnu_apres_all.is_err(),
+            "`{{\"all\": […], \"extra\": 1}}` doit être rejeté à la désérialisation : {inconnu_apres_all:?}"
+        );
+        let inconnu_apres_any = serde_json::from_value::<Predicate>(
+            json!({"any": [{"var": "mode", "op": "exists"}], "extra": 1}),
+        );
+        assert!(
+            inconnu_apres_any.is_err(),
+            "`{{\"any\": […], \"extra\": 1}}` doit être rejeté à la désérialisation : {inconnu_apres_any:?}"
+        );
     }
 }

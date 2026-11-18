@@ -34,7 +34,8 @@ Exposes:
 Tasks:
   [x] Tests d'abord (un par `Scenario` ci-dessous), puis ./predicate.rs. Avant ./definition.sdd et ./interpreter.sdd (qui le consomment).
     Validé 2026-11-18 (implementer Qwen `qwen3.8-flash-next`, validator Sonnet GO, batterie 17+17, fmt, `cargo tree`, `specdd lint` verts ; ni PostgreSQL ni serveur Restate réels) ; huit tests ; `evaluate` totale (aucun unwrap/expect/panic en production), bornes de `validate` avant toute récursion ; mutation « `ne` vrai sur valeur présente » rouge.
-  [ ] Verrou de `deny_unknown_fields` sur `all` et `any` (validator, 2026-11-18) : deux assertions dans le test d'aller-retour JSON — `{"all":[…],"extra":1}` et `{"any":[…],"extra":1}` sont rejetés à la désérialisation (comportement vérifié temporairement par le validator, sans test dans le dépôt). Tests seuls. Périmètre : ./predicate.rs (bloc de tests).
+  [x] Verrou de `deny_unknown_fields` sur `all` et `any` (validator, 2026-11-18) : deux assertions dans le test d'aller-retour JSON — `{"all":[…],"extra":1}` et `{"any":[…],"extra":1}` sont rejetés à la désérialisation (comportement vérifié temporairement par le validator, sans test dans le dépôt). Tests seuls. Périmètre : ./predicate.rs (bloc de tests).
+    Validé 2026-11-18 (implementer Qwen `qwen3.8-flash-next`, validator Sonnet GO, batterie 17+17, fmt, `cargo tree`, `specdd lint` verts ; ni PostgreSQL ni serveur Restate réels) ; `deny_unknown_fields` retiré de l'enum : les nouvelles assertions `all`/`any` rougissent.
 
 Done when:
   Les `Scenario` sont verts sous `workflow` ; la spec est relue et approuvée avant ./predicate.rs.

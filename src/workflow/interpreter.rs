@@ -129,29 +129,25 @@ impl DagInterpreter {
         let mut results: HashMap<String, serde_json::Value> = HashMap::new();
         while completed.len() != dag.0.len() {
             let prepared = ready_steps(&dag.0, &completed);
-            // Étape a' — décision d'exécution de chaque step de la couche (`decide`, fonction
-            // pure) : un `Skip` est ajouté à `completed` et `skipped`, n'est pas dispatché,
-            // n'entre pas dans `results`, et n'émet qu'une trace d'un `step_id` et de la raison
-            // — jamais une valeur lue. Seuls les `Run` passent à l'étape b.
-            let mut a_lancer: Vec<&StepDefinition> = Vec::with_capacity(prepared.len());
-            for step in &prepared {
-                if let StepDecision::Skip(raison) = decide(step, &skipped, &vars, &results) {
-                    completed.insert(step.id.clone());
-                    skipped.insert(step.id.clone());
-                    match raison {
-                        SkipReason::Dependency => tracing::info!(
-                            step_id = %step.id,
-                            raison = "dependency",
-                            "step ignoré : une dépendance directe a été ignorée"
-                        ),
-                        SkipReason::When => tracing::info!(
-                            step_id = %step.id,
-                            raison = "when",
-                            "step ignoré : sa condition `when` est fausse"
-                        ),
-                    }
-                } else {
-                    a_lancer.push(step);
+            // Étape a' — décision d'exécution de chaque step de la couche par le code partagé
+            // [`apply_decisions`] (`decide`, fonction pure) : un `Skip` est ajouté à `completed`
+            // et `skipped`, n'est pas dispatché, n'entre pas dans `results`. Seuls les `Run`
+            // passent à l'étape b ; les ignorés ne doivent qu'une trace d'un `step_id` et de la
+            // raison — jamais une valeur lue.
+            let (a_lancer, a_tracer) =
+                apply_decisions(prepared, &mut completed, &mut skipped, &vars, &results);
+            for (step_id, raison) in &a_tracer {
+                match raison {
+                    SkipReason::Dependency => tracing::info!(
+                        step_id = %step_id,
+                        raison = "dependency",
+                        "step ignoré : une dépendance directe a été ignorée"
+                    ),
+                    SkipReason::When => tracing::info!(
+                        step_id = %step_id,
+                        raison = "when",
+                        "step ignoré : sa condition `when` est fausse"
+                    ),
                 }
             }
             if a_lancer.is_empty() {
@@ -275,6 +271,36 @@ pub(crate) fn decide(
     StepDecision::Run
 }
 
+/// Applique les décisions d'exécution [`decide`] d'une couche de steps prêts — l'étape a' de la
+/// boucle de [`DagInterpreter::run`], extraite ici (case « câblage de l'étape a' prouvé par du
+/// code partagé », 2026-11-18, réserve du validator sur la case `when`) : `run` et la simulation
+/// de test `marche_simulee` (bloc `mod tests` de ce fichier) partagent cette unique
+/// implémentation, plus de copie parallèle de la boucle. Déterministe et sans `ctx` (mêmes
+/// entrées, mêmes sorties — rejeu identique après crash, `NFR-1`) ; ses seuls effets sont les
+/// insertions dans `completed` et `skipped`, dans l'ordre de la couche. Rend : les steps à
+/// dispatcher (ordre de la couche conservé) et la liste `(step_id, raison)` des ignorés à tracer
+/// par l'appelant — `step_id` et raison uniquement, jamais une valeur lue.
+pub(crate) fn apply_decisions<'a>(
+    prets: Vec<&'a StepDefinition>,
+    completed: &mut HashSet<String>,
+    skipped: &mut HashSet<String>,
+    vars: &serde_json::Map<String, serde_json::Value>,
+    results: &HashMap<String, serde_json::Value>,
+) -> (Vec<&'a StepDefinition>, Vec<(String, SkipReason)>) {
+    let mut a_lancer: Vec<&'a StepDefinition> = Vec::with_capacity(prets.len());
+    let mut a_tracer: Vec<(String, SkipReason)> = Vec::new();
+    for step in prets {
+        if let StepDecision::Skip(raison) = decide(step, skipped, vars, results) {
+            completed.insert(step.id.clone());
+            skipped.insert(step.id.clone());
+            a_tracer.push((step.id.clone(), raison));
+        } else {
+            a_lancer.push(step);
+        }
+    }
+    (a_lancer, a_tracer)
+}
+
 /// Une entrée par id de `step.depends_on`, valeur = la sortie collectée du step amont dans
 /// `results` ; un id présent dans `skipped` donne l'entrée `Value::Null` — l'entrée existe,
 /// aucune ne manque (la table `results` d'un run n'a, elle, aucune clé pour un step ignoré).
@@ -333,6 +359,7 @@ mod tests {
     use super::RunInput;
     use super::SkipReason;
     use super::StepDecision;
+    use super::apply_decisions;
     use super::build_inputs;
     use super::build_invocation;
     use super::decide;
@@ -670,11 +697,11 @@ mod tests {
         ids.iter().copied().map(String::from).collect()
     }
 
-    /// Marche simulée de l'étape 2 de `run` par les seules fonctions pures (`ready_steps`,
-    /// `decide`, `build_inputs`) : la couche décidable de la boucle, sans `WorkflowContext`
-    /// (borne des `Tasks` de ./interpreter.sdd). Rendu : (`completed`, `results`, nombre de
-    /// couches réellement dispatchées). Le pas d'exécution de la simulation est une identité
-    /// journalisable : seule la décision des steps compte ici.
+    /// Marche simulée de l'étape 2 de `run` par les seules fonctions pures : `ready_steps` et
+    /// l'application des décisions par [`apply_decisions`] — le code partagé de `run` lui-même,
+    /// plus de copie parallèle de la boucle (case « câblage de l'étape a' prouvé par du code
+    /// partagé », 2026-11-18). Le seul pas propre à la simulation est l'exécution elle-même :
+    /// une identité journalisable (`{ "sortie": <id> }`), seule la décision des steps compte ici.
     fn marche_simulee(
         dag: &[StepDefinition],
         vars: &serde_json::Map<String, serde_json::Value>,
@@ -685,16 +712,8 @@ mod tests {
         let mut couches_dispatchees = 0usize;
         while completed.len() != dag.len() {
             let prepares = ready_steps(dag, &completed);
-            let mut a_lancer: Vec<&StepDefinition> = Vec::new();
-            for etape in &prepares {
-                match decide(etape, &ignores, vars, &results) {
-                    StepDecision::Run => a_lancer.push(*etape),
-                    StepDecision::Skip(_) => {
-                        completed.insert(etape.id.clone());
-                        ignores.insert(etape.id.clone());
-                    }
-                }
-            }
+            let (a_lancer, _a_tracer) =
+                apply_decisions(prepares, &mut completed, &mut ignores, vars, &results);
             if !a_lancer.is_empty() {
                 couches_dispatchees = couches_dispatchees.saturating_add(1);
                 for etape in &a_lancer {
@@ -851,6 +870,52 @@ mod tests {
             completed,
             skipped(&["A", "B"]),
             "le run se termine, les deux steps soldés"
+        );
+    }
+
+    /// Case « Câblage de l'étape a' prouvé par du code partagé » (2026-11-18, réserve du
+    /// validator sur la case `when`) : `apply_decisions` est le seul endroit qui applique les
+    /// décisions d'une couche — appelé par `run` comme par [`marche_simulee`]. Ce test échoue si
+    /// l'une des deux insertions disparaît de la fonction partagée (mutation vérifiée à
+    /// l'implémentation) : sans `completed.insert`, la boucle de marche n'avance plus et
+    /// l'assertion sur `completed` rougit ; sans `skipped.insert`, la propagation est aveugle et
+    /// l'assertion sur `skipped` rougit.
+    #[test]
+    fn apply_decisions_enregistre_les_ignorances_dans_completed_et_skipped() {
+        let mut b = sans_quand("B", &["A"]);
+        b.when = Some(quand(json!({ "step": "A", "path": "/x", "op": "exists" })));
+        let d = sans_quand("D", &[]);
+        let mut completed = HashSet::from(["A".to_string()]);
+        let mut ignores = HashSet::new();
+        let results: HashMap<String, serde_json::Value> = HashMap::from([("A".to_string(), json!({}))]);
+
+        let (a_lancer, a_tracer) = apply_decisions(
+            vec![&b, &d],
+            &mut completed,
+            &mut ignores,
+            &serde_json::Map::new(),
+            &results,
+        );
+
+        assert_eq!(
+            ids(&a_lancer),
+            vec!["D"],
+            "seul le step `Run` repart vers le dispatch"
+        );
+        assert_eq!(
+            completed,
+            skipped(&["A", "B"]),
+            "un step ignoré entre dans `completed` — la boucle de marche avance et se termine"
+        );
+        assert_eq!(
+            ignores,
+            skipped(&["B"]),
+            "un step ignoré entre dans `skipped` — la propagation des ignorances en dépend"
+        );
+        assert_eq!(
+            a_tracer,
+            vec![("B".to_string(), SkipReason::When)],
+            "la liste à tracer porte l'ignoré et sa raison, jamais le step exécuté"
         );
     }
 }

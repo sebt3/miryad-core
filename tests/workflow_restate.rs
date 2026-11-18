@@ -2091,3 +2091,81 @@ async fn une_résolution_tardive_ou_double_est_mesurée_et_consignée() {
         "aucun effet observable de la double résolution sur le run terminé en succès"
     );
 }
+
+/// Scenario « un step ignoré ne figure pas dans la table de sortie du run » et « `run_if_skipped`
+/// fait s'exécuter le dépendant malgré l'ignorance » (`src/workflow/interpreter.sdd`, #84,
+/// intégration AC-16 arbitrée le 2026-11-18), contre un vrai `restate-server` : DAG `A → B → C`,
+/// le `when` de `B` lit `/statut_inexistant` dans sa sortie — faux, `B` est ignoré, `C` par
+/// propagation. Table de sortie réduite à `A`, ni `B` ni `C` dispatchés (aucun `start:` au
+/// journal). Second run, même pile, avec `run_if_skipped: true` sur `C` : `C` s'exécute et lit
+/// `null` pour `B` (l'entrée existe, à `Value::Null` — `build_inputs` de ./interpreter.sdd),
+/// `B` reste sans trace.
+#[tokio::test]
+#[ignore = "exige podman et l'image restate"]
+async fn ac16_l_ignorance_de_b_propage_a_c_puis_run_if_skipped_sur_c_la_franchit() {
+    let stack = Stack::start().await;
+    let quand_faux = json!({ "step": "A", "path": "/statut_inexistant", "op": "eq", "value": "ok" });
+
+    // ————— Run 1 : `B` ignoré par son `when`, `C` par propagation → sortie réduite à `A`.
+    let mut b = step("B", &["A"], "record", json!({ "id": "B" }));
+    b.when = Some(
+        serde_json::from_value(quand_faux.clone()).expect("la fixture `when` est un prédicat désérialisable"),
+    );
+    let dag = DagSteps(vec![
+        step("A", &[], "record", json!({ "id": "A" })),
+        b,
+        step("C", &["B"], "record", json!({ "id": "C" })),
+    ]);
+    let (status, body) = stack.run_to_completion(&dag, None).await;
+    assert_eq!(
+        status, 200,
+        "un run dont toute l'aval est ignoré doit mener l'attache au bout : {body}"
+    );
+    let results = body.as_object().expect("table id → sortie");
+    assert_eq!(
+        results.len(),
+        1,
+        "table de sortie réduite à `A` — `B` et `C` n'y ont aucune clé : {body}"
+    );
+    assert_eq!(body["A"]["id"], "A", "l'unique step exécuté est `A` : {body}");
+    let journal = stack.journal();
+    assert!(
+        !journal.iter().any(|e| e == "start:B") && !journal.iter().any(|e| e == "start:C"),
+        "ni `B` (`when` faux) ni `C` (propagation) ne devaient être dispatchés : {journal:?}"
+    );
+
+    // ————— Run 2 : `run_if_skipped: true` sur `C` — `C` s'exécute et lit `null` pour `B`.
+    let mut b_bis = step("B", &["A"], "record", json!({ "id": "B" }));
+    b_bis.when =
+        Some(serde_json::from_value(quand_faux).expect("la fixture `when` est un prédicat désérialisable"));
+    let mut c = step("C", &["B"], "record", json!({ "id": "C" }));
+    c.run_if_skipped = true;
+    let dag_bis = DagSteps(vec![step("A", &[], "record", json!({ "id": "A" })), b_bis, c]);
+    let (status, body) = stack.run_to_completion(&dag_bis, None).await;
+    assert_eq!(
+        status, 200,
+        "le run avec `run_if_skipped` doit mener l'attache au bout : {body}"
+    );
+    let results = body.as_object().expect("table id → sortie");
+    assert_eq!(
+        results.len(),
+        2,
+        "`A` et `C` seulement — `B` reste ignoré : {body}"
+    );
+    assert_eq!(
+        body["C"]["inputs"],
+        json!({ "B": null }),
+        "`C` doit lire `null` pour le step ignoré `B` — l'entrée existe : {body}"
+    );
+    let journal = stack.journal();
+    assert_eq!(
+        journal.iter().filter(|e| e.as_str() == "start:B").count(),
+        0,
+        "`B` n'a été dispatché dans aucun des deux runs : {journal:?}"
+    );
+    assert_eq!(
+        journal.iter().filter(|e| e.as_str() == "start:C").count(),
+        1,
+        "`C` s'exécute une fois, dans le second run : {journal:?}"
+    );
+}
