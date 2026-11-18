@@ -211,7 +211,7 @@ Exposes:
   @mcp_router ne dépend d'aucun feature interne : son `#[cfg]` protecteur est celui du module
     entier posé dans /src/lib.rs
   Rien d'autre : @mcp_handler, @handle_initialize, @handle_tools_list, @handle_tools_call,
-    @parse_tool_name, @ToolCallParams, @PROTOCOL_VERSION et @OPERATIONS sont privés au fichier —
+    @parse_tool_name, @ToolCallParams, @PROTOCOL_VERSION et @OPERATIONS sont privés au fichier (@OPERATIONS est `pub(super)` depuis le 2026-11-17, partagé avec ./registry.rs, invisible hors de `mcp`) —
     seul le contrat HTTP de `POST /mcp` est observable de l'extérieur
 
 Accepts:

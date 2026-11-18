@@ -8,6 +8,7 @@ use crate::auth::AuthPrincipal;
 use crate::mcp::app_tool::AppTool;
 use crate::mcp::error::McpError;
 use crate::mcp::format::OutputFormat;
+use crate::mcp::handler::OPERATIONS;
 use crate::resource::AccessPolicy;
 use crate::rest::RestEntity;
 
@@ -136,14 +137,6 @@ fn filter_type(column_type: &sea_orm::sea_query::ColumnType) -> Option<FilterTyp
         _ => None,
     }
 }
-
-/// Suffixes des cinq outils générés par entité (`_list`, `_get`, `_create`, `_update`,
-/// `_delete`) : miroir de la table `OPERATIONS` de ./handler.rs, `const` privée de ce module et
-/// hors du `Owns` de cette spec — duplication à sémantique identique, précédent
-/// `split_sort_direction`. Sert aux deux assertions symétriques de collision nom d'outil ↔
-/// outil d'entité (issue #86, tâche A2) : `tools/call` découpe le nom par suffixe, l'ordre des
-/// deux enregistrements ne doit jamais décider du gagnant.
-const ENTITY_TOOL_SUFFIXES: &[&str] = &["_list", "_get", "_create", "_update", "_delete"];
 
 /// Nom tel que cité dans les messages de refus d'enregistrement : tronqué à 32 caractères au
 ///-delà (issue #86, tâche A2 — le nom invalide peut être arbitrairement long).
@@ -335,7 +328,7 @@ impl McpToolRegistry {
                  whose filterable column could never be advertised"
             );
         }
-        for suffix in ENTITY_TOOL_SUFFIXES {
+        for (suffix, _) in OPERATIONS {
             let tool_name = format!("{name}{suffix}");
             assert!(
                 !self.tools.contains_key(&tool_name),
@@ -365,7 +358,7 @@ impl McpToolRegistry {
     ///   32 caractères au-delà ;
     /// - outil applicatif de ce nom déjà enregistré (aucune collision entre outils applicatifs) ;
     /// - nom égal à `{resource_name}{suffixe}` pour une entité déjà enregistrée et un suffixe
-    ///   des cinq outils générés (`ENTITY_TOOL_SUFFIXES`, miroir d'`OPERATIONS` de ./handler.rs)
+    ///   des cinq outils générés (suffixes de `OPERATIONS` de ./handler.rs)
     ///   — `register::<E>` refuse la collision symétrique, `tools/call` découpant le nom par
     ///   suffixe.
     ///
@@ -400,7 +393,7 @@ impl McpToolRegistry {
              is a programming error, refusing to register it a second time"
         );
         for entity_name in self.entities.keys() {
-            for suffix in ENTITY_TOOL_SUFFIXES {
+            for (suffix, _) in OPERATIONS {
                 assert!(
                     name != format!("{entity_name}{suffix}"),
                     "`{name}` collides with the generated tool `{name}` of entity `{entity_name}` \
@@ -2275,6 +2268,84 @@ mod tests {
             registry.entities.len(),
             1,
             "registre non modifié : la table des entités est intacte"
+        );
+    }
+
+    /// `Scenario` : « un nom d'outil en collision est refusé dans les deux ordres » — assertion
+    /// d'état du cas B : `register::<recipe>` refusé parce que `recipes_get` est déjà un outil
+    /// applicatif ne laisse ni entité insérée ni outil ajouté (même technique que
+    /// `collision_ne_modifie_pas_le_registre`).
+    #[test]
+    fn collision_entite_ne_modifie_pas_le_registre() {
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register_tool(
+            "recipes_get",
+            "outil applicatif",
+            json!({"type": "object"}),
+            AccessPolicy::Public,
+            noop_app_handler(),
+        );
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            registry.register::<recipe::Entity>();
+        }));
+        assert!(
+            outcome.is_err(),
+            "`recipes` heurte l'outil applicatif `recipes_get` et doit être refusée"
+        );
+        assert!(
+            registry.entities.is_empty(),
+            "registre non modifié : aucune entité insérée après le refus de `recipes`"
+        );
+        assert_eq!(
+            registry.tools.len(),
+            1,
+            "registre non modifié : seul l'outil applicatif préexistant reste"
+        );
+        assert!(
+            registry.tools.contains_key("recipes_get"),
+            "registre non modifié : `recipes_get` reste l'outil applicatif enregistré"
+        );
+    }
+
+    /// `Scenario` : « un nom d'outil en collision est refusé dans les deux ordres » — assertion
+    /// d'état du cas C : un second `register_tool` de même nom est refusé et ne remplace pas le
+    /// premier outil (`description` inchangée), aucune entité n'apparaît.
+    #[test]
+    fn collision_outil_ne_modifie_pas_le_registre() {
+        let mut registry = McpToolRegistry::new(OutputFormat::Json);
+        registry.register_tool(
+            "analyse",
+            "premier",
+            json!({"type": "object"}),
+            AccessPolicy::Public,
+            noop_app_handler(),
+        );
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            registry.register_tool(
+                "analyse",
+                "second doublon",
+                json!({"type": "object"}),
+                AccessPolicy::Public,
+                noop_app_handler(),
+            );
+        }));
+        assert!(
+            outcome.is_err(),
+            "le second `analyse` heurte le premier et doit être refusé"
+        );
+        assert_eq!(
+            registry.tools.len(),
+            1,
+            "registre non modifié : aucun outil applicatif ajouté"
+        );
+        assert_eq!(
+            registry.tools["analyse"].description(),
+            "premier",
+            "registre non modifié : le premier `analyse` n'est pas remplacé"
+        );
+        assert!(
+            registry.entities.is_empty(),
+            "registre non modifié : aucune entité insérée"
         );
     }
 

@@ -20,7 +20,7 @@ use crate::mcp::protocol::{
 };
 use crate::mcp::registry::{DeclaredColumns, FilterType, McpOp, McpToolRegistry};
 
-const OPERATIONS: &[(&str, McpOp)] = &[
+pub(super) const OPERATIONS: &[(&str, McpOp)] = &[
     ("_list", McpOp::List),
     ("_get", McpOp::Get),
     ("_create", McpOp::Create),
