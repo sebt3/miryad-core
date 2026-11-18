@@ -21,6 +21,7 @@ pub mod error;
 pub mod interpreter;
 #[cfg(all(feature = "workflow", feature = "matrix"))]
 pub mod matrix_step;
+pub mod predicate;
 pub mod rhai_step;
 pub mod step;
 #[cfg(all(feature = "workflow", feature = "lymaille"))]
@@ -51,6 +52,7 @@ pub use error::WorkflowError;
 pub use interpreter::DagInterpreter;
 #[cfg(all(feature = "workflow", feature = "matrix"))]
 pub use matrix_step::{MatrixEditStep, MatrixSendStep};
+pub use predicate::{Op, Predicate};
 pub use rhai_step::RhaiStep;
 pub use step::{MiryadWorkflowStep, RunInfo, StepError, StepRegistry};
 #[cfg(all(feature = "workflow", feature = "lymaille"))]
@@ -108,10 +110,14 @@ mod tests {
             _: Option<crate::workflow::JournalEntry>,
         ) {
         }
+        // Issue #84 (amendement du 2026-11-18 de ./mod.sdd) : les deux chemins du prédicat
+        // `when` en position de type, sans jamais nommer `predicate`.
+        fn witness_predicate(_: Option<crate::workflow::Predicate>, _: Option<crate::workflow::Op>) {}
         witness_execution(None, None, None, None);
         witness_definition(None, None, None, None);
         witness_lot_26(None, None, None, None);
         witness_admin(None, None, None);
+        witness_predicate(None, None);
         // Neuvième chemin : `configure_policy`, référencé en valeur sans être appelé — sa sémantique
         // `OnceLock` est prouvée par `tests/workflow_policy.rs`, hors de ce scénario.
         std::hint::black_box(crate::workflow::configure_policy);

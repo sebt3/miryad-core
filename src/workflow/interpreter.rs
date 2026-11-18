@@ -121,14 +121,49 @@ impl DagInterpreter {
         // atteint la taille du DAG : pas de garde de couche vide ici (`Must not` revérifier ce
         // que `validate_dag` prouve).
         let mut completed: HashSet<String> = HashSet::new();
+        // Étape a' (amendement 2026-11-18, issue #84, DSD `workflow` `FR-20`/`DEC-14`) —
+        // `skipped` : les steps ignorés, comptés comme terminés pour l'ordonnancement mais sans
+        // clé dans `results` (les décisions sont des fonctions pures de `vars` et `results`,
+        // rejouées à l'identique après crash — `NFR-1`).
+        let mut skipped: HashSet<String> = HashSet::new();
         let mut results: HashMap<String, serde_json::Value> = HashMap::new();
         while completed.len() != dag.0.len() {
             let prepared = ready_steps(&dag.0, &completed);
+            // Étape a' — décision d'exécution de chaque step de la couche (`decide`, fonction
+            // pure) : un `Skip` est ajouté à `completed` et `skipped`, n'est pas dispatché,
+            // n'entre pas dans `results`, et n'émet qu'une trace d'un `step_id` et de la raison
+            // — jamais une valeur lue. Seuls les `Run` passent à l'étape b.
+            let mut a_lancer: Vec<&StepDefinition> = Vec::with_capacity(prepared.len());
+            for step in &prepared {
+                if let StepDecision::Skip(raison) = decide(step, &skipped, &vars, &results) {
+                    completed.insert(step.id.clone());
+                    skipped.insert(step.id.clone());
+                    match raison {
+                        SkipReason::Dependency => tracing::info!(
+                            step_id = %step.id,
+                            raison = "dependency",
+                            "step ignoré : une dépendance directe a été ignorée"
+                        ),
+                        SkipReason::When => tracing::info!(
+                            step_id = %step.id,
+                            raison = "when",
+                            "step ignoré : sa condition `when` est fausse"
+                        ),
+                    }
+                } else {
+                    a_lancer.push(step);
+                }
+            }
+            if a_lancer.is_empty() {
+                // Couche entièrement ignorée : aucun `DurableFuturesUnordered` construit, la
+                // boucle reprend à l'étape a — `completed` a grandi, la boucle avance.
+                continue;
+            }
             // Un `DurableFuturesUnordered` par couche, construit ici — jamais partagé entre deux
             // couches, jamais `join_all` (spike 2026-09-22 : ~60 s de blocage par couche).
             let mut futures = DurableFuturesUnordered::new();
-            let mut ready_ids: Vec<String> = Vec::with_capacity(prepared.len());
-            for step in &prepared {
+            let mut ready_ids: Vec<String> = Vec::with_capacity(a_lancer.len());
+            for step in &a_lancer {
                 ready_ids.push(step.id.clone());
                 // #26 : identité du run — clé de workflow Restate de cette invocation, `id`
                 // du step, profondeur lue une fois à l'étape 1b. B4 (lot B, `FR-12`) : les
@@ -138,7 +173,7 @@ impl DagInterpreter {
                 // `trigger` du run, lu à l'étape 0, y est recopié de même.
                 let invocation = build_invocation(
                     step,
-                    build_inputs(step, &results),
+                    build_inputs(step, &results, &skipped),
                     ctx.key(),
                     depth,
                     &vars,
@@ -196,21 +231,75 @@ pub(crate) fn ready_steps<'a>(
         .collect()
 }
 
+/// Décision d'exécution d'un step prêt (amendement 2026-11-18, issue #84, ./interpreter.sdd) :
+/// exécuter, ou ignorer pour l'une des deux raisons de [`SkipReason`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StepDecision {
+    /// Le step est dispatché.
+    Run,
+    /// Le step est ignoré — compte comme terminé pour l'ordonnancement, jamais dispatché, aucune
+    /// clé dans la table de sortie du run.
+    Skip(SkipReason),
+}
+
+/// Raison d'une ignorance (amendement 2026-11-18, issue #84).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SkipReason {
+    /// Une dépendance directe a été ignorée et `run_if_skipped` est faux : propagation.
+    Dependency,
+    /// Le `when` du step rend `false`.
+    When,
+}
+
+/// Décision d'exécution d'un step prêt : fonction pure, sans `ctx` — fonctions pures de `vars`
+/// (journalisées avec l'entrée du run) et de `results` (journalisés par Restate), donc rejeu
+/// identique après crash (`NFR-1`). Propagation d'abord : une dépendance ignorée et
+/// `run_if_skipped` faux → `Skip(Dependency)`, sans même évaluer le `when`. Un step qui
+/// s'exécute malgré une dépendance ignorée (`run_if_skipped`) évalue quand même son `when`,
+/// lequel lit une valeur absente (donc `false`) s'il vise le step ignoré — `evaluate` est
+/// totale (./predicate.rs).
+pub(crate) fn decide(
+    step: &StepDefinition,
+    skipped: &HashSet<String>,
+    vars: &serde_json::Map<String, serde_json::Value>,
+    results: &HashMap<String, serde_json::Value>,
+) -> StepDecision {
+    if !step.run_if_skipped && step.depends_on.iter().any(|dep| skipped.contains(dep.as_str())) {
+        return StepDecision::Skip(SkipReason::Dependency);
+    }
+    if let Some(when) = &step.when
+        && !when.evaluate(vars, results)
+    {
+        return StepDecision::Skip(SkipReason::When);
+    }
+    StepDecision::Run
+}
+
 /// Une entrée par id de `step.depends_on`, valeur = la sortie collectée du step amont dans
-/// `results`. Jamais une entrée de plus (un résultat disponible mais absent de `depends_on` ne
-/// traverse pas), jamais une de moins. `build_inputs` n'est appelé que depuis l'étape 2.b de
-/// [`DagInterpreter::run`] : chaque dépendance est alors dans `completed`, donc déjà dans
-/// `results` — `results.get(id)` y est un `Some` à ce point de la marche. Un `None` (violation
-/// de cette invariante, chemin hors contrat) ne fabrique jamais une valeur inexistante et ne
-/// panique jamais : l'entrée est omise, et c'est le step aval qui la réclame qui la paie, côté
-/// ./dispatcher.rs, en `StepError` terminal du kind — jamais en panic dans ce fichier.
+/// `results` ; un id présent dans `skipped` donne l'entrée `Value::Null` — l'entrée existe,
+/// aucune ne manque (la table `results` d'un run n'a, elle, aucune clé pour un step ignoré).
+/// Jamais une entrée de plus (un résultat disponible mais absent de `depends_on` ne traverse
+/// pas), jamais une de moins. `build_inputs` n'est appelé que depuis l'étape 2.b de
+/// [`DagInterpreter::run`] : chaque dépendance est alors dans `completed`, donc soit dans
+/// `results` (exécuté — `results.get(id)` y est un `Some` à ce point de la marche), soit dans
+/// `skipped`. Un double `None` (violation de cette invariante, chemin hors contrat) ne fabrique
+/// jamais une valeur inexistante et ne panique jamais : l'entrée est omise, et c'est le step
+/// aval qui la réclame qui la paie, côté ./dispatcher.rs, en `StepError` terminal du kind —
+/// jamais en panic dans ce fichier.
 pub(crate) fn build_inputs(
     step: &StepDefinition,
     results: &HashMap<String, serde_json::Value>,
+    skipped: &HashSet<String>,
 ) -> HashMap<String, serde_json::Value> {
     step.depends_on
         .iter()
-        .filter_map(|id| results.get(id).map(|sortie| (id.clone(), sortie.clone())))
+        .filter_map(|id| {
+            if skipped.contains(id.as_str()) {
+                Some((id.clone(), serde_json::Value::Null))
+            } else {
+                results.get(id).map(|sortie| (id.clone(), sortie.clone()))
+            }
+        })
         .collect()
 }
 
@@ -242,8 +331,11 @@ pub(crate) fn build_invocation(
 #[cfg(test)]
 mod tests {
     use super::RunInput;
+    use super::SkipReason;
+    use super::StepDecision;
     use super::build_inputs;
     use super::build_invocation;
+    use super::decide;
     use super::parse_depth;
     use super::ready_steps;
     use crate::workflow::definition::DagSteps;
@@ -264,6 +356,8 @@ mod tests {
             depends_on: depends_on.iter().copied().map(String::from).collect(),
             kind: "noop".to_string(),
             config: serde_json::Value::Null,
+            when: None,
+            run_if_skipped: false,
         }
     }
 
@@ -349,7 +443,7 @@ mod tests {
         results.insert("A".to_string(), json!(1));
         results.insert("C".to_string(), json!(2));
 
-        let inputs = build_inputs(&b, &results);
+        let inputs = build_inputs(&b, &results, &HashSet::new());
 
         assert_eq!(
             inputs,
@@ -393,6 +487,8 @@ mod tests {
             depends_on: vec!["a".to_string()],
             kind: "echo".to_string(),
             config: json!({"m": 1}),
+            when: None,
+            run_if_skipped: false,
         };
         let vars = json!({"project": "p1"})
             .as_object()
@@ -476,6 +572,8 @@ mod tests {
             depends_on: Vec::new(),
             kind: "echo".to_string(),
             config: json!({}),
+            when: None,
+            run_if_skipped: false,
         };
 
         let declenche = build_invocation(
@@ -548,6 +646,211 @@ mod tests {
             corps_declenche.get("trigger"),
             Some(&json!("sub-42")),
             "un `Some` s'écrit sous la clé `trigger`, verbatim : {corps_declenche}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Conditions d'exécution `when` (issue #84, DSD `workflow` `FR-20`/`DEC-14`) —
+    // `decide` et `build_inputs` se testent sans contexte Restate (mêmes bornes de
+    // tranchage que les `Scenario` précédents : la boucle de `run` elle-même reste couverte
+    // par les intégrations `#[ignore]` de ../../tests/workflow_restate.rs).
+    // ---------------------------------------------------------------------------
+
+    /// `when` de fixture, construit par sa forme JSON réelle (./predicate.rs).
+    fn quand(forme: serde_json::Value) -> crate::workflow::predicate::Predicate {
+        serde_json::from_value(forme).expect("la fixture `when` est un prédicat désérialisable")
+    }
+
+    fn sans_quand(id: &str, depends_on: &[&str]) -> StepDefinition {
+        etape(id, depends_on)
+    }
+
+    /// `skipped` de fixture, à partir d'ids.
+    fn skipped(ids: &[&str]) -> HashSet<String> {
+        ids.iter().copied().map(String::from).collect()
+    }
+
+    /// Marche simulée de l'étape 2 de `run` par les seules fonctions pures (`ready_steps`,
+    /// `decide`, `build_inputs`) : la couche décidable de la boucle, sans `WorkflowContext`
+    /// (borne des `Tasks` de ./interpreter.sdd). Rendu : (`completed`, `results`, nombre de
+    /// couches réellement dispatchées). Le pas d'exécution de la simulation est une identité
+    /// journalisable : seule la décision des steps compte ici.
+    fn marche_simulee(
+        dag: &[StepDefinition],
+        vars: &serde_json::Map<String, serde_json::Value>,
+    ) -> (HashSet<String>, HashMap<String, serde_json::Value>, usize) {
+        let mut completed: HashSet<String> = HashSet::new();
+        let mut ignores: HashSet<String> = HashSet::new();
+        let mut results: HashMap<String, serde_json::Value> = HashMap::new();
+        let mut couches_dispatchees = 0usize;
+        while completed.len() != dag.len() {
+            let prepares = ready_steps(dag, &completed);
+            let mut a_lancer: Vec<&StepDefinition> = Vec::new();
+            for etape in &prepares {
+                match decide(etape, &ignores, vars, &results) {
+                    StepDecision::Run => a_lancer.push(*etape),
+                    StepDecision::Skip(_) => {
+                        completed.insert(etape.id.clone());
+                        ignores.insert(etape.id.clone());
+                    }
+                }
+            }
+            if !a_lancer.is_empty() {
+                couches_dispatchees = couches_dispatchees.saturating_add(1);
+                for etape in &a_lancer {
+                    let _ = build_inputs(etape, &results, &ignores);
+                    results.insert(etape.id.clone(), json!({ "sortie": etape.id }));
+                    completed.insert(etape.id.clone());
+                }
+            }
+        }
+        (completed, results, couches_dispatchees)
+    }
+
+    /// Scenario « un step dont le `when` est faux est ignoré, sans dispatch » (#84) : `B` dépend
+    /// de `"A"` et lit `/status eq "ok"` dans sa sortie — `Skip(When)` sur `"ko"`, `Run` sur
+    /// `"ok"`.
+    #[test]
+    fn un_step_dont_le_when_est_faux_est_ignore_sans_dispatch() {
+        let mut b = sans_quand("B", &["A"]);
+        b.when = Some(quand(
+            json!({ "step": "A", "path": "/status", "op": "eq", "value": "ok" }),
+        ));
+        let vars = serde_json::Map::new();
+        let vide = HashSet::new();
+
+        let ko: HashMap<String, serde_json::Value> =
+            HashMap::from([("A".to_string(), json!({ "status": "ko" }))]);
+        assert_eq!(
+            decide(&b, &vide, &vars, &ko),
+            StepDecision::Skip(SkipReason::When),
+            "`when` faux : ignorance, pas de dispatch"
+        );
+
+        let ok: HashMap<String, serde_json::Value> =
+            HashMap::from([("A".to_string(), json!({ "status": "ok" }))]);
+        assert_eq!(
+            decide(&b, &vide, &vars, &ok),
+            StepDecision::Run,
+            "`when` vrai : exécution"
+        );
+    }
+
+    /// Scenario « l'ignorance se propage aux dépendants par défaut » (#84) : `C` dépend de `"B"`
+    /// ignoré, aucun `when` — `Skip(Dependency)`.
+    #[test]
+    fn l_ignorance_se_propage_aux_dependants_par_defaut() {
+        let c = sans_quand("C", &["B"]);
+        let vars = serde_json::Map::new();
+        let results = HashMap::new();
+        assert_eq!(
+            decide(&c, &skipped(&["B"]), &vars, &results),
+            StepDecision::Skip(SkipReason::Dependency),
+            "`run_if_skipped` faux par défaut : l'ignorance se propage, même sans `when`"
+        );
+    }
+
+    /// Scenario « `run_if_skipped` fait s'exécuter le dépendant malgré l'ignorance » (#84) : `C`
+    /// avec `run_if_skipped: true` sur dépendance ignorée rend `Run`, et ses `inputs` portent
+    /// l'entrée `"B"` à `Value::Null` — l'entrée existe, aucune ne manque.
+    #[test]
+    fn run_if_skipped_fait_s_executer_le_dependant_malgre_l_ignorance() {
+        let mut c = sans_quand("C", &["B"]);
+        c.run_if_skipped = true;
+        let vars = serde_json::Map::new();
+        let results = HashMap::new();
+        let ignores = skipped(&["B"]);
+
+        assert_eq!(
+            decide(&c, &ignores, &vars, &results),
+            StepDecision::Run,
+            "`run_if_skipped: true` : le dépendant s'exécute malgré l'ignorance de `\"B\"`"
+        );
+        assert_eq!(
+            build_inputs(&c, &results, &ignores),
+            HashMap::from([("B".to_string(), serde_json::Value::Null)]),
+            "l'entrée de la dépendance ignorée existe, à `Value::Null`"
+        );
+    }
+
+    /// Scenario « un step ignoré ne figure pas dans la table de sortie du run » (#84) : DAG
+    /// `A → B → C`, `B` ignoré par un `when` faux, `C` par propagation — la simulation de la
+    /// boucle rend une `results` réduite à `"A"` et un `completed` des trois steps. (Le
+    /// câblage réel dans `run` relève des intégrations `#[ignore]` — borne des `Tasks`.)
+    #[test]
+    fn un_step_ignore_ne_figure_pas_dans_la_table_de_sortie_du_run() {
+        let mut b = sans_quand("B", &["A"]);
+        b.when = Some(quand(
+            json!({ "step": "A", "path": "/statut_inexistant", "op": "eq", "value": "ok" }),
+        ));
+        let dag = [sans_quand("A", &[]), b, sans_quand("C", &["B"])];
+
+        let (completed, results, _) = marche_simulee(&dag, &serde_json::Map::new());
+
+        assert_eq!(
+            results.keys().map(String::as_str).collect::<HashSet<_>>(),
+            HashSet::from(["A"]),
+            "aucune clé pour un step ignoré dans la table de sortie"
+        );
+        assert_eq!(
+            completed,
+            skipped(&["A", "B", "C"]),
+            "`completed` a bien contenu les trois steps (ignorés comme terminés)"
+        );
+    }
+
+    /// Scenario « les décisions sont déterministes au rejeu » (#84) : mêmes `vars`, `results` et
+    /// `skipped` deux runs durant, `decide` rend la même décision pour chaque step, sans aucun
+    /// `ctx` (`decide` ne prend pas de contexte).
+    #[test]
+    fn les_decisions_sont_deterministes_au_rejeu() {
+        let mut b = sans_quand("B", &["A"]);
+        b.when = Some(quand(json!({ "step": "A", "path": "/x", "op": "exists" })));
+        let dag = [sans_quand("A", &[]), b];
+        let vars = serde_json::Map::new();
+        let vide = HashSet::new();
+        let results: HashMap<String, serde_json::Value> = HashMap::from([("A".to_string(), json!({}))]);
+
+        let premiere: Vec<StepDecision> = dag
+            .iter()
+            .map(|etape| decide(etape, &vide, &vars, &results))
+            .collect();
+        let seconde: Vec<StepDecision> = dag
+            .iter()
+            .map(|etape| decide(etape, &vide, &vars, &results))
+            .collect();
+        assert_eq!(
+            premiere, seconde,
+            "rejeu identique : les mêmes entrées rendent les mêmes décisions"
+        );
+        assert_eq!(
+            premiere,
+            vec![StepDecision::Run, StepDecision::Skip(SkipReason::When),],
+            "et ces décisions sont exactement celles du contrat (`/x` absent de la sortie de `\"A\"`)"
+        );
+    }
+
+    /// Scenario « une couche entièrement ignorée ne bloque pas la boucle » (#84) : DAG `A → B`,
+    /// `B` ignoré (`when` faux) — la couche de `B` ne construit aucun futur et le run se termine.
+    /// (Vérifié par la simulation des fonctions pures ; le non-constructeur de
+    /// `DurableFuturesUnordered` dans `run` lui-même relève des intégrations `#[ignore]`.)
+    #[test]
+    fn une_couche_entierement_ignoree_ne_bloque_pas_la_boucle() {
+        let mut b = sans_quand("B", &["A"]);
+        b.when = Some(quand(json!({ "step": "A", "path": "/x", "op": "exists" })));
+        let dag = [sans_quand("A", &[]), b];
+
+        let (completed, results, couches) = marche_simulee(&dag, &serde_json::Map::new());
+
+        assert_eq!(
+            couches, 1,
+            "une seule couche dispatchée : celle de `\"A\"`, celle de `\"B\"` aucune"
+        );
+        assert!(!results.contains_key("B"), "`B` ignoré n'a pas de sortie");
+        assert_eq!(
+            completed,
+            skipped(&["A", "B"]),
+            "le run se termine, les deux steps soldés"
         );
     }
 }

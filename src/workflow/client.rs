@@ -737,12 +737,16 @@ mod tests {
                 depends_on: vec![],
                 kind: "rhai".to_string(),
                 config: serde_json::json!({ "script": "1 + 1" }),
+                when: None,
+                run_if_skipped: false,
             },
             StepDefinition {
                 id: "notify".to_string(),
                 depends_on: vec!["deploy".to_string()],
                 kind: "rhai".to_string(),
                 config: serde_json::json!({ "channel": "ops" }),
+                when: None,
+                run_if_skipped: false,
             },
         ])
     }
@@ -755,6 +759,8 @@ mod tests {
             depends_on: vec![],
             kind: "rhai".to_string(),
             config: serde_json::json!({ "script": "1 + 1" }),
+            when: None,
+            run_if_skipped: false,
         }])
     }
 

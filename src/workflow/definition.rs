@@ -25,6 +25,7 @@ use crate::resource::AccessPolicy;
 use crate::resource::HookError;
 use crate::resource::MiryadResource;
 use crate::workflow::error::WorkflowError;
+use crate::workflow::predicate::Predicate;
 
 /// La forme d'un step de workflow tel qu'il est stocké dans [`DagSteps`] : identité, dépendances
 /// amont, et le couple `kind`/`config` que seul un `impl MiryadWorkflowStep` du registre de
@@ -41,6 +42,17 @@ pub struct StepDefinition {
     pub kind: String,
     /// Configuration opaque du step, transmise telle quelle au kind — jamais interprétée ici.
     pub config: serde_json::Value,
+    /// Condition d'exécution structurée du step (amendement 2026-11-18, issue #84,
+    /// `./predicate.rs`) : le step n'est exécuté que si le prédicat est vrai ; l'absence de clé
+    /// dans le JSON lu garde `None`, un `None` n'est pas réécrit — un DAG écrit sans ce champ
+    /// reste lisible et se réécrit à l'identique.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<Predicate>,
+    /// Le step s'exécute même si l'une de ses dépendances a été ignorée (amendement 2026-11-18,
+    /// issue #84, ./interpreter.sdd : sans ce drapeau, l'ignorance se propage par défaut) ;
+    /// `false` par défaut, jamais réécrit à `false` explicite.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub run_if_skipped: bool,
 }
 
 /// Enveloppe fine d'une liste de steps : le type de la colonne `steps` (JSON) de [`Model`].
@@ -65,6 +77,11 @@ pub struct DagSteps(
 ///    steps de degré `0` dans l'ordre de la liste d'origine) ; le premier step de la liste
 ///    d'origine resté non traité identifie le message « cycle détecté impliquant le step {id} ».
 ///    L'auto-dépendance en est le cas particulier de cycle de longueur un, sans branche séparée.
+/// 5. conditions `when`, dans l'ordre de la liste (amendement 2026-11-18, issue #84) : d'abord la
+///    forme du prédicat (validation structurelle de `Predicate`, ./predicate.rs), puis la portée
+///    de ses lectures — un `when` qui lit un step absent du `depends_on` de son porteur est
+///    rejeté ; un `when` qui ne lit que des `var` est toujours valide, et `run_if_skipped`
+///    n'est jamais une erreur.
 ///
 /// Une chaîne vide est un `id` comme un autre, sans traitement spécial. `Ok(())` au-delà : la
 /// forme du `kind` et du `config` de chaque step reste hors du périmètre de cette fonction.
@@ -146,6 +163,31 @@ pub(crate) fn validate_dag(steps: &[StepDefinition]) -> Result<(), WorkflowError
             "cycle détecté impliquant le step {}",
             etape.id
         )));
+    }
+
+    // Étape 5 (amendement 2026-11-18, issue #84) — conditions `when`, dans l'ordre de la liste :
+    // d'abord la forme du prédicat (`Predicate::validate`, ./predicate.rs), puis la portée de ses
+    // lectures : un `when` ne lit que des `var` (toujours valides) et les sorties des dépendances
+    // directes du step — la visibilité transitive relève de l'issue #85. `run_if_skipped` n'est
+    // jamais une erreur.
+    for etape in steps {
+        let Some(when) = &etape.when else {
+            continue;
+        };
+        if let Err(raison) = when.validate() {
+            return Err(WorkflowError::InvalidDag(format!(
+                "le step {} porte un `when` invalide : {raison}",
+                etape.id
+            )));
+        }
+        for reference in when.referenced_steps() {
+            if !etape.depends_on.iter().any(|dep| dep == reference) {
+                return Err(WorkflowError::InvalidDag(format!(
+                    "le step {} lit {reference} dans son `when` sans en dépendre directement",
+                    etape.id
+                )));
+            }
+        }
     }
 
     Ok(())
@@ -357,6 +399,8 @@ mod tests {
             depends_on: depends_on.iter().copied().map(String::from).collect(),
             kind: "noop".to_string(),
             config: serde_json::Value::Null,
+            when: None,
+            run_if_skipped: false,
         }
     }
 
@@ -414,6 +458,87 @@ mod tests {
             .await
             .expect("migrations apply cleanly");
         db
+    }
+
+    /// `when` de fixture : prédicat construit par sa forme JSON réelle (celle que la colonne
+    /// `steps` de la définition porte) — ./predicate.rs.
+    fn quand(forme: serde_json::Value) -> crate::workflow::predicate::Predicate {
+        serde_json::from_value(forme).expect("la fixture `when` est un prédicat désérialisable")
+    }
+
+    /// Scenario « `when` lisant une dépendance directe et une variable est valide » (#84) :
+    /// `B` dépend de `"A"` et son `when` lit la sortie de `"A"` et une `var` — `Ok(())`.
+    #[test]
+    fn validate_dag_accepte_un_when_lisant_dependance_directe_et_variable() {
+        let mut b = etape("B", &["A"]);
+        b.when = Some(quand(serde_json::json!({ "all": [
+            { "step": "A", "path": "/x", "op": "exists" },
+            { "var": "mode", "op": "exists" }
+        ] })));
+        let resultat = validate_dag(&[etape("A", &[]), b]);
+        assert!(
+            resultat.is_ok(),
+            "un `when` borné aux dépendances directes et aux `var` est valide : {resultat:?}"
+        );
+    }
+
+    /// Scenario « `when` lisant un step qui n'est pas une dépendance directe est rejeté » (#84) :
+    /// `C` dépend de `"B"` seulement mais lit `"A"` (grand-parent) — `Err(InvalidDag)` dont le
+    /// texte nomme `C` et `A`.
+    #[test]
+    fn validate_dag_rejete_un_when_lisant_un_step_qui_n_est_pas_dependance_directe() {
+        let mut c = etape("C", &["B"]);
+        c.when = Some(quand(
+            serde_json::json!({ "step": "A", "path": "/statut", "op": "eq", "value": "ok" }),
+        ));
+        let message = message_invalid_dag(validate_dag(&[etape("A", &[]), etape("B", &["A"]), c]));
+        assert!(
+            message.contains('C') && message.contains('A'),
+            "le texte doit nommer le step liseur (`C`) et le step lu (`A`) : {message}"
+        );
+        assert_eq!(
+            message,
+            "le step C lit A dans son `when` sans en dépendre directement"
+        );
+    }
+
+    /// Scenario « `when` structurellement invalide est rejeté » (#84) : `all[]` vide —
+    /// `Err(InvalidDag)` nommant le step, sans aucune valeur utilisateur.
+    #[test]
+    fn validate_dag_rejete_un_when_structurellement_invalide() {
+        let mut b = etape("B", &["A"]);
+        b.when = Some(quand(serde_json::json!({ "all": [] })));
+        let message = message_invalid_dag(validate_dag(&[etape("A", &[]), b]));
+        assert!(
+            message.contains("le step B") && message.contains("invalide"),
+            "le texte doit nommer le step porteur et qualifier le défaut : {message}"
+        );
+    }
+
+    /// Scenario « un DAG sans `when` ni `run_if_skipped` garde son JSON » (#84) : un DAG écrit
+    /// comme avant l'amendement (quatre champs par step) se désérialise avec `when = None` et
+    /// `run_if_skipped = false`, et se resérialise à l'identique — aucune clé nouvelle inventée.
+    #[test]
+    fn un_dag_sans_when_ni_run_if_skipped_garde_son_json() {
+        let json_avant = serde_json::json!([
+            { "id": "A", "depends_on": [], "kind": "entree", "config": { "s": 1 } },
+            { "id": "B", "depends_on": ["A"], "kind": "transform", "config": {} },
+            { "id": "C", "depends_on": ["A", "B"], "kind": "rapport", "config": [true, null] },
+            { "id": "D", "depends_on": ["C"], "kind": "noop", "config": "fin" }
+        ]);
+        let dag: DagSteps =
+            serde_json::from_value(json_avant.clone()).expect("le JSON d'avant l'amendement se lit");
+        assert!(
+            dag.0
+                .iter()
+                .all(|etape| etape.when.is_none() && !etape.run_if_skipped),
+            "`when` vaut None et `run_if_skipped` false partout : {dag:?}"
+        );
+        let rendu = serde_json::to_value(&dag).expect("un `DagSteps` se sérialise");
+        assert_eq!(
+            rendu, json_avant,
+            "le round-trip ne doit ni inventer ni perdre de clé"
+        );
     }
 
     /// Principal dont l'utilisateur (provisionné par `resolve_user`) est membre du groupe admin —
@@ -738,12 +863,16 @@ mod tests {
                 depends_on: vec![],
                 kind: "entree".to_string(),
                 config: serde_json::json!({ "sortie": "brut", "lignes": 12 }),
+                when: None,
+                run_if_skipped: false,
             },
             StepDefinition {
                 id: "B".to_string(),
                 depends_on: vec!["A".to_string()],
                 kind: "transform".to_string(),
                 config: serde_json::json!({ "sorties": ["net", "reduit"], "seuil": 0.5, "strict": true }),
+                when: None,
+                run_if_skipped: false,
             },
             StepDefinition {
                 id: "C".to_string(),
@@ -752,6 +881,8 @@ mod tests {
                 config: serde_json::json!({
                     "sortie": { "destinataire": "admin", "formats": ["pdf", "csv"] }
                 }),
+                when: None,
+                run_if_skipped: false,
             },
         ]);
 

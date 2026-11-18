@@ -70,10 +70,14 @@ fn chemins_plats_resolvent_depuis_l_exterieur() {
         _: Option<miryad_core::workflow::JournalEntry>,
     ) {
     }
+    // Issue #84 (amendement du 2026-11-18 de ./mod.sdd) : les deux chemins du prédicat `when`
+    // en position de type, sans jamais nommer `predicate`.
+    fn witness_predicate(_: Option<miryad_core::workflow::Predicate>, _: Option<miryad_core::workflow::Op>) {}
     witness_execution(None, None, None, None);
     witness_definition(None, None, None, None);
     witness_lot_26(None, None, None, None);
     witness_admin(None, None, None);
+    witness_predicate(None, None);
     std::hint::black_box(miryad_core::workflow::configure_policy);
     // Les quatre fonctions d'administration en position de valeur, sans appel (mêmes motifs que
     // `configure_policy` ci-dessus : la résolution du chemin plat est la seule chose prouvée).

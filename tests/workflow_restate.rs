@@ -771,6 +771,8 @@ fn step(id: &str, depends_on: &[&str], kind: &str, config: Value) -> StepDefinit
         depends_on: depends_on.iter().map(ToString::to_string).collect(),
         kind: kind.to_string(),
         config,
+        when: None,
+        run_if_skipped: false,
     }
 }
 
