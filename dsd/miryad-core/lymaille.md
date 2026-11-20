@@ -168,7 +168,7 @@ et appels d'MCP externes depuis les scripts.
 
 - **FR-14 - MUST:** L'application hôte fournit, par un trait unique `LymailleHost`, ce que miryad-core n'a pas : le serveur MCP propre à un
     contexte (URL, jeton frais, décision d'autorité) et les contextes de niveau projet. Sans ce trait, le comportement est celui de `DEC-20` seul.
-    - **Source:** `DEC-27` ; `NOTE-vanyline-orientation-lymaille.md` §7 (B1, B3) ; user instruction, 2026-11-03
+    - **Source:** `DEC-27` ; besoins de l'hôte vanyline, séance du 2026-11-03 ; user instruction, 2026-11-03
     - **Verified by:** `AC-18`
 
 - **FR-15 - MUST:** Les événements d'une session interactive sont typés et exportables vers TypeScript, extensibles par l'hôte sans que la crate en
@@ -490,7 +490,7 @@ et appels d'MCP externes depuis les scripts.
       l'autorité et le jeton) ; cache de jeton dans miryad-core (écarté : un jeton survivrait à une révocation).
     - **Consequences:** amende `identity.sdd` (variante de `classify`), `mcp_access.sdd`, `interactive/assemble.sdd`, `definitions/user_context.sdd` et
       `mod.sdd` (montage) ; tests avec un hôte factice. L'hôte garde seul la définition de « cet utilisateur peut agir sur ce propriétaire ».
-    - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B1, B3) ; user instruction, 2026-11-03
+    - **Source:** besoins de l'hôte vanyline, séance du 2026-11-03 ; user instruction, 2026-11-03
 
 - **DEC-28 - Le contexte pilote la session** (2026-11-03, amende `FR-11`, `DEC-24`, `DEC-26`)
     - **Context:** l'utilisateur choisit un contexte de travail, pas un agent parmi N ; la nature de la session en découle.
@@ -509,7 +509,7 @@ et appels d'MCP externes depuis les scripts.
       colonne `context_type` (nullable, posée par le CRUD, préservée par l'`upsert` de la session de configuration) ; la nature, l'agent par défaut
       et l'ensemble autorisé sont lus sur le type à l'ouverture ; les contextes `H_…` de l'hôte, sans type, n'ouvrent que `Work` avec un agent
       explicite. La session persiste sa colonne `context` (ajout du lot 2 sur `sessions`), immuable après l'ouverture.
-    - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B2, B3) ; user instruction, 2026-11-03
+    - **Source:** besoins de l'hôte vanyline, séance du 2026-11-03 ; user instruction, 2026-11-03
 
 - **DEC-29 - Handler Restate dédié au step `subagent`** (2026-11-03, amende `DEC-10`, `FR-6`, `OI-4`)
     - **Context:** un agent de code qui compile et teste dure de 30 à 45 minutes ; la borne par défaut d'un `ctx.run` est d'environ 11 minutes, et le
@@ -520,7 +520,7 @@ et appels d'MCP externes depuis les scripts.
       déterministe (`DEC-10`) est inchangée.
     - **Alternatives:** relever les bornes du service `StepDispatcher` (écarté : tous les kinds en pâtissent).
     - **Consequences:** amende `dispatcher.sdd` et `subagent_step.sdd`. Le réglage par handler est prouvé sur 40 minutes (`OI-11`, spike du 2026-11-03) ; le kill du processus en cours de run reste couvert par `AC-10`.
-    - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B4) ; user instruction, 2026-11-03
+    - **Source:** besoins de l'hôte vanyline, séance du 2026-11-03 ; user instruction, 2026-11-03
 
 - **DEC-30 - Événements de session typés, extensibles, relisibles** (2026-11-03, amende `DEC-24`, `DEC-25`)
     - **Decision:** les événements du flux sont un enum `SessionEvent` exportable vers TypeScript, avec une variante `Host{kind, payload}` que
@@ -536,7 +536,7 @@ et appels d'MCP externes depuis les scripts.
       utilisateur, les réponses d'assistant et un résumé des appels d'outil (`UserMessage`, `ToolCallSummary`, sans arguments ni résultats), faute de quoi un
       rechargement perd les questions de l'utilisateur. Ces deux variantes sont propres à l'historique (le flux direct ne les émet pas). **Limite** : `lymaille`
       0.2.0 n'horodate pas ses messages ; `at` vaut l'instant de création de la session pour tout l'historique.
-    - **Source:** `NOTE-vanyline-orientation-lymaille.md` §7 (B7) ; user instruction, 2026-11-03 et 2026-11-05
+    - **Source:** besoins de l'hôte vanyline, séance du 2026-11-03 ; user instruction, 2026-11-03 et 2026-11-05
 
 - **DEC-31 - Haute disponibilité des sessions : porte PostgreSQL, relais `LISTEN/NOTIFY`, journal d'événements** (2026-11-14, amende `DEC-24`, `DEC-30` ; lève la limite mono-réplique de `DEC-24` ; issue #81)
     - **Decision:** trois lots ordonnés, tous livrés (arbitré par l'utilisateur le 2026-11-14). **(1) Porte de tour partagée** : `lymaille` 0.3.0 rend la porte remplaçable (`TurnLock`, permis `TurnPermit::new(session, release, lost)`) ;

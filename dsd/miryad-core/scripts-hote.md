@@ -44,7 +44,7 @@ peut accorder que ce que son propriétaire peut utiliser), `FR-10` (identité du
 
 - **FR-5 - MUST:** Les droits d'un script viennent du type du contexte et du principal qui l'exécute, jamais du contenu du script ni de son auteur. Chaque
   appel est tranché sous le principal courant.
-    - **Source:** `NOTE-vanyline-orientation-lymaille.md` §4 ; user instruction, 2026-11-03
+    - **Source:** besoins de l'hôte vanyline, séance du 2026-11-03 (modules hôte, scripts sans LLM) ; user instruction, 2026-11-03
     - **Verified by:** `AC-3`
 
 - **FR-6 - Retiré le 2026-11-11 (user instruction)** : la lecture seule imposée aux scripts était une erreur de relecture ; un script agit sous les droits de son spectateur, sans mode d'effets propre (`DEC-3`).
