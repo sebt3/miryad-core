@@ -203,6 +203,11 @@ impl MatrixClient {
     /// Enregistre une session importée (en remplaçant l'existante) puis la restaure. La session
     /// reste en base si la restauration échoue (arbitrage 2026-10-18).
     ///
+    /// Le jeton d'accès importé n'est jamais rafraîchi : après son expiration (300 s côté MAS), les
+    /// appels rendent `401 M_UNKNOWN_TOKEN`, même avec un jeton de rafraîchissement valide. Il faut
+    /// alors reprendre une session par `login_with_device_code`, qui enregistre la session OAuth et
+    /// fait tourner le rafraîchissement.
+    ///
     /// # Errors
     ///
     /// `MatrixError::Config` si la configuration est invalide, `MatrixError::InvalidId` si
