@@ -252,8 +252,9 @@ impl MatrixClient {
     ///
     /// `MatrixError::InvalidId` si `room_id` n'est pas un identifiant de salle `!x:y`, ou si un
     /// identifiant d'événement de `relation` est mal formé, `MatrixError::RoomUnavailable` si la
-    /// salle est inaccessible, `MatrixError::EventNotFound` si l'événement visé par une `Reply` est
-    /// introuvable, `MatrixError::Sdk` ou `MatrixError::Network` pour les autres échecs.
+    /// salle est inaccessible, `MatrixError::EventNotFound` si l'événement visé par une `Reply` ou
+    /// la racine d'un `Thread` est introuvable (la racine est vérifiée avant l'envoi),
+    /// `MatrixError::Sdk` ou `MatrixError::Network` pour les autres échecs.
     pub async fn send(
         &self,
         room_id: &str,
@@ -271,7 +272,17 @@ impl MatrixClient {
         let room = self.joined_room(&room_id).await?;
         let content = match relation {
             None => content,
-            Some(ParsedRelation::Thread { root, latest }) => apply_thread(content, &root, latest.as_deref()),
+            Some(ParsedRelation::Thread { root, latest }) => {
+                // Arbitré le 2026-11-22 (`src/matrix/client.sdd`, tâche J, `matrix#OI-7` (b)) :
+                // la racine du fil est **vérifiée avant l'envoi** — la même récupération
+                // d'événement que pour `Reply`, traduite par la même règle. Racine inconnue →
+                // `EventNotFound`, sans envoi ; `latest` n'est pas vérifié.
+                let root_str = root.to_string();
+                room.event(&root, None)
+                    .await
+                    .map_err(|err| fetch_failure(&err, &root_str))?;
+                apply_thread(content, &root, latest.as_deref())
+            }
             Some(ParsedRelation::Reply { to }) => {
                 // `EnforceThread::Unthreaded` : une réponse ne forme pas de fil (arbitré le
                 // 2026-11-16) ; pour y rester, l'hôte utilise `Thread`.
@@ -515,19 +526,25 @@ fn parse_relation(relation: &MessageRelation) -> Result<ParsedRelation, MatrixEr
     }
 }
 
+/// Règle commune des récupérations d'événement visé (`src/matrix/client.sdd`) : retryable conservée
+/// pour le retry du step, sinon `EventNotFound` de l'identifiant visé. Factorisée à la tâche J
+/// (le troisième appelant que le `[?]` de la tâche G attendait pour factoriser) : `Reply`
+/// (`from_fetch_error`), `edit` (`from_edit_error`) et la vérification de la racine de fil.
+fn fetch_failure(err: &matrix_sdk::Error, event_id: &str) -> MatrixError {
+    let translated = from_sdk(err);
+    if translated.retryable() {
+        translated
+    } else {
+        MatrixError::EventNotFound(event_id.to_owned())
+    }
+}
+
 /// Traduit une erreur de récupération de l'événement visé par une réponse
 /// (`src/matrix/client.sdd`, `matrix#DEC-3`) : retryable conservée pour le retry du step, sinon
 /// `EventNotFound` de l'identifiant visé ; `Deserialization` et `StateEvent` sont des erreurs `Sdk`.
 fn from_fetch_error(err: ReplyError, event_id: &str) -> MatrixError {
     match err {
-        ReplyError::Fetch(inner) => {
-            let translated = from_sdk(&inner);
-            if translated.retryable() {
-                translated
-            } else {
-                MatrixError::EventNotFound(event_id.to_owned())
-            }
-        }
+        ReplyError::Fetch(inner) => fetch_failure(&inner, event_id),
         ReplyError::Deserialization | ReplyError::StateEvent => MatrixError::Sdk(err.to_string()),
     }
 }
@@ -538,14 +555,7 @@ fn from_fetch_error(err: ReplyError, event_id: &str) -> MatrixError {
 /// et `Deserialize` sont des erreurs `Sdk`.
 fn from_edit_error(err: EditError, event_id: &str) -> MatrixError {
     match err {
-        EditError::Fetch(inner) => {
-            let translated = from_sdk(&inner);
-            if translated.retryable() {
-                translated
-            } else {
-                MatrixError::EventNotFound(event_id.to_owned())
-            }
-        }
+        EditError::Fetch(inner) => fetch_failure(&inner, event_id),
         EditError::NotAuthor => MatrixError::NotAuthor(event_id.to_owned()),
         EditError::StateEvent | EditError::IncompatibleEditType { .. } | EditError::Deserialize(_) => {
             MatrixError::Sdk(err.to_string())
@@ -757,6 +767,7 @@ mod tests {
     use matrix_sdk_crypto::store::CryptoStore;
     use sea_orm::{ConnectOptions, Database, DatabaseConnection};
     use sea_orm_migration::MigratorTrait;
+    use std::sync::{Arc, Mutex};
 
     struct StoreMigrator;
 
@@ -1194,6 +1205,208 @@ mod tests {
         assert!(
             matches!(result, Err(MatrixError::InvalidId(_))),
             "obtenu : {result:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tâche J (arbitré le 2026-11-22, `matrix#OI-7` (b)) : `send` avec `Thread`
+    // vérifie la racine avant l'envoi. Le cas sans homeserver ci-dessous repose
+    // sur un faux serveur HTTP local : aucune requête sortante.
+    // ---------------------------------------------------------------------------
+
+    /// Faux homeserver minimal (tâche J, `src/matrix/client.sdd`) : enregistre la ligne de
+    /// requête de chaque appel et répond selon le chemin — **toute** lecture d'événement rend
+    /// 404 `M_NOT_FOUND`, la jonction, les versions et l'envoi rendent 200. Si la racine du
+    /// fil n'est pas vérifiée avant l'envoi, l'envoi aboutit et le test échoue.
+    struct FakeHomeserver {
+        base_url: String,
+        room_id: String,
+        user_id: String,
+        requests: Arc<Mutex<Vec<String>>>,
+        accept: tokio::task::JoinHandle<()>,
+    }
+
+    impl FakeHomeserver {
+        async fn start() -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("faux homeserver se lie sur un port local libre");
+            let addr = listener.local_addr().expect("adresse locale du faux serveur");
+            let server_name = addr.to_string();
+            let room_id = format!("!salon:{server_name}");
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&requests);
+            let room = Arc::new(room_id.clone());
+            let accept = tokio::spawn(async move {
+                loop {
+                    let Ok((stream, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let sink = Arc::clone(&sink);
+                    let room = Arc::clone(&room);
+                    tokio::spawn(async move {
+                        if let Err(err) = serve_fake_request(stream, sink, room).await {
+                            tracing::debug!(error = %err, "faux homeserver : requête abandonnée");
+                        }
+                    });
+                }
+            });
+            Self {
+                base_url: format!("http://{addr}"),
+                room_id,
+                user_id: format!("@bot:{server_name}"),
+                requests,
+                accept,
+            }
+        }
+
+        /// Lignes de requête reçues, dans l'ordre.
+        fn requests(&self) -> Vec<String> {
+            self.requests.lock().expect("verrou du faux serveur").clone()
+        }
+    }
+
+    impl Drop for FakeHomeserver {
+        fn drop(&mut self) {
+            self.accept.abort();
+        }
+    }
+
+    /// Sert une requête HTTP/1.1 puis ferme la connexion : lit les en-têtes, draine le corps,
+    /// enregistre la ligne de requête, répond selon [`fake_response`].
+    async fn serve_fake_request(
+        mut stream: tokio::net::TcpStream,
+        sink: Arc<Mutex<Vec<String>>>,
+        room_id: Arc<String>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut pending: Vec<u8> = Vec::new();
+        let head_end = loop {
+            let mut chunk = [0_u8; 1024];
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                return Ok(());
+            }
+            pending.extend_from_slice(&chunk[..read]);
+            if let Some(end) = pending.windows(4).position(|window| window == b"\r\n\r\n") {
+                break end;
+            }
+        };
+        let head = String::from_utf8_lossy(&pending[..head_end]).into_owned();
+        let first_line = head.lines().next().unwrap_or_default().to_owned();
+        let content_length = head
+            .lines()
+            .skip(1)
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if !name.trim().eq_ignore_ascii_case("content-length") {
+                    return None;
+                }
+                value.trim().parse::<usize>().ok()
+            })
+            .unwrap_or(0);
+        let already = pending.len().saturating_sub(head_end + 4);
+        let missing = content_length.saturating_sub(already);
+        if missing > 0 {
+            let mut body = vec![0_u8; missing];
+            stream.read_exact(&mut body).await?;
+        }
+        sink.lock()
+            .expect("verrou du faux serveur")
+            .push(first_line.clone());
+        let (status, reason, body) = fake_response(&first_line, &room_id);
+        let message = format!(
+            "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(message.as_bytes()).await?;
+        stream.shutdown().await?;
+        Ok(())
+    }
+
+    /// Routage du faux serveur : la lecture d'un événement (`/event/`) est **toujours** un 404
+    /// `M_NOT_FOUND` (événement inconnu du serveur) ; la jonction et l'envoi réussissent ; les
+    /// données de compte et l'état de chiffrement sont absents (404 = non défini, salle non
+    /// chiffrée) ; tout le reste répond une coquille vide 200.
+    fn fake_response(first_line: &str, room_id: &str) -> (u16, &'static str, String) {
+        let path = first_line.split_whitespace().nth(1).unwrap_or_default();
+        let not_found = || {
+            (
+                404_u16,
+                "Not Found",
+                r#"{"errcode":"M_NOT_FOUND","error":"not found"}"#.to_owned(),
+            )
+        };
+        if path.contains("/versions") {
+            (200, "OK", r#"{"versions":["v1.11"]}"#.to_owned())
+        } else if path.contains("/event/") || path.contains("/state/") || path.contains("/account_data/") {
+            // Tout événement absent est 404 `M_NOT_FOUND` — dont la lecture de la racine de fil,
+            // point d'honneur du test : la racine est inconnue du faux serveur.
+            not_found()
+        } else if path.contains("/join") {
+            (200, "OK", format!(r#"{{"room_id":"{room_id}"}}"#))
+        } else if path.contains("/send/") {
+            (200, "OK", r#"{"event_id":"$envoye:localhost"}"#.to_owned())
+        } else {
+            (501, "Not Implemented", r#"{"errcode":"M_UNKNOWN","error":"faux serveur — requête non routée par le test : la consigner ici"}"#.to_owned())
+        }
+    }
+
+    // Scenario: un fil vers une racine inconnue échoue vite — volet unitaire sans réseau (tâche J,
+    // `matrix#OI-7` (b)) : racine bien formée que le serveur ne connaît pas (404 `M_NOT_FOUND` à la
+    // récupération) → `EventNotFound` de cette racine, construit par la même règle que `Reply`
+    // (`from_fetch_error` : non retryable → `EventNotFound`), et **aucun envoi** publié.
+    #[tokio::test]
+    async fn send_thread_to_unknown_root_fails_before_publishing() {
+        let hs = FakeHomeserver::start().await;
+        let db = fresh_db().await;
+        let config = MatrixConfig::new(hs.base_url.clone(), "passphrase-1", "pod-j");
+        let session = SessionImport {
+            user_id: hs.user_id.clone(),
+            device_id: "DEVICEJ".into(),
+            access_token: "tok".into(),
+            refresh_token: None,
+        };
+        let client = MatrixClient::import_session(db, config, session)
+            .await
+            .expect("import_session contre le faux serveur local");
+        let unknown = "$racine-inconnue:localhost".to_owned();
+        let relation = MessageRelation::Thread {
+            root: unknown.clone(),
+            latest: None,
+        };
+        let Ok(result) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            client
+                .send(
+                    &hs.room_id,
+                    "fil vers une racine inconnue",
+                    None,
+                    MessageKind::Text,
+                    Some(&relation),
+                    None,
+                )
+                .await
+        })
+        .await
+        else {
+            panic!(
+                "`send` n'a pas rendu la main en 10 s — requêtes reçues : {:?}",
+                hs.requests()
+            );
+        };
+        assert!(
+            matches!(&result, Err(MatrixError::EventNotFound(id)) if id == &unknown),
+            "EventNotFound de la racine inconnue attendu, obtenu : {result:?} — requêtes reçues : {:?}",
+            hs.requests()
+        );
+        let requests = hs.requests();
+        assert!(
+            requests.iter().any(|line| line.contains("/event/")),
+            "la racine doit être récupérée avant l'envoi : {requests:?}"
+        );
+        assert!(
+            !requests.iter().any(|line| line.contains("/send/")),
+            "aucun message ne doit être publié sur une racine inconnue : {requests:?}"
         );
     }
 

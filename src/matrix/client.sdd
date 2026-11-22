@@ -287,6 +287,19 @@ Tasks:
       été prouvés en réel (`device_code_login_then_echo` ne prouvait que les `send` sans relation) ; consigner la mesure `OI-7(b)`
       dans `dsd/miryad-core/matrix.md` (domaine développeur principal).
   [ ] Tâche J (arbitré le 2026-11-22, `matrix#OI-7` (b)) : `send` avec `Thread` vérifie la racine avant l'envoi (`EventNotFound`, voir le `Must` et le Scenario « un fil vers une racine inconnue échoue vite ») — test d'abord (cas pur : identifiant bien formé, double `Sender` ou traduction d'erreur sans réseau ; le cas serveur dans ../../tests/matrix_live.rs, `#[ignore]`, mesure `relation_to_unknown_event_measures_palpo` à réécrire en assertion `EventNotFound` rapide), puis ./client.rs. Après la tâche F.
+    Écrit 2026-11-22 (implementer ; validator PASS : unitaire `send_thread_to_unknown_root_fails_before_publishing` vert — `EventNotFound` portant
+    la racine, `/event/` émis, aucun `/send/` (faux homeserver HTTP local, aucune sortie réseau) ; rouge d'abord vérifié en source (à HEAD, `send`
+    publiait sans vérifier) ; batterie complète 17+17 + fmt + `cargo tree` verts, 35 OK, aucun FAIL ; factorisation @fetch_failure = le troisième
+    appelant que le `[?]` de la tâche G conditionnait, parité des deux appelants existants vérifiée en diff). Le test live réécrit
+    (`relation_to_unknown_event_fails_fast`, compilé, listé ignoré) **n'a pas été rejoué** sur ce pod (aucune variable `MIRYAD_MATRIX_*`) :
+    la case reste `[ ]` jusqu'à une exécution réelle contre Palpo, comme la tâche D bis.
+    [?] Renommage `relation_to_unknown_event_measures_palpo` → `relation_to_unknown_event_fails_fast` et en-tête de ../../tests/matrix_live.rs
+    (« mesure » → « assertion », OI-7(b) étant consigné et arbitré) — wording sans contrat, fait, consigné en tête du fichier.
+    [?] Budgets de « vite » : 10 s (unitaire, plafond anti-hang) et 15 s (live) choisis ; le Scenario dit « quelques secondes au plus » et le 500
+    de Palpo est mesuré à 0,0 s — serrer le budget live (p. ex. 5 s) ? Recommandation du validator : oui. Choix provisoire : 15 s conservé.
+    [?] La spec dit « via `from_fetch_error` » ; le code factorise la règle en @fetch_failure, dont `from_fetch_error` et `from_edit_error`
+    délèguent — sémantique identique, nom différent ; tracer la factorisation ici (recommandé) ou amender le `Must` au prochain passage.
+    Choix provisoire : tracé ici, `Must` non amendé (hors cycle).
   [x] Tâche K (arbitré le 2026-11-22) : documenter dans la doc de `import_session` (./client.rs) l'absence de rafraîchissement du jeton d'accès (401 `M_UNKNOWN_TOKEN` après expiration, 300 s côté MAS) et le renvoi vers `login_with_device_code` ; documentation seule, sans test.
     Validé 2026-11-22 (validator PASS : diff limité au doc-comment de `import_session`, batterie complète 17+17 + fmt + 8 contrôles `cargo tree`
     verts, zéro warning clippy et rustdoc sur ./client.rs ; l'hypothèse `client_id` de `matrix#OI-1` n'est pas affirmée dans la doc, constat seul).

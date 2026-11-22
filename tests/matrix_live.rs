@@ -12,8 +12,8 @@
 //! Couverts ici : connexion par `import_session`, envoi idempotent par `txn_id`, ordre chronologique
 //! de `recent_messages`, non-remise des messages du bot par `run_sync` puis arrêt propre ; et
 //! (tâche D bis, issue #87) relation de fil relue par `recent_messages`, réponse, édition et rejeu
-//! du `txn_id` sur chacun, mesure du comportement de Palpo face à une relation vers un événement
-//! inconnu (`matrix#OI-7`, point (b)).
+//! du `txn_id` sur chacun, échec rapide d'une relation vers un événement inconnu (`matrix#OI-7`,
+//! point (b), assertion `EventNotFound` depuis la tâche J du 2026-11-22).
 //!
 //! À écrire quand un second compte de test existe (scénarios à deux comptes ou deux processus,
 //! non écrits à ce jour) :
@@ -64,7 +64,7 @@ use std::io::Write;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use miryad_core::matrix::{
     MatrixClient, MatrixConfig, MatrixError, MatrixEventHandler, MatrixMessage, MessageKind, MessageRelation,
@@ -84,6 +84,10 @@ const REQUIRED_ENV: [&str; 4] = [
 
 /// Délai laissé à la boucle de sync pour recevoir (ou non) le message envoyé par le bot lui-même.
 const OWN_MESSAGE_WAIT: Duration = Duration::from_secs(8);
+
+/// Délai maximal accordé à un `send` vers un événement inconnu (tâche J, `matrix#OI-7` (b)) :
+/// la vérification de racine est une requête unique, jamais la retente prolongée d'un 500.
+const UNKNOWN_RELATION_BUDGET: Duration = Duration::from_secs(15);
 
 /// Paramètres lus dans l'environnement. `Debug` absent : la session contient des jetons.
 struct Live {
@@ -576,20 +580,20 @@ async fn edit_body_visible_in_recent_messages() {
     );
 }
 
-/// Cas (e) — **mesure du comportement de Palpo** pour une relation vers un événement inconnu
-/// (`matrix#OI-7`, point (b)) :
+/// Cas (e) — une relation vers un événement inconnu échoue **vite** (arbitré le 2026-11-22,
+/// `matrix#OI-7`, point (b) ; réécrit en assertion par la tâche J de `src/matrix/client.sdd`,
+/// ancienne mesure `relation_to_unknown_event_measures_palpo`) :
 ///
 /// - `Reply` : la spec promet `Err(MatrixError::EventNotFound)` (`from_fetch_error` : 404 du
-///   `make_reply_event` traduit, toute autre erreur non retryable devenant `Sdk`). **MESURE À
-///   CONSIGNER dans matrix#OI-7(b)** : vérifier que Palpo répond bien 404 sur
-///   `/rooms/{id}/event/{unknown}` — un 403 ou un 203 ferait échouer ce test et se consignerait.
-/// - `Thread` : construit à la main (`apply_thread`, aucune récupération) — la spec ne promet
-///   donc aucune erreur côté client ; c'est précisément le point à mesurer : le serveur refuse
-///   ou accepte une relation `m.thread` vers une racine inconnue. Le résultat est consigné sur
-///   stdout (`MESURE_OI7B`), sans assertion sur le fond.
+///   `make_reply_event` traduit, toute autre erreur non retryable devenant `EventNotFound`).
+/// - `Thread` : la racine est **vérifiée avant l'envoi** depuis la tâche J — même récupération
+///   d'événement que la `Reply`, même traduction. Une racine bien formée mais inconnue rend
+///   `EventNotFound` en quelques secondes au plus : le 500 de Palpo sur `/send` (constat d'origine,
+///   SDK qui retente plus de 300 s) ne doit plus jamais être atteint, et aucun message n'est
+///   publié. Le délai borné ci-dessous prouve l'absence de retente prolongée.
 #[ignore = "nécessite un homeserver Matrix réel : voir les variables MIRYAD_MATRIX_*"]
 #[tokio::test]
-async fn relation_to_unknown_event_measures_palpo() {
+async fn relation_to_unknown_event_fails_fast() {
     let live = live_env();
     let client = connect(&live).await;
     let room = client
@@ -609,31 +613,45 @@ async fn relation_to_unknown_event_measures_palpo() {
         )
         .await;
     assert!(
-        matches!(reply, Err(MatrixError::EventNotFound(_))),
-        "une Reply vers un événement inconnu doit rendre EventNotFound \
+        matches!(&reply, Err(MatrixError::EventNotFound(id)) if id == &unknown),
+        "une Reply vers un événement inconnu doit rendre EventNotFound de l'identifiant visé \
          (matrix#FR-13, from_fetch_error) — obtenu {reply:?}"
     );
 
-    let thread = client
-        .send(
-            &room,
-            &format!("miryad live test inconnu thread {}", live.suffix),
-            None,
-            MessageKind::Text,
-            Some(&MessageRelation::Thread {
-                root: unknown,
-                latest: None,
-            }),
-            None,
-        )
-        .await;
-    match &thread {
-        Ok(event_id) => println!("MESURE_OI7B thread_root_inconnu: accepté, event_id={event_id}"),
-        Err(err) => println!("MESURE_OI7B thread_root_inconnu: refusé : {err}"),
-    }
+    let start = Instant::now();
+    let thread = tokio::time::timeout(UNKNOWN_RELATION_BUDGET, async {
+        client
+            .send(
+                &room,
+                &format!("miryad live test inconnu thread {}", live.suffix),
+                None,
+                MessageKind::Text,
+                Some(&MessageRelation::Thread {
+                    root: unknown.clone(),
+                    latest: None,
+                }),
+                None,
+            )
+            .await
+    })
+    .await
+    .expect(
+        "un fil vers une racine inconnue doit rendre la main en moins de 15 s (tâche J, \
+             jamais de retente prolongée du 500 de Palpo)",
+    );
+    println!(
+        "OI-7(b) thread racine inconnue : {} en {:.1?}",
+        match &thread {
+            Ok(id) => format!("accepté, event_id={id}"),
+            Err(err) => format!("refusé : {err}"),
+        },
+        start.elapsed()
+    );
     assert!(
-        !matches!(thread, Err(MatrixError::InvalidId(_))),
-        "un identifiant bien formé ne doit pas être refusé en validation — obtenu {thread:?}"
+        matches!(&thread, Err(MatrixError::EventNotFound(id)) if id == &unknown),
+        "un Thread vers une racine inconnue doit rendre EventNotFound de cette racine avant \
+         tout envoi (Scenario « un fil vers une racine inconnue échoue vite », tâche J) — \
+         obtenu {thread:?}"
     );
 }
 
