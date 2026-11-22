@@ -270,12 +270,12 @@ impl<'a> StepContext<'a> {
     /// l'échéance** n'est observée par personne : le SDK `0.12.1` n'a pas d'annulation d'awakeable
     /// (le comportement de l'ingress face à cette résolution tardive est mesuré par
     /// ./client.sdd, hors contrat de ce fichier). Un kind qui doit distinguer délai et rejet
-    /// compare le message de l'erreur à [`AWAKEABLE_TIMEOUT_MESSAGE`].
+    /// compare le message de l'erreur à `AWAKEABLE_TIMEOUT_MESSAGE`.
     ///
     /// # Errors
     ///
     /// Le futur rend [`StepError`] `retryable: false` dont le message est exactement
-    /// [`AWAKEABLE_TIMEOUT_MESSAGE`] quand le minuteur gagne ; sur rejet de l'awakeable (message
+    /// `AWAKEABLE_TIMEOUT_MESSAGE` quand le minuteur gagne ; sur rejet de l'awakeable (message
     /// verbatim) ou annulation de l'invocation, comme [`StepContext::awakeable`] ; `Ok(v)` si
     /// l'awakeable gagne avec `v`.
     #[must_use = "l'identifiant et le futur d'un awakeable : jeter l'un des deux perd la résolution ou l'attente"]

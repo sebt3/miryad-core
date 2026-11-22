@@ -235,10 +235,12 @@ Tasks:
     Arbitré le 2026-11-14 : `awakeable_timeout` est **inclus** (sans délai un awakeable jamais résolu bloque le run, le SDK `0.12.1` n'ayant pas d'annulation d'awakeable ; @StepContext est opaque, l'appelant ne peut pas composer `select!`).
     Arbitré le 2026-11-14 : @StepError **inchangé** : un kind qui doit distinguer rejet, délai et annulation compare la constante `AWAKEABLE_TIMEOUT_MESSAGE` (`pub(crate)`) ; aucun genre d'erreur, aucun code `MRD-WORKFLOW-*` nouveau.
     Arbitré le 2026-11-14 : alternative écartée : `ctx.signal` (`ContextSignals` du SDK, promesse nommée scoped à une invocation, complétée par l'id d'invocation) : adaptée à une autre invocation Restate, pas à un appel HTTP externe porteur d'un identifiant ; `ctx.signal` écarté.
-  [ ] Cycle I8 (arbitré par le développeur principal le 2026-11-22, même règle que I7 : liens convertis en texte inline, items restent privés ; documentation seule, sans test, `cargo doc --all-features --no-deps` sans warning sur le fichier) — constat du cycle I7 : `cargo doc
+  [x] Cycle I8 (arbitré par le développeur principal le 2026-11-22, même règle que I7 : liens convertis en texte inline, items restent privés ; documentation seule, sans test, `cargo doc --all-features --no-deps` sans warning sur le fichier) — constat du cycle I7 : `cargo doc
       --all-features --no-deps` relève ici 2 liens « links to private item » vers `AWAKEABLE_TIMEOUT_MESSAGE`
       (`pub(crate)`, ./durable.rs ~l. 273/278, doc de `awakeable_timeout`) — à convertir en texte inline, même correction
       que le cycle I7.
+    Validé 2026-11-22 (validator PASS : 2 liens convertis en backticks à l. 273/278, `AWAKEABLE_TIMEOUT_MESSAGE` reste `pub(crate)`,
+    `cargo doc --all-features` sans warning sur ./durable.rs, batterie complète 17+17 + fmt + contrôles `cargo tree` verts).
 
 Done when:
   Les `Scenario` ci-dessous ont chacun un test nommé distinct et vert, sur la feature `workflow` ; les
