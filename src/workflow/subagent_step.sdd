@@ -51,21 +51,17 @@ Must:
     3. `install_crypto_provider()` (idempotent) ; `Identity::resolve(trigger)` → `UnknownSubject`/`Forbidden` non retryable.
     4. `LymailleStores::new(db, trigger)` ; `agents().get_agent(agent)` : absent → non retryable « unknown agent » ; sa nature doit être `Sub`
       (sinon « agent is not a sub-agent ») et son `output_schema` présent (sinon « sub-agent has no output schema »).
-    5. `check_grants(caller, definition.modules, ADMIN_ONLY_MODULES)` (`ADMIN_ONLY_MODULES` : constante unique de ../lymaille/identity.sdd, vide au lot 1, mécanisme présent ;
-      défense en profondeur de DSD `FR-9`).
+    5. (amendement 2026-11-22, DEC-32) la définition ne porte plus de modules : l'ancien `check_grants(caller, definition.modules, …)` disparaît ; le droit se contrôle à l'étape 7 sur les dépendances des toolsets (`ADMIN_ONLY_MODULES` : constante unique de ../lymaille/identity.sdd).
     6. Profil : `profiles().resolve_profile(<profil de la définition>, None)` ; **définition sans profil explicite** (amendement du 2026-11-13, issue #75) : profil = `LymailleHost::default_profile()` (même règle que ../lymaille/interactive/assemble.sdd) ; absence, `Ok(None)` ou panne → `StepError` **non retryable** (« no default profile configured ») ; provider : `providers().get_provider(<nom du profil>)` ; absents ou
       taille de contexte inconnue → non retryable. Secret : `secrets.resolve(provider.auth)` si `auth` est défini (`SecretUnresolved` non
       retryable) ; client d'inférence : `RigProvider::new(&RigConfig::new(address, api_key))` (`[?]`). Le secret est enregistré auprès du
       `Redactor` de la session (`[?]`) et n'en sort jamais.
     7. Toolsets (amendement DEC-27 : les rôles MCP de ces toolsets sont résolus par `resolve_role(deps.host, db, caller, <contexte>, <rôle>, <serveur lié>)` de ../lymaille/mcp_access.sdd sous le principal du
-      déclencheur ; un refus (`Forbidden`) ou un `forward` est un `StepError` **non retryable**, sans repli ; le jeton de l'hôte n'est jamais persisté) : `toolsets().get_active(name)` pour chaque nom de `definition.toolsets` (absent → non retryable) ; modules accordés : seul le
-      nom `resources` (`resources_module(readers, db, trigger)`) est connu au lot 1, plus `todo` et `memory` de `lymaille` **si** leur
-      construction ne demande que des objets déjà disponibles (`[?]`, l'implémenteur lève une question sinon) ; un autre nom →
-      non retryable « unknown module: <nom> ». `assemble(…)` produit les `Grants` ; une panne d'assemblage d'un toolset est non retryable.
+      déclencheur ; un refus (`Forbidden`) ou un `forward` est un `StepError` **non retryable**, sans repli ; le jeton de l'hôte n'est jamais persisté) : `toolsets().get_active(name)` pour chaque nom de `select_toolsets(contexte du step, définition).names()` (liste du `ToolsetContext` lié, restreinte par `toolset_restriction` du sous-agent ; absent → non retryable ; `ignored()` → avis) ; `check_grants(caller, dépendances du toolset, ADMIN_ONLY_MODULES)` pour chacun (défense en profondeur ; refus → non retryable nommant le module) ; capacités (amendement 2026-11-22) : un `Capabilities::compiled()` auquel on ajoute `resources` (`resources_module(registry, db, trigger)`, `with_module`), les modules d'hôte enregistrés et les rôles MCP ; les modules natifs (`todo`, `memory_*`, `result`) viennent de la nature `Sub` de `lymaille` (`native_modules`), jamais d'une liste ; un nom de dépendance absent du registre → non retryable « unknown module: <nom> ». `assemble(toolsets, &capabilities, &contexte, &limites)` produit la `Presentation` ; une panne d'assemblage d'un toolset est non retryable.
     8. Session : `SessionId` déterministe `"wf-"` + 32 premiers hexadécimaux de `sha256(run_key + "\0" + step_id)` (`sha2`, `hex`) ;
       `sessions().load(id)` : présente → `restore_session` (reprise ; les avis de provenance de `lymaille` sont transmis à l'agent, DSD
       `OI-8` : **accepté au lot 1**, pas d'échec sur empreinte différente) ; absente → nouvel état de nature `Sub`.
-    9. Moteur : `ScratchpadEngine::builder(limits, grants)` avec `result_module(collector)` (`ResultCollector::new(agent, schema, corrections)`),
+    9. Moteur : `ScratchpadEngine::builder(limits, presentation)` avec `result_module(collector)` (`ResultCollector::new(agent, schema, corrections)`),
       puis `TurnRunner::new(…)` avec le store de session du principal.
     10. Plafond : une tâche `tokio` déclenche `cancel.cancel()` après `max_secs` (abandonnée dès la fin du run) ; `run_batch(runner, task, &collector,
       &cancel, max_turns)`.
@@ -161,6 +157,7 @@ Tasks:
     Arbitré par Sébastien le 2026-11-16 : le `Scenario` « un serveur MCP en forward fait échouer le step sans retry » porte désormais son cas (hôte sans jeton, `forward_token` rend `None`) ; le cas avec jeton est au `Scenario` « un serveur MCP en forward est monté avec le jeton de l'hôte ».
     `build_auth` (./../lymaille/mcp_access.sdd) ; jeton fourni → serveur monté ; sinon le `StepError` non retryable actuel. Amender le `Scenario` « un serveur MCP en forward fait échouer le step sans retry »
     (cas sans fournisseur conservé) et ajouter le cas « hôte qui fournit un jeton ». Puis tests d'abord, puis ./subagent_step.rs. Après ./../lymaille/mcp_access.sdd.
+  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : adapter le step à `Capabilities` + `Presentation` (étapes 5, 7 et 9 ci-dessus) ; tests d'abord (adapter les tests existants ; Scenario ci-dessous), puis ./subagent_step.rs. Après ../lymaille/mcp_mount.sdd et ../lymaille/interactive/assemble.sdd (même lot).
 
 Done when:
   Les `Scenario` unitaires sont verts sous `all(workflow, lymaille)` et `--all-features` ; les specs de ../lymaille/ sont approuvées avant
@@ -270,3 +267,8 @@ Scenario: un agent sans profil suit le profil par défaut de l'hôte
   Given une définition `Sub` sans profil explicite, un hôte dont `default_profile` rend `Some("qwen")`, puis un hôte sans défaut
   When le step s'exécute
   Then il s'exécute sur `qwen` ; sans défaut, `StepError` non retryable « no default profile configured »
+
+Scenario: un toolset à dépendance réservée admin échoue sans exécution (2026-11-22)
+  Given un déclencheur non-admin et un sous-agent dont le toolset du contexte dépend d'un module réservé admin
+  When le step s'exécute
+  Then `StepError` non retryable nommant le module, avant tout tour d'inférence

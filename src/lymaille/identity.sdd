@@ -42,7 +42,7 @@ Must:
     (`Forbidden("host identifiers are not writable")`) : aucune surface (REST, MCP, module des ressources, session de configuration) n'écrit un identifiant `H_…`.
   `pub fn check_grants(caller: &CallerPrincipal, granted: &[String], admin_only: &[&str]) -> Result<(), LymailleError>` (pure) : si
     un module de `granted` figure dans `admin_only` et que `caller` n'est pas admin → `Forbidden("module reserved to admins: <nom>")` ;
-    sinon `Ok`. Une définition ne peut accorder que des modules que son propriétaire pourrait utiliser lui-même (DSD `FR-9`).
+    sinon `Ok`. Le droit d'accord s'applique aux **capacités brutes** qu'un toolset déclare en dépendance (hooks de ../definitions/private_toolset.sdd, activation, assemblage) et aux `modules` de `ScriptGrants` (../script_runner.sdd) ; la définition d'agent ne porte plus rien à contrôler depuis `lymaille` 0.4.0 (amendement 2026-11-22, DSD `DEC-32`). Le contrôle de l'ancien `def.modules()` disparaît de ../interactive/assemble.sdd, ../definitions/private_agent.sdd et ../../workflow/subagent_step.sdd (DSD `FR-9`).
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -85,6 +85,7 @@ Tasks:
     sans `-`, le contexte HTTP passe par un champ de corps JSON). Tests : `classify_accepts_dash_in_host_identifiers` (rouge d'abord), `classify_refuses_dash_outside_host_identifiers` (non-régression, verte
     d'emblée — verrouille la moitié conservée du Scenario).
     [?] (spec-dd) : l'amendement du DSD `lymaille#DEC-9` (« identifiant Rhai valide », exception `H_…` avec `-`) reste à écrire côté développeur principal — domaine hors du cycle.
+  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : aucun changement de code (la signature de `check_grants` et la constante `ADMIN_ONLY_MODULES` sont inchangées) ; vérifier par recherche dans `src/` qu'aucun appelant ne passe plus `def.modules()` (AC ci-dessous, cycle de clôture de la migration). Spec seule.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./identity.rs.

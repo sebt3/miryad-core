@@ -4,9 +4,7 @@ Purpose:
   Porter l'entité @MiryadResource de la table privée `miryad_lymaille_agents` (seconde ressource de la paire `DEC-19`, entité annoncée au lot 2) :
     un utilisateur crée, lit, modifie et supprime ses propres agents par REST et MCP, hors session de configuration. `OwnerOnly` ; l'identifiant est
     un identifiant `Private` (jamais `G_`/`g_`). Mêmes colonnes dérivées que ./agent.sdd (la colonne JSON `definition` est la source de vérité).
-    Le contrôle des droits d'accord de modules (`FR-9`, `check_grants`) est fait **ici à la sauvegarde** (amendement 2026-11-11, DSD `hooks-async#DEC-7`), l'état admin étant relu par
-    la connexion du hook, puis par `put_agent` (chemin des stores et de la session de configuration, ../store/catalog.sdd) et, en défense en profondeur, à l'appel d'un module (`FR-4`).
-    Il est tranché sous l'**appelant** du hook : un admin qui écrit la ligne d'un autre utilisateur n'est pas bridé à la sauvegarde, l'appel relit alors le propriétaire. Fichier neuf, conception.
+    Depuis `lymaille` 0.4.0 (amendement 2026-11-22, DSD `miryad-core/lymaille#DEC-32`) la définition d'agent **ne porte plus aucun droit** (ni liste de modules, ni droit de Memory, ni toolsets hors restriction de sous-agent) : ce fichier ne contrôle plus de droit d'accord de modules ; le contrôle vit sur les dépendances des toolsets (./private_toolset.sdd). Fichier neuf, conception.
 
 Owns:
   ./private_agent.rs
@@ -22,9 +20,8 @@ Must:
     `filter_column()` = `Some(Column::Kind)` ; `label_column()` = `Some(Column::AgentId)`.
   `before_create` / `before_update` : les étapes de ./agent.sdd, sauf l'étape 4 qui exige `classify(def.id()) = Private`, avec la distinction par préfixe de `./user_context.sdd` :
     `G_`/`g_` → « agent id cannot use the catalog prefix » ; `H_`/`h_` → « agent id cannot use the host prefix » ; identifiant invalide au sens Rhai → « invalid agent id » ; `agent_id` ne change pas à la mise à jour.
-  Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) — après les étapes de validation, `before_create` / `before_update` appellent `check_grants(caller_of(db, principal.subject), def.modules(), liste)` avec la liste
-    `ADMIN_ONLY_MODULES` de ../identity.rs (constante unique, jamais une copie) ; le corps est une fonction interne paramétrée par la liste (précédent
-    `activate_with`) pour être testable avec une liste non vide. un refus est un `HookError` sans code (`422` en REST, `-32000` en MCP) ; une panne de lecture (`DbErr`) ou un `subject` inconnu → `HookError::new("authorization check unavailable")`, texte fixe sans détail de l'erreur (échec fermé). Le message du refus nomme le module, jamais le prompt.
+  **Amendement du 2026-11-22 (DEC-32, `lymaille` 0.4.0)** — retire l'amendement du 2026-11-11 (`check_grants` sur `def.modules()`) : `AgentDefinition` n'a plus de champ `modules` ni `toolsets` d'agent de travail. Les hooks `before_create` / `before_update` n'appellent plus `caller_of` ni `check_grants`.
+    Une clé `modules` ou `toolsets` d'un JSON hérité est **ignorée** à la lecture (l'amont n'a pas de `deny_unknown_fields`) et disparaît à la réécriture. La restriction de toolsets d'un sous-agent (`toolset_restriction`) n'étend jamais la liste du contexte (amont, `Selection`) : aucun contrôle ici ; sur un agent de travail ou de configuration, `AgentDefinition::validate` amont la refuse et ce refus remonte en `HookError` sans code, sans citer le prompt.
   **Amendement du 2026-11-13 (issues #79 et #72)** : `Model` dérive `utoipa::ToSchema` — `rest::openapi::resource_openapi::<Entity>()` compile pour cette ressource, colonnes JSON `definition` décrites en objet libre (`#[schema(value_type = Object)]`) tant que les types de `lymaille` n'ont pas de schéma ; `DateTimeUtc` en
     `#[schema(value_type = String, format = DateTime)]` — et `ts_rs::TS` : colonne(s) `definition` typée(s) par `AgentDefinition` de `lymaille` (dérive `TS` amont, `lymaille` 0.3.0, issue sebt3/lymaille#10), les autres colonnes JSON de forme propre à la crate (tableaux de chaînes, `script_grants` `{ toolsets: string[]; modules: string[] }`) typées par `#[ts(type = "…")]` ; `DateTimeUtc` exporté `string` (`#[ts(type = "string")]`, RFC 3339 comme sérialisé), les entiers `number`, aucune feature d'implémentation de type tiers
     de `ts-rs`. Les dérives n'ajoutent aucun attribut `serde` et ne changent **aucune** sérialisation. Le `Model` n'est exporté que par l'export TypeScript de ../interactive/event.sdd (aucun `#[ts(export)]`).
@@ -32,10 +29,10 @@ Must:
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
-  Contrôler `check_grants` avant la validation de la définition ; relire l'état admin ailleurs que par la connexion du hook ; mettre en cache un `CallerPrincipal` ; écrire au catalogue ; coder un `MRD-*` ; citer le prompt.
+  Contrôler un droit d'accord de modules (la définition n'en porte plus, DEC-32) ; relire l'état admin ; mettre en cache un `CallerPrincipal` ; écrire au catalogue ; coder un `MRD-*` ; citer le prompt.
 
 Depends on:
-  ../identity.rs (`caller_of`, `check_grants`, `ADMIN_ONLY_MODULES`), @sea_orm, @serde_json, `lymaille::AgentDefinition`
+  @sea_orm, @serde_json, `lymaille::AgentDefinition`
 
 Exposes:
   `Entity`, `Model`, `ActiveModel`, `Column`, `impl MiryadResource`
@@ -67,6 +64,7 @@ Tasks:
     Nommage TS arbitré par Sébastien le 2026-11-16 : suffixe `Model` conservé ; le `Model` est exporté sous `<PascalCase(entité)>Model` (déjà livré : `#[ts(rename = "…Model")]` dans ./private_agent.rs).
     version amont qui dérive `TS` sur ses définitions. Alors : spec (`Must`, `Scenario` « le `.ts` exporté type la colonne par `AgentDefinition` »), test de contrat (valeur construite par la crate → JSON identique
     à la forme déclarée, JSON de la déclaration accepté par la crate), puis ./private_agent.rs.
+  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : retirer le contrôle `check_grants` des hooks (le corps paramétré par la liste, `caller_of` et la dépendance à ../identity.rs disparaissent de ce fichier) ; tests d'abord (les deux nouveaux `Scenario`, rouges avant le retrait), puis suppression des tests `sauvegarde_*`/`serveur_inexistant_*` de la sauvegarde des modules, puis ./private_agent.rs. Après la montée de `lymaille` à 0.4 (/miryad-core.sdd, tâche L0).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./private_agent.rs.
@@ -96,25 +94,15 @@ Scenario: renommer est refusé
   When `before_update` avec une définition d'id `y`
   Then `Err(HookError)` « agent id cannot change »
 
-Scenario: un accord de module réservé à l'admin est refusé à la sauvegarde
-  Given la fonction interne avec la liste `["secrets"]`, un propriétaire non-admin et une définition valide qui accorde `secrets`
-  When le hook de création, puis celui de mise à jour, sont attendus
-  Then les deux rendent un `HookError` sans code dont le message nomme le module réservé et ne cite pas le prompt, avant toute écriture
+Scenario: une définition héritée avec une clé `modules` est acceptée et la clé ignorée (2026-11-22)
+  Given un JSON de définition valide qui porte en plus `"modules": ["secrets"]`, propriétaire non-admin
+  When `before_create`
+  Then `Ok`, aucune lecture de groupe, et la définition réécrite ne porte plus la clé `modules`
 
-Scenario: un admin, ou une définition sans module réservé, est accepté
-  Given la même liste, puis un appelant admin avec la définition qui accorde `secrets`, puis un non-admin avec une définition qui n'accorde que `resources`
-  When le hook est attendu
-  Then `Ok` dans les deux cas, ActiveModel inchangé hors colonnes dérivées
-
-Scenario: le droit admin est relu à chaque sauvegarde
-  Given un admin qui sauve une définition accordant `secrets`, puis retiré du groupe admin
-  When il sauve à nouveau la même définition
-  Then la première sauvegarde est acceptée, la seconde refusée
-
-Scenario: une panne de lecture est un refus fermé sans détail
-  Given une connexion simulée dont la lecture du groupe échoue (`DbErr` détaillée), puis un `subject` sans compte
-  When le hook est attendu
-  Then `HookError` de message exactement `authorization check unavailable`, sans texte de la `DbErr`, dans les deux cas
+Scenario: une restriction de toolsets sur un agent de travail est refusée (2026-11-22)
+  Given une définition de nature `work` avec `with_toolset_restriction(["git"])`
+  When `before_create`
+  Then `Err(HookError)` sans code, qui ne cite pas le prompt
 
 Scenario: resource_openapi compile et décrit la ressource
   Given l'entité de ce fichier et `rest::openapi::resource_openapi::<Entity>()`

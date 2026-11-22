@@ -3,7 +3,7 @@ Spec: assemble — assemblage du moteur d'une session interactive (Work ou Confi
 Purpose:
   Construire, pour une session interactive, le moteur et le `TurnRunner` de `lymaille` à partir de ce que l'hôte possède (DSD `FR-11`, `DEC-24`) : c'est
     le pendant interactif de l'assemblage batch de ../../workflow/subagent_step.sdd. Il résout l'agent et son profil pour **ce** principal,
-    accorde les modules (`check_grants`), monte le module Rhai `resources` (lecture et écritures, ../resource_module.sdd) avec le sujet de la session,
+    rassemble les **capacités brutes** (`Capabilities`, `lymaille` 0.4.0, DEC-32) dont le module Rhai `resources` (lecture et écritures, ../resource_module.sdd) avec le sujet de la session,
     construit les clients MCP des rôles liés par le contexte en passant par ../mcp_access.sdd (droit d'usage relu, auth `static` ou `forward`
     avec le jeton du tour), et — pour une session `Config` — enregistre les modules de configuration (`contexts`, `inspect`, `sessions`) par
     `config_registration` sur nos stores. Aucune décision de droit n'est dupliquée : tout passe par ../identity.sdd, ../mcp_access.sdd et
@@ -26,17 +26,15 @@ Must:
     1. `AgentStore::get_agent(agent_id)` pour ce principal (privé de l'appelant ou catalogue) ; absent → `NotFound` ;
     2. profil résolu (`ProfileStore::resolve_profile`) et provider (`ProviderStore`) ; **agent sans profil explicite** (amendement du 2026-11-13, issue #75 : la définition porte un profil facultatif, `lymaille` 0.3.0) : le profil est `LymailleHost::default_profile()` (./../host.sdd), relu à **chaque** ouverture ; hôte absent, `Ok(None)` ou `Err(HostError)` → `Config("no default profile configured")` (`MRD-LYMAILLE-008`, non retryable) ; un nom désigné qui n'existe pas → l'erreur de profil inconnu inchangée ; un agent à profil explicite ne consulte pas l'hôte ; la référence d'auth du provider est résolue par le
       @SecretResolver **à la construction du client d'inférence seulement** (`DEC-16`) ;
-    3. `check_grants(caller, def.modules(), ADMIN_ONLY_MODULES)` (constante de ../identity.sdd) : un module réservé à l'admin accordé à un non-admin → `Forbidden` (refus à l'assemblage ;
-      l'appel de module revalide, `FR-4`) ;
+    3. (amendement 2026-11-22, DEC-32) la définition ne porte plus de modules : plus de `check_grants` sur `def.modules()` ; le droit se contrôle sur les **dépendances des toolsets** du contexte (étape 4 bis) ;
     4. toolsets **actifs** (jamais un brouillon) et contexte : le contexte lié (`User` de l'appelant ou `Shared` du catalogue, jamais celui d'un
       autre) fournit les paramètres et les liaisons rôle → serveur ; pour chaque rôle lié : `resolve_role` (../mcp_access.sdd — décision de l'hôte d'abord, repli `server_for(caller, nom)` sur `Unprovided`) puis `build_auth(…, token)` ;
       un rôle **requis** par le type de contexte dont le serveur est refusé fait échouer l'assemblage (`Forbidden("mcp server unavailable")`), un
       rôle optionnel refusé est omis (avis `notices`) ;
-    4 bis. (amendement 2026-11-11, DSD `scripts-hote` `FR-1` à `FR-3`) `check_grants` porte sur `ADMIN_ONLY_MODULES` **augmenté** de `HostModules::admin_only_names()` : un module d'hôte `AdminOnly` accordé à un non-admin est refusé à l'assemblage
-      (l'enrobage de ../host_module.sdd revalide à chaque appel) ;
-    4 ter. (amendement 2026-11-11, DSD `scripts-hote` `FR-1`) la garde de collision de `mount_mcp_roles` reçoit en `taken` les modules de base (`resources`) **et** les noms des modules d'hôte accordés par la définition et enregistrés
-      (ceux que l'étape 5 montera) : un rôle MCP du nom d'un tel module est refusé comme un rôle du nom d'un module de base — même garde que ../script_runner.sdd ;
-    5. modules : `resources` pour tous ; les modules d'hôte accordés par la définition (`def.modules()`) et enregistrés, montés par `mount_host_modules(…, All)` (session interactive) ; si `kind = Config` : `config_registration(...)` (stores = nos `Sea*`, index = `SeaSessionIndex`, slot
+    4 bis. (amendement 2026-11-11, DSD `scripts-hote` `FR-1` à `FR-3`, reformulé le 2026-11-22) les toolsets de la session sont ceux de `ToolsetContext::toolset_names()` du contexte lié, **restreints** pour un sous-agent par `select_toolsets(contexte, définition)` (`lymaille` 0.4.0) ; pour chacun, `check_grants(caller, dépendances du toolset, ADMIN_ONLY_MODULES augmenté de HostModules::admin_only_names())` : un toolset qui dépend d'un module d'hôte `AdminOnly` pour un non-admin → `Forbidden` nommant le module, jamais le source (défense en profondeur de la sauvegarde ; l'enrobage de ../host_module.sdd revalide à chaque appel) ; les noms ignorés par `Selection::ignored()` sont des avis (`notices`) ;
+    4 ter. (amendement 2026-11-11, DSD `scripts-hote` `FR-1`) la garde de collision de `mount_mcp_roles` reçoit en `taken` les noms du registre `Capabilities` déjà rempli (modules des features compilées, `resources`, modules d'hôte enregistrés)
+      (ceux que l'étape 5 enregistre) : un rôle MCP du nom d'un tel module est refusé comme un rôle du nom d'un module de base — même garde que ../script_runner.sdd ;
+    5. capacités (amendement 2026-11-22) : `Capabilities::compiled()`, plus `resources` (`with_module`), **tous** les modules d'hôte enregistrés (`mount_host_modules(…, All)`) et les modules des rôles MCP (`mount_role`) ; aucune n'est présentée au LLM : seul `assemble(toolsets actifs, &capabilities, &contexte résolu, &limites)` produit la `Presentation` (`Assembled::into_presentation`, `failures()` en avis), donnée à `ScratchpadEngine::builder(limites, presentation)` ; un toolset en échec d'assemblage est omis et signalé, jamais fatal ; si `kind = Config` : `config_registration(...)` (stores = nos `Sea*`, index = `SeaSessionIndex`, slot
       d'inspection par session), l'agent `Config` n'appelle aucun serveur MCP, ne délègue pas et n'active rien (`agent-sessions#BR-8`, garanti par
       la définition de l'agent et par ce fichier : aucun client MCP monté pour `Config`) ;
     6. `TurnConfig` : horloge, `Redactor` de la session (secrets du provider et du jeton ajoutés), le `EventHub` en `EventSink`, `Budget` du profil.
@@ -94,6 +92,7 @@ Tasks:
     un `TurnPermit::new(session, || {}, lost.clone())` — le `TurnRunner` ne reprend pas de verrou (le gestionnaire tient déjà le permis réel) mais voit la perte du bail ; un second appel rend `SessionError::TurnActive`.
     `None` → aucun changement (porte par défaut de `lymaille`). `Scenario` : « le jeton de bail traverse l'assemblage » (jeton annulé pendant l'inférence → tour `Cancelled`, `TurnLeaseLost` émis) ; « sans `lease`,
     rien ne change ». Tests d'abord (`ScriptedProvider` qui annule le jeton), puis ./assemble.rs. Après la tâche « Montée de dépendance à `lymaille` 0.3.0 » de ../mod.sdd.
+  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : réécrire l'assemblage interactif sur `Capabilities` + `Presentation` (étapes 3, 4 bis, 4 ter, 5 ci-dessus) ; tests d'abord (adapter les tests existants à la nouvelle API, ajouter les trois `Scenario` ci-dessous), puis ./assemble.rs et ./manager.rs (lecture de la restriction : `toolset_restriction`, plus `toolsets()`). Après ../mcp_mount.sdd (même lot) et ../definitions/private_toolset.sdd.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./assemble.rs.
@@ -157,3 +156,18 @@ Scenario: sans profil par défaut, l'erreur nomme la cause
   Given un agent sans profil explicite et un hôte absent, puis un hôte qui rend `Ok(None)`, puis `Err(HostError)`
   When une session est assemblée
   Then `Config("no default profile configured")` dans les trois cas, `MRD-LYMAILLE-008`, sans texte de l'hôte
+
+Scenario: un toolset qui dépend d'un module réservé admin est refusé à un non-admin (2026-11-22)
+  Given un registre d'hôte avec un module `secrets` `AdminOnly`, un toolset actif qui le déclare en dépendance, dans le contexte lié, et un appelant non-admin
+  When `assemble_session` est appelé
+  Then `Forbidden` nommant `secrets`, sans source de toolset ; avec un appelant admin, l'assemblage réussit et la présentation ne contient pas le module brut `secrets`
+
+Scenario: un module brut n'est jamais présenté (2026-11-22)
+  Given un contexte sans toolset et un module d'hôte enregistré
+  When la session est assemblée
+  Then la `Presentation` ne contient ni `resources` ni le module d'hôte ; un toolset qui déclare `resources` en dépendance le rend appelable depuis son propre module
+
+Scenario: la restriction d'un sous-agent n'étend pas le contexte (2026-11-22)
+  Given un contexte qui liste `a` et `b` et un sous-agent restreint à `a` et `c`
+  When la session est assemblée
+  Then seul `a` est présenté et `c` figure dans les avis

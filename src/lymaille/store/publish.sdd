@@ -23,6 +23,7 @@ Must:
     `pub async fn ensure_agent<C>(db: &C, provenance: &Provenance, definition: &AgentDefinition) -> …` (table `catalog_agents`, identifiant `G_…`) ;
     `pub async fn ensure_context_type<C>(db: &C, provenance: &Provenance, definition: &ContextType, allowed_agents: &[String], script_grants: &ScriptGrants) -> …` (table `catalog_context_types`) ;
     `pub async fn ensure_catalog_context<C>(db: &C, provenance: &Provenance, context: &ToolsetContext, context_type: Option<&str>) -> …` (table `catalog_contexts`).
+  **Amendement du 2026-11-22 (DEC-32, `OI-14` (a))** — quatrième fonction : `pub async fn ensure_toolset<C>(db: &C, provenance: &Provenance, toolset: &Toolset) -> Result<PublishOutcome, LymailleError>` (table `catalog_toolsets`, identifiant `G_…`, version **active**, brouillon laissé vide) ; mêmes règles que les trois autres (validation par `check_toolset` partagé, jamais une copie ; `classify == Catalog` ; aucune écriture sur une ligne non gérée ou modifiée) ; la `version` de la provenance est celle de l'hôte, la version du `Toolset` reste portée par la définition. Empreinte : `active`. Colonnes `managed_*` ajoutées à `catalog_toolsets` par une **nouvelle** migration (jamais par retouche d'une migration committée ; ../migration.sdd).
   Pour chacune : (1) la `provenance` est validée (`source` non vide, `version` semver, sinon `InvalidDefinition`) ; (2) l'objet passe **par la même fonction de validation que les hooks** de l'entité visée (jamais une
     copie : `valider_et_deriver` des hooks, rendue `pub(crate)`), y compris `classify(id) == Catalog` ; refus → `InvalidDefinition` (ou le refus du détecteur de secrets, sans écho de la valeur), **avant toute
     écriture** ; (3) **aucun sujet, aucun principal, aucun `check_write`** : ni `Identity`, ni compte administrateur requis (la fonction réussit sur une base fraîche) ; (4) la ligne est lue par son identifiant :
@@ -41,13 +42,13 @@ Must:
 Must not:
   Résoudre ou exiger un principal ; appeler `check_write` ; remplacer une ligne non gérée par la source ou modifiée depuis sa publication ; écrire un identifiant `H_…` ou privé (refusé par `classify`) ;
     dupliquer une règle de validation des hooks ; faire confiance à une empreinte stockée sans la recalculer ; citer le contenu d'une définition ou d'un secret dans une erreur ou une trace ; toucher aux
-    tables privées (`agents`, `user_contexts`, `toolsets`) ou aux toolsets, profils et providers (écrits par les administrateurs seuls).
+    tables privées (`agents`, `user_contexts`, `toolsets`) ou aux profils et providers (écrits par les administrateurs seuls) ; les **toolsets** du catalogue ne sont publiés que par `ensure_toolset` ci-dessous (amendement 2026-11-22).
 
 Depends on:
   ../definitions/agent.rs, ../definitions/context_type.rs, ../definitions/catalog_context.rs, ../identity.rs, ../error.rs, ../host.rs (`ScriptGrants`), @sea_orm, @sha2, @semver, @serde_json, @tracing, `lymaille`
 
 Exposes:
-  `Provenance`, `PublishOutcome`, `SkipReason`, `ensure_agent`, `ensure_context_type`, `ensure_catalog_context`
+  `Provenance`, `PublishOutcome`, `SkipReason`, `ensure_agent`, `ensure_context_type`, `ensure_catalog_context`, `ensure_toolset` (amendement 2026-11-22)
 
 Tasks:
   [x] Dépendance `semver` (déjà au graphe, 1.0.x) en dépendance directe de `/Cargo.toml` sous la feature `lymaille` ; amendement de `/tooling.sdd` si le graphe change. Rien d'autre dans ce lot ; avant ./publish.rs.
@@ -59,6 +60,7 @@ Tasks:
   [x] Tests d'abord (SQLite mémoire, migrations appliquées, aucun utilisateur en base), un test par `Scenario`, puis ./publish.rs. Après ../migration.sdd et ../definitions/{agent,context_type,catalog_context}.sdd (colonnes
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, feature non déclarée, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). 8 tests de Scenario (rouges d'abord sur stub `Store("publish: non implémenté")`), puis ./publish.rs.
     `managed_*`).
+  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : `ensure_toolset` ; tests d'abord (les mêmes cas que `ensure_agent` : création, rejeu `Unchanged`, mise à jour sur version supérieure, `Skipped(Modified)`, `Skipped(Unmanaged)`, préfixe `H_` refusé), puis ./publish.rs. Après ../migration.sdd (tâche de migration `m20261122_000001`, colonnes `managed_*` sur `catalog_toolsets`) et ../definitions/toolset.sdd (`check_toolset`).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./publish.rs.

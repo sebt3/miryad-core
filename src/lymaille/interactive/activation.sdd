@@ -4,7 +4,7 @@ Purpose:
   Porter l'**activation** que `lymaille` laisse à l'hôte (`DEC-8`, `FR-9`, `AC-8`) : promouvoir le brouillon d'un toolset (ou d'un type de contexte
     privé) du propriétaire en version `active`. Aucun trait de `lymaille` ne l'active ; la session de configuration **propose**, l'hôte
     **exécute** sur demande explicite de l'utilisateur (route REST ou commande Matrix, jamais un appel de l'agent `Config`, qui n'active rien,
-    `agent-sessions#BR-8`). Une définition ne peut accorder que des modules que son propriétaire pourrait lui-même employer : le contrôle
+    `agent-sessions#BR-8`). Un toolset ne peut dépendre que de capacités que son propriétaire pourrait lui-même employer (DEC-32 ; ce n'est plus la définition d'agent qui les accorde) : le contrôle
     `check_grants` est fait **ici** (état admin relu en base), pas dans un hook. Publier au **catalogue** (`G_…`) reste réservé aux admins par
     l'entité (`AdminOnly`). Fichier neuf, conception.
 
@@ -20,7 +20,7 @@ Must:
     1. `classify(name)` = `Private` (le catalogue n'est pas activable ici : `Forbidden("catalog publication requires admin")` pour un non-admin ; pour un
       admin, l'activation d'un `G_…` est permise par cette fonction comme équivalent de l'écriture de `active` par l'entité) ;
     2. lit la ligne du propriétaire (`owner_id = caller.user_id`) ; pas de brouillon → `NotFound("no draft to activate")` ;
-    3. `check_toolset` (mêmes contrôles que `put_draft`) puis `check_grants(caller, modules du toolset, ADMIN_ONLY_MODULES)` (constante de ../identity.sdd) ; refus → `Forbidden` nommant le
+    3. `check_toolset` (mêmes contrôles que `put_draft`) puis `check_grants(caller, dépendances du toolset, ADMIN_ONLY_MODULES)` (constante de ../identity.sdd ; les dépendances sont celles que déclare le toolset, clé JSON `dependencies`, amendement du 2026-11-22, DEC-32) ; refus → `Forbidden` nommant le
       module réservé, jamais le source ;
     4. dans **une transaction** : `active ← draft`, `draft ← NULL`, `version` dérivée ; rend `ActivationReport { name, version, previous_version }`.
   `pub async fn activate_agent(...)` n'existe pas : un agent privé est actif dès son écriture (pas de brouillon, `DEC-8`) ; cette spec ne couvre que
@@ -44,6 +44,7 @@ Tasks:
   [x] Tests d'abord (SQLite mémoire), puis ./activation.rs. Validé 2026-11-05 (validator PASS checkpoint 5 — atomicité et AdminOnly prouvés).
   [x] Amendement du 2026-11-11 (consolidation de `ADMIN_ONLY_MODULES`) : retirer la déclaration locale de ./activation.rs, importer `identity::ADMIN_ONLY_MODULES` ; `activate_with` garde sa liste en paramètre ; tests verts.
     Validé 2026-11-11 (batterie ciblée `lymaille` et `workflow,lymaille` verte).
+  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : renommer la fonction partagée `toolset_json_modules` en `toolset_json_dependencies` et lire la clé `dependencies` (au lieu de `modules`, qui n'existe pas dans la forme JSON de `lymaille::Toolset`) ; tests d'abord (un toolset sérialisé par la crate avec `with_dependency("secrets")` est refusé à l'activation pour un non-admin, rouge avant), puis ./activation.rs. Dépend de ../definitions/private_toolset.sdd (même fonction).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./activation.rs.

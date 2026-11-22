@@ -22,11 +22,12 @@ Must:
   `before_create` / `before_update` : les étapes de ./toolset.sdd (`check_toolset` partagé), sauf `classify(name) = Private`, avec la distinction par préfixe de `./user_context.sdd` : `G_`/`g_` → « toolset id cannot use the catalog prefix » ;
     `H_`/`h_` → « toolset id cannot use the host prefix » ; identifiant invalide au sens Rhai → « invalid toolset id » ; `toolset_id` ne change pas à la mise à jour.
   Amendement du 2026-11-11 (DSD `hooks-async` `DEC-7`, `FR-3`) — après `check_toolset`, `before_create` / `before_update` appellent `check_grants(caller_of(db, principal.subject), modules, liste)` pour chacune des versions posées
-    (`active` et `draft`) avec les modules extraits par la même fonction que `activate_toolset` (../interactive/activation.sdd) et la liste `ADMIN_ONLY_MODULES` de ../identity.rs (jamais
+    (`active` et `draft`) avec les **dépendances** (clé JSON `dependencies`, amendement du 2026-11-22 ci-dessous) extraites par la même fonction que `activate_toolset` (../interactive/activation.sdd) et la liste `ADMIN_ONLY_MODULES` de ../identity.rs (jamais
     une copie) ; corps interne paramétré par la liste (précédent `activate_with`). un refus est un `HookError` sans code (`422` en REST, `-32000` en MCP) ; une panne de lecture (`DbErr`) ou un `subject` inconnu → `HookError::new("authorization check unavailable")`, texte fixe sans détail de l'erreur (échec fermé). Le message nomme le module, jamais le source.
   **Amendement du 2026-11-13 (issues #79 et #72)** : `Model` dérive `utoipa::ToSchema` — `rest::openapi::resource_openapi::<Entity>()` compile pour cette ressource, colonnes JSON `active` et `draft` décrites en objet libre (`#[schema(value_type = Object)]`) tant que les types de `lymaille` n'ont pas de schéma ; `DateTimeUtc` en
     `#[schema(value_type = String, format = DateTime)]` — et `ts_rs::TS` : colonne(s) `active` et `draft` typée(s) par `Toolset` de `lymaille` (dérive `TS` amont, `lymaille` 0.3.0, issue sebt3/lymaille#10), les autres colonnes JSON de forme propre à la crate (tableaux de chaînes, `script_grants` `{ toolsets: string[]; modules: string[] }`) typées par `#[ts(type = "…")]` ; `DateTimeUtc` exporté `string` (`#[ts(type = "string")]`, RFC 3339 comme sérialisé), les entiers `number`, aucune feature d'implémentation de type tiers
     de `ts-rs`. Les dérives n'ajoutent aucun attribut `serde` et ne changent **aucune** sérialisation. Le `Model` n'est exporté que par l'export TypeScript de ../interactive/event.sdd (aucun `#[ts(export)]`).
+  **Amendement du 2026-11-22 (DEC-32, `OI-14` (b)(c))** — le droit d'accord porte sur les **dépendances** d'un toolset (`lymaille::Toolset::dependencies`, sérialisées sous la clé `dependencies`, tableau de chaînes : les capacités brutes qu'il consomme), seul chemin par lequel un LLM atteint un module d'hôte. Un toolset qui dépend d'un module réservé à l'admin est donc réservé à l'admin, sans attribut en plus. **Défaut constaté le 2026-11-22 :** la fonction d'extraction partagée lisait une clé `modules` que `lymaille::Toolset` n'a jamais sérialisée (la clé est `dependencies` en 0.3.0 comme en 0.4.0) : le contrôle ne se déclenchait que sur un JSON écrit à la main ; elle lit désormais `dependencies` (voir ../interactive/activation.sdd).
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
 Must not:
@@ -65,6 +66,7 @@ Tasks:
     Nommage TS arbitré par Sébastien le 2026-11-16 : suffixe `Model` conservé ; le `Model` est exporté sous `<PascalCase(entité)>Model` (déjà livré : `#[ts(rename = "…Model")]` dans ./private_toolset.rs).
     version amont qui dérive `TS` sur ses définitions. Alors : spec (`Must`, `Scenario` « le `.ts` exporté type la colonne par `Toolset` »), test de contrat (valeur construite par la crate → JSON identique
     à la forme déclarée, JSON de la déclaration accepté par la crate), puis ./private_toolset.rs.
+  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : lire les dépendances sous la clé `dependencies` (défaut constaté ci-dessus) ; tests d'abord (le `Scenario` « la dépendance d'un vrai `Toolset` est contrôlée » avec un `Toolset` construit par la crate, rouge avant le correctif : il passe aujourd'hui), puis ./private_toolset.rs et ./../interactive/activation.rs (fonction partagée). Même cycle que ../interactive/activation.sdd.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./private_toolset.rs.
@@ -93,6 +95,11 @@ Scenario: un module réservé à l'admin, dans le brouillon ou la version active
   Given la fonction interne avec la liste `["secrets"]`, un propriétaire non-admin, puis un toolset dont le `draft` accorde `secrets`, puis un dont l'`active` l'accorde
   When le hook de création, puis de mise à jour, sont attendus
   Then chaque appel rend un `HookError` sans code nommant le module et ne citant pas le source ; un admin passe, et le droit est relu à chaque sauvegarde
+
+Scenario: la dépendance d'un vrai `Toolset` est contrôlée (2026-11-22)
+  Given un `lymaille::Toolset` construit par `with_dependency("secrets")`, sérialisé par `serde_json`, la liste `["secrets"]` et un propriétaire non-admin
+  When le hook de création, puis de mise à jour, sont attendus
+  Then les deux rendent un `HookError` sans code nommant `secrets` ; un admin passe ; un toolset sans dépendance réservée passe
 
 Scenario: une panne de lecture est un refus fermé sans détail
   Given une connexion simulée dont la lecture du groupe échoue

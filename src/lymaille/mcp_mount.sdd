@@ -22,7 +22,7 @@ Must:
   `pub(crate) trait McpConnectorFactory: Send + Sync` et sa fabrique de production (un `RmcpConnector` par rôle, streamable HTTP), `DynConnector`
     et les traits objets associés : **déplacés tels quels** de ./interactive/assemble.rs, sans changement de comportement. La couture reste `pub(crate)` :
     la production pose la fabrique réelle, les tests injectent un connecteur espion.
-  `pub(crate) async fn mount_role(deps: &MountDeps<'_>, caller: &CallerPrincipal, context: &str, role: &str, bound_server: Option<&str>, interactive_token: Option<&Zeroizing<String>>, taken: &[&str], env: McpEnv) -> Result<GrantedModule, LymailleError>` :
+  `pub(crate) async fn mount_role(deps: &MountDeps<'_>, caller: &CallerPrincipal, context: &str, role: &str, bound_server: Option<&str>, interactive_token: Option<&Zeroizing<String>>, taken: &[&str], env: McpEnv) -> Result<rhai::Module, LymailleError>` :
     0. **Garde de collision (amendement 2026-11-07, `lymaille::assemble` ignore en silence un module qui porte un nom déjà pris)** : si `role` figure dans `taken` — les noms des modules déjà
       accordés de l'appelant, fournis par lui (relevé fait dans `lymaille` 0.2.0 : `lymaille::assemble` et le moteur ne déclarent aucun module d'office ; interactif : les modules de base, soit `resources` ; batch : les modules accordés par la définition plus `result`) —
       → `LymailleError::Config("mcp role name collides with a module: <rôle>")` avant toute résolution, tout accès à l'hôte et tout connecteur. Erreur de configuration de l'administrateur, pas
@@ -32,8 +32,8 @@ Must:
       redemandé à **chaque** appel d'outil, jamais gardé ; l'hôte est requis (une liaison `Host` sans hôte → `Config`, échec fermé) ;
     3. `RoleBinding::Table(model)` → `build_auth(&model, secrets, interactive_token)` puis connecteur vers `model.url` avec les timeouts du serveur :
       `static` et `none` sont montés ; `forward` : le jeton est `forward_token(deps.host, caller, context, role, interactive_token)` (amendement du 2026-11-13, issue #82, ./mcp_access.sdd : jeton interactif prioritaire, sinon celui de l'hôte) ; `None` → `Forbidden("forward auth needs an interactive session")` ;
-    4. `mcp_module(role, connecteur, env)` puis `GrantedModule::new(role, module)` ; un nom de rôle invalide fait échouer `mcp_module` en premier, l'erreur est celle du
-      code actuel de ./interactive/assemble.rs (`Store`), conservée telle quelle (refactor sans changement de comportement ; `InvalidDefinition` reste le repli de `GrantedModule::new`).
+    4. `mcp_module(role, connecteur, env)` (rend le `rhai::Module` du rôle, `lymaille` 0.4.0 : plus de `GrantedModule`, amendement 2026-11-22, DEC-32) ; l'appelant l'enregistre par `Capabilities::with_module(role, Shared::new(module))` et un `None` (nom pris) est la même `LymailleError::Config("mcp role name collides with a module: <rôle>")` que la garde de collision ci-dessus ; un nom de rôle invalide fait échouer `mcp_module` en premier, l'erreur est celle du
+      code actuel de ./interactive/assemble.rs (`Store`), conservée telle quelle (refactor sans changement de comportement ; le repli est `Config`, l'erreur de `with_module`).
     Le choix du connecteur selon la liaison est isolé dans un helper privé `connector_for(deps, caller, context, role, binding, token)` (hors `Exposes`), pour que la liaison `Host` sans hôte soit testable.
   `pub(crate) struct MountDeps<'a>` : `db`, `secrets`, `host: Option<&SharedHost>`, `mcp: &dyn McpConnectorFactory`. Emprunts seulement : le
     constructeur de l'appelant garde la propriété.
@@ -61,6 +61,7 @@ Tasks:
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Scenario amendé verrouillé : hôte `Some(jeton)` → monté, porteur sur le seul serveur `forward` ; `Ok(None)`/panne → refus actuel, aucun connecteur.
     `build_auth` l'hôte de `MountDeps` (champ déjà présent pour `resolve_mcp`, vérifier avant d'écrire) sans nouveau champ si possible. Tests d'abord (jeton de l'hôte atteint le seul serveur `forward`), puis
     ./mcp_mount.rs. Après ./mcp_access.sdd.
+  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) (`OI-14` (d)) : `mount_role` rend le module Rhai du rôle au lieu d'un `GrantedModule` ; le code d'erreur `Store` d'un nom de rôle invalide et la garde de collision `Config` sont conservés (refactor sans changement de comportement) ; tests d'abord (adapter les tests existants à la nouvelle valeur de retour : assertions d'erreur inchangées, rouges par la compilation), puis ./mcp_mount.rs. Après la montée de `lymaille` à 0.4 (/miryad-core.sdd, tâche L0). Appelants : ../lymaille/interactive/assemble.sdd, ./script_runner.sdd, ../workflow/subagent_step.sdd.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; les `Scenario` existants de ./interactive/assemble.sdd restent verts sans modification ; la spec est
