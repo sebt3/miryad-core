@@ -58,7 +58,7 @@ Tasks:
     Validé 2026-11-17 (validator GO, cycle 1/8, batterie 17+17 verte) : Display exacts au caractère près (égalité stricte testée,
     identifiant seul — pas de contenu), codes -009/-010 uniques, `retryable` false via catch-all existant ; `from_sdk` non étendu
     conformément au `Must` (la détection vit côté ./client.rs, cycles F/G — `matrix#OI-7(b)`, `DEC-3`).
-    - [?] (validator) : DSD `matrix#OI-7(c)` dit « une variante (`MRD-MATRIX-009`) » au singulier alors que l'amendement retient deux
+    - Soldé le 2026-11-22 : parenthèse du DSD corrigée (deux variantes). Constat d'origine : DSD `matrix#OI-7(c)` dit « une variante (`MRD-MATRIX-009`) » au singulier alors que l'amendement retient deux
       variantes (`-009`, `-010`) — la spec prévaut ; mettre à jour la parenthèse du DSD à la clôture du lot #87 (domaine développeur
       principal).
   [x] Tests d'abord (codes, retryabilité, `from_sdk` sur des erreurs `matrix-sdk` construites en test),

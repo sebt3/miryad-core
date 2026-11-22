@@ -157,11 +157,11 @@ Handles:
     autre module gated de la crate (`/src/lib.sdd`, `Handles`) — aucun squelette d'API résiduel.
 
 Tasks:
-  [ ] Amendement 2026-11-16 (issue #87, `matrix#FR-11`) : ré-exporter `matrix_step::MatrixEditStep` à côté de `MatrixSendStep`, sous le
+  [x] Amendement 2026-11-16 (issue #87, `matrix#FR-11`) : ré-exporter `matrix_step::MatrixEditStep` à côté de `MatrixSendStep`, sous le
     même `cfg(all(workflow, matrix))` (chemin supplémentaire ; l'amendement 2026-10-06 compte « vingt-sixième chemin au plus », celui-ci
     prévaut en cas de contradiction de comptage) ; étendre le Scenario « les steps croisés » à `MatrixEditStep`. Même lot que
     ./matrix_step.sdd (tâche M2).
-    - [!] (validator, clôture #87 2026-11-17) : ré-export posé sous le `cfg` exigé, preuves de chemins plats étendues sur les deux
+    - Soldé le 2026-11-22 (arbitré par le développeur principal) : texte du Scenario « les steps croisés » étendu à `MatrixEditStep`. Constat du validator (clôture #87) : ré-export posé sous le `cfg` exigé, preuves de chemins plats étendues sur les deux
       surfaces (`mod tests` de ./mod.rs et ../../tests/workflow_flat_paths.rs, discriminateurs prouvés par retrait), batterie verte —
       mais le **texte** du Scenario « les steps croisés » (lignes ~251-254) cite encore `{SystemOneStep, MatrixSendStep}` sans
       `MatrixEditStep` : l'extension demandée par la case touche un `Scenario`, hors du cycle. À faire d'une ligne par le développeur
@@ -257,5 +257,5 @@ Scenario: chemins plats résolvent sans connaître la structure interne du modul
 
 Scenario: les steps croisés n'existent que sous leur croisement de features (2026-10-06)
   Given la feature `workflow` seule, puis `workflow` + `systemone`, puis `workflow` + `matrix`
-  When un test tente d'importer `crate::workflow::{SystemOneStep, MatrixSendStep}`
-  Then `SystemOneStep` n'est importable que sous `workflow` + `systemone`, `MatrixSendStep` que sous `workflow` + `matrix` (le test est lui-même gated par `cfg`)
+  When un test tente d'importer `crate::workflow::{SystemOneStep, MatrixSendStep, MatrixEditStep}`
+  Then `SystemOneStep` n'est importable que sous `workflow` + `systemone`, `MatrixSendStep` et `MatrixEditStep` que sous `workflow` + `matrix` (le test est lui-même gated par `cfg`)

@@ -60,6 +60,7 @@ et appels d'MCP externes depuis les scripts.
     - `Provider` ne porte que des références (`name`, `kind`, `address`, `auth: Option<String>`, `ProviderLevel::{User, Project}`) ; la
       résolution de `auth` en secret est à la charge de l'hôte (`DEC-16`). `AgentDefinition` désigne son modèle par un **nom de profil**,
       jamais un provider.
+    - **Périmé depuis `lymaille` 0.4.0 (`DEC-32`)** : `Grants`, `builder(limits, grants)` et `assemble(toolsets, modules, dépendances, …)` ci-dessous décrivent la 0.3 ; la 0.4 rend une `Presentation` depuis un `Capabilities`.
     - Un run de sous-agent batch s'assemble côté hôte : `ScratchpadEngine::builder(limits, grants)` avec les `Grants` produits par
       `assemble(toolsets, modules, dépendances, contexte, limites)`, `result_module(Arc<ResultCollector>)` (`submit`, `fail`),
       `restore_session(store, id, engine, provenance)` pour la reprise, `TurnRunner::new(provider, strategy, profile, context, pad,
@@ -552,6 +553,31 @@ et appels d'MCP externes depuis les scripts.
       écartées : bornées par le seul seuil de rétention de 30 jours de la purge (`store/events.sdd`, `store/purge.sdd`, arbitré le 2026-11-14 : ni plafond par session ni rétention propre ; risque de volumétrie assumé, une ligne par delta de texte). La collision 64 bits de la clé de verrou donne au pire un `TurnActive` à tort, jamais deux tours. Sans PostgreSQL (SQLite), l'application reste mono-réplique.
     - **Source:** issue #81 ; user instruction, 2026-11-14 (lots 1 à 3 livrés ; verrou consultatif PostgreSQL) ; proposition Claude pour le détail, à approuver
 
+- **DEC-32 - Montée de `lymaille` 0.4.0 : capacités brutes et toolsets de présentation côté hôte** (2026-11-22, amende `FR-2`, `FR-4`, `FR-9`, `DEC-14`, `DEC-27` ; renvoie à `lymaille` `agent-sessions#DEC-16`)
+    - **Context:** `lymaille` 0.4.0 applique sa `DEC-16` : la définition d'agent ne porte plus aucun droit. `AgentDefinition::modules`, `with_modules`, `Grants`, `GrantedModule`, `GrantedToolset`, `GrantedSkill`
+      et `Assembled::into_grants` disparaissent ; `AgentDefinition::toolsets` devient `toolset_restriction` (sous-agent seulement) ; `assemble(toolsets, capabilities, contexte, limites)` prend un registre
+      `Capabilities` et rend une `Presentation` ; les modules natifs se déduisent de la nature de session. Un module brut n'est plus jamais présenté à un LLM productif : il n'existe que comme dépendance d'un toolset.
+      Mesuré le 2026-11-22 par un `cargo check --all-features` d'essai sous `lymaille` 0.4.0 : 16 erreurs de compilation de bibliothèque (29 avec les tests), toutes dans `src/lymaille/` et `src/workflow/subagent_step.rs`. Aucune sous `vynil-core` 0.10.0.
+    - **Decision:** (1) `resources`, les `HostModule` de l'application (`scripts-hote#FR-1`) et les modules MCP montés deviennent des **capacités brutes** : ils entrent dans un `Capabilities` (`with_module`) construit à l'assemblage, jamais dans le moteur
+      de session. (2) Le seul accès d'un LLM à une capacité est un **toolset de présentation** qui la nomme en dépendance ; la crate fournit un toolset catalogue pour `resources` (« prêt à l'emploi », objectif Kydah), l'application fournit les siens pour ses `HostModule`.
+      (3) Le droit d'accorder une capacité (`check_grants`, `ADMIN_ONLY_MODULES` augmenté de `HostModules::admin_only_names()`) s'applique désormais aux **dépendances d'un toolset** : à la sauvegarde d'un toolset privé (hook de `private_toolset`,
+      `hooks-async#DEC-7`) et, en défense en profondeur, à l'assemblage des toolsets du `ToolsetContext`. Le contrôle à la sauvegarde d'un agent privé disparaît (une définition n'accorde plus rien) ; la restriction `toolset_restriction` d'un sous-agent ne peut qu'intersecter
+      la liste du contexte. (4) `ScriptGrants` garde sa forme `{ toolsets, modules }` : `modules` désigne des **capacités brutes** montées directement dans le script, la `DEC-16` amont interdisant le brut au LLM productif, pas à un script déterministe sans LLM
+      (`scripts-hote#DEC-2`) ; `check_grants` reste la porte. (5) Aucune migration de données : la feature `lymaille` n'a jamais été déployée, les lignes d'agents portant un champ `modules` (ignoré en lecture) ne sont pas à reprendre.
+    - **Alternatives:** toolsets de présentation entièrement fournis par l'application, `resources` compris (écarté : contredit « prêt à l'emploi ») ; contourner `Capabilities` en montant les modules hôte dans le moteur (écarté : expose du brut au LLM productif et diverge à chaque version amont) ;
+      supprimer `ScriptGrants::modules` (écarté : casse la forme stockée, `LymailleHost::script_grants` et un hook déjà spécifiés, pour un bénéfice nul — un script n'a pas de LLM à protéger).
+    - **Consequences:** specs à amender (`FR-3` de `scripts-hote` pour le vocabulaire, puis les `.sdd`) : `host.sdd`, `identity.sdd` (`check_grants` sur dépendances de toolset), `mcp_mount.sdd` (rend une capacité brute, plus un `GrantedModule`), `script_runner.sdd`,
+      `interactive/assemble.sdd`, `definitions/private_agent.sdd`, `definitions/private_toolset.sdd`, `store/publish.sdd`, `workflow/subagent_step.sdd`, `miryad-core.sdd` (versions). Les détails non tranchés sont en `OI-14`.
+    - **Source:** publication de `lymaille` 0.4.0 ; user instruction, 2026-11-22 (modèle « capacités + toolsets », `ScriptGrants::modules` conservé) ; proposition Claude pour le détail, à approuver
+
+- **DEC-33 - Relais des features amont, comme `lymaille` le fait de `vynil-core`** (2026-11-22, amende `OI-1`)
+    - **Context:** `vynil-core` 0.10.0 et `lymaille` 0.4.0 ajoutent des features optionnelles : `feeds`, `prometheus`, `loki` (connecteurs de lecture, modules hôte fournis par l'application) et `embedder` (port d'embedding, recherche sémantique des `Memory` et des skills),
+      que `lymaille` relaie lui-même (`feeds = ["vynil-core/feeds"]`, etc.). `OI-1` gardait les défauts de `lymaille` sans relais « tant qu'aucun hôte ne les désactive ».
+    - **Decision:** miryad-core relaie ces features **comme le fait `lymaille`** : une sous-feature par capacité amont, hors défaut, qui active la feature homonyme de `lymaille` (et de `vynil-core` par elle), sans logique propre au-delà de ce que l'amont expose. `fs` et `shell` restent interdites (`Constraints`).
+    - **Alternatives:** ne rien relayer avant qu'un hôte le demande (écarté par l'utilisateur) ; tout relayer sous la seule feature `lymaille` (écarté : tire `rig-core`, `feed-rs` dans le graphe de tout consommateur de `lymaille`).
+    - **Consequences:** chaque sous-feature entre dans la batterie de `tooling.sdd` (tests, clippy, `cargo tree -i` de non-fuite) et dans `miryad-core.sdd`. Noms, périmètre et ordre sont en `OI-15`. `vynil-core` passe à 0.10.0 dans le même lot que `lymaille` 0.4.0 (les deux sont mêlés dans le graphe par `lymaille`).
+    - **Source:** user instruction, 2026-11-22
+
 ## Contour du lot 2
 
 Le lot 2 est **un seul lot, sans sous-découpage** (arbitré le 2026-11-03 : la spec Matrix n'a pas besoin du code REST). Il est **spécifié et réalisé**
@@ -680,7 +706,7 @@ recouper avec leurs tests nommés avant la release.
 
 - **OI-1:** **Soldé le 2026-11-02 (user instruction)** : garder les défauts de `lymaille` (`mcp-http`, `rig`), nécessaires au lot 1
   (inférence et MCP distants), sans les relayer en sous-features miryad tant qu'aucun hôte ne les désactive ; `fs`/`shell` : jamais
-  (Constraints, avec `Scenario` de preuve type A1).
+  (Constraints, avec `Scenario` de preuve type A1). **Révisé le 2026-11-22 (user instruction)** : les features de capacité amont sont relayées une à une (`DEC-33`) ; les défauts, `fs` et `shell` ne changent pas.
 - **OI-2:** **Stores du lot 1** (`DEC-13`) : huit traits, `SessionStore`, `AgentStore`, `ProfileStore`, `ProviderStore`,
   `ToolsetStore`, `ContextTypeStore`, `ContextStore`, `MemoryStore`, cloisonnés par propriétaire (`DEC-7`), stores construits
   par principal. `DraftStore`, `SessionIndex` : lot 2. **Arbitré le 2026-11-02 (user instruction), révisé le même jour
@@ -726,6 +752,19 @@ recouper avec leurs tests nommés avant la release.
   Arbitrages du 2026-11-14 : `EventHub` concret + coutures `EventRelay`/`SeaEventLog` ; événement au-delà de 7000 octets sans journal → `Missed` ; écriture du journal par lots de 50 ms ; rétention du journal = seuil unique de 30 jours (risque de volumétrie assumé) ;
   curseur `MAX + 1` en base ; feature `lymaille-pg` ; `cancel`/`close` entre répliques par le relais ; premier abonnement sans `Last-Event-ID` = flux en direct seul. Hors périmètre : bascule de la session MCP et des caches mémoire du gestionnaire
   (déchargement `idle_ttl`, marque de fermeture) entre répliques.
+
+- **OI-14:** **Ouverte le 2026-11-22** : points restant à arbitrer pour la migration `lymaille` 0.4.0 (`DEC-32`), à trancher avant les specs.
+    - **(a) Publication du toolset `resources`.** La crate le fournit (`DEC-32`) : comment entre-t-il au catalogue ? **Recommandation :** par `store/publish.rs` (provenance et version, comme `ensure_context_type`), un `ensure_toolset` appelé au montage, version semver
+      portée par la crate ; rien en base à la main.
+    - **(b) Où se contrôle l'accord d'un toolset à un contexte.** Le `ToolsetContext` (contexte utilisateur ou type de contexte) liste les toolsets de la session : le droit d'y lister un toolset privé ou réservé admin se contrôle-t-il à la sauvegarde du contexte (hook `user_context`)
+      ou seulement à l'assemblage ? **Recommandation :** les deux (sauvegarde + défense en profondeur), comme `FR-9` aujourd'hui pour les modules.
+    - **(c) `ADMIN_ONLY_MODULES` et `HostModules::admin_only_names()`.** Ils continuent de nommer des capacités brutes ; un toolset qui en dépend est-il lui-même réservé admin par ricochet ? **Recommandation :** oui, par le contrôle de `DEC-32` (3), sans second attribut sur le toolset.
+    - **(d) `mount_role` / `GrantedModule`.** `mcp_mount::mount_role` rend aujourd'hui un `GrantedModule` ; sous 0.4 il rend un module Rhai nommé destiné à `Capabilities::with_module` (nom invalide ou déjà pris : `None`, à traduire en `LymailleError`). **TBD :** conserver le code d'erreur actuel (`Store`).
+    - **(e) Reprise de session et empreinte** (`OI-8`). La définition d'agent perd des champs et gagne la restriction de toolsets : l'empreinte d'agents déjà sauvegardés change, `restore_session` rendra des avis de `Provenance`. Sans déploiement de la feature, sans conséquence ; **TBD :** confirmer qu'aucune session persistée de banc n'est à conserver.
+    - **(f) Nouveautés 0.4.0 non retenues ici :** `McpAuth`/`McpHeaders` désormais sans feature `mcp-http`, `memory_module_read_only`, `native_modules`, `Selection` (`select_toolsets`), `ProviderSummarizer`. Aucune n'est demandée ; elles s'ajoutent par `DEC` propre quand un besoin apparaît.
+- **OI-15:** **Ouverte le 2026-11-22** : relais des features amont (`DEC-33`). **TBD :** noms des sous-features miryad (proposition : `lymaille-feeds`, `lymaille-prometheus`, `lymaille-loki`, `lymaille-embedder`, sur le modèle de `lymaille-pg`) ; modules enregistrés au registre `Capabilities` de l'hôte quand un client est fourni
+      (`with_prometheus` / `with_loki` prennent un `QueryClient` construit par l'application) ; recherche sémantique : qui fournit l'`Embedder` à l'assemblage (trait `LymailleHost`, ou configuration de montage). **Recommandation :** un lot par feature, `prometheus` et `loki` d'abord
+      (cas des agents d'alerting), `embedder` et `feeds` ensuite.
 
 ## References
 

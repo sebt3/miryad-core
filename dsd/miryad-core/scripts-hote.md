@@ -37,7 +37,7 @@ peut accorder que ce que son propriétaire peut utiliser), `FR-10` (identité du
     - **Source:** user instruction, 2026-11-03
     - **Verified by:** `AC-2`
 
-- **FR-4 - MUST:** Un `ScriptRunner` exécute un script Rhai avec les `Grants` d'un contexte, **sans boucle d'inférence**, sous le principal donné. Il réutilise
+- **FR-4 - MUST:** Un `ScriptRunner` exécute un script Rhai avec les droits (`ScriptGrants`) d'un contexte (`lymaille` 0.4.0 ne produit plus de `Grants` : `miryad-core/lymaille#DEC-32`), **sans boucle d'inférence**, sous le principal donné. Il réutilise
   l'assemblage de session : modules d'hôte, `resources`, toolsets accordés — **leurs rôles MCP seuls, jamais leur source Rhai** (arbitrage du 2026-11-11) — (`miryad-core/lymaille#DEC-27`). Il rend une valeur sérialisée. Un script peut agir (écrire une ressource, appeler un rôle MCP ou un module d'hôte) : un bouton de widget qui approuve une MR est un cas visé ; ce qu'un script rejoue ou non est l'affaire de l'hôte, qui décide quand il l'exécute.
     - **Source:** user instruction, 2026-11-03
     - **Verified by:** `AC-3`
@@ -63,7 +63,7 @@ peut accorder que ce que son propriétaire peut utiliser), `FR-10` (identité du
     - **Alternatives:** exécuteur chez l'hôte (écarté : duplication de la chaîne d'autorité).
     - **Source:** user instruction, 2026-11-03
 
-- **DEC-2 - Les grants d'un script sont ceux du type de contexte** (2026-11-03)
+- **DEC-2 - Les grants d'un script sont ceux du type de contexte** (2026-11-03 ; précisé le 2026-11-22 : `modules` désigne des capacités brutes, `miryad-core/lymaille#DEC-32` (4))
     - **Decision:** le type de contexte déclare les toolsets et modules accordables aux scripts ; le principal du spectateur est intersecté à chaque appel.
     - **Alternatives:** une famille `ScriptProfile` dédiée (écarté : une troisième définition à stocker, valider et exposer).
     - **Précision du 2026-11-11 :** `script_grants` = `{"toolsets":[…],"modules":[…]}` (toolsets du catalogue `G_…` et noms de `HostModule`), validé en forme par le hook du type de contexte (toolsets existants relus par la connexion) ; les noms de module sont vérifiés à l'exécution, un hook étant une fonction statique sans accès au registre `HostModules`.

@@ -114,7 +114,7 @@ Tasks:
     (`text_message`, `recent_messages`) est adapté par la tâche de ./client.sdd, qui suit ; en attendant, ce fichier
     passe `None, None` dans `MessageParts` côté ./client.rs **si** la compilation l'exige — `[?]` : l'implémenteur
     consigne ici le choix retenu (ordre des deux tâches dans le même cycle, ou `Can modify` ponctuel de ./client.rs).
-    - [?] **choix provisoire :** `in_reply_to` rapporte aussi le repli d'un message de fil (un seul champ). Option : un
+    - Arbitré par le développeur principal le 2026-11-22 (recommandation retenue) : `in_reply_to` rapporte aussi le repli d'un message de fil (un seul champ). Option : un
       second champ `reply_is_fallback: bool`. Recommandation : un seul champ, tant qu'aucun hôte ne distingue.
     Validé 2026-11-17 (validator GO, cycle 2/8, batterie 45/45 verte) : 5 tests nommés (to_message étendu, fil avec repli, réponse
     seule, à plat, remplacement) ; `relation_ids` lue sur le contenu déchiffré dans `deliver_message` ; `#[non_exhaustive]` posé ;

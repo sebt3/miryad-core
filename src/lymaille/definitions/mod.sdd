@@ -50,15 +50,15 @@ Tasks:
     Arbitré le 2026-11-13 : `DateTimeUtc` : `#[schema(value_type = String, format = DateTime)]` et `#[ts(type = "string")]` par colonne (recommandé : conserve la règle de ./../mod.sdd « aucune feature d'implémentation de type tiers
     de `ts-rs` », `at` y est déjà un `String`) plutôt que d'activer la feature `chrono` d'`utoipa` et `chrono-impl` de `ts-rs`.
     Schéma OpenAPI arbitré par Sébastien le 2026-11-16 : le moteur (`/src/rest/openapi.sdd`) nomme le schéma d'une ressource et sa page à partir de `resource_name` ; aucun `#[schema(as = …)]` par entité ; deux ressources d'un même document ont deux schémas distincts. La collision `Model`/`PagedModel` est soldée par ce renvoi (règle précisée le 2026-11-17, issue #92 : `PascalCase(resource_name)` quand le nom du `Model` est le défaut « Model », voir `/src/rest/openapi.sdd`). Partie TS (#72) : nommage `<Entité>Model` arbitré le 2026-11-16, voir les dix specs enfants.
-  [x] Arbitré par Sébastien le 2026-11-16 : remplacer les liens vers items privés par du texte inline dans les douze sites (dix `definitions/*.rs`, deux `./host_module.rs`), y compris les liens [`check_toolset`] de ./toolset.rs et ./private_toolset.rs (cible `pub(crate)`) ; les items restent privés. Vérifier `cargo doc --all-features --no-deps` sans warning.
+  [x] Arbitré par Sébastien le 2026-11-16 : remplacer les liens vers items privés par du texte inline dans les dix-sept liens des cinq `definitions/*.rs` (reformulé le 2026-11-22 : ./host_module.rs n'en porte aucun), y compris les liens [`check_toolset`] de ./toolset.rs et ./private_toolset.rs (cible `pub(crate)`) ; les items restent privés. Vérifier `cargo doc --all-features --no-deps` sans warning.
     Validé 2026-11-17 (validator GO, cycle I7, batterie 17+17 verte) : 17 liens convertis en texte inline dans 5 fichiers
     (`definitions/{agent,private_agent,private_toolset,toolset,user_context}.rs`, diff doc-only, items ciblés restés privés) ; les
     quatre `check_toolset` exigés sont convertis. `cargo doc` : zéro warning sur les fichiers visés.
-    - [?] (implementer + validator) : le comptage de la case (« douze sites, dont deux dans ./host_module.rs ») ne correspond pas à
+    - Arbitré par le développeur principal le 2026-11-22 : comptage reformulé dans la case ci-dessus. Constat d'origine : le comptage de la case (« douze sites, dont deux dans ./host_module.rs ») ne correspond pas à
       l'état mesuré — 17 liens dans 5 fichiers `definitions/*.rs`, **zéro** dans ./host_module.rs (tous ses liens ciblent des items
       publics, vérifiés ligne à ligne). L'intention (tous les liens vers items privés éliminés) est intégra satisfaite ; reformuler
       le comptage à la prochaine édition (domaine développeur principal).
-    - [!] (validator) : « `cargo doc --all-features --no-deps` sans warning » n'est pas atteignable par cette seule case — 10 warnings
+    - Arbitré par le développeur principal le 2026-11-22 : les 10 warnings résiduels sont soldés par des cycles I8 dans ./../workflow/client.sdd, ./../workflow/durable.sdd et ./turn_lock.sdd ; la clause « sans warning » se prouve quand les trois sont `[x]`. Constat d'origine : « `cargo doc --all-features --no-deps` sans warning » n'est pas atteignable par cette seule case — 10 warnings
       résiduels hors périmètre : ./../workflow/client.rs ×5 (lien `../../tests/workflow_restate.rs`), ./../workflow/durable.rs ×2
       (`AWAKEABLE_TIMEOUT_MESSAGE`) + un lien `EventRelay`, ./../turn_lock.rs ×2 (`HEARTBEAT_MIN`/`MAX`). `[!]` ouverts chez ces specs.
 

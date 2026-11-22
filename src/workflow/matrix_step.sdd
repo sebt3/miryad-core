@@ -57,7 +57,7 @@ Must:
       message: format!("config matrix_send invalide: {e}") }.
     2. Validation (pure, avant tout appel réseau), même message préfixé, non retryable : `room_id` commence par
       `!` ; `body` non vide après `trim` ; `html`, si présent, non vide.
-    3. `sender.send(&room_id, &body, html.as_deref(), kind, &txn_id(run))` — @Err(e) → @StepError {
+    3. `sender.send(&room_id, &body, html.as_deref(), kind, relation(&cfg), &txn_id(run))` — @Err(e) → @StepError {
       retryable: e.retryable(), message: e.to_string() }.
     4. @Ok(event_id) → `{"event_id": "<id>", "room_id": "<room_id>"}`.
   `MatrixEditStep` (amendement 2026-11-16) — struct `pub`, même forme que `MatrixSendStep` (champ privé `sender: Arc<dyn Sender>`,
@@ -103,18 +103,18 @@ Tasks:
     `thread_root`, valeurs non vides en `$`, préfixe `config matrix_send invalide:`, non retryable, Sender jamais appelé — prouvé par
     compteur) ; dérivation pure `relation(cfg)` vers `MessageRelation` ; le `None` du site d'appel F est remplacé par la vraie
     dérivation ; rendu gabarit des trois champs par `render_config` sans code supplémentaire.
-    - [?] (validator) : au passage de M2, ressouder le script de la spec — l'item 3 du `Must` `run` énumère encore `sender.send(…,
+    - Soldé le 2026-11-22 (arbitré par le développeur principal) : ressoudure faite (item 3 du `Must` `run`). Constat d'origine : au passage de M2, ressouder le script de la spec — l'item 3 du `Must` `run` énumère encore `sender.send(…,
       kind, &txn_id(run))` sans `relation`, et le trait/`Exposes`/`Accepts` décrivent déjà `edit`/`MatrixEditStep` absents de l'arbre
       jusqu'à M2 (la spec décrit l'état cible du lot).
-    - [?] **choix provisoire (`matrix#OI-7`, point (d)) :** un kind distinct `matrix_edit`. Option : un champ `edit_of` optionnel
+    - Arbitré par le développeur principal le 2026-11-22 (recommandation retenue) : **choix (`matrix#OI-7`, point (d)) :** un kind distinct `matrix_edit`. Option : un champ `edit_of` optionnel
       de `matrix_send`. Recommandation : le kind distinct (le `config` de `matrix_send` refuse les champs inconnus et exige
       `body` ; un champ qui change les champs requis brouille le contrat).
-    - [?] **choix provisoire :** les trois champs de relation sont des chaînes à plat (rendues comme les autres), pas un objet
+    - Arbitré par le développeur principal le 2026-11-22 (recommandation retenue) : les trois champs de relation sont des chaînes à plat (rendues comme les autres), pas un objet
       imbriqué. Option : `relation: {kind, ...}`. Recommandation : à plat, cohérent avec `room_id`/`html`.
-  [ ] Tâche M2 (2026-11-16, `matrix#FR-11`) : `MatrixEditStep`, `MatrixEditConfig`, `Sender::edit` — tests d'abord (Scenarios
+  [x] Tâche M2 (2026-11-16, `matrix#FR-11`) : `MatrixEditStep`, `MatrixEditConfig`, `Sender::edit` — tests d'abord (Scenarios
     édition), puis ./matrix_step.rs ; ré-export dans ./mod.rs et amendement de ./mod.sdd (même lot). Après la tâche M1 et
     ./../matrix/client.sdd (tâche G).
-    - [!] (validator, clôture #87 2026-11-17) : le code, les tests et la batterie sont au vert (GO différé) mais le ressoudage
+    - Soldé le 2026-11-22 : ligne de `Must` ressoudée, la case est `[x]`. Constat du validator (clôture #87 2026-11-17) : le code, les tests et la batterie sont au vert (GO différé) mais le ressoudage
       demandé au cycle M1 n'est pas fait et relève du développeur principal : l'item 3 du `Must` `run` (ligne ~60) énumère encore
       `sender.send(…, kind, &txn_id(run))` **sans `relation`**, alors que le trait amendé et le code la passent. Une ligne de `Must`
       à ressouder — hors du cycle. La case passe `[x]` dès que cette ligne est ressoudée (rien à reprendre dans le code).

@@ -251,13 +251,13 @@ non vérifiée dans la migration DSD.
       (banc live, requêtes `PUT …/send/m.room.message` directes) : une relation `m.thread`, `m.in_reply_to` ou `m.replace` vers un
       événement inconnu est refusée **immédiatement** (0,0 s) par un **HTTP 500** `M_UNKNOWN` « unknown db error » — pas un
       404 ni un 4xx — alors qu'un message plat répond 200. Le homeserver ne fournit donc pas l'erreur typée de `FR-13` pour
-      le fil, et le SDK retente ce 500 (un `send` de fil vers une racine inconnue a duré plus de 300 s) : voir le `[?]` de
-      `SpecDD /src/matrix/client.sdd` (vérifier la racine avant l'envoi, recommandé, ou borner la durée).
-    - **(c) Édition.** `EditError::NotAuthor` est une cause nouvelle : `MatrixError` est `#[non_exhaustive]`, une variante
-      (`MRD-MATRIX-009`, non retryable) s'ajoute sans casser les hôtes. Une édition ne reprend pas la relation de fil de
+      le fil, et le SDK retente ce 500 (un `send` de fil vers une racine inconnue a duré plus de 300 s) : **arbitré le 2026-11-22 (user instruction) :** `send` vérifie la racine avant l'envoi (`EventNotFound`), tâche J de
+      `SpecDD /src/matrix/client.sdd`.
+    - **(c) Édition.** `EditError::NotAuthor` est une cause nouvelle : `MatrixError` est `#[non_exhaustive]`, deux variantes
+      (`MRD-MATRIX-009` et `-010`, non retryables ; corrigé le 2026-11-22) s'ajoute sans casser les hôtes. Une édition ne reprend pas la relation de fil de
       l'original (le remplacement porte uniquement `m.replace`).
     - **(d) Kind d'édition.** Le `config` de `matrix_send` refuse les champs inconnus (`deny_unknown_fields`) et exige
-      `body` ; l'édition exige en plus `event_id`. **Recommandation :** un kind distinct `matrix_edit`, plutôt qu'un champ
-      optionnel qui change le sens des autres.
+      `body` ; l'édition exige en plus `event_id`. **Arbitré le 2026-11-22 (user instruction) :** un kind distinct `matrix_edit`, plutôt qu'un champ
+      optionnel qui change le sens des autres ; relation en champs à plat ; `in_reply_to` unique pour le repli de fil.
     - **(e) Soldé le 2026-11-16** par `DEC-3` : cassure assumée, `#[non_exhaustive]`, `recent_messages` porte les mêmes
       champs que la remise en direct.
