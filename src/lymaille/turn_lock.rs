@@ -88,7 +88,7 @@ pub struct PgTurnLock {
 
 impl PgTurnLock {
     /// Porte sur la base `db`, battement `heartbeat` **ramené** dans
-    /// [`HEARTBEAT_MIN`]..=[`HEARTBEAT_MAX`] (hors bornes, la borne la plus proche — jamais
+    /// `HEARTBEAT_MIN`..=`HEARTBEAT_MAX` (hors bornes, la borne la plus proche — jamais
     /// d'erreur).
     #[must_use]
     pub fn new(db: DatabaseConnection, heartbeat: Duration) -> Self {
