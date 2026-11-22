@@ -413,7 +413,7 @@ fn statut_de_ligne(ligne: &Value, status: u16) -> Result<InvocationStatus, Workf
 /// sans requête.
 ///
 /// Le nom de colonnes est celui mesuré sur `restate-server` 1.8.1 (bloc en tête de module de
-/// section ; preuve live au test `#[ignore]` de [`../../tests/workflow_restate.rs`]).
+/// section ; preuve live au test `#[ignore]` de `../../tests/workflow_restate.rs`).
 ///
 /// # Errors
 ///
@@ -504,7 +504,7 @@ pub async fn list_invocations(
 /// Idempotent par contrat : invocation inconnue (`404` « does not exist » mesuré) ou déjà
 /// terminée (`409` « already completed » mesuré) → `Ok(())` — formes observées le 2026-11-15
 /// contre `restate-server` 1.8.1 au test `#[ignore]` de
-/// [`../../tests/workflow_restate.rs`] et au test unitaire `cancel_invocation_idempotence_*`.
+/// `../../tests/workflow_restate.rs` et au test unitaire `cancel_invocation_idempotence_*`.
 ///
 /// # Errors
 ///
@@ -549,7 +549,7 @@ pub async fn cancel_invocation(
 
 /// Lit le journal d'une invocation (`sys_journal`), ordonné par `index` — canal de lecture des
 /// noms d'étapes posés par ./dispatcher.rs (`step:<id>`, `render:<id>` ; preuve live au test
-/// `#[ignore]` de [`../../tests/workflow_restate.rs`]).
+/// `#[ignore]` de `../../tests/workflow_restate.rs`).
 ///
 /// # Errors
 ///
@@ -608,7 +608,7 @@ fn base64url(c: char) -> bool {
 
 /// Poste `value` nue en JSON sur `POST {ingress_url}/restate/awakeables/{id}/resolve`
 /// (`content-type: application/json` — forme issue de la doc `restate-sdk` 0.12.1, confirmée par
-/// les tests `#[ignore]` de [`../../tests/workflow_restate.rs`] contre le `restate-server` de la
+/// les tests `#[ignore]` de `../../tests/workflow_restate.rs` contre le `restate-server` de la
 /// `DevStation`, statuts consignés au rapport de tâche #26 avec la version de Restate). Toute
 /// réponse `2xx` rend `Ok(())`.
 ///
@@ -636,7 +636,7 @@ pub async fn resolve_awakeable(
 
 /// Rejette un awakeable en attente par l'ingress — `POST {ingress_url}/restate/awakeables/{id}/reject`,
 /// `content-type: text/plain`, message nu (forme issue de la doc `restate-sdk` 0.12.1, confirmée
-/// par les tests `#[ignore]` de [`../../tests/workflow_restate.rs`] ; le message transite verbatim
+/// par les tests `#[ignore]` de `../../tests/workflow_restate.rs` ; le message transite verbatim
 /// jusqu'au step en attente, ./durable.sdd).
 ///
 /// # Errors

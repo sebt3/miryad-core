@@ -310,6 +310,17 @@ Tasks:
       --all-features --no-deps` relève ici 5 liens `unresolved` vers `../../tests/workflow_restate.rs` (./client.rs
       ~l. 416/507/552/611/639) et 1 lien `unresolved` vers `EventRelay` — à convertir en texte inline (ou lien résolvable),
       même correction que le cycle I7.
+    Écrit 2026-11-22 (implementer ; validator PASS sur les 5 liens `workflow_restate.rs` convertis en texte inline, batterie complète
+    17+17 + fmt + `cargo tree` verts ; `cargo doc` sans warning sur ./client.rs) : la moitié « 5 liens » est faite. La case reste `[ ]`
+    sur le 6e lien (voir `[!]` ci-dessous).
+    [!] Le constat place le lien `unresolved` vers @EventRelay dans ./client.rs ; il n'y a **aucune** occurrence de @EventRelay dans
+    ./client.rs — le warning vient en réalité de ../lymaille/interactive/pg_relay.rs:4 (doc de @PgEventRelay, cible @EventRelay de
+    ../lymaille/interactive/hub.rs non ré-exportée à plat), hors `Owns` de la présente spec. Options : amender la présente case (retirer la mention,
+    clôturable sur les 5 liens) et ouvrir le cas dans ../lymaille/interactive/pg_relay.sdd (recommandé : le lien vit là-bas), ou élargir
+    le périmètre de la tâche à pg_relay.rs. Le code de client.rs est committé, la case attend l'arbitrage.
+    [?] Constat du même cycle : `cargo doc --all-features` relève aussi « public documentation for @Predicate links to private item
+    `Predicate::validate` » (./predicate.rs:40), couvert par aucune case I8 — à tracer dans un prochain cycle ou dans
+    ./predicate.sdd ? Choix provisoire : rien de tracé, hors périmètre.
 
 Done when:
   Les `Scenario` ont chacun un test nommé distinct et vert, sur la feature `workflow`.
