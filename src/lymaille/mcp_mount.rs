@@ -12,7 +12,6 @@ use std::time::Duration;
 use sea_orm::DatabaseConnection;
 use zeroize::Zeroizing;
 
-use ::lymaille::GrantedModule;
 use ::lymaille::McpAuth;
 use ::lymaille::McpClientConfig;
 use ::lymaille::McpConnector;
@@ -268,7 +267,7 @@ pub(crate) async fn mount_role(
     interactive_token: Option<&Zeroizing<String>>,
     taken: &[&str],
     env: McpEnv,
-) -> Result<GrantedModule, LymailleError> {
+) -> Result<rhai::Module, LymailleError> {
     // Étape 0 (`./mcp_mount.sdd`) : `lymaille::assemble` ignore en silence un module au nom déjà
     // pris ; la collision est refusée ici, avant toute résolution. `Config`, jamais `Forbidden`.
     if taken.contains(&role) {
@@ -286,11 +285,13 @@ pub(crate) async fn mount_role(
     )
     .await?;
     let connector = connector_for(deps, caller, context, role, binding, interactive_token).await?;
-    let module = mcp_module(role, Arc::new(DynConnector(connector)), env)
+    // `lymaille` 0.4.0 (`DEC-32`) : `mcp_module` rend le `rhai::Module` du rôle, plus de
+    // `GrantedModule` ; un nom de rôle invalide le fait échouer ici même — l'erreur `Store` est
+    // celle d'avant la migration, conservée telle quelle. L'appelant enregistre le module
+    // (`Capabilities::with_module`) ; un nom déjà pris est sa garde, la même `Config`.
+    mcp_module(role, Arc::new(DynConnector(connector)), env)
         .await
-        .map_err(|error| LymailleError::Store(error.to_string()))?;
-    GrantedModule::new(role, module.into())
-        .ok_or_else(|| LymailleError::InvalidDefinition(format!("invalid module name: {role}")))
+        .map_err(|error| LymailleError::Store(error.to_string()))
 }
 
 #[cfg(test)]
@@ -517,7 +518,7 @@ mod tests {
         role: &str,
         server: &str,
         jeton: Option<&Zeroizing<String>>,
-    ) -> Result<GrantedModule, LymailleError> {
+    ) -> Result<rhai::Module, LymailleError> {
         mount_role(deps, alice, "G_prod", role, Some(server), jeton, &[], env()).await
     }
 
@@ -551,7 +552,7 @@ mod tests {
             .await
             .expect("le rôle pourvu par l'hôte est monté");
         let mut moteur = rhai::Engine::new();
-        let _enregistre = moteur.register_static_module("sandbox", module.module().clone());
+        let _enregistre = moteur.register_static_module("sandbox", Arc::new(module));
         let _premier = moteur
             .eval::<rhai::Dynamic>("sandbox::ping(#{})")
             .expect("premier appel d'outil");

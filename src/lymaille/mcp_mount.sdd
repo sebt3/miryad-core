@@ -61,7 +61,14 @@ Tasks:
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). Scenario amendé verrouillé : hôte `Some(jeton)` → monté, porteur sur le seul serveur `forward` ; `Ok(None)`/panne → refus actuel, aucun connecteur.
     `build_auth` l'hôte de `MountDeps` (champ déjà présent pour `resolve_mcp`, vérifier avant d'écrire) sans nouveau champ si possible. Tests d'abord (jeton de l'hôte atteint le seul serveur `forward`), puis
     ./mcp_mount.rs. Après ./mcp_access.sdd.
-  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) (`OI-14` (d)) : `mount_role` rend le module Rhai du rôle au lieu d'un `GrantedModule` ; le code d'erreur `Store` d'un nom de rôle invalide et la garde de collision `Config` sont conservés (refactor sans changement de comportement) ; tests d'abord (adapter les tests existants à la nouvelle valeur de retour : assertions d'erreur inchangées, rouges par la compilation), puis ./mcp_mount.rs. Après la montée de `lymaille` à 0.4 (/miryad-core.sdd, tâche L0). Appelants : ../lymaille/interactive/assemble.sdd, ./script_runner.sdd, ../workflow/subagent_step.sdd.
+  [x] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) (`OI-14` (d)) : `mount_role` rend le module Rhai du rôle au lieu d'un `GrantedModule` ; le code d'erreur `Store` d'un nom de rôle invalide et la garde de collision `Config` sont conservés (refactor sans changement de comportement) ; tests d'abord (adapter les tests existants à la nouvelle valeur de retour : assertions d'erreur inchangées, rouges par la compilation), puis ./mcp_mount.rs. Après la montée de `lymaille` à 0.4 (/miryad-core.sdd, tâche L0). Appelants : ../lymaille/interactive/assemble.sdd, ./script_runner.sdd, ../workflow/subagent_step.sdd.
+    Validé 2026-11-23 (branche `feat/lymaille-0.4` ; validator PASS statique + batterie complète : le bump `lymaille` 0.4 vit dans le commit de bump final de la
+    branche, conforme au protocole de la tâche L0 — « un seul commit de bump à la fin », les commits intermédiaires de la branche ne compilent qu'avec lui.
+    @mount_role rend le `rhai::Module` ; garde `Config` de collision avant toute résolution et `Store` d'un nom invalide (mappé depuis `mcp_module`)
+    conservés à l'identique ; tests adaptés à la valeur de retour seule, assertions d'erreur inchangées, 8/8 verts ; `GrantedModule` disparu de `src/` en
+    production ; batterie 17+17 + fmt + `cargo tree` — un échec unique intermittent `auth::tests::callback_success_sets_session_then_purges_pending`
+    sur `swagger-ui,db`, rejoué 5/5 vert (course de frontière de seconde dans le test, src/auth non touché par le lot — voir le `[?]` de la tâche L0 de
+    /miryad-core.sdd).)
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; les `Scenario` existants de ./interactive/assemble.sdd restent verts sans modification ; la spec est

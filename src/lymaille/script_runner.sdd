@@ -87,7 +87,11 @@ Tasks:
     ./mcp_access.sdd) ; le jeton `token` explicite reste prioritaire ; hôte absent ou `None` → le refus actuel (`Forbidden("forward auth needs an interactive session")`). Le `Must` « le jeton `forward` n'est
     transmis qu'à `build_auth` et disparaît avec l'appel » s'étend au jeton venu de l'hôte. `Scenario` : script de widget appelant un serveur `forward` sans `token`, hôte factice qui fournit ; sans fournisseur → échec
     typé ; l'erreur ne cite ni jeton ni URL. Puis tests d'abord, puis ./script_runner.rs. Après ./mcp_access.sdd.
-  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : si ./script_runner.rs importe `GrantedModule` ou `Grants` (compilation), les remplacer par le module Rhai rendu par `mount_role` (../mcp_mount.sdd) ; aucun autre changement de comportement ; les `Scenario` existants restent verts sans modification (test de non-régression, rouges par la compilation seulement). Après ./mcp_mount.sdd.
+  [x] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : si ./script_runner.rs importe `GrantedModule` ou `Grants` (compilation), les remplacer par le module Rhai rendu par `mount_role` (../mcp_mount.sdd) ; aucun autre changement de comportement ; les `Scenario` existants restent verts sans modification (test de non-régression, rouges par la compilation seulement). Après ./mcp_mount.sdd.
+    Validé 2026-11-23 (validator PASS statique + batterie : le fichier n'importait ni `GrantedModule` ni `Grants` de `lymaille` — seul le consuming de la
+    valeur de retour de `mount_role` change (`register_static_module(role, Arc::new(module))`, un hunk de 15 lignes) ; le `struct Grants` privé local
+    (agrégat `script_grants`) est sans rapport avec le type amont retiré ; les Scenario existants sont verts sans modification. Même batterie que
+    ../mcp_mount.sdd (bump au commit final de la branche).)
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./script_runner.rs.
