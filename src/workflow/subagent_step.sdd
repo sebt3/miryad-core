@@ -157,7 +157,26 @@ Tasks:
     Arbitré par Sébastien le 2026-11-16 : le `Scenario` « un serveur MCP en forward fait échouer le step sans retry » porte désormais son cas (hôte sans jeton, `forward_token` rend `None`) ; le cas avec jeton est au `Scenario` « un serveur MCP en forward est monté avec le jeton de l'hôte ».
     `build_auth` (./../lymaille/mcp_access.sdd) ; jeton fourni → serveur monté ; sinon le `StepError` non retryable actuel. Amender le `Scenario` « un serveur MCP en forward fait échouer le step sans retry »
     (cas sans fournisseur conservé) et ajouter le cas « hôte qui fournit un jeton ». Puis tests d'abord, puis ./subagent_step.rs. Après ./../lymaille/mcp_access.sdd.
-  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : adapter le step à `Capabilities` + `Presentation` (étapes 5, 7 et 9 ci-dessus) ; tests d'abord (adapter les tests existants ; Scenario ci-dessous), puis ./subagent_step.rs. Après ../lymaille/mcp_mount.sdd et ../lymaille/interactive/assemble.sdd (même lot).
+  [x] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : adapter le step à `Capabilities` + `Presentation` (étapes 5, 7 et 9 ci-dessus) ; tests d'abord (adapter les tests existants ; `Scenario` ci-dessous), puis ./subagent_step.rs. Après ../lymaille/mcp_mount.sdd et ../lymaille/interactive/assemble.sdd (même lot).
+    Validé 2026-11-23 (branche `feat/lymaille-0.4` ; validator PASS statique + batterie complète — bump au commit final de la branche, tâche L0) :
+    étape 5 sans `check_grants` sur la définition ; étape 7 = `select_toolsets(contexte du step, toolset_restriction)` puis `get_active` (absent → non
+    retryable ; `ignored()` → avis) et `check_grants` sur les dépendances des toolsets (refus → non retryable nommant le module ; dépendance absente du
+    registre → « unknown module: <nom> » non retryable) ; `Capabilities::compiled()` + ressources (`with_module`) + modules des rôles MCP, capacités
+    jamais présentées telles quelles ; `assemble(...)` → `into_presentation` pour `ScratchpadEngine::builder(limits, presentation)` ; le `result_module`
+    du collecteur entre par `with_registration`, un seul `#[allow(clippy::result_large_err)]` justifié en une ligne citant cette spec (étape 9,
+    signature amont `FnOnce(&mut RhaiEngine) -> ScratchpadResult<()>`) ; les 8 tests rouges laissés par les passes précédentes de la branche sont
+    adaptés (fixtures `with_modules` tombées → toolsets déclarant la dépendance), le `Scenario` « un toolset à dépendance réservée admin échoue sans
+    exécution » est vert, rien d'autre dans l'arbre n'est rouge.
+    [?] Parité d'aspect assumée mais asymétrique, à ratifier : une panne d'assemblage d'un toolset est **non retryable** ici (lettre du `Must` de cette
+    spec) alors qu'elle est omise en **avis** en interactif (`Must` de ../lymaille/interactive/assemble.sdd). Les deux Must le disent ; le batch ferme
+    l'échec, l'interactif le signale. Ratifier tel quel ou aligner ? Choix provisoire : chaque surface suit son `Must`.
+    [?] La clause du `Must` « les modules d'hôte enregistrés » est **vacuieuse** pour ce step : `SubagentDeps` ne porte pas de `HostModules` et le batch
+    n'en enregistre aucun — la clause n'a d'effet que si un appelant futur en monte. Le validator (E4) propose de la retirer ou de la marquer
+    marquer « interactif seulement » à l'amendement. Choix provisoire : clause laissée telle quelle, le registre du step = compiled + ressources + rôles
+    MCP.
+    [?] Couture de test `#[cfg(test)] with_admin_only` sur `SubagentDeps` (champ privé `admin_only`, défaut `ADMIN_ONLY_MODULES`) pour tester le refus
+    d'une dépendance réservée sans dépendre d'un module d'hôte inexistant en batch — même forme que les coutures `inference`/`mcp` déjà actées.
+    Acceptable ? Choix provisoire : conservée, sous `cfg(test)` uniquement.
 
 Done when:
   Les `Scenario` unitaires sont verts sous `all(workflow, lymaille)` et `--all-features` ; les specs de ../lymaille/ sont approuvées avant

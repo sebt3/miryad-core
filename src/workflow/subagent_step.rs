@@ -41,6 +41,7 @@ use ::lymaille::AgentKind;
 use ::lymaille::AgentRef;
 use ::lymaille::AgentStore as _;
 use ::lymaille::CancelHandle;
+use ::lymaille::Capabilities;
 use ::lymaille::ContextError;
 use ::lymaille::ContextLevel;
 use ::lymaille::ContextStore as _;
@@ -49,23 +50,24 @@ use ::lymaille::DEFAULT_CORRECTIONS;
 use ::lymaille::DEFAULT_SUMMARY_PROMPT;
 use ::lymaille::DefaultStrategy;
 use ::lymaille::EventSink;
-use ::lymaille::GrantedModule;
-use ::lymaille::Grants;
 use ::lymaille::InferenceError;
 use ::lymaille::InferenceProvider;
 use ::lymaille::InferenceRequest;
 use ::lymaille::InferenceResponse;
 use ::lymaille::McpEnv;
 use ::lymaille::McpRetryPolicy;
+use ::lymaille::MemoryAccess;
 use ::lymaille::MemoryLevel;
 use ::lymaille::MemoryScopes;
 use ::lymaille::ModelSnapshot;
+use ::lymaille::NativeModule;
 use ::lymaille::NullSink;
 use ::lymaille::ProfileStore as _;
 use ::lymaille::Provenance;
 use ::lymaille::Provider;
 use ::lymaille::ProviderStore as _;
 use ::lymaille::ReplayMode;
+use ::lymaille::ResolvedContext;
 use ::lymaille::ResolvedProfile;
 use ::lymaille::RestoredSession;
 use ::lymaille::ResultCollector;
@@ -91,10 +93,13 @@ use ::lymaille::TurnConfig;
 use ::lymaille::TurnRunner;
 use ::lymaille::assemble;
 use ::lymaille::memory_module;
+use ::lymaille::memory_module_read_only;
+use ::lymaille::native_modules;
 use ::lymaille::restore_session;
 use ::lymaille::result_module;
 use ::lymaille::rhai_pad_definition;
 use ::lymaille::run_batch;
+use ::lymaille::select_toolsets;
 use ::lymaille::todo_module;
 
 use sea_orm::DatabaseConnection;
@@ -247,6 +252,13 @@ pub struct SubagentStep {
     /// production, un connecteur espion en test. Privée (amendement DEC-27, accord du développeur
     /// principal) : `SubagentDeps` garde sa forme de littéral publique.
     mcp: Arc<dyn McpConnectorFactory>,
+    /// Liste des modules réservés à l'admin lue par `check_grants` sur les **dépendances** des
+    /// toolsets à l'étape 7 (amendement DEC-32) : [`ADMIN_ONLY_MODULES`] en production — la
+    /// constante unique de `../lymaille/identity.rs`, vide au lot 1. Le step ne monte pas de
+    /// modules d'hôte (`SubagentDeps` ne porte pas de `HostModules`) ; la couture
+    /// `#[cfg(test)] with_admin_only` la remplace comme `inference` et `mcp`, pour verrouiller le
+    /// `Scenario` « un toolset à dépendance réservée admin échoue sans exécution ».
+    admin_only: &'static [&'static str],
 }
 
 impl SubagentStep {
@@ -260,6 +272,7 @@ impl SubagentStep {
             inference: Arc::new(RigInferenceFactory),
             max_secs_ceiling: DEFAULT_LONG_CEILING_SECS,
             mcp: Arc::new(RmcpConnectorFactory),
+            admin_only: ADMIN_ONLY_MODULES,
         }
     }
 
@@ -303,7 +316,17 @@ impl SubagentStep {
             inference: factory,
             max_secs_ceiling: DEFAULT_LONG_CEILING_SECS,
             mcp,
+            admin_only: ADMIN_ONLY_MODULES,
         }
+    }
+
+    /// Remplace la liste des modules réservés à l'admin (couture de test seule — la production
+    /// lit [`ADMIN_ONLY_MODULES`], vide au lot 1) : le `Scenario` « un toolset à dépendance
+    /// réservée admin échoue sans exécution » pose ainsi son `Given`.
+    #[cfg(test)]
+    fn with_admin_only(mut self, admin_only: &'static [&'static str]) -> Self {
+        self.admin_only = admin_only;
+        self
     }
 }
 
@@ -473,8 +496,10 @@ impl SubagentStep {
         definition
             .output_schema()
             .ok_or_else(|| permanent("sub-agent has no output schema"))?;
-        check_grants(&caller, definition.modules(), ADMIN_ONLY_MODULES)
-            .map_err(|error| from_lymaille(&error))?;
+        // Étape 5 (amendement DEC-32) : la définition d'agent ne porte plus de modules
+        // (`AgentDefinition::modules` supprimé) — le droit d'accord ne se contrôle plus ici, il
+        // se lit à l'étape 7 sur les dépendances des toolsets (`check_grants`,
+        // `ADMIN_ONLY_MODULES`).
         // Issue #75 (./subagent_step.sdd point 6, amendement du 2026-11-13, même règle que
         // `../lymaille/interactive/assemble.rs`) : une définition sans profil explicite suit le
         // profil par défaut de l'hôte (`LymailleHost::default_profile()`, relu à chaque
@@ -523,8 +548,8 @@ impl SubagentStep {
     }
 }
 
-/// Contexte de construction des modules accordés (étape 7) : les objets déjà disponibles, rien
-/// de plus — un module dont la construction exigerait davantage n'est pas câblé au lot 1.
+/// Contexte des constructions d'étape 7 : les objets déjà disponibles, rien de plus — un module
+/// dont la construction exigerait davantage n'est pas câblé.
 struct ModuleHost<'a> {
     step: &'a SubagentStep,
     stores: &'a LymailleStores,
@@ -537,49 +562,92 @@ struct ModuleHost<'a> {
     clock: &'a Arc<dyn ::lymaille::Clock>,
 }
 
-/// Étape 7, côté modules : chaque nom accordé par la définition devient un module accordé. Un nom
-/// inconnu est un échec non retryable, jamais un repli.
-fn granted_modules(host: &ModuleHost<'_>, names: &[String]) -> Result<Vec<GrantedModule>, StepError> {
-    let mut granted: Vec<GrantedModule> = Vec::new();
-    for name in names {
-        let module = match name.as_str() {
-            "resources" => resources_module(
-                Arc::clone(&host.step.deps.registry),
-                host.step.deps.db.clone(),
-                host.trigger.to_owned(),
-                Some(host.scope.clone()),
-            ),
-            "todo" => todo_module(
+/// Début de l'étape 7 (amendement DEC-32) : le registre des capacités brutes du run — un
+/// [`Capabilities::compiled`] (les modules des features compilées de `lymaille`, dont `host`),
+/// auquel `with_module` ajoute `resources` sous le `WriteScope` du step. Les modules des rôles
+/// MCP montés le complètent ensuite ; les modules natifs (`todo`, `memory_*`, `result`) n'y
+/// entrent pas — ils viennent de la nature `Sub` de `lymaille` (`native_modules`) et sont
+/// enregistrés sur le moteur. Aucune capacité n'est présentée au LLM : `assemble` ne les donne
+/// qu'aux toolsets qui les déclarent.
+fn base_capabilities(host: &ModuleHost<'_>) -> Result<Capabilities, StepError> {
+    let resources = resources_module(
+        Arc::clone(&host.step.deps.registry),
+        host.step.deps.db.clone(),
+        host.trigger.to_owned(),
+        Some(host.scope.clone()),
+    );
+    let capabilities = Capabilities::compiled()
+        .with_module("resources", Arc::new(resources))
+        .ok_or_else(|| permanent("invalid module name: resources"))?;
+    Ok(capabilities)
+}
+
+/// Les modules natifs du run (amendement DEC-32) : la nature `Sub` de `lymaille` les décide —
+/// `native_modules(Sub, sans parent, sans mémoire partagée)` rend `todo`, `memory_session`,
+/// `memory_user` (lecture seule pour un sous-agent) et `result`, jamais une liste portée par la
+/// définition. Chaque module construit ici est enregistré sur le moteur du pad.
+fn native_registrations(
+    host: &ModuleHost<'_>,
+    collector: &Arc<ResultCollector>,
+) -> Result<Vec<(&'static str, rhai::Module)>, StepError> {
+    let mut registrations: Vec<(&'static str, rhai::Module)> = Vec::new();
+    for native in native_modules(AgentKind::Sub, false, false) {
+        let module = match &native {
+            NativeModule::Todo => todo_module(
                 TodoList::new(),
                 host.session_id.clone(),
                 Arc::clone(host.sink),
                 Arc::clone(host.clock),
             ),
-            // La portée `project` de `memory` n'a pas de référence au lot 1 (aucune notion
-            // de projet côté hôte — question `[?]` remontée) ; `memory_project` n'est donc
-            // pas un nom connu ici.
-            "memory_user" | "memory_session" => {
-                let level = if name == "memory_user" {
-                    MemoryLevel::User
-                } else {
-                    MemoryLevel::Session
-                };
-                memory_module(
-                    level,
-                    Arc::new(host.stores.memories()),
-                    MemoryScopes::new(host.trigger, "", host.session_id),
-                    Arc::clone(host.sink),
-                    Arc::clone(host.clock),
-                )
+            NativeModule::MemorySession => memory_module(
+                MemoryLevel::Session,
+                Arc::new(host.stores.memories()),
+                MemoryScopes::new(host.trigger, "", host.session_id),
+                Arc::clone(host.sink),
+                Arc::clone(host.clock),
+            ),
+            // La portée `project` de `memory` n'a pas de référence (aucune notion de projet
+            // côté hôte) ; la nature `Sub` ne la nomme pas.
+            NativeModule::MemoryUser(access) => {
+                let scopes = MemoryScopes::new(host.trigger, "", host.session_id);
+                match access {
+                    MemoryAccess::Read => memory_module_read_only(
+                        MemoryLevel::User,
+                        Arc::new(host.stores.memories()),
+                        scopes,
+                        Arc::clone(host.sink),
+                        Arc::clone(host.clock),
+                    ),
+                    MemoryAccess::ReadWrite => memory_module(
+                        MemoryLevel::User,
+                        Arc::new(host.stores.memories()),
+                        scopes,
+                        Arc::clone(host.sink),
+                        Arc::clone(host.clock),
+                    ),
+                    // Accès ajouté par une version mineure de `lymaille` : jamais accordé au
+                    // silence, la nature `Sub` ne le nomme pas.
+                    _ => {
+                        return Err(permanent(
+                            "native module not wired for a sub-agent: memory_user (unknown access)",
+                        ));
+                    }
+                }
             }
-            other => return Err(permanent(format!("unknown module: {other}"))),
+            NativeModule::Result => result_module(Arc::clone(collector)),
+            // Modules des autres natures (`delegate`, `session`, configuration) : la nature
+            // `Sub` sans parent ne les nomme jamais — un apparition future est un échec, pas un
+            // silence.
+            other => {
+                return Err(permanent(format!(
+                    "native module not wired for a sub-agent: {}",
+                    other.name()
+                )));
+            }
         };
-        granted.push(
-            GrantedModule::new(name, module.into())
-                .ok_or_else(|| permanent(format!("invalid module name: {name}")))?,
-        );
+        registrations.push((native.name(), module));
     }
-    Ok(granted)
+    Ok(registrations)
 }
 
 /// Liaisons rôle → serveur d'un contexte, lues de sa forme sérialisée (champ `roles` du JSON
@@ -625,26 +693,22 @@ fn mcp_redactor(api_key: Option<&Zeroizing<String>>) -> ::lymaille::Redactor {
     redactor
 }
 
-/// Fin de l'étape 7 (DSD `DEC-27`, `DEC-20`) : chaque rôle MCP du contexte lié à la session
+/// Fin de l'étape 7 (DSD `DEC-27`, `DEC-20`, amendement DEC-32) : chaque rôle MCP du contexte lié
 /// (`SUBAGENT_CONTEXT_TYPE`, relu sous le sujet du déclencheur) est **monté** en client par `mount_role`
 /// (`./mcp_mount.sdd`), `interactive_token = None`, sous le principal du déclencheur. Les modules
-/// obtenus rejoignent les modules accordés du run. Tout échec (refus, panne de l'hôte, `forward`,
-/// nom invalide) est fatal et précède le premier tour, sans avis ni repli. Le `Grant` de l'hôte
-/// n'est ni persisté ni tracé ; aucun texte de l'hôte ne remonte dans l'erreur.
+/// bruts obtenus rejoignent le registre `Capabilities` du run (ils ne sont jamais présentés au
+/// LLM : seuls les toolsets qui les déclarent les atteignent). Tout échec (refus, panne de
+/// l'hôte, `forward`, nom invalide) est fatal et précède le premier tour, sans avis ni repli. Le
+/// `Grant` de l'hôte n'est ni persisté ni tracé ; aucun texte de l'hôte ne remonte dans l'erreur.
 async fn mount_context_roles(
     step: &SubagentStep,
     resolved: &Resolved,
+    context: Option<&ToolsetContext>,
     session_id: &SessionId,
     sink: &Arc<dyn EventSink>,
     clock: &Arc<dyn ::lymaille::Clock>,
     taken: &[&str],
-) -> Result<Vec<GrantedModule>, StepError> {
-    let context: Option<ToolsetContext> = resolved
-        .stores
-        .contexts()
-        .get_context(SUBAGENT_CONTEXT_TYPE)
-        .await
-        .map_err(from_toolsets)?;
+) -> Result<Vec<(String, rhai::Module)>, StepError> {
     let Some(context) = context else {
         return Ok(Vec::new());
     };
@@ -656,7 +720,7 @@ async fn mount_context_roles(
     };
     let mut mounted = Vec::new();
     let redactor = Arc::new(mcp_redactor(resolved.api_key.as_ref()));
-    for (role, server) in context_roles(&context) {
+    for (role, server) in context_roles(context) {
         let env = McpEnv::new(
             Arc::clone(&redactor),
             Arc::clone(sink),
@@ -676,7 +740,7 @@ async fn mount_context_roles(
         )
         .await
         .map_err(|error| mount_failure(&error))?;
-        mounted.push(module);
+        mounted.push((role, module));
     }
     Ok(mounted)
 }
@@ -693,30 +757,41 @@ struct EngineParts {
     render_cap_chars: usize,
 }
 
-/// Fin de l'étape 7 et début de l'étape 9 : toolsets actifs, assemblage, module `result`,
-/// moteur. Une panne d'assemblage est non retryable — le run ne commence pas.
-async fn assemble_and_engine(
-    stores: &LymailleStores,
+/// Fin de l'étape 7 et début de l'étape 9 (amendement DEC-32) : contrôle des dépendances (un nom
+/// absent du registre des capacités est un échec non retryable « unknown module: <nom> », jamais
+/// un toolset monté à moitié), `assemble(toolsets, capacités, contexte, limites)` qui produit la
+/// `Presentation`, puis moteur `ScratchpadEngine::builder(limits, presentation)` avec les modules
+/// natifs de la nature `Sub` — dont le `result_module(collector)`. Une panne d'assemblage d'un
+/// toolset est non retryable : le run ne commence pas (parité avec l'interactif écartée par cette
+/// spec, qui rend l'avis fatal — écart signalé au rapport).
+fn assemble_and_engine(
+    host: &ModuleHost<'_>,
     definition: &AgentDefinition,
-    granted_modules: Vec<GrantedModule>,
+    toolsets: &[Toolset],
+    capabilities: &Capabilities,
+    context: Option<&ToolsetContext>,
     schema: &Value,
 ) -> Result<EngineParts, StepError> {
-    let mut toolsets: Vec<Toolset> = Vec::new();
-    for name in definition.toolsets() {
-        let toolset = stores
-            .toolsets()
-            .get_active(name)
-            .await
-            .map_err(from_toolsets)?
-            .ok_or_else(|| permanent(format!("unknown toolset: {name}")))?;
-        toolsets.push(toolset);
+    // Un nom de dépendance absent du registre → échec non retryable nommant le module, avant
+    // l'assemblage (`Must` étape 7, amendement DEC-32) — jamais le repli « toolset monté à
+    // moitié » de l'avis d'assemblage.
+    for toolset in toolsets {
+        for dependency in toolset.dependencies() {
+            if capabilities.get(dependency).is_none() {
+                return Err(permanent(format!("unknown module: {dependency}")));
+            }
+        }
     }
-    let context = ToolsetContext::new(SUBAGENT_CONTEXT_TYPE.to_owned(), ContextLevel::Session)
-        .map_err(from_toolsets)?
-        .resolve(std::iter::empty::<(String, String, Value)>())
-        .map_err(from_toolsets)?;
     let limits = ScratchpadLimits::new();
-    let assembled = assemble(&toolsets, &granted_modules, &BTreeMap::new(), &context, &limits);
+    let resolved_context: ResolvedContext = match context {
+        Some(context) => context
+            .resolve(std::iter::empty::<(String, String, Value)>())
+            .map_err(from_toolsets)?,
+        None => empty_context()?
+            .resolve(std::iter::empty::<(String, String, Value)>())
+            .map_err(from_toolsets)?,
+    };
+    let assembled = assemble(toolsets, capabilities, &resolved_context, &limits);
     if let Some(first_failure) = assembled.failures().first() {
         return Err(permanent(format!("toolset assembly failed: {first_failure}")));
     }
@@ -724,14 +799,26 @@ async fn assemble_and_engine(
         ResultCollector::new(definition.id(), schema, DEFAULT_CORRECTIONS)
             .map_err(|error| permanent(format!("agent run failed: {error}")))?,
     );
-    let result_granted = GrantedModule::new("result", result_module(Arc::clone(&collector)).into())
-        .ok_or_else(|| permanent("invalid module name: result"))?;
-    let grants: Grants = assembled
-        .into_grants()
-        .with_module(result_granted)
-        .ok_or_else(|| permanent("module name collision: result"))?;
+    // Étape 9 : `builder(limits, presentation)` puis les enregistrements des modules natifs de
+    // la nature `Sub` — la seule canal ouvert à l'hôte depuis `lymaille` 0.4.0
+    // (`Presentation::with_module` est `pub(crate)` : seul `assemble` présente ; le module
+    // `result` du collecteur entre donc par ce canal, origine `Host` au catalogue, comme la
+    // registration de configuration de `../lymaille/interactive/assemble.rs`). Un toolset ne
+    // peut porter l'un de ces noms natifs : `assemble` le refuse déjà.
+    let mut builder = ScratchpadEngine::builder(limits, assembled.into_presentation());
+    // Le `#[allow]` couvre la fermeture de `with_registration` : la signature imposée par
+    // `lymaille` 0.4.0 est `FnOnce(&mut RhaiEngine) -> ScratchpadResult<()>`, l'erreur de 128 octets
+    // est amont (`src/workflow/subagent_step.sdd`, Must étape 9).
+    #[allow(clippy::result_large_err)]
+    for (name, module) in native_registrations(host, &collector)? {
+        let shared = rhai::Shared::new(module);
+        builder = builder.with_registration(move |engine| {
+            let _registered = engine.register_static_module(name, shared);
+            Ok(())
+        });
+    }
     let engine = Arc::new(
-        ScratchpadEngine::builder(limits, grants)
+        builder
             .build()
             .map_err(|error| permanent(format!("agent run failed: {error}")))?,
     );
@@ -745,6 +832,12 @@ async fn assemble_and_engine(
         toolset_versions,
         render_cap_chars: limits.render_cap_chars(),
     })
+}
+
+/// Contexte de secours du step quand aucun contexte `SUBAGENT_CONTEXT_TYPE` n'est lié : vide, à
+/// la clé déterministe de la session (les sessions reprises le relisent sous ce nom).
+fn empty_context() -> Result<ToolsetContext, StepError> {
+    ToolsetContext::new(SUBAGENT_CONTEXT_TYPE.to_owned(), ContextLevel::Session).map_err(from_toolsets)
 }
 
 /// Étape 8 : la session déterministe — `restore_session` quand elle existe (les avis de
@@ -831,6 +924,99 @@ fn build_runner(
     ))
 }
 
+/// Le moteur du run et les avis de sélection qui ouvrent la tâche (étape 7).
+struct PreparedRun {
+    parts: EngineParts,
+    /// Noms de la restriction que la liste du contexte ne porte pas (`Selection::ignored()`).
+    avis: Vec<String>,
+}
+
+/// Étape 7 complète (amendement DEC-32) : contexte lié `SUBAGENT_CONTEXT_TYPE` relu sous le sujet
+/// du déclencheur, toolsets sélectionnés par `select_toolsets` et relus actifs par nom (« unknown
+/// toolset » sinon), `check_grants` sur les DÉPENDANCES de chaque toolset (droit réservé à l'admin
+/// refusé avant tout tour, nommant le module), registre `Capabilities` (capacités compilées de
+/// l'hôte, `resources` sous le `WriteScope` du run, modules des rôles MCP montés par
+/// `mount_context_roles`), puis assemblage et moteur. Les noms hors liste de la restriction ne sont
+/// qu'un avis, jamais un ajout ni un échec (`Selection::ignored()`, DEC-16).
+async fn prepare_run(
+    step: &SubagentStep,
+    resolved: &Resolved,
+    host: &ModuleHost<'_>,
+    session_id: &SessionId,
+    sink: &Arc<dyn EventSink>,
+    clock: &Arc<dyn ::lymaille::Clock>,
+    schema: &Value,
+) -> Result<PreparedRun, StepError> {
+    // Le contexte lié du step : sa liste est la source des toolsets du run, que la définition
+    // peut seulement restreindre (`select_toolsets`, DEC-16/DEC-32) ; ses rôles sont montés en
+    // clients MCP (DSD `DEC-27`, `DEC-20`).
+    let context: Option<ToolsetContext> = resolved
+        .stores
+        .contexts()
+        .get_context(SUBAGENT_CONTEXT_TYPE)
+        .await
+        .map_err(from_toolsets)?;
+    let empty = empty_context()?;
+    let selection = select_toolsets(context.as_ref().unwrap_or(&empty), &resolved.definition);
+    let mut toolsets: Vec<Toolset> = Vec::new();
+    for name in selection.names() {
+        let toolset = resolved
+            .stores
+            .toolsets()
+            .get_active(name)
+            .await
+            .map_err(from_toolsets)?
+            .ok_or_else(|| permanent(format!("unknown toolset: {name}")))?;
+        toolsets.push(toolset);
+    }
+    // Les noms de la restriction que la liste du contexte ne porte pas : un avis, jamais un
+    // ajout ni un échec (`Selection::ignored()`, DEC-16).
+    let restriction_avis: Vec<String> = selection
+        .ignored()
+        .iter()
+        .map(|name| format!("restricted toolset not listed by the context: {name}"))
+        .collect();
+    // Défense en profondeur (amendement DEC-32) : le droit d'accord se lit sur les
+    // DÉPENDANCES des toolsets — un réservé à l'admin refusé à un non-admin échoue le step
+    // avant tout tour, nommant le module (`check_grants`, `ADMIN_ONLY_MODULES`).
+    for toolset in &toolsets {
+        let dependencies: Vec<String> = toolset.dependencies().iter().cloned().collect();
+        check_grants(&resolved.caller, &dependencies, step.admin_only)
+            .map_err(|error| from_lymaille(&error))?;
+    }
+    let mut capabilities = base_capabilities(host)?;
+    // Noms réservés à la garde de collision (`./mcp_mount.sdd`, étape 0) : ceux du registre
+    // des capacités et ceux des modules natifs de la nature `Sub` — `result` y figure, que
+    // `assemble_and_engine` enregistre ensuite sur le moteur.
+    let mut taken_names: Vec<String> = capabilities.modules().map(|(name, _)| name.to_owned()).collect();
+    taken_names.extend(
+        native_modules(AgentKind::Sub, false, false)
+            .iter()
+            .map(|native| (*native.name()).to_owned()),
+    );
+    let taken: Vec<&str> = taken_names.iter().map(String::as_str).collect();
+    let mounted =
+        mount_context_roles(step, resolved, context.as_ref(), session_id, sink, clock, &taken).await?;
+    for (role, module) in mounted {
+        let Some(next) = capabilities.with_module(&role, Arc::new(module)) else {
+            return Err(permanent(format!("mcp role name collides with a module: {role}")));
+        };
+        capabilities = next;
+    }
+    let parts = assemble_and_engine(
+        host,
+        &resolved.definition,
+        &toolsets,
+        &capabilities,
+        context.as_ref(),
+        schema,
+    )?;
+    Ok(PreparedRun {
+        parts,
+        avis: restriction_avis,
+    })
+}
+
 #[async_trait::async_trait]
 impl MiryadWorkflowStep for SubagentStep {
     fn kind(&self) -> &'static str {
@@ -867,35 +1053,24 @@ impl MiryadWorkflowStep for SubagentStep {
         let clock: Arc<dyn ::lymaille::Clock> = Arc::new(SystemClock::new());
         let sink: Arc<dyn EventSink> = Arc::new(NullSink::new());
 
-        // ── 7. toolsets et modules accordés → moteur ──
+        // ── 7. contexte lié, toolsets sélectionnés, capacités et rôles MCP → moteur ──
         // Le scope d'idempotence du step batch : les clés de la session `Sub` (amendement lot 2,
         // DSD `DEC-21`) — un rejeu rejourne les écritures sous les mêmes clés du journal.
         let scope = WriteScope {
             run_key: run.run_key.clone(),
             step_key: run.step_id.clone(),
         };
-        let mut granted = granted_modules(
-            &ModuleHost {
-                step: self,
-                stores: &resolved.stores,
-                trigger: &trigger,
-                session_id: &session_id,
-                scope: &scope,
-                sink: &sink,
-                clock: &clock,
-            },
-            resolved.definition.modules(),
-        )?;
-        // Rôles MCP du contexte lié (DSD `DEC-27`, `DEC-20`) : chaque rôle est monté en client
-        // dans le moteur du run ; refus, panne ou `forward` sont des échecs non retryables, avant
-        // le premier tour.
-        // Noms réservés à la garde de collision (`./mcp_mount.sdd`, étape 0) : les modules accordés
-        // par la définition, et `result`, que `assemble_and_engine` ajoute ensuite.
-        let mut taken: Vec<&str> = granted.iter().map(GrantedModule::name).collect();
-        taken.push("result");
-        let mounted = mount_context_roles(self, &resolved, &session_id, &sink, &clock, &taken).await?;
-        granted.extend(mounted);
-        let parts = assemble_and_engine(&resolved.stores, &resolved.definition, granted, &schema).await?;
+        let host = ModuleHost {
+            step: self,
+            stores: &resolved.stores,
+            trigger: &trigger,
+            session_id: &session_id,
+            scope: &scope,
+            sink: &sink,
+            clock: &clock,
+        };
+        let prepared = prepare_run(self, &resolved, &host, &session_id, &sink, &clock, &schema).await?;
+        let parts = prepared.parts;
 
         // ── 8. session déterministe : reprise, ou état neuf `Sub` ──
         let session_store = resolved.stores.sessions();
@@ -921,7 +1096,10 @@ impl MiryadWorkflowStep for SubagentStep {
         })?;
 
         // ── 10. plafond max_secs + run batch ──
-        // Les avis de provenance d'une reprise (DSD OI-8) ouvrent le premier message de la tâche.
+        // Les avis de provenance d'une reprise (DSD OI-8) et les noms hors liste de la
+        // restriction (`Selection::ignored()`, DEC-16) ouvrent le premier message de la tâche.
+        let mut notices = notices;
+        notices.extend(prepared.avis);
         let task = if notices.is_empty() {
             cfg.task
         } else {
@@ -1073,7 +1251,34 @@ mod tests {
     /// serveur — écrit par `subject` lui-même via le store (les hooks de `put_context` valident
     /// la liaison, `store/toolset.sdd`).
     async fn lier_contexte(db: &DatabaseConnection, subject: &str, roles: &[(&str, &str)]) {
-        lier_contexte_de_type(db, subject, super::SUBAGENT_CONTEXT_TYPE, roles).await;
+        lier_contexte_avec_toolsets(db, subject, &[], roles).await;
+    }
+
+    /// Contexte lié du step listant `toolsets` (la liste du contexte est la source des toolsets
+    /// du run — DEC-16/DEC-32) et liant chaque rôle donné à un serveur.
+    async fn lier_contexte_avec_toolsets(
+        db: &DatabaseConnection,
+        subject: &str,
+        toolsets: &[&str],
+        roles: &[(&str, &str)],
+    ) {
+        let mut context = ToolsetContext::new(super::SUBAGENT_CONTEXT_TYPE.to_owned(), ContextLevel::Session)
+            .expect("contexte de test");
+        for toolset in toolsets {
+            context = context
+                .with_toolset((*toolset).to_owned())
+                .expect("listing toolset de test");
+        }
+        for (role, server) in roles {
+            context = context
+                .with_role((*role).to_owned(), (*server).to_owned())
+                .expect("liaison role-serveur de test");
+        }
+        LymailleStores::new(db.clone(), subject)
+            .contexts()
+            .put_context(&context)
+            .await
+            .expect("le contexte lie est ecrit par son proprietaire");
     }
 
     /// Contexte lié de type `context_type`, privé sous `subject` (même écriture que `lier_contexte`).
@@ -1168,12 +1373,59 @@ mod tests {
         })
     }
 
-    /// Définition de sous-agent du catalogue, avec schéma de sortie et modules accordés.
-    fn sub_agent(id: &str, prompt: &str, modules: Vec<String>) -> AgentDefinition {
+    /// Définition de sous-agent du catalogue, avec schéma de sortie. DEC-32 : la définition ne
+    /// porte plus de modules ni de toolsets — ce que voit le run vient du contexte lié
+    /// (`select_toolsets`), restreint le cas échéant par `toolset_restriction`.
+    fn sub_agent(id: &str, prompt: &str) -> AgentDefinition {
         AgentDefinition::new(id.to_owned(), AgentKind::Sub, prompt.to_owned())
             .with_profile("qwen".to_owned())
             .with_output_schema(verdict_schema())
-            .with_modules(modules)
+    }
+
+    /// Toolset de test qui déclare des dépendances (DEC-32 : le droit se lit sur les dépendances
+    /// du toolset, plus sur la définition de l'agent). `source` est le module Rhai, qui importe
+    /// ses dépendances (forme des fixtures de `../lymaille/interactive/assemble.rs`).
+    fn toolset_depends(name: &str, source: &str, deps: &[&str]) -> Toolset {
+        let mut toolset = Toolset::new(
+            name.to_owned(),
+            format!("le toolset {name}"),
+            vynil_core::Semver::parse("1.0.0").expect("la version de fixture se parse"),
+            source.to_owned(),
+        )
+        .expect("le toolset de fixture se construit");
+        for dep in deps {
+            toolset = toolset
+                .with_dependency((*dep).to_owned())
+                .expect("une dépendance distincte est acceptée");
+        }
+        toolset
+    }
+
+    /// Écrit la version active d'un toolset au catalogue (table `miryad_lymaille_catalog_toolsets`,
+    /// même écriture que la fixture de `../lymaille/interactive/assemble.rs`).
+    async fn put_active_toolset(db: &DatabaseConnection, toolset: &Toolset) {
+        let active = serde_json::to_value(toolset).expect("l'actif se sérialise");
+        let mut insert = sea_orm::sea_query::Query::insert();
+        insert
+            .into_table(sea_orm::sea_query::Alias::new("miryad_lymaille_catalog_toolsets"))
+            .columns([
+                sea_orm::sea_query::Alias::new("toolset_id"),
+                sea_orm::sea_query::Alias::new("version"),
+                sea_orm::sea_query::Alias::new("active"),
+                sea_orm::sea_query::Alias::new("draft"),
+                sea_orm::sea_query::Alias::new("created_at"),
+            ])
+            .values(vec![
+                sea_orm::sea_query::Expr::val(toolset.name()),
+                sea_orm::sea_query::Expr::val(toolset.version().to_string()),
+                sea_orm::sea_query::Expr::val(active),
+                sea_orm::sea_query::Expr::val(serde_json::Value::Null),
+                sea_orm::sea_query::Expr::val(chrono::Utc::now()),
+            ])
+            .expect("les colonnes et valeurs de fixture correspondent");
+        db.execute(&insert)
+            .await
+            .expect("ligne active de toolset insérée");
     }
 
     /// Écrit un agent au catalogue par `root`.
@@ -1466,7 +1718,7 @@ mod tests {
         user(&db, "alice", false).await;
         user(&db, "root", true).await;
         wire_catalog(&db).await;
-        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict")).await;
         let provider = Arc::new(ScriptedProvider::new(vec![Ok(pad_call(SUBMIT_OK))]));
         let step = step_with(db.clone(), Arc::new(ScriptFactory(Arc::clone(&provider))));
         let run = run_info("t-sortie", "s1", Some("alice"));
@@ -1512,7 +1764,7 @@ mod tests {
         user(&db, "alice", false).await;
         user(&db, "root", true).await;
         wire_catalog(&db).await;
-        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict")).await;
         let run = run_info("t-rejeu", "s1", Some("alice"));
 
         // Le run interrompu : un tour terminé, sauvegardé, sans résultat soumis (`max_turns` 1).
@@ -1570,7 +1822,7 @@ mod tests {
         user(&db, "alice", false).await;
         user(&db, "root", true).await;
         wire_catalog(&db).await;
-        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict")).await;
         let step = step_with(db.clone(), Arc::new(HangFactory));
         let run = run_info("t-plafond", "s1", Some("alice"));
 
@@ -1607,11 +1859,7 @@ mod tests {
         user(&db, "alice", false).await;
         user(&db, "root", true).await;
         wire_catalog(&db).await;
-        put_catalog_agent(
-            &db,
-            &sub_agent("G_sub", "PROMPT-X tu rends un verdict", Vec::new()),
-        )
-        .await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "PROMPT-X tu rends un verdict")).await;
         let provider = Arc::new(ScriptedProvider::new(vec![Err(InferenceError::new(
             ErrorClass::Permanent,
             "le fournisseur est en panne".to_owned(),
@@ -1655,18 +1903,23 @@ mod tests {
         .exec(&db)
         .await
         .expect("une ligne AdminOnly existe");
-        put_catalog_agent(
+        // DEC-32 : la définition ne porte plus `resources` — un toolset du contexte lié le déclare
+        // en dépendance et l'expose par sa propre fonction.
+        put_active_toolset(
             &db,
-            &sub_agent(
-                "G_juge",
-                "tu lis et tu rends ton verdict",
-                vec!["resources".to_owned()],
+            &toolset_depends(
+                "G_juge_outils",
+                "import \"resources\" as r;\nfn lire(id) { r::get(\"subsecret\", id) }",
+                &["resources"],
             ),
         )
         .await;
+        put_catalog_agent(&db, &sub_agent("G_juge", "tu lis et tu rends ton verdict")).await;
+        lier_contexte_avec_toolsets(&db, "alice", &["G_juge_outils"], &[]).await;
+        lier_contexte_avec_toolsets(&db, "root", &["G_juge_outils"], &[]).await;
         let script = r#"
             let verdict = "forbidden";
-            try { let value = resources::get("subsecret", 1); verdict = "lu"; }
+            try { let value = G_juge_outils::lire(1); verdict = "lu"; }
             catch (e) { verdict = "forbidden"; }
             result::submit(#{ verdict: verdict })
         "#;
@@ -1705,22 +1958,26 @@ mod tests {
         db.execute(&schema.create_table_from_entity(widget_res::Entity))
             .await
             .expect("la table de la ressource fixture est créée");
-        put_catalog_agent(
+        // DEC-32 : la définition ne porte plus `resources` — un toolset du contexte lié le déclare
+        // en dépendance et expose le `create` du `Scenario`.
+        put_active_toolset(
             &db,
-            &sub_agent(
-                "G_scribe",
-                "tu ecris puis tu rends ton verdict",
-                vec!["resources".to_owned()],
+            &toolset_depends(
+                "G_scribe_outils",
+                "import \"resources\" as r;\nfn creer() { r::create(\"widget\", #{ id: 0, title: \"Ecriture-unique\" }) }",
+                &["resources"],
             ),
         )
         .await;
+        put_catalog_agent(&db, &sub_agent("G_scribe", "tu ecris puis tu rends ton verdict")).await;
+        lier_contexte_avec_toolsets(&db, "alice", &["G_scribe_outils"], &[]).await;
         let registry = || {
             let mut registry = ResourceRegistry::new();
             registry.register::<widget_res::Entity>();
             registry
         };
         let run = run_info("t-rejeu-ecritures", "s1", Some("alice"));
-        let create = r#"resources::create("widget", #{ id: 0, title: "Ecriture-unique" })"#;
+        let create = "G_scribe_outils::creer()";
 
         // Le run interrompu : un `create` exécuté et journalisé, aucun résultat soumis (`max_turns` 1).
         let first_provider = Arc::new(ScriptedProvider::new(vec![Ok(pad_call(create))]));
@@ -1783,7 +2040,7 @@ mod tests {
         user(&db, "alice", false).await;
         user(&db, "root", true).await;
         wire_catalog(&db).await;
-        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict")).await;
         inserer_serveur(&db, "srv_fwd", "forward", json!(["all"])).await;
         lier_contexte(&db, "alice", &[("sandbox", "srv_fwd")]).await;
         let provider = Arc::new(ScriptedProvider::new(Vec::new()));
@@ -1881,9 +2138,10 @@ mod tests {
             user(&db, "alice", false).await;
             user(&db, "root", true).await;
             wire_catalog(&db).await;
-            put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+            put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict")).await;
             inserer_serveur(&db, "srv_fwd", "forward", json!(["all"])).await;
-            lier_contexte(&db, "alice", &[("sandbox", "srv_fwd")]).await;
+            put_active_toolset(&db, &toolset_sandbox()).await;
+            lier_contexte_avec_toolsets(&db, "alice", &["G_sandbox_outils"], &[("sandbox", "srv_fwd")]).await;
             let hote = Arc::new(HoteJeton {
                 rendu,
                 appels: AtomicUsize::new(0),
@@ -2040,7 +2298,7 @@ mod tests {
         user(&db, "bob", false).await;
         user(&db, "root", true).await;
         wire_catalog(&db).await;
-        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict")).await;
         // Le serveur est pourvu par l'hôte ; sa ligne table n'est qu'une trace de repli : en
         // mode `forward` il est inutilisable en batch, donc tout run accepté sous `alice` prouve
         // que la décision vient de l'hôte et non de la table.
@@ -2294,12 +2552,34 @@ mod tests {
         )
     }
 
-    /// Script qui appelle deux fois l'outil du rôle `sandbox`, puis soumet le résultat.
+    /// Script qui appelle deux fois l'outil du rôle `sandbox` (via le toolset qui le déclare en
+    /// dépendance — DEC-32 : un module de rôle, capacité brute, n'est jamais présenté en direct),
+    /// puis soumet le résultat.
     const SCRIPT_DEUX_APPELS: &str =
-        r#"sandbox::ping(#{}); sandbox::ping(#{}); result::submit(#{ verdict: "ok" })"#;
+        r#"G_sandbox_outils::ping(); G_sandbox_outils::ping(); result::submit(#{ verdict: "ok" })"#;
 
-    /// Script qui appelle une fois l'outil du rôle `outil`, puis soumet le résultat.
-    const SCRIPT_APPEL_OUTIL: &str = r#"outil::ping(#{}); result::submit(#{ verdict: "ok" })"#;
+    /// Script qui appelle une fois l'outil du rôle `outil` (via le toolset dépendant), puis
+    /// soumet le résultat.
+    const SCRIPT_APPEL_OUTIL: &str = r#"G_outil_outils::ping(); result::submit(#{ verdict: "ok" })"#;
+
+    /// Le toolset qui expose le rôle `sandbox`, et son listing en contexte (formes des fixtures
+    /// de `../lymaille/interactive/assemble.rs` : le module importe sa dépendance déclarée).
+    fn toolset_sandbox() -> Toolset {
+        toolset_depends(
+            "G_sandbox_outils",
+            "import \"sandbox\" as s;\nfn ping() { s::ping(#{}) }",
+            &["sandbox"],
+        )
+    }
+
+    /// Le toolset qui expose le rôle `outil`.
+    fn toolset_outil() -> Toolset {
+        toolset_depends(
+            "G_outil_outils",
+            "import \"outil\" as o;\nfn ping() { o::ping(#{}) }",
+            &["outil"],
+        )
+    }
 
     // ── Scenario: le client de l'hôte est monté et son jeton redemandé à chaque appel ──────────
 
@@ -2309,9 +2589,10 @@ mod tests {
         user(&db, "alice", false).await;
         user(&db, "root", true).await;
         wire_catalog(&db).await;
-        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict")).await;
         inserer_serveur(&db, "srv_hote", "forward", json!(["all"])).await;
-        lier_contexte(&db, "alice", &[("sandbox", "srv_hote")]).await;
+        put_active_toolset(&db, &toolset_sandbox()).await;
+        lier_contexte_avec_toolsets(&db, "alice", &["G_sandbox_outils"], &[("sandbox", "srv_hote")]).await;
         let hote = Arc::new(HoteRotatif {
             appels: AtomicUsize::new(0),
         });
@@ -2361,9 +2642,10 @@ mod tests {
         user(&db, "alice", false).await;
         user(&db, "root", true).await;
         wire_catalog(&db).await;
-        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict")).await;
         inserer_serveur_statique(&db, "srv_stat").await;
-        lier_contexte(&db, "alice", &[("outil", "srv_stat")]).await;
+        put_active_toolset(&db, &toolset_outil()).await;
+        lier_contexte_avec_toolsets(&db, "alice", &["G_outil_outils"], &[("outil", "srv_stat")]).await;
         let spy = Arc::new(SpyMcp::default());
         let mcp: Arc<dyn McpConnectorFactory> = spy.clone();
         let provider = Arc::new(ScriptedProvider::new(vec![Ok(pad_call(SCRIPT_APPEL_OUTIL))]));
@@ -2400,15 +2682,16 @@ mod tests {
         user(&db, "carol", false).await;
         user(&db, "root", true).await;
         wire_catalog(&db).await;
-        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict")).await;
         inserer_serveur_statique(&db, "srv_stat").await;
         inserer_serveur_statique_a(&db, "srv_autre", "https://autre.example/").await;
-        lier_contexte(&db, "alice", &[("sandbox", "srv_stat")]).await;
+        put_active_toolset(&db, &toolset_sandbox()).await;
+        lier_contexte_avec_toolsets(&db, "alice", &["G_sandbox_outils"], &[("sandbox", "srv_stat")]).await;
         lier_contexte_de_type(&db, "alice", "autre_type", &[("sandbox", "srv_autre")]).await;
         let spy = Arc::new(SpyMcp::default());
         let mcp: Arc<dyn McpConnectorFactory> = spy.clone();
         let provider = Arc::new(ScriptedProvider::new(vec![Ok(pad_call(
-            r#"sandbox::ping(#{}); result::submit(#{ verdict: "ok" })"#,
+            r#"G_sandbox_outils::ping(); result::submit(#{ verdict: "ok" })"#,
         ))]));
         let step = step_with_seams(
             db.clone(),
@@ -2465,7 +2748,7 @@ mod tests {
         user(&db, "bob", false).await;
         user(&db, "root", true).await;
         wire_catalog(&db).await;
-        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict")).await;
         inserer_serveur(&db, "srv_hote", "forward", json!(["all"])).await;
         inserer_serveur(&db, "srv_nu", "none", json!(["all"])).await;
         lier_contexte(&db, "alice", &[("sandbox", "srv_hote")]).await;
@@ -2548,10 +2831,11 @@ mod tests {
         format!("refus de l'outil, jeton {CLE_FICTIVE} rejeté")
     }
 
-    /// Script qui appelle l'outil du rôle `outil`, capture l'erreur levée et la soumet : le texte
-    /// reçu par l'agent est ce qu'il soumet (un tour bat une seule inférence : appel et soumission
-    /// sont dans le même script).
-    const SCRIPT_ECHEC: &str = r#"let recu = ""; try { outil::ping(#{}); } catch (erreur) { recu = erreur.to_string(); } result::submit(#{ verdict: recu })"#;
+    /// Script qui appelle l'outil du rôle `outil` via le toolset dépendant (DEC-32 : le module du
+    /// rôle est une capacité brute, appelable depuis le toolset qui le déclare), capture l'erreur
+    /// levée et la soumet : le texte reçu par l'agent est ce qu'il soumet (un tour bat une seule
+    /// inférence : appel et soumission sont dans le même script).
+    const SCRIPT_ECHEC: &str = r#"let recu = ""; try { G_outil_outils::ping(); } catch (erreur) { recu = erreur.to_string(); } result::submit(#{ verdict: recu })"#;
 
     /// Fabrique MCP dont l'outil échoue avec un message donné.
     struct FailMcp {
@@ -2626,9 +2910,10 @@ mod tests {
         user(&db, "alice", false).await;
         user(&db, "root", true).await;
         wire_catalog(&db).await;
-        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict")).await;
         inserer_serveur_statique(&db, "srv_stat").await;
-        lier_contexte(&db, "alice", &[("outil", "srv_stat")]).await;
+        put_active_toolset(&db, &toolset_outil()).await;
+        lier_contexte_avec_toolsets(&db, "alice", &["G_outil_outils"], &[("outil", "srv_stat")]).await;
         let mcp: Arc<dyn McpConnectorFactory> = Arc::new(FailMcp {
             message: message_d_echec(),
         });
@@ -2670,13 +2955,9 @@ mod tests {
         user(&db, "bob", false).await;
         user(&db, "root", true).await;
         wire_catalog(&db).await;
-        // `resources` est accordé par la définition ; `G_sub` n'accorde aucun module.
-        put_catalog_agent(
-            &db,
-            &sub_agent("G_res", "tu rends un verdict", vec!["resources".to_owned()]),
-        )
-        .await;
-        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict", Vec::new())).await;
+        // DEC-32 : `resources` est une capacité du registre et `result` un module natif du run —
+        // l'un comme l'autre sont des noms pris, sans qu'aucune définition ait à les accorder.
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict")).await;
         inserer_serveur_statique(&db, "srv_stat").await;
         lier_contexte(&db, "alice", &[("resources", "srv_stat")]).await;
         lier_contexte(&db, "bob", &[("result", "srv_stat")]).await;
@@ -2693,7 +2974,7 @@ mod tests {
         let collision_resources = step
             .run(
                 &run_info("t-collision-resources", "s1", Some("alice")),
-                config("G_res", "inspecter"),
+                config("G_sub", "inspecter"),
                 HashMap::new(),
             )
             .await
@@ -2930,6 +3211,127 @@ mod tests {
         assert!(
             !refus.message.contains("host"),
             "aucun texte d'hôte ne traverse : {refus}"
+        );
+    }
+
+    // ── Migration `lymaille` 0.4.0 (DSD `DEC-32`) : dépendances des toolsets ──────────────────
+
+    /// Modules réservés à l'admin posés par la couture de test : la constante de production
+    /// `ADMIN_ONLY_MODULES` est vide au lot 1 (`../lymaille/identity.sdd`, amendement du
+    /// 2026-11-11) et le `Given` du `Scenario` — un module réellement réservé — n'existe pas
+    /// encore ; la couture `with_admin_only` le pose comme `inference` et `mcp`, sans changer le
+    /// chemin de production.
+    const ADMIN_RESERVE: &[&str] = &["admin_secrets"];
+
+    /// Scenario « un toolset à dépendance réservée admin échoue sans exécution » (2026-11-22) :
+    /// sous un déclencheur non-admin, un toolset du contexte dont une dépendance est réservée à
+    /// l'admin échoue le step — `StepError` non retryable nommant le module, avant tout tour
+    /// d'inférence (`check_grants` sur les DÉPENDANCES, DEC-32).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_toolset_a_dependance_reservee_admin_echoue_sans_execution() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "root", true).await;
+        wire_catalog(&db).await;
+        put_active_toolset(
+            &db,
+            &toolset_depends("G_reserve", "fn ping() { 1 }", &["admin_secrets"]),
+        )
+        .await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict")).await;
+        lier_contexte_avec_toolsets(&db, "alice", &["G_reserve"], &[]).await;
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let step =
+            step_with(db, Arc::new(ScriptFactory(Arc::clone(&provider)))).with_admin_only(ADMIN_RESERVE);
+
+        let error = step
+            .run(
+                &run_info("t-reserve", "s1", Some("alice")),
+                config("G_sub", "inspecter"),
+                HashMap::new(),
+            )
+            .await
+            .expect_err("un toolset dépendant d'un module réservé admin échoue sous un non-admin");
+
+        assert!(!error.retryable, "le refus est définitif : {error}");
+        assert!(
+            error.message.contains("module reserved to admins: admin_secrets"),
+            "le refus vient de `check_grants` sur les dépendances et nomme le module réservé : \
+             {error}"
+        );
+        assert!(provider.requests().is_empty(), "aucune inférence, aucun tour");
+    }
+
+    /// « Un nom de dépendance absent du registre » (`Must` étape 7, DEC-32) : non retryable
+    /// « unknown module: <nom> » — le toolset n'est pas monté à moitié, le run ne commence pas.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn une_dependance_absente_du_registre_echoue_sans_execution() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "root", true).await;
+        wire_catalog(&db).await;
+        put_active_toolset(
+            &db,
+            &toolset_depends("G_k8s", "import \"k8s\" as k;\nfn pods() { k::list() }", &["k8s"]),
+        )
+        .await;
+        put_catalog_agent(&db, &sub_agent("G_sub", "tu rends un verdict")).await;
+        lier_contexte_avec_toolsets(&db, "alice", &["G_k8s"], &[]).await;
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let step = step_with(db, Arc::new(ScriptFactory(Arc::clone(&provider))));
+
+        let error = step
+            .run(
+                &run_info("t-dependance-inconnue", "s1", Some("alice")),
+                config("G_sub", "inspecter"),
+                HashMap::new(),
+            )
+            .await
+            .expect_err("une dépendance absente du registre est un échec définitif");
+
+        assert!(!error.retryable, "l'échec n'est pas retryable : {error}");
+        assert_eq!(error.message, "unknown module: k8s");
+        assert!(provider.requests().is_empty(), "aucune inférence, aucun tour");
+    }
+
+    /// `Selection::ignored()` → avis (DEC-16, reprise de la règle de
+    /// `../lymaille/interactive/assemble.rs`) : un nom de la restriction du sous-agent que la
+    /// liste du contexte ne porte pas n'est jamais ajouté, mais ouvre le premier message de la
+    /// tâche ; le run aboutit avec les seuls toolsets du contexte.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn une_restriction_hors_liste_donne_un_avis() {
+        let db = test_db().await;
+        user(&db, "alice", false).await;
+        user(&db, "root", true).await;
+        wire_catalog(&db).await;
+        put_catalog_agent(
+            &db,
+            &sub_agent("G_restreint", "tu rends un verdict")
+                .with_toolset_restriction(vec!["G_hors_liste".to_owned()]),
+        )
+        .await;
+        let provider = Arc::new(ScriptedProvider::new(vec![Ok(pad_call(SUBMIT_OK))]));
+        let step = step_with(db, Arc::new(ScriptFactory(Arc::clone(&provider))));
+
+        let output = step
+            .run(
+                &run_info("t-restriction-avis", "s1", Some("alice")),
+                config("G_restreint", "inspecter"),
+                HashMap::new(),
+            )
+            .await
+            .expect("le step aboutit, le nom hors liste n'est qu'un avis");
+        assert_eq!(output, json!({ "verdict": "ok" }));
+
+        let requests = provider.requests();
+        let first = requests.first().expect("une requête d'inférence est partie");
+        assert!(
+            first.messages().iter().any(|message| matches!(
+                message,
+                Message::User { content }
+                    if content.contains("restricted toolset not listed by the context: G_hors_liste")
+            )),
+            "l'avis ouvre le premier message de la tâche"
         );
     }
 }
