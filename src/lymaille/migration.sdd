@@ -124,6 +124,23 @@ Tasks:
     Validé 2026-11-16 (batterie COMPLÈTE verte `BATTERY_FAIL=0`, 17 combinaisons tests + clippy, fmt, `cargo tree` ; relecture `spec-dd` + batterie tenue par le primary). `m20261114_000001_lymaille_session_events` (nouvelle migration, règle par défaut) : table `miryad_lymaille_session_events`, PK composite `(session_id, seq)`, index `created_at`, JSON via `ColumnDef::json()`, `up` idempotent, `down` strict. Tests : `has_column`, doublon `(session_id, seq)` refusé, `up` rejoué, `down` ; listes de `registered_stems`/`down_one_step`/`matrix_store_tables_are_applied_last` alignées (tests seulement, précédent #73).
     (SQLite mémoire : `has_column` de chaque colonne, clé primaire composite refusant un doublon `(session_id, seq)`, `up` rejoué sans effet, `down`), puis ./migration.rs. Après la tâche « provenance » (issue #73) de ce fichier ; avant ./store/events.sdd.
   [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : `migrations()` ajoute `m20261122_000001_lymaille_toolset_provenance` après `m20261113_000001_lymaille_provenance` : `up` ajoute `managed_by`, `managed_version`, `managed_digest` (`TEXT NULL`, une instruction `ALTER TABLE … ADD COLUMN` par colonne, portable SQLite et PostgreSQL) à `miryad_lymaille_catalog_toolsets` ; `down` les retire ; second `up` sans effet ; lignes existantes `NULL`. Aucune retouche d'une migration committée. Tests d'abord (`has_column`, rejeu), puis ./migration.rs.
+    Écrit 2026-11-23 (implementer ; validator **PASS au code** : les Scenario ont leur test au `Then` réel — `has_column` ×3, lignes existantes
+    `NULL`, rejeu idempotent, `down` et intégrité du reste, ordre dans `migrations()` ; batterie complète 17+17 + fmt + `cargo tree` verts,
+    35 OK, aucun FAIL ; aucun DDL de migration committée touché, les hunks de /src/migration/mod.rs et /src/migration/m20260930_000001_index_api_tokens_subject.rs
+    sont tous sous `#[cfg(test)]`). Le `down` est gardé `has_column` comme le précédent `m20261113_000001` (le `Must` de #73 acte déjà ce motif ;
+    « strict » de ../migration/mod.sdd vise l'échec sur table absente) — écart tranché conforme par le validator. La case reste `[ ]` sur l'écart
+    de rédaction ci-dessous.
+    [!] Le `Must` de la présente spec n'a pas reçu son « Amendement du 2026-11-22 » (précédent des issues #73 et #81 : chaque migration a son
+    amendement du `Must` plus un ou deux `Scenario` dédiés) : il décrit encore `migrations()` rendant quatre entrées là où le code en rend
+    cinq. La case `[ ]` porte le contrat complet, mais le corps normatif est devancé par le code — amendement `Must` + `Scenario` du domaine
+    du développeur principal, à poser dans le même commit que la clôture de la case.
+    [?] La case dit « après `m20261113_000001_lymaille_provenance` » ; `m20261114_000001_lymaille_session_events` (#81) existe entre-temps — la
+    migration est ajoutée en fin de liste après `m20261114` (règle de /src/migration/mod.sdd : jamais avant une entrée existante, ordre
+    chronologique). Le libellé de la case est dépassé ; le code suit la règle. Recommandation : à ratifier à l'amendement du `Must`.
+    [?] (validator) Prose obsolète des specs parentes, hors cycle : ../migration/mod.sdd dit « trois entrées » (cinq désormais) et le Scenario
+    d'ordre de /src/migration/m20260930_000001_index_api_tokens_subject.sdd « deux de plus … de quatre à huit » (cinq de plus désormais) —
+    ratification en bloc comme `5755d1d` (#73/#81) ou amendement des deux specs au passage ? Choix provisoire : rien touché, les tests alignés
+    portent la vérité.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./migration.rs.

@@ -173,8 +173,8 @@ mod tests {
 
     /// `Scenario` : « la migration suit l'ordre d'enregistrement attendu » — quatre entrées
     /// après les trois internes ; une de plus sous `workflow` (004), une de plus sous `matrix`
-    /// puis deux sous `lymaille` (amendements 2026-10-06, 2026-11-02 et lot 2 2026-11-03,
-    /// chacune en dernier).
+    /// puis cinq sous `lymaille` (amendements 2026-10-06, 2026-11-02, lot 2 2026-11-03, du
+    /// 2026-11-13, du 2026-11-14 et du 2026-11-22, chacune en dernier).
     #[tokio::test]
     async fn get_migration_files_registers_the_index_migration_after_the_three_internals() {
         let files = Migrator::get_migration_files();
@@ -196,14 +196,16 @@ mod tests {
             "m20261104_000001_lymaille_lot2",
             "m20261113_000001_lymaille_provenance",
             "m20261114_000001_lymaille_session_events",
+            "m20261122_000001_lymaille_toolset_provenance",
         ]);
 
         assert_eq!(
             names, expected,
             "l'index s'inscrit après les internes et la 004 gatée ; en fin de liste, hors \
-             `lymaille`, la migration matrix est dernière, et sous `lymaille` c'est la \
-             provenance du catalogue qui ferme la liste (amendements 2026-10-06, 2026-11-02, \
-             2026-11-03 et du 2026-11-13)"
+             `lymaille`, la migration matrix est dernière, et sous `lymaille` c'est la dernière \
+             migration du module — la provenance des toolsets (migration lymaille 0.4.0 du \
+             2026-11-22) — qui ferme la liste (amendements 2026-10-06, 2026-11-02, 2026-11-03, \
+             du 2026-11-13, du 2026-11-14 et du 2026-11-22)"
         );
     }
 }

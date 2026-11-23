@@ -140,6 +140,7 @@ mod tests {
             "m20261104_000001_lymaille_lot2",
             "m20261113_000001_lymaille_provenance",
             "m20261114_000001_lymaille_session_events",
+            "m20261122_000001_lymaille_toolset_provenance",
         ]);
         stems
     }
@@ -368,12 +369,12 @@ mod tests {
             .pop()
             .expect("the registration list is never empty");
         // Sous `matrix`, la dernière entrée enregistrée est la migration du store (amendement
-        // 2026-10-06, en fin de liste) ; sous `lymaille`, c'est la quatrième migration du module
-        // — le journal d'événements (amendements 2026-11-02, 2026-11-03, du 2026-11-13 issue #73
-        // et du 2026-11-14 issue #81 lot 3), ajoutée après toutes les autres en fin de liste.
-        // C'est elle que `down(Some(1))` défait.
+        // 2026-10-06, en fin de liste) ; sous `lymaille`, c'est la cinquième migration du module
+        // — la provenance des toolsets (amendements 2026-11-02, 2026-11-03, du 2026-11-13 issue
+        // #73, du 2026-11-14 issue #81 lot 3 et du 2026-11-22 migration lymaille 0.4.0), ajoutée
+        // après toutes les autres en fin de liste. C'est elle que `down(Some(1))` défait.
         let expected_last = if cfg!(feature = "lymaille") {
-            "m20261114_000001_lymaille_session_events"
+            "m20261122_000001_lymaille_toolset_provenance"
         } else if cfg!(feature = "matrix") {
             "m20261006_000001_create_matrix_store"
         } else {
@@ -500,10 +501,10 @@ mod tests {
             "les tables miryad_matrix_* existent après up"
         );
         let expected_last: &str = if cfg!(feature = "lymaille") {
-            // La dernière entrée du module est le journal d'événements (amendement du 2026-11-14,
-            // issue #81 lot 3), ajoutée après la provenance en fin de liste — même alignement que
+            // La dernière entrée du module est la provenance des toolsets (migration lymaille
+            // 0.4.0 du 2026-11-22), ajoutée après le journal en fin de liste — même alignement que
             // `down_one_step_undoes_the_last_applied_entry` (précédent : alignements #73).
-            "m20261114_000001_lymaille_session_events"
+            "m20261122_000001_lymaille_toolset_provenance"
         } else {
             "m20261006_000001_create_matrix_store"
         };
@@ -552,96 +553,98 @@ mod tests {
         }
     }
 
-    /// Scenario (amendement 2026-11-02, étendu lot 2 le 2026-11-03, provenance le 2026-11-13 et
-    /// journal d'événements le 2026-11-14) : « sous lymaille, le Migrator applique aussi les tables
-    /// du module ». Les tables `miryad_lymaille_*` existent en dernier (après les historiques et
-    /// les `miryad_matrix_*` éventuelles), et `down(Some(1))` défait d'abord la dernière migration
-    /// du module — le journal d'événements, qui ne retire que sa table — puis la provenance (ses
-    /// colonnes), puis le lot 2, sans toucher aux tables historiques ni à celles du lot 1.
+    /// Scenario (amendement 2026-11-02, étendu lot 2 le 2026-11-03, provenance le 2026-11-13,
+    /// journal d'événements le 2026-11-14 et provenance des toolsets le 2026-11-22) : « sous
+    /// lymaille, le Migrator applique aussi les tables du module ». Les tables `miryad_lymaille_*`
+    /// existent en dernier (après les historiques et les `miryad_matrix_*` éventuelles), et
+    /// `down(Some(1))` défait d'abord la dernière migration du module — la provenance des toolsets,
+    /// qui ne retire que ses trois colonnes — puis le journal d'événements (sa table), puis la
+    /// provenance (ses colonnes), puis le lot 2, sans toucher aux tables historiques ni à celles
+    /// du lot 1.
     #[cfg(feature = "lymaille")]
     #[tokio::test]
     async fn lymaille_tables_are_applied_last_and_removed_first() {
+        /// Sonde `has_table` compacte (limite `too_many_lines` du harnais, ce test parcours la
+        /// chaîne `down` pas à pas).
+        async fn has_table(manager: &SchemaManager<'_>, name: &str) -> bool {
+            manager.has_table(name).await.expect("has_table probe succeeds")
+        }
+        /// Sonde `has_column` compacte (même limite).
+        async fn has_column(manager: &SchemaManager<'_>, table: &str, column: &str) -> bool {
+            manager
+                .has_column(table, column)
+                .await
+                .expect("has_column probe succeeds")
+        }
         let db = fresh_db().await;
         Migrator::up(&db, None)
             .await
             .expect("up applies the historical migrations and the lymaille module");
         let manager = SchemaManager::new(&db);
         assert!(
-            manager
-                .has_table("miryad_lymaille_catalog_agents")
-                .await
-                .expect("has_table probe succeeds"),
+            has_table(&manager, "miryad_lymaille_catalog_agents").await,
             "les tables miryad_lymaille_* existent après up"
         );
         assert!(
-            manager
-                .has_table("miryad_lymaille_mcp_servers")
-                .await
-                .expect("has_table probe succeeds"),
+            has_table(&manager, "miryad_lymaille_mcp_servers").await,
             "les tables du lot 2 existent aussi après up"
         );
         assert_eq!(
             dedicated_versions(&db).await.last().map(String::as_str),
-            Some("m20261114_000001_lymaille_session_events"),
-            "la quatrième migration du module (journal d'événements, amendement du 2026-11-14) \
-             est la dernière entrée du tracking"
+            Some("m20261122_000001_lymaille_toolset_provenance"),
+            "la cinquième migration du module (provenance des toolsets, migration lymaille 0.4.0 \
+             du 2026-11-22) est la dernière entrée du tracking"
         );
         Migrator::down(&db, Some(1))
             .await
             .expect("down Some(1) défait la dernière migration du module en premier");
         assert!(
-            !manager
-                .has_table("miryad_lymaille_session_events")
-                .await
-                .expect("has_table probe succeeds"),
-            "down Some(1) retire d'abord la table du journal d'événements"
+            !has_column(&manager, "miryad_lymaille_catalog_toolsets", "managed_by").await,
+            "le premier pas retire les colonnes de provenance des toolsets"
         );
         assert!(
-            manager
-                .has_column("miryad_lymaille_catalog_agents", "managed_by")
-                .await
-                .expect("has_column probe succeeds"),
-            "le premier pas ne touche pas encore les colonnes de provenance"
+            has_column(&manager, "miryad_lymaille_catalog_agents", "managed_by").await,
+            "le premier pas ne touche pas la provenance du catalogue (issue #73)"
+        );
+        assert!(
+            has_table(&manager, "miryad_lymaille_session_events").await,
+            "le premier pas ne touche pas encore le journal d'événements"
         );
         Migrator::down(&db, Some(1))
             .await
-            .expect("le second pas défait la provenance, avant-dernière migration");
+            .expect("le second pas défait le journal d'événements");
         assert!(
-            !manager
-                .has_column("miryad_lymaille_catalog_agents", "managed_by")
-                .await
-                .expect("has_column probe succeeds"),
-            "le second pas retire les colonnes de provenance"
+            !has_table(&manager, "miryad_lymaille_session_events").await,
+            "le second pas retire la table du journal d'événements"
         );
         assert!(
-            manager
-                .has_table("miryad_lymaille_mcp_servers")
-                .await
-                .expect("has_table probe succeeds"),
-            "le second pas ne défait pas encore le lot 2"
+            has_column(&manager, "miryad_lymaille_catalog_agents", "managed_by").await,
+            "le second pas ne touche pas encore les colonnes de provenance du catalogue"
         );
         Migrator::down(&db, Some(1))
             .await
-            .expect("le troisième pas défait le lot 2");
+            .expect("le troisième pas défait la provenance du catalogue");
         assert!(
-            !manager
-                .has_table("miryad_lymaille_mcp_servers")
-                .await
-                .expect("has_table probe succeeds"),
-            "le troisième pas retire les tables du lot 2"
+            !has_column(&manager, "miryad_lymaille_catalog_agents", "managed_by").await,
+            "le troisième pas retire les colonnes de provenance du catalogue"
         );
         assert!(
-            manager
-                .has_table("miryad_lymaille_catalog_agents")
-                .await
-                .expect("has_table probe succeeds"),
-            "les tables du lot 1 ne sont défaites qu'au quatrième pas"
+            has_table(&manager, "miryad_lymaille_mcp_servers").await,
+            "le troisième pas ne défait pas encore le lot 2"
+        );
+        Migrator::down(&db, Some(1))
+            .await
+            .expect("le quatrième pas défait le lot 2");
+        assert!(
+            !has_table(&manager, "miryad_lymaille_mcp_servers").await,
+            "le quatrième pas retire les tables du lot 2"
         );
         assert!(
-            manager
-                .has_table("miryad_api_tokens")
-                .await
-                .expect("has_table probe succeeds"),
+            has_table(&manager, "miryad_lymaille_catalog_agents").await,
+            "les tables du lot 1 ne sont défaites qu'au cinquième pas"
+        );
+        assert!(
+            has_table(&manager, "miryad_api_tokens").await,
             "les tables historiques ne sont pas touchées"
         );
     }
