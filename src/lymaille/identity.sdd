@@ -85,7 +85,16 @@ Tasks:
     sans `-`, le contexte HTTP passe par un champ de corps JSON). Tests : `classify_accepts_dash_in_host_identifiers` (rouge d'abord), `classify_refuses_dash_outside_host_identifiers` (non-régression, verte
     d'emblée — verrouille la moitié conservée du Scenario).
     [?] (spec-dd) : l'amendement du DSD `lymaille#DEC-9` (« identifiant Rhai valide », exception `H_…` avec `-`) reste à écrire côté développeur principal — domaine hors du cycle.
-  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : aucun changement de code (la signature de `check_grants` et la constante `ADMIN_ONLY_MODULES` sont inchangées) ; vérifier par recherche dans `src/` qu'aucun appelant ne passe plus `def.modules()` (AC ci-dessous, cycle de clôture de la migration). Spec seule.
+  [x] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : aucun changement de code (la signature de `check_grants` et la constante `ADMIN_ONLY_MODULES` sont inchangées) ; vérifier par recherche dans `src/` qu'aucun appelant ne passe plus `def.modules()` (AC ci-dessous, cycle de clôture de la migration). Spec seule.
+    Validé 2026-11-23 (branche `feat/lymaille-0.4`) : ./identity.rs bel et bien intact dans le diff de la branche (signature de @check_grants et
+    @ADMIN_ONLY_MODULES inchangées, batterie partagée du lot verte) ; la recherche dans `src/` est concluante — plus aucun appelant ne passe
+    `def.modules()` (zéro appelant de @AgentDefinition::modules en production comme en tests : les modules ne voyagent plus que par les dépendances des
+    toolsets et le registre `Capabilities`).
+    [?] Constat du validator (E1), hors lettre de la case mais découvert par elle : le test @admin_only_modules_has_a_single_declaration de ./identity.rs
+    liste encore `definitions/private_agent.rs` parmi les consommateurs qui « importent et emploient » `ADMIN_ONLY_MODULES` ; depuis le retrait du
+    contrôle dans les hooks (../definitions/private_agent.sdd, migration 0.4.0), ce fichier ne nomme plus la constante que dans un doc-comment — le test
+    passe par cette ligne de doc, l'esprit d'origine (cinq consommateurs réels) est caduc. Le corriger (retirer private_agent de la liste, ou l'asserter
+    autrement) relève d'une prochaine tâche sur ./identity.rs, hors « Spec seule » de la présente case. Rien touché.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./identity.rs.

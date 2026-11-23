@@ -66,11 +66,9 @@ Tasks:
     partagés sans changement des trois `ensure_*` existants (leurs 8 tests inchangés au bit près) ; 7 tests au `Then` réel (Created avec version hôte et
     version définition distinguées, Unchanged sans écriture, Updated avec empreinte recalculée, Modified/Unmanaged lignes intactes, refus avant écriture
     avec zéro ligne, empreinte non crue) ; rouge d'abord démontré (stub `Store`). La case reste `[ ]` sur l'écart ci-dessous.
-    [!] Parité du code d'erreur sur les préfixes de mauvaise casse : `classify(…)?` dans @ensure_toolset propage `ReservedPrefix` (`MRD-LYMAILLE-003`)
-    pour un `g_git`/`h_git`, alors que les hooks des quatre entités (dont ../definitions/toolset.rs) absorbent l'erreur en `InvalidDefinition` et que le
-    `Must` de la présente spec dit « refus → `InvalidDefinition` ». Aucun test ne couvre ce cas limite. Options : parité stricte avec les hooks (retirer
-    le `?`, rendre `InvalidDefinition`) — recommandé, ou amendement du `Must` actant `ReservedPrefix` sur ce chemin. Le code est écrit, la case attend
-    l'arbitrage.
+    Arbitré 2026-11-23 (parité stricte avec les hooks) : `classify(…)` n'est plus propagé par `?` dans @ensure_toolset — tout nom hors catalogue, préfixe
+    de mauvaise casse (`g_git`/`h_git`) compris, rend `InvalidDefinition` ; test `ensure_toolset_prefixe_de_mauvaise_casse_est_une_definition_invalide`
+    (rouge d'abord : `MRD-LYMAILLE-003`, puis vert). La case reste `[ ]` : voir ./migration.sdd.
     [?] Lecture des `managed_*` de `catalog_toolsets` par requête `sea_query` sur la clé (relire_toolset) : le `Model` de ../definitions/toolset.rs n'expose
     pas ces colonnes (amendement #73 jamais posé sur cette entité) et l'élargir toucherait la surface REST/TS de la ressource, hors `Owns` de la tâche.
     Options : amender ../definitions/toolset.sdd pour la parité des quatre entités, ou acter la lecture brute comme forme durable (documentée dans le
@@ -111,6 +109,11 @@ Scenario: les mêmes validations que les hooks, avant toute écriture
   Given un agent `triage` (nom privé), puis un contexte dont un paramètre ressemble à un secret, puis une version `pas-semver`
   When les `ensure_*` correspondants sont appelés
   Then `InvalidDefinition` (ou le refus du détecteur de secrets sans écho de la valeur) dans les trois cas, aucune ligne écrite
+
+Scenario: un toolset au préfixe de mauvaise casse est une définition invalide
+  Given un toolset nommé `g_git` (ou `h_git`) et une provenance valide
+  When `ensure_toolset` est appelé
+  Then `InvalidDefinition` (parité avec les hooks de ../definitions/toolset.rs), jamais `ReservedPrefix`, aucune ligne écrite
 
 Scenario: deux publications simultanées créent une seule ligne
   Given deux appels concurrents de `ensure_agent` pour le même `G_triage` sur une base fraîche

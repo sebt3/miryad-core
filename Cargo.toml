@@ -72,7 +72,7 @@ hex = { version = "0.4", optional = true }
 chrono = { version = "0.4", optional = true }
 utoipa = "5"
 utoipa-swagger-ui = { version = "9", optional = true, features = ["axum", "vendored"] }
-vynil-core = { version = "0.9.1", default-features = false, features = ["hbs"], optional = true }
+vynil-core = { version = "0.10.0", default-features = false, features = ["hbs"], optional = true }
 # Validation des arguments des outils MCP applicatifs (src/mcp/app_tool.sdd, DSD `mcp#DEC-3`) : `default-features = false`
 # retire `resolve-http` et `resolve-file` (aucune résolution de `$ref` distante ou de fichier). Cargo unifie les features :
 # `lymaille` tire la même crate avec ses features par défaut, d'où le récupérateur de `$ref` qui refuse tout (spec).
@@ -92,7 +92,7 @@ zeroize = { version = "1.9.1", optional = true }
 # (`mcp-http`, `rig`) ; `fs` et `shell` ne sont jamais activés (relais de `vynil-core`, DSD `OI-1`).
 # La feature amont `ts-rs` (montée 0.3.0, mod.sdd amendement 2026-11-13) dérive `TS` sur les types de
 # définition ; elle ne tire `ts-rs` dans le graphe que sous notre feature `lymaille`.
-lymaille = { version = "0.3", optional = true, features = ["ts-rs"] }
+lymaille = { version = "0.4", optional = true, features = ["ts-rs"] }
 # Provider `ring` du provider TLS de src/lymaille/tls.sdd (DSD `DEC-4`) ; `rustls` est déjà dans
 # le graphe via `reqwest`, aucune dépendance de fond nouvelle.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
@@ -175,7 +175,7 @@ sha2 = "0.10"
 # Graphe de test seulement (miryad-core.sdd A1, `dsd/miryad-core/workflow.md` `DEC-7`/`OI-1`) : les
 # features `fs` et `shell` activées ici prouvent, par un `Scenario` de src/workflow/rhai_step.sdd
 # (tâche A4), qu'aucune feature de `vynil-core` unifiée ailleurs dans le graphe n'atteint les scripts.
-vynil-core = { version = "0.9.1", default-features = false, features = ["hbs", "fs", "shell"] }
+vynil-core = { version = "0.10", default-features = false, features = ["hbs", "fs", "shell"] }
 
 [package.metadata.docs.rs]
 all-features = false

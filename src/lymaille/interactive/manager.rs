@@ -36,6 +36,7 @@ use ::lymaille::AgentKind;
 use ::lymaille::AgentRef;
 use ::lymaille::AgentStore as _;
 use ::lymaille::CancelHandle;
+use ::lymaille::ContextStore as _;
 use ::lymaille::ContextType;
 use ::lymaille::Redactor;
 use ::lymaille::SessionError;
@@ -46,8 +47,10 @@ use ::lymaille::SessionKind;
 use ::lymaille::SessionState;
 use ::lymaille::SessionStore as _;
 use ::lymaille::SessionSummary;
+use ::lymaille::ToolsetContext;
 use ::lymaille::ToolsetStore as _;
 use ::lymaille::TurnGate;
+use ::lymaille::select_toolsets;
 
 use crate::lymaille::error::LymailleError;
 use crate::lymaille::identity::CallerPrincipal;
@@ -327,7 +330,7 @@ impl SessionManager {
         {
             return Err(LymailleError::Forbidden("too many open sessions".to_string()));
         }
-        let versions = self.toolset_versions(&stores, &definition).await?;
+        let versions = self.toolset_versions(&stores, &definition, context).await?;
         let id = SessionId::new(uuid::Uuid::new_v4().to_string())
             .ok_or_else(|| LymailleError::Store("generated session identifier was rejected".to_string()))?;
         let state = SessionState::new(
@@ -828,24 +831,42 @@ impl SessionManager {
             .ok_or_else(|| LymailleError::NotFound(CONTEXT_NOT_FOUND.to_string()))
     }
 
-    /// Versions effectives des toolsets **actifs** de la définition — l'état initial posé à
+    /// Versions effectives des toolsets **actifs** de la session — l'état initial posé à
     /// l'ouverture porte les mêmes versions que l'assemblage, la reprise du premier tour
-    /// n'émet donc aucun avis fantôme.
+    /// n'émet donc aucun avis fantôme. `DEC-32` : les toolsets sont la liste du contexte lié,
+    /// restreinte pour un sous-agent par `select_toolsets` (`lymaille` 0.4.0) — la définition de
+    /// `Work` ou `Config` n'en porte pas ; la sélection est celle de
+    /// `./assemble.rs::resolve_scope`, sans restriction étendue : les noms hors liste sont ignorés
+    /// ici comme à l'assemblage.
     async fn toolset_versions(
         &self,
         stores: &LymailleStores,
         definition: &AgentDefinition,
+        context: &str,
     ) -> Result<BTreeMap<String, String>, LymailleError> {
+        let contexte = if context.is_empty() {
+            None
+        } else {
+            stores
+                .contexts()
+                .get_context(context)
+                .await
+                .map_err(from_toolsets)?
+        };
+        let selection = if let Some(contexte) = &contexte {
+            select_toolsets(contexte, definition)
+        } else {
+            let vide = ToolsetContext::new("empty".to_owned(), ::lymaille::ContextLevel::Session)
+                .map_err(from_toolsets)?;
+            select_toolsets(&vide, definition)
+        };
         let mut versions = BTreeMap::new();
-        for name in definition.toolsets() {
+        for name in selection.names() {
             let toolset = stores
                 .toolsets()
                 .get_active(name)
                 .await
-                .map_err(|error| match error {
-                    ::lymaille::ToolsetsError::Store(text) => LymailleError::Store(text),
-                    other => LymailleError::InvalidDefinition(other.to_string()),
-                })?
+                .map_err(from_toolsets)?
                 .ok_or_else(|| LymailleError::NotFound(format!("unknown toolset: {name}")))?;
             let _entered: Option<String> = versions.insert(name.to_owned(), toolset.version().to_string());
         }
@@ -989,6 +1010,15 @@ fn from_session(error: SessionError) -> LymailleError {
     }
 }
 
+/// Erreur d'un store de toolsets (`ToolsetsError`) : panne de stockage → `Store`, refus →
+/// `InvalidDefinition` (même mappage que `from_toolsets` de `./assemble.rs`, privé à son fichier).
+fn from_toolsets(error: ::lymaille::ToolsetsError) -> LymailleError {
+    match error {
+        ::lymaille::ToolsetsError::Store(text) => LymailleError::Store(text),
+        other => LymailleError::InvalidDefinition(other.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::future::Future;
@@ -1115,11 +1145,10 @@ mod tests {
             .expect("l'admin ecrit le provider");
     }
 
-    /// Définition d'agent de test, sans toolset (le tour ne monte que `resources`).
+    /// Définition d'agent de test, sans toolset : DEC-32, la liste vient du contexte (ici vide,
+    /// donc aucune présentation ; `with_modules` supprimé en `lymaille` 0.4.0).
     fn agent(id: &str, kind: AgentKind) -> AgentDefinition {
-        AgentDefinition::new(id.to_owned(), kind, "le prompt".to_owned())
-            .with_profile("qwen".to_owned())
-            .with_modules(vec!["resources".to_owned()])
+        AgentDefinition::new(id.to_owned(), kind, "le prompt".to_owned()).with_profile("qwen".to_owned())
     }
 
     /// Écrit un agent privé (par son propriétaire).
@@ -1934,9 +1963,9 @@ mod tests {
         drop(sub);
 
         let alice = compte(&db, "alice", false).await;
+        // [B2] `with_modules` supprimé (`lymaille` 0.4.0).
         let modifie = AgentDefinition::new("dev".to_owned(), AgentKind::Work, "un prompt revise".to_owned())
-            .with_profile("qwen".to_owned())
-            .with_modules(vec!["resources".to_owned()]);
+            .with_profile("qwen".to_owned());
         put_agent(&db, &alice, &modifie).await;
 
         let second = Arc::new(ScriptedProvider::new(Vec::new()));

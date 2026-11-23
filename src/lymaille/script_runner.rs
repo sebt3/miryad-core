@@ -338,8 +338,8 @@ impl ScriptRunner {
             .await
             {
                 Ok(module) => {
-                    let _registered =
-                        engine.register_static_module(role.as_str(), Arc::clone(module.module()));
+                    // `lymaille` 0.4.0 (`DEC-32`) : `mount_role` rend le `rhai::Module` du rôle.
+                    let _registered = engine.register_static_module(role.as_str(), Arc::new(module));
                     disabled.push(role.clone());
                 }
                 Err(LymailleError::Forbidden(message))

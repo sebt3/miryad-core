@@ -294,9 +294,8 @@ mod tests {
     }
 
     fn agent(id: &str, kind: AgentKind) -> AgentDefinition {
-        AgentDefinition::new(id.to_owned(), kind, "le prompt".to_owned())
-            .with_profile("qwen".to_owned())
-            .with_modules(vec!["resources".to_owned()])
+        // [B2] `with_modules` supprimé (`lymaille` 0.4.0).
+        AgentDefinition::new(id.to_owned(), kind, "le prompt".to_owned()).with_profile("qwen".to_owned())
     }
 
     async fn put_agent(db: &DatabaseConnection, owner: &str, definition: &AgentDefinition) {

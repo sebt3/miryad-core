@@ -2,13 +2,20 @@
 //!
 //! Pendant interactif de l'assemblage batch de `../../workflow/subagent_step.rs` : même patron
 //! `InferenceFactory`/`DynProvider` (les types du step batch sont privés à leur module), même
-//! `ScratchpadEngine`. Pour **ce** principal : agent et profil relus via ses stores, `check_grants`
-//! sur les modules de la définition, toolsets **actifs** (jamais un brouillon), contexte lié à la
-//! session résolu par `SeaContextStore` (privé de l'appelant, `G_…` du catalogue, `H_…` par
-//! `resolve_context` de l'hôte — jamais le contexte d'un autre), puis pour chaque rôle lié du
-//! contexte ou exigé par les toolsets et leurs types : `resolve_role` (hôte d'abord, repli table
-//! `mcp_access`) et `build_auth` avec le jeton du tour. Une session `Config` n'assemble **aucun**
-//! client MCP et reçoit les modules de configuration (`config_registration` sur nos stores).
+//! `ScratchpadEngine`. Pour **ce** principal : agent et profil relus via ses stores, toolsets
+//! **actifs** (jamais un brouillon) listés par le contexte lié à la session — privé de l'appelant,
+//! `G_…` du catalogue, `H_…` par `resolve_context` de l'hôte (`SeaContextStore` ne lit jamais la
+//! ligne privée d'un autre, règle 3 de `../store/mod.rs`), restreints pour un sous-agent par
+//! `select_toolsets` (`lymaille` 0.4.0, `DEC-32`) ; le droit se contrôle par `check_grants` sur
+//! les **dépendances** de ces toolsets (`ADMIN_ONLY_MODULES` augmenté des noms `AdminOnly` du
+//! registre d'hôte), plus sur la définition qui ne porte plus de modules. Les capacités **brutes**
+//! (module des features compilées et `host`, `resources` avec le sujet de la session, tous les
+//! modules d'hôte enregistrés, modules des rôles MCP) entrent dans un registre `Capabilities` :
+//! seule la fonction `assemble` des toolsets produit la `Presentation` présentée au LLM — aucun
+//! module brut n'est présenté. Pour chaque rôle lié du contexte ou exigé par les toolsets et leurs
+//! types : `resolve_role` (hôte d'abord, repli table `mcp_access`) et `build_auth` avec le jeton
+//! du tour. Une session `Config` n'assemble **aucun** client MCP et reçoit les modules de
+//! configuration (`config_registration` sur nos stores).
 //!
 //! Le jeton `forward` n'est transmis qu'à `build_auth` et ne vit que dans le `SeaMcpAuth` du tour.
 //! Aucune décision de droit n'est dupliquée : tout passe par `../identity.rs`, `../mcp_access.rs`.
@@ -25,6 +32,7 @@ use ::lymaille::AgentDefinition;
 use ::lymaille::AgentRef;
 use ::lymaille::AgentStore as _;
 use ::lymaille::CancelHandle;
+use ::lymaille::Capabilities;
 use ::lymaille::Clock;
 use ::lymaille::ConfigEnv;
 use ::lymaille::ConfigStores;
@@ -34,7 +42,6 @@ use ::lymaille::ContextType;
 use ::lymaille::ContextTypeStore as _;
 use ::lymaille::DefaultStrategy;
 use ::lymaille::EventSink;
-use ::lymaille::GrantedModule;
 use ::lymaille::InferenceError;
 use ::lymaille::InferenceProvider;
 use ::lymaille::InferenceRequest;
@@ -305,13 +312,16 @@ impl TurnLock for LeaseTurnLock {
 ///
 /// # Errors
 ///
-/// - `LymailleError::NotFound` : agent inconnu de ce principal, toolset actif absent.
-/// - `LymailleError::Forbidden` : module réservé accordé (`check_grants`), rôle **requis** vers
-///   un serveur refusé (`"mcp server unavailable"`), `forward` sans jeton.
-/// - `LymailleError::InvalidDefinition` : assemblage d'un toolset impossible, nom de module
-///   invalide.
+/// - `LymailleError::NotFound` : agent inconnu de ce principal, toolset actif listé par le
+///   contexte absent.
+/// - `LymailleError::Forbidden` : dépendance d'un toolset réservée aux admins (`check_grants`,
+///   étape 4 bis), rôle **requis** vers un serveur refusé (`"mcp server unavailable"`), `forward`
+///   sans jeton.
+/// - `LymailleError::InvalidDefinition` : nom de module invalide ou pris, moteur impossible à
+///   construire. Un toolset en échec d'assemblage n'est **pas** une erreur : il est omis et
+///   signalé dans `notices`.
 /// - `LymailleError::Store` / `LymailleError::Config` / `LymailleError::Run` : pannes des stores,
-///   du moteur ou d'un tour.
+///   collision de nom de rôle MCP, du moteur ou d'un tour.
 // Spec `assemble.sdd` (tâche bail de #81, 2026-11-15) : signature-contract à 8 paramètres,
 // le jeton de bail s'ajoutant en septième position (avant `now`).
 #[allow(clippy::too_many_arguments)]
@@ -354,31 +364,19 @@ async fn assemble_with(
     reserved: &[&str],
 ) -> Result<AssembledSession, LymailleError> {
     install_crypto_provider();
-    // Étapes 1 à 3 : stores du sujet de l'appelant, définition relue, contrôle des modules
-    // réservés, profil et client d'inférence — la référence d'auth n'est résolue qu'ici, à la
-    // construction du client (`DEC-16`).
-    let resolved = resolve_inference(deps, caller, agent_id, reserved).await?;
-    // Étape 4 : toolsets actifs et contexte lié à la session (immuable, porté par l'état
-    // persisté — `DEC-28`).
+    // Étapes 1 à 3 : stores du sujet de l'appelant, définition relue, profil et client
+    // d'inférence — la référence d'auth n'est résolue qu'ici, à la construction du client
+    // (`DEC-16`). Étape 3 (`DEC-32`) : la définition ne porte plus de modules, plus de
+    // `check_grants` sur elle — le droit se lit sur les dépendances des toolsets (étape 4 bis).
+    let resolved = resolve_inference(deps, caller, agent_id).await?;
+    // Étape 4 : toolsets actifs du contexte lié (immuable, porté par l'état persisté — `DEC-28`),
+    // restreints pour un sous-agent par `select_toolsets` ; les noms ignorés de la restriction
+    // sont des avis, jamais des toolsets ajoutés.
     let scope = resolve_scope(&resolved.stores, &resolved.definition, session).await?;
-    // Étape 5 : modules — `resources` pour tous, clients MCP par rôle accordé (aucun pour
-    // `Config`) — puis le moteur assemblé de tout cela.
-    let mut granted = base_modules(deps, caller)?;
-    // Noms réservés à la garde de collision (`./mcp_mount.sdd`, étape 0) : les modules déjà
-    // accordés **et** les modules d'hôte que l'étape 5 montera — accordés par la définition **et**
-    // enregistrés, intersection `def.modules()` ∩ registre (amendement du 2026-11-11, étape 4 ter,
-    // DSD `scripts-hote` `FR-1` ; même garde que `../script_runner.rs`). La garde doit précéder
-    // tout montage MCP. Aucun module d'office de `lymaille` n'est à ajouter (`lymaille` 0.2.0
-    // n'en déclare aucun : `assemble` ne grant que ce qu'il reçoit).
-    let mut granted_names: Vec<&str> = granted.iter().map(GrantedModule::name).collect();
-    let def_modules = resolved.definition.modules();
-    granted_names.extend(
-        deps.host_modules
-            .names()
-            .into_iter()
-            .filter(|name| def_modules.iter().any(|granted| granted.as_str() == *name)),
-    );
-    let (mcp_granted, mut notices) = mount_mcp_roles(
+    // Étapes 4 bis, 4 ter et 5 (jusqu'au montage des rôles) : droit sur les dépendances, registre
+    // brut des capacités, modules MCP — aucune capacité n'est présentée telle quelle, seul
+    // `assemble` produit la `Presentation`.
+    let (capabilities, mut notices) = gather_capabilities(
         deps,
         caller,
         kind,
@@ -386,15 +384,21 @@ async fn assemble_with(
         session,
         &resolved,
         token.as_ref(),
-        &granted_names,
+        reserved,
     )
     .await?;
-    granted.extend(mcp_granted);
-    // Modules d'hôte (`Must` étape 5, amendement du 2026-11-11, DSD `scripts-hote`) : ceux
-    // accordés par la définition **et** enregistrés, montés par `mount_host_modules(…, All)` ;
-    // la définition filtre, un module non accordé ou absent du registre n'est pas monté.
-    granted.extend(granted_host_modules(deps, caller, &resolved.definition)?);
-    let engine = build_engine(deps, &resolved, kind, session, &scope, &granted, token.as_ref())?;
+    // Fin d'étape 5 : `assemble` des toolsets actifs sur le registre brut, puis le moteur sur la
+    // présentation — un toolset en échec d'assemblage est omis et signalé en avis, jamais fatal.
+    let (engine, assembly_notices) = build_engine(
+        deps,
+        &resolved,
+        kind,
+        session,
+        &scope,
+        &capabilities,
+        token.as_ref(),
+    )?;
+    notices.extend(assembly_notices);
     let toolset_versions: BTreeMap<String, String> = scope
         .toolsets
         .iter()
@@ -490,14 +494,15 @@ struct Resolved {
 }
 
 /// Stores liés au sujet de l'appelant (routage `owner_id` de `../store/toolset.rs` — un contexte,
-/// un toolset ou une ligne d'autrui est introuvable par construction), définition relue avec le
-/// contrôle en profondeur des modules réservés (`FR-4`), puis profil et provider ; la référence
-/// d'auth n'est résolue qu'ici, à la construction du client (`DEC-16`).
+/// un toolset ou une ligne d'autrui est introuvable par construction), définition relue, puis
+/// profil et provider ; la référence d'auth n'est résolue qu'ici, à la construction du client
+/// (`DEC-16`). Étape 3 (`DEC-32`) : la définition ne porte plus de modules — aucun `check_grants`
+/// ici, le droit se contrôle sur les dépendances des toolsets à l'étape 4 bis de
+/// `assemble_with`.
 async fn resolve_inference(
     deps: &AssembleDeps,
     caller: &CallerPrincipal,
     agent_id: &str,
-    reserved: &[&str],
 ) -> Result<Resolved, LymailleError> {
     let stores = match &deps.host {
         Some(host) => {
@@ -511,13 +516,6 @@ async fn resolve_inference(
         .await
         .map_err(from_agents)?
         .ok_or_else(|| LymailleError::NotFound(format!("unknown agent: {agent_id}")))?;
-    // Défense en profondeur sur les modules : refus à l'assemblage, l'appel du module revalide.
-    // La liste réservée est combinée à l'appel (amendement du 2026-11-11, DSD `scripts-hote`
-    // `FR-2`) : `ADMIN_ONLY_MODULES` de `../identity.rs` augmenté des noms `AdminOnly` du
-    // registre d'hôte — aucune nouvelle constante déclarée ici.
-    let mut reserved: Vec<&str> = reserved.to_vec();
-    reserved.extend(deps.host_modules.admin_only_names());
-    check_grants(caller, definition.modules(), &reserved)?;
     // Été 2 (amendement du 2026-11-13, issue #75, ./assemble.sdd) : un agent dont la définition
     // ne désigne pas de profil (`profile()` = `None`, définition sans `with_profile` — la colonne
     // dérivée `profile` est alors la chaîne vide, ./../definitions/agent.rs) suit le profil par
@@ -565,7 +563,8 @@ async fn resolve_inference(
     })
 }
 
-/// Étape 4 : le périmètre de la session — toolsets actifs, contexte persisté et rôles exigés.
+/// Étape 4 : le périmètre de la session — toolsets actifs (sélection du contexte), contexte
+/// persisté, rôles exigés, et les noms de restriction hors contexte (`Selection::ignored()`).
 struct Scope {
     context_name: String,
     context: Option<ToolsetContext>,
@@ -573,13 +572,21 @@ struct Scope {
     toolsets: Vec<Toolset>,
     required: BTreeSet<String>,
     optional: BTreeSet<String>,
+    ignored: Vec<String>,
 }
 
-/// Toolsets **actifs** de la définition (jamais un brouillon) et contexte lié à la session
-/// (immuable, porté par l'état persisté — `DEC-28`) : privé de l'appelant ou `G_…` du catalogue,
-/// `H_…` par `resolve_context` de l'hôte — `SeaContextStore` ne lit jamais la ligne privée d'un
-/// autre (règle 3 de `../store/mod.rs`) — puis les rôles exigés par les toolsets et aplatis de
-/// leurs types (`DEC-28`).
+/// Contexte de secours d'une session sans contexte lié : une liste vide, aucun toolset
+/// (`select_toolsets` y rend `names` vide ; pour un sous-agent restreint, ses noms sont `ignored`).
+fn empty_context() -> Result<ToolsetContext, LymailleError> {
+    ToolsetContext::new("empty".to_owned(), ::lymaille::ContextLevel::Session).map_err(from_toolsets)
+}
+
+/// Toolsets **actifs** de la session (`DEC-32`) : la liste du contexte lié à la session
+/// (immuable, porté par l'état persisté — `DEC-28`) — privé de l'appelant ou `G_…` du catalogue,
+/// `H_…` par `resolve_context` de l'hôte, `SeaContextStore` ne lit jamais la ligne privée d'un
+/// autre (règle 3 de `../store/mod.rs`) — restreinte pour un sous-agent par `select_toolsets`
+/// (`lymaille` 0.4.0) : la restriction n'étend jamais la liste, ses noms hors liste sont reportés
+/// en `ignored`. Puis les rôles exigés par les toolsets et aplatis de leurs types (`DEC-28`).
 async fn resolve_scope(
     stores: &LymailleStores,
     definition: &AgentDefinition,
@@ -587,16 +594,6 @@ async fn resolve_scope(
 ) -> Result<Scope, LymailleError> {
     let state = stores.sessions().load(session).await.map_err(from_session)?;
     let context_name = state.map_or_else(String::new, |state| state.toolset_context().to_owned());
-    let mut toolsets: Vec<Toolset> = Vec::new();
-    for name in definition.toolsets() {
-        let toolset = stores
-            .toolsets()
-            .get_active(name)
-            .await
-            .map_err(from_toolsets)?
-            .ok_or_else(|| LymailleError::NotFound(format!("unknown toolset: {name}")))?;
-        toolsets.push(toolset);
-    }
     let context: Option<ToolsetContext> = if context_name.is_empty() {
         None
     } else {
@@ -606,6 +603,20 @@ async fn resolve_scope(
             .await
             .map_err(from_toolsets)?
     };
+    let selection = match &context {
+        Some(context) => ::lymaille::select_toolsets(context, definition),
+        None => ::lymaille::select_toolsets(&empty_context()?, definition),
+    };
+    let mut toolsets: Vec<Toolset> = Vec::new();
+    for name in selection.names() {
+        let toolset = stores
+            .toolsets()
+            .get_active(name)
+            .await
+            .map_err(from_toolsets)?
+            .ok_or_else(|| LymailleError::NotFound(format!("unknown toolset: {name}")))?;
+        toolsets.push(toolset);
+    }
     let bindings: BTreeMap<String, String> =
         context.as_ref().map_or_else(BTreeMap::new, toolset_context_roles);
     let (required, optional) = role_requirements(&toolsets, stores).await?;
@@ -616,14 +627,17 @@ async fn resolve_scope(
         toolsets,
         required,
         optional,
+        ignored: selection.ignored().to_vec(),
     })
 }
 
 /// Clients MCP par rôle (étape 5) : la boucle sur les rôles requis puis optionnels, et la
 /// **politique** de l'assemblage. Le montage d'un rôle (liaison, auth, connecteur, module) est
-/// `mcp_mount::mount_role`. Un rôle **requis** refusé fait échouer la session ; un rôle
-/// optionnel refusé par le serveur (`"mcp server unavailable"`) n'émet qu'un avis, toute autre
-/// erreur de montage reste fatale. Une session `Config` n'assemble aucun client MCP.
+/// `mcp_mount::mount_role` — il rend le `rhai::Module` brut du rôle, que l'appelant enregistre
+/// dans le registre `Capabilities` (jamais présenté tel quel). Un rôle **requis** refusé fait
+/// échouer la session ; un rôle optionnel refusé par le serveur (`"mcp server unavailable"`)
+/// n'émet qu'un avis, toute autre erreur de montage reste fatale. Une session `Config`
+/// n'assemble aucun client MCP.
 #[allow(clippy::too_many_arguments)] // Signature fixée par ./mcp_mount.sdd (garde de collision, `taken`, amendement 2026-11-07).
 async fn mount_mcp_roles(
     deps: &AssembleDeps,
@@ -633,9 +647,9 @@ async fn mount_mcp_roles(
     session: &SessionId,
     resolved: &Resolved,
     token: Option<&Zeroizing<String>>,
-    granted_names: &[&str],
-) -> Result<(Vec<GrantedModule>, Vec<String>), LymailleError> {
-    let mut granted: Vec<GrantedModule> = Vec::new();
+    registry_names: &[&str],
+) -> Result<(Vec<(String, rhai::Module)>, Vec<String>), LymailleError> {
+    let mut granted: Vec<(String, rhai::Module)> = Vec::new();
     let mut notices: Vec<String> = Vec::new();
     if kind == SessionKind::Config {
         return Ok((granted, notices));
@@ -663,12 +677,15 @@ async fn mount_mcp_roles(
             role,
             scope.bindings.get(role).map(String::as_str),
             token,
-            granted_names,
+            registry_names,
             env,
         )
         .await
         {
-            Ok(module) => granted.push(module),
+            // Un nom invalide échoue déjà dans `mcp_module` (erreur `Store`), un nom pris dans la
+            // garde `taken` en amont — un nom rendu disponible entre-temps est la même `Config`
+            // que la garde (`Capabilities::with_module`).
+            Ok(module) => granted.push((role.clone(), module)),
             Err(LymailleError::Forbidden(message)) if !is_required && message == "mcp server unavailable" => {
                 notices.push(format!("role {role} omitted: mcp server unavailable"));
             }
@@ -678,42 +695,137 @@ async fn mount_mcp_roles(
     Ok((granted, notices))
 }
 
-/// Moteur de la session (fin d'étape 5) : l'assemblage `lymaille` des toolsets et des modules
-/// accordés — rien d'autre — et, pour une session `Config`, l'enregistrement des modules de
-/// configuration sur nos stores, en lecture seule pour l'hôte, sans aucun client MCP monté
-/// dessus (`agent-sessions#BR-8`).
+/// Les capacités brutes de la session, remplies jusqu'au montage des rôles MCP (`Must` étapes
+/// 4 bis à 5, `DEC-32`) :
+///
+/// - étape 4 bis : `check_grants` sur les **dépendances** de chaque toolset actif, la liste
+///   réservée étant celle de l'appel (`ADMIN_ONLY_MODULES` en production) augmentée des noms
+///   `AdminOnly` du registre d'hôte — un toolset qui dépend d'un module réservé pour un non-admin
+///   est un `Forbidden` nommant le module, jamais la source (défense en profondeur : l'enrobage de
+///   `../host_module.rs` revalide à chaque appel) ;
+/// - étape 5 (première moitié) : le registre brut (`build_capabilities`) ;
+/// - étape 4 ter : la garde de collision de `../mcp_mount.rs` reçoit en `registry_names` les noms
+///   du registre déjà rempli — un rôle MCP du nom d'un tel module est refusé comme un rôle du nom
+///   d'un module de base, avant tout montage (même garde que `../script_runner.rs`) ;
+/// - les modules des rôles montés entrent dans le registre (`with_module`), jamais dans la
+///   présentation.
+///
+/// Les avis rendus : les noms hors liste de la restriction (`Selection::ignored()`), puis les
+/// rôles optionnels omis.
+// Spec `assemble.sdd` (tâche migration `lymaille` 0.4.0, DEC-32) : les huit paramètres portent la
+// même séparation d'étapes que `mount_mcp_roles` (garde de collision, `taken`).
+#[allow(clippy::too_many_arguments)]
+async fn gather_capabilities(
+    deps: &AssembleDeps,
+    caller: &CallerPrincipal,
+    kind: SessionKind,
+    scope: &Scope,
+    session: &SessionId,
+    resolved: &Resolved,
+    token: Option<&Zeroizing<String>>,
+    reserved: &[&str],
+) -> Result<(Capabilities, Vec<String>), LymailleError> {
+    let mut reserved: Vec<&str> = reserved.to_vec();
+    reserved.extend(deps.host_modules.admin_only_names());
+    for toolset in &scope.toolsets {
+        let dependencies: Vec<String> = toolset.dependencies().iter().cloned().collect();
+        check_grants(caller, &dependencies, &reserved)?;
+    }
+    let mut capabilities = build_capabilities(deps, caller)?;
+    let registry_names: Vec<&str> = capabilities.modules().map(|(name, _)| name).collect();
+    let (mcp_modules, mut notices) = mount_mcp_roles(
+        deps,
+        caller,
+        kind,
+        scope,
+        session,
+        resolved,
+        token,
+        &registry_names,
+    )
+    .await?;
+    for (role, module) in mcp_modules {
+        let Some(next) = capabilities.with_module(&role, Arc::new(module)) else {
+            return Err(LymailleError::Config(format!(
+                "mcp role name collides with a module: {role}"
+            )));
+        };
+        capabilities = next;
+    }
+    notices.extend(
+        scope
+            .ignored
+            .iter()
+            .map(|name| format!("restricted toolset not listed by the context: {name}")),
+    );
+    Ok((capabilities, notices))
+}
+
+/// Les capacités brutes de la session (`Must` étape 5, `DEC-32`) : le registre des modules des
+/// features compilées (dont `host`, ajouté par `Capabilities::compiled` — noté au rapport), plus
+/// `resources` avec le sujet de la session (lecture et écritures, `../resource_module.rs` —
+/// interactive : `scope = None`, pas de journal), plus **tous** les modules d'hôte enregistrés
+/// (`mount_host_modules(…, All)` — l'enrobage d'autorité de `../host_module.rs` revalide la
+/// politique à chaque appel). Aucune de ces capacités n'est présentée au LLM : `assemble` ne les
+/// donne en dépendance qu'aux toolsets qui les déclarent.
+fn build_capabilities(deps: &AssembleDeps, caller: &CallerPrincipal) -> Result<Capabilities, LymailleError> {
+    let resources = resources_module(
+        Arc::clone(&deps.readers),
+        deps.db.clone(),
+        caller.subject.clone(),
+        None,
+    );
+    let mut capabilities = Capabilities::compiled()
+        .with_module("resources", Arc::new(resources))
+        .ok_or_else(|| LymailleError::InvalidDefinition("invalid module name: resources".to_owned()))?;
+    for (name, module) in mount_host_modules(
+        &deps.host_modules,
+        deps.db.clone(),
+        &caller.subject,
+        HostSelect::All,
+    ) {
+        let Some(next) = capabilities.with_module(name, Arc::new(module)) else {
+            return Err(LymailleError::InvalidDefinition(format!(
+                "host module name invalid or taken: {name}"
+            )));
+        };
+        capabilities = next;
+    }
+    Ok(capabilities)
+}
+
+/// Moteur de la session (fin d'étape 5, `DEC-32`) : seul `assemble(toolsets actifs, capacités
+/// brutes, contexte résolu, limites)` produit la `Presentation` — un toolset en échec d'assemblage
+/// est omis et signalé en avis, jamais fatal. Pour une session `Config`, l'enregistrement des
+/// modules de configuration sur nos stores, en lecture seule pour l'hôte, sans aucun client MCP
+/// monté dessus (`agent-sessions#BR-8`).
 fn build_engine(
     deps: &AssembleDeps,
     resolved: &Resolved,
     kind: SessionKind,
     session: &SessionId,
     scope: &Scope,
-    granted: &[GrantedModule],
+    capabilities: &Capabilities,
     token: Option<&Zeroizing<String>>,
-) -> Result<Arc<ScratchpadEngine>, LymailleError> {
+) -> Result<(Arc<ScratchpadEngine>, Vec<String>), LymailleError> {
     let limits = ScratchpadLimits::new();
     let resolved_context: ResolvedContext = match scope.context.as_ref() {
         Some(context) => context
             .resolve(std::iter::empty::<(String, String, serde_json::Value)>())
             .map_err(from_toolsets)?,
-        None => ToolsetContext::new("empty".to_owned(), ::lymaille::ContextLevel::Session)
-            .map_err(from_toolsets)?
+        None => empty_context()?
             .resolve(std::iter::empty::<(String, String, serde_json::Value)>())
             .map_err(from_toolsets)?,
     };
-    let assembled = assemble(
-        &scope.toolsets,
-        granted,
-        &BTreeMap::new(),
-        &resolved_context,
-        &limits,
-    );
-    if let Some(first_failure) = assembled.failures().first() {
-        return Err(LymailleError::InvalidDefinition(format!(
-            "toolset assembly failed: {first_failure}"
-        )));
-    }
-    let mut builder = ScratchpadEngine::builder(limits, assembled.into_grants());
+    let assembled = assemble(&scope.toolsets, capabilities, &resolved_context, &limits);
+    // Un toolset qui ne se monte pas est omis et signalé (nom et raison fixe, jamais la source),
+    // les autres sont présentés — l'assemblage de la session n'échoue pas pour autant.
+    let notices: Vec<String> = assembled
+        .failures()
+        .iter()
+        .map(|failure| format!("toolset omitted: {failure}"))
+        .collect();
+    let mut builder = ScratchpadEngine::builder(limits, assembled.into_presentation());
     if kind == SessionKind::Config {
         let slot = Arc::new(InspectionSlot::new());
         let registration = config_registration(
@@ -735,9 +847,14 @@ fn build_engine(
         );
         builder = builder.with_registration(registration);
     }
-    Ok(Arc::new(builder.build().map_err(|error| {
-        LymailleError::InvalidDefinition(format!("engine build failed: {error}"))
-    })?))
+    Ok((
+        Arc::new(
+            builder
+                .build()
+                .map_err(|error| LymailleError::InvalidDefinition(format!("engine build failed: {error}")))?,
+        ),
+        notices,
+    ))
 }
 
 /// Rôles requis et optionnels exigés par les toolsets actifs : leurs déclarations propres et
@@ -820,51 +937,6 @@ pub(crate) fn toolset_context_roles(context: &ToolsetContext) -> BTreeMap<String
                 })
         })
         .unwrap_or_default()
-}
-
-/// Les modules de base : `resources` pour tous avec le sujet de la session (`Must` étape 5).
-/// Les modules nommés `todo` / `memory_*` relèvent du montage batch de
-/// `../../workflow/subagent_step.rs` ; la spec de ce fichier ne promet que `resources` et
-/// l'enregistrement `Config`. Les modules MCP s'ajoutent par rôle au-dessus.
-fn base_modules(deps: &AssembleDeps, caller: &CallerPrincipal) -> Result<Vec<GrantedModule>, LymailleError> {
-    // Session interactive : `scope = None`, pas de journal (`resource_module.sdd`,
-    // amendement lot 2).
-    let resources = resources_module(
-        Arc::clone(&deps.readers),
-        deps.db.clone(),
-        caller.subject.clone(),
-        None,
-    );
-    Ok(vec![
-        GrantedModule::new("resources", resources.into())
-            .ok_or_else(|| LymailleError::InvalidDefinition("invalid module name: resources".to_owned()))?,
-    ])
-}
-
-/// Les modules d'hôte de la session (`Must` étape 5, amendement du 2026-11-11, DSD
-/// `scripts-hote`) : `mount_host_modules(…, All)` rend les modules enregistrés, la définition
-/// filtre — un module non accordé n'est pas monté, un module accordé absent du registre non
-/// plus (pas d'erreur). L'enrobage d'autorité de `../host_module.rs` revalide la politique à
-/// chaque appel.
-fn granted_host_modules(
-    deps: &AssembleDeps,
-    caller: &CallerPrincipal,
-    definition: &AgentDefinition,
-) -> Result<Vec<GrantedModule>, LymailleError> {
-    let modules = definition.modules();
-    mount_host_modules(
-        &deps.host_modules,
-        deps.db.clone(),
-        &caller.subject,
-        HostSelect::All,
-    )
-    .into_iter()
-    .filter(|(name, _)| modules.iter().any(|granted| granted.as_str() == *name))
-    .map(|(name, module)| {
-        GrantedModule::new(name, module.into())
-            .ok_or_else(|| LymailleError::InvalidDefinition(format!("invalid module name: {name}")))
-    })
-    .collect()
 }
 
 /// Le `Redactor` d'une session : les secrets connus du tour (clé d'API du provider, jeton
@@ -989,12 +1061,21 @@ mod tests {
             .expect("l'admin ecrit le provider");
     }
 
-    /// Définition d'agent de test (nature `Work` par défaut des scénarios).
-    fn agent(id: &str, kind: AgentKind, toolsets: Vec<String>) -> AgentDefinition {
-        AgentDefinition::new(id.to_owned(), kind, "le prompt".to_owned())
+    /// Définition d'agent de test (nature `Work` par défaut des scénarios). DEC-32 : une
+    /// définition de `Work` ou `Config` ne porte pas de toolsets — ce que voit la session vient
+    /// du contexte lié (`select_toolsets`) ; seul un sous-agent peut les restreindre, par
+    /// [`agent_sous_agent`].
+    fn agent(id: &str, kind: AgentKind) -> AgentDefinition {
+        AgentDefinition::new(id.to_owned(), kind, "le prompt".to_owned()).with_profile("qwen".to_owned())
+    }
+
+    /// Sous-agent de test restreint aux toolsets nommés (`AgentKind::Sub`, DEC-32 : la
+    /// restriction n'est portée que par un sous-agent, et ne fait qu'intersecter la liste du
+    /// contexte).
+    fn agent_sous_agent(id: &str, restriction: &[&str]) -> AgentDefinition {
+        AgentDefinition::new(id.to_owned(), AgentKind::Sub, "le prompt".to_owned())
             .with_profile("qwen".to_owned())
-            .with_modules(vec!["resources".to_owned()])
-            .with_toolsets(toolsets)
+            .with_toolset_restriction(restriction.iter().map(|name| (*name).to_owned()).collect())
     }
 
     /// Écrit un agent privé (par son propriétaire — `classify` route vers la table privée).
@@ -1027,6 +1108,25 @@ mod tests {
                 .expect("la declaration du type est acceptee"),
             None => toolset,
         }
+    }
+
+    /// Toolset de test qui déclare des dépendances (DEC-32 : le droit se lit sur les dépendances
+    /// du toolset, plus sur la définition de l'agent). `source` est le module Rhai, qui peut
+    /// importer ses dépendances.
+    fn toolset_depends(name: &str, source: &str, deps: &[&str]) -> Toolset {
+        let mut toolset = Toolset::new(
+            name.to_owned(),
+            format!("the toolset {name}"),
+            Semver::parse("1.0.0").expect("la version de fixture se parse"),
+            source.to_owned(),
+        )
+        .expect("le toolset de fixture se construit");
+        for dep in deps {
+            toolset = toolset
+                .with_dependency((*dep).to_owned())
+                .expect("une dependance distincte est acceptee");
+        }
+        toolset
     }
 
     /// Écrit la version **active** d'un toolset au catalogue, et un brouillon si `draft`.
@@ -1076,15 +1176,23 @@ mod tests {
             .expect("l'admin ecrit le type de contexte");
     }
 
-    /// Ligne de contexte privé (table `miryad_lymaille_user_contexts`, owner donné).
-    async fn inserer_contexte_prive(
+    /// Ligne de contexte privé (table `miryad_lymaille_user_contexts`, owner donné), listant
+    /// `toolsets` (la liste du contexte est la source des toolsets de la session — DEC-32) et
+    /// liant `roles` (rôle → serveur).
+    async fn inserer_contexte(
         db: &DatabaseConnection,
         owner_id: i32,
         name: &str,
+        toolsets: &[&str],
         roles: &[(&str, &str)],
     ) {
         let mut context = ToolsetContext::new(name.to_owned(), ContextLevel::User)
             .expect("le contexte de fixture se construit");
+        for toolset in toolsets {
+            context = context
+                .with_toolset((*toolset).to_owned())
+                .expect("la liste du contexte accepte le toolset");
+        }
         for (role, server) in roles {
             context = context
                 .with_role((*role).to_owned(), (*server).to_owned())
@@ -1370,21 +1478,28 @@ mod tests {
     // ── Scénarios ───────────────────────────────────────────────────────────
 
     /// Scenario « un module réservé à l'admin est refusé à l'assemblage » : `Forbidden`, la
-    /// liste réservée étant le séparateur injecté (liste de production vide).
+    /// liste réservée étant le séparateur injecté (liste de production vide). DEC-32 : le droit
+    /// se lit sur les dépendances des toolsets du contexte, plus sur la définition.
     #[tokio::test(flavor = "multi_thread")]
     async fn un_module_reserve_refuse_assemblage() {
         let db = db_test().await;
         wire_catalog(&db).await;
         let alice = compte(&db, "alice", false).await;
-        let mut definition = agent("dev", AgentKind::Work, Vec::new());
-        definition = definition.with_modules(vec!["resources".to_owned(), "admin_only".to_owned()]);
-        put_agent(&db, &alice, &definition).await;
+        put_active_toolset(
+            &db,
+            &toolset_depends("G_reserve", "fn ping() { 1 }", &["admin_only"]),
+            None,
+        )
+        .await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
+        inserer_contexte(&db, alice.user_id, "moncontexte", &["G_reserve"], &[]).await;
         let deps = deps_with(
             db.clone(),
             Arc::new(ScriptedProvider::new(Vec::new())),
             SpyFactory::new(),
         );
         let session = SessionId::new("s-reserve").expect("identifiant de session de test");
+        inserer_session(&deps, &alice, &session, "moncontexte", SessionKind::Work).await;
 
         let Err(refus) = assemble_with(
             &deps,
@@ -1415,12 +1530,7 @@ mod tests {
         let alice = compte(&db, "alice", false).await;
         put_type(&db, "prodtype", &[("kubectl", true)]).await;
         put_active_toolset(&db, &toolset("G_kube", "1.0.0", Some("prodtype")), None).await;
-        put_agent(
-            &db,
-            &alice,
-            &agent("dev", AgentKind::Work, vec!["G_kube".to_owned()]),
-        )
-        .await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
         inserer_serveur(
             &db,
             "admin_srv",
@@ -1429,7 +1539,14 @@ mod tests {
             json!(["admin"]),
         )
         .await;
-        inserer_contexte_prive(&db, alice.user_id, "moncontexte", &[("kubectl", "admin_srv")]).await;
+        inserer_contexte(
+            &db,
+            alice.user_id,
+            "moncontexte",
+            &["G_kube"],
+            &[("kubectl", "admin_srv")],
+        )
+        .await;
         let deps = deps_with(
             db.clone(),
             Arc::new(ScriptedProvider::new(Vec::new())),
@@ -1456,12 +1573,7 @@ mod tests {
         let alice = compte(&db, "alice", false).await;
         put_type(&db, "prodtype", &[("meteo", false)]).await;
         put_active_toolset(&db, &toolset("G_kube", "1.0.0", Some("prodtype")), None).await;
-        put_agent(
-            &db,
-            &alice,
-            &agent("dev", AgentKind::Work, vec!["G_kube".to_owned()]),
-        )
-        .await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
         inserer_serveur(
             &db,
             "admin_srv",
@@ -1470,7 +1582,14 @@ mod tests {
             json!(["admin"]),
         )
         .await;
-        inserer_contexte_prive(&db, alice.user_id, "moncontexte", &[("meteo", "admin_srv")]).await;
+        inserer_contexte(
+            &db,
+            alice.user_id,
+            "moncontexte",
+            &["G_kube"],
+            &[("meteo", "admin_srv")],
+        )
+        .await;
         let spy = SpyFactory::new();
         let deps = deps_with(
             db.clone(),
@@ -1503,19 +1622,15 @@ mod tests {
             Some(&toolset("G_util", "2.0.0", None)),
         )
         .await;
-        put_agent(
-            &db,
-            &alice,
-            &agent("dev", AgentKind::Work, vec!["G_util".to_owned()]),
-        )
-        .await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
+        inserer_contexte(&db, alice.user_id, "moncontexte", &["G_util"], &[]).await;
         let deps = deps_with(
             db.clone(),
             Arc::new(ScriptedProvider::new(Vec::new())),
             SpyFactory::new(),
         );
         let session = SessionId::new("s-actif").expect("identifiant de session de test");
-        inserer_session(&deps, &alice, &session, "", SessionKind::Work).await;
+        inserer_session(&deps, &alice, &session, "moncontexte", SessionKind::Work).await;
 
         let assembled = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
@@ -1543,7 +1658,7 @@ mod tests {
         )
         .await;
         // La définition Config n'a pas de toolset : les liaisons du contexte ne montent rien.
-        put_agent(&db, &alice, &agent("cfg", AgentKind::Config, Vec::new())).await;
+        put_agent(&db, &alice, &agent("cfg", AgentKind::Config)).await;
         let spy = SpyFactory::new();
         let deps = deps_with(
             db.clone(),
@@ -1580,12 +1695,7 @@ mod tests {
         let alice = compte(&db, "alice", false).await;
         put_type(&db, "prodtype", &[("public_role", true), ("fwd_role", true)]).await;
         put_active_toolset(&db, &toolset("G_kube", "1.0.0", Some("prodtype")), None).await;
-        put_agent(
-            &db,
-            &alice,
-            &agent("dev", AgentKind::Work, vec!["G_kube".to_owned()]),
-        )
-        .await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
         inserer_serveur(
             &db,
             "srv_none",
@@ -1602,10 +1712,11 @@ mod tests {
             json!(["all"]),
         )
         .await;
-        inserer_contexte_prive(
+        inserer_contexte(
             &db,
             alice.user_id,
             "moncontexte",
+            &["G_kube"],
             &[("public_role", "srv_none"), ("fwd_role", "srv_fwd")],
         )
         .await;
@@ -1647,8 +1758,10 @@ mod tests {
         );
     }
 
-    /// Scenario « contexte d'un autre utilisateur » : la ligne de `bob` n'est jamais lue ; le
-    /// rôle requis, sans liaison, échoue comme si le contexte était absent.
+    /// Scenario « contexte d'un autre utilisateur » : la ligne de `bob` n'est jamais lue. Alice a
+    /// son propre contexte `commun` qui liste le toolset mais ne lie pas le rôle requis ; la
+    /// ligne de même nom de `bob` lie ce rôle à un serveur que la table autorise — si elle était
+    /// lue, un client serait monté (compteur d'espion) et l'assemblage réussirait.
     #[tokio::test(flavor = "multi_thread")]
     async fn contexte_dun_autre_utilisateur() {
         let db = db_test().await;
@@ -1657,12 +1770,7 @@ mod tests {
         let bob = compte(&db, "bob", false).await;
         put_type(&db, "prodtype", &[("meteo", true)]).await;
         put_active_toolset(&db, &toolset("G_kube", "1.0.0", Some("prodtype")), None).await;
-        put_agent(
-            &db,
-            &alice,
-            &agent("dev", AgentKind::Work, vec!["G_kube".to_owned()]),
-        )
-        .await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
         // Le contexte de `bob`, du même nom, lie le rôle à un serveur que la table autorise :
         // s'il était lu, un client serait monté (compteur d'espion).
         inserer_serveur(
@@ -1673,7 +1781,16 @@ mod tests {
             json!(["all"]),
         )
         .await;
-        inserer_contexte_prive(&db, bob.user_id, "commun", &[("meteo", "public_srv")]).await;
+        inserer_contexte(
+            &db,
+            bob.user_id,
+            "commun",
+            &["G_kube"],
+            &[("meteo", "public_srv")],
+        )
+        .await;
+        // Le contexte d'alice, même nom, liste le toolset sans lier le rôle : seul le sien est lu.
+        inserer_contexte(&db, alice.user_id, "commun", &["G_kube"], &[]).await;
         let spy = SpyFactory::new();
         let deps = deps_with(
             db.clone(),
@@ -1705,12 +1822,7 @@ mod tests {
         let alice = compte(&db, "alice", false).await;
         put_type(&db, "prodtype", &[("fwd_role", true)]).await;
         put_active_toolset(&db, &toolset("G_kube", "1.0.0", Some("prodtype")), None).await;
-        put_agent(
-            &db,
-            &alice,
-            &agent("dev", AgentKind::Work, vec!["G_kube".to_owned()]),
-        )
-        .await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
         inserer_serveur(
             &db,
             "srv_fwd",
@@ -1719,7 +1831,14 @@ mod tests {
             json!(["all"]),
         )
         .await;
-        inserer_contexte_prive(&db, alice.user_id, "moncontexte", &[("fwd_role", "srv_fwd")]).await;
+        inserer_contexte(
+            &db,
+            alice.user_id,
+            "moncontexte",
+            &["G_kube"],
+            &[("fwd_role", "srv_fwd")],
+        )
+        .await;
         let deps = deps_with(
             db.clone(),
             Arc::new(ScriptedProvider::new(Vec::new())),
@@ -1763,10 +1882,21 @@ mod tests {
         }
     }
 
+    /// Toolset de fixture qui importe un module d'hôte nommé `module` et le relais par
+    /// `show(x)` — la dépendance déclarée est ce qui rend le module appelable (DEC-32).
+    fn toolset_important(name: &str, module: &str) -> Toolset {
+        toolset_depends(
+            name,
+            &format!("import \"{module}\" as m;\nfn show(x) {{ m::show(x) }}"),
+            &[module],
+        )
+    }
+
     /// Scenario « un module d'hôte réservé à l'admin accordé à un non-admin est refusé à
-    /// l'assemblage » (amendement du 2026-11-11, DSD `scripts-hote`) : `Forbidden` nommant le
-    /// module pour un non-admin ; pour un admin le module enregistré accordé est monté, et un
-    /// module accordé absent du registre n'est pas monté, sans erreur.
+    /// l'assemblage » (amendement du 2026-11-11, reformulé DEC-32) : `Forbidden` nommant le
+    /// module pour un non-admin, lu sur la dépendance du toolset du contexte ; pour un admin
+    /// l'assemblage réussit, le module enregistré est appelable depuis le toolset qui le déclare,
+    /// et un toolset dépendant d'un module absent du registre est omis en avis, jamais fatal.
     #[tokio::test(flavor = "multi_thread")]
     async fn un_module_hote_reserve_refuse_assemblage() {
         let db = db_test().await;
@@ -1780,15 +1910,14 @@ mod tests {
                 access: HostAccess::AdminOnly,
             }))
             .expect("`dashboard` s'enregistre");
-        // `dashboard` est accordé et enregistré (AdminOnly) ; `fantome` est accordé sans être
-        // enregistré — il ne doit être ni monté, ni une erreur.
-        let definition = agent("dev", AgentKind::Work, Vec::new()).with_modules(vec![
-            "resources".to_owned(),
-            "dashboard".to_owned(),
-            "fantome".to_owned(),
-        ]);
-        put_agent(&db, &alice, &definition).await;
-        put_agent(&db, &bob, &definition).await;
+        // `G_dash` dépend de `dashboard` (enregistré, `AdminOnly`) ; `G_fantome` dépend de
+        // `fantome`, absent du registre — omission en avis pour l'admin, jamais une erreur.
+        put_active_toolset(&db, &toolset_important("G_dash", "dashboard"), None).await;
+        put_active_toolset(&db, &toolset_important("G_fantome", "fantome"), None).await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
+        put_agent(&db, &bob, &agent("dev", AgentKind::Work)).await;
+        inserer_contexte(&db, alice.user_id, "moncontexte", &["G_dash"], &[]).await;
+        inserer_contexte(&db, bob.user_id, "moncontexte", &["G_dash", "G_fantome"], &[]).await;
         let mut deps = deps_with(
             db.clone(),
             Arc::new(ScriptedProvider::new(Vec::new())),
@@ -1796,35 +1925,48 @@ mod tests {
         );
         deps.host_modules = Arc::new(registry);
         let session = SessionId::new("s-hote").expect("identifiant de session de test");
-        inserer_session(&deps, &alice, &session, "", SessionKind::Work).await;
+        inserer_session(&deps, &alice, &session, "moncontexte", SessionKind::Work).await;
 
         let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
-            .expect_err("un module d'hôte AdminOnly accordé à un non-admin est refusé");
+            .expect_err("une dependance d'AdminOnly refuse l'assemblage d'un non-admin");
         assert!(
             matches!(&refus, LymailleError::Forbidden(message) if message.contains("dashboard")),
             "le refus nomme le module d'hôte : {refus:?}"
         );
 
         let admin_session = SessionId::new("s-hote-admin").expect("identifiant de session de test");
-        inserer_session(&deps, &bob, &admin_session, "", SessionKind::Work).await;
+        inserer_session(&deps, &bob, &admin_session, "moncontexte", SessionKind::Work).await;
         let assembled = assemble_session(&deps, &bob, SessionKind::Work, "dev", &admin_session, None, None)
             .await
-            .expect("l'admin assemble avec le module d'hôte accordé");
+            .expect("l'admin assemble avec le module d'hôte en dependance");
+        assert!(
+            assembled
+                .notices()
+                .iter()
+                .any(|notice| notice.contains("G_fantome")),
+            "le toolset dont la dependance n'est pas dans le registre est omis en avis : {:?}",
+            assembled.notices()
+        );
         let pad = Scratchpad::new(assembled.engine());
         let clock = SystemClock::new();
         let redactor = Redactor::default();
         let env = RunEnv::new("dev", &redactor, &clock);
-        let monte = pad.run("dashboard::show(42)", &CancelHandle::new(), &env).await;
+        let monte = pad.run("G_dash::show(42)", &CancelHandle::new(), &env).await;
         assert!(
             matches!(monte.status(), RunStatus::Ok),
-            "`dashboard`, accordé et enregistré, est monté : {:?}",
+            "`dashboard`, en dependance du toolset, est appelable depuis lui : {:?}",
             monte.status()
         );
-        let absent = pad.run("fantome::show(42)", &CancelHandle::new(), &env).await;
+        let brut = pad.run("dashboard::show(42)", &CancelHandle::new(), &env).await;
+        assert!(
+            !matches!(brut.status(), RunStatus::Ok),
+            "le module brut `dashboard` n'est pas presente au-dela du toolset"
+        );
+        let absent = pad.run("G_fantome::show(42)", &CancelHandle::new(), &env).await;
         assert!(
             !matches!(absent.status(), RunStatus::Ok),
-            "`fantome`, absent du registre, n'est pas monté (et l'assemblage n'a pas échoué)"
+            "`G_fantome`, omis pour dependance indisponible, ne rend rien (et l'assemblage n'a pas echoue)"
         );
     }
 
@@ -1838,12 +1980,7 @@ mod tests {
         let alice = compte(&db, "alice", false).await;
         put_type(&db, "prodtype", &[("resources", false)]).await;
         put_active_toolset(&db, &toolset("G_kube", "1.0.0", Some("prodtype")), None).await;
-        put_agent(
-            &db,
-            &alice,
-            &agent("dev", AgentKind::Work, vec!["G_kube".to_owned()]),
-        )
-        .await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
         inserer_serveur(
             &db,
             "public_srv",
@@ -1852,7 +1989,14 @@ mod tests {
             json!(["all"]),
         )
         .await;
-        inserer_contexte_prive(&db, alice.user_id, "moncontexte", &[("resources", "public_srv")]).await;
+        inserer_contexte(
+            &db,
+            alice.user_id,
+            "moncontexte",
+            &["G_kube"],
+            &[("resources", "public_srv")],
+        )
+        .await;
         let spy = SpyFactory::new();
         let deps = deps_with(
             db.clone(),
@@ -1878,19 +2022,17 @@ mod tests {
     }
 
     /// Scenario « un rôle du nom d'un module d'hôte monté est refusé » (amendement du
-    /// 2026-11-11, étape 4 ter, DSD `scripts-hote` `FR-1`) : la garde de collision de
-    /// `../mcp_mount.rs` reçoit en `taken` les modules de base **et** les modules d'hôte
-    /// accordés par la définition et enregistrés — un rôle MCP nommé `dashboard` est refusé
-    /// comme un rôle nommé `resources` : `Config` fixe avant toute résolution, aucun
-    /// connecteur monté, et le module d'hôte n'est pas écrasé (l'assemblage échoue avant
-    /// tout montage, MCP comme hôte).
+    /// 2026-11-11, étape 4 ter, reformulé DEC-32) : la garde de collision de `../mcp_mount.rs`
+    /// reçoit en `taken` les noms du registre `Capabilities` déjà rempli — modules des features
+    /// compilées, `resources`, modules d'hôte enregistrés (l'étape 5 les enregistre tous) ; un
+    /// rôle MCP nommé `dashboard` est refusé comme un rôle nommé `resources` : `Config` fixe
+    /// avant tout montage, aucun connecteur monté, et le module d'hôte n'est pas écrasé.
     #[tokio::test(flavor = "multi_thread")]
     async fn un_role_du_nom_dun_module_hote_monte_est_refuse() {
         let db = db_test().await;
         wire_catalog(&db).await;
         let alice = compte(&db, "alice", false).await;
-        // `dashboard` est enregistré (module d'hôte montable par un compte authentifié) et
-        // accordé par la définition — c'est le module que l'étape 5 montera.
+        // `dashboard` est enregistré : c'est un module que l'étape 5 enregistre dans le registre.
         let mut registry = HostModules::new();
         registry
             .register(Arc::new(Temoignage {
@@ -1900,13 +2042,7 @@ mod tests {
             .expect("`dashboard` s'enregistre");
         put_type(&db, "prodtype", &[("dashboard", false)]).await;
         put_active_toolset(&db, &toolset("G_kube", "1.0.0", Some("prodtype")), None).await;
-        put_agent(
-            &db,
-            &alice,
-            &agent("dev", AgentKind::Work, vec!["G_kube".to_owned()])
-                .with_modules(vec!["resources".to_owned(), "dashboard".to_owned()]),
-        )
-        .await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
         inserer_serveur(
             &db,
             "public_srv",
@@ -1915,7 +2051,14 @@ mod tests {
             json!(["all"]),
         )
         .await;
-        inserer_contexte_prive(&db, alice.user_id, "moncontexte", &[("dashboard", "public_srv")]).await;
+        inserer_contexte(
+            &db,
+            alice.user_id,
+            "moncontexte",
+            &["G_kube"],
+            &[("dashboard", "public_srv")],
+        )
+        .await;
         let spy = SpyFactory::new();
         let mut deps = deps_with(
             db.clone(),
@@ -1947,19 +2090,17 @@ mod tests {
         let db = db_test().await;
         wire_catalog(&db).await;
         let alice = compte(&db, "alice", false).await;
-        put_agent(
-            &db,
-            &alice,
-            &agent("dev", AgentKind::Work, vec!["G_absent".to_owned()]),
-        )
-        .await;
+        put_active_toolset(&db, &toolset("G_present", "1.0.0", None), None).await;
+        // Le contexte liste un toolset connu et un absent : l'absence arrête l'assemblage.
+        inserer_contexte(&db, alice.user_id, "moncontexte", &["G_present", "G_absent"], &[]).await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
         let deps = deps_with(
             db.clone(),
             Arc::new(ScriptedProvider::new(Vec::new())),
             SpyFactory::new(),
         );
         let session = SessionId::new("s-absent").expect("identifiant de session de test");
-        inserer_session(&deps, &alice, &session, "", SessionKind::Work).await;
+        inserer_session(&deps, &alice, &session, "moncontexte", SessionKind::Work).await;
 
         let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
             .await
@@ -2004,9 +2145,9 @@ mod tests {
             .await
             .expect("l'admin ecrit le second provider");
         let alice = compte(&db, "alice", false).await;
-        // Agent sans profil explicite (`new` sans `with_profile`, `lymaille` 0.3.0).
-        let sans_profil = AgentDefinition::new("dev".to_owned(), AgentKind::Work, "le prompt".to_owned())
-            .with_modules(vec!["resources".to_owned()]);
+        // Agent sans profil explicite (`new` sans `with_profile`, `lymaille` 0.3.0) ; sans
+        // toolset : DEC-32, une définition de `Work` n'en porte pas.
+        let sans_profil = AgentDefinition::new("dev".to_owned(), AgentKind::Work, "le prompt".to_owned());
         put_agent(&db, &alice, &sans_profil).await;
         let hote = HoteProfil::new(Some("qwen"));
         let fabrique = FabriqueAdresse::new(Arc::new(ScriptedProvider::new(Vec::new())));
@@ -2048,7 +2189,7 @@ mod tests {
         assert_eq!(hote.appels(), 2, "le defaut est relu a chaque ouverture");
 
         // Agent à profil explicite : l'hôte n'est pas consulté.
-        put_agent(&db, &alice, &agent("dev2", AgentKind::Work, Vec::new())).await;
+        put_agent(&db, &alice, &agent("dev2", AgentKind::Work)).await;
         let avant = hote.appels();
         let session_trois = SessionId::new("s-defaut-3").expect("identifiant de session de test");
         assemble_session(
@@ -2078,8 +2219,9 @@ mod tests {
         let db = db_test().await;
         wire_catalog(&db).await;
         let alice = compte(&db, "alice", false).await;
-        let sans_profil = AgentDefinition::new("dev".to_owned(), AgentKind::Work, "le prompt".to_owned())
-            .with_modules(vec!["resources".to_owned()]);
+        // Agent sans profil explicite ni toolset (DEC-32 : une définition de `Work` ne porte pas
+        // de toolsets).
+        let sans_profil = AgentDefinition::new("dev".to_owned(), AgentKind::Work, "le prompt".to_owned());
         put_agent(&db, &alice, &sans_profil).await;
 
         // Cas 1 : hôte absent (`AssembleDeps::host = None`).
@@ -2174,7 +2316,7 @@ mod tests {
 
     /// Session de fixture posée et agent `dev` prêts : rendition du `AssembleDeps` configuré.
     async fn setup_bail(db: &DatabaseConnection, alice: &CallerPrincipal) -> SessionId {
-        put_agent(db, alice, &agent("dev", AgentKind::Work, Vec::new())).await;
+        put_agent(db, alice, &agent("dev", AgentKind::Work)).await;
         SessionId::new("s-bail").expect("identifiant de session de test")
     }
 
@@ -2314,6 +2456,203 @@ mod tests {
             "sans bail, les tours sont valides : {:?} puis {:?}",
             premier.outcome(),
             second.outcome()
+        );
+    }
+
+    // ── Migration `lymaille` 0.4.0 (`DEC-32`, 2026-11-22) ─────────────────────
+
+    /// Scenario « un toolset qui dépend d'un module réservé admin est refusé à un non-admin » :
+    /// `Forbidden` nommant `secrets` — jamais la source du toolset ; pour un admin l'assemblage
+    /// réussit et la présentation ne contient pas le module brut `secrets`, appelable seulement
+    /// depuis le toolset qui le déclare.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_toolset_qui_depend_dun_module_reserve_admin_est_refuse_a_un_non_admin() {
+        let db = db_test().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
+        let bob = compte(&db, "bob", true).await;
+        let mut registry = HostModules::new();
+        registry
+            .register(Arc::new(Temoignage {
+                name: "secrets",
+                access: HostAccess::AdminOnly,
+            }))
+            .expect("`secrets` s'enregistre");
+        put_active_toolset(&db, &toolset_important("G_secrecy", "secrets"), None).await;
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
+        put_agent(&db, &bob, &agent("dev", AgentKind::Work)).await;
+        inserer_contexte(&db, alice.user_id, "moncontexte", &["G_secrecy"], &[]).await;
+        inserer_contexte(&db, bob.user_id, "moncontexte", &["G_secrecy"], &[]).await;
+        let mut deps = deps_with(
+            db.clone(),
+            Arc::new(ScriptedProvider::new(Vec::new())),
+            SpyFactory::new(),
+        );
+        deps.host_modules = Arc::new(registry);
+        let session = SessionId::new("s-deps").expect("identifiant de session de test");
+        inserer_session(&deps, &alice, &session, "moncontexte", SessionKind::Work).await;
+
+        let refus = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
+            .await
+            .expect_err("un toolset dependant d'un module AdminOnly refuse l'assemblage d'un non-admin");
+        match &refus {
+            LymailleError::Forbidden(message) => {
+                assert!(
+                    message.contains("secrets"),
+                    "le refus nomme le module : {refus:?}"
+                );
+                assert!(
+                    !message.contains("import") && !message.contains("G_secrecy"),
+                    "le refus ne porte pas la source du toolset : {message}"
+                );
+            }
+            autre => panic!("`Forbidden` attendue, obtenu : {autre:?}"),
+        }
+
+        let admin_session = SessionId::new("s-deps-admin").expect("identifiant de session de test");
+        inserer_session(&deps, &bob, &admin_session, "moncontexte", SessionKind::Work).await;
+        let assembled = assemble_session(&deps, &bob, SessionKind::Work, "dev", &admin_session, None, None)
+            .await
+            .expect("l'admin assemble le toolset qui depend d'AdminOnly");
+        let pad = Scratchpad::new(assembled.engine());
+        let clock = SystemClock::new();
+        let redactor = Redactor::default();
+        let env = RunEnv::new("dev", &redactor, &clock);
+        let through = pad.run("G_secrecy::show(42)", &CancelHandle::new(), &env).await;
+        assert!(
+            matches!(through.status(), RunStatus::Ok),
+            "le toolset qui declare `secrets` en dependance l'appelle : {:?}",
+            through.status()
+        );
+        let brut = pad.run("secrets::show(42)", &CancelHandle::new(), &env).await;
+        assert!(
+            matches!(
+                brut.status(),
+                RunStatus::Failed(::lymaille::ScriptErrorClass::NotFound)
+            ),
+            "le module brut `secrets` n'est pas dans la presentation : {:?}",
+            brut.status()
+        );
+    }
+
+    /// Scenario « un module brut n'est jamais présenté » : contexte sans toolset et module d'hôte
+    /// enregistré — la `Presentation` ne contient ni `resources` ni le module d'hôte ; un toolset
+    /// qui déclare `resources` en dépendance le rend appelable depuis son propre module.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn un_module_brut_nest_jamais_presente() {
+        let db = db_test().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
+        let mut registry = HostModules::new();
+        registry
+            .register(Arc::new(Temoignage {
+                name: "dashboard",
+                access: HostAccess::Authenticated,
+            }))
+            .expect("`dashboard` s'enregistre");
+        put_agent(&db, &alice, &agent("dev", AgentKind::Work)).await;
+        inserer_contexte(&db, alice.user_id, "moncontexte", &[], &[]).await;
+        let mut deps = deps_with(
+            db.clone(),
+            Arc::new(ScriptedProvider::new(Vec::new())),
+            SpyFactory::new(),
+        );
+        deps.host_modules = Arc::new(registry);
+        let session = SessionId::new("s-brut").expect("identifiant de session de test");
+        inserer_session(&deps, &alice, &session, "moncontexte", SessionKind::Work).await;
+
+        let assembled = assemble_session(&deps, &alice, SessionKind::Work, "dev", &session, None, None)
+            .await
+            .expect("lassemblage reussit sans toolset");
+        let pad = Scratchpad::new(assembled.engine());
+        let clock = SystemClock::new();
+        let redactor = Redactor::default();
+        let env = RunEnv::new("dev", &redactor, &clock);
+        for script in ["resources::describe()", "dashboard::show(42)"] {
+            let refus = pad.run(script, &CancelHandle::new(), &env).await;
+            assert!(
+                matches!(
+                    refus.status(),
+                    RunStatus::Failed(::lymaille::ScriptErrorClass::NotFound)
+                ),
+                "`{script}` : un module brut n'est pas presente : {:?}",
+                refus.status()
+            );
+        }
+
+        // Le toolset qui declare `resources` en dependance l'appelle depuis son propre module.
+        put_active_toolset(
+            &db,
+            &toolset_depends(
+                "G_res",
+                "import \"resources\" as r;\nfn probe() { r::describe() }",
+                &["resources"],
+            ),
+            None,
+        )
+        .await;
+        inserer_contexte(&db, alice.user_id, "avecres", &["G_res"], &[]).await;
+        let avec_res = SessionId::new("s-brut-res").expect("identifiant de session de test");
+        inserer_session(&deps, &alice, &avec_res, "avecres", SessionKind::Work).await;
+        let assemble_avec = assemble_session(&deps, &alice, SessionKind::Work, "dev", &avec_res, None, None)
+            .await
+            .expect("lassemblage avec le toolset dependant de resources reussit");
+        let pad_avec = Scratchpad::new(assemble_avec.engine());
+        let through = pad_avec.run("G_res::probe()", &CancelHandle::new(), &env).await;
+        assert!(
+            matches!(through.status(), RunStatus::Ok),
+            "`resources` est appelable depuis le toolset qui le declare : {:?}",
+            through.status()
+        );
+        let brut = pad_avec
+            .run("resources::describe()", &CancelHandle::new(), &env)
+            .await;
+        assert!(
+            matches!(
+                brut.status(),
+                RunStatus::Failed(::lymaille::ScriptErrorClass::NotFound)
+            ),
+            "toujours pas presente en brut : {:?}",
+            brut.status()
+        );
+    }
+
+    /// Scenario « la restriction d'un sous-agent n'étend pas le contexte » : le contexte liste
+    /// `G_a` et `G_b`, le sous-agent est restreint à `G_a` et `G_c` — seul `G_a` est monté,
+    /// `G_c` figure dans les avis (`Selection::ignored()`).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn la_restriction_dun_sous_agent_netend_pas_le_contexte() {
+        let db = db_test().await;
+        wire_catalog(&db).await;
+        let alice = compte(&db, "alice", false).await;
+        put_active_toolset(&db, &toolset("G_a", "1.0.0", None), None).await;
+        put_active_toolset(&db, &toolset("G_b", "1.0.0", None), None).await;
+        put_agent(&db, &alice, &agent_sous_agent("sub", &["G_a", "G_c"])).await;
+        inserer_contexte(&db, alice.user_id, "moncontexte", &["G_a", "G_b"], &[]).await;
+        let deps = deps_with(
+            db.clone(),
+            Arc::new(ScriptedProvider::new(Vec::new())),
+            SpyFactory::new(),
+        );
+        let session = SessionId::new("s-restriction").expect("identifiant de session de test");
+        inserer_session(&deps, &alice, &session, "moncontexte", SessionKind::Work).await;
+
+        let assembled = assemble_session(&deps, &alice, SessionKind::Work, "sub", &session, None, None)
+            .await
+            .expect("lassemblage du sous-agent restreint reussit");
+        assert_eq!(
+            assembled
+                .toolset_versions()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["G_a"],
+            "seule l'intersection est montee : ni `G_b` hors de la restriction, ni `G_c` hors du contexte"
+        );
+        assert!(
+            assembled.notices().iter().any(|notice| notice.contains("G_c")),
+            "le nom ignore de la restriction est un avis : {:?}",
+            assembled.notices()
         );
     }
 }

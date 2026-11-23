@@ -55,6 +55,11 @@ Must:
     la table n'existe pas encore). Son `up` crée, `IF NOT EXISTS`, `session_events` (préfixe `miryad_lymaille_`) : `session_id` TEXT NOT NULL ; `seq` BIGINT NOT NULL ; `created_at` TIMESTAMP WITH TIME ZONE NOT NULL ; `kind` TEXT NOT NULL ; `event` JSON NOT NULL
     (`ColumnDef::json()`, jamais `json_binary()`) ; **clé primaire** `(session_id, seq)` ; un index `idx_miryad_lymaille_session_events_created` sur `created_at` (purge par âge) ; aucune `FOREIGN KEY` (couplage lâche). Son `down` supprime la table et son index si
     elle existe (strict ailleurs). Contrat d'emploi : ./store/events.sdd. Aucune autre table ni colonne ne change.
+  **Amendement du 2026-11-22 (migration `lymaille` 0.4.0, DSD `DEC-32`, arbitré 2026-11-23)** : `migrations()` rend cinq entrées, la dernière étant `m20261122_000001_lymaille_toolset_provenance`, ajoutée
+    **après** `m20261114_000001_lymaille_session_events` (règle de ../migration/mod.sdd : jamais avant une entrée existante, ordre chronologique ; **nouvelle** migration, règle par défaut de `/AGENTS.md`, aucune exception).
+    Son `up` ajoute `managed_by`, `managed_version`, `managed_digest` (`TEXT NULL`, une instruction `ALTER TABLE … ADD COLUMN` par colonne : portable SQLite et PostgreSQL) à `miryad_lymaille_catalog_toolsets`, en testant
+    `has_column` avant chaque ajout (idempotent) ; les lignes existantes valent `NULL` (« non gérée »). Son `down` retire ces trois colonnes si elles existent (gardé `has_column`, comme `m20261113_000001` ; « strict » de
+    ../migration/mod.sdd vise l'échec sur table absente). Aucun index, aucune autre table ni colonne ne change. Contrat d'emploi : ./store/publish.sdd (`ensure_toolset`).
   Compiler sous `#[cfg(feature = "lymaille")]`.
 
   **Amendement lot 2 (2026-11-03)** : `migrations()` rend désormais `[m20261103_000001_create_lymaille_tables, m20261104_000001_lymaille_lot2]` (puis `m20261113_000001_lymaille_provenance`, amendement du 2026-11-13, issue #73 : nouvelle migration, règle par défaut de `/AGENTS.md`, aucune exception) (la première
@@ -123,20 +128,15 @@ Tasks:
   [x] Issue #81 lot 3 — migration `m20261114_000001_lymaille_session_events` (voir l'amendement du 2026-11-14 ci-dessus). Spec d'abord (cet amendement : une spec par fichier de migration, `/.specdd/bootstrap.project.md` — ici le fichier est ./migration.rs). Tests d'abord
     Validé 2026-11-16 (batterie COMPLÈTE verte `BATTERY_FAIL=0`, 17 combinaisons tests + clippy, fmt, `cargo tree` ; relecture `spec-dd` + batterie tenue par le primary). `m20261114_000001_lymaille_session_events` (nouvelle migration, règle par défaut) : table `miryad_lymaille_session_events`, PK composite `(session_id, seq)`, index `created_at`, JSON via `ColumnDef::json()`, `up` idempotent, `down` strict. Tests : `has_column`, doublon `(session_id, seq)` refusé, `up` rejoué, `down` ; listes de `registered_stems`/`down_one_step`/`matrix_store_tables_are_applied_last` alignées (tests seulement, précédent #73).
     (SQLite mémoire : `has_column` de chaque colonne, clé primaire composite refusant un doublon `(session_id, seq)`, `up` rejoué sans effet, `down`), puis ./migration.rs. Après la tâche « provenance » (issue #73) de ce fichier ; avant ./store/events.sdd.
-  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : `migrations()` ajoute `m20261122_000001_lymaille_toolset_provenance` après `m20261113_000001_lymaille_provenance` : `up` ajoute `managed_by`, `managed_version`, `managed_digest` (`TEXT NULL`, une instruction `ALTER TABLE … ADD COLUMN` par colonne, portable SQLite et PostgreSQL) à `miryad_lymaille_catalog_toolsets` ; `down` les retire ; second `up` sans effet ; lignes existantes `NULL`. Aucune retouche d'une migration committée. Tests d'abord (`has_column`, rejeu), puis ./migration.rs.
+  [x] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : `migrations()` ajoute `m20261122_000001_lymaille_toolset_provenance` après `m20261114_000001_lymaille_session_events` : `up` ajoute `managed_by`, `managed_version`, `managed_digest` (`TEXT NULL`, une instruction `ALTER TABLE … ADD COLUMN` par colonne, portable SQLite et PostgreSQL) à `miryad_lymaille_catalog_toolsets` ; `down` les retire ; second `up` sans effet ; lignes existantes `NULL`. Aucune retouche d'une migration committée. Tests d'abord (`has_column`, rejeu), puis ./migration.rs.
     Écrit 2026-11-23 (implementer ; validator **PASS au code** : les Scenario ont leur test au `Then` réel — `has_column` ×3, lignes existantes
     `NULL`, rejeu idempotent, `down` et intégrité du reste, ordre dans `migrations()` ; batterie complète 17+17 + fmt + `cargo tree` verts,
     35 OK, aucun FAIL ; aucun DDL de migration committée touché, les hunks de /src/migration/mod.rs et /src/migration/m20260930_000001_index_api_tokens_subject.rs
     sont tous sous `#[cfg(test)]`). Le `down` est gardé `has_column` comme le précédent `m20261113_000001` (le `Must` de #73 acte déjà ce motif ;
     « strict » de ../migration/mod.sdd vise l'échec sur table absente) — écart tranché conforme par le validator. La case reste `[ ]` sur l'écart
     de rédaction ci-dessous.
-    [!] Le `Must` de la présente spec n'a pas reçu son « Amendement du 2026-11-22 » (précédent des issues #73 et #81 : chaque migration a son
-    amendement du `Must` plus un ou deux `Scenario` dédiés) : il décrit encore `migrations()` rendant quatre entrées là où le code en rend
-    cinq. La case `[ ]` porte le contrat complet, mais le corps normatif est devancé par le code — amendement `Must` + `Scenario` du domaine
-    du développeur principal, à poser dans le même commit que la clôture de la case.
-    [?] La case dit « après `m20261113_000001_lymaille_provenance` » ; `m20261114_000001_lymaille_session_events` (#81) existe entre-temps — la
-    migration est ajoutée en fin de liste après `m20261114` (règle de /src/migration/mod.sdd : jamais avant une entrée existante, ordre
-    chronologique). Le libellé de la case est dépassé ; le code suit la règle. Recommandation : à ratifier à l'amendement du `Must`.
+    Arbitré 2026-11-23 : `Must` amendé (amendement du 2026-11-22, cinq entrées, ordre après `m20261114`), deux `Scenario` ajoutés, libellé de la case corrigé
+    (`après m20261114_000001_lymaille_session_events`). Les tests existants portent déjà le `Then` réel de chacun. La case est close.
     [?] (validator) Prose obsolète des specs parentes, hors cycle : ../migration/mod.sdd dit « trois entrées » (cinq désormais) et le Scenario
     d'ordre de /src/migration/m20260930_000001_index_api_tokens_subject.sdd « deux de plus … de quatre à huit » (cinq de plus désormais) —
     ratification en bloc comme `5755d1d` (#73/#81) ou amendement des deux specs au passage ? Choix provisoire : rien touché, les tests alignés
@@ -194,3 +194,13 @@ Scenario: le down retire la table du journal (issue #81)
   Given la migration du journal appliquée
   When son `down` est exécuté, puis le `down` de toute la chaîne
   Then la table et l'index n'existent plus ; après la chaîne complète, plus aucune table `miryad_lymaille_*` n'existe
+
+Scenario: la migration de provenance des toolsets ajoute trois colonnes nullables (migration lymaille 0.4.0)
+  Given les migrations précédentes appliquées sous `lymaille`, avec une ligne dans `catalog_toolsets`
+  When `m20261122_000001_lymaille_toolset_provenance` est exécutée, puis rejouée
+  Then `managed_by`, `managed_version`, `managed_digest` (`TEXT` nullable) existent sur `miryad_lymaille_catalog_toolsets` (`has_column`), la ligne existante vaut `NULL`, le second `up` ne fait rien, `migrations()` rend cinq entrées dont la dernière est celle-ci
+
+Scenario: le down retire les colonnes de provenance des toolsets (migration lymaille 0.4.0)
+  Given la migration de provenance des toolsets appliquée
+  When son `down` est exécuté
+  Then les trois colonnes n'existent plus sur `catalog_toolsets`, les autres colonnes, les autres tables et les lignes sont intactes

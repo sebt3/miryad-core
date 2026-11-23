@@ -92,7 +92,22 @@ Tasks:
     un `TurnPermit::new(session, || {}, lost.clone())` — le `TurnRunner` ne reprend pas de verrou (le gestionnaire tient déjà le permis réel) mais voit la perte du bail ; un second appel rend `SessionError::TurnActive`.
     `None` → aucun changement (porte par défaut de `lymaille`). `Scenario` : « le jeton de bail traverse l'assemblage » (jeton annulé pendant l'inférence → tour `Cancelled`, `TurnLeaseLost` émis) ; « sans `lease`,
     rien ne change ». Tests d'abord (`ScriptedProvider` qui annule le jeton), puis ./assemble.rs. Après la tâche « Montée de dépendance à `lymaille` 0.3.0 » de ../mod.sdd.
-  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : réécrire l'assemblage interactif sur `Capabilities` + `Presentation` (étapes 3, 4 bis, 4 ter, 5 ci-dessus) ; tests d'abord (adapter les tests existants à la nouvelle API, ajouter les trois `Scenario` ci-dessous), puis ./assemble.rs et ./manager.rs (lecture de la restriction : `toolset_restriction`, plus `toolsets()`). Après ../mcp_mount.sdd (même lot) et ../definitions/private_toolset.sdd.
+  [x] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : réécrire l'assemblage interactif sur `Capabilities` + `Presentation` (étapes 3, 4 bis, 4 ter, 5 ci-dessus) ; tests d'abord (adapter les tests existants à la nouvelle API, ajouter les trois `Scenario` ci-dessous), puis ./assemble.rs et ./manager.rs (lecture de la restriction : `toolset_restriction`, plus `toolsets()`). Après ../mcp_mount.sdd (même lot) et ../definitions/private_toolset.sdd.
+    Validé 2026-11-23 (branche `feat/lymaille-0.4` ; validator PASS statique + batterie complète 17+17 + fmt + `cargo tree` — 35 combos, un échec unique
+    intermittent `auth::tests::callback_success_sets_session_then_purges_pending` rejoué 5/5 vert, sans rapport avec le lot ; bump au commit final de la
+    branche, tâche L0 de /miryad-core.sdd). Étapes du `Must` : plus aucun `check_grants` sur la définition à l'étape 3 ; `select_toolsets(contexte,
+    definition)` puis `get_active` par nom retenu ; `check_grants` sur les dépendances de chaque toolset avec `ADMIN_ONLY_MODULES` augmenté de
+    `HostModules::admin_only_names()` avant tout montage ; `taken` = noms du registre `Capabilities` déjà rempli ; `Capabilities::compiled()` +
+    ressources (`with_module`) + tous les modules d'hôte enregistrés (`All`) + modules des rôles MCP ; seule `assemble(toolsets, &capabilities,
+    &contexte, &limites)` (`into_presentation`) produit la `Presentation` de `ScratchpadEngine::builder` — aucune capacité présentée telle quelle ;
+    `failures()` en avis, jamais fatal ; `kind=Config` sans client MCP ; ./manager.rs lit `toolset_restriction`. Les trois nouveaux `Scenario` verts
+    (« un toolset qui dépend d'un module réservé admin » refusé, « un module brut n'est jamais présenté », « la restriction d'un sous-agent n'étend pas
+    le contexte »).
+    [?] Deux comportements 0.3 changés sont portés par le `Must` amendé du 2026-11-22 mais par aucun `Scenario` du corps : un module que la définition
+    déclarait et que le registre d'hôte ne connaissait pas était monté silencieusement, et la panne d'assemblage d'un toolset était fatale
+    (`InvalidDefinition`). Sous DEC-32 : le toolset dont une dépendance manque au registre `Capabilities` est omis et signalé en avis (admin), refusé en
+    `Forbidden` (non-admin) — le test `un_module_hote_reserve_refuse_assemblage` porte ce Then réel. Faut-il un `Scenario` dédié à cette omission ? Choix
+    provisoire : les tests portent le Then, le corps attend un amendement du domaine du développeur principal.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./assemble.rs.
