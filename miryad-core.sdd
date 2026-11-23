@@ -132,7 +132,7 @@ Depends on:
   axum 0.8 (@axum) et @tower, @tower-http derrière `static-frontend`
   openidconnect 4 (@openidconnect)
   utoipa 5 (@utoipa), @utoipa-swagger-ui derrière `swagger-ui`
-  vynil-core 0.9 (`hbs`, sans `crypto` depuis le 2026-09-29 ; montée depuis 0.7.7 le 2026-10-30), derrière les features `mcp` et `workflow`
+  vynil-core 0.10 (`hbs`, sans `crypto` depuis le 2026-09-29 ; monté depuis 0.7.7 le 2026-10-30, puis 0.9.1 → 0.10.0 le 2026-11-23 par la tâche L0 ci-dessous), derrière les features `mcp` et `workflow`
   ./tooling.sdd
 
 Tasks:
@@ -306,6 +306,21 @@ Tasks:
   [x] Prénoms dans les doc-comments de `src/**/*.rs` (arbitré le 2026-11-18, règle des instructions de projet : fichiers commités sans prénom) : retirer le prénom du développeur principal des commentaires (`//`, `///`, `//!`) des fichiers `.rs` de `./src/` — « arbitré par Prénom le DATE » devient « arbitré le DATE », « (décision Prénom DATE, … » devient « (décision DATE, … », toute autre forme devient une tournure sans prénom (« arbitrage du développeur principal » si le sens l'exige). Aucun changement de code ni de test, aucun `.sdd` (les specs gardent leur convention, décidée à part). Preuve : `grep -rn 'Sébastien' src --include='*.rs'` ne rend rien ; `cargo fmt --check`, `cargo clippy --all-features --all-targets -- -D warnings` et `cargo test --no-default-features --features lymaille,matrix,workflow,mcp` verts (un commentaire modifié ne doit rien changer). Périmètre : `./src/**/*.rs`, commentaires seulement.
     Validé 2026-11-18 (implementer Haiku ; vérifié par le primary : `grep -rn 'Sébastien' src --include='*.rs'` vide, 43 occurrences dans 17 fichiers, diff exclusivement composé de lignes de commentaire, `cargo fmt --check` et `cargo clippy --all-features --all-targets -- -D warnings` verts ; la batterie complète du lot suivant rejoue les tests).
   [ ] L0 — Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`), montée de dépendances : dans `./Cargo.toml`, `vynil-core` passe de `0.9.1` à `0.10.0` (inchangés : `default-features = false`, features `["hbs"]` ; `[dev-dependencies]` `vynil-core` à `0.10` avec `["hbs", "fs", "shell"]`) et `lymaille` de `0.3` à `0.4` (feature `ts-rs` conservée ; **aucune** nouvelle feature relayée dans cette tâche, `DEC-33` suit par lots). `vynil-core` 0.10.0 ne casse rien chez nous (essai du 2026-11-22 : zéro erreur) ; `lymaille` 0.4.0 casse 16 erreurs de compilation, toutes résolues par les tâches de ./src/lymaille/mcp_mount.sdd, ./src/lymaille/interactive/assemble.sdd et ./src/workflow/subagent_step.sdd : **ne pas committer le bump avant elles** (le dépôt doit rester vert à chaque commit : ces tâches s'exécutent dans une branche, un seul commit de bump à la fin). Vérifier `cargo tree --no-default-features -e normal -i sea-orm` (sortie vide), le delta de `Cargo.lock` (`rhai`, `rmcp`, `rig-core` dictés par `lymaille` 0.4.0) et la batterie complète. Mise à jour des mentions « vynil-core 0.9 » du présent fichier. Dépend de toutes les tâches « Migration `lymaille` 0.4.0 » listées dans les specs de ./src/lymaille/.
+    Écrit 2026-11-23 (branche `feat/lymaille-0.4` ; bump fait ici, ce commit rend la branche compilable — protocole annoncé, les commits de tâche qui
+    précèdent ne compilaient qu'avec ce bump) : `Cargo.toml` au contrat (vynil-core 0.10.0/0.10 dev, lymaille 0.4, `ts-rs` conservé, aucune feature
+    nouvelle relayée) ; delta `Cargo.lock` réduit aux deux paquets — `rhai` 1.27.0, `rmcp` 3.9.0, `rig-core` 0.43.0 aux mêmes versions, dictés par
+    `lymaille` 0.4.0 ; `cargo tree --no-default-features -e normal -i sea-orm` vide, les dix contrôles `cargo tree` de ./tooling.sdd conformes ;
+    batterie complète 17 tests + 17 clippy + fmt + trees — 35 combos, un échec unique intermittent rejoué vert (voir `[?]` ci-dessous) ; les onze
+    tâches « Migration `lymaille` 0.4.0 » du lot sont réalisées et validées, neuf closes `[x]`. La case reste `[ ]` car sa clause de dépendance n'est pas tenue
+    au sens strict : ./src/lymaille/migration.sdd attend son amendement de `Must` `[!]` et ./src/lymaille/store/publish.sdd son arbitrage de parité
+    d'erreur `[!]` — codes livrés et verts, clos attendus de l'arbitrage du développeur principal.
+    [?] Flaky mesuré pendant la batterie du lot : `auth::tests::callback_success_sets_session_then_purges_pending` (src/auth/mod.rs:863, assertion
+    `Max-Age` aligné sur l'`exp`) a échoué une fois sur `swagger-ui,db` — course de frontière de seconde (`exp - now_secs()` selon l'instant où le test
+    lit l'horloge), `src/auth` intact dans tout le lot ; rejoué 5/5 vert. Dépendance connue hors migration : resserrer l'assertion (`now_secs()` avant
+    l'émission du jeton, ou tolérance ±1) relève d'une tâche ./src/auth/cookie.sdd ou mod.sdd, hors cycle. Choix provisoire : rien touché.
+    [?] La mention « vynil-core 0.9 » de la tâche A1 ci-dessus (« Lot A (vynil-core 0.9, liste blanche, timeout) ») est laissée telle quelle : elle
+    nomme l'état de la dépendance au moment du lot A (2026-10-30), pas l'état courant (ligne `Depends on` mise à jour, elle). Ratifier la conservation
+    de la mention historique ? Choix provisoire : conservée.
   [ ] L1 — relais `lymaille-prometheus` et `lymaille-loki` (`DEC-33`, `OI-15`, lot 1) : **les specs s'écrivent à l'ouverture du lot, pas avant** (une question reste à poser : d'où vient le `QueryClient` fourni par l'hôte). Après L0.
   [ ] L2 — relais `lymaille-embedder` et `lymaille-feeds` (`DEC-33`, `OI-15`, lot 2) : idem, specs à l'ouverture du lot ; `LymailleHost` gagne une méthode à défaut `None` pour l'`Embedder`. Après L1.
 
