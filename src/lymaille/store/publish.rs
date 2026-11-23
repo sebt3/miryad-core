@@ -696,8 +696,8 @@ pub async fn ensure_catalog_context<C: ConnectionTrait>(
 /// # Errors
 ///
 /// [`LymailleError::InvalidDefinition`] si la provenance est vide ou hors semver, si le
-/// `check_toolset` partagé refuse le toolset, ou si son nom n'est pas du catalogue ;
-/// [`LymailleError::ReservedPrefix`] si le préfixe est réservé (`g_`/`h_` de mauvaise casse) ;
+/// `check_toolset` partagé refuse le toolset, ou si son nom n'est pas du catalogue (y compris un
+/// préfixe réservé de mauvaise casse, `g_`/`h_` : parité avec les hooks, jamais `ReservedPrefix`) ;
 /// [`LymailleError::Store`] en cas d'échec de la base.
 pub async fn ensure_toolset<C: ConnectionTrait>(
     db: &C,
@@ -708,7 +708,7 @@ pub async fn ensure_toolset<C: ConnectionTrait>(
     let valeur = serde_json::to_value(toolset)
         .map_err(|cause| LymailleError::Store(format!("toolset is not serializable: {cause}")))?;
     check_toolset(toolset).map_err(refus_toolsets)?;
-    if !matches!(identity::classify(toolset.name())?, identity::IdKind::Catalog) {
+    if !matches!(identity::classify(toolset.name()), Ok(identity::IdKind::Catalog)) {
         return Err(LymailleError::InvalidDefinition(
             "toolset id must start with G_ (catalog)".to_owned(),
         ));
@@ -1689,6 +1689,31 @@ mod tests {
             refuse.to_string().contains("MRD-LYMAILLE-004"),
             "la version est validée avant toute écriture : {refuse}"
         );
+        assert_eq!(
+            compter(&db, CATALOG_TOOLSETS_TABLE).await,
+            0,
+            "aucune ligne écrite"
+        );
+    }
+
+    /// Scenario (DEC-32, arbitré 2026-11-23, parité avec les hooks) : un préfixe de mauvaise casse
+    /// (`g_git`, `h_git`) est un `InvalidDefinition` — jamais `ReservedPrefix` —, aucune ligne écrite.
+    #[tokio::test]
+    async fn ensure_toolset_prefixe_de_mauvaise_casse_est_une_definition_invalide() {
+        let db = test_db().await;
+        for id in ["g_git", "h_git"] {
+            let refuse = ensure_toolset(
+                &db,
+                &provenance("vanyline", "1.0.0"),
+                &toolset_catalogue(id, "1.0.0"),
+            )
+            .await
+            .expect_err(&format!("`{id}` n'est pas un identifiant du catalogue"));
+            assert!(
+                matches!(refuse, super::LymailleError::InvalidDefinition(_)),
+                "le refus de `{id}` est un `InvalidDefinition`, pas `ReservedPrefix` : {refuse}"
+            );
+        }
         assert_eq!(
             compter(&db, CATALOG_TOOLSETS_TABLE).await,
             0,
