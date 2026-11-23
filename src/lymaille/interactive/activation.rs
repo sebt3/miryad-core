@@ -42,8 +42,8 @@ pub struct ActivationReport {
 ///
 /// # Errors
 ///
-/// - `LymailleError::Forbidden` : `G_…` par un non-admin, identifiant `H_…`, ou module réservé
-///   accordé par un non-admin (`check_grants`).
+/// - `LymailleError::Forbidden` : `G_…` par un non-admin, identifiant `H_…`, ou dépendance
+///   réservée déclarée par le brouillon et appelant non-admin (`check_grants`).
 /// - `LymailleError::NotFound` : aucune ligne de l'appelant, ou ligne sans brouillon.
 /// - `LymailleError::InvalidDefinition` : brouillon illisible ou invalide (`check_toolset`).
 /// - `LymailleError::Store` : panne de la base, transaction annulée.
@@ -75,14 +75,16 @@ pub async fn discard_draft(
         .map_err(from_toolsets)
 }
 
-/// Extraction des modules qu'accorde la forme JSON d'un toolset : la clé `modules`, tableau de
-/// chaînes ; absent, non tableau ou entrées non chainaires, la liste est vide. **Fonction
-/// partagée** (amendement du 2026-11-11, DSD `hooks-async` `DEC-7`) : `activate_with` et les
-/// hooks de sauvegarde de `../definitions/private_toolset.sdd` appliquent la même règle — une
-/// seule extraction des modules du JSON toolset dans la crate.
-pub(crate) fn toolset_json_modules(brute: &serde_json::Value) -> Vec<String> {
+/// Extraction des **dépendances** que déclare la forme JSON d'un toolset : la clé `dependencies`,
+/// tableau de chaînes — celle que `lymaille::Toolset` sérialise réellement (`BTreeSet<String>`),
+/// en 0.3.0 comme en 0.4.0 (`modules` n'a jamais été une clé de cette forme, défaut constaté
+/// le 2026-11-22, DEC-32) ; absent, non tableau ou entrées non chainaires, la liste est vide.
+/// **Fonction partagée** (amendement du 2026-11-11, DSD `hooks-async` `DEC-7`) : `activate_with`
+/// et les hooks de sauvegarde de `../definitions/private_toolset.sdd` appliquent la même règle —
+/// une seule extraction des dépendances du JSON toolset dans la crate.
+pub(crate) fn toolset_json_dependencies(brute: &serde_json::Value) -> Vec<String> {
     brute
-        .get("modules")
+        .get("dependencies")
         .and_then(serde_json::Value::as_array)
         .map_or_else(Vec::new, |entries| {
             entries
@@ -129,15 +131,15 @@ async fn activate_with(
         return Err(LymailleError::NotFound("no draft to activate".to_string()));
     };
 
-    // Étape 3 : mêmes contrôles que `put_draft`, puis `check_grants` sur les modules que le
-    // brouillon accorde — refus nommant le module, jamais le source.
+    // Étape 3 : mêmes contrôles que `put_draft`, puis `check_grants` sur les dépendances que le
+    // brouillon déclare — refus nommant le module, jamais le source.
     let toolset: Toolset = serde_json::from_value(draft.clone()).map_err(|_cause| {
         // La cause serde est abandonnée : le texte d'un toolset porte son source.
         LymailleError::InvalidDefinition(format!("stored toolset {name} is unreadable"))
     })?;
     check_toolset(&toolset).map_err(from_toolsets)?;
-    let modules = toolset_json_modules(&draft);
-    check_grants(caller, &modules, reserved)?;
+    let dependencies = toolset_json_dependencies(&draft);
+    check_grants(caller, &dependencies, reserved)?;
 
     // Version dérivée du brouillon ; la colonne `version` rend la précédente (`DEC-17`).
     let version_new = draft
@@ -337,6 +339,22 @@ mod tests {
         serde_json::to_value(toolset).expect("le toolset de fixture se sérialise")
     }
 
+    /// Forme sérialisée d'un toolset nommé `name` en version `version`, déclarant la dépendance
+    /// `dependance` par `with_dependency` — la clé `dependencies` réellement sérialisée par la
+    /// crate (amendement du 2026-11-22, DEC-32), jamais une injection à la main.
+    fn toolset_json_avec_dependance(name: &str, version: &str, dependance: &str) -> serde_json::Value {
+        let toolset = Toolset::new(
+            name.to_owned(),
+            format!("the toolset {name}"),
+            Semver::parse(version).expect("la version de fixture se parse"),
+            "fn ping() { 1 }".to_owned(),
+        )
+        .expect("le toolset de fixture se construit")
+        .with_dependency(dependance.to_owned())
+        .expect("la dependance de fixture se declare");
+        serde_json::to_value(toolset).expect("le toolset de fixture se serialise")
+    }
+
     /// Insertion brute d'une ligne de toolsets (la table privée n2019a pas d2019entit00e9 `SeaORM`).
     async fn inserer_ligne(
         db: &DatabaseConnection,
@@ -435,14 +453,16 @@ mod tests {
 
     /// Scenario « un module réservé à l'admin bloque l'activation d'un non-admin » : `Forbidden`
     /// nommant le module, ligne inchangée. La liste réservée est le séparateur de test — la liste
-    /// de production est vide.
+    /// de production est vide. La clé `dependencies` est ici injectée à la main ; sa contrepartie
+    /// sérialisée par la crate est verrouillée par
+    /// `une_dependance_reservee_bloque_lactivation_d_un_non_admin`.
     #[tokio::test(flavor = "multi_thread")]
     async fn un_module_reserve_bloque_lactivation_dun_non_admin() {
         let db = db_test().await;
         let alice = compte(&db, "alice").await;
         let v1 = toolset_json("mon_toolset", "1.0.0");
         let mut brouillon = toolset_json("mon_toolset", "2.0.0");
-        brouillon["modules"] = json!(["admin_only"]);
+        brouillon["dependencies"] = json!(["admin_only"]);
         inserer_ligne(
             &db,
             PRIVATE_TOOLSETS_TABLE,
@@ -461,6 +481,51 @@ mod tests {
             LymailleError::Forbidden(message) => {
                 assert!(
                     message.contains("admin_only"),
+                    "le module reserve est nomme : {message}"
+                );
+                assert!(
+                    !message.contains("fn ping"),
+                    "le source du toolset n'est jamais cite : {message}"
+                );
+            }
+            autre => panic!("`Forbidden` attendue, obtenu : {autre:?}"),
+        }
+        let (version, active, draft) =
+            ligne(&db, PRIVATE_TOOLSETS_TABLE, Some(alice.user_id), "mon_toolset").await;
+        assert_eq!(version, "1.0.0", "la ligne est inchangee");
+        assert_eq!(active.as_ref(), Some(&v1), "l'active n'a pas bouge");
+        assert_eq!(draft.as_ref(), Some(&brouillon), "le brouillon est conserve");
+    }
+
+    /// Second volet du Scenario « un module réservé à l'admin bloque l'activation d'un non-admin »
+    /// (amendement du 2026-11-22, DEC-32/OI-14) : le brouillon est un `Toolset` sérialisé par la
+    /// crate avec `with_dependency("secrets")` — plus une clé `modules` écrite à la main, que la
+    /// crate n'a jamais sérialisée. Un non-admin est refusé (`Forbidden` nommant `secrets`), la
+    /// ligne est inchangée.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn une_dependance_reservee_bloque_lactivation_d_un_non_admin() {
+        let db = db_test().await;
+        let alice = compte(&db, "alice").await;
+        let v1 = toolset_json("mon_toolset", "1.0.0");
+        let brouillon = toolset_json_avec_dependance("mon_toolset", "2.0.0", "secrets");
+        inserer_ligne(
+            &db,
+            PRIVATE_TOOLSETS_TABLE,
+            Some(alice.user_id),
+            "mon_toolset",
+            "1.0.0",
+            Some(v1.clone()),
+            Some(brouillon.clone()),
+        )
+        .await;
+
+        let refus = activate_with(&db, &alice, "mon_toolset", &["secrets"], false)
+            .await
+            .expect_err("une dependance reservee d un toolset serialise par la crate bloque un non-admin");
+        match &refus {
+            LymailleError::Forbidden(message) => {
+                assert!(
+                    message.contains("secrets"),
                     "le module reserve est nomme : {message}"
                 );
                 assert!(

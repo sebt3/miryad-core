@@ -111,8 +111,10 @@ impl Entity {
     /// 2026-11-11, DSD `hooks-async` `DEC-7`) : le principal de l'appelant est reconstruit par
     /// [`identity::caller_of`] sur la **connexion du hook** — état admin relu, jamais mis en
     /// cache —, puis [`identity::check_grants`] tranche, pour **chacune des versions posées**
-    /// (`active` et `draft`), les modules extraits de la forme JSON par la fonction partagée avec
-    /// l'activation (`crate::lymaille::interactive::activation::toolset_json_modules`), contre
+    /// (`active` et `draft`), les **dépendances** extraites de la forme JSON par la fonction
+    /// partagée avec l'activation (`crate::lymaille::interactive::activation::toolset_json_dependencies`
+    /// — la clé `dependencies` que la crate sérialise réellement, amendement du 2026-11-22,
+    /// DEC-32), contre
     /// la liste `reserved` injectée (la fonction publique passe `identity::ADMIN_ONLY_MODULES`, le
     /// test une liste non vide — précédent `activate_with`). Un module réservé refusé rend un
     /// `HookError` sans code nommant le module, jamais le source ; une panne de lecture ou un
@@ -135,8 +137,8 @@ impl Entity {
         .into_iter()
         .flatten()
         {
-            let modules = crate::lymaille::interactive::activation::toolset_json_modules(brute);
-            identity::check_grants(&caller, &modules, reserved).map_err(|cause| match cause {
+            let dependances = crate::lymaille::interactive::activation::toolset_json_dependencies(brute);
+            identity::check_grants(&caller, &dependances, reserved).map_err(|cause| match cause {
                 // Le message interne de `Forbidden` nomme le module ; son affichage porterait un
                 // code `MRD-*` (`Must not`), seule la charge utile traverse.
                 crate::lymaille::error::LymailleError::Forbidden(message) => HookError::new(message),
@@ -240,8 +242,8 @@ impl MiryadResource for Entity {
         Some(Column::ToolsetId)
     }
 
-    /// Valide les versions, contrôle les modules accordés et dérive `toolset_id` et `version` —
-    /// voir `Entity::sauvegarde_avec`.
+    /// Valide les versions, contrôle les dépendances réservées déclarées et dérive `toolset_id` et
+    /// `version` — voir `Entity::sauvegarde_avec`.
     fn before_create<C>(
         db: &C,
         active: Self::ActiveModel,
@@ -389,18 +391,33 @@ mod tests {
             .expect("retrait des appartenances de fixture");
     }
 
-    /// Version de `git` en `version` accordant les modules `modules` — la clé `modules` est une
-    /// clé JSON additionnelle, ignorée par la désérialisation `Toolset` mais lue par l'extraction
-    /// partagée (`../interactive/activation.rs`) — motif des fixtures de `activate_with`.
-    fn version_avec_modules(version: &str, modules: &[&str]) -> serde_json::Value {
+    /// Version de `git` en `version` déclarant les dépendances `dependances` — la clé
+    /// `dependencies` est posée à la main sur la forme sérialisée (amendement du 2026-11-22,
+    /// DEC-32 : c'est bien la clé que lit l'extraction partagée, `../interactive/activation.rs`) ;
+    /// sa contrepartie réellement sérialisée par la crate est verrouillée par
+    /// `sauvegarde_controle_la_dependance_d_un_vrai_toolset`.
+    fn version_avec_dependances(version: &str, dependances: &[&str]) -> serde_json::Value {
         let mut valeur = version_json("git", version);
-        valeur["modules"] = serde_json::Value::Array(
-            modules
+        valeur["dependencies"] = serde_json::Value::Array(
+            dependances
                 .iter()
                 .map(|module| serde_json::Value::String((*module).to_string()))
                 .collect(),
         );
         valeur
+    }
+
+    /// Forme JSON **réellement sérialisée par la crate** (amendement du 2026-11-22, DEC-32) : un
+    /// `Toolset` construit par `with_dependency`, jamais une injection de clé à la main. La clé
+    /// portée est `dependencies` (`BTreeSet` sérialisé en tableau de chaînes), en 0.3.0 comme en
+    /// 0.4.0 — motif du Scenario « la dépendance d'un vrai `Toolset` est contrôlée ».
+    fn toolset_avec_dependance(name: &str, version: &str, dependance: &str) -> serde_json::Value {
+        serde_json::to_value(
+            toolset(name, version, SOURCE_VALIDE)
+                .with_dependency(dependance.to_string())
+                .expect("la dependance de fixture se declare"),
+        )
+        .expect("le toolset de fixture se serialise")
     }
 
     /// Verrou d'un refus de module réservé : `HookError` sans code, nommant le module, ne citant
@@ -675,7 +692,7 @@ mod tests {
         let db = db_avec_compte("alice").await;
         let principal = principal_sujet("alice");
         for version_reservee in ["draft", "active"] {
-            let accordee = version_avec_modules("2.0.0", &["secrets"]);
+            let accordee = version_avec_dependances("2.0.0", &["secrets"]);
             let (active, draft) = if version_reservee == "active" {
                 (Some(accordee.clone()), None)
             } else {
@@ -720,7 +737,7 @@ mod tests {
         crate::users::membership::sync_group_memberships(&db, alice.id, &["admin".to_string()])
             .await
             .expect("alice membre du groupe admin");
-        let accordee = version_avec_modules("1.0.0", &["secrets"]);
+        let accordee = version_avec_dependances("1.0.0", &["secrets"]);
         let principal = principal_sujet("alice");
         Entity::sauvegarde_avec(
             &db,
@@ -744,6 +761,80 @@ mod tests {
             Err(erreur) => assert_refus_module_reserve(&erreur),
             Ok(_) => panic!("retirée du groupe admin, alice doit être bridée : le droit est relu"),
         }
+    }
+
+    /// Scenario « la dépendance d'un vrai `Toolset` est contrôlée » (amendement du 2026-11-22,
+    /// DEC-32/OI-14) : un `lymaille::Toolset` construit par `with_dependency("secrets")` et
+    /// sérialisé par `serde_json` — plus un JSON écrit à la main — est refusé à la création puis à
+    /// la mise à jour pour un non-admin (`HookError` sans code nommant `secrets`) ; un admin passe
+    /// avec la même définition ; un toolset sans dépendance réservée passe.
+    #[tokio::test]
+    async fn sauvegarde_controle_la_dependance_d_un_vrai_toolset() {
+        let db = db_avec_compte("alice").await;
+        let principal = principal_sujet("alice");
+        let dependante = toolset_avec_dependance("git", "2.0.0", "secrets");
+        for colonne in ["draft", "active"] {
+            let (active, draft) = if colonne == "active" {
+                (Some(dependante.clone()), None)
+            } else {
+                (None, Some(dependante.clone()))
+            };
+            match Entity::sauvegarde_avec(
+                &db,
+                active_avec(active.clone(), draft.clone()),
+                None,
+                &principal,
+                &["secrets"],
+            )
+            .await
+            {
+                Err(erreur) => assert_refus_module_reserve(&erreur),
+                Ok(_) => panic!(
+                    "la dependance `secrets` d'un toolset serialise par la crate, posee en \
+                     {colonne}, est refusee a la creation"
+                ),
+            }
+            match Entity::sauvegarde_avec(
+                &db,
+                active_avec(active, draft),
+                Some(&modele(1, "git")),
+                &principal,
+                &["secrets"],
+            )
+            .await
+            {
+                Err(erreur) => assert_refus_module_reserve(&erreur),
+                Ok(_) => panic!(
+                    "la dependance `secrets` d'un toolset serialise par la crate, posee en \
+                     {colonne}, est refusee a la mise a jour"
+                ),
+            }
+        }
+        let db_admin = db_migree_sans_compte().await;
+        let admin = resolve_user(&db_admin, "root", None)
+            .await
+            .expect("compte local de root");
+        crate::users::membership::sync_group_memberships(&db_admin, admin.id, &["admin".to_string()])
+            .await
+            .expect("root membre du groupe admin");
+        Entity::sauvegarde_avec(
+            &db_admin,
+            active_avec(Some(dependante), None),
+            None,
+            &principal_sujet("root"),
+            &["secrets"],
+        )
+        .await
+        .expect("un admin passe avec la meme dependance");
+        Entity::sauvegarde_avec(
+            &db,
+            active_avec(Some(version_json("git", "3.0.0")), None),
+            None,
+            &principal,
+            &["secrets"],
+        )
+        .await
+        .expect("un toolset sans dependance reservee passe pour un non-admin");
     }
 
     /// Scenario « une panne de lecture est un refus fermé sans détail » (amendement du
