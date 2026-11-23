@@ -61,6 +61,23 @@ Tasks:
     Validé 2026-11-15 (batterie complète verte — hors `lymaille-pg`, feature non déclarée, tâche #81 lot 2 ; relecture `spec-dd` + batterie tenue par le primary). 8 tests de Scenario (rouges d'abord sur stub `Store("publish: non implémenté")`), puis ./publish.rs.
     `managed_*`).
   [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : `ensure_toolset` ; tests d'abord (les mêmes cas que `ensure_agent` : création, rejeu `Unchanged`, mise à jour sur version supérieure, `Skipped(Modified)`, `Skipped(Unmanaged)`, préfixe `H_` refusé), puis ./publish.rs. Après ../migration.sdd (tâche de migration `m20261122_000001`, colonnes `managed_*` sur `catalog_toolsets`) et ../definitions/toolset.sdd (`check_toolset`).
+    Écrit 2026-11-23 (implementer ; validator PASS statique + batterie complète 17+17 + fmt + `cargo tree` verts, 35 OK, aucun FAIL) : @ensure_toolset livrée —
+    @check_toolset importé (jamais dupliqué), ordre contenu puis préfixe comme les hooks, `INSERT … ON CONFLICT DO NOTHING`, `decider`/`empreinte`/`tracer`
+    partagés sans changement des trois `ensure_*` existants (leurs 8 tests inchangés au bit près) ; 7 tests au `Then` réel (Created avec version hôte et
+    version définition distinguées, Unchanged sans écriture, Updated avec empreinte recalculée, Modified/Unmanaged lignes intactes, refus avant écriture
+    avec zéro ligne, empreinte non crue) ; rouge d'abord démontré (stub `Store`). La case reste `[ ]` sur l'écart ci-dessous.
+    [!] Parité du code d'erreur sur les préfixes de mauvaise casse : `classify(…)?` dans @ensure_toolset propage `ReservedPrefix` (`MRD-LYMAILLE-003`)
+    pour un `g_git`/`h_git`, alors que les hooks des quatre entités (dont ../definitions/toolset.rs) absorbent l'erreur en `InvalidDefinition` et que le
+    `Must` de la présente spec dit « refus → `InvalidDefinition` ». Aucun test ne couvre ce cas limite. Options : parité stricte avec les hooks (retirer
+    le `?`, rendre `InvalidDefinition`) — recommandé, ou amendement du `Must` actant `ReservedPrefix` sur ce chemin. Le code est écrit, la case attend
+    l'arbitrage.
+    [?] Lecture des `managed_*` de `catalog_toolsets` par requête `sea_query` sur la clé (relire_toolset) : le `Model` de ../definitions/toolset.rs n'expose
+    pas ces colonnes (amendement #73 jamais posé sur cette entité) et l'élargir toucherait la surface REST/TS de la ressource, hors `Owns` de la tâche.
+    Options : amender ../definitions/toolset.sdd pour la parité des quatre entités, ou acter la lecture brute comme forme durable (documentée dans le
+    doc-comment ; fenêtre de course couverte par la garde `managed_digest`). Recommandation du validator : les deux sont défendables, amender `toolset.sdd`
+    est un choix d'arbitrage (surface REST/TS) pas une correction. Choix provisoire : lecture brute conservée.
+    [?] Branche « ligne gérée disparue entre les deux lectures » de relire_toolset → `Store`, sans équivalent dans les trois autres `relire_*` (qui rendent
+    `None`) : acceptable tel quel ? Choix provisoire : conservée (échec fermé).
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./publish.rs.

@@ -27,8 +27,11 @@ use super::db_text;
 use crate::lymaille::definitions::agent;
 use crate::lymaille::definitions::catalog_context;
 use crate::lymaille::definitions::context_type;
+use crate::lymaille::definitions::toolset;
+use crate::lymaille::definitions::toolset::check_toolset;
 use crate::lymaille::error::LymailleError;
 use crate::lymaille::host::ScriptGrants;
+use crate::lymaille::identity;
 
 /// Table des agents du catalogue (`../migration.rs`), colonnes `managed_*` comprises.
 const CATALOG_AGENTS_TABLE: &str = "miryad_lymaille_catalog_agents";
@@ -38,6 +41,10 @@ const CATALOG_CONTEXT_TYPES_TABLE: &str = "miryad_lymaille_catalog_context_types
 
 /// Table des contextes du catalogue (`../migration.rs`).
 const CATALOG_CONTEXTS_TABLE: &str = "miryad_lymaille_catalog_contexts";
+
+/// Table des toolsets du catalogue (`../migration.rs`), colonnes `managed_*` comprises depuis
+/// `m20261122_000001` (amendement du 2026-11-22, DEC-32).
+const CATALOG_TOOLSETS_TABLE: &str = "miryad_lymaille_catalog_toolsets";
 
 /// La marque de l'hôte : `source` (nom stable, non vide) et `version` de son catalogue (semver
 /// valide), validées par les `ensure_*` avant toute écriture (`./publish.sdd`).
@@ -680,22 +687,138 @@ pub async fn ensure_catalog_context<C: ConnectionTrait>(
     .await
 }
 
+/// Publie un toolset du catalogue (`G_…`, version active) : `catalog_toolsets`, validation par le
+/// `check_toolset` partagé de `../definitions/toolset.rs` puis `classify(name) == Catalog`, avant
+/// toute écriture (amendement du 2026-11-22, DEC-32 — mêmes règles que les trois autres
+/// `ensure_*`). La `version` de la provenance est celle de l'hôte ; la version du `Toolset` reste
+/// portée par la définition, dans la colonne `version`. Le brouillon n'est jamais écrit.
+///
+/// # Errors
+///
+/// [`LymailleError::InvalidDefinition`] si la provenance est vide ou hors semver, si le
+/// `check_toolset` partagé refuse le toolset, ou si son nom n'est pas du catalogue ;
+/// [`LymailleError::ReservedPrefix`] si le préfixe est réservé (`g_`/`h_` de mauvaise casse) ;
+/// [`LymailleError::Store`] en cas d'échec de la base.
+pub async fn ensure_toolset<C: ConnectionTrait>(
+    db: &C,
+    provenance: &Provenance,
+    toolset: &::lymaille::Toolset,
+) -> Result<PublishOutcome, LymailleError> {
+    let publiee = valider_provenance(provenance)?;
+    let valeur = serde_json::to_value(toolset)
+        .map_err(|cause| LymailleError::Store(format!("toolset is not serializable: {cause}")))?;
+    check_toolset(toolset).map_err(refus_toolsets)?;
+    if !matches!(identity::classify(toolset.name())?, identity::IdKind::Catalog) {
+        return Err(LymailleError::InvalidDefinition(
+            "toolset id must start with G_ (catalog)".to_owned(),
+        ));
+    }
+    let id = toolset.name().to_owned();
+    let version = toolset.version().to_string();
+    let cible = Publication {
+        table: CATALOG_TOOLSETS_TABLE,
+        cle: "toolset_id",
+        identifiant: &id,
+        provenance,
+        publiee: &publiee,
+        digest_nouvelle: &empreinte(&[("active", Some(valeur.clone()))]),
+    };
+    publier(
+        db,
+        &cible,
+        &[
+            ("toolset_id", Expr::val(id.clone())),
+            ("version", Expr::val(version.clone())),
+            ("active", Expr::val(valeur.clone())),
+            // `draft` n'est jamais écrit par la publication : sa valeur par défaut à l'insertion
+            // est `NULL`, la colonne de brouillon appartient à la session de configuration.
+            ("draft", Expr::null()),
+            ("created_at", Expr::val(chrono::Utc::now())),
+        ],
+        &[("version", Expr::val(version)), ("active", Expr::val(valeur))],
+        relire_toolset(db, &id, provenance.source.as_str()).await,
+        relire_toolset(db, &id, provenance.source.as_str()),
+    )
+    .await
+}
+
+/// Traduction d'un refus du `check_toolset` partagé : une panne de stockage est `Store`, tout
+/// autre refus est `InvalidDefinition` — le texte ne cite jamais le source (motif de
+/// `../interactive/activation.rs`, les détails de `ToolsetsError` sont des phrases fixes).
+fn refus_toolsets(cause: ::lymaille::ToolsetsError) -> LymailleError {
+    match cause {
+        ::lymaille::ToolsetsError::Store(texte) => LymailleError::Store(texte),
+        autre => LymailleError::InvalidDefinition(autre.to_string()),
+    }
+}
+
+/// Relit la ligne `catalog_toolsets` par sa clé, avec sa marque et l'empreinte recalculée de son
+/// contenu (`active` tel que stocké — un `active` `NULL` comme `null`). Le `Model` de
+/// `../definitions/toolset.rs` n'expose pas les colonnes `managed_*` : la marque est lue en brut
+/// par la clé, le contenu par l'entité.
+async fn relire_toolset<C: ConnectionTrait>(
+    db: &C,
+    id: &str,
+    source: &str,
+) -> Result<Option<LigneGeree>, LymailleError> {
+    let Some(ligne) = toolset::Entity::find()
+        .filter(toolset::Column::ToolsetId.eq(id))
+        .one(db)
+        .await
+        .map_err(|cause| LymailleError::Store(db_text(&cause)))?
+    else {
+        return Ok(None);
+    };
+    let mut select = Query::select();
+    select
+        .columns([
+            Alias::new("managed_by"),
+            Alias::new("managed_version"),
+            Alias::new("managed_digest"),
+        ])
+        .from(Alias::new(CATALOG_TOOLSETS_TABLE))
+        .and_where(Expr::col(Alias::new("toolset_id")).eq(id.to_owned()));
+    let marque = db
+        .query_one(&select)
+        .await
+        .map_err(|cause| LymailleError::Store(db_text(&cause)))?
+        .ok_or_else(|| LymailleError::Store("managed row disappeared mid-read".to_owned()))?;
+    Ok(Some(marquee(
+        marque
+            .try_get::<Option<String>>("", "managed_by")
+            .map_err(|cause| LymailleError::Store(db_text(&cause)))?
+            .as_deref()
+            == Some(source),
+        marque
+            .try_get::<Option<String>>("", "managed_version")
+            .map_err(|cause| LymailleError::Store(db_text(&cause)))?,
+        marque
+            .try_get::<Option<String>>("", "managed_digest")
+            .map_err(|cause| LymailleError::Store(db_text(&cause)))?,
+        empreinte(&[("active", ligne.active)]),
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::CATALOG_AGENTS_TABLE;
     use super::CATALOG_CONTEXT_TYPES_TABLE;
     use super::CATALOG_CONTEXTS_TABLE;
+    use super::CATALOG_TOOLSETS_TABLE;
     use super::Provenance;
     use super::PublishOutcome;
     use super::SkipReason;
     use crate::lymaille::host::ScriptGrants;
-    use crate::lymaille::store::publish::{ensure_agent, ensure_catalog_context, ensure_context_type};
+    use crate::lymaille::store::publish::{
+        ensure_agent, ensure_catalog_context, ensure_context_type, ensure_toolset,
+    };
     use crate::lymaille::store::test_support::test_db;
     use ::lymaille::AgentDefinition;
     use ::lymaille::AgentKind;
     use ::lymaille::ContextLevel;
     use ::lymaille::ContextType;
     use ::lymaille::SecretDetector;
+    use ::lymaille::Toolset;
     use ::lymaille::ToolsetContext;
     use sea_orm::ActiveModelTrait as _;
     use sea_orm::ActiveValue;
@@ -1223,6 +1346,380 @@ mod tests {
             &db,
             &provenance("vanyline", "1.1.0"),
             &agent_catalogue("G_triage", "trie affiné"),
+        )
+        .await
+        .expect("la publication avec version supérieure réussit en saut");
+        assert_eq!(
+            rendu,
+            PublishOutcome::Skipped(SkipReason::Modified),
+            "l'empreinte stockée n'a pas été crue : elle est recalculée sur le contenu actuel"
+        );
+    }
+
+    // ── `ensure_toolset` — les mêmes cas que `ensure_agent` (amendement du 2026-11-22, DEC-32,
+    // `OI-14` (a) de ./publish.sdd) ──
+
+    /// Source Rhai de fixture : un module qui compile (le contrat extrait est la fonction `ping`),
+    /// motif de `../definitions/toolset.rs`.
+    const SOURCE_MODULE: &str = "fn ping() { 1 }";
+
+    /// Toolset du catalogue nommé `id`, version sémantique `version`, module [`SOURCE_MODULE`].
+    fn toolset_catalogue(id: &str, version: &str) -> Toolset {
+        Toolset::new(
+            id.to_owned(),
+            "toolset de test".to_owned(),
+            semver(version),
+            SOURCE_MODULE.to_owned(),
+        )
+        .expect("le toolset de fixture se construit")
+    }
+
+    /// Scenario (amendement DEC-32) « un toolset publié sur une base fraîche » : `Created` sans
+    /// aucun compte, lignes marquées de la provenance de l'hôte, version de la définition portée
+    /// par la colonne `version`, brouillon laissé vide.
+    #[tokio::test]
+    async fn base_fraiche_publie_un_toolset_sans_sujet_administrateur() {
+        let db = test_db().await;
+        let rendu = ensure_toolset(
+            &db,
+            &provenance("vanyline", "1.0.0"),
+            &toolset_catalogue("G_git", "2.5.0"),
+        )
+        .await
+        .expect("la publication du toolset réussit sans aucun compte");
+        assert_eq!(rendu, PublishOutcome::Created);
+        let (source, version, digest) =
+            lire_provenance(&db, CATALOG_TOOLSETS_TABLE, "toolset_id", "G_git").await;
+        assert_eq!(source.as_deref(), Some("vanyline"), "managed_by");
+        assert_eq!(
+            version.as_deref(),
+            Some("1.0.0"),
+            "managed_version : la version de l'hôte"
+        );
+        assert_eq!(
+            digest.as_deref().map_or(0, str::len),
+            64,
+            "empreinte SHA-256 hex non nulle"
+        );
+        assert_eq!(
+            lire_colonne(&db, CATALOG_TOOLSETS_TABLE, "version", "toolset_id", "G_git")
+                .await
+                .as_deref(),
+            Some("2.5.0"),
+            "la version du Toolset est portée par la définition, pas par la provenance"
+        );
+        assert!(
+            lire_colonne(&db, CATALOG_TOOLSETS_TABLE, "active", "toolset_id", "G_git")
+                .await
+                .is_some(),
+            "la version active est écrite"
+        );
+        assert!(
+            lire_colonne(&db, CATALOG_TOOLSETS_TABLE, "draft", "toolset_id", "G_git")
+                .await
+                .is_none(),
+            "le brouillon reste vide"
+        );
+    }
+
+    /// Scenario (amendement DEC-32) « rejouer la publication d'un toolset ne change rien » :
+    /// même provenance, `Unchanged` et aucune ligne réécrite.
+    #[tokio::test]
+    async fn rejouer_ensure_toolset_ne_change_rien() {
+        let db = test_db().await;
+        ensure_toolset(
+            &db,
+            &provenance("vanyline", "1.0.0"),
+            &toolset_catalogue("G_git", "1.0.0"),
+        )
+        .await
+        .expect("la publication initiale crée la ligne");
+        let avant = (
+            lire_colonne(&db, CATALOG_TOOLSETS_TABLE, "active", "toolset_id", "G_git").await,
+            lire_colonne(&db, CATALOG_TOOLSETS_TABLE, "created_at", "toolset_id", "G_git").await,
+            lire_provenance(&db, CATALOG_TOOLSETS_TABLE, "toolset_id", "G_git").await,
+        );
+        let rendu = ensure_toolset(
+            &db,
+            &provenance("vanyline", "1.0.0"),
+            &toolset_catalogue("G_git", "1.0.0"),
+        )
+        .await
+        .expect("le rejeu du toolset réussit");
+        assert_eq!(
+            rendu,
+            PublishOutcome::Unchanged,
+            "le rejeu sans changement ne publie rien"
+        );
+        let apres = (
+            lire_colonne(&db, CATALOG_TOOLSETS_TABLE, "active", "toolset_id", "G_git").await,
+            lire_colonne(&db, CATALOG_TOOLSETS_TABLE, "created_at", "toolset_id", "G_git").await,
+            lire_provenance(&db, CATALOG_TOOLSETS_TABLE, "toolset_id", "G_git").await,
+        );
+        assert_eq!(avant, apres, "aucune ligne n'est réécrite");
+    }
+
+    /// Scenario (amendement DEC-32) « un toolset géré et non modifié est mis à jour par une
+    /// version supérieure » : `Updated` (empreinte recalculée, `managed_version` de l'hôte,
+    /// colonne `version` de la définition), puis `Unchanged` (version égale), puis `Unchanged`
+    /// (version d'hôte inférieure, aucune écriture même à contenu changé).
+    #[tokio::test]
+    async fn ensure_toolset_met_a_jour_sur_version_superieure() {
+        let db = test_db().await;
+        let premier = ensure_toolset(
+            &db,
+            &provenance("vanyline", "1.0.0"),
+            &toolset_catalogue("G_git", "1.0.0"),
+        )
+        .await
+        .expect("la publication initiale crée la ligne");
+        assert_eq!(premier, PublishOutcome::Created);
+        let digest_initial = lire_provenance(&db, CATALOG_TOOLSETS_TABLE, "toolset_id", "G_git")
+            .await
+            .2;
+
+        let mis_a_jour = ensure_toolset(
+            &db,
+            &provenance("vanyline", "1.1.0"),
+            &toolset_catalogue("G_git", "1.1.0"),
+        )
+        .await
+        .expect("la publication supérieure réussit");
+        assert_eq!(mis_a_jour, PublishOutcome::Updated);
+        let (source, version, digest) =
+            lire_provenance(&db, CATALOG_TOOLSETS_TABLE, "toolset_id", "G_git").await;
+        assert_eq!(source.as_deref(), Some("vanyline"));
+        assert_eq!(
+            version.as_deref(),
+            Some("1.1.0"),
+            "`managed_version` porte la version de l'hôte"
+        );
+        assert_ne!(
+            digest, digest_initial,
+            "l'empreinte est recalculée sur le nouveau contenu"
+        );
+        assert_eq!(
+            lire_colonne(&db, CATALOG_TOOLSETS_TABLE, "version", "toolset_id", "G_git")
+                .await
+                .as_deref(),
+            Some("1.1.0"),
+            "la colonne `version` porte la version de la définition"
+        );
+
+        let egal = ensure_toolset(
+            &db,
+            &provenance("vanyline", "1.1.0"),
+            &toolset_catalogue("G_git", "1.1.0"),
+        )
+        .await
+        .expect("le rejeu à la même version réussit");
+        assert_eq!(egal, PublishOutcome::Unchanged);
+
+        let inferieure = ensure_toolset(
+            &db,
+            &provenance("vanyline", "1.0.5"),
+            &toolset_catalogue("G_git", "9.9.9"),
+        )
+        .await
+        .expect("la publication d'une version d'hôte inférieure réussit");
+        assert_eq!(
+            inferieure,
+            PublishOutcome::Unchanged,
+            "une version d'hôte inférieure n'écrit rien, même à contenu changé"
+        );
+        assert_eq!(
+            lire_colonne(&db, CATALOG_TOOLSETS_TABLE, "version", "toolset_id", "G_git")
+                .await
+                .as_deref(),
+            Some("1.1.0"),
+            "aucune écriture : la colonne `version` reste à 1.1.0"
+        );
+    }
+
+    /// Scenario (amendement DEC-32) « un toolset modifié par un administrateur reste intacte » :
+    /// `Skipped(Modified)`, contenu et provenance d'origine préservés.
+    #[tokio::test]
+    async fn ensure_toolset_saute_une_ligne_modifiee_par_un_administrateur() {
+        let db = test_db().await;
+        ensure_toolset(
+            &db,
+            &provenance("vanyline", "1.0.0"),
+            &toolset_catalogue("G_git", "1.0.0"),
+        )
+        .await
+        .expect("la publication initiale crée la ligne");
+        // L'administrateur modifie `active` en base : la provenance est intacte mais l'empreinte
+        // recalculée ne correspond plus.
+        db.execute_unprepared(&format!(
+            "UPDATE {CATALOG_TOOLSETS_TABLE} SET active = \
+             '{{\"name\":\"G_git\",\"description\":\"vu de l admin\",\"version\":\"1.0.0\",\"source\":\"fn ping() {{ 1 }}\"}}' \
+             WHERE toolset_id = 'G_git'"
+        ))
+        .await
+        .expect("la modification de l'administrateur s'applique");
+
+        let rendu = ensure_toolset(
+            &db,
+            &provenance("vanyline", "1.1.0"),
+            &toolset_catalogue("G_git", "1.1.0"),
+        )
+        .await
+        .expect("la publication sur une ligne modifiée réussit en saut");
+        assert_eq!(rendu, PublishOutcome::Skipped(SkipReason::Modified));
+        let contenu = lire_colonne(&db, CATALOG_TOOLSETS_TABLE, "active", "toolset_id", "G_git").await;
+        assert!(
+            contenu
+                .as_deref()
+                .is_some_and(|texte| texte.contains("vu de l admin")),
+            "le toolset garde la modification de l'administrateur : {contenu:?}"
+        );
+        assert_eq!(
+            lire_provenance(&db, CATALOG_TOOLSETS_TABLE, "toolset_id", "G_git")
+                .await
+                .1
+                .as_deref(),
+            Some("1.0.0"),
+            "la ligne sautée garde sa provenance d'origine"
+        );
+    }
+
+    /// Scenario (amendement DEC-32) « un toolset non géré n'est pas touché » : `Skipped(Unmanaged)`
+    /// sur une ligne à provenance nulle, ligne intacte.
+    #[tokio::test]
+    async fn ensure_toolset_saute_une_ligne_non_geree() {
+        let db = test_db().await;
+        // Un toolset créé par un administrateur (provenance nulle) : écriture directe, hors CRUD.
+        crate::lymaille::definitions::toolset::ActiveModel {
+            id: ActiveValue::NotSet,
+            toolset_id: ActiveValue::Set("G_git".to_owned()),
+            version: ActiveValue::Set("1.0.0".to_owned()),
+            active: ActiveValue::Set(Some(
+                serde_json::to_value(toolset_catalogue("G_git", "1.0.0")).expect("la fixture se sérialise"),
+            )),
+            draft: ActiveValue::Set(None),
+            created_at: ActiveValue::Set(chrono::Utc::now()),
+        }
+        .insert(&db)
+        .await
+        .expect("le toolset de l'administrateur est posé, provenance nulle");
+        let rendu = ensure_toolset(
+            &db,
+            &provenance("vanyline", "1.1.0"),
+            &toolset_catalogue("G_git", "1.1.0"),
+        )
+        .await
+        .expect("la publication d'un toolset non géré réussit en saut");
+        assert_eq!(rendu, PublishOutcome::Skipped(SkipReason::Unmanaged));
+        assert!(
+            lire_colonne(&db, CATALOG_TOOLSETS_TABLE, "active", "toolset_id", "G_git")
+                .await
+                .is_some_and(|texte| texte.contains("toolset de test")),
+            "la ligne non gérée est intacte"
+        );
+        assert!(
+            lire_provenance(&db, CATALOG_TOOLSETS_TABLE, "toolset_id", "G_git")
+                .await
+                .0
+                .is_none(),
+            "`managed_by` reste nul"
+        );
+    }
+
+    /// Scenario (amendement DEC-32) « les mêmes validations que les hooks, avant toute écriture » :
+    /// un `H_…` (résolu par l'hôte, jamais stocké), un `triage` (nom privé), un module qui ne
+    /// compile pas (refus du `check_toolset` partagé, sans écho de la source), une version
+    /// `pas-semver` — refus avant toute écriture dans les quatre cas.
+    #[tokio::test]
+    async fn ensure_toolset_refuse_avant_toute_ecriture() {
+        let db = test_db().await;
+        for id in ["H_triage", "triage"] {
+            let refuse = ensure_toolset(
+                &db,
+                &provenance("vanyline", "1.0.0"),
+                &toolset_catalogue(id, "1.0.0"),
+            )
+            .await
+            .expect_err(&format!("l'identifiant `{id}` n'est pas du catalogue"));
+            let texte = refuse.to_string();
+            assert!(
+                texte.contains("MRD-LYMAILLE-004"),
+                "le refus de `{id}` est un `InvalidDefinition` : {texte}"
+            );
+        }
+        assert_eq!(
+            compter(&db, CATALOG_TOOLSETS_TABLE).await,
+            0,
+            "aucune ligne écrite"
+        );
+
+        let marque = "SOURCE-A-NE-JAMAIS-CITER-3f08";
+        let casse = Toolset::new(
+            "G_casse".to_owned(),
+            "toolset de test".to_owned(),
+            semver("1.0.0"),
+            format!("let x = {marque}((("),
+        )
+        .expect("la fixture se construit : le module n'est pas compilé à la construction");
+        let refuse = ensure_toolset(&db, &provenance("vanyline", "1.0.0"), &casse)
+            .await
+            .expect_err("un module qui ne compile pas est refusé par le check_toolset partagé");
+        let texte = refuse.to_string();
+        assert!(
+            texte.contains("MRD-LYMAILLE-004"),
+            "le refus nomme la règle : {texte}"
+        );
+        assert!(
+            !texte.contains(marque),
+            "le source Rhai ne traverse jamais l'erreur : {texte}"
+        );
+        assert_eq!(
+            compter(&db, CATALOG_TOOLSETS_TABLE).await,
+            0,
+            "aucune ligne écrite"
+        );
+
+        let refuse = ensure_toolset(
+            &db,
+            &provenance("vanyline", "pas-semver"),
+            &toolset_catalogue("G_git", "1.0.0"),
+        )
+        .await
+        .expect_err("une provenance dont la version n'est pas semver est refusée");
+        assert!(
+            refuse.to_string().contains("MRD-LYMAILLE-004"),
+            "la version est validée avant toute écriture : {refuse}"
+        );
+        assert_eq!(
+            compter(&db, CATALOG_TOOLSETS_TABLE).await,
+            0,
+            "aucune ligne écrite"
+        );
+    }
+
+    /// Scenario (amendement DEC-32) « l'empreinte d'un toolset est recalculée, pas crue » :
+    /// `managed_digest` écrasé en base par l'empreinte d'un autre contenu — la ligne est tenue
+    /// pour modifiée malgré une version supérieure.
+    #[tokio::test]
+    async fn lempreinte_d_un_toolset_est_recalculee_pas_crue() {
+        let db = test_db().await;
+        ensure_toolset(
+            &db,
+            &provenance("vanyline", "1.0.0"),
+            &toolset_catalogue("G_git", "1.0.0"),
+        )
+        .await
+        .expect("la publication initiale crée la ligne");
+        db.execute_unprepared(&format!(
+            "UPDATE {CATALOG_TOOLSETS_TABLE} SET managed_digest = '{}' WHERE toolset_id = 'G_git'",
+            "f".repeat(64)
+        ))
+        .await
+        .expect("l'empreinte attendue d'un autre contenu est écrasée en base");
+
+        let rendu = ensure_toolset(
+            &db,
+            &provenance("vanyline", "1.1.0"),
+            &toolset_catalogue("G_git", "1.1.0"),
         )
         .await
         .expect("la publication avec version supérieure réussit en saut");
