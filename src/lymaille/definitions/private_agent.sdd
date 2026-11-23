@@ -64,7 +64,18 @@ Tasks:
     Nommage TS arbitré par Sébastien le 2026-11-16 : suffixe `Model` conservé ; le `Model` est exporté sous `<PascalCase(entité)>Model` (déjà livré : `#[ts(rename = "…Model")]` dans ./private_agent.rs).
     version amont qui dérive `TS` sur ses définitions. Alors : spec (`Must`, `Scenario` « le `.ts` exporté type la colonne par `AgentDefinition` »), test de contrat (valeur construite par la crate → JSON identique
     à la forme déclarée, JSON de la déclaration accepté par la crate), puis ./private_agent.rs.
-  [ ] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : retirer le contrôle `check_grants` des hooks (le corps paramétré par la liste, `caller_of` et la dépendance à ../identity.rs disparaissent de ce fichier) ; tests d'abord (les deux nouveaux `Scenario`, rouges avant le retrait), puis suppression des tests `sauvegarde_*`/`serveur_inexistant_*` de la sauvegarde des modules, puis ./private_agent.rs. Après la montée de `lymaille` à 0.4 (/miryad-core.sdd, tâche L0).
+  [x] Migration `lymaille` 0.4.0 (2026-11-22, DSD `miryad-core/lymaille#DEC-32`, arbitrages `OI-14`) : retirer le contrôle `check_grants` des hooks (le corps paramétré par la liste, `caller_of` et la dépendance à ../identity.rs disparaissent de ce fichier) ; tests d'abord (les deux nouveaux `Scenario`, rouges avant le retrait), puis suppression des tests `sauvegarde_*`/`serveur_inexistant_*` de la sauvegarde des modules, puis ./private_agent.rs. Après la montée de `lymaille` à 0.4 (/miryad-core.sdd, tâche L0).
+    Validé 2026-11-23 (branche `feat/lymaille-0.4` ; validator PASS statique + batterie complète — bump au commit final de la branche, tâche L0) : hooks
+    appelant directement `Entity::valider_et_deriver` (synchrones, enveloppés de `std::future::ready` — `unused_async` interdisait un `async fn` sans
+    `.await`) ; `sauvegarde_avec`, `caller_of`, `check_grants`, `ADMIN_ONLY_MODULES` et `PANNE_AUTORISATION` disparus du fichier ; la colonne
+    `definition` est re-sérialisée depuis la définition chargée, donc une clé `modules`/`toolsets` héritée d'un JSON 0.3 est ignorée à la lecture et
+    effacée à la réécriture ; les deux nouveaux `Scenario` ont leur test au `Then` réel (« une définition héritée avec une clé modules est acceptée et
+    la clé ignorée », « une restriction de toolsets sur un agent de travail est refusée » — `HookError` citant la cause, jamais le prompt) ; les deux
+    tests rouges laissés par l'étape précédente de la branche (sauvegarde des modules) sont supprimés, tests du toolset conservés ; batterie 17+17 +
+    fmt + `cargo tree` verts (rejouée, voir ../mcp_mount.sdd).
+    [?] Le libellé de la case dit « la dépendance à ../identity.rs disparaît de ce fichier » : elle ne visait que `check_grants`/`caller_of` ;
+    @classify (étape 4, DSD `DEC-9`) vit dans ../identity.rs et reste appelé (private_agent.rs:82). Rien à corriger dans le code — ratifier le
+    libellé (« la dépendance à ../identity.rs pour le contrôle des droits disparaît ») à l'amendement.
 
 Done when:
   Les `Scenario` sont verts sous `lymaille` ; la spec est relue et approuvée avant ./private_agent.rs.
