@@ -71,7 +71,7 @@ hmac = { version = "0.12", optional = true }
 hex = { version = "0.4", optional = true }
 chrono = { version = "0.4", optional = true }
 utoipa = "5"
-utoipa-swagger-ui = { version = "9", optional = true, features = ["axum", "vendored"] }
+utoipa-swagger-ui = { version = "10", optional = true, features = ["axum", "vendored"] }
 vynil-core = { version = "0.10.0", default-features = false, features = ["hbs"], optional = true }
 # Validation des arguments des outils MCP applicatifs (src/mcp/app_tool.sdd, DSD `mcp#DEC-3`) : `default-features = false`
 # retire `resolve-http` et `resolve-file` (aucune résolution de `$ref` distante ou de fichier). Cargo unifie les features :
