@@ -76,7 +76,7 @@ vynil-core = { version = "0.10.0", default-features = false, features = ["hbs"],
 # Validation des arguments des outils MCP applicatifs (src/mcp/app_tool.sdd, DSD `mcp#DEC-3`) : `default-features = false`
 # retire `resolve-http` et `resolve-file` (aucune résolution de `$ref` distante ou de fichier). Cargo unifie les features :
 # `lymaille` tire la même crate avec ses features par défaut, d'où le récupérateur de `$ref` qui refuse tout (spec).
-jsonschema = { version = "0.60", default-features = false, optional = true }
+jsonschema = { version = "0.61", default-features = false, optional = true }
 tower-http = { version = "0.6", default-features = false, features = ["fs"], optional = true }
 restate-sdk = { version = "0.12", features = ["http_server"], optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
